@@ -46,14 +46,25 @@ def load_liquidity_fade_manager_checkpoint(client, prefix, row, parent, event, f
             or cursor.get('boundary_ms') != witness.boundary_ms
             or cursor.get('session_date') != day):
         raise ValueError('Liquidity manager reference differs from its exact committed decision cursor')
-    rows = load_unattested_manager_snapshot_rows(client, run_id=prefix.run_id, checkpoint_sequence=sequence)
-    seal = rows.snapshot
-    if (str(seal.get('snapshot_id')) != row['source_manager_snapshot_id']
-            or seal.get('content_hash') != row['source_manager_snapshot_hash']
-            or seal.get('run_id') != prefix.run_id or seal.get('checkpoint_sequence') != sequence
-            or seal.get('boundary_ms') != witness.boundary_ms or seal.get('session_date') != day):
-        raise ValueError('Liquidity manager snapshot differs from its immutable reference')
-    state = restore_manager_snapshot(rows)
+    from .selected_checkpoint_products import source_for_client,load_historical_checkpoint,checkpoint_root
+    selected_source=source_for_client(client)
+    if selected_source is not None:
+        image=load_historical_checkpoint(client,prefix,source=selected_source,sequence=sequence)
+        seal=checkpoint_root(client,source=selected_source,sequence=sequence)
+        if (seal['snapshot_id']!=row['source_manager_snapshot_id']
+                or seal['content_hash']!=row['source_manager_snapshot_hash']
+                or seal['boundary_ms']!=witness.boundary_ms or seal['session_date']!=day):
+            raise ValueError('Liquidity selected checkpoint differs from immutable reference')
+        state=image.inherited
+    else:
+        rows = load_unattested_manager_snapshot_rows(client, run_id=prefix.run_id, checkpoint_sequence=sequence)
+        seal = rows.snapshot
+        if (str(seal.get('snapshot_id')) != row['source_manager_snapshot_id']
+                or seal.get('content_hash') != row['source_manager_snapshot_hash']
+                or seal.get('run_id') != prefix.run_id or seal.get('checkpoint_sequence') != sequence
+                or seal.get('boundary_ms') != witness.boundary_ms or seal.get('session_date') != day):
+            raise ValueError('Liquidity manager snapshot differs from its immutable reference')
+        state = restore_manager_snapshot(rows)
     source = validate_liquidity_fade_state(witness, state, financial)
     if float(parent['quantity']) != financial.position_quantity:
         raise ValueError('Liquidity exit quantity differs from its independently verified financial view')

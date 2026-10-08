@@ -40,16 +40,21 @@ def _fixed_structural_lot_oms_image(owner,image,contexts):
         strategy_identity=(source._strategy_id,source._revision),require_tactic=True,fixed_lot_contexts=contexts)
     history=load_complete_typed_protection_history(owner.client,prefix,fixed_lot_contexts=contexts)
     by_intent={v.base.intents[0]['intent_id']:v for v in contexts};lineages=[]
-    for group in groups:
-        ctx=by_intent.get(group.group['strategy_intent_id'])
-        if ctx is None:raise ValueError('Selected OMS bootstrap lacks complete owned source lineage')
-        request=ctx.verify_source()
-        admission=load_committed_oms_admission_page(owner.client,prefix,(group,))[group.sequence]
-        decision=load_committed_oms_decision_page(owner.client,prefix,(group,),{group.sequence:admission})[group.sequence]
-        original=RecoveredIntent(ctx.record.sequence,ctx.record.account_id,ctx.record.record_id,ctx.base.batch_id,request.intent,ctx.base)
-        approved,_=_approved_strategy_one_oms_intent(group,original,history,admission,decision)
-        orders=reconstruct_strategy_one_oms_lineage(group,original,history,admission_reservation=admission,admission_decision=decision)
-        lineages.append(RecoveredStrategyOneOmsLineage(group,original,orders,image.sequence,approved,admission))
+    from src.trading_runtime.selected_checkpoint_products import selected,source_bound_oms_lineages
+    if selected(source):
+        lineages=source_bound_oms_lineages(owner.client,prefix,source=source,contexts=contexts,
+            allowed_accounts=frozenset(v[1] for v in image.financial_roots if v[0]=='portfolio'))
+    else:
+        for group in groups:
+            ctx=by_intent.get(group.group['strategy_intent_id'])
+            if ctx is None:raise ValueError('Selected OMS bootstrap lacks complete owned source lineage')
+            request=ctx.verify_source()
+            admission=load_committed_oms_admission_page(owner.client,prefix,(group,))[group.sequence]
+            decision=load_committed_oms_decision_page(owner.client,prefix,(group,),{group.sequence:admission})[group.sequence]
+            original=RecoveredIntent(ctx.record.sequence,ctx.record.account_id,ctx.record.record_id,ctx.base.batch_id,request.intent,ctx.base)
+            approved,_=_approved_strategy_one_oms_intent(group,original,history,admission,decision)
+            orders=reconstruct_strategy_one_oms_lineage(group,original,history,admission_reservation=admission,admission_decision=decision)
+            lineages.append(RecoveredStrategyOneOmsLineage(group,original,orders,image.sequence,approved,admission))
     decoded=reconstruct_typed_oms_actor_image(tuple(lineages),history,run_id=source.run_id,
         strategy_id=source._strategy_id,strategy_revision=source._revision,through_sequence=image.sequence,
         cutoff_at=market_day_boundary(source.session_date,image.inherited.boundary_ms))
@@ -175,27 +180,39 @@ async def restore_fixed_structural_lot_native_manager(owner, manager, keeper_ses
         strategy_identity=(source._strategy_id,source._revision),require_tactic=True,fixed_lot_contexts=contexts)
     history=load_complete_typed_protection_history(owner.client,prefix,fixed_lot_contexts=contexts)
     context_by_intent={v.base.intents[0]['intent_id']:v for v in contexts}
+    from src.trading_runtime.selected_checkpoint_products import selected,source_bound_oms_lineages
+    selected_lineages={}
+    if selected(source):
+        selected_lineages={v.state.group['group_id']:v for v in source_bound_oms_lineages(
+            owner.client,prefix,source=source,contexts=contexts,allowed_accounts=frozenset(portfolio_roots))}
     live=tuple(freeze_oms_group(group) for group in runtime.order_manager._groups.values())
     live_by_id={v.group_id:v for v in live}
     if len(live_by_id)!=len(live):raise ValueError('Selected bootstrap repeated actual OMS group')
     expected_ids=set()
     for stored in groups:
-        ctx=context_by_intent.get(stored.group['strategy_intent_id'])
+        lineage=selected_lineages.get(stored.group['group_id'])
+        if selected(source) and lineage is None:
+            raise ValueError('Selected bootstrap has missing verified OMS lineage')
+        ctx=context_by_intent.get(lineage.source_entry_intent_id if lineage is not None
+            and lineage.source_entry_intent_id is not None else stored.group['strategy_intent_id'])
         if ctx is None:raise ValueError('Selected bootstrap group lacks actual source companion')
         request=ctx.verify_source();key=(request.entry.proposal.account_id,request.entry.proposal.assignment_id,request.entry.proposal.ticker)
         if key not in active_keys:continue
-        admission=load_committed_oms_admission_page(owner.client,prefix,(stored,))[stored.sequence]
-        decision=load_committed_oms_decision_page(owner.client,prefix,(stored,),{stored.sequence:admission})[stored.sequence]
-        original=RecoveredIntent(ctx.record.sequence,ctx.record.account_id,ctx.record.record_id,
-            ctx.base.batch_id,request.intent,ctx.base)
-        approved,_=_approved_strategy_one_oms_intent(stored,original,history,admission,decision)
-        orders=reconstruct_strategy_one_oms_lineage(stored,original,history,
-            admission_reservation=admission,admission_decision=decision)
+        if lineage is not None:
+            approved=lineage.approved_intent;orders=lineage.orders
+        else:
+            admission=load_committed_oms_admission_page(owner.client,prefix,(stored,))[stored.sequence]
+            decision=load_committed_oms_decision_page(owner.client,prefix,(stored,),{stored.sequence:admission})[stored.sequence]
+            original=RecoveredIntent(ctx.record.sequence,ctx.record.account_id,ctx.record.record_id,
+                ctx.base.batch_id,request.intent,ctx.base)
+            approved,_=_approved_strategy_one_oms_intent(stored,original,history,admission,decision)
+            orders=reconstruct_strategy_one_oms_lineage(stored,original,history,
+                admission_reservation=admission,admission_decision=decision)
         actual=live_by_id.get(stored.group['group_id'])
         if (actual is None or actual.account_id!=key[0] or actual.intent.metadata.get('assignment_id')!=key[1]
                 or actual.intent.ticker!=key[2] or actual.intent!=approved or tuple(actual.orders)!=tuple(orders)
-                or actual.broker_order_request_indexes!={v['broker_order_id']:v['request_index'] for v in stored.broker_bindings}
-                or actual.filled_by_broker_order!={v['broker_order_id']:float(v['filled_quantity']) for v in stored.broker_bindings}
+                or actual.broker_order_request_indexes!={v['broker_order_id']:v['request_index'] for v in stored.broker_bindings if lineage is None or v['request_index'] is not None}
+                or actual.filled_by_broker_order!={v['broker_order_id']:float(v['filled_quantity']) for v in stored.broker_bindings if lineage is None or v['has_filled_quantity']}
                 or actual.terminal_broker_order_ids!={v['broker_order_id'] for v in stored.broker_bindings if v['terminal']}):
             raise ValueError('Selected bootstrap actual OMS/source/order/ACK inventory differs')
         from src.trading_runtime.arte_journal_reader import _journal_instant
@@ -216,8 +233,8 @@ async def restore_fixed_structural_lot_native_manager(owner, manager, keeper_ses
         if (actual.rejection_reason!=stored.group['rejection_reason']
                 or actual.reprice_count!=stored.group['reprice_count']
                 or int(actual.protection_delegated)!=stored.group['protection_delegated']
-                or actual.broker_order_roles!={v['broker_order_id']:v['role'] for v in stored.broker_bindings}
-                or actual.broker_order_slices!={v['broker_order_id']:v['slice_id'] for v in stored.broker_bindings}):
+                or actual.broker_order_roles!={v['broker_order_id']:v['role'] for v in stored.broker_bindings if lineage is None or v['has_role']}
+                or actual.broker_order_slices!={v['broker_order_id']:v['slice_id'] for v in stored.broker_bindings if lineage is None or v['has_slice']}):
             raise ValueError('Selected bootstrap actual OMS flags/binding roles differ')
         deferred=actual.deferred_reprice
         if ((tuple(_exact_decimal(v) for v in deferred) if deferred is not None else (None,None))!=

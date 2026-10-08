@@ -1931,7 +1931,9 @@ class ReplayRunController:
                 "pending": self._monitoring is not None and self._monitoring.pending is not None,
                 "cached_symbols": len(self._monitoring.results) if self._monitoring is not None else 0,
             },
-            "performance_timings": {"stages": deepcopy(getattr(self, '_stage_timings', {})),
+            "performance_timings": {"stages": {**deepcopy(getattr(self, '_stage_timings', {})),
+                **deepcopy(getattr(getattr(getattr(self, '_strategy_one_manager', None),
+                    '_fixed_lot_owner', None), '_checkpoint_product_timings', {}))},
                 "journal": dict(getattr(self._journal, 'timings', {})),
                 "journal_writer": (
                     journal_writer.metrics()
@@ -2450,6 +2452,18 @@ class ReplayRunController:
                         # Only the genuine current publisher receipt may settle
                         # its owned dispatch before immutable proof capture.
                         await publisher.await_fence()
+                    from src.trading_runtime.selected_checkpoint_products import selected as checkpoint_products_selected
+                    if checkpoint_products_selected(selected_source):
+                        # Settle an owned receipt before scheduling its new
+                        # immutable suffix; never retry an ambiguous dispatch.
+                        if getattr(publisher, '_task', None) is not None:
+                            await publisher.await_fence()
+                        capture_frontier = publisher.journal.latest_sequence(self.run_id)
+                        if capture_frontier > publisher.fenced_sequence:
+                            publisher.enqueue_pending()
+                            receipt = await publisher.await_fence()
+                            if receipt.last_sequence != capture_frontier or publisher.fenced_sequence != capture_frontier:
+                                raise RuntimeError('Selected checkpoint publication did not reach its captured frontier')
                 manager_state = (selected_owner.capture(manager, boundary_ms=boundary)
                     if selected_owner is not None else manager.capture_state(boundary_ms=boundary))
                 evidence_state = manager.evidence.capture_recovery_state()
@@ -2646,7 +2660,12 @@ class ReplayRunController:
 
         def confirm():
             with closing(backtest_v4_operator_client_from_env(**declared_contract_runner_options(manager.contract))) as reader:
-                head = ManagedManagerSnapshotHeadReader(keeper)
+                from src.trading_runtime.selected_checkpoint_products import selected,CheckpointReader,manager_head_reader
+                owner=getattr(manager,'_fixed_lot_owner',None)
+                source=owner.operation.source if owner is not None else None
+                if selected(source):
+                    reader=CheckpointReader(reader,owner)
+                head = manager_head_reader(keeper,source)
                 return tuple(confirm_profit_arm_reference(
                     reader, head, candidate, financial, receipt,
                     run_id=self.run_id, first_price_source=publisher._first_price_source)
@@ -2691,8 +2710,13 @@ class ReplayRunController:
         from src.trading_runtime.strategy_liquidity_fade_checkpoint_reference import confirm_liquidity_fade_checkpoint_sources
         def confirm():
             with closing(backtest_v4_operator_client_from_env(**declared_contract_runner_options(manager.contract))) as reader:
+                from src.trading_runtime.selected_checkpoint_products import selected,CheckpointReader,manager_head_reader
+                owner=getattr(manager,'_fixed_lot_owner',None)
+                source=owner.operation.source if owner is not None else None
+                if selected(source):
+                    reader=CheckpointReader(reader,owner)
                 return confirm_liquidity_fade_checkpoint_sources(reader,
-                    ManagedManagerSnapshotHeadReader(self._fixed_keeper_session),
+                    manager_head_reader(self._fixed_keeper_session,source),
                     ManagedBrokerMatchHeadReader(self._fixed_keeper_session), requests, receipt,
                     run_id=self.run_id, first_price_source=publisher._first_price_source)
         task = asyncio.create_task(asyncio.to_thread(confirm))
@@ -2731,8 +2755,13 @@ class ReplayRunController:
         from src.trading_runtime.original_risk_checkpoint import confirm_original_risk_checkpoint_sources
         def confirm():
             with closing(backtest_v4_operator_client_from_env(**declared_contract_runner_options(manager.contract))) as reader:
+                from src.trading_runtime.selected_checkpoint_products import selected,CheckpointReader,manager_head_reader
+                owner=getattr(manager,'_fixed_lot_owner',None)
+                source=owner.operation.source if owner is not None else None
+                if selected(source):
+                    reader=CheckpointReader(reader,owner)
                 return confirm_original_risk_checkpoint_sources(reader,
-                    ManagedManagerSnapshotHeadReader(self._fixed_keeper_session),
+                    manager_head_reader(self._fixed_keeper_session,source),
                     ManagedBrokerMatchHeadReader(self._fixed_keeper_session), requests, receipt,
                     run_id=self.run_id, first_price_source=publisher._first_price_source)
         task = asyncio.create_task(asyncio.to_thread(confirm))
@@ -3535,7 +3564,7 @@ class ReplayRunController:
         from .backtest_fixed_structural_lot_configuration import declared_fixed_structural_lot_contract
         selected_lot_session = None
         if declared_fixed_structural_lot_contract(strategy_number) is not None:
-            from .backtest_fixed_structural_lot_execution_v10 import prepare_fixed_structural_lot_session
+            from .backtest_fixed_structural_lot_execution_v11 import prepare_fixed_structural_lot_session
             from .backtest_market_data import readonly_clickhouse_client
             selected_lot_session = await asyncio.to_thread(prepare_fixed_structural_lot_session, plans=plans,
                 number=strategy_number, run_id=self.run_id, session_date=self.definition.session_date,
@@ -10173,7 +10202,7 @@ class ReplayRunService:
         from .backtest_fixed_structural_lot_configuration import declared_fixed_structural_lot_contract
         selected_lot_session = None
         if declared_fixed_structural_lot_contract(strategy_number) is not None:
-            from .backtest_fixed_structural_lot_execution_v10 import prepare_fixed_structural_lot_session
+            from .backtest_fixed_structural_lot_execution_v11 import prepare_fixed_structural_lot_session
             from .backtest_market_data import readonly_clickhouse_client
             selected_lot_session = await asyncio.to_thread(prepare_fixed_structural_lot_session, plans=plans,
                 number=strategy_number,run_id=run_id,session_date=definition.session_date,

@@ -135,4 +135,4 @@ def test_unknown_successor_cold_join_remains_closed():
     with pytest.raises(ValueError, match='No installed numbered'):
         load_recovered_strategy_one_oms_lineage(object(), prefix,
             allowed_accounts=frozenset({source.account_id}), protection_history=history,
-            strategy_number=39)
+            strategy_number=-1)

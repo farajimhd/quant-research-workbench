@@ -111,8 +111,15 @@ def load_liquidity_fade_financial_checkpoint(client, prefix, row, parent, event,
             or root['session_date'] != day.isoformat() or root['boundary_ms'] != witness.boundary_ms
             or {item['account_id'] for item in image.accounts} != set(accounts)):
         raise ValueError('Liquidity broker snapshot differs from its immutable checkpoint reference')
+    from .selected_checkpoint_products import source_for_client,load_historical_checkpoint
+    selected_source=source_for_client(client)
+    selected_image=(load_historical_checkpoint(client,prefix,source=selected_source,sequence=sequence)
+        if selected_source is not None else None)
+    if selected_image is not None:
+        ceiling=selected_image.prefix
     lineage = load_recovered_strategy_one_oms_lineage(client, ceiling,
-        allowed_accounts=frozenset(accounts), strategy_number=row['strategy_number'], first_price_source=first_price_source)
+        allowed_accounts=frozenset(accounts), strategy_number=row['strategy_number'], first_price_source=first_price_source,
+        **({'fixed_lot_checkpoint':selected_image} if selected_image is not None else {}))
     if type(lineage) is not tuple or len(lineage) > 2_000:
         raise ValueError('Liquidity financial OMS inventory exceeds its native bound')
     seen, entries, pending_exit = set(), [], False

@@ -115,7 +115,7 @@ def test_installed_child_does_not_grant_unknown_successor_admission():
     assert numbered_fixed_strategy(35).strategy_number == 35
     assert numbered_fixed_strategy(36).strategy_number == 36
     with pytest.raises(ValueError):
-        numbered_fixed_strategy(39)
+        numbered_fixed_strategy(-1)
 
 
 @pytest.mark.parametrize("number", [37, 38])

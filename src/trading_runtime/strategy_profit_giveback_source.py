@@ -73,16 +73,26 @@ def load_profit_giveback_checkpoint(client, prefix, row, financial, *, first_pri
             or str(cursor.get('batch_id')) not in prefix.batch_ids
             or cursor.get('boundary_ms') != witness.prior_high_through_boundary_ms):
         raise ValueError('Profit checkpoint differs from committed market cursor')
-    rows = load_unattested_manager_snapshot_rows(
-        client, run_id=prefix.run_id, checkpoint_sequence=sequence)
-    if (rows.snapshot.get('snapshot_id') != row['source_manager_snapshot_id']
-            or rows.snapshot.get('run_id') != prefix.run_id
-            or rows.snapshot.get('checkpoint_sequence') != sequence
-            or rows.snapshot.get('boundary_ms') != cursor['boundary_ms']
-            or rows.snapshot.get('session_date') != cursor['session_date']):
-        raise ValueError('Profit checkpoint snapshot differs from committed cursor')
-    state = attach_committed_momentum_sources(
-        client, prefix, restore_manager_snapshot(rows), first_price_source=first_price_source)
+    from .selected_checkpoint_products import source_for_client,load_historical_checkpoint,checkpoint_root
+    selected_source=source_for_client(client)
+    if selected_source is not None:
+        image=load_historical_checkpoint(client,prefix,source=selected_source,sequence=sequence)
+        root=checkpoint_root(client,source=selected_source,sequence=sequence)
+        if (root['snapshot_id']!=row['source_manager_snapshot_id']
+                or root['boundary_ms']!=cursor['boundary_ms'] or root['session_date']!=cursor['session_date']):
+            raise ValueError('Profit selected checkpoint differs from immutable reference')
+        state=image.inherited
+    else:
+        rows = load_unattested_manager_snapshot_rows(
+            client, run_id=prefix.run_id, checkpoint_sequence=sequence)
+        if (rows.snapshot.get('snapshot_id') != row['source_manager_snapshot_id']
+                or rows.snapshot.get('run_id') != prefix.run_id
+                or rows.snapshot.get('checkpoint_sequence') != sequence
+                or rows.snapshot.get('boundary_ms') != cursor['boundary_ms']
+                or rows.snapshot.get('session_date') != cursor['session_date']):
+            raise ValueError('Profit checkpoint snapshot differs from committed cursor')
+        state = attach_committed_momentum_sources(
+            client, prefix, restore_manager_snapshot(rows), first_price_source=first_price_source)
     source = validate_profit_giveback_state(witness, state, financial)
     entry, event, child = _source_entry(
         client, prefix.run_id, str(row['source_entry_intent_id']),

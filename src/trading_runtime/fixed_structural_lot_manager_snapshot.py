@@ -186,6 +186,11 @@ def _verify_financial_checkpoint(context,client,session):
     contexts=tuple(getattr(client,'fixed_structural_lot_contexts',()))
     groups=load_latest_committed_oms_groups(client,prefix,allowed_accounts=frozenset(accounts),
         strategy_identity=(source._strategy_id,source._revision),require_tactic=True,fixed_lot_contexts=contexts)
+    from .selected_checkpoint_products import selected as selected_products,checkpoint_acquisitions,checkpoint_roster,checkpoint_acquisition_active,checkpoint_aggregate_quantity
+    if selected_products(source):
+        groups=checkpoint_acquisitions(client,prefix,source=source,contexts=contexts,
+            allowed_accounts=frozenset(accounts))
+        load_fixed_structural_lot_stop_ceiling=checkpoint_roster
     entries={str(v.unit.base.intents[0]['intent_id']):v for v in contexts}
     active={}
     for group in groups:
@@ -198,12 +203,19 @@ def _verify_financial_checkpoint(context,client,session):
             raise ValueError('Selected manager OMS source operation differs')
         roster=load_fixed_structural_lot_stop_ceiling(entry=request.entry,group_id=payload['group_id'],
             **context.owner._arguments(request,prefix,contexts))
-        if any(q>0 for _,q in roster.remaining) or any(v for _,v in roster.acquiring):
+        is_active=(checkpoint_acquisition_active(client,prefix,entry_request=request,
+            contexts=contexts,roster=roster) if selected_products(source)
+            else any(q>0 for _,q in roster.remaining) or any(v for _,v in roster.acquiring))
+        if is_active:
             key=(request.entry.proposal.account_id,request.entry.proposal.assignment_id,request.entry.proposal.ticker)
             if payload['account_id']!=key[0]:
                 raise ValueError('Selected manager OMS account differs from its certified entry')
             if key in active:
                 raise ValueError('Selected manager OMS repeats an active acquisition')
+            if selected_products(source) and (key not in financials or
+                    checkpoint_aggregate_quantity(client,prefix,entry_request=request,
+                        contexts=contexts,roster=roster)!=Decimal(str(financials[key].position_quantity))):
+                raise ValueError('Selected closing aggregate differs from actual committed financial quantity')
             active[key]=roster
     expected_states=dict(context.owner.require_checkpoint(context.checkpoint)[1])
     if set(active)!=set(expected_states) or any(active[key]!=state.roster for key,state in expected_states.items()):
@@ -340,6 +352,11 @@ def load_cold_manager_image(client,session,*,source,fixed_lot_contexts=(),recove
         fixed_lot_contexts=fixed_lot_contexts,fixed_lot_recovery_contexts=recovery_contexts,
         _fixed_lot_cold_source=source,_cold_recovery_context_sink=cold_recoveries)
     if prefix is None:raise ValueError('Cold selected manager lacks committed source prefix')
+    # Nested historical side-product reads retain this completed cold walk's
+    # authentic inventory without changing the current-head or verifier authority.
+    from .selected_checkpoint_products import _HistoricalReads,_HISTORICAL_READ_ISSUER
+    client=_HistoricalReads(client,source,prefix,fixed_lot_contexts,
+        tuple(recovery_contexts)+tuple(cold_recoveries),issuer=_HISTORICAL_READ_ISSUER)
     cursor=load_latest_backtest_cursor(client,prefix)
     if prefix is None or type(cursor) is not dict or cursor['event_sequence']!=prefix.last_sequence or cursor['batch_id']!=prefix.last_batch_id:
         raise ValueError('Cold selected manager lacks complete committed cursor')
@@ -409,6 +426,11 @@ def load_cold_manager_image(client,session,*,source,fixed_lot_contexts=(),recove
         strategy_identity=(source._strategy_id,source._revision),require_tactic=True,fixed_lot_contexts=fixed_lot_contexts)
     active=set()
     from .fixed_structural_lot_management import load_fixed_structural_lot_stop_ceiling
+    from .selected_checkpoint_products import selected as selected_products,checkpoint_acquisitions,checkpoint_roster,checkpoint_aggregate_quantity,checkpoint_acquisition_active
+    if selected_products(source):
+        groups=checkpoint_acquisitions(client,prefix,source=source,contexts=fixed_lot_contexts,
+            allowed_accounts=frozenset(_verify_run_identity(client,source.run_id)['account_ids']))
+        load_fixed_structural_lot_stop_ceiling=checkpoint_roster
     for group in groups:
         context=entries.get(group.group['strategy_intent_id'])
         if context is None:raise ValueError('Cold manager has unexpected OMS source inventory')
@@ -416,7 +438,10 @@ def load_cold_manager_image(client,session,*,source,fixed_lot_contexts=(),recove
         roster=load_fixed_structural_lot_stop_ceiling(client,prefix,entry=request.entry,intervals=source.intervals,
             intent=request.intent,group_id=group.group['group_id'],strategy_identity=(request.strategy_id,request.revision),
             entry_request=request,fixed_lot_contexts=fixed_lot_contexts)
-        if any(q>0 for _,q in roster.remaining) or roster.acquiring:
+        is_active=(checkpoint_acquisition_active(client,prefix,entry_request=request,
+            contexts=fixed_lot_contexts,roster=roster) if selected_products(source)
+            else any(q>0 for _,q in roster.remaining) or roster.acquiring)
+        if is_active:
             key=(p.account_id,p.assignment_id,p.ticker)
             if key in active or key not in states or states[key].roster!=roster:
                 raise ValueError('Cold manager complete active OMS roster differs')
@@ -442,6 +467,11 @@ def load_cold_manager_image(client,session,*,source,fixed_lot_contexts=(),recove
         if root_field=='snapshot':
             held={(v['account_id'],v['ticker']):float64_from_bits(v['quantity_f64_bits'],'quantity') for v in rows.positions if float64_from_bits(v['quantity_f64_bits'],'quantity')!=0}
             expected={(key[0],key[2]):float(sum(q for _,q in state.roster.remaining)) for key,state in states.items() if any(q>0 for _,q in state.roster.remaining)}
+            if selected_products(source):
+                quantities={key:checkpoint_aggregate_quantity(client,prefix,
+                    entry_request=entries[state.roster.intent_id].verify_source(),
+                    contexts=fixed_lot_contexts,roster=state.roster) for key,state in states.items()}
+                expected={(key[0],key[2]):float(quantity) for key,quantity in quantities.items() if quantity}
             if len(held)!=sum(float64_from_bits(v['quantity_f64_bits'],'quantity')!=0 for v in rows.positions) or held!=expected:
                 raise ValueError('Cold manager broker inventory differs from complete lots')
         financial.append((root_field,root['content_hash']))

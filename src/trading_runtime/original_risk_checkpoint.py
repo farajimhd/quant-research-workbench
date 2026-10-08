@@ -97,21 +97,29 @@ def confirm_original_risk_checkpoint_sources(client, manager_keeper, broker_keep
             or any(head.run_id != run_id or head.checkpoint_sequence != receipt.last_sequence
                    or head.journal_batch_id != receipt.last_batch_id for head in (manager_head, broker_head))):
         raise ValueError('Original-risk confirmation receipt differs from selected native snapshot heads')
-    state = load_attested_manager_snapshot(client, manager_keeper, run_id=run_id,
-        checkpoint_sequence=receipt.last_sequence, first_price_source=first_price_source)
-    broker = load_attested_broker_match_snapshot(client, broker_keeper, run_id=run_id,
-        checkpoint_sequence=receipt.last_sequence, first_price_source=first_price_source)
-    manager = load_unattested_manager_snapshot_rows(client, run_id=run_id, checkpoint_sequence=receipt.last_sequence)
+    from .selected_checkpoint_products import current_checkpoint,checkpoint_root
+    image=current_checkpoint(client,manager_keeper,run_id=run_id,
+        sequence=receipt.last_sequence,first_price_source=first_price_source)
+    state=(image.inherited if image is not None else load_attested_manager_snapshot(client, manager_keeper, run_id=run_id,
+        checkpoint_sequence=receipt.last_sequence, first_price_source=first_price_source))
+    if image is not None:
+        from .strategy_one_broker_match_snapshot import load_unattested_broker_match_snapshot
+        broker=load_unattested_broker_match_snapshot(client,run_id=run_id,checkpoint_sequence=receipt.last_sequence)
+        manager_root=checkpoint_root(client,source=image.source,sequence=receipt.last_sequence)
+    else:
+        broker = load_attested_broker_match_snapshot(client, broker_keeper, run_id=run_id,
+            checkpoint_sequence=receipt.last_sequence, first_price_source=first_price_source)
+        manager_root = load_unattested_manager_snapshot_rows(client, run_id=run_id, checkpoint_sequence=receipt.last_sequence).snapshot
     from src.backend.backtest_strategy_one_management import OriginalRiskManagementState
     if type(state) is not OriginalRiskManagementState or state.original_risk_requests != requests:
         raise ValueError('Original-risk pending decisions differ from the actual selected manager root')
-    if (manager.snapshot['content_hash'] != manager_head.snapshot_hash
+    if (manager_root['content_hash'] != manager_head.snapshot_hash
             or broker.snapshot['content_hash'] != broker_head.snapshot_hash
-            or manager.snapshot['boundary_ms'] != state.boundary_ms
+            or manager_root['boundary_ms'] != state.boundary_ms
             or broker.snapshot['boundary_ms'] != state.boundary_ms
-            or manager.snapshot['session_date'] != broker.snapshot['session_date']):
+            or manager_root['session_date'] != broker.snapshot['session_date']):
         raise ValueError('Original-risk confirmation snapshot roots differ from their attested decision clock')
-    refs = dict(source_manager_snapshot_id=manager.snapshot['snapshot_id'],
+    refs = dict(source_manager_snapshot_id=manager_root['snapshot_id'],
         source_manager_checkpoint_sequence=receipt.last_sequence,
         source_manager_snapshot_hash=manager_head.snapshot_hash,
         source_broker_snapshot_id=broker.snapshot['snapshot_id'], source_broker_snapshot_hash=broker_head.snapshot_hash)
@@ -132,12 +140,12 @@ def confirm_original_risk_checkpoint_sources(client, manager_keeper, broker_keep
         from datetime import date
         if type(first_price_source) is not CertifiedPriceReadbackAuthority or first_price_source.run_id != run_id:
             raise ValueError('Original-risk checkpoint lacks exact certified entry authority')
-        day=date.fromisoformat(manager.snapshot['session_date'])
+        day=date.fromisoformat(manager_root['session_date'])
         entry=(certified_episode_entry_intent(first_price_source,source,session_date=day)
             if declared_fixed_rule(source.strategy_number,'strategy-thirty-seven-confirmed-episode-activity-veto-v1')
             else certified_price_entry_intent(first_price_source.plan,source,session_date=day))
         if (entry.intent_id != request.source_entry_intent_id
-                or request.diagnostic.newest.session_date != manager.snapshot['session_date']
+                or request.diagnostic.newest.session_date != manager_root['session_date']
                 or request.diagnostic.newest.ticker != financial.ticker):
             raise ValueError('Original-risk checkpoint crosses original entry or active session')
         result.append(replace(request.diagnostic,checkpoint=OriginalRiskCheckpointReference(**refs)))
@@ -176,22 +184,34 @@ def load_original_risk_checkpoint(client, prefix, failure, parent, event, diagno
             or cursor.get('boundary_ms') != diagnostic.current.boundary_ms
             or cursor.get('session_date') != diagnostic.newest.session_date):
         raise ValueError('Original-risk checkpoint differs from exact decision cursor')
-    rows = load_unattested_manager_snapshot_rows(client, run_id=prefix.run_id,
-                                                checkpoint_sequence=sequence)
-    root = rows.snapshot
-    if (root.get('snapshot_id') != reference.source_manager_snapshot_id
-            or root.get('content_hash') != reference.source_manager_snapshot_hash
-            or root.get('run_id') != prefix.run_id or root.get('checkpoint_sequence') != sequence
-            or root.get('boundary_ms') != cursor['boundary_ms']
-            or root.get('session_date') != cursor['session_date']):
-        raise ValueError('Original-risk manager root differs from immutable checkpoint reference')
+    from .selected_checkpoint_products import source_for_client,load_historical_checkpoint,checkpoint_root
+    selected_source=source_for_client(client)
+    if selected_source is not None:
+        image=load_historical_checkpoint(client,prefix,source=selected_source,sequence=sequence)
+        root=checkpoint_root(client,source=selected_source,sequence=sequence)
+        if (root['snapshot_id']!=reference.source_manager_snapshot_id
+                or root['content_hash']!=reference.source_manager_snapshot_hash
+                or root['boundary_ms']!=cursor['boundary_ms']
+                or root['session_date']!=cursor['session_date']):
+            raise ValueError('Original-risk selected checkpoint differs from immutable reference')
+        state=image.inherited
+    else:
+        rows = load_unattested_manager_snapshot_rows(client, run_id=prefix.run_id,
+                                                    checkpoint_sequence=sequence)
+        root = rows.snapshot
+        if (root.get('snapshot_id') != reference.source_manager_snapshot_id
+                or root.get('content_hash') != reference.source_manager_snapshot_hash
+                or root.get('run_id') != prefix.run_id or root.get('checkpoint_sequence') != sequence
+                or root.get('boundary_ms') != cursor['boundary_ms']
+                or root.get('session_date') != cursor['session_date']):
+            raise ValueError('Original-risk manager root differs from immutable checkpoint reference')
+        state = attach_committed_momentum_sources(client, prefix, restore_manager_snapshot(rows),
+                                                 first_price_source=first_price_source)
     financial = StrategyOneFinancialView(failure['assignment_id'], event['account_id'], parent['ticker'],
         AssignmentStatus.MANAGING, StrategyPermissions(), float(parent['quantity']), False, False, False, 1)
     linked = {**failure, **asdict(reference)}
     load_liquidity_fade_financial_checkpoint(client, prefix, linked, parent, event, financial,
         first_price_source=first_price_source, original_risk_diagnostic=diagnostic)
-    state = attach_committed_momentum_sources(client, prefix, restore_manager_snapshot(rows),
-                                             first_price_source=first_price_source)
     from src.backend.backtest_strategy_one_management import OriginalRiskManagementState
     candidates=tuple(request for request in getattr(state,'original_risk_requests',())
         if (request.financial.account_id,request.financial.assignment_id,request.financial.ticker)

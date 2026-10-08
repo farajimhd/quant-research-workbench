@@ -138,6 +138,12 @@ def canonical_oms_order_metadata(
 
     metadata = canonical_runtime_metadata(order, approved_oms_lineage_intent(group))
     proofs = authorized_protection or {}
+    from .selected_checkpoint_products import managed_exit_metadata
+    managed = managed_exit_metadata(group, order, metadata, source=fixed_lot_source,
+        run_id=source_run_id, strategy_id=source_strategy_id,
+        strategy_revision=source_strategy_revision)
+    if managed is not None:
+        return managed
     from .independent_lot_initial_stop_lineage import initial_metadata
     initial = initial_metadata(group,order,metadata,proofs,source=fixed_lot_source,
         run_id=source_run_id,strategy_id=source_strategy_id,strategy_revision=source_strategy_revision,
@@ -589,6 +595,7 @@ class RecoveredStrategyOneOmsLineage:
     through_sequence: int
     approved_intent: StrategyIntent | None = None
     admission_reservation: Mapping[str, Any] | None = None
+    source_entry_intent_id: str | None = None
 
 
 def _approved_strategy_one_oms_intent(
@@ -955,7 +962,7 @@ def reconstruct_strategy_one_oms_lineage(
             fixed_lot_source=fixed_lot_source,source_strategy_id=group["strategy_id"],source_strategy_revision=group["strategy_revision"],
             **({"source_sequence":state.sequence,
                 "source_boundary":datetime.fromisoformat(str(group["updated_at"])).replace(tzinfo=timezone.utc),
-                "source_run_id":protection_history.run_id} if independent_profile(approved_intent) is not None else {}))
+                "source_run_id":protection_history.run_id} if independent_profile(approved_intent) is not None else ({"source_run_id":protection_history.run_id} if fixed_lot_source is not None else {})))
         rebuilt.append(replace(order, raw={
             "canonical_run_id": protection_history.run_id,
             "canonical_strategy_id": group["strategy_id"],
@@ -973,7 +980,8 @@ def load_recovered_strategy_one_oms_lineage(
     protection_history: CompleteProtectionHistory | None = None,
     strategy_number: int = 1,
     first_price_source: Any = None,
-    automatic_ladder_sources: Any = None, fixed_lot_resume=None,
+    automatic_ladder_sources: Any = None, fixed_lot_resume=None ,fixed_lot_checkpoint=None,
+    fixed_lot_read_scope=None,
 ) -> tuple[RecoveredStrategyOneOmsLineage, ...]:
     """Cold-join latest OMS groups to exact intents and complete protection.
 
@@ -981,9 +989,27 @@ def load_recovered_strategy_one_oms_lineage(
     broker state or grant permission to resume an OMS actor or send an order.
     """
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
-    selected = fixed_lot_resume is not None
+    selected = fixed_lot_resume is not None or fixed_lot_checkpoint is not None or fixed_lot_read_scope is not None
     contexts = ()
-    if selected:
+    if sum(v is not None for v in (fixed_lot_resume,fixed_lot_checkpoint,fixed_lot_read_scope))>1:
+        raise ValueError('Selected OMS read scopes are mutually exclusive')
+    if fixed_lot_read_scope is not None:
+        from .selected_checkpoint_products import require_source_oms_read_scope
+        binding=require_source_oms_read_scope(fixed_lot_read_scope,client,prefix)
+        if (binding.source._revision!=strategy_number or automatic_ladder_sources is not None
+                or first_price_source is not binding.source.price_authority):
+            raise ValueError('Selected OMS read has foreign source/price authority')
+        contexts=binding.contexts
+    elif fixed_lot_checkpoint is not None:
+        from .selected_checkpoint_products import require_historical_checkpoint
+        if fixed_lot_resume is not None:
+            raise ValueError('Historical OMS scope cannot also grant resume authority')
+        binding=require_historical_checkpoint(fixed_lot_checkpoint,source=fixed_lot_checkpoint.source)
+        if (binding.source._revision!=strategy_number or automatic_ladder_sources is not None
+                or binding.prefix!=prefix or binding.run_id!=prefix.run_id):
+            raise ValueError('Historical OMS checkpoint has foreign source/frontier')
+        contexts=binding.contexts
+    elif selected:
         from src.backend.backtest_fixed_structural_lot_resume import require_fixed_structural_lot_resume
         binding=require_fixed_structural_lot_resume(fixed_lot_resume,prefix.run_id)
         if binding.source._revision!=strategy_number or automatic_ladder_sources is not None or binding.prefix(client,prefix.run_id)!=prefix:
@@ -1060,6 +1086,7 @@ def load_recovered_strategy_one_oms_lineage(
         page = load_committed_strategy_intent_page(
             client, prefix, limit=len(chunk), record_ids=chunk,
             include_source_batch=not automatic,
+            **({"fixed_lot_read_scope":fixed_lot_read_scope} if fixed_lot_read_scope is not None else {}),
             **({'first_price_source': first_price_source}
                if first_price_source is not None else {}))
         if len(page) != len(chunk):
@@ -1114,8 +1141,66 @@ def load_recovered_strategy_one_oms_lineage(
             risk_diagnostics[record_id]=diagnostic
         elif (source.intent.reason in profit_reasons or declared_fixed_exit_reason(source.intent.reason, 'strategy-thirty-one-original-risk-profit-giveback-v1')):
             profit_rows[record_id] = load_committed_profit_giveback(
-                client, prefix, record_id, first_price_source=first_price_source)
-    return tuple(RecoveredStrategyOneOmsLineage(
+                client, prefix, record_id, first_price_source=first_price_source,
+                **({'fixed_lot_read_scope':fixed_lot_read_scope} if fixed_lot_read_scope is not None else {}))
+    def selected_entry_link(group):
+        if fixed_lot_read_scope is None:
+            return None
+        source=by_id[group.intent_record_id]
+        if source.intent.action in {'enter_long','enter_short','add_long','add_short'}:
+            return None
+        witnesses=[rows[group.intent_record_id] for rows in
+            (failure_rows,profit_rows,confirmed_ah_rows,liquidity_rows)
+            if group.intent_record_id in rows]
+        from .numbered_fixed_strategy import numbered_session_exit_reason
+        session_exit=(not witnesses and source.intent.reason==numbered_session_exit_reason(binding.source._revision))
+        if source.intent.action!='exit' or (len(witnesses)!=1 and not session_exit):
+            raise ValueError('Selected OMS exit lacks one exact declared typed source product')
+        entry_id=witnesses[0].get('source_entry_intent_id') if witnesses else None
+        admission=admissions[group.sequence]
+        matches=[]
+        session_holdings={}
+        for context in contexts:
+            request=context.verify_source()
+            if (entry_id in {request.intent.intent_id,request.original.intent_id}
+                    or session_exit and (request.entry.proposal.account_id,
+                        request.entry.proposal.assignment_id,request.entry.proposal.ticker)==
+                        (group.group['account_id'],admission['assignment_id'],source.intent.ticker)):
+                if session_exit:
+                    acquisitions=[value for value in lineages if
+                        value.state.group['strategy_intent_id']==request.intent.intent_id
+                        and value.source_intent.sequence<source.sequence]
+                    if len(acquisitions)!=1:
+                        continue
+                    # All candidates and preceding exits have already passed
+                    # the canonical source/admission/order reconstruction.
+                    # Side witnesses bind fresh SELL groups to their exact
+                    # certified acquisition without a recursive OMS read.
+                    prior=[]
+                    for value in lineages:
+                        if (value.source_intent.sequence<source.sequence
+                                and any(value.state.intent_record_id in rows for rows in
+                                    (failure_rows,profit_rows,confirmed_ah_rows,liquidity_rows))
+                                and selected_entry_link(value.state)==request.intent.intent_id):
+                            prior.append(value)
+                    from .selected_checkpoint_products import _holdings_at_exit_issuance
+                    current=next(value for value in lineages if value.state is group)
+                    holding,_=_holdings_at_exit_issuance(client,prefix,acquisitions[0],current,
+                        prior_exits=tuple(prior))
+                    if holding<=0:
+                        continue
+                    session_holdings[request.intent.intent_id]=holding
+                matches.append(request)
+        if (len(matches)!=1 or matches[0].source is not binding.source
+                or group.group['account_id']!=matches[0].entry.proposal.account_id
+                or source.intent.ticker!=matches[0].entry.proposal.ticker
+                or admission['assignment_id']!=matches[0].entry.proposal.assignment_id):
+            raise ValueError('Selected OMS exit has foreign or ambiguous certified entry ownership')
+        if session_exit and Decimal(str(admission['quantity']))>session_holdings[matches[0].intent.intent_id]:
+            raise ValueError('Selected session exit exceeds its causal acquired holdings')
+        return matches[0].intent.intent_id
+
+    lineages=tuple(RecoveredStrategyOneOmsLineage(
         group, by_id[group.intent_record_id],
         reconstruct_strategy_one_oms_lineage(
             group, by_id[group.intent_record_id], history,
@@ -1139,6 +1224,8 @@ def load_recovered_strategy_one_oms_lineage(
             risk_diagnostics.get(group.intent_record_id))[0],
         dict(admissions[group.sequence]),
     ) for group in groups)
+    return tuple(replace(value,source_entry_intent_id=selected_entry_link(value.state))
+        for value in lineages)
 
 
 def load_latest_committed_oms_groups(

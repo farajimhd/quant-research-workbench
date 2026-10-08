@@ -26,7 +26,8 @@ class FixedStructuralLotStopCeiling:
 
 def load_fixed_structural_lot_stop_ceiling(client, prefix, *, entry, intervals,
                                          intent, group_id, strategy_identity,
-                                         entry_request=None,fixed_lot_contexts=(),now_ms=None):
+                                         entry_request=None,fixed_lot_contexts=(),now_ms=None,
+                                         _checkpoint_closing=None):
     """Freshly verify normalized OMS rows and preserve every frozen lot target.
 
     The prefix/OMS reader verifies committed content. Entry replay checks source
@@ -65,7 +66,8 @@ def load_fixed_structural_lot_stop_ceiling(client, prefix, *, entry, intervals,
         raise ValueError('Fixed lot roster has a foreign original request')
     groups=load_latest_committed_oms_groups(client,prefix,
         allowed_accounts=frozenset((entry.proposal.account_id,)),strategy_identity=strategy_identity,
-        **({'fixed_lot_contexts':fixed_lot_contexts} if entry_request is not None else {}))
+        **({'fixed_lot_contexts':fixed_lot_contexts} if entry_request is not None else {}),
+        **({'require_tactic':True} if _checkpoint_closing is not None else {}))
     selected=tuple(v for v in groups if v.group['group_id']==group_id)
     if len(selected)!=1:
         raise ValueError('Fixed lot roster is missing or duplicated')
@@ -75,7 +77,12 @@ def load_fixed_structural_lot_stop_ceiling(client, prefix, *, entry, intervals,
         OrderManagementState(g['state'])
     except ValueError as exc:
         raise ValueError('Fixed lot roster state is unknown') from exc
-    if (g['strategy_intent_id']!=intent.intent_id or g['protection_delegated']!=0
+    if _checkpoint_closing is not None:
+        from .selected_checkpoint_products import require_closing_checkpoint_read
+        require_closing_checkpoint_read(_checkpoint_closing,client=client,prefix=prefix,
+            entry_request=entry_request,state=state)
+    if (g['strategy_intent_id']!=intent.intent_id
+            or g['protection_delegated']!=0 and _checkpoint_closing is None
             or g['state'] in ('outcome_unknown','rejected','policy_blocked')):
         raise ValueError('Fixed lot roster has unresolved or delegated ownership')
     slices=tuple(v.slice_id for v in intent.protection_profile.slices)

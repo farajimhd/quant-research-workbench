@@ -4,6 +4,7 @@ This owner requires the installed entry capability. A requested price or a
 nonnull OMS group is not confirmation. The fresh fenced prefix must contain
 each exact live stop's effective outcome before reducer state is committed.
 """
+from src.trading_runtime.selected_checkpoint_products import observe_owner_stage
 from dataclasses import dataclass,fields,is_dataclass
 from decimal import Decimal
 from weakref import WeakKeyDictionary
@@ -176,6 +177,7 @@ class NativeFixedStructuralLotManagement:
     def states(self):
         return MappingProxyType(self._states)
 
+    @observe_owner_stage('selected_prefix_read')
     def _prefix(self):
         from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
         source=self.operation.source
@@ -196,6 +198,7 @@ class NativeFixedStructuralLotManagement:
             strategy_identity=(request.strategy_id,request.revision),entry_request=request,
             fixed_lot_contexts=contexts)
 
+    @observe_owner_stage('selected_oms_read')
     def _group(self,request,prefix,contexts,group_id):
         from src.trading_runtime.fixed_structural_lot_warm_proof import load_oms_groups
         groups=load_oms_groups(self.client,prefix,
@@ -244,14 +247,38 @@ class NativeFixedStructuralLotManagement:
 
     async def retire(self,key):
         from src.trading_runtime.fixed_structural_lot_management import load_fixed_structural_lot_stop_ceiling
+        from src.trading_runtime.selected_checkpoint_products import selected,closing_checkpoint_read
         self.publisher.enqueue_pending();await self.publisher.await_fence()
         prefix,contexts=self._prefix();request=self.entries[key]
+        if selected(request.source):
+            closing=closing_checkpoint_read(self.client,prefix,entry_request=request,contexts=contexts)
+            if closing is not None:
+                if closing.aggregate_remaining or closing.cancellation_pending or closing.exit_pending:
+                    raise ValueError('Selected manager cannot retire unresolved closing obligations')
+                self._states.pop(key,None);self.entries.pop(key);self.groups.pop(key)
+                self.financials.pop(key,None)
+                return
         roster=load_fixed_structural_lot_stop_ceiling(**self._arguments(request,prefix,contexts),
             entry=request.entry,group_id=self.groups[key])
         if roster.ceiling is not None or roster.acquiring or any(q for _,q in roster.remaining):
             raise ValueError('Selected manager cannot retire unresolved lot ownership')
         self._states.pop(key,None);self.entries.pop(key);self.groups.pop(key)
 
+    def observe_checkpoint_financial(self,financial):
+        from src.trading_runtime.selected_checkpoint_products import selected
+        if not selected(self.operation.source):
+            return
+        if type(financial) is not StrategyOneFinancialView:
+            raise ValueError('Selected checkpoint needs exact received financial view')
+        key=(financial.account_id,financial.assignment_id,financial.ticker)
+        if key in self._states:
+            request=self.entries[key]
+            request.verify()
+            if request.source is not self.operation.source:
+                raise ValueError('Selected financial observation has foreign source')
+            self.financials[key]=financial
+
+    @observe_owner_stage('selected_propose')
     def propose(self,entry_request,financial,**inputs):
         from src.trading_runtime.strategy_one_protection_intent import strategy_one_protection_intents
         if type(financial) is not StrategyOneFinancialView:
@@ -275,6 +302,7 @@ class NativeFixedStructuralLotManagement:
         self._requests[request]=(entry_request,_request_content(request),prefix.last_sequence,prefix.last_batch_id,prefix.source_cursor)
         return request
 
+    @observe_owner_stage('selected_owner_verify')
     def verify_request(self,request,runtime):
         self._verify_issued_request(request)
         binding=self._requests[request]
@@ -608,6 +636,7 @@ class NativeFixedStructuralLotManagement:
         if not _exact(expected,source_batch):
             raise ValueError('Selected deferral substituted original command batch/content')
 
+    @observe_owner_stage('selected_confirm')
     async def confirm(self,request):
         """Read exact committed effects; failure retains the prior owner state."""
         from src.trading_runtime.arte_journal_reader import load_complete_typed_protection_history,_journal_instant
@@ -677,24 +706,36 @@ class NativeFixedStructuralLotManagement:
         return FixedStructuralLotManagementReceipt(prefix.run_id,prefix.last_sequence,group.sequence,tuple(legs),state)
 
     def capture(self,manager,*,boundary_ms):
+        from dataclasses import replace
         from .backtest_strategy_one_management import StrategyOneManagementRunner
         from src.trading_runtime.fixed_structural_lot_snapshot import project_fixed_structural_lot_snapshot
+        from src.trading_runtime.selected_checkpoint_products import selected,closing_checkpoint_read,checkpoint_roster
         if type(manager) is not StrategyOneManagementRunner or manager._fixed_lot_owner is not self:
             raise ValueError('Checkpoint requires the actual bound selected manager')
         inherited=manager.capture_state(boundary_ms=boundary_ms)
         prefix,contexts=self._prefix()
         if set(self.states)!=set(manager._positions) or set(self.financials)!=set(self.states):
             raise ValueError('Selected checkpoint lacks complete owner financial/position state')
-        rows=[]
+        rows=[];captured_states=[];captured_positions=dict(inherited.positions)
         for key,state in sorted(self.states.items()):
             if manager._positions[key]!=state.protection:
                 raise ValueError('Selected checkpoint manager protection differs')
             request=self.entries[key]
+            if selected(request.source):
+                closing=closing_checkpoint_read(self.client,prefix,entry_request=request,contexts=contexts)
+                if closing is not None:
+                    fresh=checkpoint_roster(**self._arguments(request,prefix,contexts),
+                        entry=state.entry,group_id=state.roster.group_id)
+                    state=replace(state,roster=fresh,
+                        protection=replace(state.protection,boundary_ms=boundary_ms))
+                    captured_positions[key]=state.protection
+            captured_states.append((key,state))
             rows.append((key,project_fixed_structural_lot_snapshot(state,
                 **self._arguments(request,prefix,contexts))))
         # Highs, first-held clocks, closed/reentry facts and pending breaks
         # remain in the original complete manager capture. Profit-arm refs
         # are ephemeral, just as in the default owner; cold needs a new arm.
+        inherited=replace(inherited,positions=tuple(sorted(captured_positions.items())))
         checkpoint=FixedStructuralLotManagerCheckpoint(inherited,tuple(rows),tuple(sorted(self.financials.items())))
         from datetime import datetime,timedelta,timezone
         from zoneinfo import ZoneInfo
@@ -703,7 +744,7 @@ class NativeFixedStructuralLotManagement:
         captures=tuple(manager.runtime.portfolio.capture_recovery_snapshot(account,
             state_revision=prefix.last_sequence,snapshot_at=instant)
             for account in sorted(manager.runtime.portfolio.states))
-        self._checkpoints[checkpoint]=(_checkpoint_content(checkpoint),tuple(sorted(self.states.items())),
+        self._checkpoints[checkpoint]=(_checkpoint_content(checkpoint),tuple(captured_states),
             self.operation.source,prefix.last_sequence,prefix.last_batch_id,prefix.source_cursor,captures)
         return checkpoint
 
@@ -721,7 +762,7 @@ class NativeFixedStructuralLotManagement:
         """Re-certify the frozen economic image at the new committed cursor."""
         from dataclasses import replace
         from src.trading_runtime.fixed_structural_lot_snapshot import project_fixed_structural_lot_snapshot
-        from src.trading_runtime.fixed_structural_lot_management import load_fixed_structural_lot_stop_ceiling
+        from src.trading_runtime.selected_checkpoint_products import checkpoint_roster as load_fixed_structural_lot_stop_ceiling
         binding=self.require_checkpoint(checkpoint)
         prefix,contexts=self._prefix()
         if (type(checkpoint_sequence) is not int or checkpoint_sequence<binding[3]
@@ -785,9 +826,14 @@ class NativeFixedStructuralLotManagement:
             state=restore_fixed_structural_lot_snapshot(rows,entry=request.entry,
                 **self._arguments(request,prefix,contexts))
             financial=financials[key]
+            from src.trading_runtime.selected_checkpoint_products import selected,checkpoint_aggregate_quantity
+            expected_quantity=(checkpoint_aggregate_quantity(self.client,prefix,
+                entry_request=request,contexts=contexts,roster=state.roster)
+                if selected(self.operation.source)
+                else sum((q for _,q in state.roster.remaining),Decimal(0)))
             if (state.protection!=positions[key] or type(financial) is not StrategyOneFinancialView
                     or (financial.account_id,financial.assignment_id,financial.ticker)!=key
-                    or Decimal(str(financial.position_quantity))!=sum((q for _,q in state.roster.remaining),Decimal(0))):
+                    or Decimal(str(financial.position_quantity))!=expected_quantity):
                 raise ValueError('Selected checkpoint original/financial authority differs')
             states[key]=state;entries[key]=request;groups[key]=state.roster.group_id
         manager.restore_state(inherited,first_price_source=self.operation.source.price_authority)

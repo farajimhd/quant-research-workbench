@@ -583,12 +583,23 @@ def load_verified_commit_v4(
     fixed_lot_context=None,
     fixed_lot_recovery_context=None,
     _fixed_lot_cold_walk=None,_cold_recovery_context_sink=None,
+    fixed_lot_read_scope=None,
 ) -> tuple[dict, tuple[dict, ...]]:
     """SELECT one fenced batch and verify every normalized detail row."""
     from src.trading_runtime.arte_journal_writer import (
         _CONTRACTS, _literal, _rows,
     )
 
+    if fixed_lot_read_scope is not None:
+        from .selected_checkpoint_products import source_batch_read_contexts
+        selected_batch_contexts=source_batch_read_contexts(fixed_lot_read_scope,client,fixed_lot_read_scope.prefix,batch_id,first_price_source)
+        if run_id!=fixed_lot_read_scope.source.run_id:
+            raise ValueError('Nested batch read has foreign run')
+        for supplied,key in ((fixed_lot_context,'fixed_lot_context'),(fixed_lot_recovery_context,'fixed_lot_recovery_context')):
+            if supplied is not None and supplied is not selected_batch_contexts.get(key):
+                raise ValueError('Nested batch read has substituted source context')
+        fixed_lot_context=selected_batch_contexts.get('fixed_lot_context')
+        fixed_lot_recovery_context=selected_batch_contexts.get('fixed_lot_recovery_context')
     identity = str(UUID(batch_id))
     if not run_id or type(max_rows_per_family) is not int \
             or not 1 <= max_rows_per_family <= 65_536:
@@ -631,6 +642,7 @@ def load_verified_commit_v4(
         automatic_ladder_sources=automatic_ladder_sources, automatic_ladder_batch_metadata=dict(commit),
         declared_native_context=declared_native_context, fixed_lot_context=fixed_lot_context,
         fixed_lot_recovery_context=fixed_lot_recovery_context,
+        fixed_lot_read_scope=fixed_lot_read_scope,
         _fixed_lot_cold_walk=_fixed_lot_cold_walk,_cold_recovery_context_sink=_cold_recovery_context_sink)
     try:
         verify_commit_v4(commit, family_rows, details)
@@ -661,6 +673,7 @@ def _load_verified_details_v4(
     fixed_lot_context=None,
     fixed_lot_recovery_context=None,
     _fixed_lot_cold_walk=None,_cold_recovery_context_sink=None,
+    fixed_lot_read_scope=None,
 ) -> dict[str, list[tuple[str, str]]]:
     from src.trading_runtime.arte_journal_writer import (
         _CONTRACTS, _canonical_typed_content, _literal, _rows,
@@ -690,7 +703,8 @@ def _load_verified_details_v4(
     row_sets = (
         _batched_detail_rows_v4(client, tuple(spec for spec in family_specs
             if spec[0] not in (MOMENTUM.name, INITIAL_MOMENTUM.name)), filters,
-            fixed_lot_context=fixed_lot_context, fixed_lot_recovery_context=fixed_lot_recovery_context)
+            fixed_lot_context=fixed_lot_context, fixed_lot_recovery_context=fixed_lot_recovery_context,
+            **({"fixed_lot_read_scope":fixed_lot_read_scope} if fixed_lot_read_scope is not None else {}))
         if batched_readback else None
     )
     for name, column_names, row_count in family_specs:
@@ -767,7 +781,11 @@ def _load_verified_details_v4(
                 run_id=run_id, batch_id=batch_id, stored_utc=True)
         except ValueError as exc:
             raise RuntimeError("V4 OMS tactic differs from its group revision") from exc
-    seal_followthrough_rows(client, related_rows.get(FAILURE.name, ()),
+    from .selected_checkpoint_products import cold_checkpoint_product_reader
+    product_client=cold_checkpoint_product_reader(client,walk=_fixed_lot_cold_walk,
+        verified_prefix=verified_prior_prefix,
+        recovery_contexts=tuple(_cold_recovery_context_sink or ()))
+    seal_followthrough_rows(product_client, related_rows.get(FAILURE.name, ()),
         related_rows.get("trading_strategy_intent_v1", ()),
         related_rows.get("trading_event_v1", ()), related_rows.get(ENTRY_EVIDENCE.name, ()),
         prior_batch_id=prior_batch_id, verified_prefix=verified_prior_prefix,
@@ -779,7 +797,7 @@ def _load_verified_details_v4(
                           related_rows.get('trading_strategy_intent_v1', ())):
         if verified_prior_prefix is None:
             raise RuntimeError('Profit readback requires an independently verified preceding prefix')
-        seal_profit_giveback_rows(client, profit_rows,
+        seal_profit_giveback_rows(product_client, profit_rows,
             related_rows.get('trading_strategy_intent_v1', ()),
             related_rows.get('trading_event_v1', ()),
             prefix=verified_prior_prefix, first_price_source=first_price_source)
@@ -793,7 +811,7 @@ def _load_verified_details_v4(
         unsigned = {name for name, kind in CONFIRMED_AH_FAILURE.columns if kind.startswith('UInt')}
         adapted = tuple({k: int(v) if k in unsigned else v for k, v in row.items()}
                         for row in confirmation_rows)
-        seal_confirmed_ah_rows(client, adapted,
+        seal_confirmed_ah_rows(product_client, adapted,
             related_rows.get('trading_strategy_intent_v1', ()),
             related_rows.get('trading_event_v1', ()),
             verified_prefix=verified_prior_prefix, first_price_source=first_price_source)
@@ -802,7 +820,7 @@ def _load_verified_details_v4(
     unsigned = {name for name, kind in LIQUIDITY_FADE_FAILURE.columns if kind.startswith('UInt')}
     liquidity_rows = tuple({k: int(v) if k in unsigned else v for k, v in row.items()}
                            for row in related_rows.get(LIQUIDITY_FADE_FAILURE.name, ()))
-    prepare_native_liquidity_fade_rows(client, liquidity_rows,
+    prepare_native_liquidity_fade_rows(product_client, liquidity_rows,
         related_rows.get('trading_strategy_intent_v1', ()),
         related_rows.get('trading_event_v1', ()), verified_prefix=verified_prior_prefix,
         first_price_source=first_price_source)
@@ -1116,7 +1134,8 @@ def _load_verified_details_v4(
 
 
 def _batched_detail_rows_v4(client, family_specs, filters, *,
-                            fixed_lot_context=None, fixed_lot_recovery_context=None):
+                            fixed_lot_context=None, fixed_lot_recovery_context=None,
+                            fixed_lot_read_scope=None):
     """Read complete typed rows in bounded UNIONs; JSON is transport only.
 
     The stored rows remain normalized. Each row is reconstructed using its
@@ -1127,6 +1146,10 @@ def _batched_detail_rows_v4(client, family_specs, filters, *,
 
     from .strategy_registry import BATCHED_DETAIL_SELECT_RULE
     outer_select = False
+    if fixed_lot_read_scope is not None:
+        from .selected_checkpoint_products import require_batched_product_read_scope
+        require_batched_product_read_scope(fixed_lot_read_scope,client,filters)
+        outer_select=True
     for context in (fixed_lot_context, fixed_lot_recovery_context):
         if context is None:
             continue
@@ -1384,6 +1407,7 @@ def publish_protection_reconciliation_batch_v4(
 
 def publish_terminal_typed_batch_v4(
     client, batch, *, captures, broker_snapshots=None, first_price_source=None,
+    fixed_lot_source=None, fixed_lot_contexts=(),fixed_lot_recovery_contexts=(),
 ) -> V4CommittedPrefix:
     """Commit one lifecycle-last suffix, then anchor every account recovery.
 
@@ -1398,6 +1422,16 @@ def publish_terminal_typed_batch_v4(
     from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
     from src.backend.backtest_terminal_broker_snapshot_v4 import V4BrokerSnapshotRows
 
+    selected_contexts={}
+    if fixed_lot_source is not None:
+        from .selected_checkpoint_products import require_terminal_scope
+        require_terminal_scope(client,batch.run_id,fixed_lot_source,fixed_lot_contexts,fixed_lot_recovery_contexts)
+        if fixed_lot_source.price_authority is not first_price_source:
+            raise ValueError('Terminal selected source has foreign price authority')
+        selected_contexts=dict(fixed_lot_contexts=fixed_lot_contexts,
+            fixed_lot_recovery_contexts=fixed_lot_recovery_contexts)
+    elif fixed_lot_contexts or fixed_lot_recovery_contexts:
+        raise ValueError('Terminal selected contexts lack installed source')
     if (broker_snapshots is not None
             and type(broker_snapshots) is not V4BrokerSnapshotRows):
         raise ValueError("V4 terminal broker snapshots are not typed")
@@ -1459,9 +1493,9 @@ def publish_terminal_typed_batch_v4(
         prefix = load_verified_v4_prefix(sources.client, batch.run_id, automatic_ladder_sources=sources)
         sources.verify_immutable_prefix(prefix)
     else:
-        prefix = (load_verified_v4_prefix(client, batch.run_id)
+        prefix = (load_verified_v4_prefix(client, batch.run_id,**selected_contexts)
                   if first_price_source is None else load_verified_v4_prefix(
-                      client, batch.run_id, first_price_source=first_price_source))
+                      client, batch.run_id, first_price_source=first_price_source,**selected_contexts))
     if (prefix is None or prefix.status != batch.status
             or prefix.last_batch_id != batch.batch_id
             or prefix.last_sequence != batch.last_sequence):

@@ -1039,8 +1039,11 @@ class BacktestTypedJournalPublisher:
                 prior_batch_id=self._batch_id,
                 source_cursor=self._source_cursor)
             batch = unit.base
+            from src.trading_runtime.selected_checkpoint_products import terminal_scope,selected
+            selected_scope=(terminal_scope(self.writer._client,self.journal.run_id)
+                if selected(self._fixed_lot_source) else {})
             submitted = self.writer.submit_terminal_backtest(
-                batch, captures, unit.broker_snapshots,
+                batch, captures, unit.broker_snapshots, **selected_scope,
                 **({"first_price_source": self._first_price_source}
                    if self._first_price_source is not None else {}))
             committed = await asyncio.wrap_future(submitted)

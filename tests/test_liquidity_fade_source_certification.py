@@ -1,5 +1,6 @@
 """Prepared seals reject semantic changes without granting installed admission."""
 from pathlib import Path
+import ast
 import pytest
 
 from src.backend.backtest_strategy_liquidity_fade_certification import (
@@ -10,7 +11,7 @@ from src.backend.backtest_strategy_liquidity_fade_certification import (
 def test_prepared_source_proof_is_deterministic_and_fully_pinned():
     proof = certify_prepared_liquidity_fade_source()
     assert len(proof) == 64 and proof == certify_prepared_liquidity_fade_source()
-    assert len(LIQUIDITY_FADE_SOURCE_AST) == 64
+    assert len(LIQUIDITY_FADE_SOURCE_AST) == 74
     assert 'src/trading_runtime/squeeze_ladder_geometry.py' in LIQUIDITY_FADE_SOURCE_AST
     assert 'src/backend/source_ast_summary.py' in LIQUIDITY_FADE_SOURCE_AST
     assert {
@@ -27,7 +28,16 @@ def test_each_prepared_authority_rejects_modified_semantics(relative, tmp_path):
     root = Path(__file__).parents[1]
     changed = tmp_path / 'altered.py'
     source = (root / relative).read_text(encoding='utf-8')
-    if relative.endswith('strategy_liquidity_fade_failure.py'):
+    if type(LIQUIDITY_FADE_SOURCE_AST[relative]) is dict:
+        tree = ast.parse(source)
+        names = set(LIQUIDITY_FADE_SOURCE_AST[relative])
+        selected = [node for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in names]
+        assert len(selected) == len(names)
+        for node in selected:
+            node.body.append(ast.parse('unreviewed_authority_change = True').body[0])
+        source = ast.unparse(ast.fix_missing_locations(tree)) + '\n'
+    elif relative.endswith('strategy_liquidity_fade_failure.py'):
         source = source.replace('4 * recent > prior', '2 * recent > prior')
     elif relative.endswith('backtest_strategy_liquidity_fade.py'):
         source = source.replace('4 * pl.col("recent_10s_trade_count")', '2 * pl.col("recent_10s_trade_count")')

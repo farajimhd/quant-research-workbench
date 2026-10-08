@@ -373,8 +373,14 @@ def load_committed_strategy_intent_page(
     record_ids: tuple[str, ...] | None = None,
     include_source_batch: bool = False,
     first_price_source: Any = None,
+    fixed_lot_read_scope=None,
 ) -> tuple[RecoveredIntent, ...]:
     """Read one bounded, fully typed intent page from a verified prefix."""
+    if fixed_lot_read_scope is not None:
+        from .selected_checkpoint_products import require_source_oms_read_scope
+        binding=require_source_oms_read_scope(fixed_lot_read_scope,client,prefix)
+        if first_price_source is not binding.source.price_authority:
+            raise ValueError('Intent page read has foreign source price authority')
     if not _valid_prefix(prefix):
         raise ValueError("Intent recovery requires a verified committed prefix")
     if after_sequence < 0 or not 1 <= limit <= 500 or max_slices < 1:
@@ -494,8 +500,12 @@ def load_committed_strategy_intent_page(
                 raise ValueError("Cold intent source batch requires V4 authority")
             batch_id = str(UUID(str(event["batch_id"])))
             if batch_id not in commits:
+                if fixed_lot_read_scope is not None:
+                    from .selected_checkpoint_products import source_batch_read_contexts
+                    source_batch_contexts=source_batch_read_contexts(fixed_lot_read_scope,client,prefix,batch_id,first_price_source)
                 commits[batch_id], _ = load_verified_commit_v4(
                     client, run_id=prefix.run_id, batch_id=batch_id,
+                    **(source_batch_contexts if fixed_lot_read_scope is not None else {}),
                     # Nested exits must verify strictly against the source
                     # batch's predecessor, never its containing/latest prefix.
                     **({'first_price_source': first_price_source,

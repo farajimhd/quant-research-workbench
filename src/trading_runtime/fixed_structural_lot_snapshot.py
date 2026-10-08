@@ -12,7 +12,7 @@ from uuid import UUID, NAMESPACE_URL, uuid5
 
 from .arte_journal_schema import TableContract
 from .fixed_structural_lot_policy import FixedStructuralLotPolicy
-from .fixed_structural_lot_management import load_fixed_structural_lot_stop_ceiling
+from .selected_checkpoint_products import checkpoint_roster as load_fixed_structural_lot_stop_ceiling
 from .fixed_structural_lot_state import FixedStructuralLotProtectionState
 from .strategy_one_position import ProtectionState, AcceptedResistance
 

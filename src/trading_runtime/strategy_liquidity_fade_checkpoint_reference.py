@@ -28,18 +28,26 @@ def confirm_liquidity_fade_checkpoint_sources(client, manager_keeper, broker_kee
             or any(head.run_id != run_id or head.checkpoint_sequence != receipt.last_sequence
                    or head.journal_batch_id != receipt.last_batch_id for head in (manager_head, broker_head))):
         raise ValueError('Liquidity confirmation receipt differs from selected native snapshot heads')
-    state = load_attested_manager_snapshot(client, manager_keeper, run_id=run_id,
-        checkpoint_sequence=receipt.last_sequence, first_price_source=first_price_source)
-    broker = load_attested_broker_match_snapshot(client, broker_keeper, run_id=run_id,
-        checkpoint_sequence=receipt.last_sequence, first_price_source=first_price_source)
-    manager = load_unattested_manager_snapshot_rows(client, run_id=run_id, checkpoint_sequence=receipt.last_sequence)
-    if (manager.snapshot['content_hash'] != manager_head.snapshot_hash
+    from .selected_checkpoint_products import current_checkpoint,checkpoint_root
+    image=current_checkpoint(client,manager_keeper,run_id=run_id,
+        sequence=receipt.last_sequence,first_price_source=first_price_source)
+    state=(image.inherited if image is not None else load_attested_manager_snapshot(client, manager_keeper, run_id=run_id,
+        checkpoint_sequence=receipt.last_sequence, first_price_source=first_price_source))
+    if image is not None:
+        from .strategy_one_broker_match_snapshot import load_unattested_broker_match_snapshot
+        broker=load_unattested_broker_match_snapshot(client,run_id=run_id,checkpoint_sequence=receipt.last_sequence)
+        manager_root=checkpoint_root(client,source=image.source,sequence=receipt.last_sequence)
+    else:
+        broker = load_attested_broker_match_snapshot(client, broker_keeper, run_id=run_id,
+            checkpoint_sequence=receipt.last_sequence, first_price_source=first_price_source)
+        manager_root = load_unattested_manager_snapshot_rows(client, run_id=run_id, checkpoint_sequence=receipt.last_sequence).snapshot
+    if (manager_root['content_hash'] != manager_head.snapshot_hash
             or broker.snapshot['content_hash'] != broker_head.snapshot_hash
-            or manager.snapshot['boundary_ms'] != state.boundary_ms
+            or manager_root['boundary_ms'] != state.boundary_ms
             or broker.snapshot['boundary_ms'] != state.boundary_ms
-            or manager.snapshot['session_date'] != broker.snapshot['session_date']):
+            or manager_root['session_date'] != broker.snapshot['session_date']):
         raise ValueError('Liquidity confirmation snapshot roots differ from their attested decision clock')
-    refs = dict(source_manager_snapshot_id=manager.snapshot['snapshot_id'],
+    refs = dict(source_manager_snapshot_id=manager_root['snapshot_id'],
         source_manager_checkpoint_sequence=receipt.last_sequence,
         source_manager_snapshot_hash=manager_head.snapshot_hash,
         source_broker_snapshot_id=broker.snapshot['snapshot_id'], source_broker_snapshot_hash=broker_head.snapshot_hash)

@@ -521,6 +521,8 @@ class StrategyOneManagementRunner:
             self.original_risk_requests(boundary_ms=boundary_ms)
         if not isinstance(financial, StrategyOneFinancialView):
             raise TypeError("Strategy 1 management needs typed financial state")
+        if self._fixed_lot_owner is not None:
+            self._fixed_lot_owner.observe_checkpoint_financial(financial)
         key = (financial.account_id, financial.assignment_id, financial.ticker)
         if (self.contract.strategy_number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(self.contract.strategy_number, 'strategy-thirty-one-original-risk-profit-giveback-v1')):
             self._profit_arm_financials[key] = financial
@@ -795,7 +797,9 @@ class StrategyOneManagementRunner:
                 breaks=tuple(pending),overhead_levels=evidence.overhead_levels,
                 price_bearing_bar=evidence.price_bearing_bar,
                 allows_completed_30s_trailing=self.contract.allows_completed_30s_trailing)
-            receipt=await self.runtime.submit_fixed_structural_lot_protection(request)
+            from src.trading_runtime.selected_checkpoint_products import observe_runtime_submission
+            with observe_runtime_submission(self._fixed_lot_owner):
+                receipt=await self.runtime.submit_fixed_structural_lot_protection(request)
             confirmed=receipt.state.protection
             if (confirmed.boundary_ms!=boundary_ms or not previous.accepted_ids<=confirmed.accepted_ids
                     or confirmed.target!=source.initial_target

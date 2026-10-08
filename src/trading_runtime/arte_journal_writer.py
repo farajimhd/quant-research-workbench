@@ -3917,6 +3917,9 @@ class _TerminalBacktestUnit:
     captured: tuple[CapturedPortfolioSnapshot, ...]
     broker_snapshots: Any | None = None
     first_price_source: Any | None = None
+    fixed_lot_source: Any | None = None
+    fixed_lot_contexts: tuple = ()
+    fixed_lot_recovery_contexts: tuple = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -4773,7 +4776,7 @@ class ArteJournalWriter:
         self, batch: TypedJournalBatch,
         captured: tuple[CapturedPortfolioSnapshot, ...],
         broker_snapshots: Any | None = None,
-        *, first_price_source=None,
+        *, first_price_source=None, fixed_lot_source=None, fixed_lot_contexts=(), fixed_lot_recovery_contexts=(),
     ) -> Future[str]:
         """Enqueue terminal events and every account recovery image as one unit.
 
@@ -4784,6 +4787,13 @@ class ArteJournalWriter:
         from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
         from src.backend.backtest_terminal_broker_snapshot_v4 import V4BrokerSnapshotRows
 
+        if fixed_lot_source is not None:
+            from .selected_checkpoint_products import require_terminal_scope
+            require_terminal_scope(self._client,self._run_id,fixed_lot_source,fixed_lot_contexts,fixed_lot_recovery_contexts)
+            if self._journal_profile!='backtest_v4':
+                raise ValueError('Selected terminal scope belongs only to V4')
+        elif fixed_lot_contexts or fixed_lot_recovery_contexts:
+            raise ValueError('Selected terminal contexts lack issued source')
         if self._journal_profile == "backtest_v2":
             raise RuntimeError("V2 terminal publication requires the staged separate fence")
 
@@ -4818,7 +4828,7 @@ class ArteJournalWriter:
             try:
                 self._queue.put_nowait((
                     _TerminalBacktestUnit(batch, tuple(captured), broker_snapshots,
-                                          first_price_source),
+                                          first_price_source,fixed_lot_source,fixed_lot_contexts,fixed_lot_recovery_contexts),
                     receipt))
             except Full as exc:
                 raise JournalQueueFull("Terminal Backtest queue is full; stop execution") from exc
@@ -5368,6 +5378,10 @@ class ArteJournalWriter:
                         prefix = publish_terminal_typed_batch_v4(
                             self._client, unit.batch, captures=unit.captured,
                             broker_snapshots=unit.broker_snapshots,
+                            **({'fixed_lot_source':unit.fixed_lot_source,
+                                'fixed_lot_contexts':unit.fixed_lot_contexts,
+                                'fixed_lot_recovery_contexts':unit.fixed_lot_recovery_contexts}
+                               if unit.fixed_lot_source is not None else {}),
                             **({"first_price_source": unit.first_price_source}
                                if unit.first_price_source is not None else {}))
                         committed_id = prefix.last_batch_id

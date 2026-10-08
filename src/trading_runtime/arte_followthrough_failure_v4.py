@@ -91,6 +91,11 @@ def restore_failure(row,diagnostic=None):
 
 def _source_entry(client, run_id, intent_id, *, prior_batch_id, exit_batch_id,
                   verified_prefix=None, first_price_source=None):
+    from .selected_checkpoint_products import original_entry
+    selected_entry=original_entry(client,run_id,intent_id,prior_batch_id=prior_batch_id,
+        exit_batch_id=exit_batch_id,verified_prefix=verified_prefix,first_price_source=first_price_source)
+    if selected_entry is not None:
+        return selected_entry
     from .arte_journal_writer import _rows, _literal, _CONTRACTS
     from .arte_journal_commit_v4 import load_verified_commit_v4, verified_batch_predecessor
     from .arte_strategy_one_entry_schema import ENTRY_EVIDENCE

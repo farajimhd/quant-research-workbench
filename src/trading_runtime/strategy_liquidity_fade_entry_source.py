@@ -39,6 +39,7 @@ def validate_liquidity_fade_entry_source(client, row, parent, event, *, verified
     source, source_event, child = _source_entry(
         client, row['run_id'], str(row['source_entry_intent_id']),
         prior_batch_id=verified_prefix.last_batch_id, exit_batch_id=str(row['batch_id']), **context)
+    from .selected_checkpoint_products import original_link_matches
     if (type(child['strategy_number']) is not int or child['strategy_number'] != row['strategy_number']
             or child['assignment_id'] != row['assignment_id']
             or type(child['boundary_ms']) is not int
@@ -46,7 +47,7 @@ def validate_liquidity_fade_entry_source(client, row, parent, event, *, verified
             or source_event['account_id'] != event['account_id']
             or source_event['sequence'] >= event['sequence']
             or source_event['sequence'] >= row['source_manager_checkpoint_sequence']
-            or str(source['intent_id']) != str(row['source_entry_intent_id'])
+            or not original_link_matches(client,source,child,row['source_entry_intent_id'])
             or source['ticker'] != parent['ticker']
             or source['action'] != 'enter_long' or source['reason'] != 'strategy_one_entry'
             or float(source['reference_price']) != witness.reference_ask

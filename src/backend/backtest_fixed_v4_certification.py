@@ -88,7 +88,11 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
         from src.trading_runtime.fixed_structural_lot_warm_proof import RULE as WARM_RULE
         from src.trading_runtime.strategy_registry import IMMUTABLE_NUMBERED_IDENTITY_RULE
         from src.trading_runtime.strategy_registry import BATCHED_DETAIL_SELECT_RULE
-        if BATCHED_DETAIL_SELECT_RULE in selected_lots.release.rule_set_contracts:
+        from src.trading_runtime.strategy_registry import SELECTED_CHECKPOINT_PRODUCT_RULE
+        if SELECTED_CHECKPOINT_PRODUCT_RULE in selected_lots.release.rule_set_contracts:
+            from .backtest_fixed_structural_lot_certification_v11 import certify_fixed_structural_lot_source as certify_fixed_structural_lot_source_v11
+            additional_proof = certify_fixed_structural_lot_source_v11()
+        elif BATCHED_DETAIL_SELECT_RULE in selected_lots.release.rule_set_contracts:
             from .backtest_fixed_structural_lot_certification_v10 import certify_fixed_structural_lot_source as certify_fixed_structural_lot_source_v10
             additional_proof = certify_fixed_structural_lot_source_v10()
         elif IMMUTABLE_NUMBERED_IDENTITY_RULE in selected_lots.release.rule_set_contracts:
@@ -1538,6 +1542,8 @@ def _reviewed_fixed_lot_configuration_projection(source: str, name: str, expecte
     """Pin this exact registration delta and prove whole legacy module restoration."""
     from .backtest_fixed_structural_lot_compatibility_v9 import restore_reviewed_parent_source as restore_v9
     from .backtest_fixed_structural_lot_compatibility_v10 import restore_reviewed_parent_source as restore_v10
+    from .backtest_fixed_structural_lot_compatibility_v11 import restore_reviewed_parent_source as restore_v11
+    source = restore_v11(source, 'src/backend/backtest_strategy_one_configuration.py')
     source = restore_v10(source, 'src/backend/backtest_strategy_one_configuration.py')
     source = restore_v9(source, 'src/backend/backtest_strategy_one_configuration.py')
     from .backtest_fixed_structural_lot_compatibility_v8 import restore_reviewed_parent_source as restore_v8
@@ -1651,6 +1657,8 @@ def _reviewed_fixed_lot_management_projection(source: str, name: str, expected: 
     """Prove this exact selected owner leaves the complete default manager unchanged."""
     from .backtest_fixed_structural_lot_compatibility_v9 import restore_reviewed_parent_source as restore_v9
     from .backtest_fixed_structural_lot_compatibility_v10 import restore_reviewed_parent_source as restore_v10
+    from .backtest_fixed_structural_lot_compatibility_v11 import restore_reviewed_parent_source as restore_v11
+    source = restore_v11(source, 'src/backend/backtest_strategy_one_management.py')
     source = restore_v10(source, 'src/backend/backtest_strategy_one_management.py')
     source = restore_v9(source, 'src/backend/backtest_strategy_one_management.py')
     from .backtest_fixed_structural_lot_compatibility_v8 import restore_reviewed_parent_source as restore_v8
@@ -1688,6 +1696,8 @@ def _reviewed_fixed_lot_typed_projection(source: str, name: str, expected: str) 
     """Accept exact source-bound selected projection with the unchanged default projector."""
     from .backtest_fixed_structural_lot_compatibility_v9 import restore_reviewed_parent_source as restore_v9
     from .backtest_fixed_structural_lot_compatibility_v10 import restore_reviewed_parent_source as restore_v10
+    from .backtest_fixed_structural_lot_compatibility_v11 import restore_reviewed_parent_source as restore_v11
+    source = restore_v11(source, 'src/backend/backtest_typed_projection.py')
     source = restore_v10(source, 'src/backend/backtest_typed_projection.py')
     source = restore_v9(source, 'src/backend/backtest_typed_projection.py')
     from .backtest_fixed_structural_lot_compatibility_v8 import restore_reviewed_parent_source as restore_v8
@@ -1736,6 +1746,8 @@ def _reviewed_fixed_lot_ast_recipe(source: str, relative: str, name: str, expect
     supplied_source = source
     from .backtest_fixed_structural_lot_compatibility_v9 import restore_reviewed_parent_source as restore_v9
     from .backtest_fixed_structural_lot_compatibility_v10 import restore_reviewed_parent_source as restore_v10
+    from .backtest_fixed_structural_lot_compatibility_v11 import restore_reviewed_parent_source as restore_v11
+    source = restore_v11(source, relative)
     source = restore_v10(source, relative)
     source = restore_v9(source, relative)
     from .backtest_fixed_structural_lot_compatibility_v8 import restore_reviewed_parent_source as restore_v8

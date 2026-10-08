@@ -9,7 +9,7 @@ from .arte_journal_writer import _canonical_typed_content, _literal, _rows, cano
 from .arte_profit_giveback_v4 import PROFIT_GIVEBACK, restore_profit_giveback
 
 
-def load_committed_profit_giveback(client, prefix, exit_record_id, *, first_price_source):
+def load_committed_profit_giveback(client, prefix, exit_record_id, *, first_price_source, fixed_lot_read_scope=None):
     """Verify the whole source batch before returning its exact scalar child.
 
     The caller supplies an independently verified prefix and certified native
@@ -18,6 +18,12 @@ def load_committed_profit_giveback(client, prefix, exit_record_id, *, first_pric
     """
     from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
 
+
+    if fixed_lot_read_scope is not None:
+        from .selected_checkpoint_products import require_source_oms_read_scope
+        binding=require_source_oms_read_scope(fixed_lot_read_scope,client,prefix)
+        if first_price_source is not binding.source.price_authority:
+            raise ValueError('Profit witness read has foreign source price authority')
     identity = str(UUID(exit_record_id))
     if (type(prefix) is not V4CommittedPrefix
             or type(first_price_source) is not CertifiedPriceReadbackAuthority
@@ -35,12 +41,16 @@ def load_committed_profit_giveback(client, prefix, exit_record_id, *, first_pric
     batch_id = str(UUID(str(row['batch_id'])))
     if batch_id not in prefix.batch_ids:
         raise RuntimeError('Profit witness is outside the verified prefix')
+    if fixed_lot_read_scope is not None:
+        from .selected_checkpoint_products import source_batch_read_contexts
     predecessor = verified_batch_predecessor(client, prefix, batch_id)
     if predecessor is None:
         raise RuntimeError('Profit witness lacks a preceding checkpoint prefix')
     _, families = load_verified_commit_v4(client, run_id=prefix.run_id,
         batch_id=batch_id, first_price_source=first_price_source,
-        verified_prior_prefix=predecessor)
+        verified_prior_prefix=predecessor,
+        **(source_batch_read_contexts(fixed_lot_read_scope,client,prefix,batch_id,first_price_source)
+           if fixed_lot_read_scope is not None else {}))
     if not any(family['family_name'] == PROFIT_GIVEBACK.name for family in families):
         raise RuntimeError('Profit witness family is absent from its committed inventory')
     content = {key: value for key, value in row.items() if key != 'content_hash'}

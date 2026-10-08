@@ -32,8 +32,11 @@ def confirm_profit_arm_reference(client, keeper, candidate, financial, receipt, 
             or head.checkpoint_sequence!=receipt.last_sequence
             or head.journal_batch_id!=receipt.last_batch_id):
         raise ValueError('Profit arming receipt differs from selected checkpoint')
-    state=load_attested_manager_snapshot(client,keeper,run_id=run_id,
-        checkpoint_sequence=receipt.last_sequence,first_price_source=first_price_source)
+    from .selected_checkpoint_products import current_checkpoint,checkpoint_root
+    image=current_checkpoint(client,keeper,run_id=run_id,
+        sequence=receipt.last_sequence,first_price_source=first_price_source)
+    state=(image.inherited if image is not None else load_attested_manager_snapshot(client,keeper,run_id=run_id,
+        checkpoint_sequence=receipt.last_sequence,first_price_source=first_price_source))
     actual=profit_arm_candidate(state,financial,already_checkpointed=False)
     if actual!=candidate or keeper.read_head(run_id=run_id)!=head:
         raise ValueError('Profit arming checkpoint or position changed during confirmation')
@@ -43,10 +46,10 @@ def confirm_profit_arm_reference(client, keeper, candidate, financial, receipt, 
     # writer's source cursor is intentionally not parsed as session authority.
     # Read the already verified root selected at exactly this checkpoint.
     from .strategy_one_management_snapshot import load_unattested_manager_snapshot_rows
-    rows=load_unattested_manager_snapshot_rows(client,run_id=run_id,checkpoint_sequence=receipt.last_sequence)
-    if rows.snapshot['content_hash']!=head.snapshot_hash or rows.snapshot['boundary_ms']!=candidate.boundary_ms:
+    root=(checkpoint_root(client,source=image.source,sequence=receipt.last_sequence) if image is not None else load_unattested_manager_snapshot_rows(client,run_id=run_id,checkpoint_sequence=receipt.last_sequence).snapshot)
+    if root['content_hash']!=head.snapshot_hash or root['boundary_ms']!=candidate.boundary_ms:
         raise ValueError('Profit arming reference differs from attested snapshot root')
-    identity=str(UUID(str(rows.snapshot['snapshot_id'])))
+    identity=str(UUID(str(root['snapshot_id'])))
     if keeper.read_head(run_id=run_id)!=head:
         raise ValueError('Profit arming checkpoint changed before reference selection')
     return ProfitArmReference(candidate,identity,receipt.last_sequence,receipt.last_batch_id,head.snapshot_hash)

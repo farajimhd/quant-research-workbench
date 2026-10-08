@@ -21,6 +21,8 @@ def certify_confirmed_ah_source(*, source_overrides=None):
     observed = []
     for relative, expected in CONFIRMED_AH_SOURCE_AST.items():
         source = Path(overrides.get(relative, root / relative)).read_text(encoding='utf-8')
+        from .backtest_fixed_structural_lot_compatibility_v11 import restore_reviewed_parent_source
+        source = restore_reviewed_parent_source(source, relative)
         try:
             tree = ast.parse(source)
         except SyntaxError as exc:

@@ -91,6 +91,7 @@ def validate_confirmed_ah_source(
         instant = instant.replace(tzinfo=timezone.utc)
     local = instant.astimezone(ZoneInfo('America/New_York'))
     elapsed_ms = (local - datetime.combine(local.date(), time(4), local.tzinfo)).total_seconds() * 1000
+    from .selected_checkpoint_products import original_link_matches
     if (row['strategy_number'] != child['strategy_number']
             or row['assignment_id'] != child['assignment_id']
             or row['parent_record_id'] != parent['record_id']
@@ -99,7 +100,7 @@ def validate_confirmed_ah_source(
             or row['batch_id'] != parent['batch_id'] or parent['batch_id'] != event['batch_id']
             or row['event_month'] != parent['event_month']
             or event['account_id'] != source_event['account_id']
-            or str(source['intent_id']) != str(row['source_entry_intent_id'])
+            or not original_link_matches(client,source,child,row['source_entry_intent_id'])
             or source['ticker'] != parent['ticker'] or parent['action'] != 'exit'
             or parent['reason'] != confirmed_ah_reason(row['strategy_number'])
             or source['action'] != 'enter_long' or source['reason'] != 'strategy_one_entry'
