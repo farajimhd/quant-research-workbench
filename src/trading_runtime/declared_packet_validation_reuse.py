@@ -27,7 +27,7 @@ def _source_cache(source):
         return None
     from src.backend.backtest_fixed_structural_lot_source import require_native_fixed_structural_lot_source
     from .strategy_registry import numbered_strategy, fixed_strategy_executor
-    from .fixed_structural_lot_reuse_contract import FixedStructuralLotReuseStrategyContract
+    from .fixed_structural_lot_reuse_contract import require_declared_fixed_structural_lot_contract
     from .fixed_structural_lot_entry_v4 import FixedStructuralLotEntryRows
     require_native_fixed_structural_lot_source(source)
     source.require_installed_admission()
@@ -38,8 +38,8 @@ def _source_cache(source):
         strategy['parameters'].get('packet_validation_reuse_policy'))
     factory = fixed_strategy_executor(release.executor_strategy_id,
                                      release.executor_revision).contract_factory()
-    if (type(factory) is not FixedStructuralLotReuseStrategyContract or
-            factory.release != release or factory.validation_reuse_policy != policy):
+    require_declared_fixed_structural_lot_contract(factory,release)
+    if factory.validation_reuse_policy != policy:
         raise ValueError('Packet reuse differs from installed typed factory')
     factory.__post_init__()
     with _LOCK:

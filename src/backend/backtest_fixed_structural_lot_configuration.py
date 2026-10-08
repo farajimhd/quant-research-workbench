@@ -46,10 +46,16 @@ def verify_fixed_structural_lot_configuration(strategy):
     expected = {'execution','sizing','fixed_structural_lot_policy','fixed_structural_lot_parent'}
     if reuse_selected:
         expected.add('packet_validation_reuse_policy')
+    from src.trading_runtime.projected_configuration_reuse_policy import RULE as PROJECTION_REUSE_RULE, parse_projected_configuration_reuse_policy
+    projection_selected = PROJECTION_REUSE_RULE in contract.release.rule_set_contracts
+    if projection_selected:
+        expected.add('projected_configuration_reuse_policy')
     if type(params) is not dict or set(params) != expected:
         raise ValueError('Fixed-lot parameter companions differ')
     if reuse_selected and parse_packet_validation_reuse_policy(params['packet_validation_reuse_policy']) != contract.validation_reuse_policy:
         raise ValueError('Fixed-lot validation reuse bounds differ from registered factory')
+    if projection_selected and parse_projected_configuration_reuse_policy(params['projected_configuration_reuse_policy']) != contract.projection_reuse_policy:
+        raise ValueError('Projected-node reuse bounds differ from registered factory')
     if parse_fixed_structural_lot_policy(params['fixed_structural_lot_policy']) != contract.fixed_structural_lot_policy:
         raise ValueError('Fixed-lot policy differs from exact registered factory')
     manifest = strategy.get('numbered_release')

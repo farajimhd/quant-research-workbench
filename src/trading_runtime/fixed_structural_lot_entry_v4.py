@@ -192,9 +192,16 @@ def project_fixed_structural_lot_entry(record,batch,request):
         confirmed_at_ms=t.confirmed_at_ms,historical=int(t.historical),role=t.role,transition_from=t.transition_from))
         for i,t in enumerate(entry.targets))
     payloads=(source.parent_payload,source.selected_payload,_proposal_tree(entry.proposal))
-    node_sets=tuple(encode_nodes(value) for value in payloads)
-    nodes=tuple(_seal(NODE,dict(common,record_id=str(uuid5(NAMESPACE_URL,f'{root_id}:{kind}:{row["node_id"]}')),
-        tree_kind=kind,**row)) for kind,rows in zip(TREE_KINDS,node_sets) for row in rows)
+    from .declared_projected_configuration_reuse import declared_projected_configuration_cache
+    projection_cache=declared_projected_configuration_cache(source)
+    if projection_cache is None:
+        node_sets=tuple(encode_nodes(value) for value in payloads)
+        node_counts=tuple(len(rows) for rows in node_sets)
+        nodes=tuple(_seal(NODE,dict(common,record_id=str(uuid5(NAMESPACE_URL,f'{root_id}:{kind}:{row["node_id"]}')),
+            tree_kind=kind,**row)) for kind,rows in zip(TREE_KINDS,node_sets) for row in rows)
+    else:
+        projected=projection_cache.project(canonical_json(common),tuple(canonical_json(value) for value in payloads))
+        node_counts,nodes=projected.counts,projected.rows
     q=source._quotes[(entry.proposal.ticker,entry.proposal.boundary_ms)]
     root=dict(common,record_id=root_id,companion_contract=CONTRACT,intent_id=request.intent.intent_id,
         original_intent_id=request.original.intent_id,strategy_id=request.strategy_id,revision=request.revision,
@@ -211,7 +218,7 @@ def project_fixed_structural_lot_entry(record,batch,request):
         policy_version=source.policy.version,lot_count=source.policy.count,
         **{k:getattr(source.policy,k) for k in ('allocation','target_selection','target_price_rule','target_management',
         'stop_management','aggregate_exit','entry_reentry','profile_id')},lot_hash=_hash([dict(r) for r in lots]),
-        parent_node_count=len(node_sets[0]),selected_node_count=len(node_sets[1]),proposal_node_count=len(node_sets[2]),
+        parent_node_count=node_counts[0],selected_node_count=node_counts[1],proposal_node_count=node_counts[2],
         configuration_nodes_hash=_hash([dict(r) for r in nodes]),proposal_hash=_hash(payloads[2]))
     return FixedStructuralLotEntryRows(_seal(ENTRY,root),lots,nodes)
 

@@ -280,10 +280,22 @@ projection retention bounds are two entries, 1 MiB complete input, 30,000 rows
 and 64 MiB conservatively counted objects. The separate v15 preparation
 compiler reconstructs the complete parent-derived tree and rejects altered
 cash, costs, accounts, parent lineage, extra parameters or reuse semantics.
-Seventy-two focused declaration/cache tests passed. This specification is
-unregistered and unpublished: no native source certificate, issued operation,
-selected projection hook or financial backtest is claimed. Strategy93's
-financial run remains pinned to its original committed checkout.
+Seventy-two focused declaration/cache tests passed. Generic native v15 routing
+and the projection hook now select reuse only through the paired rule/input,
+registered exact typed factory and independently issued installed source.
+Unselected versions retain their previous execution adapter. Fifty-nine focused
+hook, entry and declaration tests passed, including exact original projection,
+semantic-batch rejection and forged-source rejection. Strategy42's complete
+source proof passed after exact whole-module restoration of six owned shared
+deltas; its receipt is `projection-reuse-parent-source-check-v1.json` under the
+optimization runtime root. An additional routing/contract group had 32 passes
+and two pre-existing error-message assertion mismatches, reproduced against
+commit `533387ff4`; those tests remain unchanged. The v15 source inventory
+contains 416 paths, including the retained v14 fallback certifier, but its
+approval pins remain empty and admission fails closed. Strategy94 remains
+unregistered and unpublished: no issued operation, actual selected native
+integration, full-session speed acceptance or financial result is claimed.
+Strategy93's financial run remains pinned to its original committed checkout.
 The qualifier, multi-resolution alignment and campaign suites passed 35 tests.
 The development-only confirmed-failure audit additionally compared six declared
 post-acquisition predicates across 126 saved Strategy57 positions, excluding

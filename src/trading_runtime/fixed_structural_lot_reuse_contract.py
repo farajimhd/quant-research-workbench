@@ -22,6 +22,10 @@ def require_declared_fixed_structural_lot_contract(contract, release):
     """Select the exact factory shape through semantic declarations only."""
     selected = INPUT in release.input_contracts or RULE in release.rule_set_contracts
     wanted = FixedStructuralLotReuseStrategyContract if selected else FixedStructuralLotStrategyContract
+    from .projected_configuration_reuse_policy import INPUT as PROJECTION_INPUT, RULE as PROJECTION_RULE
+    if PROJECTION_INPUT in release.input_contracts or PROJECTION_RULE in release.rule_set_contracts:
+        from .fixed_structural_lot_projection_reuse_contract import FixedStructuralLotProjectionReuseStrategyContract
+        wanted = FixedStructuralLotProjectionReuseStrategyContract
     if type(contract) is not wanted or contract.release != release:
         raise ValueError('Fixed-lot factory differs from exact declared release type')
     contract.__post_init__()
