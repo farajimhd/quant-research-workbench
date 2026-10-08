@@ -257,9 +257,12 @@ restart-safe isolated labeling pipeline for non-gold 2026 news.
 
 Evolved a Market Discovery review into the complete computational-funnel and
 three-tier QMD architecture, implemented the approved QMD/backend/frontend and
-trading backlog, restored Canvas containers, externalized runtime output, and
-preserved explicit storage, coverage, compatibility, archive-projection, and
-broker-deployment dependencies.
+trading backlog, restored Canvas containers, and externalized runtime output.
+The continuation established interval-free Data Fields with use-site timing,
+Signal Streams as immutable strategy inputs, headless Strategy Deployments,
+Canvas as presentation rather than execution authority, and QMD-owned durable
+session-stream cache and causal recovery. Recovery remains explicitly pending
+where authoritative `q_live` intervals were absent during downtime.
 
 ### [2026-08-08 time unavailable - Expand and operationalize the consolidated News Synthesis gold authority](docs/codex/chat-summaries/2026/CHAT-20260808-UNKNOWN-consolidated-news-gold-evaluator.md)
 

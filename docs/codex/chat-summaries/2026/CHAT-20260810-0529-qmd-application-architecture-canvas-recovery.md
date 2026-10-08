@@ -1,11 +1,11 @@
 # Define and implement the unified QMD and trading application architecture
 
 - Chat started: 2026-08-10 05:29:41 PDT (America/Vancouver)
-- Chat ended or last activity: 2026-08-12 09:14:06 PDT (America/Vancouver)
-- Summary written: 2026-08-12 09:14 PDT (America/Vancouver)
+- Chat ended or last activity: 2026-10-08 12:31:47 PDT (America/Vancouver)
+- Summary written: 2026-10-08 12:31 PDT (America/Vancouver)
 - Chat/task identifier: `019feba6-725b-70e0-8df7-c3d174d4d890`
 - Repository or scope: `D:\TradingCodes\quant-research-workbench`; QMD Live, QMD History, backend, frontend, Market Discovery, Canvas, Strategy, Replay, Backtest, Portfolio, OMS, and operations
-- Related task-history entries: `TASK-0188`, `TASK-0136`, `TASK-0134`, `TASK-0130`, `TASK-0126`, `TASK-0096`
+- Related task-history entries: `TASK-0188`, `TASK-0194`, `TASK-0195`, `TASK-0196`, `TASK-0198`, `TASK-0136`, `TASK-0134`, `TASK-0130`, `TASK-0126`, `TASK-0096`
 - Source completeness: Complete for this chat. Earlier Canvas, Replay, and strategy chats were not re-reviewed; their existing durable summaries are cross-references only.
 
 ## Narrative
@@ -158,6 +158,53 @@ processes were stopped. The QMD correction and architecture reconciliation were
 committed as `52e7d41b`. `TASK-0188` and its rendered history were added and
 pushed in `20d4f8c5`.
 
+The same chat then moved from broad architecture into its user-facing
+configuration contract. The user rejected interval-specific Data Field
+identities such as separate one-second and ten-second Last Price fields. The
+accepted funnel became Atomic Fields to immutable, interval-free Data Fields;
+Rule Sets instantiate those fields with structured interval value and unit,
+optional aggregation, typed literal or compatible field operands; enabled
+Market Discovery compositions alone materialize QMD demand. Milliseconds
+through months are supported where meaningful, while latest-value attributes
+do not invent a window. Categorical values use registered choices, and
+bar-native fields treat the interval as the bar timeframe. This work is
+recorded by `TASK-0194`.
+
+Signal Streams were separated from mutable Watchlists. A stream is a named,
+append-only sequence of immutable false-to-true occurrences with frozen
+trigger-time fields; Scanner provides the minimal all-market computation and a
+Watchlist may optionally constrain eligibility. Strategies consume Signal
+Streams for activation but may run headlessly. Session Profiles own mode,
+clock, data authority, and manual permission; Execution Routes bind account,
+Portfolio, and OMS authority; Strategy Deployments bind enabled strategies to
+routes. Canvas is a persisted observer and control surface, never an execution
+dependency. Live and Replay also support manual and semi-automatic trading
+through the same Portfolio and OMS boundary. These revisions are captured in
+`TASK-0195` and `TASK-0196`.
+
+Repeated live UAT exposed the final causal defect: opening a Signal Stream was
+still capable of triggering expensive reconstruction, and QMD downtime left
+the visible session history incomplete. Commit `4515c642` made QMD the owner
+of the current-session stream cache and durable occurrence history. QMD
+hydrates its cache on startup, keeps live evaluation non-blocking, asks QMD
+History to replay only required event families for rule-derived streams,
+deduplicates deterministic occurrence identities, and advances monotonic
+sequences. Source-native streams retain their native authority. Recovery is
+declared complete only when both the request and authoritative historical
+coverage are complete; repeated materialization or Canvas opens reuse the same
+attempt rather than starting duplicate work. The UI reports cached,
+recovering, or coverage-pending state without rendering raw backend errors.
+
+The recovery implementation passed 138 QMD Live tests, 52 QMD History tests,
+79 backend/integration tests, and the managed frontend build. Browser UAT had
+no console errors, verified cached Price Squeeze and source-native Trading Halt
+rows, and confirmed that restart preserved cached occurrences and sequence
+progress. The remaining current-session replay correctly stayed
+`coverage_incomplete`: authoritative `q_live` intervals from earlier QMD
+downtime were genuinely absent. QMD continued autonomous retry while live
+evaluation and cached rows remained usable; no missing interval was fabricated
+as a signal.
+
 ## Durable decisions
 
 ### Confirmed requirements
@@ -186,6 +233,11 @@ pushed in `20d4f8c5`.
   owns decisions; Canvas owns presentation and interaction only.
 - Bounded caches may improve delivery but must preserve revision, freshness,
   cursor-expiry, and gap evidence.
+- Data Fields are immutable definitions; interval, aggregation, and operand
+  bindings belong to Rule Set or Market Discovery use sites.
+- QMD owns Signal Stream evaluation, restart hydration, session cache,
+  persistence, recovery, deduplication, and completeness evidence. Canvas only
+  subscribes to the result.
 
 ### Rejected approaches
 
@@ -222,6 +274,11 @@ pushed in `20d4f8c5`.
 - Active-session QMD global memory bound and streaming repair policy: commit
   `52e7d41b`.
 - Task-history linkage: commit `20d4f8c5`.
+- Configuration and runtime lifecycle deliveries: `TASK-0194`, `TASK-0195`,
+  and `TASK-0196`.
+- Durable QMD Signal Stream recovery and UI state: commit `4515c642`, with 138
+  QMD Live, 52 QMD History, and 79 backend/integration tests plus the managed
+  frontend build and browser UAT.
 - Passing validation: 114 QMD tests, nine lifecycle guards, managed frontend
   production build, 21 focused Canvas/registry/preview/lifecycle tests, all
   Canvas kinds mounted, 4.3-million-event active soak, and 9,832-request active
@@ -262,6 +319,12 @@ pushed in `20d4f8c5`.
    changed. Next action: resume each under its owning intelligence task after
    current work completes. Owner: intelligence programs. Related task:
    `TASK-0188` and the applicable intelligence ledger rows.
+7. **Current-session Signal Stream coverage gaps.** Current state: live
+   evaluation, durable cache, restart hydration, and autonomous retry work, but
+   historical recovery remains incomplete wherever authoritative `q_live`
+   intervals were not captured during downtime. Next action: repair or certify
+   those source intervals, then rerun recovery acceptance. Owner: QMD and
+   market-data operations. Related task: `TASK-0198`.
 
 ## Unavailable or incomplete source chats
 
@@ -276,13 +339,16 @@ pushed in `20d4f8c5`.
 
 ## Handoff to the next chat
 
-Read `TASK-0188`, the architecture `README.md`, `14-implementation-backlog.md`,
-and `15-implementation-log.md` first. Preserve the computational funnel, the
-three-tier QMD source plan, explicit gap/revision evidence, the approved Canvas
-catalog, Portfolio/OMS authority separation, and external-runtime rules. Do not
-promote optional calculations into Core Scan, create a repository-local build,
-change a deferred producer service, fabricate source continuity, or enable
-broker submission. The next permitted action should be selected from the six
-gates above; immutable revision storage, archive projection, Market SIP changes,
-and executable brokerage all require explicit user approval or data-operations
-authority.
+Read `TASK-0188`, `TASK-0194` through `TASK-0198`, the architecture
+`README.md`, `14-implementation-backlog.md`, and `15-implementation-log.md`
+first. Preserve the Atomic Field to Data Field to Rule Set to active Market
+Discovery funnel, QMD-owned Signal Stream cache and recovery, the three-tier
+source plan, explicit gap/revision evidence, Canvas presentation-only
+authority, shared Portfolio/OMS execution boundary, and external-runtime
+rules. Do not promote optional calculations into Core Scan, recompute streams
+on Canvas open, fabricate source continuity, change a deferred producer
+service, or enable broker submission. The most immediate operational action is
+to repair or certify missing current-session source intervals and rerun
+recovery acceptance; Market SIP changes, immutable revision storage, archive
+projection, and executable brokerage require explicit approval or
+data-operations authority.
