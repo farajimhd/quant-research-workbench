@@ -72,7 +72,8 @@ def test_native_v15_complete_semantic_verifier_retains_all_three_policies():
         kwargs['parent_release']) == (FixedStructuralLotPolicy(), VALIDATION_REUSE_POLICY, PROJECTION_REUSE_POLICY)
 
 
-def test_unapproved_v15_complete_source_inventory_remains_closed():
-    from src.backend.backtest_fixed_structural_lot_certification_v15 import certify_fixed_structural_lot_source
-    with pytest.raises(ValueError, match='unapproved'):
-        certify_fixed_structural_lot_source()
+def test_v15_loaded_certificate_tampering_remains_closed(monkeypatch):
+    from src.backend import backtest_fixed_structural_lot_certification_v15 as seal
+    monkeypatch.setattr(seal, 'REVIEWED_SOURCE_AST', {'foreign': '0' * 64})
+    with pytest.raises(ValueError, match='loaded and fresh declarations differ'):
+        seal.certify_fixed_structural_lot_source()

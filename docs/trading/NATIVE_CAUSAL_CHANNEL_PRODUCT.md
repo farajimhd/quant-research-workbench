@@ -291,10 +291,21 @@ deltas; its receipt is `projection-reuse-parent-source-check-v1.json` under the
 optimization runtime root. An additional routing/contract group had 32 passes
 and two pre-existing error-message assertion mismatches, reproduced against
 commit `533387ff4`; those tests remain unchanged. The v15 source inventory
-contains 416 paths, including the retained v14 fallback certifier, but its
-approval pins remain empty and admission fails closed. Strategy94 remains
-unregistered and unpublished: no issued operation, actual selected native
-integration, full-session speed acceptance or financial result is claimed.
+contains 416 paths, including the retained v14 fallback certifier. Its reviewed
+AST inventory found only the seven owned shared changes relative to v14 and
+thirteen additional dependency paths. Strategy94's typed factory is now
+registered; both cold lookup and explicit parent catalogs include its immutable
+identity. A fresh-process test caught and verified the correction of a missing
+catalog entry. Sixty-seven focused tests passed, and the complete source proof
+passed with digest
+`b0a644035085c0ea8606d152995c785a2867f234db3624f018fa8cf8426a239a`.
+Seven exact whole-module restoration recipes preserve the parent source checks.
+The source review and proof receipts are
+`projection-reuse-source-inventory-review-v15-v2.json` and
+`strategy94-complete-source-proof-v2.json` under the optimization runtime root;
+earlier failed proof receipts remain preserved. Strategy94 remains unpublished:
+no actual selected native integration, issued financial operation, full-session
+speed acceptance or financial result is claimed.
 Strategy93's financial run remains pinned to its original committed checkout.
 The qualifier, multi-resolution alignment and campaign suites passed 35 tests.
 The development-only confirmed-failure audit additionally compared six declared

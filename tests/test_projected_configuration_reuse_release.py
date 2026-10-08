@@ -73,8 +73,8 @@ def test_typed_factory_and_preparation_do_not_register_or_mutate_parent():
     assert own.projection_reuse_policy == PROJECTION_REUSE_POLICY
     assert own.validation_reuse_policy == prior.validation_reuse_policy
     assert own.policy_json == prior.policy_json
-    with pytest.raises(ValueError, match='not published'):
-        numbered_strategy(94)
+    assert numbered_strategy(94) == release_contract()
+    assert numbered_strategy(93) == prior.release
 
 
 @pytest.mark.parametrize('field,value', [('max_entries', True), ('max_rows', 0),
@@ -103,3 +103,22 @@ def test_policy_requires_paired_selection_and_all_bounds():
     del missing['max_bytes']
     with pytest.raises(ValueError, match='cannot receive defaults'):
         parse_projected_configuration_reuse_policy(missing)
+
+
+def test_fresh_process_can_resolve_projection_release_before_any_parent_lookup():
+    import os
+    import subprocess
+    import sys
+    code = '''
+from src.trading_runtime.strategy_registry import numbered_strategy, numbered_strategy_parent
+from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+release = numbered_strategy(94)
+assert release.number == 94
+assert numbered_strategy_parent(94) == 42
+contract = numbered_fixed_strategy(94)
+assert contract.release == release
+assert contract.projection_reuse_policy.max_entries == 2
+'''
+    environment = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', POLARS_MAX_THREADS='2')
+    subprocess.run([sys.executable, '-B', '-c', code], env=environment,
+        check=True, capture_output=True, text=True, timeout=30)

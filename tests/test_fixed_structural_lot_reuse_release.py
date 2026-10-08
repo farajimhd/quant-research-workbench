@@ -91,7 +91,7 @@ def test_unregistered_number_cannot_query_or_issue_native_source():
         def execute(self, sql):
             raise AssertionError('Unregistered successor queried a database')
     with pytest.raises(ValueError):
-        load_installed_configuration(NoDatabase(), number=94, parent=parent)
+        load_installed_configuration(NoDatabase(), number=95, parent=parent)
 
 
 def test_registered_successor_uses_exact_declared_factory_and_parent():
