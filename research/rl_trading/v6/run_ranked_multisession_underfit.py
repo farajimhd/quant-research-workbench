@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 import subprocess
 import time
+import random
+import traceback
 import torch
 from research.mlops.env import discover_env_files, load_env_files
 from research.rl_trading.v1.common import digest, file_hash
@@ -39,6 +41,38 @@ def verify_coverage(selection, sessions):
         raise ValueError('Actual pooled current/future label coverage changed')
 
 
+def validate_continuation(root, epoch, plan):
+    """Bind recovery to the same inputs, model, objective and saved evaluation."""
+    old = json.loads((root/'manifest.json').read_text())
+    if old.get('hash') != digest({k:v for k,v in old.items() if k != 'hash'}):
+        raise ValueError('Continuation manifest hash changed')
+    if any(old.get(k) is not False for k in ('sealed_labels_read', 'development_labels_read', 'generalization_evaluated', 'workstation_gpu_used')):
+        raise ValueError('Continuation must remain TRAIN-only on laptop')
+    runner = Path(__file__).name
+    if old['source_files_sha256'].get(runner) not in {
+            'e90f8d6f679d715b1d2df0e4b7a23a58c29187e4513a60f8138be3f272d0b101',
+            plan['source_files_sha256'][runner]}:
+        raise ValueError('Unreviewed continuation runner source')
+    for key in ('version', 'dataset_sha256', 'market_dataset_sha256', 'feature_contract',
+                'forecast_contract', 'sessions', 'selection_sha256', 'normalization_sha256',
+                'width', 'ranking', 'teacher_loss', 'regression_weights', 'auxiliary_weights',
+                'learning_rate', 'weight_decay', 'laptop_resources', 'cpu_saved_tensors',
+                'activation_checkpointing', 'criterion'):
+        if old.get(key) != plan.get(key):
+            raise ValueError(f'Continuation contract changed: {key}')
+    for name, sha in old['source_files_sha256'].items():
+        if name != Path(__file__).name and plan['source_files_sha256'].get(name) != sha:
+            raise ValueError(f'Continuation calculation source changed: {name}')
+    records = [json.loads(line) for line in (root/'metrics.jsonl').read_text().splitlines()]
+    matches = [r for r in records if r['epoch'] == epoch]
+    if len(matches) != 1 or not 1 <= epoch < plan['epochs']:
+        raise ValueError('Continuation requires one saved evaluation before final epoch')
+    checkpoint = root/f'epoch-{epoch:03d}.pt'
+    return checkpoint, matches[0], dict(parent_manifest_sha256=file_hash(root/'manifest.json'),
+        checkpoint_sha256=file_hash(checkpoint), parent_epoch=epoch,
+        parent_run=str(root.resolve()), exact_uninterrupted_resume=False)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--underfit', type=Path, required=True, help='Verified single-session normalization/input contract')
@@ -54,11 +88,17 @@ def main(argv=None):
     parser.add_argument('--history-microbatch', type=int, default=16)
     parser.add_argument('--gpu-duty-cycle', type=float, default=.75)
     parser.add_argument('--cpu-saved-tensors', action='store_true')
+    parser.add_argument('--continue-from', type=Path, help='Preserved run; new output and pre-training replay required')
+    parser.add_argument('--continue-epoch', type=int)
     args = parser.parse_args(argv)
     if not 1 <= args.history_microbatch <= 32 or not 0 < args.gpu_duty_cycle <= .8:
         raise ValueError('Laptop requires bounded history batches and at most 80% duty cycle')
     runtime = Path('D:/TradingML/runtimes').resolve()
     paths = [args.underfit, args.selection, args.initial_cache, args.initial_source, args.additional_cache, args.output]
+    if (args.continue_from is None) != (args.continue_epoch is None):
+        raise ValueError('Continuation run and epoch must be supplied together')
+    if args.continue_from is not None:
+        paths.append(args.continue_from)
     if not runtime.is_dir() or any(not p.resolve().is_relative_to(runtime) for p in paths) or args.output.exists() or not 1 <= args.epochs <= 400 or not torch.cuda.is_available():
         raise ValueError('Fresh bounded laptop CUDA experiment required')
     if args.normalization_source_dir is not None and not args.normalization_source_dir.resolve().is_relative_to(runtime):
@@ -113,6 +153,11 @@ def main(argv=None):
         generalization_evaluated=False, workstation_gpu_used=False,
         criterion='same-checkpoint pooled full-head gate; current and future F1>=.95; all quality/sizing MAE<=.02; complete coverage',
         source_files_sha256={p.name:file_hash(p) for p in Path(__file__).parent.glob('*.py')})
+    continuation = None
+    if args.continue_from is not None:
+        checkpoint, parent_record, continuation = validate_continuation(args.continue_from, args.continue_epoch, plan)
+        plan['initialization'] = 'validated_parent_model_and_optimizer'
+        plan['continuation'] = continuation
     plan['hash'] = digest(plan); write('manifest.json', plan); write('normalization.json', normalization)
     torch.manual_seed(17); torch.set_num_threads(4); device = torch.device('cuda')
     def model():
@@ -141,18 +186,46 @@ def main(argv=None):
         return pool_gate_metrics(reports), reports
     passed = False
     try:
-        for epoch in range(1,args.epochs+1):
+        start_epoch = 1
+        if continuation is not None:
+            write('progress.json', dict(phase='continuation_replay', epoch=args.continue_epoch))
+            state = torch.load(checkpoint, map_location=device, weights_only=True)
+            if state['epoch'] != args.continue_epoch or file_hash(checkpoint) != continuation['checkpoint_sha256']:
+                raise ValueError('Continuation checkpoint identity changed')
+            policy.load_state_dict(state['model']); optimizer.load_state_dict(state['optimizer'])
+            replay_metrics, replay_reports = evaluate(policy)
+            if not exact_metrics(replay_metrics, parent_record['metrics']) or not exact_metrics(replay_reports, parent_record['sessions']):
+                raise ValueError('Parent checkpoint replay differs from saved evaluation')
+            has_rng = 'torch_rng' in state and 'cuda_rng' in state and 'python_rng' in state
+            if has_rng:
+                torch.set_rng_state(state['torch_rng'].cpu())
+                torch.cuda.set_rng_state_all([s.cpu() for s in state['cuda_rng']])
+                random.setstate(state['python_rng'])
+            write('continuation-verification.json', dict(**continuation, reload_exact=True,
+                rng_restored=has_rng, rng_policy='restored' if has_rng else 'new_seed_17_continuation',
+                generalization_evaluated=False))
+            if not has_rng:
+                torch.manual_seed(17); random.seed(17)
+            logger.log({'continuation/parent_epoch': args.continue_epoch,
+                        'continuation/reload_exact': True, 'continuation/rng_restored': has_rng}, step=args.continue_epoch)
+            start_epoch = args.continue_epoch+1
+        for epoch in range(start_epoch,args.epochs+1):
             for s,t in sessions:
                 write('progress.json', dict(phase='training', epoch=epoch, day=s.day.isoformat()))
                 train_session(policy, optimizer, s, t, (), device=device,
                     teacher_loss='branch-balanced-v3', regression_weights=(0.,0.))
             if epoch != 1 and epoch % 5 and epoch != args.epochs: continue
+            write('progress.json', dict(phase='evaluation', epoch=epoch))
             metrics, reports = evaluate(policy); passed = passes(metrics)
             record = dict(epoch=epoch, passed=passed, metrics=metrics, sessions=reports)
             write('result.json', record)
             with (args.output/'metrics.jsonl').open('a', encoding='utf-8') as stream: stream.write(json.dumps(record)+'\n')
             logger.log(flatten(record), step=epoch)
-            torch.save(dict(model=policy.state_dict(), optimizer=optimizer.state_dict(), epoch=epoch), args.output/f'epoch-{epoch:03d}.pt')
+            temporary = args.output/f'epoch-{epoch:03d}.pt.tmp'
+            torch.save(dict(model=policy.state_dict(), optimizer=optimizer.state_dict(), epoch=epoch,
+                torch_rng=torch.get_rng_state(), cuda_rng=torch.cuda.get_rng_state_all(),
+                python_rng=random.getstate()), temporary)
+            temporary.replace(args.output/f'epoch-{epoch:03d}.pt')
             print(json.dumps(dict(epoch=epoch, passed=passed, f1=metrics['action_class_f1'], ratio=metrics['allocation_ratio_mae'])), flush=True)
             if passed: break
         torch.save(policy.state_dict(), args.output/'last.pt')
@@ -167,6 +240,10 @@ def main(argv=None):
         logger.summary['completion_status']='completed'; logger.summary['underfit_passed']=passed
         for name in ('manifest.json','metrics.jsonl','complete.json','normalization.json'):
             logger.save(str(args.output/name), base_path=str(args.output), policy='now')
+    except BaseException:
+        write('failure.json', dict(status='failed', traceback=traceback.format_exc(),
+            progress=json.loads((args.output/'progress.json').read_text()) if (args.output/'progress.json').exists() else None))
+        raise
     finally: logger.finish()
     return 0
 
