@@ -72,6 +72,32 @@ negative reader/producer permission checks. Its immutable runtime receipt is
 `D:\TradingML\runtimes\strategy-optimization-20261005\native_channel_installed_actual_v1\receipt.json`
 on the workstation, with a laptop copy named `native-channel-installed-actual-v1.json`.
 This is not full-session, full-universe coverage or a financial strategy run.
+
+A development campaign declares 581 packets for 11,547 saved big-move and
+negative-control anchors across the 26 PM/AH sessions. Native resolutions are
+30 seconds, one minute and five minutes. Completed-anchor clocks use source
+midnight milliseconds, `(backtest_anchor_minute + 241) * 60000`. Full source-day
+context is retained, but backward as-of alignment selects completed features
+only. Research labels remain separate; this cohort is not an executable
+opportunity universe or a financial backtest. Immutable packet receipts and
+the campaign declaration live under `native_big_move_feature_campaign_v1` in
+the existing optimization runtime root. Incomplete packets remain queued;
+unknown or failed publication is held for explicit review.
+
+On the workstation, three repeats of the full 330-minute PM decision grid
+for six tickers (1,188,000 decisions at 100 ms) used 13,537 actual certified
+feature rows. Median feature-alignment times were 4.884, 3.824 and 3.832 seconds
+for two-, five- and twenty-minute batches respectively. Observed process RSS
+peaks were 143, 212 and 504 MB; maximum output batches were 5.94, 14.86 and
+59.44 MB. Every repeat had identical per-resolution availability counts and
+zero future selected rows. Five-minute batches are the measured starting
+choice for a future consumer, with smaller declared batches available when
+memory requires them. Keep batch size separate from decision interval and
+source resolution. These measurements include alignment and causal checks,
+but exclude strategy state, cash, fills, OCA and journal work: full native
+Backtest speed acceptance remains outstanding. Receipts are named
+`full-pm-feature-clock-benchmark[-<minutes>min]-v1.json` in the campaign root.
+
 Splits and fundamentals await
 verified point-in-time availability; news is omitted. Profitability and complete
 session performance require native financial runs, not projection benchmarks.
