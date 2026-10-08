@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import date
 from hashlib import sha256
 from pathlib import Path
+import re
 
 import polars as pl
 import pyarrow as pa
@@ -17,6 +18,15 @@ STORAGE_POLICY = 'live_market_ssd'
 HASH_DOMAIN = 'native-causal-channel-producer:utf8-lf@1'
 MAX_SOURCE_ROWS = 2_000_000
 MAX_TICKERS = 8
+
+
+def require_bars_output_hash(value):
+    """Canonical ARTE sum(cityHash64(tuple(*))) UInt64 text, not SHA-256."""
+    if (type(value) is not str or re.fullmatch(r'0|[1-9][0-9]{0,19}', value) is None or
+            int(value) > 2**64 - 1):
+        raise ValueError('Canonical UInt64 bars output checksum required')
+
+
 BASE_FIELDS = [
     *((n, pa.string()) for n in ('build_id', 'session_date', 'ticker', 'attempt_id')),
     ('resolution_ms', pa.uint32()), ('bucket_index', pa.uint32()),
@@ -133,7 +143,7 @@ class NativeChannelRequest:
             u = self.unit(ticker)
             require_uuid(u.attempt_id)
             require_hash(u.source_hash)
-            require_hash(u.output_hash)
+            require_bars_output_hash(u.output_hash)
             if u.build_id != m.build_id or type(u.output_rows) is not int or u.output_rows <= 0:
                 raise ValueError('Feature source lacks nonempty certified bars coverage')
 

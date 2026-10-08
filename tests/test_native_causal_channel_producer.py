@@ -10,7 +10,7 @@ from pipelines.market_sip.events import native_causal_channel_producer as produc
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit
 from src.market_engine.native_causal_channel_contract import (
     NativeChannelPolicy, NativeChannelRequest, FEATURE_SCHEMA, SOURCE_SCHEMA, COVERAGE_SCHEMA,
-    projection_token, producer_implementation_hash, issue_source_plan, ddl,
+    projection_token, producer_implementation_hash, issue_source_plan, ddl, require_bars_output_hash,
 )
 from research.causal_strategy_features.v5.decisions import multi_resolution_decisions
 from tests.test_causal_native_volatility_channels import source
@@ -20,7 +20,7 @@ FEATURE_ATTEMPT = '22222222-2222-4222-8222-222222222222'
 
 
 def request(boundary=600000):
-    unit = MarketDayUnit('a'*64, '2026-08-04', 'X', 'bars', ATTEMPT, 'b'*64, 20, 'c'*64)
+    unit = MarketDayUnit('a'*64, '2026-08-04', 'X', 'bars', ATTEMPT, 'b'*64, 20, '12345678901234567890')
     market = CertifiedMarketDayPlan(ExecutionInterval.fixed(100), 'a'*64, 'd'*64,
         ('2026-08-04',), ('X',), (unit,), (100, 60000, 300000), 'e'*64)
     policy = NativeChannelPolicy((60000, 300000), 100, ((60000, 59999), (300000, 299999)), 3, 3)
@@ -164,3 +164,14 @@ def test_installation_contract_is_explicit_ssd_and_normalized():
     assert 'Nullable(Float64)' in statements[0]
     assert 'attempt_id UUID' in statements[0]
     assert all(' JSON' not in sql and ' default' not in sql for sql in statements)
+
+
+@pytest.mark.parametrize('value', ['01', '-1', '1.0', ' 1', 'a'*64, str(2**64), 1, True])
+def test_output_checksum_requires_actual_canonical_uint64_domain(value):
+    with pytest.raises(ValueError, match='UInt64'):
+        require_bars_output_hash(value)
+
+
+def test_certified_output_checksum_extremes_are_exact():
+    for value in ('0', '10502403561365938998', str(2**64-1)):
+        require_bars_output_hash(value)

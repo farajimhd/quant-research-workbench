@@ -25,6 +25,10 @@ Coverage includes each requested ticker/resolution, including zero source rows,
 and pins the bar source/output hashes, market token, producer-source identity,
 typed content hashes, row counts and completed boundary. Missing market source
 certification is fatal before the source read.
+The bar source hash is SHA-256 text; the existing certified bar output hash is
+canonical decimal UInt64 text for `sum(cityHash64(tuple(*)))`. These distinct
+domains are preserved exactly. Feature and coverage content seals use SHA-256
+over normalized typed Arrow bytes.
 
 Installation remains a separate campaign responsibility: verify schema and
 `live_market_ssd` policy, insert immutable child rows, verify actual SSD parts,
