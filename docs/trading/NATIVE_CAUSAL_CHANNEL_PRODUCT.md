@@ -222,8 +222,8 @@ The parent-derived 26-session financial declaration is
 $10,000 cash, unchanged Strategy92 trading parameters apart from declared
 validation reuse, original dates and LGHL exclusion. Its review receipt keeps
 the first unlaunched declaration and explicitly corrects inherited ancestry
-links. Full market launch, full-session timing and financial comparisons remain
-outstanding. The Backtest-only publication command ended with a broken socket
+links. Full-session timing and financial comparisons remain outstanding.
+The Backtest-only publication command ended with a broken socket
 connection after entering the publisher. Its process is terminal. Independent
 read-only database counts found one release and 1,188 nodes. Subsequent complete
 read-only reconciliation passed, without repeating the write, and certified
