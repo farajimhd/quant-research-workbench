@@ -102,6 +102,31 @@ fields and coercible non-JSON objects fail. Parsing establishes rule contents on
 or financial admission. The parser, entry qualifier, event qualifier and
 installed-input adapter suites passed 56 tests in 3.45 seconds; their log is
 `native-policy-parsing-tests-v2.log` under the development runtime root.
+
+The saved post-acquisition development audit uses hash-verified installed
+feature artifacts and actual acquisition microseconds. It examines completed
+bars strictly after acquisition and before each saved exit. On 126 Strategy57
+positions across 12 fully covered development dates, negative 30-second close
+returns occurred before 36/71 losing exits and 20/55 winning exits, including
+three of the ten largest winners. Requiring relative volume below one reduced
+these to 20/71 and 13/55, including two of the ten largest winners. Negative
+one-minute returns occurred before 16/71 losses and 8/55 wins. These findings
+do not establish a new exit rule or saved-loss avoidance: no new quote fills,
+cash release, replacement admission or candidate P&L were calculated.
+August19's seven saved positions were explicitly excluded because that date's
+feature publication still has one unresolved INSERT; no coverage was invented.
+The declaration, script, packet proofs, position/summary Parquets and receipt
+are under `native_post_acquisition_development_audit_v1` in the runtime root.
+
+The separate paired native integration experiment on workstation source
+`11a565dfc78cab3d47c388d4234e113cfb28e25d` passed both controls. Pure packet
+validation reuse took 1012.40 seconds versus 1418.11 seconds without reuse,
+a 28.6% elapsed reduction for that fixture. The source, workstation, negative
+fixture and AST-restoration cache were held constant. This runtime-only
+prototype is not installed and is not full-session financial speed acceptance.
+The terminal proofs and comparison are `whole-packet-validation-probe-v4.json`,
+`whole-packet-validation-baseline-v1.json` and
+`whole-packet-validation-paired-result-v1.json` in the runtime root.
 The qualifier, multi-resolution alignment and campaign suites passed 35 tests.
 On the same six-ticker full PM feature grid, three declared benchmark bands
 added a median 0.350 seconds of qualification work across 1,188,000 decisions.
