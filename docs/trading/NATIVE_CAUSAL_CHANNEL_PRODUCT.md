@@ -301,8 +301,23 @@ and intersects an immutable copy of actual held ownership with strict earliest
 supporting-completion versus acquisition time. Future or missing held fill
 clocks fail closed. Thirty-eight focused tests passed, including bars-attempt
 isolation, stale evidence, decision-order preservation and immutable results.
-The v2 packet audit above remains pinned to its earlier source; the strengthened
-alignment still requires a separate real-packet check and native exit test.
+The v2 packet audit above remains pinned to its earlier source. A separate
+real-packet audit of commit `1a1e3fee59338fb216742ed92e12ec1843a5e1a5`
+tested the strengthened alignment against 66 certified feature packets and
+126 saved development ownership lifetimes, excluding the seven positions
+dependent on the held August 19 packet. It processed 113,077 actual held
+decision clocks at the declared 100 ms interval with the certified policy's
+59,999 ms freshness limit in 0.970 seconds; 6,900 rows qualified. The two-negative
+one-minute sequence flagged eight losing positions, two winning positions and
+none of the ten largest winners. Source identity includes the bars attempt,
+and supporting candles must complete strictly after the actual acquisition.
+The receipt and hash-verified position output are under
+`native_sequence_held_clock_alignment_audit_v1` in the optimization runtime
+root. Saved closing clocks and P&L are retrospective analysis labels only:
+this audit does not simulate exits, released cash or replacement admission.
+The utility remains unselected; native exit testing, financial comparisons
+and full-session speed acceptance remain outstanding. Validation exposure
+was zero.
 On the same six-ticker full PM feature grid, three declared benchmark bands
 added a median 0.350 seconds of qualification work across 1,188,000 decisions.
 Alignment plus qualification took 3.990 seconds median with five-minute
