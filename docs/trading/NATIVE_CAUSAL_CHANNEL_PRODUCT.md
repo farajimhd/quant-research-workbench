@@ -269,8 +269,8 @@ five while retaining the same two flagged winners. The retained declaration,
 hash-verified packet audit, position results and top-winner review live under
 `native_post_acquisition_confirmed_failure_audit_v1` in the optimization runtime
 root. The current acquisition qualifier exposes the latest aligned bar only;
-a causal vectorized sequence step and native Portfolio/OMS exit integration
-remain required before this predicate can become a tested strategy rule.
+native Portfolio/OMS exit integration remains required before this predicate
+can become a tested strategy rule; the unselected sequence step follows below.
 The additive `completed_bar_sequence_windows` utility now implements the pure
 sequence step using native Polars sorting, grouped shifts and rolling counts.
 Minimum bar count and row capacity are explicit parameters; timeframe comes
@@ -293,6 +293,16 @@ verified line-ending-only correction and both hashes. No rules or coverage
 were changed. This is a real feature-packet path check, not an exit-fill or
 financial backtest. The utility remains unselected; installed release
 declaration and real native Portfolio/OMS exit integration are outstanding.
+Subsequent native alignment preparation also retains the original bars-attempt
+identity and isolates sequence support by that identity. The unselected
+`qualify_completed_sequences_after_acquisition` function joins windows backward
+on the full source identity, checks explicit decision clock/freshness/capacity,
+and intersects an immutable copy of actual held ownership with strict earliest
+supporting-completion versus acquisition time. Future or missing held fill
+clocks fail closed. Thirty-eight focused tests passed, including bars-attempt
+isolation, stale evidence, decision-order preservation and immutable results.
+The v2 packet audit above remains pinned to its earlier source; the strengthened
+alignment still requires a separate real-packet check and native exit test.
 On the same six-ticker full PM feature grid, three declared benchmark bands
 added a median 0.350 seconds of qualification work across 1,188,000 decisions.
 Alignment plus qualification took 3.990 seconds median with five-minute
