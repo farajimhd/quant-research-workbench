@@ -271,6 +271,18 @@ hash-verified packet audit, position results and top-winner review live under
 root. The current acquisition qualifier exposes the latest aligned bar only;
 a causal vectorized sequence step and native Portfolio/OMS exit integration
 remain required before this predicate can become a tested strategy rule.
+The additive `completed_bar_sequence_windows` utility now implements the pure
+sequence step using native Polars sorting, grouped shifts and rolling counts.
+Minimum bar count and row capacity are explicit parameters; timeframe comes
+from the certified feature rows. It preserves original row order, requires
+exact grid continuity and every supporting candle/predicate, and isolates
+windows by ticker, source day, build, feature attempt, policy and resolution.
+The first supporting completion is retained for strict actual-fill filtering;
+decision alignment must still be backward and source certification remains
+the caller's responsibility. Thirty-five focused sequence/acquisition/channel
+tests passed, including future-prefix invariance and empty typed frames.
+This utility remains unselected; the saved feature campaign comparison,
+installed release declaration and real native exit integration are outstanding.
 On the same six-ticker full PM feature grid, three declared benchmark bands
 added a median 0.350 seconds of qualification work across 1,188,000 decisions.
 Alignment plus qualification took 3.990 seconds median with five-minute
