@@ -7,9 +7,10 @@ import re
 
 import polars as pl
 import pyarrow as pa
+import pyarrow.compute as pc
 
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, FIXED_RESOLUTIONS_MS
-from src.market_engine.completed_endpoint_return_contract import require_hash, require_uuid, table_hash
+from src.market_engine.completed_endpoint_return_contract import require_hash, require_uuid
 from src.trading_runtime.journal_contract import canonical_json
 
 FEATURE_TABLE = 'arte.native_causal_channels_v1'
@@ -18,6 +19,39 @@ STORAGE_POLICY = 'live_market_ssd'
 HASH_DOMAIN = 'native-causal-channel-producer:utf8-lf@1'
 MAX_SOURCE_ROWS = 2_000_000
 MAX_TICKERS = 8
+
+
+def table_hash(table):
+    """Seal typed visible values and null positions, independent of Arrow garbage.
+
+    Arrow can preserve arbitrary bytes beneath nulls and unused bitmap padding.
+    Those transport bytes are not values. Each column seals its declared schema,
+    exact validity positions and only its valid values (including Float64 bits).
+    All operations are native Arrow kernels; no Python market-row conversion.
+    """
+    if type(table) is not pa.Table:
+        raise ValueError('Exact Arrow table required for native content seal')
+    schema = table.schema.remove_metadata()
+    digest = sha256(b'native-channel-typed-visible-values@1\0' +
+                    schema.serialize().to_pybytes() + table.num_rows.to_bytes(8, 'little'))
+    for field, column in zip(schema, table.columns):
+        validity = pc.cast(pc.is_valid(column), pa.uint8()).combine_chunks()
+        digest.update(validity.buffers()[1].slice(validity.offset, len(validity)).to_pybytes())
+        values = pc.drop_null(column).combine_chunks()
+        if field.type == pa.bool_():
+            values = pc.cast(values, pa.uint8())
+        values = pa.concat_arrays([values])
+        # The remaining values are nonnull: remove an optional all-valid bitmap
+        # so equivalent transports produce the same canonical IPC stream.
+        values = pa.Array.from_buffers(values.type, len(values),
+            [None, *values.buffers()[1:]], offset=values.offset)
+        sink = pa.BufferOutputStream()
+        child = pa.table({'value': values})
+        with pa.ipc.new_stream(sink, child.schema) as writer:
+            writer.write_table(child)
+        encoded = sink.getvalue().to_pybytes()
+        digest.update(len(encoded).to_bytes(8, 'little') + encoded)
+    return digest.hexdigest()
 
 
 def require_bars_output_hash(value):

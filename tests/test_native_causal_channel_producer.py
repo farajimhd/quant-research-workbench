@@ -10,7 +10,7 @@ from pipelines.market_sip.events import native_causal_channel_producer as produc
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit
 from src.market_engine.native_causal_channel_contract import (
     NativeChannelPolicy, NativeChannelRequest, FEATURE_SCHEMA, SOURCE_SCHEMA, COVERAGE_SCHEMA,
-    projection_token, producer_implementation_hash, issue_source_plan, ddl, require_bars_output_hash,
+    projection_token, producer_implementation_hash, issue_source_plan, ddl, require_bars_output_hash, table_hash,
 )
 from research.causal_strategy_features.v5.decisions import multi_resolution_decisions
 from tests.test_causal_native_volatility_channels import source
@@ -175,3 +175,18 @@ def test_output_checksum_requires_actual_canonical_uint64_domain(value):
 def test_certified_output_checksum_extremes_are_exact():
     for value in ('0', '10502403561365938998', str(2**64-1)):
         require_bars_output_hash(value)
+
+
+def test_content_hash_ignores_hidden_null_bytes_and_bitmap_padding_but_preserves_values():
+    import struct
+    first = pa.Array.from_buffers(pa.float64(), 3,
+        [pa.py_buffer(bytes([0b101])), pa.py_buffer(struct.pack('<ddd', 1.0, 99.0, -0.0))])
+    other = pa.Array.from_buffers(pa.float64(), 3,
+        [pa.py_buffer(bytes([0b11111101])), pa.py_buffer(struct.pack('<ddd', 1.0, -777.0, -0.0))])
+    before, after = pa.table({'x': first}), pa.table({'x': other})
+    assert table_hash(before) == table_hash(after)
+    assert table_hash(before) == table_hash(pl.from_arrow(before).to_arrow())
+    assert table_hash(before) != table_hash(pa.table({'x': pa.array([1.0, None, 0.0])}))
+    assert table_hash(before) != table_hash(pa.table({'x': pa.array([1.0, 0.0, -0.0])}))
+    assert table_hash(pa.table({'x': pa.array([True, None, False])})) == table_hash(
+        pl.from_arrow(pa.table({'x': pa.array([True, None, False])})).to_arrow())

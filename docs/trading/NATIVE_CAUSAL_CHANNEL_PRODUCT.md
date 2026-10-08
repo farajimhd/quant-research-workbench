@@ -28,7 +28,9 @@ certification is fatal before the source read.
 The bar source hash is SHA-256 text; the existing certified bar output hash is
 canonical decimal UInt64 text for `sum(cityHash64(tuple(*)))`. These distinct
 domains are preserved exactly. Feature and coverage content seals use SHA-256
-over normalized typed Arrow bytes.
+over declared schemas, null positions and canonical Arrow streams of valid
+values. Arbitrary hidden bytes beneath nulls and unused bitmap padding are
+excluded; every valid Float64 bit, including signed zero, remains significant.
 
 Installation remains a separate campaign responsibility: verify schema and
 `live_market_ssd` policy, insert immutable child rows, verify actual SSD parts,
