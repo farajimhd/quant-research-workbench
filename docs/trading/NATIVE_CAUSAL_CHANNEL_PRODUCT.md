@@ -65,7 +65,13 @@ only and requires the typed source plan, certified market, SSD placement, exact
 rows/coverage hashes and completed producer fence. Its feature read uses the
 whole bounded attempt inventory, exposing extra rows rather than filtering
 away mismatched identities. The declared table DDL does not itself verify
-installation. No feature product has yet been installed by this implementation.
+installation. A bounded August 4, 2026 development pilot for AMIX and ATPC
+through 09:30 ET is installed: 309 feature rows and four coverage rows passed
+exact native readback, active SSD placement, private Keeper completion and
+negative reader/producer permission checks. Its immutable runtime receipt is
+`D:\TradingML\runtimes\strategy-optimization-20261005\native_channel_installed_actual_v1\receipt.json`
+on the workstation, with a laptop copy named `native-channel-installed-actual-v1.json`.
+This is not full-session, full-universe coverage or a financial strategy run.
 Splits and fundamentals await
 verified point-in-time availability; news is omitted. Profitability and complete
 session performance require native financial runs, not projection benchmarks.
