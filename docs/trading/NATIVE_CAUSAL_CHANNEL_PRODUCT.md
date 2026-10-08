@@ -137,6 +137,17 @@ selected by a release or installed in the execution path; its separate native
 integration and any consuming version's full-session financial acceptance
 remain required. Source, admission, ownership and recovery checks are outside
 the reusable validator and must continue to execute.
+`packet_validation_reuse_policy.py` defines the paired
+`declared-pure-packet-validation-bounds@1` input and
+`exact-scalar-packet-validation-reuse@1` rule. All three cache bounds must be
+explicit in the immutable payload; an unselected claim, duplicate companion,
+missing bound or altered admission scope fails. The selection-policy and packet
+reuse suites passed 21 tests in 0.86 seconds (`packet-reuse-policy-tests-v2.log`).
+This declaration is a prerequisite for a future consuming release, not an
+installed source capability or a published strategy. The bounded utility's
+native integration was launched separately against the same frozen fixture,
+with native source `11a565dfc78cab3d47c388d4234e113cfb28e25d` and utility source
+`8f157c945d0583313f69ce181c551b0be307f958`; its result remains pending.
 The qualifier, multi-resolution alignment and campaign suites passed 35 tests.
 On the same six-ticker full PM feature grid, three declared benchmark bands
 added a median 0.350 seconds of qualification work across 1,188,000 decisions.
