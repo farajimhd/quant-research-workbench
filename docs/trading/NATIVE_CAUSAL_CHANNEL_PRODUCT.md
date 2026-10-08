@@ -148,6 +148,16 @@ installed source capability or a published strategy. The bounded utility's
 native integration was launched separately against the same frozen fixture,
 with native source `11a565dfc78cab3d47c388d4234e113cfb28e25d` and utility source
 `8f157c945d0583313f69ce181c551b0be307f958`; its result remains pending.
+The prepared Strategy93 declaration pins these bounds in its typed factory
+and complete parent-derived configuration. Its v14 compiler and native source
+factory reject changed economic fields, accounts, identity, source references
+or reuse scope; reconstruction compares bounds against the factory's expected
+policy rather than trusting the payload to choose them. Forty-four preparation,
+inheritance and policy tests passed in 2.65 seconds
+(`reuse-release-tests-v4.log`). The synthetic certificates in these tests issue
+no runtime authority. Strategy93 is not registered or published; its native
+loader rejects it before database access. Source freezing, runtime selection,
+cold integration, full-session timing and financial runs remain outstanding.
 The qualifier, multi-resolution alignment and campaign suites passed 35 tests.
 On the same six-ticker full PM feature grid, three declared benchmark bands
 added a median 0.350 seconds of qualification work across 1,188,000 decisions.
