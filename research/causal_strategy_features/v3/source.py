@@ -7,13 +7,13 @@ from src.backend.backtest_market_data import (
 from pipelines.market_sip.events.completed_endpoint_return_producer import read_arrow
 from .native_bars import COLUMNS, native_channels
 
-SOURCE_SCHEMA = pa.schema([
+SOURCE_SCHEMA = pa.schema([pa.field(name,kind,nullable=False) for name,kind in [
     *((name,pa.string()) for name in ('build_id','session_date','ticker','attempt_id')),
     ('resolution_ms',pa.uint32()),('bucket_index',pa.uint32()),
     *((name,pa.uint64()) for name in ('open_int','high_int','low_int','close_int')),
     ('execution_volume',pa.float64()),('execution_notional',pa.float64()),
     ('trade_count',pa.uint64()),('price_valid',pa.uint8()),('extremes_valid',pa.uint8()),
-])
+]])
 MAX_PACKET_ROWS = 2_000_000
 MAX_PACKET_TICKERS = 8
 

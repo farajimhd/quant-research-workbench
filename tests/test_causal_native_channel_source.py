@@ -65,3 +65,15 @@ def test_extra_sentinel_row_rejects_overflow_instead_of_truncating(monkeypatch):
     too_many=pl.concat([frame(),frame().head(1)])
     with pytest.raises(ValueError,match='row bound'):
         list(reader.certified_channel_packets(plan(),Transport(too_many),**args()))
+
+
+def test_nullable_arrow_schema_is_not_native_source_contract(monkeypatch):
+    monkeypatch.setattr(reader,'verify_market_day_plan',lambda *a:None)
+    class NullableTransport(Transport):
+        def iter_arrow_record_batches(self,sql):
+            table=self.frame.select(reader.COLUMNS).to_arrow().cast(reader.SOURCE_SCHEMA)
+            nullable=reader.pa.schema([reader.pa.field(f.name,f.type,nullable=True)
+                                      for f in table.schema])
+            yield from table.cast(nullable).to_batches()
+    with pytest.raises(ValueError,match='Foreign/lossy schema'):
+        list(reader.certified_channel_packets(plan(),NullableTransport(frame()),**args()))
