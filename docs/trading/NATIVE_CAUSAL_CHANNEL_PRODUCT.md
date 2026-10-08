@@ -236,6 +236,16 @@ real development unit, August 4 PM 04:00–09:30 ET with $10,000, has launched
 through the native app route. Completion, financial results and full-session
 speed acceptance remain outstanding. No validation dates have been selected
 or inspected.
+The real financial sample also exposed repeated companion projection and
+scalar-snapshot work. `ExactConfigurationTreeCache` is an additive, unselected
+pure utility keyed by complete canonical configuration text. It uses the
+existing encoder and returns owned immutable scalar rows, with explicit
+entry/input/row/retained-byte bounds; over-budget results remain complete and
+uncached. Thirty-seven focused tests passed. The exact saved Strategy93
+publication payload round-tripped through all 1,188 nodes with its original
+node hash (`exact-configuration-tree-saved-publication-check-v1.json`). No
+installed strategy uses this utility, and no native financial speed or P&L
+benefit has been established for it. Strategy93 keeps its pinned source.
 The qualifier, multi-resolution alignment and campaign suites passed 35 tests.
 The development-only confirmed-failure audit additionally compared six declared
 post-acquisition predicates across 126 saved Strategy57 positions, excluding
