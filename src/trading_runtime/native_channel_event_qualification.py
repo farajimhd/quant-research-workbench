@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from src.trading_runtime.native_channel_qualification import (
     NativeChannelQualificationPolicy, qualify_native_channels,
     parse_native_channel_qualification_policy,
+    _require_policy_json,
 )
 from src.trading_runtime.journal_contract import canonical_json
 
@@ -41,6 +42,7 @@ def event_qualification_payload(policy):
 
 def parse_event_qualification_policy(value):
     """Parse complete immutable rule contents without inventing exit authority."""
+    _require_policy_json(value)
     if type(value) is not dict or set(value) != {'rule', 'channel_rule',
             'fresh_resolutions_ms', 'event_clock', 'evidence'}:
         raise ValueError('Complete acquisition qualification declaration required')

@@ -12,6 +12,26 @@ from research.causal_strategy_features.v5.decisions import DECISION_IDENTITY, MA
 RULE = 'native-completed-channel-qualification@1'
 
 
+def _require_policy_json(value, depth=0):
+    """Reject coercible objects before the journal serializer sees them."""
+    if depth > 16:
+        raise ValueError('Native policy JSON nesting exceeds declaration bound')
+    kind = type(value)
+    if value is None or kind in (str, bool, int):
+        return
+    if kind is float and isfinite(value):
+        return
+    if kind is list and len(value) <= 64:
+        for child in value:
+            _require_policy_json(child, depth + 1)
+        return
+    if kind is dict and len(value) <= 64 and all(type(k) is str for k in value):
+        for child in value.values():
+            _require_policy_json(child, depth + 1)
+        return
+    raise ValueError('Native policy requires bounded finite built-in JSON values')
+
+
 @dataclass(frozen=True, slots=True)
 class NativeChannelBand:
     resolution_ms: int
@@ -64,6 +84,7 @@ def parse_native_channel_qualification_policy(value):
     Transport lists become typed tuples; all semantic metadata and the input
     digest must match the resulting policy exactly.
     """
+    _require_policy_json(value)
     if type(value) is not dict or set(value) != {
             'rule', 'input_policy', 'input_policy_digest', 'bands'}:
         raise ValueError('Complete native qualification declaration required')

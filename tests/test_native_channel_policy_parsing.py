@@ -88,3 +88,19 @@ def test_event_rule_round_trip_and_clock_tampering():
         changed[field] = value
         with pytest.raises(ValueError):
             parse_event_qualification_policy(changed)
+
+
+def test_string_coercion_and_scalar_subclasses_cannot_approve_metadata():
+    class Coercible:
+        def __str__(self):
+            return 'native-causal-channel@1'
+
+    class Text(str):
+        pass
+
+    _, _, payload = declaration()
+    for value in (Coercible(), Text('native-causal-channel@1')):
+        changed = deepcopy(payload)
+        changed['input_policy']['contract'] = value
+        with pytest.raises(ValueError, match='built-in JSON'):
+            parse_native_channel_qualification_policy(changed)
