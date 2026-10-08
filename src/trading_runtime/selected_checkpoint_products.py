@@ -706,7 +706,8 @@ def load_historical_checkpoint(client, verified_prefix, *, source, sequence):
         sql=assert_select_only(f'SELECT {columns} FROM arte.{contract.name} WHERE run_id={_literal(source.run_id)} AND {predicate} LIMIT {count+1} FORMAT JSONEachRow')
         values=tuple(json.loads(v) for v in client.execute(sql).splitlines() if v.strip())
         if len(values)!=count:raise ValueError('Cold selected manager exact inventory differs: '+contract.name)
-        return values
+        from .decimal_snapshot_readback import declared_decimal_rows
+        return declared_decimal_rows(source,contract,values)
     seal=read(PARENT,f'checkpoint_sequence={prefix.last_sequence}',1)[0]
     if (seal['content_hash']!=_digest({k:v for k,v in seal.items() if k!='content_hash'})
             or seal['boundary_ms']!=cursor['boundary_ms'] or seal['session_date']!=source.session_date.isoformat()

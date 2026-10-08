@@ -276,6 +276,8 @@ def publish_manager_publication(client,session,context):
         columns=','.join(f'toString({key}) AS {key}' if 'Decimal(' in kind else key for key,kind in contract.columns)
         sql=assert_select_only(f'SELECT {columns} FROM arte.{name} WHERE run_id={_literal(context.run_id)} AND {predicate} LIMIT {len(expected)+1} FORMAT JSONEachRow')
         observed=tuple(json.loads(v) for v in client.execute(sql).splitlines() if v.strip())
+        from .decimal_snapshot_readback import declared_decimal_rows
+        observed=declared_decimal_rows(context.owner.operation.source,contract,observed)
         if len(observed)!=len(expected) or sorted((_canonical(_wire_row(name,v)) for v in observed))!=sorted((_canonical(_wire_row(name,v)) for v in expected)):
             raise ValueError(f'Selected manager exact readback differs: {name}')
     if previous is not None and previous.checkpoint_sequence==context.sequence:
@@ -372,7 +374,8 @@ def load_cold_manager_image(client,session,*,source,fixed_lot_contexts=(),recove
         sql=assert_select_only(f'SELECT {columns} FROM arte.{contract.name} WHERE run_id={_literal(source.run_id)} AND {predicate} LIMIT {count+1} FORMAT JSONEachRow')
         values=tuple(json.loads(v) for v in client.execute(sql).splitlines() if v.strip())
         if len(values)!=count:raise ValueError('Cold selected manager exact inventory differs: '+contract.name)
-        return values
+        from .decimal_snapshot_readback import declared_decimal_rows
+        return declared_decimal_rows(source,contract,values)
     seal=read(PARENT,f'checkpoint_sequence={prefix.last_sequence}',1)[0]
     if (seal['content_hash']!=head.snapshot_hash or seal['content_hash']!=_digest({k:v for k,v in seal.items() if k!='content_hash'})
             or seal['boundary_ms']!=cursor['boundary_ms'] or seal['session_date']!=source.session_date.isoformat()
