@@ -127,6 +127,16 @@ prototype is not installed and is not full-session financial speed acceptance.
 The terminal proofs and comparison are `whole-packet-validation-probe-v4.json`,
 `whole-packet-validation-baseline-v1.json` and
 `whole-packet-validation-paired-result-v1.json` in the runtime root.
+`exact_scalar_packet_validation_cache.py` packages the pure-content reuse
+mechanism with explicit entry, row and retained-byte limits. Every field of
+the exact frozen packet type participates; row order and Float64 bits are
+preserved. Failed checks or changed backing mappings cannot publish success.
+Unsupported shapes call the original validator. Fifteen packet/row reuse tests
+passed in 1.69 seconds (`packet-reuse-tests-v2.log`). This utility has not been
+selected by a release or installed in the execution path; its separate native
+integration and any consuming version's full-session financial acceptance
+remain required. Source, admission, ownership and recovery checks are outside
+the reusable validator and must continue to execute.
 The qualifier, multi-resolution alignment and campaign suites passed 35 tests.
 On the same six-ticker full PM feature grid, three declared benchmark bands
 added a median 0.350 seconds of qualification work across 1,188,000 decisions.
