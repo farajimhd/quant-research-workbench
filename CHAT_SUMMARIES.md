@@ -223,6 +223,20 @@ silently changing model labels; and established a bounded, restart-safe review
 program for model/gold mismatches. Runtime packets and authorities remain
 outside the repository, with unresolved cases and exact lineage preserved.
 
+### [2026-08-13 08:07 PDT - Scanner authority and guided configuration composition](docs/codex/chat-summaries/2026/CHAT-20260813-0807-scanner-configuration-composition.md)
+
+- Chat/task ID: `019ffbaa-28d1-7dc2-9279-1eea890623df`
+- Related tasks: `TASK-0188`, `TASK-0192`
+- Summary written: 2026-10-08 PDT
+
+Traces Scanner/Watchlist authority into reusable Data Fields, Rule Sets,
+Strategy lifecycle composition, shared typography/lookups, and guided Accounts,
+Portfolio, OMS, and Run Plans. Records the verified August guided-UI commits
+and spacing correction, distinguishes missing early implementation receipts
+from accepted requirements, and preserves the later Signal Stream extension.
+This archive update performs no new trading-runtime acceptance.
+
+
 ### [2026-08-10 16:18 PDT - Audit News Synthesis and establish standalone LLM issuer labeling](docs/codex/chat-summaries/2026/CHAT-20260810-1618-news-synthesis-features-llm-labeling.md)
 
 - Chat/task ID: `019fedf8-0541-72f1-ac5c-795d21248aa3`
