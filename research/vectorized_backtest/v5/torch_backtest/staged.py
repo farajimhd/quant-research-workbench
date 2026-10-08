@@ -104,4 +104,14 @@ def objective_matrix(results, population, objective):
                                for individual in population], dtype=torch.float64)
     return score(matrix('net_pnl'), matrix('drawdown'), matrix('stop_risk_dollar_seconds'),
                  matrix('capital_dollar_seconds'), matrix('filled_batches'),
-                 matrix('terminal_valid'), complexity, config=objective)
+                 matrix('terminal_valid'), complexity, config=objective,
+                 inactivity=matrix('inactivity_seconds').sum(0)/matrix('eligible_seconds').sum(0) if hasattr(objective,'inactivity_weight') else None)
+
+
+def selection_rank(rng,rank,scored,results,objective):
+    """Seeded half-removal of inactive candidates; financial validity unchanged."""
+    if not hasattr(objective,'inactive_removal_fraction'):return rank
+    inactive=[i for i in rank if sum(r['filled_batches'][i] for r in results)==0]
+    remove=int(len(inactive)*objective.inactive_removal_fraction)
+    excluded=set(rng.choice(inactive,remove,replace=False).tolist()) if remove else set()
+    return [i for i in rank if i not in excluded]

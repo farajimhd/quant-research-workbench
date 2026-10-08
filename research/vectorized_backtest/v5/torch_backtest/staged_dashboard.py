@@ -16,7 +16,7 @@ def duration(value):
 
 def ranked_rows(status):
     """Use authoritative ranks from a completed, common evaluation panel."""
-    return sorted(status.get('top_strategies',[]),key=lambda row:row['rank'])[:100]
+    return sorted(status.get('top_strategies',[]),key=lambda row:row['rank'])
 
 
 def ranking_page_size(height):
@@ -79,20 +79,20 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
         table.add_column('Profit factor',justify='right',no_wrap=True)
     for leader in leaders[rank_page*page_size:(rank_page+1)*page_size]:
         metrics=leader.get('metrics',{});rank=leader['rank']
-        values=[f'{rank}'+(' *' if rank==selected else ''),number(leader.get('score'),'.6f'),number(metrics.get('total_pnl')),
+        values=[f'{rank}'+(' *' if rank==selected else ''),number(leader.get('score'),',.2f') if leader.get('valid',True) else 'INVALID',number(metrics.get('total_pnl')),
                 number(None if metrics.get('position_win_rate') is None else metrics['position_win_rate']*100),number(metrics.get('positions'),',.0f')]
         if width>=110:values.extend([number(metrics.get('worst_drawdown')),number(metrics.get('profit_factor'))])
         table.add_row(*values,style='bold cyan' if rank==selected else '')
     if not leaders:table.add_row('--','Pending completed ranking',*(['--']*(len(table.columns)-2)))
     basis=status.get('evaluation_basis','No completed ranking yet')
-    layout['leaders'].update(Panel(table,title=f'Top {len(leaders)}/100 | page {rank_page+1}/{rank_pages}',subtitle=basis,padding=0))
+    layout['leaders'].update(Panel(table,title=f'Ranked {len(leaders)} | page {rank_page+1}/{rank_pages}',subtitle=basis,padding=0))
     leader=next((v for v in leaders if v['rank']==selected),{});metrics=leader.get('metrics',{})
     active=status.get('active_session') or {}
     grid=Table(expand=True,padding=(0,1));grid.add_column('Metric');grid.add_column('Value',justify='right')
     if view=='objective':
         components=metrics.get('objective_components',{})
-        rows=[(key.replace('_',' ').title(),number(value if key.endswith('reward') else -value,'.6f')) for key,value in components.items()]
-        rows.append(('Total score',number(leader.get('score'),'.6f')))
+        rows=[(key.replace('_',' ').title(),number(value if key.endswith('reward') or key=='total_profit' else -value,'.6f')) for key,value in components.items()]
+        rows.append(('Total score',number(leader.get('score'),',.2f') if leader.get('valid',True) else 'INVALID'))
     elif view=='positions':
         rows=[('Positions / fills',f"{number(metrics.get('positions'),',.0f')} / {number(metrics.get('fills'),',.0f')}"),
               ('Open positions',number(metrics.get('open'),',.0f')),

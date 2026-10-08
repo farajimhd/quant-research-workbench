@@ -22,7 +22,19 @@ class Objective:
             raise ValueError('Invalid immutable stability objective')
         return self
 
-def score(pnl,drawdown,risk_dollar_seconds,capital_dollar_seconds,batches,terminal_valid,complexity,*,initial_cash=10000.,config=Objective()):
+@dataclass(frozen=True)
+class DollarObjective(Objective):
+    median_weight:float=0.
+    ex_best_weight:float=0.
+    inactivity_weight:float=.001
+    inactive_removal_fraction:float=.5
+    def validate(self):
+        super().validate()
+        if not 0<=self.inactive_removal_fraction<1: raise ValueError('Invalid inactive removal fraction')
+        return self
+
+
+def score(pnl,drawdown,risk_dollar_seconds,capital_dollar_seconds,batches,terminal_valid,complexity,*,initial_cash=10000.,config=Objective(),inactivity=None):
     config.validate()
     arrays=(pnl,drawdown,risk_dollar_seconds,capital_dollar_seconds,batches)
     if pnl.ndim!=2 or len(pnl)<2 or any(v.shape!=pnl.shape for v in arrays) or terminal_valid.shape!=pnl.shape or complexity.shape!=(pnl.shape[1],) or initial_cash<=0:
@@ -41,7 +53,18 @@ def score(pnl,drawdown,risk_dollar_seconds,capital_dollar_seconds,batches,termin
         stop_risk_penalty=config.stop_risk_weight*(risk_dollar_seconds/(initial_cash*3600)).mean(0),
         capital_time_penalty=config.capital_time_weight*(capital_dollar_seconds/(initial_cash*3600)).mean(0),
         complexity_penalty=config.complexity_weight*complexity/config.maximum_nodes)
-    objective=components['median_reward']+components['ex_best_reward']-sum(v for k,v in components.items() if k.endswith('penalty'))
+    if isinstance(config,DollarObjective):
+        if inactivity is None or inactivity.shape!=complexity.shape or not torch.isfinite(inactivity).all() or ((inactivity<0)|(inactivity>1)).any():
+            raise ValueError('Bound elapsed inactivity required')
+        scale=len(r)*initial_cash
+        components=dict(total_profit=pnl.sum(0),
+            tail_penalty=config.cvar_weight*tail*scale,
+            drawdown_penalty=config.drawdown_weight*drawdown.sum(0),
+            stop_risk_penalty=config.stop_risk_weight*risk_dollar_seconds.sum(0)/3600,
+            capital_time_penalty=config.capital_time_weight*capital_dollar_seconds.sum(0)/3600,
+            complexity_penalty=config.complexity_weight*complexity/config.maximum_nodes*scale,
+            inactivity_penalty=config.inactivity_weight*inactivity*scale)
+    objective=(components['total_profit'] if isinstance(config,DollarObjective) else components['median_reward']+components['ex_best_reward'])-sum(v for k,v in components.items() if k.endswith('penalty'))
     missing_activity=(batches<config.minimum_batches).sum(0)
     excess_activity=(batches>config.maximum_batches).sum(0)
     nonflat=(~terminal_valid.bool()).sum(0)

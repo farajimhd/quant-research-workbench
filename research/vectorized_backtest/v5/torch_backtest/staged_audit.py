@@ -5,11 +5,11 @@ import numpy as np
 import torch
 from .runtime import file_hash,write_json,code_hash
 from .run_search import state,restore,fingerprint,clean,metric_summary
-from .staged import Stage,validate_schedule,balanced_panels,migrate,objective_matrix
+from .staged import Stage,validate_schedule,balanced_panels,migrate,objective_matrix,selection_rank
 from .staged_search import rank_valid
 from .evolution import sample
 from .genome import StrategySpace
-from .stability import Objective
+from .stability import DollarObjective as Objective
 from .financial_audit import audit_fills
 from .batched import merge_metrics
 
@@ -49,7 +49,8 @@ def verified_panel(root,folder_name,record,population,sessions,space,objective):
             parts.append(value['metrics']);left+=count
         if left!=len(population) or merge_metrics(parts,order)!=receipt['metrics']:
             raise ValueError('Candidate metrics do not reconcile with batch ledgers')
-        results.append(receipt['metrics']);bindings.append(dict(path=str(path),sha256=file_hash(path),day=receipt['day']))
+        from .inactivity import panel_metrics
+        results.append(panel_metrics(receipt,path.parent));bindings.append(dict(path=str(path),sha256=file_hash(path),day=receipt['day']))
     calculated=objective_matrix(results,population,objective)
     if clean(calculated)!=record['scores']:raise ValueError('Objective or validity arithmetic changed')
     return results,calculated,bindings
@@ -77,6 +78,7 @@ def audit(root,*,fresh_inputs=False,freeze=False):
             results,scored,bindings=verified_panel(root,name,record,population,selected,space,objective)
             rank=rank_valid(scored)
             if not rank:raise ValueError('All-invalid generation cannot have evolved')
+            rank=selection_rank(rng,rank,scored,results,objective)
             top=rank[:stage.archive_top];others=[i for i in rank if i not in top]
             random=rng.choice(others,min(stage.archive_random,len(others)),replace=False).tolist()
             for i in top+random:
@@ -96,6 +98,7 @@ def audit(root,*,fresh_inputs=False,freeze=False):
                                    identity_sha256=file_hash(root/'identity.json'),ranking_sha256=file_hash(root/name/'ranking.json'))
         else:
             next_stage=stages[stage_index+1]
+            rank=selection_rank(rng,rank,scored,results,objective)
             population=migrate(rng,finalists,rank,next_stage.population,space,features)
             archive={fingerprint(state(finalists[i])):state(finalists[i]) for i in rank[:next_stage.archive_top]}
             panels=balanced_panels(rng,next_stage.end_generation-generation,next_stage.sessions,30)

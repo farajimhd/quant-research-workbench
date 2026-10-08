@@ -15,7 +15,7 @@ from .batched import BatchedEvaluator
 from .offline_data import load_session
 from .session_prefetch import SessionPrefetch
 from .staged import objective_matrix
-from .stability import Objective
+from .stability import DollarObjective as Objective
 from .metrics import financial_metrics
 from .financial_audit import audit_fills
 
@@ -60,7 +60,8 @@ def main(argv=None):
                     path=folder/batch['directory'];value=json.loads((path/'receipt.json').read_text())
                     if file_hash(path/'fills.pt')!=value['ledger_sha256']:raise ValueError('Final actual fill bytes changed')
                     audit_fills(path/'fills.pt',value['metrics'])
-                results.append(receipt['metrics']);bindings.append(dict(path=str(folder/'receipt.json'),sha256=file_hash(folder/'receipt.json'),start_sha256=file_hash(before)))
+                from .inactivity import panel_metrics
+                results.append(panel_metrics(receipt,folder));bindings.append(dict(path=str(folder/'receipt.json'),sha256=file_hash(folder/'receipt.json'),start_sha256=file_hash(before)))
                 emit(completed_sessions=index+1,timing=receipt['timing'])
         scored=objective_matrix(results,population,Objective(**identity['objective']))
         from .input_audit import FreshHashes,verify_session

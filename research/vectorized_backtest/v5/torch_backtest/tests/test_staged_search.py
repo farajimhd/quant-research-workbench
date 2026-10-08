@@ -84,4 +84,4 @@ def test_dashboard_fixed_height_and_three_ranks(view):
     out=StringIO();console=Console(file=out,width=130,height=38,color_system=None)
     console.print(render(dict(top_strategies=[dict(rank=1,score=-.1,metrics={'total_pnl':-20,'objective_components':{'median_reward':-.1}})],evaluation_basis='3-day search ranking'),width=130,height=38,view=view))
     text=out.getvalue();assert len(text.splitlines())==38
-    assert '3-day search ranking' in text and '1/2/3 rank' in text
+    assert '3-day search ranking' in text and 'N/B rankings page' in text

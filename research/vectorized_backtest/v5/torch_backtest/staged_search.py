@@ -12,9 +12,9 @@ from .runtime import require_runtime, write_json, code_hash, file_hash, configur
 from .offline_data import load_session, preflight
 from .session_prefetch import SessionPrefetch
 from .genome import StrategySpace
-from .stability import Objective
+from .stability import DollarObjective as Objective
 from .run_search import state, restore, fingerprint, clean, metric_summary
-from .staged import Stage, validate_schedule, balanced_panels, migrate, objective_matrix
+from .staged import Stage, validate_schedule, balanced_panels, migrate, objective_matrix, selection_rank
 from .evolution import sample
 from .search_operands import searchable_features
 from .batched import BatchedEvaluator
@@ -31,9 +31,24 @@ def evaluate_panel(sessions, population, evaluator, folder, emit):
             receipt = evaluator.evaluate(session, population, folder/f'session_{index:03d}', prefetch.take(index), emit)
             path = folder/f'session_{index:03d}'/'receipt.json'
             receipts.append(dict(path=str(path), sha256=file_hash(path)))
-            results.append(receipt['metrics'])
+            from .inactivity import panel_metrics
+            results.append(panel_metrics(receipt,path.parent))
             emit(completed_sessions=index+1, timing=receipt['timing'],session_completed_timing=receipt['timing'])
     return results, receipts
+
+
+def ranking_rows(results,scored,population,rank):
+    from .metrics import financial_metrics
+    from .feature_bank import CATALOG
+    financial=financial_metrics(results)
+    rows=[]
+    for j,i in enumerate(rank):
+        metrics={k:clean(v[i] if isinstance(v,torch.Tensor) else v) for k,v in financial.items()}
+        for k in ('median_return','ex_best_return','profitable_day_fraction','tail_loss','best_day_pnl','other_days_pnl'):metrics[k]=clean(scored[k][i])
+        metrics['objective_components']={k:clean(v[i]) for k,v in scored['components'].items()}
+        metrics['active_nodes']=sum(p.validate(CATALOG)['active_nodes'] for p in population[i].programs().values())
+        rows.append(dict(rank=j+1,candidate=i+1,valid=bool(scored['feasible'][i]),score=float(scored['score'][i]),metrics=metrics))
+    return rows
 
 
 def rank_valid(scored):
@@ -45,7 +60,7 @@ def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--sessions',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
     p.add_argument('--schedule',type=Path,required=True);p.add_argument('--execute',action='store_true');p.add_argument('--resume',action='store_true')
-    p.add_argument('--qualification',type=Path);p.add_argument('--seed',type=int,default=20261005)
+    p.add_argument('--qualified-source',type=Path);p.add_argument('--qualification',type=Path);p.add_argument('--seed',type=int,default=20261005)
     p.add_argument('--batch-size',type=int,default=128);p.add_argument('--device',choices=('cuda','cpu'),default='cuda')
     p.add_argument('--backend',choices=('eager','compiled_graph'),default='compiled_graph')
     p.add_argument('--ticker-capacity',type=int,default=2368);p.add_argument('--graph-steps',type=int,default=32)
@@ -70,9 +85,14 @@ def main(argv=None):
         write_json(output/'plan.json',identity);return 0
     if not args.qualification:raise ValueError('Measured same-source qualification required before full search')
     qualification=json.loads(args.qualification.read_text())
-    if (qualification.get('status')!='passed' or qualification.get('code_hash')!=code_hash() or
+    if (qualification.get('status')!='passed' or (not args.qualified_source and qualification.get('code_hash')!=code_hash()) or
             qualification.get('sessions_sha256')!=file_hash(args.sessions) or qualification.get('batch_size')!=args.batch_size):
         raise ValueError('Qualification identity mismatch')
+    if args.qualified_source:
+        from .qualification_reuse import verify
+        evidence=verify(args.qualified_source,Path(__file__).parent,qualification)
+        identity['qualification_reuse']=evidence
+        write_json(output/'qualification_reuse.json',evidence)
     identity_path=output/'identity.json'
     if identity_path.exists():
         if not args.resume or json.loads(identity_path.read_text())!=identity:raise ValueError('Exact immutable resume required')
@@ -125,10 +145,12 @@ def main(argv=None):
                 results,receipts=evaluate_panel(selected,population,evaluator,folder,emit)
                 scored=objective_matrix(results,population,objective);rank=rank_valid(scored)
                 if not rank:raise ValueError('All strategies invalid under crucial constraints')
-                leaders=[dict(rank=j+1,score=float(scored['score'][i]),metrics=metric_summary(results,scored,i,population)) for j,i in enumerate(rank[:100])]
+                display_rank=rank+[i for i in range(len(population)) if i not in set(rank)]
+                leaders=ranking_rows(results,scored,population,display_rank)
                 emit(top_strategies=leaders,best_score=leaders[0]['score'],best_metrics=leaders[0]['metrics'],feasible_candidates=len(rank))
                 write_json(folder/'generation.json',clean(dict(population=[state(v) for v in population],population_sha256=fingerprint([state(v) for v in population]),
                                                               receipts=receipts,scores=scored,selected_days=[s['day'] for s in selected])))
+                rank=selection_rank(rng,rank,scored,results,objective)
                 top=rank[:stage.archive_top];others=[i for i in rank if i not in top]
                 random=rng.choice(others,min(stage.archive_random,len(others)),replace=False).tolist()
                 for i in top+random:
@@ -145,7 +167,7 @@ def main(argv=None):
             if not rank:raise ValueError('No valid full-training finalist')
             write_json(folder/'ranking.json',clean(dict(population=[state(v) for v in finalists],population_sha256=fingerprint([state(v) for v in finalists]),
                                                        receipts=receipts,scores=scored)))
-            leaders=[dict(rank=j+1,score=float(scored['score'][i]),metrics=metric_summary(results,scored,i,finalists)) for j,i in enumerate(rank[:100])]
+            leaders=ranking_rows(results,scored,finalists,rank+[i for i in range(len(finalists)) if i not in set(rank)])
             emit(top_strategies=leaders,best_score=leaders[0]['score'],best_metrics=leaders[0]['metrics'])
             if stage_index==len(stages)-1:
                 # No validation is opened here. Independent ledger audit is required to authorize freeze.
@@ -153,6 +175,7 @@ def main(argv=None):
                            identity_sha256=file_hash(identity_path),ranking_sha256=file_hash(folder/'ranking.json')))
                 emit(status='awaiting_finalist_audit',stage='Full-training finalist ready; audit required before freeze');return 0
             stage_index+=1;next_stage=stages[stage_index]
+            rank=selection_rank(rng,rank,scored,results,objective)
             population=migrate(rng,finalists,rank,next_stage.population,space,features)
             archive={fingerprint(state(finalists[i])):state(finalists[i]) for i in rank[:next_stage.archive_top]}
             panels=balanced_panels(rng,next_stage.end_generation-generation,next_stage.sessions,len(spec['training']))

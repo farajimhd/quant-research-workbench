@@ -11,11 +11,11 @@ def snapshot(count=100):
 
 def test_sorted_top100_and_navigation():
     status=snapshot(110)
-    assert [row['rank'] for row in ranked_rows(status)]==list(range(1,101))
+    assert [row['rank'] for row in ranked_rows(status)]==list(range(1,111))
     assert navigate(status,'n',height=38)==(9,1,0)
-    assert navigate(status,'b',height=38)==(97,12,0)
-    assert navigate(status,'k',height=38)==(100,12,0)
-    assert navigate(status,'j',rank=100,rank_page=12,height=38)==(1,0,0)
+    assert navigate(status,'b',height=38)==(105,13,0)
+    assert navigate(status,'k',height=38)==(110,13,0)
+    assert navigate(status,'j',rank=110,rank_page=13,height=38)==(1,0,0)
     assert navigate(snapshot(0),'n',height=24)==(1,0,0)
 
 
