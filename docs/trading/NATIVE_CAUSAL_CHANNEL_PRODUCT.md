@@ -117,6 +117,26 @@ certification or order admission; no existing numbered strategy selects it.
 The caller must retain the complete causal parent population and native PM/AH
 financial clocks, then bind the dependency and rule in a new immutable release.
 
+`native_channel_event_qualification` adds a separate declared post-acquisition
+predicate. Its policy explicitly selects which qualified resolutions must have
+a completed boundary strictly after the actual acquisition, using microsecond
+event clocks. Slower contextual bands can retain causally available pre-entry
+history. Missing or future acquisition clocks on held rows fail closed; a fill
+on a bar boundary cannot reuse that bar as new evidence. The output remains
+columnar, ordered and immutable. Portfolio/OMS must establish actual acquired
+ownership and supply fill clocks. This helper does not issue exits, establish
+ownership, replace quote-confirmed risk checks or change independent protection;
+no current strategy selects it.
+
+Saved Strategy57 holding periods provide a timing limit for exit experiments:
+63 of 75 losses crossed a 30-second boundary, 45 crossed a one-minute boundary,
+and 14 crossed a five-minute boundary. The ten largest winners had a median
+holding period of 77.2 seconds. These counts establish clock opportunities,
+not valid new source bars or profitable exit signals. The saved receipt is
+`native-feature-exit-clock-feasibility-v1.json` in the runtime root. A faster
+trigger with slower context still needs actual source availability and a new
+cash-sequential financial comparison.
+
 A declared 128-variant diagnostic on all 133 saved Strategy57 development
 positions compared one-minute wick, return and relative-volume bounds, with an
 optional five-minute return bound. No nontrivial tested filter preserved at
