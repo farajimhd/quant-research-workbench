@@ -27,9 +27,8 @@ def declared_fixed_structural_lot_contract(number):
         raise ValueError('Fixed-lot configuration lacks exact semantic companions')
     factory = fixed_strategy_executor(release.executor_strategy_id, release.executor_revision).contract_factory
     contract = factory()
-    if type(contract) is not FixedStructuralLotStrategyContract or contract.release != release:
-        raise ValueError('Fixed-lot configuration lacks exact registered typed factory')
-    contract.__post_init__()
+    from src.trading_runtime.fixed_structural_lot_reuse_contract import require_declared_fixed_structural_lot_contract
+    require_declared_fixed_structural_lot_contract(contract, release)
     return contract
 
 
@@ -42,8 +41,15 @@ def verify_fixed_structural_lot_configuration(strategy):
             or strategy.get('execution_interval') != contract.execution_interval):
         raise ValueError('Fixed-lot execution identity differs from registered contract')
     params = strategy.get('parameters')
-    if type(params) is not dict or set(params) != {'execution','sizing','fixed_structural_lot_policy','fixed_structural_lot_parent'}:
+    from src.trading_runtime.packet_validation_reuse_policy import RULE as REUSE_RULE, parse_packet_validation_reuse_policy
+    reuse_selected = REUSE_RULE in contract.release.rule_set_contracts
+    expected = {'execution','sizing','fixed_structural_lot_policy','fixed_structural_lot_parent'}
+    if reuse_selected:
+        expected.add('packet_validation_reuse_policy')
+    if type(params) is not dict or set(params) != expected:
         raise ValueError('Fixed-lot parameter companions differ')
+    if reuse_selected and parse_packet_validation_reuse_policy(params['packet_validation_reuse_policy']) != contract.validation_reuse_policy:
+        raise ValueError('Fixed-lot validation reuse bounds differ from registered factory')
     if parse_fixed_structural_lot_policy(params['fixed_structural_lot_policy']) != contract.fixed_structural_lot_policy:
         raise ValueError('Fixed-lot policy differs from exact registered factory')
     manifest = strategy.get('numbered_release')
@@ -115,12 +121,17 @@ def derive_registered_fixed_structural_lot_configuration(parent, *, number,
     from src.trading_runtime.decimal_snapshot_readback import RULE as DECIMAL_RULE
     if DECIMAL_RULE in numbered_strategy(number).rule_set_contracts:
         from src.trading_runtime.fixed_structural_lot_release_v13 import derive_fixed_structural_lot_release
+    from src.trading_runtime.packet_validation_reuse_policy import RULE as REUSE_RULE
+    reuse_selected = REUSE_RULE in numbered_strategy(number).rule_set_contracts
+    if reuse_selected:
+        from src.trading_runtime.fixed_structural_lot_release_v14 import derive_fixed_structural_lot_release
     contract = declared_fixed_structural_lot_contract(number)
     if contract is None or parent.strategy_number != numbered_strategy_parent(number):
         raise ValueError('Fixed-lot registered parent differs')
     return derive_fixed_structural_lot_release(parent,
         parent_release=numbered_strategy(parent.strategy_number), release=contract.release,
         policy=contract.fixed_structural_lot_policy.payload(),
+        **({'reuse_policy': contract.validation_reuse_policy} if reuse_selected else {}),
         approved_code_commit=approved_code_commit,
         approved_code_fingerprint=approved_code_fingerprint, approval_reference=approval_reference)
 

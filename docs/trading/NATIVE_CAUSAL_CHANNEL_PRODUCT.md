@@ -175,6 +175,17 @@ fixtures do not prove installed admission. The changed shared hook needs the
 successor's complete reviewed source closure before publishing Strategy93;
 older versions retain their original pinned execution source. No deployed app
 or running native financial checkout was changed.
+The v14 execution and empty-horizon routes now select the successor only through
+its paired reuse declarations, and delegate unselected releases to v13. The
+configuration and numbered capability readers require the exact legacy or
+reuse factory type and compare persisted reuse bounds with the registered
+factory. Both initial and resumed launch sites call this semantic router.
+Eighty-seven routing, configuration preparation, original-packet, hook and
+policy tests passed in 6.79 seconds (`reuse-routing-tests-v2.log`). The policy
+parser checks its flat typed payload directly, avoiding an unnecessary feature
+module import in the execution dependency graph. Strategy93 remains unregistered
+and source certification remains outstanding; these tests do not prove an
+installed launch, financial result or current compatibility certificate.
 The qualifier, multi-resolution alignment and campaign suites passed 35 tests.
 On the same six-ticker full PM feature grid, three declared benchmark bands
 added a median 0.350 seconds of qualification work across 1,188,000 decisions.

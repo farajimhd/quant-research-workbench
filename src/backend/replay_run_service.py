@@ -3570,7 +3570,7 @@ class ReplayRunController:
         from .backtest_fixed_structural_lot_configuration import declared_fixed_structural_lot_contract
         selected_lot_session = None
         if declared_fixed_structural_lot_contract(strategy_number) is not None:
-            from .backtest_fixed_structural_lot_execution_v13 import prepare_fixed_structural_lot_session
+            from .backtest_fixed_structural_lot_execution_v14 import prepare_fixed_structural_lot_session
             from .backtest_market_data import readonly_clickhouse_client
             selected_lot_session = await asyncio.to_thread(prepare_fixed_structural_lot_session, plans=plans,
                 number=strategy_number, run_id=self.run_id, session_date=self.definition.session_date,
@@ -10208,7 +10208,7 @@ class ReplayRunService:
         from .backtest_fixed_structural_lot_configuration import declared_fixed_structural_lot_contract
         selected_lot_session = None
         if declared_fixed_structural_lot_contract(strategy_number) is not None:
-            from .backtest_fixed_structural_lot_execution_v13 import prepare_fixed_structural_lot_session
+            from .backtest_fixed_structural_lot_execution_v14 import prepare_fixed_structural_lot_session
             from .backtest_market_data import readonly_clickhouse_client
             selected_lot_session = await asyncio.to_thread(prepare_fixed_structural_lot_session, plans=plans,
                 number=strategy_number,run_id=run_id,session_date=definition.session_date,

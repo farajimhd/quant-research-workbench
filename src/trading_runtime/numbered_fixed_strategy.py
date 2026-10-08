@@ -570,11 +570,8 @@ def numbered_fixed_strategy(number: int) -> NumberedFixedStrategyContract:
             release = numbered_strategy(number)
             contract = fixed_strategy_executor(release.executor_strategy_id, number).contract_factory()
             if any(source in release.input_contracts for source in ('fixed-structural-lot-source@1', 'fixed-structural-lot-source@2')):
-                from .fixed_structural_lot_contract import FixedStructuralLotStrategyContract
-                if type(contract) is not FixedStructuralLotStrategyContract or contract.release != release:
-                    raise ValueError('Selected fixed-lot factory differs from installed release')
-                contract.__post_init__()
-                return contract
+                from .fixed_structural_lot_reuse_contract import require_declared_fixed_structural_lot_contract
+                return require_declared_fixed_structural_lot_contract(contract, release)
             if type(contract) is not DeclaredFixedStrategyContract or contract.release != release:
                 raise ValueError('Declared fixed factory differs from installed release')
             return contract

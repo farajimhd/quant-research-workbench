@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 from .fixed_structural_lot_contract import FixedStructuralLotStrategyContract
 from .packet_validation_reuse_policy import (
-    PacketValidationReusePolicy, declared_packet_validation_reuse_policy,
+    INPUT, RULE, PacketValidationReusePolicy, declared_packet_validation_reuse_policy,
 )
 
 
@@ -16,3 +16,13 @@ class FixedStructuralLotReuseStrategyContract(FixedStructuralLotStrategyContract
         if type(self.validation_reuse_policy) is not PacketValidationReusePolicy:
             raise ValueError('Explicit typed packet reuse policy required')
         declared_packet_validation_reuse_policy(self.release, self.validation_reuse_policy.payload())
+
+
+def require_declared_fixed_structural_lot_contract(contract, release):
+    """Select the exact factory shape through semantic declarations only."""
+    selected = INPUT in release.input_contracts or RULE in release.rule_set_contracts
+    wanted = FixedStructuralLotReuseStrategyContract if selected else FixedStructuralLotStrategyContract
+    if type(contract) is not wanted or contract.release != release:
+        raise ValueError('Fixed-lot factory differs from exact declared release type')
+    contract.__post_init__()
+    return contract
