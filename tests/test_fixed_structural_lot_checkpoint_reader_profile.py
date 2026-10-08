@@ -315,7 +315,7 @@ def test_actual_native_installation_calls_real_source_certifier_and_source_prefl
     actual Git HEAD/status. Configuration SELECT decoding alone is controlled.
     """
     from src.backend import backtest_fixed_structural_lot_certification_v12 as seal
-    native, parent, own = _actual_native_factory_declaration(monkeypatch, 89)
+    native, parent, own = _actual_native_factory_declaration(monkeypatch, 90)
     if os.environ.get('FIXED_LOT_PROPOSED_HEAD'):
         commit = os.environ['FIXED_LOT_PROPOSED_HEAD']
         real = subprocess.check_output
@@ -765,7 +765,7 @@ def test_actual_89_selected_controller_checkpoint_and_fresh_cold_actors(monkeypa
         from src.backend import backtest_fixed_structural_lot_native_v12 as native
         from src.backend.backtest_fixed_structural_lot_execution_v12 import prepare_fixed_structural_lot_session
         from src.backend.backtest_fixed_structural_lot_execution import bind_fixed_structural_lot_manager
-        native,parent,own=_actual_native_factory_declaration(monkeypatch,89)
+        native,parent,own=_actual_native_factory_declaration(monkeypatch,90)
         monkeypatch.setattr(native,'certify_numbered_configuration',lambda client,number:parent if number==42 else own)
         import src.backend.backtest_market_data as market_module
         import src.backend.backtest_input_scope as scope_module
