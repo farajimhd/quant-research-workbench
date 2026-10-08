@@ -67,9 +67,10 @@ class PersistentClient(Client):
     def iter_arrow_record_batches(self, sql):
         if 'FROM arte.bars_v1 ' in sql:
             return super().iter_arrow_record_batches(sql)
-        table = re.search(r'FROM (\S+)', sql).group(1)
+        table = re.search(r'FROM (arte\.\w+)', sql).group(1)
         self.sql.append(sql)
         assert 'SETTINGS' not in sql and 'feature_attempt_id=toUUID(' in sql
+        assert sql.index('WHERE feature_attempt_id') > sql.index('FROM (SELECT')
         return iter(self.tables[table].to_batches(max_chunksize=3))
 
 

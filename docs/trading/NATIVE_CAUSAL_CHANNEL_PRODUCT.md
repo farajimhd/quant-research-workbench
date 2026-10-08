@@ -48,6 +48,12 @@ grants. The operator command is `python -B scripts/clickhouse/provision_native_c
 installs only the new product layout and reconciles those two narrow principals.
 Private credentials stay in the workstation secret root and are never rotated
 or replaced implicitly. The command is a dry run without `--apply`.
+`open_native_channel_keeper` authenticates the two feature-specific principals
+with digest ACLs. The owner has all namespace permissions; the reader has READ
+only. Installation verifies exact private ACLs, never replaces existing ACLs,
+and preserves common Keeper paths and other products. READ-only ACL inspection
+accepts masked digest hashes by exact principal names and permission bits,
+without granting the reader ADMIN.
 
 Installation remains a separate campaign operation: verify schema and
 `live_market_ssd` policy, insert immutable child rows, verify actual SSD parts,

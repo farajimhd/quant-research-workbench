@@ -77,9 +77,11 @@ def read_packet_tables(client, request, attempt):
         fields = ','.join(f'toString({f.name}) AS {f.name}' if f.name.endswith('attempt_id')
                           else f.name for f in schema)
         bound = request.maximum_source_rows if table == FEATURE_TABLE else len(request.tickers) * len(request.policy.resolutions_ms)
-        sql = (f'SELECT {fields} FROM {table} WHERE feature_attempt_id=toUUID({_literal(attempt)}) '
-               'ORDER BY ticker,resolution_ms' + (',bucket_index' if table == FEATURE_TABLE else '') +
-               f' LIMIT {bound+1} FORMAT ArrowStream')
+        # Filter native UUID columns before output aliases can shadow them.
+        order = 'ticker,resolution_ms' + (',bucket_index' if table == FEATURE_TABLE else '')
+        sql = (f'SELECT {fields} FROM (SELECT {",".join(schema.names)} FROM {table} '
+               f'WHERE feature_attempt_id=toUUID({_literal(attempt)}) ORDER BY {order} '
+               f'LIMIT {bound+1}) FORMAT ArrowStream')
         output.append(read_arrow(client, sql, schema, bound))
     return tuple(output)
 
