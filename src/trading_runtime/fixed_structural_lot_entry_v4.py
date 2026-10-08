@@ -115,6 +115,11 @@ class FixedStructuralLotEntryRows:
     nodes: tuple[MappingProxyType,...]
 
     def __post_init__(self):
+        from .declared_packet_validation_reuse import validate_selected_packet
+        if not validate_selected_packet(self):
+            self._validate_content()
+
+    def _validate_content(self):
         if (type(self.root) is not MappingProxyType or type(self.lots) is not tuple
                 or type(self.nodes) is not tuple or not 2<=len(self.lots)<=32 or not 3<=len(self.nodes)<=30000
                 or any(type(r) is not MappingProxyType for r in (*self.lots,*self.nodes))):
@@ -278,9 +283,11 @@ class FixedStructuralLotPublicationContext:
         if (type(self.unit) is not V4FixedStructuralLotEntryBatch or type(self.record) is not JournalRecord
                 or type(self.source) is not PreparedFixedStructuralLotSource):
             raise ValueError('Exact selected publication source context required')
-        self.unit.__post_init__()
-        return restore_fixed_structural_lot_entry(self.unit.packet,record=self.record,
-            batch=self.unit.base,source=self.source)
+        from .declared_packet_validation_reuse import declared_packet_validation_scope
+        with declared_packet_validation_scope(self.source):
+            self.unit.__post_init__()
+            return restore_fixed_structural_lot_entry(self.unit.packet,record=self.record,
+                batch=self.unit.base,source=self.source)
 
     def verify_admission(self):
         self.verify_source()

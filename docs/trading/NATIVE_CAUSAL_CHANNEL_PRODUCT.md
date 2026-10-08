@@ -147,7 +147,13 @@ This declaration is a prerequisite for a future consuming release, not an
 installed source capability or a published strategy. The bounded utility's
 native integration was launched separately against the same frozen fixture,
 with native source `11a565dfc78cab3d47c388d4234e113cfb28e25d` and utility source
-`8f157c945d0583313f69ce181c551b0be307f958`; its result remains pending.
+`8f157c945d0583313f69ce181c551b0be307f958`. That native integration passed
+in 972.71 seconds with 34724 hits, one miss, no bypasses and 4438413 retained
+key bytes. The result is 31.4% below the no-reuse control's 1418.11 seconds
+on the same native fixture. Terminal proof is
+`whole-packet-validation-utility-v1.json`; reconciled comparison is
+`bounded-packet-validation-native-result-v1.json`. This is still not an
+installed release or full-session financial speed result.
 The prepared Strategy93 declaration pins these bounds in its typed factory
 and complete parent-derived configuration. Its v14 compiler and native source
 factory reject changed economic fields, accounts, identity, source references
@@ -158,6 +164,17 @@ inheritance and policy tests passed in 2.65 seconds
 no runtime authority. Strategy93 is not registered or published; its native
 loader rejects it before database access. Source freezing, runtime selection,
 cold integration, full-session timing and financial runs remain outstanding.
+The new `declared_packet_validation_reuse` scope checks the genuinely issued
+source, exact registered release and typed factory before activating reuse.
+Its hook wraps only pure row-content validation inside source-equivalence
+verification. Unselected nested operations explicitly disable the active
+scope; the source-equivalence request and financial/recovery admission remain
+outside the cache. Sixty-three hook, original packet, prepared release and
+cache tests passed in 6.35 seconds (`reuse-runtime-hook-tests-v1.log`). Those
+fixtures do not prove installed admission. The changed shared hook needs the
+successor's complete reviewed source closure before publishing Strategy93;
+older versions retain their original pinned execution source. No deployed app
+or running native financial checkout was changed.
 The qualifier, multi-resolution alignment and campaign suites passed 35 tests.
 On the same six-ticker full PM feature grid, three declared benchmark bands
 added a median 0.350 seconds of qualification work across 1,188,000 decisions.
