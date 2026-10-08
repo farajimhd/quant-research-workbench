@@ -373,7 +373,7 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
                     'target_policy', 'entry_price_policy', 'followthrough_policy')
         if any(type(payload.get(key)) is not dict for key in required):
             raise ValueError('Declared fixed capability payload is incomplete')
-        optional = {'half_risk_liquidity_policy', 'entry_spread_risk_policy',
+        optional = {'half_risk_liquidity_policy', 'entry_spread_risk_policy', 'early_original_risk_failure_policy',
                     'all_held_original_risk_policy', 'confirmed_original_risk_policy', 'premarket_confirmed_original_risk_policy', 'entry_scope_policy', 'recent_bos_policy',
                     'momentum_policy', 'strong_ten_second_momentum_policy',
                     'initial_strong_momentum_policy', 'first_setup_growth_policy',
@@ -398,6 +398,7 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
                for key, _, producer in bindings):
             raise ValueError('Declared fixed capability scalar types differ')
         self.entry_spread_risk_policy
+        self.early_original_risk_policy
         self.all_held_original_risk_policy
         self.confirmed_original_risk_policy
         self.premarket_confirmed_original_risk_policy
@@ -454,6 +455,12 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
         if payload != policy.payload() or not self._has(policy.policy_id):
             raise ValueError('Declared entry spread policy payload differs from its rule')
         return policy
+
+    @property
+    def _declared_early_original_risk_policy(self):
+        import json
+        from .declared_early_original_risk_policy import parse_declared_early_original_risk_policy
+        return parse_declared_early_original_risk_policy(self.release, json.loads(self.policy_json))
 
     @property
     def _declared_all_held_original_risk_policy(self):
@@ -539,6 +546,7 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
     caps_entry_at_reference_ask = _declared_caps_entry_at_reference_ask
     allows_followthrough_failure_exit = _declared_allows_followthrough_failure_exit
     entry_spread_risk_policy = _declared_entry_spread_risk_policy
+    early_original_risk_policy = _declared_early_original_risk_policy
     all_held_original_risk_policy = _declared_all_held_original_risk_policy
     confirmed_original_risk_policy = _declared_confirmed_original_risk_policy
     entry_allowed = _declared_entry_allowed
