@@ -281,8 +281,18 @@ The first supporting completion is retained for strict actual-fill filtering;
 decision alignment must still be backward and source certification remains
 the caller's responsibility. Thirty-five focused sequence/acquisition/channel
 tests passed, including future-prefix invariance and empty typed frames.
-This utility remains unselected; the saved feature campaign comparison,
-installed release declaration and real native exit integration are outstanding.
+The guard also reproduced the development result through 66 hash-verified
+feature packets and 126 positions in 1.09 seconds: the one-minute window
+flagged eight losers, two winners and none of the ten largest winners. The
+half-minute alternative flagged sixteen losers and eleven winners, including
+two top-ten winners. Receipts are under
+`native_post_acquisition_sequence_guard_audit_v2`. Attempt v1 stopped before
+feature reads because the laptop LF file hash was incorrectly applied to the
+clean workstation CRLF checkout; v2 pins its actual bytes and retains the
+verified line-ending-only correction and both hashes. No rules or coverage
+were changed. This is a real feature-packet path check, not an exit-fill or
+financial backtest. The utility remains unselected; installed release
+declaration and real native Portfolio/OMS exit integration are outstanding.
 On the same six-ticker full PM feature grid, three declared benchmark bands
 added a median 0.350 seconds of qualification work across 1,188,000 decisions.
 Alignment plus qualification took 3.990 seconds median with five-minute
