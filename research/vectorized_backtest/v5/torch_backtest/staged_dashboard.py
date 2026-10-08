@@ -52,7 +52,9 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     layout.split_column(Layout(name='header',size=2),Layout(name='progress',size=progress_height),
                         Layout(name='leaders',size=leader_height),Layout(name='metrics',ratio=1),
                         Layout(name='timing',size=2),Layout(name='messages',size=5 if height>=30 else 3),Layout(name='keys',size=1))
-    layout['header'].update(Text(f"V5 {status.get('status','starting').upper()} | {status.get('stage','Preflight')} | updated {age:.0f}s ago\n{status.get('focus','')}{' | queued population '+str(queued['population']) if queued else ''} | validation {status.get('validation_status','SEALED')}",style='cyan' if age<30 else 'yellow'))
+    population=queued.get('population') if queued else config.get('population')
+    population_label=('Queued population' if queued else 'Population')
+    layout['header'].update(Text(f"V5 {status.get('status','starting').upper()} | {status.get('stage','Preflight')} | updated {age:.0f}s ago\n{population_label} {number(population,',.0f')} | {status.get('focus','')} | validation {status.get('validation_status','SEALED')}",style='cyan' if age<30 else 'yellow'))
     bars=Progress(TextColumn('{task.description}',table_column=Column(min_width=18,no_wrap=True)),BarColumn(bar_width=None),TaskProgressColumn(),TextColumn('{task.completed:,.0f}/{task.total:,.0f}'),expand=True)
     if queued:
         bars.add_task('Campaign generations (queued)',total=queued['generations'],completed=0)
