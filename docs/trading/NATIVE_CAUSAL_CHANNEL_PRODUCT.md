@@ -162,8 +162,8 @@ policy rather than trusting the payload to choose them. Forty-four preparation,
 inheritance and policy tests passed in 2.65 seconds
 (`reuse-release-tests-v4.log`). The synthetic certificates in these tests issue
 no runtime authority. Strategy93 is not registered or published; its native
-loader rejects it before database access. Source freezing, runtime selection,
-cold integration, full-session timing and financial runs remain outstanding.
+loader rejects it before database access. Installed admission, cold integration,
+full-session timing and financial runs remain outstanding.
 The new `declared_packet_validation_reuse` scope checks the genuinely issued
 source, exact registered release and typed factory before activating reuse.
 Its hook wraps only pure row-content validation inside source-equivalence
@@ -171,7 +171,7 @@ verification. Unselected nested operations explicitly disable the active
 scope; the source-equivalence request and financial/recovery admission remain
 outside the cache. Sixty-three hook, original packet, prepared release and
 cache tests passed in 6.35 seconds (`reuse-runtime-hook-tests-v1.log`). Those
-fixtures do not prove installed admission. The changed shared hook needs the
+fixtures do not prove installed admission. The changed shared hook requires the
 successor's complete reviewed source closure before publishing Strategy93;
 older versions retain their original pinned execution source. No deployed app
 or running native financial checkout was changed.
@@ -183,9 +183,23 @@ factory. Both initial and resumed launch sites call this semantic router.
 Eighty-seven routing, configuration preparation, original-packet, hook and
 policy tests passed in 6.79 seconds (`reuse-routing-tests-v2.log`). The policy
 parser checks its flat typed payload directly, avoiding an unnecessary feature
-module import in the execution dependency graph. Strategy93 remains unregistered
-and source certification remains outstanding; these tests do not prove an
-installed launch, financial result or current compatibility certificate.
+module import in the execution dependency graph.
+The v14 source certificate now seals 403 ordered source files, including the
+complete inherited inventory, all eleven new execution/policy modules and an
+exact parent-compatibility restoration. Each restoration requires the complete
+current module AST to match its reviewed pin and reconstructs the complete
+retained parent AST. Unreviewed edits receive no restoration. The real,
+unmodified Strategy42 source preflight passed with this restoration; its proof
+is saved in `reuse-parent42-source-preflight-v3.log`. The complete v14 source
+certificate also passed without caller overrides. Sixty-nine source-seal,
+compatibility, routing, prepared-release, runtime-hook and cache tests passed
+in 31.37 seconds (`reuse-source-seal-tests-v2.log`), including semantic
+tampering of every new source leaf, altered certifier code, changed loaded
+metadata and exact parent reconstruction. `reuse-source-seal-v14-v1.json`
+records the source inventory and certificate anchors. Strategy93 remains
+unregistered and unpublished. Installed launch, cold native integration,
+full-session timing and financial comparisons remain outstanding; this source
+proof does not establish any financial result or validation exposure.
 The qualifier, multi-resolution alignment and campaign suites passed 35 tests.
 On the same six-ticker full PM feature grid, three declared benchmark bands
 added a median 0.350 seconds of qualification work across 1,188,000 decisions.
