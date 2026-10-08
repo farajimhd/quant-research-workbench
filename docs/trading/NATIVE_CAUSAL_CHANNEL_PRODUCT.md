@@ -273,6 +273,17 @@ batch and complete replay equality on every call. No existing strategy selects
 this utility. The receipt is `real-development-projected-node-reuse-v1.json`
 under the optimization runtime root. These component timings do not establish
 native full-session speed acceptance or financial benefit.
+The prepared Strategy94 specification adds only that pure projection reuse to
+the Strategy93 declarations. It retains the Strategy42 parent, three equal
+independent structural lots and unchanged trading economics. Its explicit
+projection retention bounds are two entries, 1 MiB complete input, 30,000 rows
+and 64 MiB conservatively counted objects. The separate v15 preparation
+compiler reconstructs the complete parent-derived tree and rejects altered
+cash, costs, accounts, parent lineage, extra parameters or reuse semantics.
+Seventy-two focused declaration/cache tests passed. This specification is
+unregistered and unpublished: no native source certificate, issued operation,
+selected projection hook or financial backtest is claimed. Strategy93's
+financial run remains pinned to its original committed checkout.
 The qualifier, multi-resolution alignment and campaign suites passed 35 tests.
 The development-only confirmed-failure audit additionally compared six declared
 post-acquisition predicates across 126 saved Strategy57 positions, excluding
