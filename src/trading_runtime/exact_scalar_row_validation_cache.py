@@ -5,8 +5,8 @@ The validator must depend only on table name/columns and scalar row contents.
 Ownership, release, lease, lineage and portfolio checks remain with their owners.
 """
 from collections import OrderedDict
-from pickle import dumps
 from struct import pack
+from sys import getsizeof
 from threading import RLock
 from types import MappingProxyType, SimpleNamespace
 
@@ -42,8 +42,15 @@ class ExactScalarRowValidationCache:
             return None
         entries = tuple(sorted((k, type(v).__name__, pack('!d', v) if type(v) is float else v)
                                for k, v in values.items()))
-        # Serialization is only a deterministic key; these bytes are never loaded.
-        return dumps((schema, entries), protocol=4), schema, values
+        return (schema, entries), schema, values
+
+    @staticmethod
+    def _key_bytes(key):
+        # Count shared objects repeatedly: this is a conservative bound on
+        # retained key storage, independent of aliases and scalar identities.
+        if type(key) is tuple:
+            return getsizeof(key) + sum(ExactScalarRowValidationCache._key_bytes(v) for v in key)
+        return getsizeof(key)
 
     def validate(self, table, row):
         snapshot = self._snapshot(table, row)
@@ -63,13 +70,14 @@ class ExactScalarRowValidationCache:
             after = self._snapshot(table, row)
             if after is None or after[0] != key:
                 raise ValueError('Scalar row or schema changed during validation')
-            if key not in self._rows and len(key) <= self._max_bytes:
+            size = self._key_bytes(key) if key not in self._rows else 0
+            if key not in self._rows and size <= self._max_bytes:
                 while self._rows and (len(self._rows) >= self._max_entries
-                                      or self._bytes + len(key) > self._max_bytes):
-                    removed, _ = self._rows.popitem(last=False)
-                    self._bytes -= len(removed)
-                self._rows[key] = None
-                self._bytes += len(key)
+                                      or self._bytes + size > self._max_bytes):
+                    _, removed_size = self._rows.popitem(last=False)
+                    self._bytes -= removed_size
+                self._rows[key] = size
+                self._bytes += size
             return result
 
     def statistics(self):

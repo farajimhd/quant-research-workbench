@@ -57,13 +57,26 @@ def test_exact_scalar_types_float_bits_and_schema_are_distinct():
 def test_capacity_and_oversized_rows_do_not_skip_validation():
     calls = []
     cache = ExactScalarRowValidationCache(lambda table, row: calls.append(row),
-                                         max_entries=2, max_bytes=512)
+                                         max_entries=2, max_bytes=2048)
     table = SimpleNamespace(name='sample', columns=(('value', 'String'),))
-    for value in ('a', 'b', 'c', 'a', 'x' * 1024, 'x' * 1024):
+    for value in ('a', 'b', 'c', 'a', 'x' * 4096, 'x' * 4096):
         cache.validate(table, {'value': value})
     assert len(calls) == 6
     assert cache.statistics()['entries'] <= 2
-    assert cache.statistics()['retained_key_bytes'] <= 512
+    assert cache.statistics()['retained_key_bytes'] <= 2048
+
+
+def test_equal_content_keys_ignore_object_sharing_and_mapping_order():
+    value = 'scalar-content-' * 40
+    equal_value = value.encode().decode()
+    assert value == equal_value and value is not equal_value
+    calls = []
+    cache = ExactScalarRowValidationCache(lambda table, row: calls.append(row))
+    table = SimpleNamespace(name='sample', columns=(('a', 'String'), ('b', 'String')))
+    cache.validate(table, {'a': value, 'b': value})
+    cache.validate(table, {'b': equal_value, 'a': value})
+    assert len(calls) == 1
+    assert cache.statistics()['hits'] == 1
 
 
 def test_mutation_during_validation_is_rejected_and_not_retained():
