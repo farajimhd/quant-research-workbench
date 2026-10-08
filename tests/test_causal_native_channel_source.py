@@ -38,6 +38,7 @@ def test_pinned_bounded_arrow_read_and_real_vector_projection(monkeypatch):
     sql=client.queries[0]
     assert 'FROM arte.bars_v1' in sql and ATTEMPT in sql and "build_id='build'" in sql
     assert '*resolution_ms<=600000' in sql and 'FORMAT ArrowStream' in sql
+    assert 'LIMIT 11' in sql and 'SETTINGS' not in sql
     assert packets[0].filter(pl.col('bucket_index')==5)['relative_execution_volume'][0]==1.
 
 
@@ -55,3 +56,10 @@ def test_undeclared_resolution_fails_before_verification_or_read(monkeypatch):
     values={**args(),'resolutions_ms':(300000,)}
     with pytest.raises(ValueError,match='explicitly certified'):
         list(reader.certified_channel_packets(plan(),Transport(frame()),**values))
+
+
+def test_extra_sentinel_row_rejects_overflow_instead_of_truncating(monkeypatch):
+    monkeypatch.setattr(reader,'verify_market_day_plan',lambda *a:None)
+    too_many=pl.concat([frame(),frame().head(1)])
+    with pytest.raises(ValueError,match='row bound'):
+        list(reader.certified_channel_packets(plan(),Transport(too_many),**args()))

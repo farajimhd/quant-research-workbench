@@ -52,6 +52,7 @@ def certified_channel_packets(market, client, *, session_date, tickers,
         selected = tickers[offset:offset+packet_size]
         pins = ','.join(f'({_literal(t)},toUUID({_literal(units[t].attempt_id)}))' for t in selected)
         resolutions = ','.join(str(r) for r in resolutions_ms)
+        row_bound = min(MAX_PACKET_ROWS,per_ticker*len(selected))
         sql = ('SELECT build_id,toString(session_date) AS session_date,toString(ticker) AS ticker,'
                'toString(attempt_id) AS attempt_id,resolution_ms,bucket_index,'
                'open_int,high_int,low_int,close_int,execution_volume,execution_notional,'
@@ -60,9 +61,10 @@ def certified_channel_packets(market, client, *, session_date, tickers,
                f'AND (ticker,attempt_id) IN ({pins}) AND resolution_ms IN ({resolutions}) '
                f'AND (toUInt64(bucket_index)+1)*resolution_ms<={through_day_boundary_ms} '
                'ORDER BY ticker,resolution_ms,bucket_index '
-               f'SETTINGS max_threads=1,max_execution_time=45,max_memory_usage=2147483648,'
-               f'max_result_rows={MAX_PACKET_ROWS},result_overflow_mode=\'throw\' FORMAT ArrowStream')
-        table = read_arrow(client,sql,SOURCE_SCHEMA,min(MAX_PACKET_ROWS,per_ticker*len(selected)))
+               f'LIMIT {row_bound+1} FORMAT ArrowStream')
+        # Read-only principals retain their server resource policy. The extra
+        # row is an overflow sentinel: read_arrow rejects it, never truncates.
+        table = read_arrow(client,sql,SOURCE_SCHEMA,row_bound)
         raw = pl.from_arrow(table)
         expected = pl.DataFrame({'ticker':selected,'attempt_id':[units[t].attempt_id for t in selected]})
         if (raw.filter((pl.col('build_id')!=market.build_id)|(pl.col('session_date')!=session_date)).height or
