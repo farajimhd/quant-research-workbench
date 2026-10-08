@@ -113,8 +113,37 @@ context is retained, but backward as-of alignment selects completed features
 only. Research labels remain separate; this cohort is not an executable
 opportunity universe or a financial backtest. Immutable packet receipts and
 the campaign declaration live under `native_big_move_feature_campaign_v1` in
-the existing optimization runtime root. Incomplete packets remain queued;
-unknown or failed publication is held for explicit review.
+the existing optimization runtime root. All 581 research packets completed.
+The saved matched comparison covers 26 sessions and 11,547 anchors, with zero
+future feature selections. Within source-time and prior-return strata, the
+positive episode cohort had a smaller one-minute upper-wick return than
+failed-momentum controls in all 26 sessions; volatility-normalized upper wicks
+were smaller in 22 sessions. These are descriptive development comparisons,
+with control-selection and repeated-ticker dependence still present. They
+do not establish a profitable threshold or a financial result. Evidence lives
+under `native_big_move_matched_channels_v1/1791488371492091600`.
+
+A separate financial-input campaign certifies the complete native market and
+candidate population before excluding LGHL. Its feature dependency comprises
+tickers with certified PM/AH MACD candidate keys, retaining full source-day
+context. This dependency is suitable only for an additional filter within
+that parent candidate gate; it cannot define a broader breakout universe or
+act as a future candidate-presence signal. Each bounded feature request is
+projected from the hash-pinned full market parent. Research label-selected
+packets cannot substitute for these financial dependencies.
+
+The financial-input campaign has 216 of 217 packets complete, with 2,343,259
+feature rows and 3,813 coverage rows. Twelve development dates have all their
+declared packets; August 19, 2026 has one held packet. Its original feature
+INSERT remains persistently pending after a transport disconnect. Neither
+elapsed time nor observed child rows authorizes clearing that gate: the shared
+protocol requires a trusted original-terminal resolution, which has no
+production implementation yet. The other 140 independent packets completed
+under a separate declaration preserving the original failed receipt. The
+hash-checked reconciliation is `native_financial_feature_campaign_v1/
+reconciled-publication-v1.json` under the optimization runtime root. It records
+the held packet explicitly and does not claim complete campaign coverage,
+native strategy admission, financial backtesting or validation exposure.
 
 On the workstation, three repeats of the full 330-minute PM decision grid
 for six tickers (1,188,000 decisions at 100 ms) used 13,537 actual certified
