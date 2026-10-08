@@ -19,6 +19,13 @@ the verified source adapter. Never pass that relative clock as a day boundary.
 Feature availability is the completed bucket end, not its start. The strategy
 decision interval is separately declared and does not alter source clocks.
 
+`source.certified_channel_packets` rechecks an exact market plan before bounded
+Arrow reads. It requires explicit resolution dependencies, pins ticker attempts,
+enforces row/schema bounds and rejects foreign or future rows. It retains all
+earlier source rows for warming; it does not run regular-session trades.
+
 No market writer, installer, Backtest integration or financial evaluation is
-included. Split/fundamental certification and native source coverage remain
-pending. Generated data and evidence belong under `D:\TradingML\runtimes`.
+included. Source-reader tests use controlled verification and Arrow transport;
+actual workstation reads are still required. Split/fundamental certification
+and native source coverage remain pending. Generated data and evidence belong
+under `D:\TradingML\runtimes`.
