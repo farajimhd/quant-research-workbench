@@ -205,11 +205,31 @@ preflight for Strategy93 passed without source/parent overrides
 release and cache tests passed in 32.34 seconds
 (`reuse-registered-source-tests-v3.log`). The checkpoint fixture now includes
 the v14 path and asserts that both original and fresh recovery sources use
-the declared bounded cache. Collection passed; execution has not yet passed.
-No installed Strategy93 configuration has been published. Installed launch,
-cold native integration,
-full-session timing and financial comparisons remain outstanding; this source
-proof does not establish any financial result or validation exposure.
+the declared bounded cache. The selected native fixture passed from clean
+commit `3a188f4fc30730923c6614617b799273d3cbba0b` in 1092.14 seconds. It reached
+earned-profit arming, partial exit, a fresh recovery actor, final exit and the
+completed terminal prefix at sequence 223. Original and fresh sources recorded
+9,752 and 22,952 cache hits respectively, one miss each, zero bypasses and
+4,577,283 retained key bytes each. The installed loader, complete source checks
+and selected validators were not replaced. Complete transport fixtures remain
+controlled, so this establishes native integration rather than a real market
+financial result. Receipts are `strategy93-selected-native-integration-v2.log`
+and `strategy93-selected-native-integration-result-v2.json` in the optimization
+runtime root. A passive ten-second sample during the run observed fresh cold
+source preflight; it is diagnostic and does not establish full-session speed.
+The parent-derived 26-session financial declaration is
+`root-strategy93-development-financial-declaration-v2.json`, with independent
+$10,000 cash, unchanged Strategy92 trading parameters apart from declared
+validation reuse, original dates and LGHL exclusion. Its review receipt keeps
+the first unlaunched declaration and explicitly corrects inherited ancestry
+links. Full market launch, full-session timing and financial comparisons remain
+outstanding. The Backtest-only publication command ended with a broken socket
+connection after entering the publisher. Its process is terminal. Independent
+read-only database counts found one release and 1,188 nodes; counts alone do
+not certify the complete configuration. Read-only reconciliation is running
+before financial admission, without repeating the write. The retained receipt
+is `strategy93-publication-terminal-readback-v1.json`. No validation dates have
+been selected or inspected.
 The qualifier, multi-resolution alignment and campaign suites passed 35 tests.
 On the same six-ticker full PM feature grid, three declared benchmark bands
 added a median 0.350 seconds of qualification work across 1,188,000 decisions.
