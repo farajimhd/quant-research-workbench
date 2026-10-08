@@ -225,11 +225,17 @@ the first unlaunched declaration and explicitly corrects inherited ancestry
 links. Full market launch, full-session timing and financial comparisons remain
 outstanding. The Backtest-only publication command ended with a broken socket
 connection after entering the publisher. Its process is terminal. Independent
-read-only database counts found one release and 1,188 nodes; counts alone do
-not certify the complete configuration. Read-only reconciliation is running
-before financial admission, without repeating the write. The retained receipt
-is `strategy93-publication-terminal-readback-v1.json`. No validation dates have
-been selected or inspected.
+read-only database counts found one release and 1,188 nodes. Subsequent complete
+read-only reconciliation passed, without repeating the write, and certified
+revision `strategy-one-93:4ece9f7e-2be0-4949-84f1-614f3d5125d7` against the exact
+source, payload and node identities. The retained receipts are
+`strategy93-publication-terminal-readback-v1.json` and
+`worker-strategy93-certified-published-identity-v1.json`. The declaration was
+bound through `root-strategy93-financial-envelope-binding-v1.json`; the first
+real development unit, August 4 PM 04:00–09:30 ET with $10,000, has launched
+through the native app route. Completion, financial results and full-session
+speed acceptance remain outstanding. No validation dates have been selected
+or inspected.
 The qualifier, multi-resolution alignment and campaign suites passed 35 tests.
 On the same six-ticker full PM feature grid, three declared benchmark bands
 added a median 0.350 seconds of qualification work across 1,188,000 decisions.
