@@ -32,12 +32,25 @@ over declared schemas, null positions and canonical Arrow streams of valid
 values. Arbitrary hidden bytes beneath nulls and unused bitmap padding are
 excluded; every valid Float64 bit, including signed zero, remains significant.
 
-Installation remains a separate campaign responsibility: verify schema and
+`native_channel_campaign.install` is an explicit producer-only API. Publication
+uses `NativeChannelInsertAuthority` under a separate Keeper namespace, reusing
+the shared durable dispatch protocol. Unknown INSERTs retain a closed gate;
+an explicit trusted original-terminal resolution is required before exact
+missing-row resumption. Existing unregistered rows cannot be adopted. Child
+readback and actual SSD-part checks precede coverage, and both typed tables
+must match before the producer marks its completion fence.
+
+Installation remains a separate campaign operation: verify schema and
 `live_market_ssd` policy, insert immutable child rows, verify actual SSD parts,
 publish coverage last, and read back exact typed hashes. A native consumer must
 then declare this dependency, obtain read-only grants, and fail preflight on
 missing or mismatched coverage before a new numbered strategy can consume it.
-The declared table DDL does not itself verify installation. No feature product
-is currently installed by this implementation. Splits and fundamentals await
+`backtest_native_channel_store.read_installed_native_channels` performs SELECTs
+only and requires the typed source plan, certified market, SSD placement, exact
+rows/coverage hashes and completed producer fence. Its feature read uses the
+whole bounded attempt inventory, exposing extra rows rather than filtering
+away mismatched identities. The declared table DDL does not itself verify
+installation. No feature product has yet been installed by this implementation.
+Splits and fundamentals await
 verified point-in-time availability; news is omitted. Profitability and complete
 session performance require native financial runs, not projection benchmarks.
