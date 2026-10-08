@@ -209,27 +209,28 @@ def test_actual_public_app_revision_selector_and_certifier(monkeypatch):
 from test_fixed_structural_lot_interval_validator_v2 import ordinal_transport_plan
 
 
-def selected(monkeypatch, *, actual_loader=False):
+def selected(monkeypatch, *, actual_loader=False, number=90, version=12):
+    from importlib import import_module
     from src.backend.historical_runtime_versions import backend_source_fingerprint
     from test_fixed_structural_lot_source_v2 import inputs
     from test_fixed_structural_lot_native import cert, declarations
     from src.backend import backtest_fixed_structural_lot_source_v2 as previous
-    from src.backend import backtest_fixed_structural_lot_source_v12 as source
+    source = import_module(f'src.backend.backtest_fixed_structural_lot_source_v{version}')
     from src.backend import backtest_fixed_structural_lot_source_v5 as scope_owner
-    from src.backend import backtest_fixed_structural_lot_native_v12 as native
+    native = import_module(f'src.backend.backtest_fixed_structural_lot_native_v{version}')
     from src.backend import backtest_fixed_structural_lot_native as owner
-    from src.backend import backtest_fixed_structural_lot_execution_v12 as session
+    session = import_module(f'src.backend.backtest_fixed_structural_lot_execution_v{version}')
     from src.backend import backtest_strategy_one_execution as execution
-    from src.trading_runtime.fixed_structural_lot_release_v12 import derive_fixed_structural_lot_release
+    derive_fixed_structural_lot_release = import_module(f'src.trading_runtime.fixed_structural_lot_release_v{version}').derive_fixed_structural_lot_release
     from src.trading_runtime.strategy_registry import numbered_strategy
     plans, authority, old, proposal, calls = inputs(monkeypatch)
-    authority = replace(authority, entry_activity_source=replace(authority.entry_activity_source, strategy_number=90))
+    authority = replace(authority, entry_activity_source=replace(authority.entry_activity_source, strategy_number=number))
     plans = replace(plans, v7_intervals=ordinal_transport_plan(plans.v7_intervals))
     for name in ('verify_market_day_plan', 'certify_candidate_plan', 'certified_seed_plan', '_load_quotes'):
         monkeypatch.setattr(source if name == '_load_quotes' else scope_owner, name, getattr(previous, name))
     monkeypatch.setattr(scope_owner, 'certify_v7_interval_plan', lambda *a, **kw: plans.v7_intervals)
     parent, _, _, parent_release = declarations()
-    own = cert(derive_fixed_structural_lot_release(parent, parent_release=parent_release, release=numbered_strategy(90), policy=old.policy.payload(), approved_code_commit=subprocess.check_output(['git','rev-parse','HEAD']).decode().strip(), approved_code_fingerprint=backend_source_fingerprint(), approval_reference='controlled immutable installation seam')['payload'])
+    own = cert(derive_fixed_structural_lot_release(parent, parent_release=parent_release, release=numbered_strategy(number), policy=old.policy.payload(), approved_code_commit=subprocess.check_output(['git','rev-parse','HEAD']).decode().strip(), approved_code_fingerprint=backend_source_fingerprint(), approval_reference='controlled immutable installation seam')['payload'])
     monkeypatch.setattr(source, 'certify_numbered_configuration', lambda *a: parent)
     if actual_loader:
         monkeypatch.setattr(native, 'certify_numbered_configuration', lambda *a: own)
@@ -242,8 +243,8 @@ def selected(monkeypatch, *, actual_loader=False):
 
         def close(self):
             calls.append(('closed',))
-    actual = session.prepare_fixed_structural_lot_session(plans=plans, number=90, run_id=old.run_id, session_date=old.session_date, market=plans.market, candidates=plans.candidates, entry=plans.entry, seeds=plans.seeds, through_boundary_ms=57600000, client_factory=Client)
-    actual.require(market=plans.market, candidates=plans.candidates, entry=plans.entry, through_boundary_ms=57600000, run_id=old.run_id, number=90)
+    actual = session.prepare_fixed_structural_lot_session(plans=plans, number=number, run_id=old.run_id, session_date=old.session_date, market=plans.market, candidates=plans.candidates, entry=plans.entry, seeds=plans.seeds, through_boundary_ms=57600000, client_factory=Client)
+    actual.require(market=plans.market, candidates=plans.candidates, entry=plans.entry, through_boundary_ms=57600000, run_id=old.run_id, number=number)
     from test_strategy_one_intent import _proposal
     from src.backend.backtest_strategy_certified_price_break import bind_certified_price_break_proposal
     from src.backend.backtest_strategy_episode_activity_source import bind_episode_activity_proposal
@@ -433,8 +434,9 @@ def test_actual_active_native_owner_imports_resolve_and_missing_future_import_re
     assert len(retained) == 1 and retained[0][2] == 'src.backend.backtest_fixed_v5_certification'
 
 
-def published(monkeypatch, *, publish=True, actual_loader=False, exclusive_writer=False):
-    actual, request, plans = selected(monkeypatch, actual_loader=actual_loader)
+def published(monkeypatch, *, publish=True, actual_loader=False, exclusive_writer=False,
+              number=90, version=12, transport_class=None):
+    actual, request, plans = selected(monkeypatch, actual_loader=actual_loader, number=number, version=version)
     source = actual.operation.source
     config = RunConfig(mode=RunMode.BACKTEST, strategy_id=request.strategy_id,
         strategy_revision=request.revision, account_ids=(request.entry.proposal.account_id,),
@@ -442,7 +444,7 @@ def published(monkeypatch, *, publish=True, actual_loader=False, exclusive_write
     ExactDecisionTransport = BatchedDecisionTransport
     from src.backend.backtest_v4_run_context import fixed_v4_context_rows
     from src.trading_runtime.arte_journal_writer import publish_typed_run, publish_typed_run_context
-    client = ExactDecisionTransport()
+    client = (transport_class or ExactDecisionTransport)()
     from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
     from tests.test_arte_typed_insert_dispatch import Keeper
     keeper = journal_lease_keeper() if exclusive_writer else Keeper()
@@ -1136,6 +1138,60 @@ class BatchedDecisionTransport(_BaseDecisionTransport):
             return '\n'.join(json.dumps(v) for v in rows[:limit])
         return super().execute(sql,query_id=query_id)
 
+class ScaleStrippedSnapshotTransport(BatchedDecisionTransport):
+    """Controlled ClickHouse Decimal text formatting, without changing stored facts."""
+    def __init__(self):
+        super().__init__()
+        self.scale_stripped_cells = 0
+
+    def execute(self, sql, *, query_id=None):
+        result = super().execute(sql, query_id=query_id)
+        if (not isinstance(sql, str) or not sql.startswith(('SELECT ', '(SELECT ')) or
+                not sql.endswith(' FORMAT JSONEachRow') or not result):
+            return result
+        import json, re
+        from src.trading_runtime.arte_journal_writer import _CONTRACTS
+        from src.trading_runtime.fixed_structural_lot_snapshot import ROOT, LOT, RESISTANCE
+        from src.trading_runtime.strategy_one_management_snapshot import SOURCE, BREAK, HIGH, CLOSED, FIRST_HELD
+        from src.trading_runtime.strategy_one_protection_snapshot import TABLES
+        families = {v.name for v in (ROOT, LOT, RESISTANCE, SOURCE, BREAK, HIGH, CLOSED, FIRST_HELD, *TABLES)}
+
+        def shorten(row, name):
+            if name not in families:
+                return row
+            for key, kind in _CONTRACTS[name].columns:
+                if 'Decimal(' in kind and key in row and isinstance(row[key], str):
+                    text = row[key]
+                    value = text.rstrip('0').rstrip('.') if '.' in text else text
+                    if value != text:
+                        self.scale_stripped_cells += 1
+                        row[key] = value
+            return row
+
+        match = re.search(r'FROM arte\.([a-z0-9_]+)', sql)
+        rows = [json.loads(line) for line in result.splitlines() if line]
+        for row in rows:
+            if set(row) == {'family_name', 'payload'}:
+                name = row['family_name']
+                if name in families:
+                    columns = [key for key, _ in _CONTRACTS[name].columns]
+                    values = json.loads(row['payload'])
+                    assert len(columns) == len(values)
+                    decoded = shorten(dict(zip(columns, values)), name)
+                    row['payload'] = json.dumps([decoded[key] for key in columns])
+            elif match:
+                shorten(row, match.group(1))
+        return '\n'.join(json.dumps(row) for row in rows)
+
+
+def test_scale_stripped_snapshot_transport_preserves_scalar_preflight(monkeypatch):
+    monkeypatch.setattr(BatchedDecisionTransport, 'execute',
+                        lambda self, sql, **kwargs: 'backtest_v4_fixed_structural_lot_runner')
+    client = ScaleStrippedSnapshotTransport()
+    assert client.execute('SELECT currentUser()') == 'backtest_v4_fixed_structural_lot_runner'
+    assert client.scale_stripped_cells == 0
+
+
 def test_strict_warm_proxy_keeps_exact_read_only_and_argument_guards():
     from src.trading_runtime.fixed_structural_lot_warm_proof import _ImmutableReads
     class Reader:
@@ -1154,9 +1210,11 @@ def test_batched_helper_rejects_foreign_context_before_transport():
     with pytest.raises(ValueError,match='foreign source context'):
         _batched_detail_rows_v4(Reader(),(),'',fixed_lot_context=SimpleNamespace(source=None))
 
-def test_actual_earned_profit_arm_selected_checkpoint_and_historical_products(monkeypatch):
+@pytest.mark.parametrize("number,version,strip_decimal", [(90,12,False),(92,13,True)])
+def test_actual_earned_profit_arm_selected_checkpoint_and_historical_products(monkeypatch,number,version,strip_decimal):
     quote_offset_us=25515
-    from src.backend import backtest_fixed_structural_lot_certification_v12 as seal
+    from importlib import import_module
+    seal=import_module(f"src.backend.backtest_fixed_structural_lot_certification_v{version}")
     if not seal.REVIEWED_SOURCE_AST:
         pytest.skip('Actual full source certification positive runs on reviewed proposal and clean committed source')
     if os.environ.get('FIXED_LOT_PROPOSED_HEAD'):
@@ -1178,7 +1236,8 @@ def test_actual_earned_profit_arm_selected_checkpoint_and_historical_products(mo
         from src.backend.backtest_fixed_structural_lot_management import NativeFixedStructuralLotManagement
         from src.trading_runtime.fixed_structural_lot_snapshot import project_fixed_structural_lot_snapshot,restore_fixed_structural_lot_snapshot
         from src.backend.backtest_market_data import market_day_boundary
-        actual,request,plans,config,client,flat=published(monkeypatch,actual_loader=True,exclusive_writer=True)
+        actual,request,plans,config,client,flat=published(monkeypatch,actual_loader=True,exclusive_writer=True,number=number,version=version,
+            transport_class=ScaleStrippedSnapshotTransport if strip_decimal else None)
         entry=request.entry.proposal;at=request.intent.event_time
         journal=BacktestMemoryJournal(run_id=config.run_id)
         broker=SimulatedBrokerAdapter(config.account_ids,SimulationConfig(initial_cash=10000.),mode=TradingMode.BACKTEST,initial_time=at,fixed_bar_mode=True)
@@ -1213,7 +1272,7 @@ def test_actual_earned_profit_arm_selected_checkpoint_and_historical_products(mo
             empty_activity=pl.DataFrame(schema={name:pl.String for name in
                 ('source_build_id','session_date','ticker','source_attempt_id')}|{'boundary_ms':pl.UInt32,'trade_count':pl.UInt64})
             manager.bind_liquidity_fade_lookup(CompiledLiquidityFadeLookup(empty_activity,plan=plans.market,
-                session_date=actual.operation.source.session_date,strategy_number=90),plans.market)
+                session_date=actual.operation.source.session_date,strategy_number=number),plans.market)
             runtime.order_manager.on_market_snapshot(ExecutionMarketSnapshot(entry.ticker,10.,10.01,.01,at,'arte.liquidity_100ms_v1'))
             initial_quote=request.intent.event_time-timedelta(microseconds=1000)
             local=at.astimezone(__import__('zoneinfo').ZoneInfo('America/New_York'))
@@ -1503,11 +1562,11 @@ def test_actual_earned_profit_arm_selected_checkpoint_and_historical_products(mo
             controller._source_cursor['boundary_ms']=exit_boundary
             await controller._save_restart_checkpoint_responsive(at,require_fresh_capture=True)
             await publisher.await_fence()
-            from src.backend.backtest_fixed_structural_lot_execution_v12 import prepare_fixed_structural_lot_session
+            prepare_fixed_structural_lot_session=import_module(f"src.backend.backtest_fixed_structural_lot_execution_v{version}").prepare_fixed_structural_lot_session
             class SourceRows:
                 def execute(self,sql,*args,**kwargs):return client.execute(sql,*args,**kwargs)
                 def close(self):pass
-            fresh_prepared=prepare_fixed_structural_lot_session(plans=plans,number=90,
+            fresh_prepared=prepare_fixed_structural_lot_session(plans=plans,number=number,
                 run_id=config.run_id,session_date=actual.operation.source.session_date,
                 market=plans.market,candidates=plans.candidates,entry=plans.entry,seeds=plans.seeds,
                 through_boundary_ms=57600000,client_factory=SourceRows)
@@ -1671,6 +1730,8 @@ def test_actual_earned_profit_arm_selected_checkpoint_and_historical_products(mo
                 cold_writer.close();cold_journal.close()
             # Historical image is reconstructed from durable normalized rows,
             # never selected as a current execution head after completion.
+            if strip_decimal:
+                assert client.scale_stripped_cells > 0
             rebuilt=load_historical_checkpoint(cold_client,final_prefix,source=fresh_operation.source,
                 sequence=references[0].checkpoint_sequence)
             assert rebuilt.inherited==image.inherited
