@@ -93,6 +93,17 @@ or inconsistent availability is rejected. It changes no cash, reservations,
 fills or protection and performs no source reads. It must be selected and
 bound to installed feature inputs by a future immutable strategy declaration;
 adding this helper does not change any existing strategy or publish one.
+The qualifier, multi-resolution alignment and campaign suites passed 35 tests.
+On the same six-ticker full PM feature grid, three declared benchmark bands
+added a median 0.350 seconds of qualification work across 1,188,000 decisions.
+Alignment plus qualification took 3.990 seconds median with five-minute
+batches and 257 MB observed peak process RSS. All three repeats produced
+identical 116,400 qualifying grid rows and zero future selections. These are
+benchmark rows with an all-true synthetic mandatory mask, not native admitted
+proposals, acquisitions or P&L. The saved receipt is
+`full-pm-feature-qualification-benchmark-5min-v1.json` in the campaign root;
+its explicit policy and timing fields describe the added qualification stage.
+Cash, fills, OCA, journal and per-clock strategy state remain excluded.
 
 A development campaign declares 581 packets for 11,547 saved big-move and
 negative-control anchors across the 26 PM/AH sessions. Native resolutions are
