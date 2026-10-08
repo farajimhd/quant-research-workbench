@@ -196,19 +196,20 @@ exhaustion to an unbounded QMD History coverage query and replaced it with a
 date-scoped, coalesced, cached, memory- and time-bounded contract without
 restarting QMD Live.
 
-### [2026-08-19 time unavailable - Productionize BarGPT v2/v3 serving](docs/codex/chat-summaries/2026/CHAT-20260819-UNKNOWN-bargpt-production-serving.md)
+### [2026-08-19 08:45 PDT - Productionize BarGPT v2/v3 serving](docs/codex/chat-summaries/2026/CHAT-20260819-0845-bargpt-production-serving.md)
 
-- Chat/task ID: unavailable
-- Related tasks: `TASK-0170`, `TASK-0197`
-- Summary written: 2026-08-19 16:54 PDT
+- Chat/task ID: `01a01ab3-13cf-7bd1-be82-f0157ceaabd8`
+- Related tasks: `TASK-0170`, `TASK-0197`; later continuation `TASK-0217`
+- Summary written: 2026-10-08 12:30 PDT
 
 Replaced the stale generic Market AI prototype with a causal, mode-scoped
 BarGPT v2/v3 service; connected raw and decoded heads to application Data
 Fields, Rule Sets, Signal Streams, Market Discovery, and Canvas; and added a
-fail-closed historical inference barrier. Workstation verification loaded the
-immutable v3 3.5B-origin checkpoint through the actual service loader. The
-remaining operational work is a dedicated BarGPT Services page, immutable
-release promotion, measured GPU capacity, and an end-to-end workstation smoke.
+fail-closed historical inference barrier. Added immutable workstation release
+manifests, CUDA/BF16 serving, Services configuration, lifecycle controls, and
+Replay 1-second test guidance. V2 remains champion and v3 shadow. Later paced
+evaluation is stopped under TASK-0217; promotion, deadline acceptance, and
+visual Replay UAT remain open and require a new request.
 
 ### [2026-08-15 time unavailable - Consolidate forecast labels and establish metadata/model mismatch audits](docs/codex/chat-summaries/2026/CHAT-20260815-UNKNOWN-forecast-labeling-metadata-audits.md)
 

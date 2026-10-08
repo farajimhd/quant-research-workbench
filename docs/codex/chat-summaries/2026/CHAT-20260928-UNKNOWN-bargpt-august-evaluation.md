@@ -66,7 +66,7 @@ All items below belong to TASK-0217 with serving integration under TASK-0197 and
 
 ### Unavailable or incomplete source chats
 
-Earlier content in this task is partly condensed; the runtime handoff preserves experiment details. App inventory exposed other repository tasks, including Design BarGPT production serving, but their full conversations were not reviewed for this closure. The existing CHAT-20260819-UNKNOWN-bargpt-production-serving summary and TASK-0197 provide related context, not a claim of newly reviewing those chats.
+Earlier content in this task is partly condensed; the runtime handoff preserves experiment details. App inventory exposed other repository tasks, including Design BarGPT production serving, but their full conversations were not reviewed for this closure. The existing CHAT-20260819-0845-bargpt-production-serving summary and TASK-0197 provide related context, not a claim of newly reviewing those chats.
 
 ### Handoff to the next chat
 
