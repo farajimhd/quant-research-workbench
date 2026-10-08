@@ -79,4 +79,3 @@ Only this chat was summarized. Its exact creation timestamp and title were retri
 ### Handoff to the next chat
 
 Read TASK-0188, TASK-0192, TASK-0194, the linked architecture summary, and 17-information-ontology-and-registry-inventory.md first. Preserve atomic/custom ownership, reference composition, guided-only setup, typography, and shared lookup patterns. Treat newer registry schemas and Signal Stream work as authoritative over older design screenshots. The next substantive action is verification of the specific current defect or runtime path the user requests—not an unsolicited architecture rewrite. Publishing, broker deployment, data migration, and trade execution require their own explicit scope and authority.
-
