@@ -3,6 +3,7 @@ import numpy as np
 import polars as pl
 from research.vectorized_backtest.v6.torch_backtest.compact_prepare import feature_rows, vector_validity, sparse_market
 from research.vectorized_backtest.v6.torch_backtest.feature_bank import CertifiedBank
+import pytest
 
 
 def bank(clocks, factor):
@@ -17,6 +18,17 @@ def test_numpy_feature_history_exactly_matches_certified_reader():
     old=bank([1000000,2000000],2.);new=bank([3000000,4000000,5000000],3.)
     clocks,values=feature_rows(new,old,'x',4000000,4000000)
     a,b,c=CertifiedBank.listing(new,'x',previous=old,start_us=4000000,end_us=4000000)
+    np.testing.assert_array_equal(clocks,a.numpy())
+    np.testing.assert_array_equal(values,b.numpy())
+    np.testing.assert_array_equal(vector_validity(values),c.numpy())
+
+
+@pytest.mark.parametrize('start,end',[(1000000,1000000),(2000000,3000000),(9000000,10000000),(900000000,900000001)])
+def test_feature_span_slicing_preserves_warm_history_and_empty_ranges(start,end):
+    old=bank(np.arange(1,251)*1000000,2.)
+    new=bank(np.arange(251,651)*1000000,3.)
+    clocks,values=feature_rows(new,old,'x',start,end)
+    a,b,c=CertifiedBank.listing(new,'x',previous=old,start_us=start,end_us=end)
     np.testing.assert_array_equal(clocks,a.numpy())
     np.testing.assert_array_equal(values,b.numpy())
     np.testing.assert_array_equal(vector_validity(values),c.numpy())

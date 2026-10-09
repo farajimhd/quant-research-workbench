@@ -19,7 +19,7 @@ from .runtime import file_hash, require_runtime
 from .source import arte_source, arte_sql as sql
 from .availability import configure_reader
 
-VERSION = 'v6-volume-market-blocks-v1'
+VERSION = 'v6-volume-market-blocks-v2'
 BAR_SCHEMA = dict(ticker=pl.String, clock=pl.Int64, close=pl.Float64,
     high=pl.Float64, low=pl.Float64, volume=pl.Float64, trade_count=pl.UInt64,
     execution_volume=pl.Float64, execution_notional=pl.Float64,
@@ -51,15 +51,44 @@ def rolling_volume(volume, window):
     return result
 
 
+def stable_top_indices(scores,top_n,*,clock_batch=1024):
+    """Exact score-descending/identity-ascending top K, without a full sort.
+
+    Partition only finds the cutoff. Explicit tie ranks then select the lowest
+    identities at that cutoff, preserving the full stable-sort reference.
+    Clock chunks bound partition and tie scratch space independently of T.
+    """
+    if scores.ndim!=2 or top_n<1 or clock_batch<1:raise ValueError('Invalid top-K ranking dimensions')
+    clocks,listings=scores.shape;k=min(top_n,listings)
+    indices=np.full((clocks,k),-1,dtype=np.int64);values=np.full((clocks,k),-np.inf,dtype=np.float64)
+    if not k:return indices,values
+    for begin in range(0,clocks,clock_batch):
+        block=scores[begin:begin+clock_batch]
+        if np.isnan(block).any() or np.isposinf(block).any():raise ValueError('Non-finite ranked volume')
+        cutoff=np.partition(block,listings-k,axis=1)[:,listings-k].copy()
+        greater=block>cutoff[:,None]
+        tied=(block==cutoff[:,None])&np.isfinite(cutoff[:,None])
+        needed=k-greater.sum(1)
+        selected=greater|(tied&(np.cumsum(tied,axis=1,dtype=np.int32)<=needed[:,None]))
+        counts=selected.sum(1);rows,columns=np.nonzero(selected)
+        starts=np.cumsum(counts)-counts
+        slots=np.arange(len(columns))-np.repeat(starts,counts)
+        candidates=np.full((len(block),k),-1,dtype=np.int64)
+        candidates[rows,slots]=columns
+        candidate_scores=np.where(candidates>=0,np.take_along_axis(block,candidates.clip(0),axis=1),-np.inf)
+        order=np.lexsort((candidates,-candidate_scores),axis=1)
+        indices[begin:begin+len(block)]=np.take_along_axis(candidates,order,axis=1)
+        values[begin:begin+len(block)]=np.take_along_axis(candidate_scores,order,axis=1)
+    return indices,values
+
+
 def rank_indices(volume, available, window, top_n):
-    if available.shape != volume.shape or top_n < 1:
+    if (available is not None and (available.shape!=volume.shape or available.dtype!=np.bool_)) or top_n < 1:
         raise ValueError('Invalid availability/top-N')
     scores = rolling_volume(volume, window)
-    scores[~available | (scores <= 0)] = -np.inf
-    # Columns are sorted listing identities; stable ties preserve that order.
-    indices = np.argsort(-scores, axis=1, kind='stable')[:, :min(top_n, volume.shape[1])]
-    selected = np.take_along_axis(scores, indices, axis=1)
-    return np.where(np.isfinite(selected), indices, -1), selected
+    scores[scores<=0]=-np.inf
+    if available is not None:scores[~available]=-np.inf
+    return stable_top_indices(scores,top_n)
 
 
 def prior_session(day):
@@ -179,7 +208,6 @@ def prepare(item, args):
         day_origin=int(datetime.fromisoformat(day+'T00:00:00').replace(tzinfo=ZoneInfo('America/New_York')).timestamp())
         columns={row['ticker']:i for i,row in enumerate(eligible)}
         volume=np.zeros((len(clocks),len(eligible)),dtype=np.float64)
-        available=np.zeros(volume.shape,dtype=bool)
         pieces=[]
         # Price gate has completed: no rejected listing enters these volume reads.
         for offset in range(0,len(eligible),64):
@@ -194,11 +222,12 @@ def prepare(item, args):
                 rows=frame['clock'].to_numpy()-clocks[0];cols=frame['listing'].to_numpy()
                 if np.unique(rows*len(eligible)+cols).size != len(rows):raise ValueError('Duplicate source row')
                 volume[rows,cols]=frame['volume'].to_numpy()
-                available[rows,cols]=frame['price_valid'].to_numpy()==1
                 pieces.append(frame)
         backing=pl.concat(pieces).sort(['clock','listing'])
         backing.write_parquet(folder/'backing.parquet')
-        indices,scores=rank_indices(volume,available,args.window,args.top_n)
+        # Every eligible identity has an opening-known prior close. A missing
+        # current price candle must not erase its trailing elapsed-volume rank.
+        indices,scores=rank_indices(volume,None,args.window,args.top_n)
         np.save(folder/'clocks.npy',clocks,allow_pickle=False)
         np.save(folder/'top_indices.npy',indices.astype(np.int32),allow_pickle=False)
         for begin in range(0,len(clocks),args.block_seconds):

@@ -32,22 +32,33 @@ def vector_validity(features):
     return valid
 
 
-def feature_rows(bank,previous,identity,start_us,end_us):
-    """Same certified split/history semantics as CertifiedBank.listing, NumPy only."""
-    from .splits import append_session_flags,rvol_view,history_view
+def feature_slices(bank,previous,identity,start_us,end_us):
+    """Resolve causal row spans before copying any feature values."""
     left,right=bank.manifest['offsets'][identity]
-    clocks=np.asarray(bank.clocks[left:right])
-    values=np.concatenate((bank.scalar[left:right],bank.levels[left:right].reshape(-1,110)),axis=1)
-    values=append_session_flags(rvol_view(values,bank.split_basis[identity]['rvol_price_factor']),bank.split_basis[identity])
+    clocks=np.asarray(bank.clocks[left:right]);prior_count=0;prior_start=0
     if previous is not None and identity in previous.manifest['offsets']:
         a,b=previous.manifest['offsets'][identity];a=max(a,b-119)
-        old=np.concatenate((previous.scalar[a:b],previous.levels[a:b].reshape(-1,110)),axis=1)
-        old=append_session_flags(old,previous.split_basis[identity])
-        old=history_view(rvol_view(old,previous.split_basis[identity]['rvol_price_factor']),bank.split_basis[identity]['history_price_factor'])
         if len(clocks) and b>a and previous.clocks[b-1]>=clocks[0]:raise ValueError('History reaches current/future observations')
-        clocks=np.concatenate((previous.clocks[a:b],clocks));values=np.concatenate((old,values))
+        prior_count=b-a;prior_start=a;clocks=np.concatenate((previous.clocks[a:b],clocks))
     begin=max(0,int(np.searchsorted(clocks,start_us))-119);end=int(np.searchsorted(clocks,end_us,side='right'))
-    return clocks[begin:end],values[begin:end]
+    spans=[]
+    if begin<prior_count and end>begin:
+        spans.append((previous,prior_start+begin,prior_start+min(end,prior_count),True))
+    a=left+max(0,begin-prior_count);b=left+max(0,end-prior_count)
+    if b>a:spans.append((bank,a,b,False))
+    return spans,clocks[begin:end]
+
+
+def feature_rows(bank,previous,identity,start_us,end_us):
+    """Certified split/history semantics, copying only the requested spans."""
+    from .splits import append_session_flags,rvol_view,history_view
+    spans,clocks=feature_slices(bank,previous,identity,start_us,end_us);parts=[]
+    for owner,left,right,historical in spans:
+        values=np.concatenate((owner.scalar[left:right],owner.levels[left:right].reshape(-1,110)),axis=1)
+        values=append_session_flags(rvol_view(values,owner.split_basis[identity]['rvol_price_factor']),owner.split_basis[identity])
+        if historical:values=history_view(values,bank.split_basis[identity]['history_price_factor'])
+        parts.append(values)
+    return clocks,np.concatenate(parts) if parts else np.empty((0,len(CATALOG)),dtype=np.float32)
 
 
 def sparse_market(bars,liquid):
@@ -92,7 +103,7 @@ def bind_session(item,args):
     # Absence of a current price bar must not remove its rolling-volume rank.
     volume=np.zeros((len(clocks),len(members)),dtype=np.float64)
     volume[bars['clock'].to_numpy()-clocks[0],bars['listing'].to_numpy()]=bars['volume'].to_numpy()
-    top,scores=rank_indices(volume,np.ones(volume.shape,dtype=bool),identity['window'],identity['top_n'])
+    top,scores=rank_indices(volume,None,identity['window'],identity['top_n'])
     del volume
     np.save(target/'clocks.npy',clocks,allow_pickle=False);np.save(target/'top_indices.npy',top.astype(np.int32),allow_pickle=False)
     bank=CertifiedBank(item['feature_root'],expected_day=day)
@@ -106,24 +117,28 @@ def bind_session(item,args):
         prior_mapping={k:v['ticker'] for k,v in certificate['listings'].items()}
         if set(prior_mapping)!=set(prior.manifest['offsets']):raise ValueError('Incomplete prior identity context')
         prior.split_basis,prior_split_hash=load_basis(item['previous_split_certificate'],prior,None,prior_mapping,rvol_only=True)
-    chunks=[];offsets=[0];features_bytes=0
+    offsets=[0]
     for listing,row in enumerate(members):
         if mapping['listing_to_ticker'].get(row['listing_id'])!=row['ticker']:raise ValueError('Eligible feature identity changed')
-        stamps,values=feature_rows(bank,prior,row['listing_id'],int(clocks[0])*1000000,int(clocks[-1])*1000000)
+        _,stamps=feature_slices(bank,prior,row['listing_id'],int(clocks[0])*1000000,int(clocks[-1])*1000000)
         if np.any(stamps%1000000) or np.any(np.diff(stamps)<=0):raise ValueError('Feature clock is not a strict completed one-second sequence')
-        valid=vector_validity(values);seconds=stamps//1000000
+        seconds=stamps//1000000
         if (seconds<0).any() or (seconds>=KEY_STRIDE).any():raise ValueError('Feature key clock outside declared envelope')
-        features_bytes+=values.nbytes+valid.nbytes+seconds.nbytes
+        offsets.append(offsets[-1]+len(seconds))
+        features_bytes=offsets[-1]*(len(CATALOG)*5+8)
         if features_bytes>args.maximum_feature_gib*1024**3:raise MemoryError('Compact feature producer exceeds declared memory bound')
-        chunks.append((listing*KEY_STRIDE+seconds,values,valid));offsets.append(offsets[-1]+len(seconds))
     count=offsets[-1]
     if not count:raise ValueError('No certified feature observations')
     feature_keys=np.lib.format.open_memmap(target/'feature_keys.npy',mode='w+',dtype=np.int64,shape=(count,))
     feature_values=np.lib.format.open_memmap(target/'features.npy',mode='w+',dtype=np.float32,shape=(count,len(CATALOG)))
     feature_valid=np.lib.format.open_memmap(target/'feature_valid.npy',mode='w+',dtype=np.bool_,shape=(count,len(CATALOG)))
-    for i,(keys,values,valid) in enumerate(chunks):
-        a,b=offsets[i:i+2];feature_keys[a:b]=keys;feature_values[a:b]=values;feature_valid[a:b]=valid
-    feature_keys.flush();feature_values.flush();feature_valid.flush();del chunks
+    for i,row in enumerate(members):
+        stamps,values=feature_rows(bank,prior,row['listing_id'],int(clocks[0])*1000000,int(clocks[-1])*1000000)
+        a,b=offsets[i:i+2]
+        if len(stamps)!=b-a:raise ValueError('Feature source row spans changed during preparation')
+        feature_keys[a:b]=i*KEY_STRIDE+stamps//1000000
+        feature_values[a:b]=values;feature_valid[a:b]=vector_validity(values)
+    feature_keys.flush();feature_values.flush();feature_valid.flush()
     if np.any(np.diff(feature_keys)<=0):raise ValueError('Feature identity key ordering failed')
     feature_table=pl.DataFrame(dict(feature_row=np.arange(count,dtype=np.int64),listing=(np.asarray(feature_keys)//KEY_STRIDE).astype(np.int32),
         clock=np.asarray(feature_keys)%KEY_STRIDE)).sort('clock')
