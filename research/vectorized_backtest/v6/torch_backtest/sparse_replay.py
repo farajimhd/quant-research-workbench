@@ -105,15 +105,20 @@ class SparseInputs:
                     from .captured_rules import CapturedRules
                     if n not in captures:captures[n]=prepared.capture((n,size,len(CATALOG))) if prepared is not None else CapturedRules(programs,(n,size,len(CATALOG)),self.device)
                     values=captures[n].values;valid=captures[n].valid
-                    values.zero_();valid.zero_()
                 else:
-                    values=torch.zeros((n,size,len(CATALOG)),device=self.device)
-                    valid=torch.zeros_like(values,dtype=torch.bool)
-                indices=torch.zeros((n,size),device=self.device,dtype=torch.int64)
-                core=torch.zeros((n,size),device=self.device,dtype=torch.bool)
-                for i,(warm,begin,end) in enumerate(task):
-                    length=end-warm;values[i,:length]=self.tensors['features'][warm:end];valid[i,:length]=self.tensors['feature_valid'][warm:end]
-                    indices[i,:length]=torch.arange(warm,end,device=self.device);core[i,begin-warm:length]=True
+                    values=torch.empty((n,size,len(CATALOG)),device=self.device)
+                    valid=torch.empty_like(values,dtype=torch.bool)
+                # Gather the complete listing batch in one operation instead of
+                # launching copies/aranges separately for every history chunk.
+                bounds=torch.tensor(task+[(0,0,0)]*(n-len(task)),device=self.device,dtype=torch.int64)
+                position=torch.arange(size,device=self.device)[None]
+                present=position<(bounds[:,2]-bounds[:,0])[:,None]
+                indices=torch.where(present,bounds[:,0,None]+position,0)
+                core=present&(position>=(bounds[:,1]-bounds[:,0])[:,None])
+                torch.index_select(self.tensors['features'],0,indices.reshape(-1),out=values.view(-1,len(CATALOG)))
+                values.masked_fill_(~present[...,None],0)
+                torch.index_select(self.tensors['feature_valid'],0,indices.reshape(-1),out=valid.view(-1,len(CATALOG)))
+                valid.logical_and_(present[...,None])
                 if backend=='cudagraph':
                     signal=torch.where(core[None],captures[n].replay(),0)
                     gates.scatter_add_(1,indices.reshape(1,-1).expand(b,-1),signal.reshape(b,-1))
