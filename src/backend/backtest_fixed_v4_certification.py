@@ -93,7 +93,11 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
         from src.trading_runtime.decimal_snapshot_readback import RULE as DECIMAL_RULE
         from src.trading_runtime.packet_validation_reuse_policy import RULE as REUSE_RULE
         from src.trading_runtime.projected_configuration_reuse_policy import RULE as PROJECTION_REUSE_RULE
-        if PROJECTION_REUSE_RULE in selected_lots.release.rule_set_contracts:
+        from src.trading_runtime.owned_scalar_snapshot_policy import RULE as OWNED_RULE
+        if OWNED_RULE in selected_lots.release.rule_set_contracts:
+            from .backtest_fixed_structural_lot_certification_v16 import certify_fixed_structural_lot_source as certify_owned_source
+            additional_proof = certify_owned_source()
+        elif PROJECTION_REUSE_RULE in selected_lots.release.rule_set_contracts:
             from .backtest_fixed_structural_lot_certification_v15 import certify_fixed_structural_lot_source as certify_fixed_structural_lot_source_v15
             additional_proof = certify_fixed_structural_lot_source_v15()
         elif REUSE_RULE in selected_lots.release.rule_set_contracts:
@@ -1559,6 +1563,8 @@ def _reviewed_fixed_lot_configuration_projection(source: str, name: str, expecte
     from .backtest_fixed_structural_lot_compatibility_v9 import restore_reviewed_parent_source as restore_v9
     from .backtest_fixed_structural_lot_compatibility_v10 import restore_reviewed_parent_source as restore_v10
     from .backtest_fixed_structural_lot_compatibility_v11 import restore_reviewed_parent_source as restore_v11
+    from .backtest_fixed_structural_lot_compatibility_v16 import restore_reviewed_parent_source as restore_v16
+    source = restore_v16(source, 'src/backend/backtest_strategy_one_configuration.py')
     from .backtest_fixed_structural_lot_compatibility_v15 import restore_reviewed_parent_source as restore_v15
     source = restore_v15(source, 'src/backend/backtest_strategy_one_configuration.py')
     from .backtest_fixed_structural_lot_compatibility_v14 import restore_reviewed_parent_source as restore_v14
@@ -1682,6 +1688,8 @@ def _reviewed_fixed_lot_management_projection(source: str, name: str, expected: 
     from .backtest_fixed_structural_lot_compatibility_v9 import restore_reviewed_parent_source as restore_v9
     from .backtest_fixed_structural_lot_compatibility_v10 import restore_reviewed_parent_source as restore_v10
     from .backtest_fixed_structural_lot_compatibility_v11 import restore_reviewed_parent_source as restore_v11
+    from .backtest_fixed_structural_lot_compatibility_v16 import restore_reviewed_parent_source as restore_v16
+    source = restore_v16(source, 'src/backend/backtest_strategy_one_management.py')
     from .backtest_fixed_structural_lot_compatibility_v15 import restore_reviewed_parent_source as restore_v15
     source = restore_v15(source, 'src/backend/backtest_strategy_one_management.py')
     from .backtest_fixed_structural_lot_compatibility_v14 import restore_reviewed_parent_source as restore_v14
@@ -1729,6 +1737,8 @@ def _reviewed_fixed_lot_typed_projection(source: str, name: str, expected: str) 
     from .backtest_fixed_structural_lot_compatibility_v9 import restore_reviewed_parent_source as restore_v9
     from .backtest_fixed_structural_lot_compatibility_v10 import restore_reviewed_parent_source as restore_v10
     from .backtest_fixed_structural_lot_compatibility_v11 import restore_reviewed_parent_source as restore_v11
+    from .backtest_fixed_structural_lot_compatibility_v16 import restore_reviewed_parent_source as restore_v16
+    source = restore_v16(source, 'src/backend/backtest_typed_projection.py')
     from .backtest_fixed_structural_lot_compatibility_v15 import restore_reviewed_parent_source as restore_v15
     source = restore_v15(source, 'src/backend/backtest_typed_projection.py')
     from .backtest_fixed_structural_lot_compatibility_v14 import restore_reviewed_parent_source as restore_v14
@@ -1784,6 +1794,8 @@ _FIXED_LOT_LEGACY_AST_RECIPES = {('backend/backtest_typed_publisher.py', '_drain
 def _reviewed_fixed_lot_ast_recipe(source: str, relative: str, name: str, expected: str) -> bool:
     """Apply only exact reviewed AST edits; complete retained legacy pin remains required."""
     supplied_source = source
+    from .backtest_fixed_structural_lot_compatibility_v16 import restore_reviewed_parent_source as restore_v16
+    source = restore_v16(source, relative)
     from .backtest_fixed_structural_lot_compatibility_v15 import restore_reviewed_parent_source as restore_v15
     source = restore_v15(source, relative)
     from .backtest_fixed_structural_lot_compatibility_v14 import restore_reviewed_parent_source as restore_v14

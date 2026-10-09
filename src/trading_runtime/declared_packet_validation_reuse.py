@@ -17,6 +17,10 @@ _LOCK = RLock()
 def _source_cache(source):
     if not source.installed_json:
         return None
+    from .declared_owned_scalar_snapshot_reuse import declared_owned_scalar_caches
+    owned = declared_owned_scalar_caches(source)
+    if owned is not None:
+        return owned.validation
     strategy = source.installed_payload['strategy']
     manifest = strategy.get('numbered_release', {})
     contract = manifest.get('contract', {})

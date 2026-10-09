@@ -50,12 +50,18 @@ def verify_fixed_structural_lot_configuration(strategy):
     projection_selected = PROJECTION_REUSE_RULE in contract.release.rule_set_contracts
     if projection_selected:
         expected.add('projected_configuration_reuse_policy')
+    from src.trading_runtime.owned_scalar_snapshot_policy import RULE as OWNED_RULE, parse_owned_scalar_snapshot_policy
+    owned_selected = OWNED_RULE in contract.release.rule_set_contracts
+    if owned_selected:
+        expected.add('owned_scalar_snapshot_policy')
     if type(params) is not dict or set(params) != expected:
         raise ValueError('Fixed-lot parameter companions differ')
     if reuse_selected and parse_packet_validation_reuse_policy(params['packet_validation_reuse_policy']) != contract.validation_reuse_policy:
         raise ValueError('Fixed-lot validation reuse bounds differ from registered factory')
     if projection_selected and parse_projected_configuration_reuse_policy(params['projected_configuration_reuse_policy']) != contract.projection_reuse_policy:
         raise ValueError('Projected-node reuse bounds differ from registered factory')
+    if owned_selected and parse_owned_scalar_snapshot_policy(params['owned_scalar_snapshot_policy']) != contract.owned_snapshot_policy:
+        raise ValueError('Owned snapshot bounds differ from registered factory')
     if parse_fixed_structural_lot_policy(params['fixed_structural_lot_policy']) != contract.fixed_structural_lot_policy:
         raise ValueError('Fixed-lot policy differs from exact registered factory')
     manifest = strategy.get('numbered_release')
@@ -135,6 +141,10 @@ def derive_registered_fixed_structural_lot_configuration(parent, *, number,
     projection_selected = PROJECTION_REUSE_RULE in numbered_strategy(number).rule_set_contracts
     if projection_selected:
         from src.trading_runtime.fixed_structural_lot_release_v15 import derive_fixed_structural_lot_release
+    from src.trading_runtime.owned_scalar_snapshot_policy import RULE as OWNED_RULE
+    owned_selected = OWNED_RULE in numbered_strategy(number).rule_set_contracts
+    if owned_selected:
+        from src.trading_runtime.fixed_structural_lot_release_v16 import derive_fixed_structural_lot_release
     contract = declared_fixed_structural_lot_contract(number)
     if contract is None or parent.strategy_number != numbered_strategy_parent(number):
         raise ValueError('Fixed-lot registered parent differs')
@@ -143,6 +153,7 @@ def derive_registered_fixed_structural_lot_configuration(parent, *, number,
         policy=contract.fixed_structural_lot_policy.payload(),
         **({'reuse_policy': contract.validation_reuse_policy} if reuse_selected else {}),
         **({'projection_reuse_policy': contract.projection_reuse_policy} if projection_selected else {}),
+        **({'owned_snapshot_policy': contract.owned_snapshot_policy} if owned_selected else {}),
         approved_code_commit=approved_code_commit,
         approved_code_fingerprint=approved_code_fingerprint, approval_reference=approval_reference)
 

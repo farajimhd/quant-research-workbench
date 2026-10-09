@@ -26,6 +26,10 @@ def require_declared_fixed_structural_lot_contract(contract, release):
     if PROJECTION_INPUT in release.input_contracts or PROJECTION_RULE in release.rule_set_contracts:
         from .fixed_structural_lot_projection_reuse_contract import FixedStructuralLotProjectionReuseStrategyContract
         wanted = FixedStructuralLotProjectionReuseStrategyContract
+    from .owned_scalar_snapshot_policy import INPUT as OWNED_INPUT, RULE as OWNED_RULE
+    if OWNED_INPUT in release.input_contracts or OWNED_RULE in release.rule_set_contracts:
+        from .fixed_structural_lot_owned_snapshot_contract import FixedStructuralLotOwnedSnapshotStrategyContract
+        wanted = FixedStructuralLotOwnedSnapshotStrategyContract
     if type(contract) is not wanted or contract.release != release:
         raise ValueError('Fixed-lot factory differs from exact declared release type')
     contract.__post_init__()
