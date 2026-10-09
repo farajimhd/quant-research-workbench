@@ -1209,6 +1209,21 @@ def initialize_numbered_fixed_strategies() -> None:
                 verify_prepared_strategy_one_hundred_four_configuration,
                 certify_content_source, management_parent_release)))
         register_numbered_strategy(content)
+        from .strategy_one_hundred_five_release import (release_contract as repair_lineage_release,
+            derive_strategy_one_hundred_five_configuration,
+            verify_prepared_strategy_one_hundred_five_configuration)
+        from .strategy_one_hundred_five_contract import strategy_one_hundred_five_contract
+        from src.backend.backtest_fixed_structural_lot_certification_v24 import certify_fixed_structural_lot_source as certify_repair_lineage_source
+        repair_lineage = repair_lineage_release()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=repair_lineage.executor_strategy_id, revision=repair_lineage.executor_revision,
+            evaluation_interval=repair_lineage.evaluation_interval, strategy_factory=_strategy_two_factory,
+            contract_factory=strategy_one_hundred_five_contract,
+            manifest_authority=NativeManifestAuthority(42, 'fixed-structural-lots-from',
+                derive_strategy_one_hundred_five_configuration,
+                verify_prepared_strategy_one_hundred_five_configuration,
+                certify_repair_lineage_source, management_parent_release)))
+        register_numbered_strategy(repair_lineage)
         _NUMBERED_FIXED_REGISTERED = True
 
 

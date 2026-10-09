@@ -1,9 +1,11 @@
 from types import SimpleNamespace as NS
+import asyncio
 
 import pytest
 
 from src.trading_runtime.ibkr_schema import OrderStatus
 from src.trading_runtime.independent_lot_repair_retirement import require_cancelled_repair_readback
+from src.trading_runtime.independent_lot_repair_retirement import record_terminal_repair_readback
 
 
 def packet():
@@ -48,3 +50,36 @@ def test_missing_readback_and_unowned_request_are_rejected():
     group.broker_order_request_indexes['17'] = 1
     with pytest.raises(ValueError, match='ownership'):
         require_cancelled_repair_readback(group, 0, before, after)
+
+
+def test_undeclared_manager_does_not_read_broker_or_change_terminal_state():
+    group, before, _ = packet()
+    group.terminal_broker_order_ids = set()
+    asyncio.run(record_terminal_repair_readback(NS(), group, 0, before))
+    assert group.terminal_broker_order_ids == set()
+
+
+@pytest.mark.parametrize('cancelled', [True, False])
+def test_selected_readback_marks_only_confirmed_terminal_leg(cancelled):
+    group, before, after = packet()
+    group.terminal_broker_order_ids = set()
+    admission_checks = []
+    source = NS(run_id='run', _strategy_id='owned', _revision=7,
+        require_installed_admission=lambda: admission_checks.append(True))
+    if not cancelled:
+        after.order_status = OrderStatus.SUBMITTED
+
+    class Broker:
+        async def live_orders(self):
+            return [after]
+
+    manager = NS(run_id='run', strategy_id='owned', strategy_revision=7,
+        broker=Broker(), _fixed_lot_repair_retirement_source=source)
+    if cancelled:
+        asyncio.run(record_terminal_repair_readback(manager, group, 0, before))
+        assert group.terminal_broker_order_ids == {'17'}
+    else:
+        with pytest.raises(ValueError, match='not terminally'):
+            asyncio.run(record_terminal_repair_readback(manager, group, 0, before))
+        assert group.terminal_broker_order_ids == set()
+    assert admission_checks == [True]

@@ -161,6 +161,8 @@ class NativeFixedStructuralLotOperation:
                 or getattr(runtime,'_fixed_structural_lot_operation',None) is not None):
             raise ValueError('Installed lot operation differs from runtime identity')
         runtime._fixed_structural_lot_operation=self
+        from src.trading_runtime.independent_lot_repair_retirement import bind_retirement_source
+        bind_retirement_source(runtime.order_manager,self.source)
     async def submit(self,runtime,proposal):
         return await runtime.submit_fixed_structural_lot_request(self.request(proposal))
 

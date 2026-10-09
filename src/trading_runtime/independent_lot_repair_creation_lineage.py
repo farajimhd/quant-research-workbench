@@ -10,6 +10,8 @@ RULE = 'independent-lot-repair-creation-lineage@1'
 def metadata_at_creation(group, order, metadata, proofs, *, source, run_id,
                          strategy_id, strategy_revision, sequence, boundary):
     """Opt in only through an exact installed independent-lot declaration."""
+    if order.side != 'SELL' or order.parentId or order.orderType not in {'LMT', 'STP', 'STOP_LIMIT'}:
+        return None
     from .independent_lot_initial_stop_lineage import selected_source
     if not selected_source(source, run_id=run_id, strategy_id=strategy_id,
                            strategy_revision=strategy_revision):

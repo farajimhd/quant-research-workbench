@@ -144,6 +144,13 @@ def canonical_oms_order_metadata(
         strategy_revision=source_strategy_revision)
     if managed is not None:
         return managed
+    from .independent_lot_repair_creation_lineage import metadata_at_creation
+    creation_metadata = metadata_at_creation(group, order, metadata, proofs,
+        source=fixed_lot_source, run_id=source_run_id, strategy_id=source_strategy_id,
+        strategy_revision=source_strategy_revision, sequence=source_sequence,
+        boundary=source_boundary)
+    if creation_metadata is not None:
+        return creation_metadata
     from .independent_lot_initial_stop_lineage import initial_metadata
     initial = initial_metadata(group,order,metadata,proofs,source=fixed_lot_source,
         run_id=source_run_id,strategy_id=source_strategy_id,strategy_revision=source_strategy_revision,

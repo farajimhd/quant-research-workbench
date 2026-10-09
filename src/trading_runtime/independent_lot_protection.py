@@ -138,6 +138,8 @@ async def reconcile_independent_lot_protection(manager, group):
                                 or str(response.get("order_id") or response.get("orderId")) != str(order.orderId)):
                             raise RuntimeError("Ladder repair cancellation is not acknowledged")
                         index = group.broker_order_request_indexes[str(order.orderId)]
+                        from .independent_lot_repair_retirement import record_terminal_repair_readback
+                        await record_terminal_repair_readback(manager, group, index, order)
                         manager._record_protection(group, group.orders[index], phase="effective",
                             broker_order_id=str(order.orderId), active=False)
                 actions.append({"action": "retire_ladder_repair_pair", "lot_id": exposure.lot_id})
