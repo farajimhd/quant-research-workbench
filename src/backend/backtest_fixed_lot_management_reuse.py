@@ -467,6 +467,7 @@ def _frontier(owner):
 
 def _normalized_context_snapshot(owner, bound_entries=None):
     """Only normalized entry/recovery content, never market arrays or tape."""
+    from . import backtest_management_structural_guard as structural
     from src.trading_runtime import fixed_structural_lot_entry_v4 as entry
     from src.trading_runtime import fixed_structural_lot_cold_recovery as cold
     from src.trading_runtime import fixed_structural_lot_warm_proof as warm
@@ -475,12 +476,17 @@ def _normalized_context_snapshot(owner, bound_entries=None):
     recoveries = tuple(getattr(owner.client, 'fixed_lot_recovery_contexts', ()))
     bound = []
     entries = []
+    if bound_entries is not None and (type(bound_entries) is not tuple
+            or any(type(binding) is not tuple or len(binding) != 3 for binding in bound_entries)):
+        raise ValueError('Management normalized entry bindings changed')
     for context in contexts:
         request = None
+        content_guard = None
         if bound_entries is not None:
-            request = next((request for original,request in bound_entries if original is context), None)
-            if request is None:
+            binding = next((binding for binding in bound_entries if binding[0] is context), None)
+            if binding is None:
                 raise ValueError('Management normalized context inventory changed')
+            _, request, content_guard = binding
         else:
             from .backtest_fixed_structural_lot_source import FixedStructuralLotRequest
             for saved in _PROPOSALS.get(owner, {}).values():
@@ -491,10 +497,18 @@ def _normalized_context_snapshot(owner, bound_entries=None):
                     break
             if request is None:
                 request = context.verify_source()  # Complete first authority, never warm admission.
-        bound.append((context,request))
+        # The declared management-reuse scope already verified the complete
+        # original source. Read every mutable normalized descendant on every
+        # subsequent check without rebuilding its typed tree and JSON image.
+        content = (context.unit, context.record)
+        if bound_entries is None:
+            content_guard = structural.capture_management_structural_guard(content)
+        else:
+            structural.require_management_structural_guard(content_guard, content)
+        bound.append((context,request,content_guard))
         entries.append((context, context.source, context.unit, context.record,
             type(context), type(context.unit), type(context.unit.packet), type(context.record),
-            _content((context.unit, context.record)), _entry_content(request),
+            content_guard, _entry_content(request),
             _entry_source_facts(request), _entry_dependencies(request)))
     entries = tuple(entries)
     recovery = []
@@ -524,7 +538,9 @@ def _normalized_context_snapshot(owner, bound_entries=None):
                 _entry_source_facts(request.entry_request), _entry_dependencies(request.entry_request)))
         else:
             raise ValueError('Management recovery context type changed')
-    functions = [_snapshot_tree, _content, _entry_content, _entry_source_facts,
+    functions = [structural.capture_management_structural_guard,
+        structural.require_management_structural_guard, structural.fields, structural.is_dataclass,
+        _snapshot_tree, _content, _entry_content, _entry_source_facts,
         _entry_dependencies, _context_frontier, _policy_snapshot, _factory_dependencies,
         installed_management_reuse_policy, _same_normalized_snapshot, _Decision.require,
         warm._authority, entry.fixed_lot_contexts_by_batch,
@@ -532,17 +548,27 @@ def _normalized_context_snapshot(owner, bound_entries=None):
         management.recovery_contexts_by_batch, management._recovery_content,
         management.NativeFixedStructuralLotManagement.require_recovery,
         cold.require_cold_recovery_context]
-    classes = (entry.FixedStructuralLotPublicationContext, entry.V4FixedStructuralLotEntryBatch,
+    classes = (structural.ManagementStructuralGuard, structural._Node,
+        entry.FixedStructuralLotPublicationContext, entry.V4FixedStructuralLotEntryBatch,
         cold.FixedStructuralLotColdRecoveryContext,
         *(type(context.unit.packet) for context in contexts))
     for cls in classes:
         functions.extend(value for value in cls.__dict__.values()
             if callable(value) and hasattr(value, '__code__'))
     return (_context_frontier(owner), entries, tuple(recovery),
-        tuple((fn, fn.__code__) for fn in functions), tuple(bound))
+        tuple((fn, fn.__code__) for fn in functions), tuple(bound),
+        (structural._ISSUED, structural._Node, structural.ManagementStructuralGuard,
+         structural.fields, structural.is_dataclass, structural.pack, structural.isfinite,
+         structural.Mapping, structural.Enum, structural.Decimal, structural.date,
+         structural.datetime, structural._MAX_NODES, structural._MAX_DEPTH))
 
 
 def _same_normalized_snapshot(before, after):
+    if len(before) != len(after):
+        return False
+    if len(before) > 5 and (len(before[5]) != len(after[5])
+            or any(a is not b for a,b in zip(before[5],after[5],strict=True))):
+        return False
     if before[0] != after[0] or len(before[1]) != len(after[1]) or len(before[2]) != len(after[2]):
         return False
     for old, new in zip(before[1], after[1], strict=True):
