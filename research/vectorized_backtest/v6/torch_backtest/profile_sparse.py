@@ -62,7 +62,10 @@ def main(argv=None):
         measurements=[];previous=None
         for repeat in range(a.repeats):
             torch.cuda.reset_peak_memory_stats();started=perf_counter()
-            metrics=runner.run(steps=a.seconds);torch.cuda.synchronize();elapsed=perf_counter()-started
+            # Full captured sessions include the separately captured remainder;
+            # an explicit prefix is required to contain whole graph blocks.
+            steps=None if a.seconds==len(inputs.arrays['clocks']) else a.seconds
+            metrics=runner.run(steps=steps);torch.cuda.synchronize();elapsed=perf_counter()-started
             measurements.append(dict(repeat=repeat,elapsed_seconds=elapsed,candidate_clock_updates_per_second=a.batch_size*a.seconds/elapsed,
                 peak_allocated_bytes=torch.cuda.max_memory_allocated(),fills=int(runner.fill_count.sum())))
             print(measurements[-1],flush=True)
