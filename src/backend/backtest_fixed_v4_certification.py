@@ -94,7 +94,11 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
         from src.trading_runtime.packet_validation_reuse_policy import RULE as REUSE_RULE
         from src.trading_runtime.projected_configuration_reuse_policy import RULE as PROJECTION_REUSE_RULE
         from src.trading_runtime.owned_scalar_snapshot_policy import RULE as OWNED_RULE
-        if OWNED_RULE in selected_lots.release.rule_set_contracts:
+        from src.trading_runtime.complete_market_window_policy import RULE as WINDOW_RULE
+        if WINDOW_RULE in selected_lots.release.rule_set_contracts:
+            from .backtest_fixed_structural_lot_certification_v18 import certify_fixed_structural_lot_source as certify_complete_source
+            additional_proof = certify_complete_source()
+        elif OWNED_RULE in selected_lots.release.rule_set_contracts:
             from .backtest_fixed_structural_lot_certification_v16 import certify_fixed_structural_lot_source as certify_owned_source
             additional_proof = certify_owned_source()
         elif PROJECTION_REUSE_RULE in selected_lots.release.rule_set_contracts:

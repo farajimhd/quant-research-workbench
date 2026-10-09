@@ -63,14 +63,13 @@ def test_exact_typed_policy_and_complete_release_pair_are_mandatory():
             'release': replace(draft, approved_digest=draft.digest())})
 
 
-def test_prepared_successor_is_unregistered_but_exact_factory_shape_is_recognized():
+def test_registered_successor_requires_the_exact_factory_shape():
     from src.trading_runtime.strategy_registry import numbered_strategy
     from src.trading_runtime.fixed_structural_lot_reuse_contract import require_declared_fixed_structural_lot_contract
-    with pytest.raises(ValueError):
-        numbered_strategy(98)
     factory = strategy_ninety_eight_contract()
+    assert numbered_strategy(98) == factory.release
     assert require_declared_fixed_structural_lot_contract(factory, factory.release) is factory
-    # Type recognition cannot register a release or mint installed source admission.
+    # Type recognition cannot mint installed source admission.
     from src.trading_runtime.strategy_ninety_six_contract import strategy_ninety_six_contract
     with pytest.raises(ValueError, match='exact declared release type'):
         require_declared_fixed_structural_lot_contract(strategy_ninety_six_contract(), factory.release)

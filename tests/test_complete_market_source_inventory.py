@@ -1,4 +1,4 @@
-"""Prepared full inventory deliberately issues no source approval yet."""
+"""Exact sealed source inventory; this is not financial or recovery proof."""
 from pathlib import Path
 
 import pytest
@@ -8,7 +8,7 @@ from src.backend.backtest_fixed_structural_lot_certification_v18 import (
 )
 
 
-def test_complete_market_inventory_contains_reader_and_native_owners_and_stays_closed():
+def test_complete_market_inventory_contains_reader_and_native_owners():
     root = Path(__file__).resolve().parents[1]
     assert len(REQUIRED_SOURCE_FILES) == len(set(REQUIRED_SOURCE_FILES))
     assert all((root / relative).is_file() for relative in REQUIRED_SOURCE_FILES)
@@ -22,5 +22,14 @@ def test_complete_market_inventory_contains_reader_and_native_owners_and_stays_c
         'src/backend/backtest_fixed_structural_lot_native_v18.py',
         'src/trading_runtime/complete_market_window_policy.py',
     )) <= set(REQUIRED_SOURCE_FILES)
-    with pytest.raises(ValueError, match='source seal is unapproved'):
+    proof = certify_fixed_structural_lot_source()
+    assert len(proof) == 64 and set(proof) <= set('0123456789abcdef')
+
+
+def test_loaded_source_metadata_tampering_is_rejected(monkeypatch):
+    from src.backend import backtest_fixed_structural_lot_certification_v18 as authority
+    changed = dict(authority.REVIEWED_SOURCE_AST)
+    changed.pop(next(iter(changed)))
+    monkeypatch.setattr(authority, 'REVIEWED_SOURCE_AST', changed)
+    with pytest.raises(ValueError, match='loaded and fresh declarations differ'):
         certify_fixed_structural_lot_source()
