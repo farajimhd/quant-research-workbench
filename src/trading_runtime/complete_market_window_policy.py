@@ -65,3 +65,37 @@ def declared_complete_market_window_policy(release, value):
     if inputs != 1 or rules != 1:
         raise ValueError('Complete market window input and rule must be paired exactly once')
     return parse_complete_market_window_policy(value)
+
+
+def installed_complete_market_window_policy(source):
+    """Select through an issued installed source, never a caller declaration.
+
+    Unselected sources retain their original reader. A claimed policy fails
+    closed unless source admission, the release and exact factory all agree.
+    """
+    if not source.installed_json:
+        return None
+    strategy = source.installed_payload['strategy']
+    contract = strategy.get('numbered_release', {}).get('contract', {})
+    parameters = strategy['parameters']
+    claimed = ('complete_market_window_policy' in parameters
+        or INPUT in contract.get('input_contracts', ())
+        or RULE in contract.get('rule_set_contracts', ()))
+    if not claimed:
+        return None
+    from src.backend.backtest_fixed_structural_lot_source import require_native_fixed_structural_lot_source
+    from .strategy_registry import numbered_strategy, fixed_strategy_executor
+    from .fixed_structural_lot_reuse_contract import require_declared_fixed_structural_lot_contract
+    from .fixed_structural_lot_complete_market_contract import FixedStructuralLotCompleteMarketStrategyContract
+    require_native_fixed_structural_lot_source(source)
+    source.require_installed_admission()
+    release = numbered_strategy(strategy['strategy_number'])
+    if contract != release.canonical_payload():
+        raise ValueError('Complete market windows differ from issued installed release')
+    policy = declared_complete_market_window_policy(release, parameters.get('complete_market_window_policy'))
+    factory = fixed_strategy_executor(release.executor_strategy_id, release.executor_revision).contract_factory()
+    require_declared_fixed_structural_lot_contract(factory, release)
+    if (type(factory) is not FixedStructuralLotCompleteMarketStrategyContract
+            or factory.complete_market_policy != policy):
+        raise ValueError('Complete market windows differ from exact installed factory')
+    return policy
