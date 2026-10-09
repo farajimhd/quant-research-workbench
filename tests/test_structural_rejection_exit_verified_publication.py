@@ -55,6 +55,91 @@ def test_detail_publication_keeps_verified_companion_on_issuing_client(monkeypat
     assert calls==['head','native','head','head','native','head']
 
 
+def test_dedicated_publisher_passes_complete_verified_graph(monkeypatch):
+    from src.trading_runtime import arte_journal_commit_v4 as commit
+    from src.trading_runtime.arte_journal_writer import _sealed_families,_v4_family_table
+    from src.trading_runtime.arte_structural_rejection_exit_v1 import EXIT
+    issued,client,current,_=fixture(monkeypatch)
+    captured=[]
+    monkeypatch.setattr(commit,'_publish_sealed_batch_v4',
+        lambda *a,**k: captured.append((a,k)) or a[1].batch_id)
+    assert commit.publish_structural_rejection_exit_v4(client,issued.unit,
+        verified_prior_prefix=current['prefix'],
+        first_price_source=issued.profile.owner.price_authority)==issued.unit.base.batch_id
+    args,kwargs=captured[0]
+    assert args[0] is client and args[1] is issued.unit.base
+    assert args[2]==_sealed_families(issued.unit.base)
+    assert args[3]==tuple((_v4_family_table(name),rows) for name,rows in args[2])+((EXIT.name,issued.rows),)
+    verified.require_verified_structural_rejection_exit_publication(
+        kwargs['structural_rejection_exit_context'],client=client)
+
+
+def test_own_exit_is_not_rekeyed_or_combined_with_adjacent_batches(monkeypatch):
+    from src.backend.backtest_typed_publisher import _coalesce_v4_units
+    issued,_,_,_=fixture(monkeypatch)
+    from test_arte_journal_commit_v4 import batch
+    before=batch();after=replace(before,batch_id='00000000-0000-0000-0000-000000000002')
+    result=_coalesce_v4_units((before,issued.unit,after))
+    assert result==(before,issued.unit,after)
+    assert result[1] is issued.unit
+
+
+@pytest.mark.parametrize('kind',('valid','copy','source','profile','run','closed','full'))
+def test_queue_admission_checks_issued_unit_without_cold_reads(monkeypatch,kind):
+    from queue import Queue
+    from threading import Lock
+    from src.trading_runtime.arte_journal_writer import ArteJournalWriter,JournalQueueFull
+    issued,client,_,calls=fixture(monkeypatch)
+    writer=object.__new__(ArteJournalWriter)
+    writer._client=client;writer._run_id=issued.unit.base.run_id
+    writer._journal_profile='backtest_v4';writer._closed=False;writer._error=None
+    writer._submission_lock=Lock();writer._queue=Queue(maxsize=1);writer._accepted_writes=False
+    # The cached price-contract check has its existing dedicated tests; this
+    # fixture isolates the new queue admission from cold reader authorities.
+    checked=[]
+    writer._validate_checkpoint_price_source=lambda source,day:checked.append((source,day))
+    unit=issued.unit;source=issued.profile.owner.price_authority
+    if kind=='copy': unit=replace(unit)
+    elif kind=='source': source=object()
+    elif kind=='profile': writer._journal_profile='live_v4'
+    elif kind=='run': writer._run_id='foreign'
+    elif kind=='closed': writer._closed=True
+    elif kind=='full': writer._queue.put_nowait(('existing',None))
+    initial_calls=list(calls)
+    if kind=='valid':
+        receipt=writer.submit_structural_rejection_exit_v4(unit,first_price_source=source)
+        queued,actual_receipt=writer._queue.get_nowait()
+        assert queued.unit is unit and queued.first_price_source is source
+        assert actual_receipt is receipt and not receipt.done() and writer._accepted_writes
+        assert len(checked)==1
+    else:
+        with pytest.raises((ValueError,RuntimeError,JournalQueueFull)):
+            writer.submit_structural_rejection_exit_v4(unit,first_price_source=source)
+        assert not writer._accepted_writes
+        assert writer._queue.qsize()==(1 if kind=='full' else 0)
+    assert calls==initial_calls
+
+
+@pytest.mark.parametrize('kind',('unissued','rows','base','source','bare'))
+def test_sealed_route_rejects_changed_graph_before_transport(monkeypatch,kind):
+    from src.trading_runtime import arte_journal_commit_v4 as commit
+    from src.trading_runtime.arte_journal_writer import _sealed_families,_v4_family_table
+    from src.trading_runtime.arte_structural_rejection_exit_v1 import EXIT
+    issued,client,current,_=fixture(monkeypatch)
+    base=_sealed_families(issued.unit.base)
+    families=tuple((_v4_family_table(name),rows) for name,rows in base)+((EXIT.name,issued.rows),)
+    context=issued;source=issued.profile.owner.price_authority
+    if kind=='unissued': context=replace(issued)
+    elif kind=='rows': families=families[:-1]+((EXIT.name,()),)
+    elif kind=='base': base=base[:-1]
+    elif kind=='source': source=object()
+    else: context=None
+    with pytest.raises(ValueError):
+        commit._publish_sealed_batch_v4(client,issued.unit.base,base,families,
+            verified_prior_prefix=current['prefix'],first_price_source=source,
+            structural_rejection_exit_context=context)
+
+
 @pytest.mark.parametrize('kind',('missing','batch','live','duplicate','head','rows'))
 def test_detail_publication_rejects_bad_companion_before_any_insert(monkeypatch,kind):
     from src.trading_runtime.arte_journal_commit_v4 import _insert_detail_families_v4

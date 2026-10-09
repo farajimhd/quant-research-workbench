@@ -104,6 +104,7 @@ from src.trading_runtime.arte_profit_giveback_v4 import PROFIT_GIVEBACK, V4Profi
 from src.trading_runtime.arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE, V4ConfirmedAhFailureBatch
 from src.trading_runtime.arte_liquidity_fade_failure_v4 import LIQUIDITY_FADE_FAILURE
 from src.trading_runtime.strategy_liquidity_fade_transport import V4LiquidityFadeFailureBatch
+from src.trading_runtime.structural_rejection_exit_transport import V4StructuralRejectionExitBatch
 from src.trading_runtime.arte_rising_momentum_entry_v4 import MOMENTUM
 from src.trading_runtime.arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM
 from src.trading_runtime.arte_first_price_entry_v4 import FIRST_PRICE, FirstPriceEntryAuthority
@@ -4431,9 +4432,18 @@ class ArteJournalWriter:
         from .selected_exit_publication_policy import requires_selected_followthrough_context_for_client
         from zoneinfo import ZoneInfo
         if (self._journal_profile != 'backtest_v4'
-                or type(unit) not in (V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch, V4LiquidityFadeFailureBatch, V4CompoundBatch, V4FollowThroughFailureBatch)
+                or type(unit) not in (V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch, V4LiquidityFadeFailureBatch, V4CompoundBatch, V4FollowThroughFailureBatch, V4StructuralRejectionExitBatch)
                 or unit.base.run_id != self._run_id):
             raise ValueError('Profit publication requires its exact Backtest writer')
+        if type(unit) is V4StructuralRejectionExitBatch:
+            from .structural_rejection_exit_transport import require_structural_rejection_exit_batch
+            from .profit_armed_structural_rejection_profile import require_native_structural_rejection_profile
+            require_structural_rejection_exit_batch(unit)
+            profile = require_native_structural_rejection_profile(
+                getattr(self._client, 'structural_rejection_profile', None))
+            if (first_price_source is not profile.owner.price_authority
+                    or unit.evidence['strategy_number'] != profile.owner.manager.contract.strategy_number):
+                raise ValueError('Structural rejection submission differs from selected source profile')
         selected_context = requires_selected_followthrough_context_for_client(self._client, unit) if type(unit) in (V4FollowThroughFailureBatch, V4CompoundBatch) else False
         if type(unit) is V4FollowThroughFailureBatch and unit.diagnostic is None and not selected_context:
             raise ValueError('Source-fenced followthrough lane requires selected diagnostic')
@@ -4453,6 +4463,7 @@ class ArteJournalWriter:
         # linked historical exit clocks attest the native market session.
         exits = (unit.children['profit_givebacks'] + unit.children['confirmed_ah_failures'] + unit.children['liquidity_fade_failures'] + selected_failures
                  if type(unit) is V4CompoundBatch else
+                 (unit.evidence,) if type(unit) is V4StructuralRejectionExitBatch else
                  (unit.profit,) if type(unit) is V4ProfitGivebackBatch else
                  (unit.failure,) if type(unit) in (V4LiquidityFadeFailureBatch,V4FollowThroughFailureBatch) else
                  (unit.confirmation,))
@@ -4499,6 +4510,12 @@ class ArteJournalWriter:
         """Queue the native cold verifier on the existing preceding-prefix lane."""
         if type(unit) is not V4LiquidityFadeFailureBatch:
             raise ValueError('Liquidity fade requires its exact typed envelope')
+        return self._submit_profit_publication(unit, first_price_source=first_price_source)
+
+    def submit_structural_rejection_exit_v4(self, unit, *, first_price_source) -> Future[str]:
+        """Queue an issued own exit; all cold reads stay on the writer worker."""
+        if type(unit) is not V4StructuralRejectionExitBatch:
+            raise ValueError('Structural rejection exit requires its issued typed envelope')
         return self._submit_profit_publication(unit, first_price_source=first_price_source)
 
     def submit_oms_tactic_v4(self, unit) -> Future[str]:
@@ -5279,7 +5296,10 @@ class ArteJournalWriter:
                         prefix = verified_batch_predecessor(self._client, prefix, unit.base.batch_id)
                     context = {'verified_prior_prefix': prefix,
                                'first_price_source': queued.first_price_source}
-                    if type(unit) is V4CompoundBatch:
+                    if type(unit) is V4StructuralRejectionExitBatch:
+                        from .arte_journal_commit_v4 import publish_structural_rejection_exit_v4
+                        committed_id = publish_structural_rejection_exit_v4(self._client, unit, **context)
+                    elif type(unit) is V4CompoundBatch:
                         committed_id = publish_compound_v4(self._client, unit,
                             timings_ns=compound_timings_ns, **context)
                     elif type(unit) is V4ConfirmedAhFailureBatch:

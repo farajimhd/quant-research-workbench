@@ -22,6 +22,7 @@ from src.trading_runtime.arte_followthrough_failure_v4 import V4FollowThroughFai
 from src.trading_runtime.arte_profit_giveback_v4 import V4ProfitGivebackBatch
 from src.trading_runtime.arte_confirmed_ah_failure_v4 import V4ConfirmedAhFailureBatch
 from src.trading_runtime.strategy_liquidity_fade_transport import V4LiquidityFadeFailureBatch
+from src.trading_runtime.structural_rejection_exit_transport import V4StructuralRejectionExitBatch
 from src.trading_runtime.arte_journal_writer import (
     ArteJournalWriter, TypedJournalBatch, V3SqueezeBatch,
     V4StrategyOneEntryBatch, V4BrokerAcknowledgementBatch, V4OrderCancelBatch,
@@ -52,7 +53,7 @@ def _coalesce_v4_units(units: tuple, *, max_events: int = 512) -> tuple:
     boundary without weakening live order admission.
     """
     def isolated(unit):
-        return (type(unit) in (V4AutomaticLadderBatch,V4FixedStructuralLotEntryBatch)
+        return (type(unit) in (V4AutomaticLadderBatch,V4FixedStructuralLotEntryBatch,V4StructuralRejectionExitBatch)
             or (isinstance(unit,V4ProtectionReconciliationBatch) and unit.recovery_context is not None))
     if any(isolated(unit) for unit in units):
         # Its financial authority is the exact immediately preceding prefix.
@@ -434,6 +435,7 @@ class BacktestTypedJournalPublisher:
             | V4ProfitGivebackBatch
             | V4ConfirmedAhFailureBatch
             | V4LiquidityFadeFailureBatch
+            | V4StructuralRejectionExitBatch
             | V4PortfolioAllocationBatch | V4ReservationReasonBatch
             | V4BrokerAcknowledgementBatch | V4OrderCancelBatch
             | V4OrderRepriceBatch | V4RiskActionBatch | V4ProtectionChangeBatch
@@ -513,7 +515,7 @@ class BacktestTypedJournalPublisher:
                 for unit in batches:
                     batch = unit.base if isinstance(
                         unit, (V3SqueezeBatch, V4CompoundBatch, V4AutomaticLadderBatch, V4FixedStructuralLotEntryBatch,
-                               V4StrategyOneEntryBatch, V4FollowThroughFailureBatch, V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch, V4LiquidityFadeFailureBatch,
+                               V4StrategyOneEntryBatch, V4FollowThroughFailureBatch, V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch, V4LiquidityFadeFailureBatch, V4StructuralRejectionExitBatch,
                                V4OmsTacticBatch,
                                V4PortfolioAllocationBatch, V4ReservationReasonBatch,
                                V4BrokerAcknowledgementBatch, V4OrderCancelBatch,
@@ -546,6 +548,9 @@ class BacktestTypedJournalPublisher:
                                else self.writer.submit_confirmed_ah_exit_v4(unit,
                                     first_price_source=self._first_price_source)
                                if isinstance(unit, V4ConfirmedAhFailureBatch)
+                               else self.writer.submit_structural_rejection_exit_v4(unit,
+                                    first_price_source=self._first_price_source)
+                               if type(unit) is V4StructuralRejectionExitBatch
                                else self.writer.submit_liquidity_fade_exit_v4(unit,
                                     first_price_source=self._first_price_source)
                                if isinstance(unit, V4LiquidityFadeFailureBatch)
@@ -655,6 +660,14 @@ class BacktestTypedJournalPublisher:
                             if sidecar is None:
                                 raise RuntimeError('Committed AH confirmation lost its immutable source')
                             intent, _, _, _, _ = sidecar
+                            self._committed_strategy_intents[intent.intent_id] = (
+                                _committed_intent_source(batch, parent_id), intent)
+                        elif type(source_unit) is V4StructuralRejectionExitBatch:
+                            parent_id = source_unit.base.events[0]['record_id']
+                            sidecar = self.journal.structural_rejection_exit_for_record(parent_id)
+                            if sidecar is None:
+                                raise RuntimeError('Committed structural rejection exit lost its frozen source')
+                            intent = sidecar.intent
                             self._committed_strategy_intents[intent.intent_id] = (
                                 _committed_intent_source(batch, parent_id), intent)
                         elif isinstance(source_unit, V4LiquidityFadeFailureBatch):

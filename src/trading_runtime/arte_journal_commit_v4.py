@@ -2346,6 +2346,21 @@ def _insert_detail_families_v4(client, batch, pending, *, journal_profile,
                 lane.close()
 
 
+def publish_structural_rejection_exit_v4(client, unit, *, verified_prior_prefix,
+                                       first_price_source):
+    """Publish an issued own exit; ordinary typed batches remain inadmissible."""
+    from .arte_journal_writer import _sealed_families, _v4_family_table
+    from .structural_rejection_exit_verified_publication import issue_verified_structural_rejection_exit_publication
+    context = issue_verified_structural_rejection_exit_publication(client, unit,
+        verified_prior_prefix=verified_prior_prefix, first_price_source=first_price_source)
+    base = _sealed_families(unit.base)
+    families = tuple((_v4_family_table(name), rows) for name, rows in base)
+    families += ((STRUCTURAL_REJECTION_EXIT.name, context.rows),)
+    return _publish_sealed_batch_v4(client, unit.base, base, families,
+        verified_prior_prefix=verified_prior_prefix, first_price_source=first_price_source,
+        structural_rejection_exit_context=context)
+
+
 def _publish_sealed_batch_v4(client, batch, base_families, families, *,
                              timings_ns: dict[str, int] | None = None,
                              first_price_authorities: tuple = (),
@@ -2353,7 +2368,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
                              first_price_source=None, automatic_ladder_sources=(),
                              automatic_ladder_read_client=None,
                              declared_native_context=None, fixed_lot_context=None,
-                             fixed_lot_recovery_context=None) -> str:
+                             fixed_lot_recovery_context=None,
+                             structural_rejection_exit_context=None) -> str:
     """Publish one sealed normalized family graph under a Keeper fence."""
     if fixed_lot_recovery_context is not None:
         from src.backend.backtest_fixed_structural_lot_management import require_recovery_client
@@ -2366,6 +2382,22 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
 
     from .arte_declared_native_publication import verify_declared_publication_graph
     verify_declared_publication_graph(batch, base_families, families, declared_native_context)
+    from .profit_armed_structural_rejection_exit import REASON as structural_rejection_reason
+    own_rows = dict(families).get(STRUCTURAL_REJECTION_EXIT.name, ())
+    if (own_rows or structural_rejection_exit_context is not None
+            or any(row.get('reason') == structural_rejection_reason
+                   for row in dict(base_families).get('trading_strategy_intent_v1', ()))):
+        from .structural_rejection_exit_verified_publication import reverify_structural_rejection_exit_publication
+        context = reverify_structural_rejection_exit_publication(
+            structural_rejection_exit_context, client=client)
+        from .arte_journal_writer import _sealed_families, _v4_family_table
+        expected_base = _sealed_families(context.unit.base)
+        expected = tuple((_v4_family_table(name), rows) for name, rows in expected_base)
+        expected += ((STRUCTURAL_REJECTION_EXIT.name, context.rows),)
+        if (batch is not context.unit.base or base_families != expected_base
+                or first_price_source is not context.profile.owner.price_authority
+                or families != expected):
+            raise ValueError('Structural rejection publication changed its complete issued graph')
     if (fixed_lot_context is not None
             or any(name.startswith('trading_fixed_structural_lot_') and rows for name, rows in families)
             or any(row.get('entity_type') == 'fixed_structural_lot_entry_intent'
@@ -2421,7 +2453,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
         dict(base_families).get('trading_strategy_intent_v1', ()),
         dict(base_families).get('trading_event_v1', ()), run_id=batch.run_id,
         source=getattr(first_price_source, 'entry_spread_risk_source', None))
-    if any(name in (PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name, LIQUIDITY_FADE_FAILURE.name) and rows for name, rows in families):
+    if any(name in (PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name, LIQUIDITY_FADE_FAILURE.name,
+                   STRUCTURAL_REJECTION_EXIT.name) and rows for name, rows in families):
         if (live_lease is not None or type(verified_prior_prefix) is not V4CommittedPrefix
                 or verified_prior_prefix.run_id != batch.run_id
                 or verified_prior_prefix.status != 'running'
@@ -2511,7 +2544,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
             raise RuntimeError("V4 typed detail conflicts with a prior attempt")
         if not identities:
             pending.append((name, rows))
-    _insert_detail_families_v4(client, batch, pending, journal_profile=profile)
+    _insert_detail_families_v4(client, batch, pending, journal_profile=profile,
+        structural_rejection_exit_context=structural_rejection_exit_context)
     mark_stage("detail_insert")
     actual_details = _load_verified_details_v4(
         client, run_id=batch.run_id, batch_id=batch.batch_id,
