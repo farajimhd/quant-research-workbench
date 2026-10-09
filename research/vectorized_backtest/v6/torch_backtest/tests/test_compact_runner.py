@@ -10,7 +10,7 @@ from research.vectorized_backtest.v6.torch_backtest.genome import NAMES
 from research.vectorized_backtest.v6.torch_backtest.runtime import file_hash
 
 
-def compare(*,cycling=False,population=1,compiled=False,structure=None,capacity=2,swing=False):
+def compare(*,cycling=False,population=1,compiled=False,structure=None,capacity=2,swing=False,cuda=False):
     tape,x,space,member,gates=fixture();x.offsets=np.array([0,60,120])
     x.arrays['top_indices']=x.arrays['top_indices'].astype(np.int32)
     x.tensors['top_indices']=torch.tensor(x.arrays['top_indices'])
@@ -45,15 +45,22 @@ def compare(*,cycling=False,population=1,compiled=False,structure=None,capacity=
     if population>1:
         gates[1,:20]=0;dense[:20,1]=0
     reference=ProgramRunner(tape,space,members,dense,maximum_fills=512)
-    compact=CompactProgramRunner(x,space,members,gates,holding_capacity=capacity,structure=structure,maximum_fills=512)
+    if cuda:
+        from research.vectorized_backtest.v6.torch_backtest.runtime import DEFAULT,configure_caches
+        configure_caches(DEFAULT/'tests'/'shared-history-cuda')
+        x.device=torch.device('cuda',torch.cuda.current_device())
+        x.tensors={k:v.to(x.device) for k,v in x.tensors.items()};x.market={k:v.to(x.device) for k,v in x.market.items()}
+        gates=gates.to(x.device)
+    compact=CompactProgramRunner(x,space,members,gates,holding_capacity=capacity,structure=structure,maximum_fills=512,backend='cudagraph' if cuda else 'eager')
+    if cuda:compact.compile()
     if compiled:compact.step=torch.compile(compact.tick,backend='eager',fullgraph=True)
     before=reference.run();after=compact.run()
     assert int(reference.fill_count.sum())>0
     for lane in range(population):
         count=int(reference.fill_count[lane])
-        torch.testing.assert_close(reference.ledger[lane,:count],compact.ledger[lane,:count],rtol=0,atol=0)
+        torch.testing.assert_close(reference.ledger[lane,:count],compact.ledger[lane,:count].cpu(),rtol=0,atol=0)
     for name,value in before.items():
-        if isinstance(value,torch.Tensor):torch.testing.assert_close(value,after[name],rtol=0,atol=0,equal_nan=True,msg=name)
+        if isinstance(value,torch.Tensor):torch.testing.assert_close(value,after[name].cpu(),rtol=0,atol=0,equal_nan=True,msg=name)
     return compact
 
 
@@ -88,6 +95,11 @@ def test_compact_capacity_exhaustion_rejects_result():
 def test_shared_swing_pairs_match_all_candidate_financial_windows(compiled):
     runner=compare(population=50,swing=True,compiled=compiled)
     assert runner.source_swing.shape==(25,2)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA capture qualification')
+def test_shared_swing_history_cuda_capture_exact_financial_parity():
+    compare(population=50,swing=True,cuda=True)
 
 
 def test_sparse_population_reuse_changes_parameters_and_gates_exactly():
