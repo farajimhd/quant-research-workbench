@@ -23,7 +23,7 @@ def compare(reference,target):
     for name,values in before['metrics'].items():
         if name=='closed_position_pnl_samples':
             if len(values)!=len(after['metrics'][name]):raise ValueError('Position sample lanes changed')
-            for actual,reference in zip(after['metrics'][name],values):assert_metric_equal(actual,reference)
+            for actual_samples,expected_samples in zip(after['metrics'][name],values):assert_metric_equal(actual_samples,expected_samples)
         elif name=='closed_position_duration_samples':
             if values!=after['metrics'][name]:raise ValueError('Holding samples changed')
         else:
