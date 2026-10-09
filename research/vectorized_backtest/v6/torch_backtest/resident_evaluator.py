@@ -28,7 +28,7 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
         self.backend=backend
 
     def contract(self,training,workers):
-        if type(workers) is not int or not 1<=workers<=4:raise ValueError('Unqualified resident concurrency')
+        if type(workers) is not int or not 1<=workers<=30:raise ValueError('Resident concurrency must be within the training-session count')
         result=super().contract(training,workers)
         result['capture_barrier']='all resident graphs prepared before concurrent replay'
         return result
@@ -90,18 +90,24 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
                     candidate_offset=offset,population=len(population),active=len(jobs),validation_opened=False))
                 def execute(job):
                     session,folder,runner,rule_seconds,stream=job
+                    replay_started=perf_counter()
                     with torch.cuda.stream(stream):
                         result=runner.run();stream.synchronize()
+                        replay_seconds=perf_counter()-replay_started
+                        audit_started=perf_counter()
                         record=seal_batch(runner,result,session,token,offset,folder,rule_seconds)
-                    return session['day'],folder,record
+                    return session['day'],folder,record,dict(day=session['day'],replay_and_position_report_seconds=replay_seconds,
+                        seal_and_financial_audit_seconds=perf_counter()-audit_started,rule_seconds=rule_seconds,
+                        captured_preparation_seconds=runner.setup_seconds,clocks=len(runner.tape.clocks))
+                timings=[]
                 with ThreadPoolExecutor(max_workers=workers) as pool:
                     futures=[pool.submit(execute,job) for job in jobs]
                     for future in futures:
-                        day,folder,record=future.result()
+                        day,folder,record,timing=future.result();timings.append(timing)
                         parts[day].append(record['metrics']);batches[day].append(dict(directory=folder.name,sha256=file_hash(folder/'receipt.json')))
                 torch.cuda.synchronize(self.device)
                 measurements.append(dict(sessions=[s['day'] for s in sessions],candidate_offset=offset,candidates=len(members),
-                    setup_seconds=setup,replay_and_audit_seconds=perf_counter()-started,active=len(jobs)))
+                    setup_seconds=setup,replay_and_audit_seconds=perf_counter()-started,active=len(jobs),session_timings=timings))
                 # Release graphs, rule gates and account state before the next batch.
                 del jobs,futures
                 if 'runner' in locals():del runner,gates

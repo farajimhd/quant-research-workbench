@@ -42,12 +42,14 @@ def main(argv=None):
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--population',type=int,default=128);p.add_argument('--batch-size',type=int,default=128)
     p.add_argument('--session-count',type=int,default=2);p.add_argument('--workers',type=int,default=2)
+    p.add_argument('--worker-counts',help='Comma-separated resident concurrency sweep, for example 2,4,8,16')
     p.add_argument('--holding-capacity',type=int,default=40);p.add_argument('--maximum-fills',type=int,default=16384)
     p.add_argument('--backend',choices=['compile','cudagraph','compiled_graph'],default='compiled_graph')
     p.add_argument('--seed',type=int,default=2236)
     p.add_argument('--maximum-input-gib',type=float,default=4.);p.add_argument('--maximum-state-gib',type=float,default=4.)
     a=p.parse_args(argv)
-    if not 2<=a.session_count<=30 or not 1<=a.workers<=min(4,a.session_count) or a.population<1:
+    worker_counts=[a.workers] if a.worker_counts is None else [int(v) for v in a.worker_counts.split(',')]
+    if not worker_counts or len(set(worker_counts))!=len(worker_counts) or not 2<=a.session_count<=30 or any(not 1<=w<=a.session_count for w in worker_counts) or a.population<1:
         raise ValueError('Invalid bounded profiling dimensions')
     root=require_runtime(a.output)
     if (root/'identity.json').exists():raise ValueError('Use a new immutable profile identity')
@@ -66,7 +68,14 @@ def main(argv=None):
             population_sha256=population_hash(members),validation_opened=False,optimization_started=False))
         write_json(root/'population.json',[v.payload() for v in members])
         rows=[]
-        for mode,workers in (('serial-cold',1),('serial-warm',1),('concurrent-warm',a.workers)):
+        audits=[]
+        modes=[('serial-cold',1),('serial-warm',1)]+[(f'concurrent-warm-{w}',w) for w in worker_counts]
+        for mode,workers in modes:
+            try:evaluate.contract(sessions,workers)
+            except MemoryError as error:
+                rows.append(dict(mode=mode,status='rejected_memory_envelope',reason=str(error)))
+                write_json(root/'measurements.json',rows);print(rows[-1],flush=True)
+                continue
             destination=require_runtime(root/mode)
             write_json(root/'status.json',dict(stage=mode,sessions=days,workers=workers,validation_opened=False))
             torch.cuda.synchronize();torch.cuda.reset_peak_memory_stats();started=perf_counter()
@@ -78,7 +87,8 @@ def main(argv=None):
             row=dict(mode=mode,elapsed_seconds=perf_counter()-started,peak_allocated_bytes=torch.cuda.max_memory_allocated(),
                 peak_reserved_bytes=torch.cuda.max_memory_reserved(),candidate_sessions=a.population*len(days))
             rows.append(row);write_json(root/'measurements.json',rows);print(row,flush=True)
-        audits=[compare_sessions(root/'serial-warm'/day,root/'concurrent-warm'/day) for day in days]
+            if mode.startswith('concurrent-warm'):
+                audits.extend(dict(workers=workers,**compare_sessions(root/'serial-warm'/day,destination/day)) for day in days)
         write_json(root/'receipt.json',dict(status='complete',measurements=rows,audits=audits,validation_opened=False,
             optimization_started=False,backend=a.backend,limitations=['Training-only throughput evidence']))
         write_json(root/'status.json',dict(status='complete',stage='Exact full-session concurrency audit passed',validation_opened=False))
