@@ -1,8 +1,9 @@
 # V6 causal compact-market optimization (implementation in progress)
 
-V6 is an isolated source copy of V5 plus the new training materializer. The
-inherited search/replay modules have not yet been adapted or qualified for V6.
-Do not launch optimization from them. V5 immutable deployments are untouched.
+V6 has certified sparse training inputs, six lifecycle programs, semantic
+sampling, management orders and a signed lower-tail dollar objective. The
+inherited staged search is not the V6 full-training controller: do not launch
+optimization from it. V5 immutable deployments are untouched.
 
 First runnable producer:
 
@@ -30,10 +31,25 @@ These first blocks are deliberately marked `ready_for_replay=false`: feature
 history, execution quotes and held/pending-order binding remain required.
 V5 must not stop merely because these preliminary blocks are complete.
 
-Remaining implementation: compact GPU replay with identity-preserving holding
-slots and pending orders; six lifecycle programs including adds/reductions;
-semantic sampling and conditional/frozen genes; full-training generation
-evaluation with bounded session concurrency; lower-tail-profit objective;
-50-row ranking pages and session/complete-position diagnostics; equivalence,
-causality and financial qualification; measured population/generation report.
+`compact_prepare` binds all causal feature history and certified quote/fill
+evidence. `sparse_runner` is a profiling baseline with stable daily-union broker
+state and sparse market/gate lookups; it avoids full-time dense market and gate
+tensors, but does not yet implement the final top-N-plus-held state allocator.
+Dense-reference fixtures verify exact fills/financial metrics including a
+departed holding and raw structural targets. `sparse_structure` prepares raw
+V7 structural targets outside replay with opening-known references; absent
+certified prior seeds are explicitly masked. Sidecars bind exact market keys
+and receipt hashes. Structural modes fail closed without this sidecar.
+
+`training_pass` supplies a bounded concurrent all-30-session selection barrier
+and the lower-tail objective; its independent evaluator integration and durable
+generation/resume controller remain to be completed. Terminal 50-row pages and
+session/complete-position diagnostics are implemented.
+
+`profile_sparse` is workstation-CUDA profiling only, with explicit percentage
+target stratification unless a structural sidecar is supplied. Short profiles
+are timing evidence, not profitability or full-generation throughput evidence.
+Remaining qualification includes representative full-session GPU financial
+audits, all-target sidecars, held-state compaction, concurrency and the measured
+population/generation report.
 Full optimization requires the user's final parameter decision.
