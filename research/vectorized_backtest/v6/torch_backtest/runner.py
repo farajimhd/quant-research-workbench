@@ -80,7 +80,7 @@ class SqueezeRunner:
         self.slots=slot_capacity
         self.shape = (self.b, self.n, self.slots)
         # Include four distinct exit-order commission histories and bounded logs.
-        estimate = self.b * self.n * self.slots * 364 + self.b * maximum_fills * 9 * 8
+        estimate = self.b * self.n * self.slots * 480 + self.b * maximum_fills * 9 * 8
         if ledger_mode != "atomic":
             estimate += self.b * self.n * self.slots * 9 * 8
         if (
@@ -118,6 +118,10 @@ class SqueezeRunner:
             "requested_quantity",
             "remaining",
             "buy_filled",
+            "buy_order_filled",
+            "reduce_remaining",
+            "add_count",
+            "management_at",
             "buy_submitted",
             "buy_deadline",
             "buy_created",
@@ -140,8 +144,8 @@ class SqueezeRunner:
             "entry_reference",
         ):
             state(name, self.shape)
-        state("exit_filled", self.shape + (4,), torch.int64)
-        state("exit_paid", self.shape + (4,))
+        state("exit_filled", self.shape + (5,), torch.int64)
+        state("exit_paid", self.shape + (5,))
         for name in ("used", "previous_above", "previous_valid"):
             state(name, (self.b, self.n), torch.bool)
         for name in ("hold_since", "retest_phase", "retest_at"):
@@ -440,11 +444,12 @@ class SqueezeRunner:
             & (sell_price > 0)
         )
         eligible_sell &= (self.exit_kind != 1) | (sell_price >= self.target)
-        discretionary = (self.exit_kind == 1) | (self.exit_kind == 3)
+        discretionary = (self.exit_kind == 1) | (self.exit_kind == 3) | (self.exit_kind == 5)
         eligible_sell &= ~discretionary | (
             now - self.first_fill >= s.minimum_position_hold_seconds
         )
-        wanted = torch.where(eligible_sell, self.quantity, 0)
+        desired_exit=torch.where(self.exit_kind==5,torch.minimum(self.quantity,self.reduce_remaining),self.quantity)
+        wanted = torch.where(eligible_sell, desired_exit, 0)
         sold = proportional_fill(wanted, capacity)
         role = (self.exit_kind - 1).clamp_min(0)[..., None]
         old_filled = self.exit_filled.gather(-1, role).squeeze(-1)
@@ -468,12 +473,14 @@ class SqueezeRunner:
             (sold * (now - self.first_fill).clamp_min(0)).sum((1, 2))
         )
         self.quantity.sub_(sold)
+        self.reduce_remaining.copy_(torch.where(self.exit_kind==5,(self.reduce_remaining-sold).clamp_min(0),0))
         # Any protective/rotation/terminal exit cancels the unfilled parent.
         self.exit_cancelled_entry_shares.add_(
             torch.where(self.exit_kind > 0, self.remaining, 0).sum((1, 2))
         )
         self.remaining.copy_(torch.where(self.exit_kind > 0, 0, self.remaining))
         self.exit_kind.copy_(torch.where(self.quantity > 0, self.exit_kind, 0))
+        self.exit_kind.copy_(torch.where((self.exit_kind==5)&(self.reduce_remaining==0),0,self.exit_kind))
         age_ok = (now > self.buy_submitted) & (now <= self.buy_deadline)
         allowed = age_ok & (self.remaining > 0) & executable[None, :, None]
         allowed &= (
@@ -494,7 +501,7 @@ class SqueezeRunner:
         wanted = torch.minimum(wanted, self.remaining)
         # All orders in one account share the SAME interval volume budget.
         bought = proportional_fill(wanted, (capacity - sold.sum(-1)).clamp_min(0))
-        cumulative = self.buy_filled + bought
+        cumulative = self.buy_order_filled + bought
         buy_fee = torch.where(
             bought > 0,
             torch.maximum(
@@ -523,7 +530,8 @@ class SqueezeRunner:
         self.first_fill.copy_(torch.where(first, now, self.first_fill))
         self.last_high.copy_(torch.where(first, now, self.last_high))
         self.peak_price.copy_(torch.where(first, buy_price, self.peak_price))
-        self.buy_filled.copy_(cumulative)
+        self.buy_filled.add_(bought)
+        self.buy_order_filled.copy_(cumulative)
         self.buy_paid.add_(buy_fee)
         self.remaining.sub_(bought)
         # Expiry is finalized after completed evidence is evaluated below.
@@ -580,7 +588,7 @@ class SqueezeRunner:
         """
         remainder_update(
                 self.remaining.flatten(1),
-                self.buy_filled.flatten(1),
+                self.buy_order_filled.flatten(1),
                 self.buy_created.flatten(1),
                 self.buy_retries.flatten(1),
                 self.buy_last_retry.flatten(1),
@@ -817,7 +825,7 @@ class SqueezeRunner:
         remaining_fee = (
             torch.maximum(
                 torch.full_like(self.buy_paid, s.minimum_order_fee),
-                (self.buy_filled + self.remaining).to(torch.float64) * s.fee_per_share,
+                (self.buy_order_filled + self.remaining).to(torch.float64) * s.fee_per_share,
             )
             - self.buy_paid
         ).clamp_min(0)

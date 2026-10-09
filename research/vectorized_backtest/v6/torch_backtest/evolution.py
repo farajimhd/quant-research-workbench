@@ -1,5 +1,5 @@
 """Seed-owned variable ruleset construction and bounded insert/delete mutation."""
-from dataclasses import dataclass
+from dataclasses import dataclass,field
 import numpy as np
 from .feature_bank import CATALOG
 from .program import Node,Program,Op,WINDOWS,MAX_NODES
@@ -7,7 +7,13 @@ from .genome import StrategySpace
 from dataclasses import replace
 import math
 
-STAGES=('entry','exit','trail','replacement')
+STAGES=('entry','exit','trail','replacement','add','reduce')
+
+MANAGEMENT_BOUNDS=dict(add_fraction=(.05,1.,False),maximum_adds=(1,5,True),
+    add_minimum_profit_fraction=(0.,.25,False),reduce_fraction=(.05,1.,False),
+    reduce_minimum_profit_fraction=(0.,.50,False),management_cooldown_seconds=(3,300,True))
+MANAGEMENT_DEFAULT=dict(add_fraction=.25,maximum_adds=2,add_minimum_profit_fraction=.01,
+    reduce_fraction=.25,reduce_minimum_profit_fraction=.02,management_cooldown_seconds=30)
 
 SAMPLING_CONTRACT='v6-semantic-relative-local-conditional-v1'
 
@@ -122,15 +128,32 @@ def compose(clauses,connectors):
         if root is None:root=output
         else:
             nodes.append(Node(connectors[index-1],a=root,b=output));root=len(nodes)-1
-    return Program(tuple(nodes),root).validate(CATALOG) and Program(tuple(nodes),root)
+    # Common expressions and boolean idempotence are exact, including masks.
+    canonical=[];lookup={};references={}
+    for index,node in enumerate(nodes):
+        fixed=replace(node,a=references[node.a] if node.a>=0 else -1,b=references[node.b] if node.b>=0 else -1)
+        if fixed.op in (Op.AND,Op.OR) and fixed.a==fixed.b:references[index]=fixed.a;continue
+        if fixed.op==Op.NOT and canonical[fixed.a].op==Op.NOT:references[index]=canonical[fixed.a].a;continue
+        if fixed not in lookup:lookup[fixed]=len(canonical);canonical.append(fixed)
+        references[index]=lookup[fixed]
+    root=references[root];reachable=set()
+    def visit(index):
+        if index in reachable:return
+        reachable.add(index);node=canonical[index]
+        for source in (node.a,node.b):
+            if source>=0:visit(source)
+    visit(root);ordered=sorted(reachable);remap={old:new for new,old in enumerate(ordered)}
+    compact=tuple(replace(canonical[i],a=remap[canonical[i].a] if canonical[i].a>=0 else -1,b=remap[canonical[i].b] if canonical[i].b>=0 else -1) for i in ordered)
+    program=Program(compact,remap[root]);program.validate(CATALOG);return program
 
 @dataclass
 class Individual:
     policy:list
     clauses:dict
     connectors:dict
+    management:dict=field(default_factory=lambda:dict(MANAGEMENT_DEFAULT))
     def programs(self):return {s:compose(self.clauses[s],self.connectors[s]) for s in STAGES}
-    def payload(self):return dict(policy=self.policy,programs={s:p.payload() for s,p in self.programs().items()})
+    def payload(self):return dict(policy=self.policy,management=self.management,programs={s:p.payload() for s,p in self.programs().items()})
 
 def sample(rng,space,count,features=None):
     policies=space.sample(rng,count)
@@ -142,7 +165,8 @@ def sample(rng,space,count,features=None):
         policy=conditional_policy(policy,space)
         clauses={s:[usable_condition(rng,features) for _ in range(int(rng.integers(1,4)))] for s in STAGES}
         connectors={s:[int(rng.choice([Op.AND,Op.OR])) for _ in range(len(clauses[s])-1)] for s in STAGES}
-        out.append(Individual(policy,clauses,connectors))
+        management={name:int(rng.integers(lo,hi+1)) if integer else float(rng.uniform(lo,hi)) for name,(lo,hi,integer) in MANAGEMENT_BOUNDS.items()}
+        out.append(Individual(policy,clauses,connectors,management))
     return out
 
 def mutate(rng,parent,space,features=None):
@@ -182,9 +206,13 @@ def mutate(rng,parent,space,features=None):
             chunk[root]=replace(node,op=int(rng.choice([Op.GREATER,Op.GREATER_EQUAL,Op.LESS,Op.LESS_EQUAL,Op.CROSS_ABOVE,Op.CROSS_BELOW])))
     else:
         index=int(rng.integers(len(clauses[stage])));clauses[stage][index]=usable_condition(rng,features)
-    child=Individual(policy,clauses,connectors)
+    management=dict(parent.management)
+    name=list(MANAGEMENT_BOUNDS)[int(rng.integers(len(MANAGEMENT_BOUNDS)))];lo,hi,integer=MANAGEMENT_BOUNDS[name]
+    proposal=float(np.clip(management[name]+rng.normal(0,.05*(hi-lo)),lo,hi))
+    management[name]=int(round(proposal)) if integer else proposal
+    child=Individual(policy,clauses,connectors,management)
     try:
         child.programs()
         if any(reject_degenerate(chunk) for rows in clauses.values() for chunk,_ in rows):raise ValueError('Degenerate mutation')
-    except ValueError:return Individual(policy,parent.clauses,parent.connectors)
+    except ValueError:return Individual(policy,parent.clauses,parent.connectors,management)
     return child

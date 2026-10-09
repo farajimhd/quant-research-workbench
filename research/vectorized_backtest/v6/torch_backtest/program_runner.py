@@ -5,6 +5,58 @@ from .evolution import STAGES
 from .position_metrics import duration_summary
 
 class ProgramRunner(SearchRunner):
+    def tick(self):
+        now=self.tape.clocks.index_select(0,self.index.reshape(1)).squeeze(0)
+        ask,bid,quote,observed=self._row('ask'),self._row('bid'),self._row('quote_valid'),self._row('observed')
+        add,reduce,exit=self._program_gate('add'),self._program_gate('reduce'),self._program_gate('exit')
+        super().tick()
+        self._manage_positions(now,ask,bid,quote&observed,add,reduce,exit)
+
+    def _manage_positions(self,now,ask,bid,valid,add,reduce,exit):
+        s=self.settings
+        def value(name):return self.management_columns[name][:,None,None]
+        live=(self.quantity>0)&valid[None,:,None]&(self.remaining==0)&(self.exit_kind==0)
+        live&=(now-self.first_fill>=s.minimum_position_hold_seconds)&(now-self.management_at>=value('management_cooldown_seconds'))
+        terminal=now>=self.end_boundary-self._value('terminal_exit_lead_seconds',3)
+        live&=~terminal
+        profitable=bid[None,:,None]>=self.average*(1+value('reduce_minimum_profit_fraction'))
+        reduce_mask=live&reduce[...,None]&profitable&~exit[...,None]
+        amount=torch.floor(self.quantity*value('reduce_fraction')).to(torch.int64)
+        reduce_mask&=amount>0
+        self.reduce_remaining.copy_(torch.where(reduce_mask,amount,self.reduce_remaining))
+        self.exit_filled[...,4].copy_(torch.where(reduce_mask,0,self.exit_filled[...,4]))
+        self.exit_paid[...,4].copy_(torch.where(reduce_mask,0,self.exit_paid[...,4]))
+        self.exit_kind.copy_(torch.where(reduce_mask,5,self.exit_kind))
+        # A full discretionary exit supersedes an unfinished profit reduction.
+        full=exit[...,None]&(self.quantity>0)&(self.exit_kind==5)
+        self.exit_kind.copy_(torch.where(full,3,self.exit_kind))
+        self.reduce_remaining.copy_(torch.where(full,0,self.reduce_remaining))
+        eligible=live&add[...,None]&~reduce_mask&~exit[...,None]&(self.exit_kind==0)
+        eligible&=self.add_count<value('maximum_adds')
+        eligible&=bid[None,:,None]>=self.average*(1+value('add_minimum_profit_fraction'))
+        wanted=torch.where(eligible,torch.floor(self.quantity*value('add_fraction')).to(torch.int64),0)
+        limit=ask.nan_to_num(0)[None,:,None]*(1+self._value('maximum_entry_drift_fraction',3))
+        pending=(self.remaining*self.buy_limit).sum((1,2))
+        pending_fee=(torch.maximum(torch.full_like(self.buy_paid,s.minimum_order_fee),
+            (self.buy_order_filled+self.remaining)*s.fee_per_share)-self.buy_paid).clamp_min(0)
+        available=(self.cash-pending-torch.where(self.remaining>0,pending_fee,0).sum((1,2))-self._exit_fee_reserve().sum((1,2))).clamp_min(0)
+        minima=(wanted>0).sum((1,2))*s.minimum_order_fee
+        spend=(wanted*(limit+2*s.fee_per_share)).sum((1,2))
+        scale=((available-minima).clamp_min(0)/spend.clamp_min(1e-12)).clamp(max=1)
+        wanted=torch.floor(wanted*scale[:,None,None]).to(torch.int64)
+        reserved=(self.quantity*(self.average-self.stop).clamp_min(0)+self.remaining*(self.buy_limit-self.stop).clamp_min(0)).sum((1,2))
+        room=(self.equity.clamp_min(0)*s.maximum_stop_risk_fraction-reserved).clamp_min(0)
+        risk=(wanted*(limit-self.stop).clamp_min(0)).sum((1,2))
+        wanted=torch.floor(wanted*(room/risk.clamp_min(1e-12)).clamp(max=1)[:,None,None]).to(torch.int64)
+        add_mask=wanted>0
+        self.requested_quantity.add_(wanted);self.remaining.add_(wanted)
+        for name,new in (('buy_limit',limit),('buy_reference',ask[None,:,None]),('buy_submitted',now),('buy_created',now),('buy_last_retry',now),
+            ('buy_deadline',now+self._value('entry_deadline_seconds',3)),('buy_retries',0),('buy_order_filled',0),('buy_paid',0)):
+            state=getattr(self,name);state.copy_(torch.where(add_mask,new,state))
+        self.add_count.add_(add_mask.to(torch.int64))
+        self.management_at.copy_(torch.where(add_mask|reduce_mask,now,self.management_at))
+        new_reserved=(self.quantity*(self.average-self.stop).clamp_min(0)+self.remaining*(self.buy_limit-self.stop).clamp_min(0)).sum((1,2))
+        self.peak_reserved_stop_risk.copy_(torch.maximum(self.peak_reserved_stop_risk,new_reserved))
     @staticmethod
     def specialization_key(individuals,space):
         from .genome import NAMES
@@ -89,6 +141,12 @@ class ProgramRunner(SearchRunner):
             gross_profit=profit,gross_loss=loss,scope='active session population; pooled closed positions; marked equity provisional')
 
     def __init__(self,tape,space,individuals,gates,*,specialize=True,**kwargs):
+        from .evolution import MANAGEMENT_BOUNDS
+        self.management_columns={}
+        for name,(lo,hi,integer) in MANAGEMENT_BOUNDS.items():
+            values=[v.management[name] for v in individuals]
+            if any(not lo<=v<=hi or (integer and int(v)!=v) for v in values):raise ValueError('Invalid management parameter: '+name)
+            self.management_columns[name]=torch.tensor(values,dtype=torch.float64,device=tape.device)
         self.native_programs=True
         self.specialize=specialize
         kwargs.setdefault('masked_ledger',specialize)
@@ -112,6 +170,11 @@ class ProgramRunner(SearchRunner):
         if self.specialize and self.specialization_key(individuals,self.space)!=self.execution_key:
             raise ValueError('Changing execution specialization requires a new runner')
         self.set_genomes([v.policy for v in individuals])
+        from .evolution import MANAGEMENT_BOUNDS
+        for name,(lo,hi,integer) in MANAGEMENT_BOUNDS.items():
+            values=[v.management[name] for v in individuals]
+            if any(not lo<=v<=hi or (integer and int(v)!=v) for v in values):raise ValueError('Invalid management parameter: '+name)
+            self.management_columns[name].copy_(torch.tensor(values,dtype=torch.float64,device=self.tape.device))
         if isinstance(self.program_gates,torch.Tensor):
             if not isinstance(gates,torch.Tensor) or gates.shape!=self.program_gates.shape:raise ValueError('Packed gate allocation changed')
             if gates is not self.program_gates:self.program_gates.copy_(gates)

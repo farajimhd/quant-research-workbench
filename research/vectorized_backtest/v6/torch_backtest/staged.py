@@ -67,7 +67,10 @@ def crossover(rng, left, right, space):
         parent = left if rng.random() < .5 else right
         clauses[stage] = deepcopy(parent.clauses[stage])
         connectors[stage] = deepcopy(parent.connectors[stage])
-    child = Individual(policy, clauses, connectors)
+    from .evolution import conditional_policy
+    policy=conditional_policy(policy,space,previous=left.policy,rng=rng)
+    management={name:(left if rng.random()<.5 else right).management[name] for name in left.management}
+    child = Individual(policy, clauses, connectors,management)
     child.programs()
     return child
 

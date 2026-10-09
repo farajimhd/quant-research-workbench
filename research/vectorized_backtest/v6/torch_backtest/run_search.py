@@ -18,10 +18,10 @@ from .stability import Objective,score
 from .metrics import financial_metrics
 
 def state(individual):
-    return dict(policy=individual.policy,clauses={s:[dict(nodes=[asdict(n) for n in chunk],root=root) for chunk,root in individual.clauses[s]] for s in STAGES},connectors=individual.connectors)
+    return dict(policy=individual.policy,management=individual.management,clauses={s:[dict(nodes=[asdict(n) for n in chunk],root=root) for chunk,root in individual.clauses[s]] for s in STAGES},connectors=individual.connectors)
 
 def restore(value):
-    return Individual(value['policy'],{s:[([Node(**n) for n in c['nodes']],c['root']) for c in value['clauses'][s]] for s in STAGES},value['connectors'])
+    return Individual(value['policy'],{s:[([Node(**n) for n in c['nodes']],c['root']) for c in value['clauses'][s]] for s in STAGES},value['connectors'],value['management'])
 
 def fingerprint(value):
     from hashlib import sha256
