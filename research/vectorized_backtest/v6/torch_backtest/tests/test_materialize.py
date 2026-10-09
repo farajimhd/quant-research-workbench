@@ -1,5 +1,17 @@
 import numpy as np
+import polars as pl
+from io import StringIO
 from research.vectorized_backtest.v6.torch_backtest.materialize import rank_indices, rolling_volume
+from research.vectorized_backtest.v6.torch_backtest.materialize import BAR_SCHEMA
+
+
+def test_fractional_share_volume_uses_explicit_float_schema():
+    # A long integer-valued prefix must not determine the later volume type.
+    prefix='X,1,1,1,1,100,1,100,100,1,1\n'*150
+    csv=','.join(BAR_SCHEMA)+'\n'+prefix+'X,2,1,1,1,0.477459,1,0.061984,0.061984,1,1\n'
+    rows=pl.read_csv(StringIO(csv),schema_overrides=BAR_SCHEMA)
+    assert rows['volume'][-1]==.477459
+    assert rows['execution_volume'][-1]==.061984
 
 
 def test_elapsed_window_and_prefix_invariance():

@@ -20,6 +20,10 @@ from .source import arte_source, arte_sql as sql
 from .availability import configure_reader
 
 VERSION = 'v6-volume-market-blocks-v1'
+BAR_SCHEMA = dict(ticker=pl.String, clock=pl.Int64, close=pl.Float64,
+    high=pl.Float64, low=pl.Float64, volume=pl.Float64, trade_count=pl.UInt64,
+    execution_volume=pl.Float64, execution_notional=pl.Float64,
+    price_valid=pl.UInt8, extremes_valid=pl.UInt8)
 
 
 @contextmanager
@@ -110,8 +114,12 @@ def prepare(item, args):
         _validate_units(reader, source, date.fromisoformat(day), [r['ticker'] for r in members], None)
         _validate_units(reader, prior, date.fromisoformat(previous), [r['ticker'] for r in paired], None)
         # Certified per-listing split factors, already available at premarket opening.
-        split = json.loads(Path(item['split_certificate']).read_text())
         mapping = json.loads(Path(item['identity_map']).read_text())['listing_to_ticker']
+        from .feature_bank import CertifiedBank
+        from .splits import load_basis
+        bank = CertifiedBank(item['feature_root'], expected_day=day)
+        load_basis(item['split_certificate'], bank, None, mapping, rvol_only=True)
+        split = json.loads(Path(item['split_certificate']).read_text())
         factors = {mapping[k]:v['rvol_price_factor'] for k,v in split['listings'].items()}
         if split['day'] != day or set(factors) != set(mapping.values()):
             raise ValueError('Incomplete opening split identity coverage')
@@ -129,7 +137,7 @@ def prepare(item, args):
             names = [r['ticker'] for r in paired[offset:offset+128]]
             rows = sql.query(reader, 'SELECT ticker,argMax(close_int,bucket_index)/10000. AS prior_close '
                 f"FROM arte.bars_v1 WHERE {scope(prior,previous,names,'bars')} AND resolution_ms=1000 "
-                f'AND bucket_index>={low} AND bucket_index<{high} AND price_valid=1 AND volume>0 GROUP BY ticker')
+                f'AND bucket_index>={low} AND bucket_index<{high} AND price_valid=1 GROUP BY ticker')
             closes.update({r['ticker']:float(r['prior_close'])*factors[r['ticker']] for r in rows})
         eligible = sorted([r for r in paired if args.minimum_close <= closes.get(r['ticker'],np.nan) <= args.maximum_close], key=lambda r:r['listing_id'])
         if not eligible:
@@ -153,7 +161,7 @@ def prepare(item, args):
                 'high_int/10000. AS high,low_int/10000. AS low,volume,trade_count,execution_volume,execution_notional,price_valid,extremes_valid '
                 f"FROM arte.bars_v1 WHERE {scope(source,day,names,'bars')} AND resolution_ms=1000 "
                 f'AND bucket_index>={start-day_origin} AND bucket_index<{end-day_origin} ORDER BY ticker,bucket_index')
-            frame=arte_source.frame(reader,statement,dict(ticker=pl.String,clock=pl.Int64))
+            frame=arte_source.frame(reader,statement,BAR_SCHEMA)
             if frame.height:
                 frame=frame.with_columns(pl.col('ticker').replace_strict(columns).cast(pl.Int32).alias('listing'))
                 rows=frame['clock'].to_numpy()-clocks[0];cols=frame['listing'].to_numpy()
