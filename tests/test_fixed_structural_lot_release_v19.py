@@ -3,7 +3,7 @@ from copy import deepcopy
 
 import pytest
 
-from tests.test_fixed_structural_lot_native import declarations
+from tests.test_fixed_structural_lot_native import declarations, cert
 from src.trading_runtime.fixed_structural_lot_policy import FixedStructuralLotPolicy
 from src.trading_runtime.fixed_structural_lot_release_v19 import (
     derive_fixed_structural_lot_release, verify_prepared_fixed_structural_lot_release,
@@ -45,3 +45,27 @@ def test_modified_tree_is_not_accepted_by_reconstruction(field):
     else: own['strategy']['numbered_release']['source_payload_hash'] = 'f' * 64
     with pytest.raises(ValueError):
         verify_prepared_fixed_structural_lot_release(parent, own, **arguments)
+
+
+def test_v19_native_semantic_verifier_retains_complete_parent_binding():
+    from src.backend.backtest_fixed_structural_lot_native_v19 import verify_installed_configuration
+    parent, arguments, result = prepared()
+    policies = verify_installed_configuration(parent, cert(result['payload']),
+        arguments['release'], arguments['parent_release'])
+    assert len(policies) == 7 and policies[-1] == SELECTED_EXIT_POLICY
+    assert policies[0] == FixedStructuralLotPolicy()
+
+
+@pytest.mark.parametrize('field', ('cost', 'policy', 'parent', 'identity'))
+def test_v19_native_semantic_verifier_rejects_resealed_foreign_tree(field):
+    from src.backend.backtest_fixed_structural_lot_native_v19 import verify_installed_configuration
+    parent, arguments, result = prepared()
+    own = deepcopy(result['payload'])
+    params = own['strategy']['parameters']
+    if field == 'cost': params['costs']['per_share'] = 0
+    elif field == 'policy': params['selected_exit_publication_policy']['missing'] = 'infer'
+    elif field == 'parent': params['fixed_structural_lot_parent']['payload_hash'] = 'f' * 64
+    else: own['strategy']['revision'] = 98
+    with pytest.raises(ValueError):
+        verify_installed_configuration(parent, cert(own),
+            arguments['release'], arguments['parent_release'])
