@@ -74,7 +74,7 @@ class SparseInputs:
         result['feature_row']=torch.where(known,result['feature_row'],-1).to(torch.int64)
         return result
 
-    def compile(self, individuals, *, chunk_candles=2048, listing_batch=16, workspace_gib=2., maximum_gate_gib=4., listing_ids=None,backend='eager'):
+    def compile(self, individuals, *, chunk_candles=2048, listing_batch=16, workspace_gib=2., maximum_gate_gib=4., listing_ids=None,backend='eager',prepared=None):
         """[candidate, observed row] gates, never [clock,candidate,all tickers]."""
         began=perf_counter();b=len(individuals);r=len(self.arrays['feature_keys'])
         if backend not in ('eager','cudagraph') or (backend=='cudagraph' and self.device.type!='cuda'):
@@ -82,7 +82,9 @@ class SparseInputs:
         if not b or min(chunk_candles,listing_batch)<1 or workspace_gib<=0 or b*r>maximum_gate_gib*1024**3:
             raise MemoryError('Invalid or excessive sparse rule workspace/gates')
         gates=torch.zeros((b,r),dtype=torch.uint8,device=self.device)
-        programs={stage:TorchPrograms([v.programs()[stage] for v in individuals],CATALOG,self.device) for stage in STAGES}
+        if prepared is not None and (tuple(individuals)!=prepared.members or self.device!=prepared.device or backend!='cudagraph'):
+            raise ValueError('Shared rule batch identity/device/backend changed')
+        programs=prepared.programs if prepared is not None else {stage:TorchPrograms([v.programs()[stage] for v in individuals],CATALOG,self.device) for stage in STAGES}
         buckets={};width=max(p.width for p in programs.values())
         selected=set(range(len(self.offsets)-1)) if listing_ids is None else set(listing_ids)
         if any(type(i) is not int or not 0<=i<len(self.offsets)-1 for i in selected):raise ValueError('Invalid sparse rule listing identity')
@@ -97,10 +99,10 @@ class SparseInputs:
             batch_size=min(listing_batch,int(workspace_gib*1024**3)//per_listing)
             if batch_size<1:raise MemoryError('Sparse rule workspace cannot fit one listing chunk')
             for cursor in range(0,len(tasks),batch_size):
-                task=tasks[cursor:cursor+batch_size];n=len(task)
+                task=tasks[cursor:cursor+batch_size];n=batch_size if prepared is not None else len(task)
                 if backend=='cudagraph':
                     from .captured_rules import CapturedRules
-                    if n not in captures:captures[n]=CapturedRules(programs,(n,size,len(CATALOG)),self.device)
+                    if n not in captures:captures[n]=prepared.capture((n,size,len(CATALOG))) if prepared is not None else CapturedRules(programs,(n,size,len(CATALOG)),self.device)
                     values=captures[n].values;valid=captures[n].valid
                     values.zero_();valid.zero_()
                 else:

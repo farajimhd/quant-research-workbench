@@ -17,6 +17,7 @@ from .genome import StrategySpace
 from .training_pass import population_hash
 from .runtime import require_runtime,write_json,file_hash
 from .financial_audit import audit_fills
+from .captured_rules import SharedRuleBatch
 
 
 class ResidentSessionEvaluator(SparseSessionEvaluator):
@@ -58,63 +59,68 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
             destination=require_runtime(output/session['day'])
             if (destination/'receipt.json').exists():self(session,population,destination)
             else:remaining.append(session)
-        for cursor in range(0,len(remaining),workers):
-            sessions=remaining[cursor:cursor+workers];inputs={};parts={};batches={}
-            for session in sessions:
-                day=session['day'];inputs[day]=SparseInputs(self.inputs/day,device=self.device,maximum_gib=self.maximum_input_gib)
-                begin,end=[datetime.fromisoformat(session[k]).timestamp() for k in ('start','end')]
-                if inputs[day].receipt['identity']['session']!=session or len(inputs[day].arrays['clocks'])!=int(end-begin):
-                    raise ValueError('Resident full-session contract changed')
-                parts[day]=[];batches[day]=[]
-            for offset in range(0,len(population),self.batch_size):
-                members=population[offset:offset+self.batch_size];jobs=[];prepared=perf_counter()
-                write_json(output/'resident-status.json',dict(stage='Preparing resident graphs',sessions=[s['day'] for s in sessions],
-                    candidate_offset=offset,population=len(population),validation_opened=False))
-                for session in sessions:
-                    day=session['day'];folder=require_runtime(output/day/f'batch-{offset:06d}')
-                    record=self._resume_batch(session,token,list(range(offset,offset+len(members))),folder)
-                    if record is not None:
-                        parts[day].append(record['metrics']);batches[day].append(dict(directory=folder.name,sha256=file_hash(folder/'receipt.json')))
-                        continue
-                    union=sorted(set(int(v) for v in inputs[day].arrays['top_indices'].ravel() if v>=0))
-                    gates,rule_seconds=inputs[day].compile(members,listing_ids=union,backend='cudagraph')
-                    runner=CompactProgramRunner(inputs[day],space,members,gates,structure=self.structures/day,
-                        holding_capacity=self.holding_capacity,backend=self.backend,maximum_fills=self.maximum_fills,
-                        maximum_state_gib=self.maximum_state_gib)
-                    # No worker runs until this entire serial preparation loop finishes.
-                    torch.cuda.synchronize(self.device);runner.compile()
-                    jobs.append((session,folder,runner,rule_seconds,torch.cuda.Stream(device=self.device)))
-                setup=perf_counter()-prepared
-                torch.cuda.synchronize(self.device);started=perf_counter()
-                write_json(output/'resident-status.json',dict(stage='Concurrent captured replay',sessions=[s['day'] for s in sessions],
-                    candidate_offset=offset,population=len(population),active=len(jobs),validation_opened=False))
-                def execute(job):
-                    session,folder,runner,rule_seconds,stream=job
-                    replay_started=perf_counter()
-                    with torch.cuda.stream(stream):
-                        result=runner.run();stream.synchronize()
-                        replay_seconds=perf_counter()-replay_started
-                        audit_started=perf_counter()
-                        record=seal_batch(runner,result,session,token,offset,folder,rule_seconds)
-                    return session['day'],folder,record,dict(day=session['day'],replay_and_position_report_seconds=replay_seconds,
-                        seal_and_financial_audit_seconds=perf_counter()-audit_started,rule_seconds=rule_seconds,
-                        captured_preparation_seconds=runner.setup_seconds,clocks=len(runner.tape.clocks))
-                timings=[]
-                with ThreadPoolExecutor(max_workers=workers) as pool:
-                    futures=[pool.submit(execute,job) for job in jobs]
-                    for future in futures:
-                        day,folder,record,timing=future.result();timings.append(timing)
-                        parts[day].append(record['metrics']);batches[day].append(dict(directory=folder.name,sha256=file_hash(folder/'receipt.json')))
-                torch.cuda.synchronize(self.device)
-                measurements.append(dict(sessions=[s['day'] for s in sessions],candidate_offset=offset,candidates=len(members),
-                    setup_seconds=setup,replay_and_audit_seconds=perf_counter()-started,active=len(jobs),session_timings=timings))
-                # Release graphs, rule gates and account state before the next batch.
-                del jobs,futures
-                if 'runner' in locals():del runner,gates
-                gc.collect()
-            for session in sessions:
-                day=session['day']
-                seal_session(session,token,len(population),output/day,parts[day],batches[day],self.inputs,self.structures,self.holding_capacity)
-            del inputs
+        parts={s['day']:[] for s in remaining};batches={s['day']:[] for s in remaining}
+        for offset in range(0,len(population),self.batch_size):
+            members=population[offset:offset+self.batch_size]
+            shared=SharedRuleBatch(members,self.device)
+            try:
+                for cursor in range(0,len(remaining),workers):
+                    sessions=remaining[cursor:cursor+workers];inputs={}
+                    for session in sessions:
+                        day=session['day'];inputs[day]=SparseInputs(self.inputs/day,device=self.device,maximum_gib=self.maximum_input_gib)
+                        begin,end=[datetime.fromisoformat(session[k]).timestamp() for k in ('start','end')]
+                        if inputs[day].receipt['identity']['session']!=session or len(inputs[day].arrays['clocks'])!=int(end-begin):
+                            raise ValueError('Resident full-session contract changed')
+                    jobs=[];started_preparation=perf_counter()
+                    write_json(output/'resident-status.json',dict(stage='Preparing resident graphs',sessions=[s['day'] for s in sessions],
+                        candidate_offset=offset,population=len(population),validation_opened=False))
+                    for session in sessions:
+                        day=session['day'];folder=require_runtime(output/day/f'batch-{offset:06d}')
+                        record=self._resume_batch(session,token,list(range(offset,offset+len(members))),folder)
+                        if record is not None:
+                            parts[day].append(record['metrics']);batches[day].append(dict(directory=folder.name,sha256=file_hash(folder/'receipt.json')))
+                            continue
+                        union=sorted(set(int(v) for v in inputs[day].arrays['top_indices'].ravel() if v>=0))
+                        gates,rule_seconds=inputs[day].compile(members,listing_ids=union,backend='cudagraph',prepared=shared)
+                        runner=CompactProgramRunner(inputs[day],space,members,gates,structure=self.structures/day,
+                            holding_capacity=self.holding_capacity,backend=self.backend,maximum_fills=self.maximum_fills,
+                            maximum_state_gib=self.maximum_state_gib)
+                        # No worker runs until this entire serial preparation loop finishes.
+                        torch.cuda.synchronize(self.device);runner.compile()
+                        jobs.append((session,folder,runner,rule_seconds,torch.cuda.Stream(device=self.device)))
+                    setup=perf_counter()-started_preparation
+                    torch.cuda.synchronize(self.device);started=perf_counter()
+                    write_json(output/'resident-status.json',dict(stage='Concurrent captured replay',sessions=[s['day'] for s in sessions],
+                        candidate_offset=offset,population=len(population),active=len(jobs),validation_opened=False))
+                    def execute(job):
+                        session,folder,runner,rule_seconds,stream=job
+                        replay_started=perf_counter()
+                        with torch.cuda.stream(stream):
+                            result=runner.run();stream.synchronize()
+                            replay_seconds=perf_counter()-replay_started
+                            audit_started=perf_counter()
+                            record=seal_batch(runner,result,session,token,offset,folder,rule_seconds)
+                        return session['day'],folder,record,dict(day=session['day'],replay_and_position_report_seconds=replay_seconds,
+                            seal_and_financial_audit_seconds=perf_counter()-audit_started,rule_seconds=rule_seconds,
+                            captured_preparation_seconds=runner.setup_seconds,clocks=len(runner.tape.clocks))
+                    timings=[]
+                    with ThreadPoolExecutor(max_workers=workers) as pool:
+                        futures=[pool.submit(execute,job) for job in jobs]
+                        for future in futures:
+                            day,folder,record,timing=future.result();timings.append(timing)
+                            parts[day].append(record['metrics']);batches[day].append(dict(directory=folder.name,sha256=file_hash(folder/'receipt.json')))
+                    torch.cuda.synchronize(self.device)
+                    measurements.append(dict(sessions=[s['day'] for s in sessions],candidate_offset=offset,candidates=len(members),
+                        setup_seconds=setup,replay_and_audit_seconds=perf_counter()-started,active=len(jobs),session_timings=timings))
+                    # Release graphs, rule gates and account state before the next batch.
+                    del jobs,futures
+                    if 'runner' in locals():del runner,gates
+                    gc.collect()
+                    del inputs
+            finally:
+                shared.close()
+        for session in remaining:
+            day=session['day']
+            seal_session(session,token,len(population),output/day,parts[day],batches[day],self.inputs,self.structures,self.holding_capacity)
         write_json(output/'resident-measurements.json',measurements)
         return measurements

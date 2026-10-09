@@ -71,6 +71,10 @@ def main(argv=None):
         audits=[]
         modes=[('serial-cold',1),('serial-warm',1)]+[(f'concurrent-warm-{w}',w) for w in worker_counts]
         for mode,workers in modes:
+            # Whole-pass graph owners have gone out of scope. Release unused
+            # allocator cache before measuring the next independent envelope.
+            import gc
+            gc.collect();torch.cuda.synchronize();torch.cuda.empty_cache()
             try:evaluate.contract(sessions,workers)
             except MemoryError as error:
                 rows.append(dict(mode=mode,status='rejected_memory_envelope',reason=str(error)))

@@ -18,3 +18,17 @@ def test_captured_gates_exact_native_with_padding_history_and_missing_features()
     native,_=inputs.compile(population,backend='eager',**options)
     captured,_=inputs.compile(population,backend='cudagraph',**options)
     assert torch.equal(native,captured)
+    from research.vectorized_backtest.v6.torch_backtest.captured_rules import SharedRuleBatch
+    shared=SharedRuleBatch(population,inputs.device,maximum_gib=.5)
+    try:
+        first,_=inputs.compile(population,backend='cudagraph',prepared=shared,**options)
+        assert torch.equal(native,first)
+        builds=shared.builds
+        inputs.tensors['features'].mul_(-1)
+        changed,_=inputs.compile(population,backend='eager',**options)
+        second,_=inputs.compile(population,backend='cudagraph',prepared=shared,**options)
+        assert torch.equal(changed,second)
+        assert shared.builds==builds and shared.hits>0
+        with pytest.raises(ValueError,match='identity'):
+            inputs.compile(population[:-1],backend='cudagraph',prepared=shared,**options)
+    finally:shared.close()
