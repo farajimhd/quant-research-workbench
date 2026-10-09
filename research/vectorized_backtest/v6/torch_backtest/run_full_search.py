@@ -26,8 +26,10 @@ def main(argv=None):
     root=require_runtime(a.output);configure_caches(root/'cache')
     evaluate=ResidentSessionEvaluator(a.inputs,a.structure,batch_size=a.batch_size,holding_capacity=a.holding_capacity,
         maximum_fills=a.maximum_fills,maximum_input_gib=a.maximum_input_gib,maximum_state_gib=a.maximum_state_gib)
-    return run_generations(spec,a.population,a.generations,evaluate,root,seed=a.seed,
-        workers=a.session_workers,objective=LowerTailDollarObjective())
+    try:
+        return run_generations(spec,a.population,a.generations,evaluate,root,seed=a.seed,
+            workers=a.session_workers,objective=LowerTailDollarObjective())
+    finally:evaluate.close()
 
 
 if __name__=='__main__':raise SystemExit(main())

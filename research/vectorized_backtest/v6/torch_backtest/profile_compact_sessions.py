@@ -78,6 +78,9 @@ def main(argv=None):
         audits=[]
         modes=([] if a.reference or a.concurrent_only else [('serial-cold',1),('serial-warm',1)])+[(f'concurrent-warm-{w}',w) for w in worker_counts]
         for mode,workers in modes:
+            # Profiling trials measure fresh ownership consistently; production
+            # evaluators retain compatible buffers across generations.
+            if hasattr(evaluate,'close'):evaluate.close()
             # Whole-pass graph owners have gone out of scope. Release unused
             # allocator cache before measuring the next independent envelope.
             import gc
@@ -105,6 +108,7 @@ def main(argv=None):
             optimization_started=False,backend=a.backend,partition_reference=bool(a.concurrent_only and not a.reference),
             limitations=['Training-only throughput evidence']+(['Independent financial audit; no scheduling parity reference in this pass'] if a.concurrent_only and not a.reference else [])))
         write_json(root/'status.json',dict(status='complete',stage='Full-session financial audit passed' if a.concurrent_only and not a.reference else 'Exact full-session comparison audit passed',validation_opened=False))
+        if hasattr(evaluate,'close'):evaluate.close()
     return 0
 
 

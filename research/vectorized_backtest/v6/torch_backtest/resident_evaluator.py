@@ -27,6 +27,13 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
         super().__init__(*args,backend='compile',**kwargs)
         if self.device.type!='cuda':raise ValueError('Resident capture requires CUDA')
         self.backend=backend
+        self._resident_inputs={};self._resident_runners={};self._cohort_identity=None
+
+    def close(self):
+        """Release this evaluator's retained generation buffers explicitly."""
+        torch.cuda.synchronize(self.device)
+        self._resident_runners.clear();self._resident_inputs.clear();self._cohort_identity=None
+        gc.collect()
 
     def contract(self,training,workers):
         if type(workers) is not int or not 1<=workers<=30:raise ValueError('Resident concurrency must be within the training-session count')
@@ -60,6 +67,11 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
             if (destination/'receipt.json').exists():self(session,population,destination)
             else:remaining.append(session)
         parts={s['day']:[] for s in remaining};batches={s['day']:[] for s in remaining}
+        if not remaining:
+            write_json(output/'resident-measurements.json',[]);return []
+        identity=tuple((s['day'],file_hash(self.inputs/s['day']/'complete.json'),file_hash(self.structures/s['day']/'complete.json')) for s in training)
+        if self._cohort_identity is not None and identity!=self._cohort_identity:
+            raise ValueError('Retained cohort input/structural identity changed')
         # Inputs are immutable across candidate batches. Reserve a separate
         # bounded cohort envelope before retaining them on device.
         free,_=torch.cuda.mem_get_info(self.device)
@@ -76,18 +88,21 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
                 ('clocks','top_indices','market_keys','feature_keys','features','feature_valid'))
             residency+=arrays+certificate['market_rows']*(105+121)
         working=(len(remaining)*self.maximum_state_gib+workers*2.5+4)*1024**3
-        if residency+working>free*.75:
+        if self._cohort_identity is None and residency+working>free*.75:
             raise MemoryError('Resident cohort inputs plus replay/rule envelopes exceed GPU headroom')
-        resident_inputs={};runners={};load_started=perf_counter()
+        resident_inputs=self._resident_inputs;runners=self._resident_runners;load_started=perf_counter();loads=0
         for session in remaining:
             day=session['day']
+            if day in resident_inputs:continue
             write_json(output/'resident-status.json',dict(stage='Loading immutable cohort inputs once',day=day,loaded=len(resident_inputs),total=len(remaining),validation_opened=False))
             item=SparseInputs(self.inputs/day,device=self.device,maximum_gib=self.maximum_input_gib)
             begin,end=[datetime.fromisoformat(session[k]).timestamp() for k in ('start','end')]
             if item.receipt['identity']['session']!=session or len(item.arrays['clocks'])!=int(end-begin):
                 raise ValueError('Resident full-session contract changed')
             resident_inputs[day]=item
-        write_json(output/'input-residency.json',dict(load_seconds=perf_counter()-load_started,session_loads=len(resident_inputs),
+            loads+=1
+        self._cohort_identity=identity
+        write_json(output/'input-residency.json',dict(load_seconds=perf_counter()-load_started,session_loads=loads,resident_sessions=len(resident_inputs),
             candidate_batches=(len(population)+self.batch_size-1)//self.batch_size,validation_opened=False))
         for offset in range(0,len(population),self.batch_size):
             members=population[offset:offset+self.batch_size]

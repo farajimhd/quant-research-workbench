@@ -46,9 +46,20 @@ def test_all_captures_precede_parallel_replay_and_receipts_resume(tmp_path,monke
     population=[member,deepcopy(member),deepcopy(member),deepcopy(member)];output=mkdir(tmp_path/'result')
     evaluate.prepare_pass(sessions,population,output,workers=2)
     assert events==['capture','capture','replay','replay','replay','replay']
+    assert events.count('capture')==2
     assert len(loads)==2
+    next_output=mkdir(tmp_path/'next-generation')
+    evaluate.prepare_pass(sessions,population,next_output,workers=2)
+    assert len(loads)==2
+    assert events.count('capture')==2
+    for session in sessions:
+        before=evaluate(session,population,output/session['day'])
+        after=evaluate(session,population,next_output/session['day'])
+        assert before['metrics']==after['metrics']
+    evaluate.close()
+    assert not evaluate._resident_inputs and not evaluate._resident_runners
     records=[evaluate(session,population,output/session['day']) for session in sessions]
     assert records[0]['metrics']==records[1]['metrics'] and records[0]['metrics']['fill_count'][0]>0
     evaluate.prepare_pass(sessions,population,output,workers=2)
-    assert events==['capture','capture','replay','replay','replay','replay']
+    assert events.count('capture')==2
     assert len(loads)==2
