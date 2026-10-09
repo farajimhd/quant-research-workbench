@@ -24,14 +24,19 @@ def compare_sessions(reference,actual):
     after=json.loads((actual/'receipt.json').read_text())
     for name in ('day','population_sha256','candidate_indices','metrics','input_receipt_sha256','structural_receipt_sha256'):
         if before[name]!=after[name]:raise ValueError('Concurrent session changed '+name)
-    if len(before['batch_receipts'])!=len(after['batch_receipts']):raise ValueError('Candidate batch coverage changed')
-    for left,right in zip(before['batch_receipts'],after['batch_receipts']):
-        a=torch.load(reference/left['directory']/'fills.pt',map_location='cpu',weights_only=True)
-        b=torch.load(actual/right['directory']/'fills.pt',map_location='cpu',weights_only=True)
-        if not torch.equal(a['counts'],b['counts']):raise ValueError('Concurrent fill counts changed')
-        for lane,count in enumerate(a['counts'].tolist()):
-            if not torch.equal(a['ledger'][lane,:count],b['ledger'][lane,:count]):
-                raise ValueError('Concurrent actual fills changed')
+    def lanes(root,receipt):
+        for batch in receipt['batch_receipts']:
+            folder=root/batch['directory']
+            record=json.loads((folder/'receipt.json').read_text())
+            if file_hash(folder/'receipt.json')!=batch['sha256'] or file_hash(folder/'fills.pt')!=record['ledger_sha256']:
+                raise ValueError('Comparison receipt/ledger changed')
+            data=torch.load(folder/'fills.pt',map_location='cpu',weights_only=True)
+            for lane,(index,count) in enumerate(zip(record['candidate_indices'],data['counts'].tolist())):
+                yield index,count,data['ledger'][lane,:count]
+    from itertools import zip_longest
+    for left,right in zip_longest(lanes(reference,before),lanes(actual,after)):
+        if left is None or right is None or left[:2]!=right[:2]:raise ValueError('Candidate identity/fill coverage changed')
+        if not torch.equal(left[2],right[2]):raise ValueError('Concurrent actual fills changed')
     return dict(day=before['day'],actual_fill_parity='exact',financial_metrics_parity='exact',
                 reference_receipt_sha256=file_hash(reference/'receipt.json'),actual_receipt_sha256=file_hash(actual/'receipt.json'))
 
@@ -43,6 +48,7 @@ def main(argv=None):
     p.add_argument('--population',type=int,default=128);p.add_argument('--batch-size',type=int,default=128)
     p.add_argument('--session-count',type=int,default=2);p.add_argument('--workers',type=int,default=2)
     p.add_argument('--worker-counts',help='Comma-separated resident concurrency sweep, for example 2,4,8,16')
+    p.add_argument('--reference',type=Path,help='Completed serial-warm session directory for this exact population; skips serial passes')
     p.add_argument('--holding-capacity',type=int,default=40);p.add_argument('--maximum-fills',type=int,default=16384)
     p.add_argument('--backend',choices=['compile','cudagraph','compiled_graph'],default='compiled_graph')
     p.add_argument('--seed',type=int,default=2236)
@@ -69,7 +75,7 @@ def main(argv=None):
         write_json(root/'population.json',[v.payload() for v in members])
         rows=[]
         audits=[]
-        modes=[('serial-cold',1),('serial-warm',1)]+[(f'concurrent-warm-{w}',w) for w in worker_counts]
+        modes=([] if a.reference else [('serial-cold',1),('serial-warm',1)])+[(f'concurrent-warm-{w}',w) for w in worker_counts]
         for mode,workers in modes:
             # Whole-pass graph owners have gone out of scope. Release unused
             # allocator cache before measuring the next independent envelope.
@@ -92,7 +98,8 @@ def main(argv=None):
                 peak_reserved_bytes=torch.cuda.max_memory_reserved(),candidate_sessions=a.population*len(days))
             rows.append(row);write_json(root/'measurements.json',rows);print(row,flush=True)
             if mode.startswith('concurrent-warm'):
-                audits.extend(dict(workers=workers,**compare_sessions(root/'serial-warm'/day,destination/day)) for day in days)
+                reference=a.reference if a.reference else root/'serial-warm'
+                audits.extend(dict(workers=workers,**compare_sessions(reference/day,destination/day)) for day in days)
         write_json(root/'receipt.json',dict(status='complete',measurements=rows,audits=audits,validation_opened=False,
             optimization_started=False,backend=a.backend,limitations=['Training-only throughput evidence']))
         write_json(root/'status.json',dict(status='complete',stage='Exact full-session concurrency audit passed',validation_opened=False))

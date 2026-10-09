@@ -15,6 +15,8 @@ class SharedRuleBatch:
     """Immutable population tensors and bounded, serial-only capture reuse."""
     def __init__(self, members, device, maximum_gib=4., maximum_shapes=8):
         self.members=tuple(members);self.device=torch.device(device)
+        if self.device.type=='cuda' and self.device.index is None:
+            self.device=torch.device('cuda',torch.cuda.current_device())
         self.programs={stage:TorchPrograms([m.programs()[stage] for m in members],CATALOG,self.device) for stage in STAGES}
         self.captures=OrderedDict();self.maximum_bytes=int(maximum_gib*1024**3)
         self.maximum_shapes=maximum_shapes;self.bytes=0;self.hits=0;self.builds=0
