@@ -155,6 +155,13 @@ class StrategyOneManagementRunner:
         self._completed_risk_lookup = None
         self._original_risk_requests = {}
         self._fixed_lot_owner = None
+        self._cadence_financials = {}
+        self._cadence_retry = set()
+        from src.trading_runtime.fixed_lot_management_cadence_policy import require_declared_management_cadence
+        from src.trading_runtime.fixed_structural_lot_selected_exit_contract import FixedStructuralLotSelectedExitStrategyContract
+        self._management_cadence = (require_declared_management_cadence(self.contract.release,
+            self.contract.management_cadence_policy)
+            if type(self.contract) is FixedStructuralLotSelectedExitStrategyContract else None)
 
     def bind_fixed_structural_lot_management(self,owner):
         from .backtest_fixed_structural_lot_management import NativeFixedStructuralLotManagement
@@ -538,6 +545,8 @@ class StrategyOneManagementRunner:
                 self._positions.pop(key, None)
                 self._first_held_boundaries.pop(key, None)
                 self._pending_breaks.pop(key, None)
+                self._cadence_financials.pop(key, None)
+                self._cadence_retry.discard(key)
                 self._submitted.pop(key, None)
                 self._profit_arm_references.pop(key, None)
                 self._profit_arm_financials.pop(key, None)
@@ -787,7 +796,25 @@ class StrategyOneManagementRunner:
         tick = self.tick_for_ticker(financial.ticker)
         if type(tick) not in (int, float) or not isfinite(tick) or tick <= 0:
             raise ValueError("Strategy 1 management lacks a point-in-time tick")
+        if self._fixed_lot_owner is not None and self._management_cadence is not None:
+            # This is an explicit ratchet delay, never a broker/exit clock change.
+            # Missing ephemeral history (including cold restore) forces a fresh
+            # independently verified decision; pending witnesses stay captured.
+            signature=(financial.status,(financial.permissions.observe,financial.permissions.enter,
+                financial.permissions.add,financial.permissions.reduce,financial.permissions.exit,
+                financial.permissions.reenter),financial.position_quantity,
+                financial.pending_entry,financial.pending_exit,financial.pending_capital_request,
+                financial.completed_entries,financial.current_purchase_groups)
+            from src.trading_runtime.fixed_lot_management_cadence_policy import recovery_cadence_binding,execution_cadence_binding
+            signature=(*signature,recovery_cadence_binding(self._fixed_lot_owner.client),
+                execution_cadence_binding(self.runtime,self._fixed_lot_owner,key))
+            prior_signature=self._cadence_financials.get(key)
+            if (key not in self._cadence_retry and prior_signature == signature
+                    and boundary_ms % self._management_cadence.interval_ms != 0):
+                return
         if self._fixed_lot_owner is not None:
+            if self._management_cadence is not None:
+                self._cadence_retry.add(key)
             self._fixed_lot_owner.publisher.enqueue_pending()
             await self._fixed_lot_owner.publisher.await_fence()
             request=self._fixed_lot_owner.propose(self._fixed_lot_owner.entries[key],financial,
@@ -807,6 +834,11 @@ class StrategyOneManagementRunner:
                 raise RuntimeError('Selected manager returned inconsistent per-lot protection')
             self._positions[key]=confirmed
             pending.clear()
+            if self._management_cadence is not None:
+                self._cadence_financials[key]=(*signature[:-2],
+                    recovery_cadence_binding(self._fixed_lot_owner.client),
+                    execution_cadence_binding(self.runtime,self._fixed_lot_owner,key))
+                self._cadence_retry.discard(key)
             return
         transition = advance_protection(
             previous, now_ms=boundary_ms, bid=evidence.bid, ask=evidence.ask,

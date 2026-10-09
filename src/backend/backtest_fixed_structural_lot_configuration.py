@@ -80,6 +80,11 @@ def verify_fixed_structural_lot_configuration(strategy):
         from src.trading_runtime.portfolio_acquisition_contract import SessionAcquisitionQuotaPolicy
         if type(contract.session_acquisition_quota) is not SessionAcquisitionQuotaPolicy or quota!=contract.session_acquisition_quota.maximum:
             raise ValueError('Portfolio acquisition quota differs from exact registered factory')
+    from src.trading_runtime.fixed_lot_management_cadence_policy import PARAMETER as CADENCE_PARAMETER, parse_declared_management_cadence
+    cadence=parse_declared_management_cadence(contract.release,params.get(CADENCE_PARAMETER) if type(params) is dict else None)
+    if cadence is not None: expected.add(CADENCE_PARAMETER)
+    if cadence != getattr(contract,'management_cadence_policy',None):
+        raise ValueError('Management cadence differs from exact registered factory')
     if type(params) is not dict or set(params) != expected:
         raise ValueError('Fixed-lot parameter companions differ')
     if reuse_selected and parse_packet_validation_reuse_policy(params['packet_validation_reuse_policy']) != contract.validation_reuse_policy:

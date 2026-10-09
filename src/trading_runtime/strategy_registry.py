@@ -1237,6 +1237,19 @@ def initialize_numbered_fixed_strategies() -> None:
                 derive_strategy_one_hundred_six_configuration,verify_prepared_strategy_one_hundred_six_configuration,
                 certify_quota_source,management_parent_release)))
         register_numbered_strategy(quota)
+        from .strategy_one_hundred_seven_release import (release_contract as cadence_release,
+            derive_strategy_one_hundred_seven_configuration,verify_prepared_strategy_one_hundred_seven_configuration)
+        from .strategy_one_hundred_seven_contract import strategy_one_hundred_seven_contract
+        from src.backend.backtest_fixed_structural_lot_certification_v26 import certify_fixed_structural_lot_source as certify_cadence_source
+        cadence=cadence_release()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=cadence.executor_strategy_id,revision=cadence.executor_revision,
+            evaluation_interval=cadence.evaluation_interval,strategy_factory=_strategy_two_factory,
+            contract_factory=strategy_one_hundred_seven_contract,
+            manifest_authority=NativeManifestAuthority(42,'fixed-structural-lots-from',
+                derive_strategy_one_hundred_seven_configuration,verify_prepared_strategy_one_hundred_seven_configuration,
+                certify_cadence_source,management_parent_release)))
+        register_numbered_strategy(cadence)
         _NUMBERED_FIXED_REGISTERED = True
 
 

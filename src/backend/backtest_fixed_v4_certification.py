@@ -1584,6 +1584,8 @@ def _reviewed_fixed_lot_journal_projection(source: str, name: str, expected: str
 
 def _reviewed_fixed_lot_configuration_projection(source: str, name: str, expected: str) -> bool:
     """Pin this exact registration delta and prove whole legacy module restoration."""
+    from .backtest_fixed_structural_lot_compatibility_v26 import restore_reviewed_parent_source as restore_v26
+    source = restore_v26(source, 'backend/backtest_strategy_one_configuration.py')
     from .backtest_fixed_structural_lot_compatibility_v25 import restore_reviewed_parent_source as restore_v25
     source = restore_v25(source, 'backend/backtest_strategy_one_configuration.py')
     from .backtest_fixed_structural_lot_compatibility_v24 import restore_reviewed_parent_source as restore_v24
@@ -1731,6 +1733,8 @@ def _reviewed_fixed_lot_execution_projection(source: str, name: str, expected: s
 
 def _reviewed_fixed_lot_management_projection(source: str, name: str, expected: str) -> bool:
     """Prove this exact selected owner leaves the complete default manager unchanged."""
+    from .backtest_fixed_structural_lot_compatibility_v26 import restore_reviewed_parent_source as restore_v26
+    source = restore_v26(source, 'src/backend/backtest_strategy_one_management.py')
     from .backtest_fixed_structural_lot_compatibility_v9 import restore_reviewed_parent_source as restore_v9
     from .backtest_fixed_structural_lot_compatibility_v10 import restore_reviewed_parent_source as restore_v10
     from .backtest_fixed_structural_lot_compatibility_v11 import restore_reviewed_parent_source as restore_v11
@@ -1848,6 +1852,8 @@ _FIXED_LOT_LEGACY_AST_RECIPES = {('backend/backtest_typed_publisher.py', '_drain
 def _reviewed_fixed_lot_ast_recipe(source: str, relative: str, name: str, expected: str) -> bool:
     """Apply only exact reviewed AST edits; complete retained legacy pin remains required."""
     supplied_source = source
+    from .backtest_fixed_structural_lot_compatibility_v26 import restore_reviewed_parent_source as restore_v26
+    source = restore_v26(source, relative)
     from .backtest_fixed_structural_lot_compatibility_v25 import restore_reviewed_parent_source as restore_v25
     source = restore_v25(source, relative)
     from .backtest_fixed_structural_lot_compatibility_v24 import restore_reviewed_parent_source as restore_v24
@@ -1999,6 +2005,8 @@ def _reviewed_fixed_lot_core_projection(source: str, relative: str, name: str, e
     """Retain core source pins under the same bounded, independently reviewed projection."""
     supplied_source = source
     relative = relative.removeprefix("src/")
+    from .backtest_fixed_structural_lot_compatibility_v26 import restore_reviewed_parent_source as restore_v26
+    source = restore_v26(source, relative)
     from .backtest_fixed_structural_lot_compatibility_v25 import restore_reviewed_parent_source as restore_v25
     source = restore_v25(source, relative)
     from .backtest_fixed_structural_lot_compatibility_v24 import restore_reviewed_parent_source as restore_v24
