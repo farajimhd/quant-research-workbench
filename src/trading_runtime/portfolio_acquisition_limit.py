@@ -65,6 +65,32 @@ def accepted_acquisition_ids(scope, reservations, *, run_id, ticker, at):
     return frozenset(accepted)
 
 
+def require_owned_session_history(scope, reservations, *, run_id, at):
+    """Reject a native independent-session window that hides accepted history.
+
+    Use only with a single-session run's verified Portfolio reservations. This
+    is stricter than the generic multi-session counting projection above.
+    The original issued window still needs independent caller verification.
+    """
+    if type(scope) is not SessionAcquisitionLimit or run_id != scope.run_id:
+        raise ValueError('Acquisition history has foreign session ownership')
+    scope.__post_init__()
+    if not _aware(at) or not scope.begins_at <= at < scope.ends_at:
+        raise ValueError('Acquisition recovery has an invalid session clock')
+    for row in reservations:
+        if type(row) is not PortfolioReservation:
+            raise ValueError('Acquisition recovery requires typed Portfolio reservations')
+        if row.account_id != scope.account_id or row.action not in ENTRY_ACTIONS:
+            continue
+        if type(row.quantity) not in {int, float} or not isfinite(row.quantity) or row.quantity < 0:
+            raise ValueError('Acquisition recovery has invalid accepted quantity')
+        if row.quantity == 0:
+            continue
+        if (not _aware(row.created_at) or not scope.begins_at <= row.created_at < scope.ends_at
+                or row.created_at > at):
+            raise ValueError('Acquisition window excludes or precedes owned accepted history')
+
+
 def acquisition_limit_reached(scope, reservations, *, run_id, ticker, intent_id, at):
     if type(intent_id) is not str or not intent_id:
         raise ValueError('Acquisition request identity is required')

@@ -6,6 +6,7 @@ import pytest
 
 from src.trading_runtime.portfolio import PortfolioReservation
 from src.trading_runtime.portfolio_acquisition_limit import SessionAcquisitionLimit, acquisition_limit_reached
+from src.trading_runtime.portfolio_acquisition_limit import require_owned_session_history
 
 AT = datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc)
 
@@ -98,3 +99,24 @@ def test_released_acceptance_survives_actual_typed_snapshot_and_cold_reader(monk
     assert acquisition_limit_reached(policy,cold.reservations.values(),**args)
     args['intent_id']='i1'
     assert not acquisition_limit_reached(policy,cold.reservations.values(),**args)
+    require_owned_session_history(policy,cold.reservations.values(),run_id='live-run',at=snapshot_at)
+    shifted=replace(policy,begins_at=snapshot_at+timedelta(seconds=1))
+    with pytest.raises(ValueError,match='owned accepted history'):
+        require_owned_session_history(shifted,cold.reservations.values(),run_id='live-run',
+            at=snapshot_at+timedelta(seconds=2))
+
+
+@pytest.mark.parametrize('ticker',['TEST','OTHER'])
+def test_narrowed_recovery_window_cannot_hide_any_owned_acquisition(ticker):
+    policy=replace(scope(),begins_at=AT+timedelta(seconds=1))
+    with pytest.raises(ValueError,match='owned accepted history'):
+        require_owned_session_history(policy,[reservation(ticker=ticker,status='released')],
+            run_id=policy.run_id,at=AT+timedelta(seconds=2))
+
+
+def test_owned_session_history_accepts_valid_released_and_excludes_other_accounts():
+    policy=scope()
+    require_owned_session_history(policy,[reservation(status='released'),
+        reservation(account_id='DU2',created_at=AT-timedelta(days=1)),
+        reservation(quantity=0.0,created_at=AT-timedelta(seconds=1))],
+        run_id=policy.run_id,at=AT+timedelta(seconds=2))
