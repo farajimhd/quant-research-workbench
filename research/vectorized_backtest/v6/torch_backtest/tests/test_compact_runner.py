@@ -12,6 +12,8 @@ from research.vectorized_backtest.v6.torch_backtest.runtime import file_hash
 
 def compare(*,cycling=False,population=1,compiled=False,structure=None,capacity=2):
     tape,x,space,member,gates=fixture();x.offsets=np.array([0,60,120])
+    x.arrays['top_indices']=x.arrays['top_indices'].astype(np.int32)
+    x.tensors['top_indices']=torch.tensor(x.arrays['top_indices'])
     members=[deepcopy(member) for _ in range(population)]
     if structure is not None:
         x.root=structure/'input';x.root.mkdir();(x.root/'complete.json').write_text('{}')

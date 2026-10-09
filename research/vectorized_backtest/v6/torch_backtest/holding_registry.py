@@ -20,6 +20,9 @@ class HoldingRegistry:
     def reconcile(self,top,retained):
         if top.shape!=(self.top_n,) or retained.shape!=self.ids.shape or retained.dtype!=torch.bool:
             raise ValueError('Compact top/retention shape changed')
+        # Materialized membership uses int32; durable financial identities use
+        # int64. Normalize before scatter, including under compiled execution.
+        top=top.to(torch.int64)
         old=self.ids.clone()
         membership=(self.ids[:,:,None]==top[None,None,:])&(self.ids[:,:,None]>=0)
         keep=retained|membership.any(-1)
