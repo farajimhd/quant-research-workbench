@@ -241,6 +241,9 @@ def selected(monkeypatch, *, actual_loader=False, number=90, version=12):
     from src.trading_runtime.projected_configuration_reuse_policy import RULE as PROJECTION_REUSE_RULE
     if PROJECTION_REUSE_RULE in release.rule_set_contracts:
         reuse_options['projection_reuse_policy'] = contract.projection_reuse_policy
+    from src.trading_runtime.owned_scalar_snapshot_policy import RULE as OWNED_RULE
+    if OWNED_RULE in release.rule_set_contracts:
+        reuse_options['owned_snapshot_policy'] = contract.owned_snapshot_policy
     own = cert(derive_fixed_structural_lot_release(parent, parent_release=parent_release, release=release, policy=old.policy.payload(), **reuse_options, approved_code_commit=subprocess.check_output(['git','rev-parse','HEAD']).decode().strip(), approved_code_fingerprint=backend_source_fingerprint(), approval_reference='controlled immutable installation seam')['payload'])
     monkeypatch.setattr(source, 'certify_numbered_configuration', lambda *a: parent)
     if actual_loader:
@@ -1221,7 +1224,7 @@ def test_batched_helper_rejects_foreign_context_before_transport():
     with pytest.raises(ValueError,match='foreign source context'):
         _batched_detail_rows_v4(Reader(),(),'',fixed_lot_context=SimpleNamespace(source=None))
 
-@pytest.mark.parametrize("number,version,strip_decimal", [(90,12,False),(92,13,True),(93,14,True),(94,15,True)])
+@pytest.mark.parametrize("number,version,strip_decimal", [(90,12,False),(92,13,True),(93,14,True),(94,15,True),(95,16,True)])
 def test_actual_earned_profit_arm_selected_checkpoint_and_historical_products(monkeypatch,number,version,strip_decimal):
     quote_offset_us=25515
     from importlib import import_module
@@ -1750,7 +1753,25 @@ def test_actual_earned_profit_arm_selected_checkpoint_and_historical_products(mo
             print('actual_selected_profit_exit_and_terminal_sequence='+str(terminal_sequence))
             from src.trading_runtime.packet_validation_reuse_policy import RULE as REUSE_RULE
             from src.trading_runtime.strategy_registry import numbered_strategy
-            if REUSE_RULE in numbered_strategy(number).rule_set_contracts:
+            from src.trading_runtime.owned_scalar_snapshot_policy import RULE as OWNED_RULE
+            rules = numbered_strategy(number).rule_set_contracts
+            if OWNED_RULE in rules:
+                from src.trading_runtime.declared_owned_scalar_snapshot_reuse import _CACHES as owned_caches
+                for selected_source in (actual.operation.source, fresh_operation.source):
+                    installed_json, policies, family = owned_caches[selected_source]
+                    assert installed_json == selected_source.installed_json
+                    owned_policy, packet_policy, projection_policy = policies
+                    for label, cache, policy, byte_field in (
+                        ('ownership', family.ownership, owned_policy, 'retained_bytes'),
+                        ('packet', family.validation, packet_policy, 'retained_key_bytes'),
+                        ('projection', family.projection, projection_policy, 'retained_bytes'),
+                    ):
+                        statistics = cache.statistics()
+                        assert statistics['hits'] > 0 and statistics['misses'] > 0
+                        assert statistics['entries'] <= policy.max_entries
+                        assert statistics[byte_field] <= policy.max_bytes
+                        print('actual_selected_owned_'+label+'_reuse_statistics='+canonical_json(statistics))
+            elif REUSE_RULE in rules:
                 from src.trading_runtime.declared_packet_validation_reuse import _CACHES
                 for selected_source in (actual.operation.source, fresh_operation.source):
                     installed_json, policy, cache = _CACHES[selected_source]
@@ -1761,7 +1782,7 @@ def test_actual_earned_profit_arm_selected_checkpoint_and_historical_products(mo
                     assert statistics['retained_key_bytes'] <= policy.max_bytes
                     print('actual_selected_packet_reuse_statistics='+canonical_json(statistics))
             from src.trading_runtime.projected_configuration_reuse_policy import RULE as PROJECTION_REUSE_RULE
-            if PROJECTION_REUSE_RULE in numbered_strategy(number).rule_set_contracts:
+            if PROJECTION_REUSE_RULE in rules and OWNED_RULE not in rules:
                 from src.trading_runtime.declared_projected_configuration_reuse import _CACHES as projected_caches
                 for selected_source in (actual.operation.source, fresh_operation.source):
                     installed_json, policy, cache = projected_caches[selected_source]

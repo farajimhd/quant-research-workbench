@@ -66,6 +66,32 @@ def test_prepared_typed_factory_rejects_wrong_ownership_or_bounds():
         replace(contract, owned_snapshot_policy=replace(OWNED_SNAPSHOT_POLICY, max_rows=1))
 
 
+def test_registered_compiler_derives_complete_owned_configuration():
+    from src.backend.backtest_fixed_structural_lot_configuration import derive_registered_fixed_structural_lot_configuration
+    parent, kwargs, expected = prepared()
+    approval = {k: kwargs[k] for k in ('approved_code_commit', 'approved_code_fingerprint', 'approval_reference')}
+    assert derive_registered_fixed_structural_lot_configuration(parent,
+        number=kwargs['release'].number, **approval) == expected
+
+
+def test_cold_process_resolves_owned_factory_before_parent_lookup():
+    import os
+    import subprocess
+    import sys
+    code = '''
+from src.trading_runtime.strategy_registry import numbered_strategy, numbered_strategy_parent
+from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+from src.trading_runtime.strategy_ninety_five_release import release_contract
+release = numbered_strategy(release_contract().number)
+assert release == release_contract()
+assert numbered_strategy_parent(release.number) == 42
+contract = numbered_fixed_strategy(release.number)
+assert contract.owned_snapshot_policy.max_rows == contract.validation_reuse_policy.max_rows
+'''
+    subprocess.run([sys.executable, '-B', '-c', code], check=True, capture_output=True,
+        text=True, timeout=30, env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1', POLARS_MAX_THREADS='2'))
+
+
 @pytest.mark.parametrize('key,value', [('max_rows', True), ('max_entries', 0),
     ('max_bytes', -1), ('scope', 'source admission'), ('ownership', 'caller aliases')])
 def test_owned_policy_semantic_and_type_changes_rejected(key, value):

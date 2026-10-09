@@ -12,8 +12,12 @@ from src.backend.backtest_fixed_structural_lot_compatibility_v16 import (
 )
 
 
-def test_new_source_certificate_is_explicitly_unapproved():
-    with pytest.raises(ValueError, match='unapproved; admission remains closed'):
+def test_loaded_source_metadata_tampering_fails_closed(monkeypatch):
+    from src.backend import backtest_fixed_structural_lot_certification_v16 as authority
+    changed = dict(authority.REVIEWED_SOURCE_AST)
+    changed.pop(next(iter(changed)))
+    monkeypatch.setattr(authority, 'REVIEWED_SOURCE_AST', changed)
+    with pytest.raises(ValueError, match='loaded and fresh declarations differ'):
         certify_fixed_structural_lot_source()
     assert len(set(REQUIRED_SOURCE_FILES)) == len(REQUIRED_SOURCE_FILES)
     assert 'src/trading_runtime/owned_scalar_row_snapshots.py' in REQUIRED_SOURCE_FILES
