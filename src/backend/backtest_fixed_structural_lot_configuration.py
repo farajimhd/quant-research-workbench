@@ -54,6 +54,14 @@ def verify_fixed_structural_lot_configuration(strategy):
     owned_selected = OWNED_RULE in contract.release.rule_set_contracts
     if owned_selected:
         expected.add('owned_scalar_snapshot_policy')
+    from src.trading_runtime.empty_protection_confirmation_policy import RULE as EMPTY_RULE, parse_empty_protection_confirmation_policy
+    empty_selected = EMPTY_RULE in contract.release.rule_set_contracts
+    if empty_selected:
+        expected.add('empty_protection_confirmation_policy')
+    from src.trading_runtime.complete_market_window_policy import RULE as WINDOW_RULE, parse_complete_market_window_policy
+    window_selected = WINDOW_RULE in contract.release.rule_set_contracts
+    if window_selected:
+        expected.add('complete_market_window_policy')
     if type(params) is not dict or set(params) != expected:
         raise ValueError('Fixed-lot parameter companions differ')
     if reuse_selected and parse_packet_validation_reuse_policy(params['packet_validation_reuse_policy']) != contract.validation_reuse_policy:
@@ -62,6 +70,10 @@ def verify_fixed_structural_lot_configuration(strategy):
         raise ValueError('Projected-node reuse bounds differ from registered factory')
     if owned_selected and parse_owned_scalar_snapshot_policy(params['owned_scalar_snapshot_policy']) != contract.owned_snapshot_policy:
         raise ValueError('Owned snapshot bounds differ from registered factory')
+    if empty_selected and parse_empty_protection_confirmation_policy(params['empty_protection_confirmation_policy']) != contract.empty_confirmation_policy:
+        raise ValueError('Empty confirmation differs from registered factory')
+    if window_selected and parse_complete_market_window_policy(params['complete_market_window_policy']) != contract.complete_market_policy:
+        raise ValueError('Complete market window bounds differ from registered factory')
     if parse_fixed_structural_lot_policy(params['fixed_structural_lot_policy']) != contract.fixed_structural_lot_policy:
         raise ValueError('Fixed-lot policy differs from exact registered factory')
     manifest = strategy.get('numbered_release')
@@ -145,6 +157,14 @@ def derive_registered_fixed_structural_lot_configuration(parent, *, number,
     owned_selected = OWNED_RULE in numbered_strategy(number).rule_set_contracts
     if owned_selected:
         from src.trading_runtime.fixed_structural_lot_release_v16 import derive_fixed_structural_lot_release
+    from src.trading_runtime.empty_protection_confirmation_policy import RULE as EMPTY_RULE
+    empty_selected = EMPTY_RULE in numbered_strategy(number).rule_set_contracts
+    if empty_selected:
+        from src.trading_runtime.fixed_structural_lot_release_v17 import derive_fixed_structural_lot_release
+    from src.trading_runtime.complete_market_window_policy import RULE as WINDOW_RULE
+    window_selected = WINDOW_RULE in numbered_strategy(number).rule_set_contracts
+    if window_selected:
+        from src.trading_runtime.fixed_structural_lot_release_v18 import derive_fixed_structural_lot_release
     contract = declared_fixed_structural_lot_contract(number)
     if contract is None or parent.strategy_number != numbered_strategy_parent(number):
         raise ValueError('Fixed-lot registered parent differs')
@@ -154,6 +174,8 @@ def derive_registered_fixed_structural_lot_configuration(parent, *, number,
         **({'reuse_policy': contract.validation_reuse_policy} if reuse_selected else {}),
         **({'projection_reuse_policy': contract.projection_reuse_policy} if projection_selected else {}),
         **({'owned_snapshot_policy': contract.owned_snapshot_policy} if owned_selected else {}),
+        **({'empty_confirmation_policy': contract.empty_confirmation_policy} if empty_selected else {}),
+        **({'complete_market_policy': contract.complete_market_policy} if window_selected else {}),
         approved_code_commit=approved_code_commit,
         approved_code_fingerprint=approved_code_fingerprint, approval_reference=approval_reference)
 
