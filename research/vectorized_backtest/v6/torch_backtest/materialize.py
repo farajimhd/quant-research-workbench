@@ -27,10 +27,10 @@ BAR_SCHEMA = dict(ticker=pl.String, clock=pl.Int64, close=pl.Float64,
 
 
 @contextmanager
-def owned_run(root):
+def owned_run(root, *, version=VERSION):
     lock=root/'owner.lock'
     with lock.open('x',encoding='utf-8') as stream:
-        json.dump(dict(pid=os.getpid(),version=VERSION,started_epoch=time()),stream)
+        json.dump(dict(pid=os.getpid(),version=version,started_epoch=time()),stream)
     try:yield
     finally:lock.unlink()
 
