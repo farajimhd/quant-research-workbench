@@ -5196,6 +5196,16 @@ class ReplayRunController:
         selected_drawdown = resolve_drawdown_policy(
             str(strategy_configuration.get("strategy_id") or ""),
             int(strategy_configuration.get("revision") or 0), strategy_configuration)
+        from src.trading_runtime.portfolio_acquisition_policy import RULE as ACQUISITION_RULE
+        manifest_rules=strategy_configuration.get('numbered_release',{}).get('contract',{}).get('rule_set_contracts',())
+        session_acquisition_authority=None
+        if ACQUISITION_RULE in manifest_rules:
+            from src.backend.backtest_portfolio_acquisition_scope import issue_native_acquisition_authority
+            if self._journal_writer is None:
+                raise ValueError('Selected Portfolio quota requires its committed native journal definition')
+            session_acquisition_authority=issue_native_acquisition_authority(self._journal_writer._client,
+                definition=self.definition,run_id=self.run_id,
+                account_ids=tuple(profile.account_id for profile in portfolio_profiles))
         portfolio = PortfolioManagementEngine(
             portfolio_profiles,
             journal=self._journal,
@@ -5203,9 +5213,11 @@ class ReplayRunController:
             strategy_id=str(strategy_configuration.get("strategy_id") or "manual"),
             strategy_revision=int(strategy_configuration.get("revision") or 0),
             groups=groups,
-            event_clock=lambda: self.current_time or self.definition.session_start,
+            event_clock=lambda: self.current_time or (self.definition.requested_start
+                if session_acquisition_authority is not None else self.definition.session_start),
             typed_recovery=(fixed_restore.portfolio if fixed_restore is not None else None),
             drawdown_measure_policy=selected_drawdown,
+            session_acquisition_authority=session_acquisition_authority,
         )
         broker = SimulatedBrokerAdapter(
             list(self.account_ids),

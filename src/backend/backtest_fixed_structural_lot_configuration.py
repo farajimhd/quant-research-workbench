@@ -73,6 +73,13 @@ def verify_fixed_structural_lot_configuration(strategy):
         expected.add('management_reuse_policy')
     if management_policy != getattr(contract, 'management_reuse_policy', None):
         raise ValueError('Management reuse differs from exact registered factory')
+    from src.trading_runtime.portfolio_acquisition_policy import declared_acquisition_limit, PARAMETER
+    quota=declared_acquisition_limit({'strategy':strategy})
+    if quota is not None:
+        expected.add(PARAMETER)
+        from src.trading_runtime.portfolio_acquisition_contract import SessionAcquisitionQuotaPolicy
+        if type(contract.session_acquisition_quota) is not SessionAcquisitionQuotaPolicy or quota!=contract.session_acquisition_quota.maximum:
+            raise ValueError('Portfolio acquisition quota differs from exact registered factory')
     if type(params) is not dict or set(params) != expected:
         raise ValueError('Fixed-lot parameter companions differ')
     if reuse_selected and parse_packet_validation_reuse_policy(params['packet_validation_reuse_policy']) != contract.validation_reuse_policy:

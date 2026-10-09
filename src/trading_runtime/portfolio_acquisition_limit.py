@@ -75,7 +75,7 @@ def require_owned_session_history(scope, reservations, *, run_id, at):
     if type(scope) is not SessionAcquisitionLimit or run_id != scope.run_id:
         raise ValueError('Acquisition history has foreign session ownership')
     scope.__post_init__()
-    if not _aware(at) or not scope.begins_at <= at < scope.ends_at:
+    if not _aware(at) or not scope.begins_at <= at <= scope.ends_at:
         raise ValueError('Acquisition recovery has an invalid session clock')
     for row in reservations:
         if type(row) is not PortfolioReservation:

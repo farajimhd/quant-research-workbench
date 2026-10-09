@@ -384,6 +384,7 @@ class PortfolioManagementEngine:
         typed_recovery: PortfolioRecovery | None = None,
         event_clock: Callable[[], datetime] | None = None,
         drawdown_measure_policy=None,
+        session_acquisition_authority=None,
     ) -> None:
         if not profiles:
             raise ValueError("Portfolio management requires at least one account profile")
@@ -394,6 +395,11 @@ class PortfolioManagementEngine:
         # wall time; journal event time must never be inferred by the writer.
         self._event_clock = event_clock or (lambda: datetime.now(timezone.utc))
         self.run_id = run_id
+        self.session_acquisition_authority = session_acquisition_authority
+        if session_acquisition_authority is not None:
+            from src.backend.backtest_portfolio_acquisition_scope import require_acquisition_authority
+            require_acquisition_authority(session_acquisition_authority,run_id=run_id,
+                account_ids=tuple(profile.account_id for profile in profiles),strategy_id=strategy_id,strategy_revision=strategy_revision)
         self.strategy_id = strategy_id
         self.strategy_revision = strategy_revision
         self.allocation_identity = allocation_identity or strategy_id
@@ -465,11 +471,22 @@ class PortfolioManagementEngine:
             self.allocations = dict(typed_recovery.allocations)
             self.differences = dict(typed_recovery.differences)
             self._last_filled_by_reservation = dict(typed_recovery.last_filled_by_reservation)
+            if self.session_acquisition_authority is not None:
+                from .portfolio_acquisition_limit import require_owned_session_history
+                for scope in self.session_acquisition_authority.scopes.values():
+                    require_owned_session_history(scope,tuple(self.reservations.values()),
+                        run_id=self.run_id,at=self._event_time())
             if self._typed_backtest_recovery:
                 # This adapter is memory-only. Its next ordered V4 journal
                 # prefix is published asynchronously by the Backtest writer.
                 for state in self.states.values():
                     self._persist_state(state)
+
+
+        if typed_recovery is None and self.session_acquisition_authority is not None:
+            from .portfolio_acquisition_limit import require_owned_session_history
+            for scope in self.session_acquisition_authority.scopes.values():
+                require_owned_session_history(scope,tuple(self.reservations.values()),run_id=self.run_id,at=self._event_time())
 
     def bind_control_plane(self, control_plane: TradingControlPlane) -> None:
         """Promote this engine's admission locks to shared account authorities."""
@@ -1309,6 +1326,19 @@ class PortfolioManagementEngine:
                 existing_request.quantity, existing_request.quantity,
                 existing_request.reserved_planned_risk, existing_request.reservation_id,
                 ["entry_request_already_allocated"], metrics, metrics, now), None
+        if entry and self.session_acquisition_authority is not None:
+            from src.backend.backtest_portfolio_acquisition_scope import require_acquisition_authority
+            from .portfolio_acquisition_limit import require_owned_session_history, acquisition_limit_reached
+            authority=require_acquisition_authority(self.session_acquisition_authority,
+                run_id=self.run_id,account_ids=tuple(self.states),strategy_id=self.strategy_id,strategy_revision=self.strategy_revision)
+            scope=authority.scopes[state.profile.account_id]
+            history=tuple(self.reservations.values())
+            require_owned_session_history(scope,history,run_id=self.run_id,at=now)
+            if acquisition_limit_reached(scope,history,run_id=self.run_id,ticker=intent.ticker.upper(),
+                    intent_id=intent.intent_id,at=now):
+                metrics=self._metrics(state)
+                return self._decision(intent,state,PortfolioDecisionStatus.REJECTED,requested,0.,0.,'',
+                    ['session_acquisition_quota_reached'],metrics,metrics,now),None
         reduction = intent.action in REDUCTION_ACTIONS
         protection_update = intent.action in PROTECTION_ACTIONS
         control_mode = state.control_mode
