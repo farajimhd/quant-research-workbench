@@ -33,10 +33,14 @@ def derive_strategy_one_hundred_one_configuration(source, *, approved_code_commi
     from .strategy_ninety_nine_release import _compiler_arguments, _verify_parent
     from .fixed_structural_lot_policy import FixedStructuralLotPolicy
     _verify_parent(source)
-    return derive_fixed_structural_lot_release(source, inherited_arguments=_compiler_arguments(),
+    prepared = derive_fixed_structural_lot_release(source, inherited_arguments=_compiler_arguments(),
         release=release_contract(), management_reuse_policy=MANAGEMENT_REUSE_POLICY,
         policy=FixedStructuralLotPolicy().payload(), approved_code_commit=approved_code_commit,
         approved_code_fingerprint=approved_code_fingerprint, approval_reference=approval_reference)
+    # Registered derivation is the publisher/reader transfer contract. The
+    # internal compiler retains nodes for typed verification and reconstruction.
+    return {key: prepared[key] for key in ('source_candidate_id', 'source_candidate_hash',
+        'payload_hash', 'node_hash', 'node_count', 'payload')}
 
 
 def verify_prepared_strategy_one_hundred_one_configuration(parent, payload):

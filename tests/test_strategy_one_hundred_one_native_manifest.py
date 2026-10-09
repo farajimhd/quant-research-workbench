@@ -121,6 +121,47 @@ def test_publisher_rejects_malformed_envelope_before_any_write():
         publish_configuration(Writer(), object(), envelope)
 
 
+def test_registered_transport_reaches_official_publisher_and_normalized_reader(monkeypatch):
+    """Only SQL parent transport is synthetic; inheritance uses actual adapters."""
+    import pipelines.strategy_one.configuration_publisher as publisher
+    import src.backend.backtest_strategy_one_configuration as reader
+    from src.trading_runtime.strategy_one_configuration_tree import encode_nodes
+    parent = source_fixture()
+    envelope = prepared()
+    assert set(envelope) == {'source_candidate_id', 'source_candidate_hash',
+        'payload_hash', 'node_hash', 'node_count', 'payload'}
+    internal = verify_prepared_strategy_one_hundred_one_configuration(parent, envelope['payload'])
+    assert internal['nodes'] == encode_nodes(envelope['payload'])
+    assert {key: internal[key] for key in envelope} == envelope
+    monkeypatch.setattr(publisher, 'certify_numbered_configuration',
+        lambda client, number: parent if number == 42 else pytest.fail('Foreign parent'))
+    def before_layout(client):
+        raise RuntimeError('Verified complete inheritance; stop before inserts')
+    monkeypatch.setattr(publisher, 'verify_tables', before_layout)
+    with pytest.raises(publisher.PublicationStageError) as error:
+        publisher.publish_configuration(object(), object(), envelope)
+    assert str(error.value.__cause__) == 'Verified complete inheritance; stop before inserts'
+
+    attempt = '00000000-0000-0000-0000-000000000101'
+    class ReaderTransport:
+        def execute(self, query):
+            assert query.startswith('SELECT') and 'strategy_number=101' in query
+            if 'release_attempt_id,strategy_id' in query:
+                return json.dumps(dict(release_attempt_id=attempt,
+                    strategy_id=envelope['payload']['strategy']['strategy_id'],
+                    **{key: envelope[key] for key in ('source_candidate_id',
+                        'source_candidate_hash', 'payload_hash', 'node_count', 'node_hash')}))
+            return '\n'.join(json.dumps(row) for row in internal['nodes'])
+    original = reader.certify_numbered_configuration
+    def parent_transport(client, number=1):
+        return parent if number == 42 else original(client, number)
+    monkeypatch.setattr(reader, 'certify_numbered_configuration', parent_transport)
+    certified = original(ReaderTransport(), 101)
+    assert certified.payload == envelope['payload'] and certified.attempt_id == attempt
+    assert certified.payload_hash == envelope['payload_hash']
+    assert certified.node_hash == envelope['node_hash']
+
+
 @pytest.mark.parametrize('relative', [
     'src/backend/backtest_fixed_structural_lot_source.py',
     'src/backend/backtest_fixed_structural_lot_management.py',
