@@ -46,7 +46,7 @@ def test_progress_timeout_observes_same_task_without_cancelling(monkeypatch, cap
     asyncio.run(exercise())
     output = capsys.readouterr().out
     assert "run_id=run-observed status=running" in output
-    assert "processed_rows=42" in output
+    assert "processed_broker_rows=42" in output
 
 
 def test_progress_observer_preserves_original_task_failure():
