@@ -25,6 +25,7 @@ class NativeChannelSequencePolicy:
     comparison: str
     threshold: float
     max_decisions: int
+    reference_mode: str
 
     def __post_init__(self):
         if (type(self.inputs) is not NativeChannelPolicy or
@@ -37,17 +38,48 @@ class NativeChannelSequencePolicy:
                 type(self.channel) is not str or self.channel not in RELATIVE_FIELDS or
                 type(self.comparison) is not str or self.comparison not in ('lt', 'le', 'gt', 'ge') or
                 type(self.threshold) is not float or not isfinite(self.threshold) or
+                type(self.reference_mode) is not str or
+                self.reference_mode not in ('none', 'below-first-post-acquisition-close') or
                 type(self.max_decisions) is not int or not 1 <= self.max_decisions <= 2**32 - 1):
             raise ValueError('Complete bounded finite channel sequence declaration required')
 
     def payload(self):
         self.__post_init__()
-        return dict(rule='native-post-acquisition-channel-sequence@1',
+        return dict(rule='native-post-acquisition-channel-sequence@2',
             input_policy=self.inputs.payload(), input_policy_digest=self.inputs.digest,
             minimum_bars=self.sequence.minimum_bars, max_rows=self.sequence.max_rows,
             resolution_ms=self.resolution_ms, channel=self.channel,
             comparison=self.comparison, threshold=self.threshold,
-            max_decisions=self.max_decisions)
+            max_decisions=self.max_decisions, reference_mode=self.reference_mode)
+
+
+def _reference_confirmation(features, decisions, acquired):
+    """Columnar first available post-fill close, visible only on completion.
+
+    Inputs are already source/schema validated by the installed adapter. The
+    first close is an observed reference, not a broker acquisition price.
+    """
+    keys = [*DECISION_IDENTITY, 'feature_attempt_id', 'policy_digest']
+    left = decisions.select(*keys, 'decision_day_ms').with_row_index('_input_row')
+    # A completed boundary is integral milliseconds. floor(fill_us/1000)+1
+    # excludes a completion equal to the fill, including submillisecond fills.
+    left = left.with_columns(pl.Series('_after_fill_ms', acquired // 1000 + 1))
+    source = features.select(*keys, 'available_day_boundary_ms', 'candle_available', 'close_int')
+    first = source.filter(pl.col('candle_available') & (pl.col('close_int') > 0)).select(
+        *keys, pl.col('available_day_boundary_ms').alias('_first_completion'),
+        pl.col('close_int').alias('_first_close'))
+    left = left.sort([*keys, '_after_fill_ms']).join_asof(
+        first.sort([*keys, '_first_completion']), left_on='_after_fill_ms',
+        right_on='_first_completion', by=keys, strategy='forward', check_sortedness=False)
+    latest = source.select(*keys, pl.col('available_day_boundary_ms').alias('_latest_completion'),
+        pl.col('close_int').alias('_latest_close'), 'candle_available')
+    left = left.sort([*keys, 'decision_day_ms']).join_asof(
+        latest.sort([*keys, '_latest_completion']), left_on='decision_day_ms',
+        right_on='_latest_completion', by=keys, strategy='backward', check_sortedness=False)
+    predicate = ((pl.col('_first_completion') <= pl.col('decision_day_ms')) &
+        pl.col('candle_available') & (pl.col('_latest_close') > 0) &
+        (pl.col('_latest_close') < pl.col('_first_close'))).fill_null(False)
+    return left.with_columns(predicate.alias('_reference')).sort('_input_row')['_reference'].to_numpy()
 
 
 def qualify_installed_native_channel_sequences(client, request, feature_attempt_id,
@@ -101,8 +133,11 @@ def qualify_installed_native_channel_sequences(client, request, feature_attempt_
     eligible = features.select((value.is_not_null() & value.is_finite() & compare)
                               .fill_null(False).alias('eligible'))['eligible'].to_numpy()
     windows = completed_bar_sequence_windows(features, eligible, policy.sequence)
-    return qualify_completed_sequences_after_acquisition(windows, left, held, acquired,
+    result = qualify_completed_sequences_after_acquisition(windows, left, held, acquired,
         sequence_policy=policy.sequence, resolution_ms=policy.resolution_ms,
         decision_interval_ms=policy.inputs.decision_interval_ms,
         freshness_ms=dict(policy.inputs.freshness_by_resolution)[policy.resolution_ms],
         max_decisions=policy.max_decisions)
+    if policy.reference_mode == 'below-first-post-acquisition-close':
+        result = result & _reference_confirmation(features, left, acquired)
+    return np.frombuffer(result.tobytes(), dtype=bool)
