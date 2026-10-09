@@ -54,6 +54,7 @@ from .arte_profit_giveback_v4 import PROFIT_GIVEBACK, seal_profit_giveback_rows
 from .arte_confirmed_ah_failure_v4 import CONFIRMED_AH_FAILURE, seal_confirmed_ah_rows
 from .arte_liquidity_fade_failure_v4 import LIQUIDITY_FADE_FAILURE
 from .strategy_liquidity_fade_publication import prepare_native_liquidity_fade_rows
+from .arte_structural_rejection_exit_v1 import EXIT as STRUCTURAL_REJECTION_EXIT
 from .arte_rising_momentum_entry_v4 import (
     MOMENTUM, seal_rising_momentum_rows, momentum_select_columns, decode_momentum_row,
 )
@@ -732,7 +733,7 @@ def _load_verified_details_v4(
                 raise RuntimeError("V4 typed detail differs from its row hash")
             identities.append((str(UUID(str(row["record_id"]))), digest))
         details[name] = identities
-        if name in {"trading_event_v1", "trading_strategy_intent_v1",
+        if name in {"trading_event_v1", "trading_strategy_intent_v1", STRUCTURAL_REJECTION_EXIT.name,
                     ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name, ORIGINAL_RISK_DIAGNOSTIC.name, PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name, LIQUIDITY_FADE_FAILURE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name, ENTRY_ACTIVITY.name, ENTRY_SPREAD_RISK.name,
                     ACKNOWLEDGEMENT.name,
                     ACKNOWLEDGEMENT_V5.name, CANCEL.name,
@@ -824,6 +825,15 @@ def _load_verified_details_v4(
         related_rows.get('trading_strategy_intent_v1', ()),
         related_rows.get('trading_event_v1', ()), verified_prefix=verified_prior_prefix,
         first_price_source=first_price_source)
+    # A stored row hash is content integrity, not certified exit evidence.
+    # Recheck the complete source/financial/parent graph during cold recovery,
+    # including an own exit whose companion family was omitted entirely.
+    from .structural_rejection_exit_publication import prepare_native_structural_rejection_exit_rows
+    prepare_native_structural_rejection_exit_rows(client,
+        tuple(related_rows.get(STRUCTURAL_REJECTION_EXIT.name, ())),
+        tuple(related_rows.get('trading_strategy_intent_v1', ())),
+        tuple(related_rows.get('trading_event_v1', ())),
+        verified_prefix=verified_prior_prefix, first_price_source=first_price_source)
     parents = {str(UUID(str(row["record_id"]))): row for row in
                related_rows.get("trading_strategy_intent_v1", ())
                if row["reason"] == "strategy_one_entry"}
@@ -2238,7 +2248,8 @@ def _existing_detail_identities_v4(client, batch, families):
     return {name: sorted(identities) for name, identities in by_name.items()}
 
 
-def _insert_detail_families_v4(client, batch, pending, *, journal_profile):
+def _insert_detail_families_v4(client, batch, pending, *, journal_profile,
+                             structural_rejection_exit_context=None):
     """Insert independent detail families in bounded lanes, before any commit.
 
     Every lane has its own HTTP connection. The shared Keeper dispatch registers
@@ -2249,6 +2260,32 @@ def _insert_detail_families_v4(client, batch, pending, *, journal_profile):
     if journal_profile not in {"backtest_v4", "live_v4"}:
         raise ValueError("V4 detail publication requires its explicit owner profile")
     from src.trading_runtime.arte_journal_writer import _insert
+
+    # This companion is bound to the exact verified reader/writer client.
+    # Independent HTTP lanes cannot inherit that authority. Validate before
+    # inserting any family, then keep its INSERT on the issuing client.
+    from .arte_structural_rejection_exit_v1 import EXIT
+    own = tuple((name, rows) for name, rows in pending if name == EXIT.name)
+    if own or structural_rejection_exit_context is not None:
+        from .structural_rejection_exit_verified_publication import (
+            require_verified_structural_rejection_exit_publication,
+            verify_structural_rejection_exit_insert,
+        )
+        context = require_verified_structural_rejection_exit_publication(
+            structural_rejection_exit_context, client=client)
+        if (journal_profile != 'backtest_v4' or context.unit.base is not batch
+                or len(own) > 1):
+            raise ValueError('Structural rejection detail INSERT differs from its issued batch')
+        if own:
+            rows = tuple(own[0][1])
+            verify_structural_rejection_exit_insert(context, client=client,
+                rows=rows, run_id=batch.run_id, sequence=batch.last_sequence,
+                batch_id=batch.batch_id)
+            _insert(client, EXIT.name, rows, f'{batch.batch_id}:{EXIT.name}:v4',
+                journal_profile=journal_profile, dispatch_batch_id=batch.batch_id,
+                dispatch_sequence=batch.last_sequence,
+                dispatch_structural_rejection_exit_context=context)
+        pending = tuple((name, rows) for name, rows in pending if name != EXIT.name)
 
     factory = getattr(client, "v4_insert_lane_factory", None)
     lane_limit = getattr(client, "v4_insert_lane_limit", 1)

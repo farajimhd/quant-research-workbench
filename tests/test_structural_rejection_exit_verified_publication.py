@@ -38,6 +38,43 @@ def test_exact_image_rechecks_all_native_gates_before_companion_insert(monkeypat
     assert calls==['head','native','head','head','native','head']
 
 
+def test_detail_publication_keeps_verified_companion_on_issuing_client(monkeypatch):
+    from src.trading_runtime.arte_journal_commit_v4 import _insert_detail_families_v4
+    from src.trading_runtime.arte_structural_rejection_exit_v1 import EXIT
+    issued,client,_,calls=fixture(monkeypatch)
+    inserts=[]
+    monkeypatch.setattr('src.trading_runtime.arte_journal_writer._insert',
+        lambda target,name,rows,token,**kwargs: inserts.append((target,name,rows,kwargs)))
+    _insert_detail_families_v4(client,issued.unit.base,
+        ((EXIT.name,issued.rows),('trading_event_v1',issued.unit.base.events)),
+        journal_profile='backtest_v4',structural_rejection_exit_context=issued)
+    assert [item[1] for item in inserts]==[EXIT.name,'trading_event_v1']
+    assert all(item[0] is client for item in inserts)
+    assert inserts[0][3]['dispatch_structural_rejection_exit_context'] is issued
+    assert 'dispatch_structural_rejection_exit_context' not in inserts[1][3]
+    assert calls==['head','native','head','head','native','head']
+
+
+@pytest.mark.parametrize('kind',('missing','batch','live','duplicate','head','rows'))
+def test_detail_publication_rejects_bad_companion_before_any_insert(monkeypatch,kind):
+    from src.trading_runtime.arte_journal_commit_v4 import _insert_detail_families_v4
+    from src.trading_runtime.arte_structural_rejection_exit_v1 import EXIT
+    issued,client,current,_=fixture(monkeypatch)
+    pending=((EXIT.name,issued.rows),('trading_event_v1',issued.unit.base.events))
+    batch=issued.unit.base;context=issued;profile='backtest_v4'
+    if kind=='missing': context=None
+    elif kind=='batch': batch=replace(batch)
+    elif kind=='live': profile='live_v4'
+    elif kind=='duplicate': pending=pending+(pending[0],)
+    elif kind=='head': current['prefix']=replace(current['prefix'],last_sequence=11)
+    else: pending=((EXIT.name,({**dict(issued.rows[0]),'position_quantity':100.},)),pending[1])
+    monkeypatch.setattr('src.trading_runtime.arte_journal_writer._insert',
+        lambda *a,**k: pytest.fail('invalid companion reached INSERT'))
+    with pytest.raises(ValueError):
+        _insert_detail_families_v4(client,batch,pending,journal_profile=profile,
+            structural_rejection_exit_context=context)
+
+
 @pytest.mark.parametrize('kind',('copy','rows','unit','profile','client','nested-unit'))
 def test_context_cannot_be_forged_rebound_or_mutated(monkeypatch,kind):
     issued,client,_,_=fixture(monkeypatch)
