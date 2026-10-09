@@ -27,3 +27,46 @@ def release_contract():
     result = NumberedStrategyRelease(**values, approved_digest=draft.digest())
     result.verify()
     return result
+
+
+def _compiler_arguments():
+    from . import strategy_forty_two_release as parent
+    from .strategy_ninety_eight_release import (
+        VALIDATION_REUSE_POLICY, PROJECTION_REUSE_POLICY, OWNED_SNAPSHOT_POLICY,
+        EMPTY_CONFIRMATION_POLICY, COMPLETE_MARKET_POLICY,
+    )
+    return dict(parent_release=parent.release_contract(), release=release_contract(),
+                reuse_policy=VALIDATION_REUSE_POLICY,
+                projection_reuse_policy=PROJECTION_REUSE_POLICY,
+                owned_snapshot_policy=OWNED_SNAPSHOT_POLICY,
+                empty_confirmation_policy=EMPTY_CONFIRMATION_POLICY,
+                complete_market_policy=COMPLETE_MARKET_POLICY,
+                selected_exit_policy=SELECTED_EXIT_POLICY)
+
+
+def _verify_parent(source):
+    from src.backend.backtest_strategy_one_configuration import CertifiedStrategyOneConfiguration
+    from .strategy_forty_two_release import verify_strategy_forty_two_manifest
+    if type(source) is not CertifiedStrategyOneConfiguration or source.strategy_number != 42:
+        raise ValueError('Selected exit comparison requires certified Strategy42 parent')
+    verify_strategy_forty_two_manifest(source.payload['strategy'])
+
+
+def derive_strategy_ninety_nine_configuration(source, *, approved_code_commit,
+        approved_code_fingerprint, approval_reference):
+    from .fixed_structural_lot_release_v19 import derive_fixed_structural_lot_release
+    from .fixed_structural_lot_policy import FixedStructuralLotPolicy
+    _verify_parent(source)
+    return derive_fixed_structural_lot_release(source, **_compiler_arguments(),
+        policy=FixedStructuralLotPolicy().payload(), approved_code_commit=approved_code_commit,
+        approved_code_fingerprint=approved_code_fingerprint, approval_reference=approval_reference)
+
+
+def verify_prepared_strategy_ninety_nine_configuration(parent, payload):
+    from .fixed_structural_lot_release_v19 import verify_prepared_fixed_structural_lot_release
+    from .fixed_structural_lot_policy import FixedStructuralLotPolicy, parse_fixed_structural_lot_policy
+    _verify_parent(parent)
+    if parse_fixed_structural_lot_policy(payload['strategy']['parameters'].get(
+            'fixed_structural_lot_policy')) != FixedStructuralLotPolicy():
+        raise ValueError('Prepared comparison differs from declared fixed lot policy')
+    return verify_prepared_fixed_structural_lot_release(parent, payload, **_compiler_arguments())
