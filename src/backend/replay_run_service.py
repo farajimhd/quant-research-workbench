@@ -3578,6 +3578,23 @@ class ReplayRunController:
                 seeds=plans.seeds, through_boundary_ms=self._fixed_through_boundary_ms(),
                 client_factory=lambda: readonly_clickhouse_client(market_stream=True, v3_read_principal=True))
         self._fixed_structural_lot_session = selected_lot_session
+        from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+        from src.trading_runtime.profit_armed_structural_rejection_native_policy import native_structural_rejection_declaration
+        selected_rejection_session=None
+        if native_structural_rejection_declaration(numbered_fixed_strategy(strategy_number)) is not None:
+            if selected_lot_session is not None:
+                raise ValueError('Structural rejection cannot mix native writer operations')
+            from .backtest_structural_rejection_execution import prepare_structural_rejection_session
+            from .backtest_market_data import readonly_clickhouse_client
+            selected_rejection_session=await asyncio.to_thread(prepare_structural_rejection_session,
+                plans=plans,number=strategy_number,run_id=self.run_id,session_date=self.definition.session_date,
+                through_boundary_ms=self._fixed_through_boundary_ms(),
+                client_factory=lambda:readonly_clickhouse_client(market_stream=True,v3_read_principal=True))
+        self._structural_rejection_session=selected_rejection_session
+        runner_options=({'structural_rejection_profile':selected_rejection_session.profile}
+            if selected_rejection_session is not None else
+            {'fixed_structural_lot_profile':selected_lot_session.profile}
+            if selected_lot_session is not None else declared_fixed_runner_options(configuration))
         from .backtest_fixed_structural_lot_projection_runtime_authority import uses_projection_authority
         separate_lot_projection = (selected_lot_session is not None
             and uses_projection_authority(selected_lot_session.operation.source))
@@ -3609,15 +3626,12 @@ class ReplayRunController:
                         backtest_v4_context_client_from_env(
                             keeper_session=keeper)))
                     reader = control_clients.enter_context(closing(
-                        backtest_v4_operator_client_from_env(**({'fixed_structural_lot_profile':selected_lot_session.profile}
-                            if selected_lot_session is not None else declared_fixed_runner_options(configuration)))))
+                        backtest_v4_operator_client_from_env(**runner_options)))
                     writer = backtest_v4_journal_client_from_env(
                         keeper_session=keeper, lease=lease,
-                        **({'fixed_structural_lot_profile':selected_lot_session.profile}
-                            if selected_lot_session is not None else declared_fixed_runner_options(configuration)))
+                        **runner_options)
                     terminal = control_clients.enter_context(closing(
-                        backtest_v4_operator_client_from_env(**({'fixed_structural_lot_profile':selected_lot_session.profile}
-                            if selected_lot_session is not None else declared_fixed_runner_options(configuration)))))
+                        backtest_v4_operator_client_from_env(**runner_options)))
                     bootstrap_timings["strategy_one_journal_clients"] = (
                         time.perf_counter() - bootstrap_phase)
                     bootstrap_phase = time.perf_counter()
@@ -4046,6 +4060,15 @@ class ReplayRunController:
         async def manager_ready(manager):
             if getattr(self, '_strategy_one_manager', None) is not None:
                 raise RuntimeError('Strategy 1 manager is already bound')
+            selected_rejection_session=getattr(self,'_structural_rejection_session',None)
+            if selected_rejection_session is not None:
+                publisher=self._journal_publisher
+                if (publisher is None or publisher.writer.journal_profile!='backtest_v4'
+                        or getattr(publisher.writer._client,'structural_rejection_profile',None)
+                            is not selected_rejection_session.profile
+                        or publisher._first_price_source is not selected_rejection_session.source.price_authority
+                        or manager._structural_rejection_owner is not selected_rejection_session.profile.owner):
+                    raise RuntimeError('Structural rejection manager differs from its preflighted native writer/source')
             selected_lot_session = getattr(self, '_fixed_structural_lot_session', None)
             if selected_lot_session is not None:
                 from .backtest_fixed_structural_lot_execution import bind_fixed_structural_lot_manager
@@ -5245,6 +5268,9 @@ class ReplayRunController:
         selected_lot_session = getattr(self, '_fixed_structural_lot_session', None)
         if selected_lot_session is not None:
             selected_lot_session.bind_runtime(self._runtime)
+        selected_rejection_session=getattr(self,'_structural_rejection_session',None)
+        if selected_rejection_session is not None:
+            selected_rejection_session.bind_runtime(self._runtime)
         await self._runtime.initialize(
             record_lifecycle=record_lifecycle,
             review_only=review_only,

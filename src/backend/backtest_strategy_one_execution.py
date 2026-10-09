@@ -251,6 +251,17 @@ async def run_certified_strategy_one_session(
             number=runtime.config.strategy_revision)
     elif getattr(numbered_fixed_strategy(runtime.config.strategy_revision), 'fixed_structural_lot_policy', None) is not None:
         raise ValueError('Declared fixed lots lack native source preparation')
+    from src.trading_runtime.profit_armed_structural_rejection_native_policy import native_structural_rejection_declaration
+    rejection_session=getattr(runtime,'_structural_rejection_session',None)
+    rejection_declared=native_structural_rejection_declaration(numbered_fixed_strategy(runtime.config.strategy_revision))
+    if rejection_session is not None:
+        from .backtest_structural_rejection_execution import PreparedStructuralRejectionSession
+        if type(rejection_session) is not PreparedStructuralRejectionSession or selected_session is not None:
+            raise ValueError('Structural rejection execution requires unmixed issued native session')
+        rejection_session.require(market=market,candidates=candidates,entry=entry,
+            through_boundary_ms=through_boundary_ms,run_id=runtime.run_id,number=runtime.config.strategy_revision)
+    elif rejection_declared is not None:
+        raise ValueError('Declared structural rejection lacks prewriter native source preparation')
     if (runtime.config.strategy_revision in (35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-thirty-five-completed-liquidity-fade-v1')) and resume_manager_state is not None and selected_session is None:
         raise ValueError("Strategy 35 resume lacks liquidity-cache equivalence acceptance")
     if flat_start_boundary_ms:
@@ -305,6 +316,8 @@ async def run_certified_strategy_one_session(
             through_boundary_ms=through_boundary_ms, run_id=runtime.run_id,
             number=runtime.config.strategy_revision)
         entry_authorities = selected_session.entry_authorities
+    elif rejection_session is not None:
+        entry_authorities=rejection_session.entry_authorities
     else:
         entry_authorities = prepare_strategy_one_entry_authorities(
             market=market, candidates=candidates, entry=entry, through_boundary_ms=through_boundary_ms,
@@ -447,12 +460,11 @@ async def run_certified_strategy_one_session(
                 manager.bind_completed_risk_lookup(risk_lookup,risk_market)
             from src.trading_runtime.profit_armed_structural_rejection_native_policy import native_structural_rejection_declaration
             if native_structural_rejection_declaration(manager.contract) is not None:
-                from .backtest_profit_armed_structural_rejection_management import prepare_native_structural_rejection_manager
-                rejection_owner=await asyncio.to_thread(prepare_native_structural_rejection_manager,
-                    manager,reader,market=price_authority.plan.source.market,seeds=seeds,
-                    intervals=interval_plan,price_authority=price_authority,
-                    through_boundary_ms=through_boundary_ms)
-                manager.bind_structural_rejection_management(rejection_owner)
+                from .backtest_structural_rejection_execution import bind_structural_rejection_session_manager
+                if (rejection_session is None or rejection_session.source.price_authority is not price_authority
+                        or rejection_session.source.seeds!=seeds or rejection_session.source.intervals!=interval_plan):
+                    raise ValueError('Structural rejection manager differs from prewriter source preparation')
+                bind_structural_rejection_session_manager(rejection_session,manager)
             if resume_manager_state is not None and selected_session is None:
                 if (runtime.config.strategy_revision in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-twenty-premarket-first-completed-one-second-price-break-v1')):
                     manager.restore_state(resume_manager_state, first_price_source=price_authority)
