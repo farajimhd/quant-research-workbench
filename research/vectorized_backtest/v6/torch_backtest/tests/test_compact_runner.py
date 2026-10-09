@@ -61,7 +61,16 @@ def test_compact_candidate_identities_and_archived_order_counters():
 def test_compact_fullgraph_candidate_state_matches_reference():compare(population=2,compiled=True)
 
 
-def test_compact_structural_targets_match_financial_reference(tmp_path):compare(population=2,structure=tmp_path)
+def test_compact_structural_targets_match_financial_reference(tmp_path):
+    runner=compare(population=2,structure=tmp_path)
+    _,_,space,member,_=fixture();member.policy[6]=1
+    second=CompactProgramRunner(runner.inputs,space,[member,deepcopy(member)],runner.sparse_gates.clone(),
+        holding_capacity=2,structure=tmp_path,maximum_fills=512)
+    assert second.structural is runner.structural
+    assert second.tape.provenance['structural_receipt_sha256']==runner.tape.provenance['structural_receipt_sha256']
+    with pytest.raises(ValueError,match='authority changed'):
+        CompactProgramRunner(runner.inputs,space,[member,deepcopy(member)],runner.sparse_gates.clone(),
+            holding_capacity=2,structure=tmp_path/'different',maximum_fills=512)
 
 
 def test_compact_capacity_exhaustion_rejects_result():

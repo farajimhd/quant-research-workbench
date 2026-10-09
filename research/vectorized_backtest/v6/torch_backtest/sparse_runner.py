@@ -38,21 +38,29 @@ class SparseProgramRunner(ProgramRunner):
         self.union_ids=union.tolist()
         self.structural=None
         if structure is not None:
-            folder=Path(structure);record=json.loads((folder/'complete.json').read_text())
-            if (record.get('status')!='complete' or record.get('version')!='v6-sparse-structural-v1' or record.get('validation_opened',True)
-                or record.get('input_receipt_sha256')!=file_hash(inputs.root/'complete.json')
-                or record.get('market_keys_sha256')!=inputs.receipt['files']['market_keys.npy'] or record.get('listing_ids')!=self.union_ids):
-                raise ValueError('Structural sidecar input/identity seal mismatch')
-            arrays={}
-            for name in ('targets','valid'):
-                path=folder/(name+'.npy')
-                if file_hash(path)!=record['files'][path.name]:raise ValueError('Structural sidecar bytes changed')
-                arrays[name]=np.load(path,mmap_mode='r',allow_pickle=False)
-            rows=len(inputs.arrays['market_keys'])
-            if arrays['targets'].shape!=(rows,15) or arrays['targets'].dtype!=np.float64 or arrays['valid'].shape!=(rows,) or arrays['valid'].dtype!=np.bool_:
-                raise ValueError('Structural sidecar raw-price/clock shape mismatch')
-            if np.isnan(arrays['targets']).any():raise ValueError('Structural raw targets contain NaN')
-            self.structural={name:inputs._transfer(value) for name,value in arrays.items()}
+            folder=Path(structure)
+            binding=getattr(inputs,'structural_binding',None)
+            if binding is not None:
+                if binding[0]!=folder.resolve():raise ValueError('Resident structural authority changed')
+                if file_hash(folder/'complete.json')!=binding[2]:raise ValueError('Structural sidecar input/identity seal mismatch')
+                self.structural=binding[1]
+            else:
+                folder=Path(structure);record=json.loads((folder/'complete.json').read_text())
+                if (record.get('status')!='complete' or record.get('version')!='v6-sparse-structural-v1' or record.get('validation_opened',True)
+                    or record.get('input_receipt_sha256')!=file_hash(inputs.root/'complete.json')
+                    or record.get('market_keys_sha256')!=inputs.receipt['files']['market_keys.npy'] or record.get('listing_ids')!=self.union_ids):
+                    raise ValueError('Structural sidecar input/identity seal mismatch')
+                arrays={}
+                for name in ('targets','valid'):
+                    path=folder/(name+'.npy')
+                    if file_hash(path)!=record['files'][path.name]:raise ValueError('Structural sidecar bytes changed')
+                    arrays[name]=np.load(path,mmap_mode='r',allow_pickle=False)
+                rows=len(inputs.arrays['market_keys'])
+                if arrays['targets'].shape!=(rows,15) or arrays['targets'].dtype!=np.float64 or arrays['valid'].shape!=(rows,) or arrays['valid'].dtype!=np.bool_:
+                    raise ValueError('Structural sidecar raw-price/clock shape mismatch')
+                if np.isnan(arrays['targets']).any():raise ValueError('Structural raw targets contain NaN')
+                self.structural={name:inputs._transfer(value) for name,value in arrays.items()}
+                inputs.structural_binding=(folder.resolve(),self.structural,file_hash(folder/'complete.json'))
         clocks=inputs.tensors['clocks'];n=len(union) if broker_capacity is None else broker_capacity
         tape=SimpleNamespace(device=inputs.device,clocks=clocks,
             tickers=tuple(str(i) for i in self.union_ids) if broker_capacity is None else tuple(f'compact-{i}' for i in range(n)),
@@ -61,7 +69,7 @@ class SparseProgramRunner(ProgramRunner):
             provenance=dict(version='v6-sparse-union-profiling-v1',input_identity=inputs.receipt['identity'],
                 input_files=inputs.receipt['files'],listing_ids=self.union_ids,
                 timing_contract=TIMING_CONTRACT,timing_fingerprint=timing_fingerprint(),
-                structural_receipt_sha256=file_hash(Path(structure)/'complete.json') if structure is not None else None))
+                structural_receipt_sha256=inputs.structural_binding[2] if structure is not None else None))
         tape.validate=lambda:tape
         shape=(len(clocks),len(individuals),n)
         descriptors={s:SimpleNamespace(shape=shape,dtype=torch.bool,device=inputs.device) for s in STAGES}
