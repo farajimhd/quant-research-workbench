@@ -66,6 +66,8 @@ def main(argv=None):
     p.add_argument('--rule-backend',choices=['auto','eager','cudagraph'],default='auto')
     p.add_argument('--holding-capacity',type=int,default=40)
     p.add_argument('--seed',type=int,default=2236);p.add_argument('--maximum-input-gib',type=float,default=4.)
+    p.add_argument('--maximum-state-gib',type=float,default=4.)
+    p.add_argument('--rule-workspace-gib',type=float,default=2.)
     p.add_argument('--maximum-fills',type=int,default=4096,help='Per-candidate bounded ledger capacity; exhaustion fails closed')
     p.add_argument('--structure',type=Path,help='Certified sparse raw-level sidecar; enables both target modes')
     a=p.parse_args(argv)
@@ -98,10 +100,10 @@ def main(argv=None):
         print('Compiling causal sparse lifecycle gates',flush=True)
         write_json(root/'status.json',dict(stage='Compiling causal lifecycle gates',validation_opened=False))
         union=np.unique(inputs.arrays['top_indices']);union=union[union>=0].tolist()
-        gates,rule_seconds=inputs.compile(members,listing_ids=union,backend=a.rule_backend)
+        gates,rule_seconds=inputs.compile(members,listing_ids=union,backend=a.rule_backend,workspace_gib=a.rule_workspace_gib)
         runner_type=CompactProgramRunner if a.broker=='compact' else SparseProgramRunner
         dimensions={'holding_capacity':a.holding_capacity} if a.broker=='compact' else {}
-        runner=runner_type(inputs,space,members,gates,structure=a.structure,backend=a.backend,maximum_fills=a.maximum_fills,maximum_state_gib=4.,**dimensions)
+        runner=runner_type(inputs,space,members,gates,structure=a.structure,backend=a.backend,maximum_fills=a.maximum_fills,maximum_state_gib=a.maximum_state_gib,**dimensions)
         print('Preparing financial replay: '+a.device+'/'+a.backend,flush=True)
         write_json(root/'status.json',dict(stage='Preparing financial replay',device=a.device,backend=a.backend,validation_opened=False))
         setup=perf_counter();runner.compile();synchronize();setup=perf_counter()-setup

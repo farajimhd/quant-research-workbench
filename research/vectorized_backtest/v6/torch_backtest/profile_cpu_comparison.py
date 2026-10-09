@@ -69,7 +69,9 @@ def profile_one(root,day,args,threads):
     command=[sys.executable,'-B','-u','-m','research.vectorized_backtest.v6.torch_backtest.profile_sparse',
         '--inputs',str(args.inputs),'--structure',str(args.structure/day),'--output',str(folder),'--day',day,
         '--device','cpu','--cpu-threads',str(threads),'--backend','eager','--batch-size',str(args.population),
-        '--seconds','19800','--repeats','1','--seed',str(args.seed),'--maximum-input-gib','1','--maximum-fills','16384',
+        '--seconds',str(getattr(args,'seconds',19800)),'--repeats','1','--seed',str(args.seed),'--maximum-input-gib','1','--maximum-fills','16384',
+        '--maximum-state-gib',str(getattr(args,'maximum_state_gib',4.)),
+        '--rule-workspace-gib',str(getattr(args,'rule_workspace_gib',2.)),
         '--population-file',str(args.gpu_reference/'population.json')]
     started=perf_counter();peak=0
     with (folder/'worker.log').open('w') as log,(folder/'worker.err').open('w') as err:
