@@ -363,3 +363,71 @@ def test_actual_publication_seals_snapshot_operations_and_publishes_head(monkeyp
     assert checks==['verify','fresh']
     gate=client.typed_insert_dispatch._read_gate(RUN)[0]
     assert gate.inflight==0 and gate.registered==0
+
+
+def prewriter_profile(monkeypatch):
+    from src.backend import backtest_profit_armed_structural_rejection_management as native
+    client,context,calls,*_=prepared(monkeypatch)
+    previous=context.profile.owner
+    source=native.prepare_structural_rejection_source(object(),contract=previous.manager.contract,
+        strategy_id=previous.manager.runtime.config.strategy_id,
+        strategy_revision=previous.manager.runtime.config.strategy_revision,
+        run_id=RUN,session_date=DAY,market=previous.market,seeds=previous.seeds,
+        intervals=previous.intervals,price_authority=previous.price_authority,through_boundary_ms=40000)
+    selected=profile.issue_prepared_structural_rejection_profile(source)
+    return client,selected,calls,previous
+
+
+def test_issued_prewriter_scope_binds_same_source_without_new_proof_or_tables(monkeypatch):
+    from src.backend.backtest_profit_armed_structural_rejection_management import bind_prepared_structural_rejection_manager
+    from src.backend.backtest_strategy_one_management import StrategyOneManagementRunner
+    from test_profit_armed_structural_rejection_management import Evidence
+    _,selected,calls,previous=prewriter_profile(monkeypatch)
+    before=tuple(calls)
+    tables=profile.selected_structural_rejection_tables(selected)
+    with pytest.raises(ValueError,match='no bound actual manager'): selected.owner
+    manager=StrategyOneManagementRunner(runtime=previous.manager.runtime,evidence=Evidence(),tick_for_ticker=lambda _: .01)
+    owner=bind_prepared_structural_rejection_manager(manager,selected.source)
+    manager.bind_structural_rejection_management(owner)
+    assert profile.bind_prepared_structural_rejection_profile(selected,owner) is selected
+    assert selected.owner is owner
+    assert profile.selected_structural_rejection_tables(selected)==tables
+    assert tuple(calls)==before
+    with pytest.raises(ValueError,match='certified manager operation'):
+        profile.bind_prepared_structural_rejection_profile(selected,previous)
+
+
+def test_prewriter_profile_copy_and_bound_only_profile_cannot_select_credentials(monkeypatch):
+    client,selected,*_=prewriter_profile(monkeypatch)
+    with pytest.raises(ValueError,match='Unissued'):
+        writer._validate_structural_rejection_profile(replace(selected))
+    with pytest.raises(ValueError,match='prewriter profile'):
+        writer._validate_structural_rejection_profile(client.structural_rejection_profile)
+    with pytest.raises(ValueError,match='unmixed'):
+        writer._validate_structural_rejection_profile(selected,entry_spread_risk=True)
+
+
+def test_prewriter_preflight_audits_own_parts_and_exact_write_scope(monkeypatch):
+    client,selected,*_=prewriter_profile(monkeypatch)
+    client.structural_rejection_profile=selected
+    client.execute=lambda sql,**kw:'backtest_v4_structural_rejection_runner'
+    storage=[];permissions=[]
+    # Catalog/actual-part transport seams are explicit; no DB installed here.
+    monkeypatch.setattr(writer,'storage_preflight',lambda client,*,tables:storage.append(tuple(tables)))
+    monkeypatch.setattr(writer,'journal_permission_preflight',lambda client,**kw:permissions.append(kw))
+    monkeypatch.setattr(writer,'_rows',lambda *a,**kw:[])
+    seal=writer._v4_preflight(client)
+    assert seal.structural_rejection_profile is selected
+    assert profile.selected_structural_rejection_tables(selected) in storage
+    assert {t.name for t in profile.selected_structural_rejection_tables(selected)}<=permissions[0]['journal_tables']
+    assert not {t.name for t in profile.selected_structural_rejection_tables(selected)}&permissions[0]['read_only_tables']
+    with pytest.raises(ValueError,match='no bound actual manager'): selected.owner
+    client.execute=lambda sql,**kw:'backtest_v4_runner'
+    with pytest.raises(RuntimeError,match='dedicated principal'): writer._v4_preflight(client)
+
+
+def test_prepared_profile_requires_dedicated_private_credentials_before_transport(monkeypatch):
+    _,selected,*_=prewriter_profile(monkeypatch)
+    monkeypatch.delenv('BACKTEST_V4_STRUCTURAL_REJECTION_RUNNER_CREDENTIAL_FILE',raising=False)
+    with pytest.raises(ValueError,match='private credential FILE'):
+        writer._v4_runner_credentials(structural_rejection_profile=selected)

@@ -313,7 +313,8 @@ def journal_client_from_env() -> Any:
 
 def backtest_v4_journal_client_from_env(*, keeper_session=None,
                                         lease=None, automatic_ladder=False, entry_spread_risk=False,
-                                        ladder_geometry_policy=None, confirmed_original_risk_policy=None, fixed_structural_lot_profile=None) -> Any:
+                                        ladder_geometry_policy=None, confirmed_original_risk_policy=None, fixed_structural_lot_profile=None,
+                                        structural_rejection_profile=None) -> Any:
     """Open V4 with a caller-owned writable Keeper session and strict dispatch.
 
     The caller must keep that session alive until the writer has drained and
@@ -328,7 +329,8 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
     url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder, entry_spread_risk=entry_spread_risk,
         **({'ladder_geometry_policy':ladder_geometry_policy} if ladder_geometry_policy is not None else {}),
         **({'confirmed_original_risk_policy':confirmed_original_risk_policy} if confirmed_original_risk_policy is not None else {}),
-        **({'fixed_structural_lot_profile':fixed_structural_lot_profile} if fixed_structural_lot_profile is not None else {}))
+        **({'fixed_structural_lot_profile':fixed_structural_lot_profile} if fixed_structural_lot_profile is not None else {}),
+        **({'structural_rejection_profile':structural_rejection_profile} if structural_rejection_profile is not None else {}))
     if user in {os.environ.get(key, "").strip() for key in (
         "BACKTEST_CLICKHOUSE_USER", "REAL_LIVE_CLICKHOUSE_READ_USER",
         "REAL_LIVE_CLICKHOUSE_USER", "TRADING_JOURNAL_CLICKHOUSE_USER",
@@ -385,6 +387,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
     client.entry_spread_risk_profile = entry_spread_risk
     client.confirmed_original_risk_policy = confirmed_original_risk_policy
     client.fixed_structural_lot_profile = fixed_structural_lot_profile
+    client.structural_rejection_profile = structural_rejection_profile
     def new_detail_lane() -> ClickHouseHttpClient:
         lane = _V4RunnerClient(
             url, user, password, timeout_seconds=60, persistent=True,
@@ -398,6 +401,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
         lane.ladder_geometry_policy = ladder_geometry_policy
         lane.confirmed_original_risk_policy = confirmed_original_risk_policy
         lane.fixed_structural_lot_profile = fixed_structural_lot_profile
+        lane.structural_rejection_profile = structural_rejection_profile
         return lane
     client.v4_insert_lane_factory = new_detail_lane
     client.v4_insert_lane_limit = 4
@@ -406,7 +410,8 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
 
 
 def _v4_runner_credentials(*, automatic_ladder=False, entry_spread_risk=False,
-                          ladder_geometry_policy=None, confirmed_original_risk_policy=None, fixed_structural_lot_profile=None) -> tuple[str, str, str]:
+                          ladder_geometry_policy=None, confirmed_original_risk_policy=None, fixed_structural_lot_profile=None,
+                          structural_rejection_profile=None) -> tuple[str, str, str]:
     from src.trading_runtime.clickhouse_transport import workstation_ipv4_transport
 
     if type(automatic_ladder) is not bool or type(entry_spread_risk) is not bool or (automatic_ladder and entry_spread_risk):
@@ -430,6 +435,14 @@ def _v4_runner_credentials(*, automatic_ladder=False, entry_spread_risk=False,
         stem,principal='BACKTEST_V4_FIXED_STRUCTURAL_LOT_RUNNER','backtest_v4_fixed_structural_lot_runner'
         if not os.environ.get(stem+'_CREDENTIAL_FILE','').strip():
             raise ValueError('Selected fixed-lot runner requires its private credential FILE')
+    if structural_rejection_profile is not None:
+        _validate_structural_rejection_profile(structural_rejection_profile,
+            automatic_ladder=automatic_ladder,entry_spread_risk=entry_spread_risk,
+            ladder_geometry_policy=ladder_geometry_policy,risk_policy=confirmed_original_risk_policy,
+            lot_profile=fixed_structural_lot_profile)
+        stem,principal='BACKTEST_V4_STRUCTURAL_REJECTION_RUNNER','backtest_v4_structural_rejection_runner'
+        if not os.environ.get(stem+'_CREDENTIAL_FILE','').strip():
+            raise ValueError('Selected structural rejection runner requires its private credential FILE')
     url, user, password = _dedicated_clickhouse_credentials(
         stem + '_CLICKHOUSE_', stem + '_CREDENTIAL_FILE')
     url = workstation_ipv4_transport(url)
@@ -465,7 +478,8 @@ def _dedicated_clickhouse_credentials(prefix: str, path_key: str) -> tuple[str, 
 
 
 def backtest_v4_operator_client_from_env(*, automatic_ladder=False, entry_spread_risk=False,
-                                         ladder_geometry_policy=None, confirmed_original_risk_policy=None, fixed_structural_lot_profile=None) -> Any:
+                                         ladder_geometry_policy=None, confirmed_original_risk_policy=None, fixed_structural_lot_profile=None,
+                                         structural_rejection_profile=None) -> Any:
     """SELECT-only catalog/grant audit before any Keeper claim or run write."""
     from research.mlops.clickhouse import ClickHouseHttpClient
 
@@ -473,7 +487,8 @@ def backtest_v4_operator_client_from_env(*, automatic_ladder=False, entry_spread
     url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder, entry_spread_risk=entry_spread_risk,
         **({'ladder_geometry_policy':ladder_geometry_policy} if ladder_geometry_policy is not None else {}),
         **({'confirmed_original_risk_policy':confirmed_original_risk_policy} if confirmed_original_risk_policy is not None else {}),
-        **({'fixed_structural_lot_profile':fixed_structural_lot_profile} if fixed_structural_lot_profile is not None else {}))
+        **({'fixed_structural_lot_profile':fixed_structural_lot_profile} if fixed_structural_lot_profile is not None else {}),
+        **({'structural_rejection_profile':structural_rejection_profile} if structural_rejection_profile is not None else {}))
     client = ClickHouseHttpClient(
         url, user, password, timeout_seconds=60, persistent=True,
         default_query_params={"readonly": 1, "max_threads": 2,
@@ -484,6 +499,7 @@ def backtest_v4_operator_client_from_env(*, automatic_ladder=False, entry_spread
     client.entry_spread_risk_profile = entry_spread_risk
     client.confirmed_original_risk_policy = confirmed_original_risk_policy
     client.fixed_structural_lot_profile = fixed_structural_lot_profile
+    client.structural_rejection_profile = structural_rejection_profile
     return client
 
 
@@ -2375,7 +2391,7 @@ _V4_PREFLIGHT_SECRET = object()
 class _V4PreflightSeal:
     """One-use proof that this exact client passed the full V4 audit."""
 
-    __slots__ = ("client", "secret", "used", "ladder_geometry_policy", "automatic_ladder_profile", "confirmed_original_risk_policy", "fixed_structural_lot_profile")
+    __slots__ = ("client", "secret", "used", "ladder_geometry_policy", "automatic_ladder_profile", "confirmed_original_risk_policy", "fixed_structural_lot_profile", "structural_rejection_profile")
 
     def __init__(self, client: Any, secret: object) -> None:
         self.client, self.secret, self.used = client, secret, False
@@ -2383,6 +2399,7 @@ class _V4PreflightSeal:
         self.automatic_ladder_profile = getattr(client, 'automatic_ladder_profile', False)
         self.confirmed_original_risk_policy = getattr(client,'confirmed_original_risk_policy',None)
         self.fixed_structural_lot_profile = getattr(client,'fixed_structural_lot_profile',None)
+        self.structural_rejection_profile = getattr(client,'structural_rejection_profile',None)
 
 
 def _validate_ladder_geometry_profile(automatic_ladder, policy):
@@ -2400,6 +2417,17 @@ def _validate_fixed_structural_lot_profile(profile, *, automatic_ladder=False,
         raise ValueError('Fixed-lot runner cannot mix declared writer profiles')
 
 
+def _validate_structural_rejection_profile(profile,*,automatic_ladder=False,
+        entry_spread_risk=False,ladder_geometry_policy=None,risk_policy=None,lot_profile=None):
+    from .profit_armed_structural_rejection_profile import (
+        PreparedStructuralRejectionProfile,require_native_structural_rejection_profile)
+    require_native_structural_rejection_profile(profile)
+    if (type(profile) is not PreparedStructuralRejectionProfile or automatic_ladder is not False
+            or entry_spread_risk is not False or ladder_geometry_policy is not None
+            or risk_policy is not None or lot_profile is not None):
+        raise ValueError('Structural rejection requires unmixed issued prewriter profile')
+
+
 def _v4_preflight(client: Any) -> _V4PreflightSeal:
     """Opt-in normalized fence; leave the live V1 startup contract unchanged."""
     installed = fixed_backtest_v2_contracts()
@@ -2407,6 +2435,7 @@ def _v4_preflight(client: Any) -> _V4PreflightSeal:
     _validate_ladder_geometry_profile(getattr(client, 'automatic_ladder_profile', False), geometry_policy)
     from .original_risk_diagnostic_profile import validate_original_risk_profile
     risk_policy=getattr(client,'confirmed_original_risk_policy',None)
+    lot_profile=getattr(client,'fixed_structural_lot_profile',None)
     validate_original_risk_profile(getattr(client,'automatic_ladder_profile',False),
         getattr(client,'entry_spread_risk_profile',False),risk_policy)
     # A storage_preflight scans active parts as well as schema. Audit the
@@ -2418,6 +2447,18 @@ def _v4_preflight(client: Any) -> _V4PreflightSeal:
         if client.execute('SELECT currentUser()').strip()!='backtest_v4_original_risk_runner':
             raise RuntimeError('Original-risk profile requires its dedicated principal')
         selected_tables=(ORIGINAL_RISK_DIAGNOSTIC,*selected_snapshot_contracts())
+        storage_preflight(client,tables=selected_tables)
+        writable |= frozenset(table.name for table in selected_tables)
+    rejection_profile=getattr(client,'structural_rejection_profile',None)
+    if rejection_profile is not None:
+        _validate_structural_rejection_profile(rejection_profile,
+            automatic_ladder=getattr(client,'automatic_ladder_profile',False),
+            entry_spread_risk=getattr(client,'entry_spread_risk_profile',False),
+            ladder_geometry_policy=geometry_policy,risk_policy=risk_policy,lot_profile=lot_profile)
+        from .profit_armed_structural_rejection_profile import selected_structural_rejection_tables
+        if client.execute('SELECT currentUser()').strip()!='backtest_v4_structural_rejection_runner':
+            raise RuntimeError('Structural rejection profile requires its dedicated principal')
+        selected_tables=selected_structural_rejection_tables(rejection_profile)
         storage_preflight(client,tables=selected_tables)
         writable |= frozenset(table.name for table in selected_tables)
     if getattr(client, 'automatic_ladder_profile', False):
@@ -2437,7 +2478,6 @@ def _v4_preflight(client: Any) -> _V4PreflightSeal:
             raise RuntimeError('Entry cost profile requires its dedicated principal')
         storage_preflight(client, tables=(ENTRY_SPREAD_RISK,))
         writable |= frozenset({ENTRY_SPREAD_RISK.name})
-    lot_profile=getattr(client,'fixed_structural_lot_profile',None)
     if lot_profile is not None:
         _validate_fixed_structural_lot_profile(lot_profile,
             automatic_ladder=getattr(client,'automatic_ladder_profile',False),
@@ -4054,6 +4094,7 @@ class ArteJournalWriter:
                       or v4_preflight_seal.automatic_ladder_profile != getattr(client, 'automatic_ladder_profile', False)
                       or v4_preflight_seal.confirmed_original_risk_policy != getattr(client,'confirmed_original_risk_policy',None)
                       or v4_preflight_seal.fixed_structural_lot_profile is not getattr(client,'fixed_structural_lot_profile',None)
+                      or v4_preflight_seal.structural_rejection_profile is not getattr(client,'structural_rejection_profile',None)
                       or v4_preflight_seal.used):
                     raise RuntimeError("V4 writer lacks a fresh same-client preflight")
                 else:

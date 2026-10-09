@@ -30,6 +30,35 @@ from src.trading_runtime.strategy_one_stateful import StrategyOneFinancialView, 
 _OWNERS = WeakKeyDictionary()
 _REQUESTS = WeakKeyDictionary()
 _CAPTURES = WeakKeyDictionary()
+_SOURCES = WeakKeyDictionary()
+
+
+@dataclass(frozen=True,slots=True,eq=False,weakref_slot=True)
+class PreparedStructuralRejectionSource:
+    """Read-only certified source prepared before any financial actors/writer."""
+    contract: object
+    strategy_id: object
+    strategy_revision: int
+    run_id: str
+    session_date: object
+    market: CertifiedMarketDayPlan
+    seeds: CertifiedSeedPlan
+    intervals: CertifiedV7IntervalPlan
+    price_authority: CertifiedPriceReadbackAuthority
+    declaration: object
+    lookup: object
+
+
+def require_prepared_structural_rejection_source(source):
+    if type(source) is not PreparedStructuralRejectionSource or source not in _SOURCES:
+        raise ValueError('Unissued prepared structural rejection source')
+    image,lookup_binding=_SOURCES[source]
+    if (any(getattr(source,name) is not value for name,value in image)
+            or not _same_lookup(source.lookup,lookup_binding)
+            or source.price_authority.run_id!=source.run_id
+            or native_structural_rejection_declaration(source.contract)!=source.declaration):
+        raise ValueError('Prepared structural rejection source binding changed')
+    return source
 
 
 def _freeze(value):
@@ -105,11 +134,14 @@ def require_structural_rejection_request(request, *, owner=None):
 def require_native_structural_rejection_owner(owner):
     if type(owner) is not NativeStructuralRejectionManager or owner not in _OWNERS:
         raise ValueError('Unissued native structural rejection owner')
-    manager,market,seeds,intervals,price,declaration,run,revision,lookup,lookup_binding,origin,caches,frames = _OWNERS[owner]
+    manager,market,seeds,intervals,price,declaration,run,revision,lookup,lookup_binding,origin,caches,frames,source = _OWNERS[owner]
+    require_prepared_structural_rejection_source(source)
     if (owner.manager is not manager or owner.market is not market or owner.seeds is not seeds
             or owner.intervals is not intervals or owner.price_authority is not price
             or owner.declaration != declaration or manager.runtime.run_id != run
             or manager.runtime.config.strategy_revision != revision
+            or manager.runtime.config.strategy_id!=source.strategy_id
+            or manager.runtime.config.anchor_date!=source.session_date
             or owner.lookup is not lookup or not _same_lookup(lookup,lookup_binding)
             or owner.origin_us!=origin
             or any(actual is not expected for actual,expected in zip(
@@ -369,22 +401,19 @@ class NativeStructuralRejectionManager:
         return state
 
 
-def prepare_native_structural_rejection_manager(manager,client,*,market,seeds,intervals,price_authority,
-                                               through_boundary_ms):
-    from .backtest_strategy_one_management import StrategyOneManagementRunner
+def prepare_structural_rejection_source(client,*,contract,strategy_id,strategy_revision,
+        run_id,session_date,market,seeds,intervals,price_authority,through_boundary_ms):
+    """Certify the complete source once, without constructing financial actors."""
     from src.trading_runtime.numbered_fixed_strategy import resolve_numbered_fixed_strategy
-    if type(manager) is not StrategyOneManagementRunner:
-        raise ValueError('Native rejection requires actual shared manager')
-    declaration=native_structural_rejection_declaration(manager.contract)
+    declaration=native_structural_rejection_declaration(contract)
     if declaration is None:
         raise ValueError('Undeclared structural rejection native preparation')
-    if (resolve_numbered_fixed_strategy(manager.runtime.config.strategy_id,
-                                       manager.runtime.config.strategy_revision)!=manager.contract
+    if (resolve_numbered_fixed_strategy(strategy_id,strategy_revision)!=contract
             or type(market) is not CertifiedMarketDayPlan or type(seeds) is not CertifiedSeedPlan
             or type(intervals) is not CertifiedV7IntervalPlan
             or type(price_authority) is not CertifiedPriceReadbackAuthority
-            or price_authority.run_id!=manager.runtime.run_id
-            or market.sessions!=(manager.runtime.config.anchor_date.isoformat(),)
+            or price_authority.run_id!=run_id
+            or market.sessions!=(session_date.isoformat(),)
             or price_authority.plan.source.market.build_id!=market.build_id
             or price_authority.plan.source.market.token!=market.token):
         raise ValueError('Native rejection lacks exact configured source/entry authority')
@@ -402,13 +431,44 @@ def prepare_native_structural_rejection_manager(manager,client,*,market,seeds,in
     if fresh!=intervals:
         raise ValueError('Native rejection interval authority changed')
     lookup=load_completed_structural_rejection_lookup(client,plan=market,
-        session_date=manager.runtime.config.anchor_date,tickers=tickers,policy=declaration.policy,
-        run_id=manager.runtime.run_id,interval_plan_token=intervals.token,
+        session_date=session_date,tickers=tickers,policy=declaration.policy,
+        run_id=run_id,interval_plan_token=intervals.token,
         through_boundary_ms=through_boundary_ms)
-    owner=NativeStructuralRejectionManager(manager,market,fresh_seeds,fresh,price_authority,declaration,lookup)
-    _OWNERS[owner]=(manager,market,fresh_seeds,fresh,price_authority,declaration,
+    source=PreparedStructuralRejectionSource(contract,strategy_id,strategy_revision,run_id,
+        session_date,market,fresh_seeds,fresh,price_authority,declaration,lookup)
+    _SOURCES[source]=(tuple((f.name,getattr(source,f.name)) for f in fields(source)),_lookup_binding(lookup))
+    return source
+
+
+def bind_prepared_structural_rejection_manager(manager,source):
+    """Bind only the already certified operation to its exact actual runtime."""
+    from .backtest_strategy_one_management import StrategyOneManagementRunner
+    source=require_prepared_structural_rejection_source(source)
+    if (type(manager) is not StrategyOneManagementRunner or manager.contract!=source.contract
+            or manager.runtime.config.strategy_id!=source.strategy_id
+            or manager.runtime.config.strategy_revision!=source.strategy_revision
+            or manager.runtime.run_id!=source.run_id
+            or manager.runtime.config.anchor_date!=source.session_date
+            or manager._submitted or manager._positions):
+        raise ValueError('Prepared rejection source differs from empty actual manager/runtime')
+    owner=NativeStructuralRejectionManager(manager,source.market,source.seeds,source.intervals,
+        source.price_authority,source.declaration,source.lookup)
+    _OWNERS[owner]=(manager,source.market,source.seeds,source.intervals,source.price_authority,source.declaration,
                     manager.runtime.run_id,manager.runtime.config.strategy_revision,
-                    lookup,_lookup_binding(lookup),owner.origin_us,
+                    source.lookup,_lookup_binding(source.lookup),owner.origin_us,
                     (owner._seed_units,owner._intervals,owner._coverage,owner._geometry_index,owner._valid_seconds),
-                    owner._index_frames)
+                    owner._index_frames,source)
     return owner
+
+
+def prepare_native_structural_rejection_manager(manager,client,*,market,seeds,intervals,price_authority,
+                                               through_boundary_ms):
+    from .backtest_strategy_one_management import StrategyOneManagementRunner
+    if type(manager) is not StrategyOneManagementRunner:
+        raise ValueError('Native rejection requires actual shared manager')
+    source=prepare_structural_rejection_source(client,contract=manager.contract,
+        strategy_id=manager.runtime.config.strategy_id,strategy_revision=manager.runtime.config.strategy_revision,
+        run_id=manager.runtime.run_id,session_date=manager.runtime.config.anchor_date,
+        market=market,seeds=seeds,intervals=intervals,price_authority=price_authority,
+        through_boundary_ms=through_boundary_ms)
+    return bind_prepared_structural_rejection_manager(manager,source)

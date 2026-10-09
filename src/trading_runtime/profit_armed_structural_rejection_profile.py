@@ -9,6 +9,63 @@ from weakref import WeakKeyDictionary
 import re
 
 _ISSUED=WeakKeyDictionary()
+_PREPARED=WeakKeyDictionary()
+_BOUND_OWNERS=WeakKeyDictionary()
+
+
+@dataclass(frozen=True,slots=True,eq=False,weakref_slot=True)
+class PreparedStructuralRejectionProfile:
+    source: object
+    source_proof: str
+    approved_release_digest: str
+
+    @property
+    def owner(self):
+        require_native_structural_rejection_profile(self)
+        if self not in _BOUND_OWNERS:
+            raise ValueError('Prepared structural rejection writer has no bound actual manager')
+        return _BOUND_OWNERS[self]
+
+
+def issue_prepared_structural_rejection_profile(source):
+    from src.backend.backtest_profit_armed_structural_rejection_management import require_prepared_structural_rejection_source
+    from src.backend.backtest_fixed_v4_certification import certify_numbered_fixed_v4_projection
+    from .strategy_registry import numbered_strategy,fixed_strategy_executor
+    from .profit_armed_structural_rejection_native_policy import native_structural_rejection_declaration
+    source=require_prepared_structural_rejection_source(source)
+    contract=source.contract
+    release=numbered_strategy(contract.strategy_number);release.verify()
+    executor=fixed_strategy_executor(release.executor_strategy_id,release.executor_revision);executor.verify()
+    registered=executor.contract_factory()
+    if (contract.release!=release or type(contract) is not type(registered) or contract!=registered
+            or native_structural_rejection_declaration(registered)!=source.declaration):
+        raise ValueError('Prepared writer requires actual registered own declaration')
+    proof=certify_numbered_fixed_v4_projection(contract.strategy_number)
+    if type(proof) is not str or not re.fullmatch('[0-9a-f]{64}',proof):
+        raise ValueError('Prepared writer lacks complete own source proof')
+    result=PreparedStructuralRejectionProfile(source,proof,release.approved_digest)
+    _PREPARED[result]=(source,contract,release,proof,registered)
+    return result
+
+
+def bind_prepared_structural_rejection_profile(profile,owner):
+    from src.backend.backtest_profit_armed_structural_rejection_management import require_native_structural_rejection_owner
+    require_native_structural_rejection_profile(profile)
+    require_native_structural_rejection_owner(owner)
+    if type(profile) is not PreparedStructuralRejectionProfile:
+        raise ValueError('Structural rejection binding requires issued prewriter profile')
+    source=profile.source
+    if (owner.manager.contract!=source.contract or owner.market is not source.market
+            or owner.seeds is not source.seeds or owner.intervals is not source.intervals
+            or owner.price_authority is not source.price_authority or owner.lookup is not source.lookup
+            or owner.declaration!=source.declaration or owner.manager.runtime.run_id!=source.run_id
+            or owner.manager.runtime.config.strategy_revision!=source.strategy_revision
+            or owner.manager.runtime.config.strategy_id!=source.strategy_id
+            or owner.manager.runtime.config.anchor_date!=source.session_date
+            or profile in _BOUND_OWNERS and _BOUND_OWNERS[profile] is not owner):
+        raise ValueError('Prepared writer differs from actual certified manager operation')
+    _BOUND_OWNERS[profile]=owner
+    return require_native_structural_rejection_profile(profile,owner=owner)
 
 
 @dataclass(frozen=True,slots=True,eq=False,weakref_slot=True)
@@ -48,6 +105,22 @@ def issue_native_structural_rejection_profile(owner):
 
 def require_native_structural_rejection_profile(profile,*,owner=None):
     from src.backend.backtest_profit_armed_structural_rejection_management import require_native_structural_rejection_owner
+    if type(profile) is PreparedStructuralRejectionProfile:
+        from src.backend.backtest_profit_armed_structural_rejection_management import require_prepared_structural_rejection_source
+        if profile not in _PREPARED:
+            raise ValueError('Unissued prepared structural rejection writer profile')
+        source,contract,release,proof,registered=_PREPARED[profile]
+        require_prepared_structural_rejection_source(source)
+        if (profile.source is not source or source.contract is not contract or contract.release!=release
+                or type(contract) is not type(registered) or contract!=registered
+                or profile.source_proof!=proof or profile.approved_release_digest!=release.approved_digest):
+            raise ValueError('Prepared writer changed its certified source/identity')
+        bound=_BOUND_OWNERS.get(profile)
+        if bound is not None:
+            require_native_structural_rejection_owner(bound)
+        if owner is not None and bound is not owner:
+            raise ValueError('Prepared writer lacks the exact bound actual manager')
+        return profile
     if type(profile) is not NativeStructuralRejectionProfile or profile not in _ISSUED:
         raise ValueError('Unissued structural rejection writer profile')
     source,contract,release,proof,run,revision,declaration,registered_contract=_ISSUED[profile]

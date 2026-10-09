@@ -122,6 +122,46 @@ def start(manager):
     asyncio.run(run())
 
 
+def prepared_source(monkeypatch):
+    previous,owner,calls=fixture(monkeypatch)
+    source=native.prepare_structural_rejection_source(object(),contract=previous.contract,
+        strategy_id=previous.runtime.config.strategy_id,strategy_revision=previous.runtime.config.strategy_revision,
+        run_id=RUN,session_date=DAY,market=owner.market,seeds=owner.seeds,intervals=owner.intervals,
+        price_authority=owner.price_authority,through_boundary_ms=40000)
+    return source,calls
+
+
+def test_source_preparation_precedes_actual_manager_and_binding_does_not_recertify(monkeypatch):
+    source,calls=prepared_source(monkeypatch)
+    before=tuple(calls)
+    manager=StrategyOneManagementRunner(runtime=Runtime(),evidence=Evidence(),tick_for_ticker=lambda _: .01)
+    owner=native.bind_prepared_structural_rejection_manager(manager,source)
+    manager.bind_structural_rejection_management(owner)
+    assert tuple(calls)==before
+    assert owner.lookup is source.lookup and owner.price_authority is source.price_authority
+    assert owner.market is source.market and owner.intervals is source.intervals
+
+
+@pytest.mark.parametrize('field',('strategy_revision','run_id','anchor_date','strategy_id'))
+def test_prepared_source_refuses_foreign_runtime(monkeypatch,field):
+    source,_=prepared_source(monkeypatch)
+    runtime=Runtime()
+    if field=='run_id': runtime.run_id='foreign'
+    else: setattr(runtime.config,field,58 if field=='strategy_revision' else date(2026,8,19) if field=='anchor_date' else 'foreign')
+    manager=StrategyOneManagementRunner(runtime=runtime,evidence=Evidence(),tick_for_ticker=lambda _: .01)
+    with pytest.raises(ValueError,match='actual manager/runtime'):
+        native.bind_prepared_structural_rejection_manager(manager,source)
+
+
+def test_copied_or_mutated_prepared_source_is_not_authority(monkeypatch):
+    source,_=prepared_source(monkeypatch)
+    with pytest.raises(ValueError,match='Unissued'):
+        native.require_prepared_structural_rejection_source(replace(source))
+    object.__setattr__(source,'run_id','foreign')
+    with pytest.raises(ValueError,match='binding changed'):
+        native.require_prepared_structural_rejection_source(source)
+
+
 @pytest.mark.parametrize('number',(1,42,57))
 def test_genuine_legacy_contract_is_unselected(number):
     assert native_structural_rejection_declaration(numbered_fixed_strategy(number)) is None
