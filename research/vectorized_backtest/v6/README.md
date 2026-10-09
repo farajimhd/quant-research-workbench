@@ -42,8 +42,12 @@ certified prior seeds are explicitly masked. Sidecars bind exact market keys
 and receipt hashes. Structural modes fail closed without this sidecar.
 
 `training_pass` supplies a bounded concurrent all-30-session selection barrier
-and the lower-tail objective; its independent evaluator integration and durable
-generation/resume controller remain to be completed. Terminal 50-row pages and
+and the lower-tail objective. `sparse_evaluator` owns independent accounts and
+audits durable fill receipts; `full_search` preserves exact RNG/population
+checkpoints and reuses completed generations on resume. Concurrent execution
+uses eager/compiled streams; shared CUDA capture concurrency is not qualified.
+Declared concurrent memory envelopes are checked before launching evaluation.
+Terminal 50-row pages and
 session/complete-position diagnostics are implemented.
 
 `profile_sparse` is workstation-CUDA profiling only, with explicit percentage

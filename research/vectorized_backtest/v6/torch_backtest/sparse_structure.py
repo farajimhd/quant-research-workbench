@@ -20,6 +20,7 @@ from .source import arte_source
 def prepare(inputs_root,output,*,workers=2):
     """Only daily-union identities can enter or become held; retain all their bars."""
     from research.rl_trading.v6.reference import read_reference
+    from research.rl_trading.v1.arte_source import reader as reference_reader
     inputs=SparseInputs(inputs_root,device='cpu');output=require_runtime(output)
     if (output/'complete.json').exists():raise ValueError('Structural sidecar already complete; do not overwrite')
     item=inputs.receipt['identity']['session'];day=item['day'];members=inputs.receipt['listings']
@@ -45,7 +46,9 @@ def prepare(inputs_root,output,*,workers=2):
         print(dict(completed=completed,total=len(union)),flush=True)
     for name in ('OMP_NUM_THREADS','OPENBLAS_NUM_THREADS','MKL_NUM_THREADS'):os.environ[name]='1'
     reader=arte_source.reader(threads=1)
-    references=ordered_references(selected,date.fromisoformat(day),read_reference=read_reference,reader_factory=lambda:arte_source.reader(threads=1))
+    # Same reference-reader contract used by V5 offline_structure. The dedicated
+    # market principal intentionally lacks float/split metadata table grants.
+    references=ordered_references(selected,date.fromisoformat(day),read_reference=read_reference,reader_factory=lambda:reference_reader(threads=1))
     with ProcessPoolExecutor(max_workers=width,initializer=_initialize_worker) as pool:
         try:
             for listing,reference in references:
