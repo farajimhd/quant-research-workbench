@@ -62,6 +62,10 @@ def verify_fixed_structural_lot_configuration(strategy):
     window_selected = WINDOW_RULE in contract.release.rule_set_contracts
     if window_selected:
         expected.add('complete_market_window_policy')
+    from src.trading_runtime.selected_exit_publication_policy import RULE as EXIT_RULE, parse_selected_exit_publication_policy
+    exit_selected = EXIT_RULE in contract.release.rule_set_contracts
+    if exit_selected:
+        expected.add('selected_exit_publication_policy')
     if type(params) is not dict or set(params) != expected:
         raise ValueError('Fixed-lot parameter companions differ')
     if reuse_selected and parse_packet_validation_reuse_policy(params['packet_validation_reuse_policy']) != contract.validation_reuse_policy:
@@ -74,6 +78,8 @@ def verify_fixed_structural_lot_configuration(strategy):
         raise ValueError('Empty confirmation differs from registered factory')
     if window_selected and parse_complete_market_window_policy(params['complete_market_window_policy']) != contract.complete_market_policy:
         raise ValueError('Complete market window bounds differ from registered factory')
+    if exit_selected and parse_selected_exit_publication_policy(params['selected_exit_publication_policy']) != contract.selected_exit_publication_policy:
+        raise ValueError('Selected exit publication differs from registered factory')
     if parse_fixed_structural_lot_policy(params['fixed_structural_lot_policy']) != contract.fixed_structural_lot_policy:
         raise ValueError('Fixed-lot policy differs from exact registered factory')
     manifest = strategy.get('numbered_release')
@@ -165,6 +171,10 @@ def derive_registered_fixed_structural_lot_configuration(parent, *, number,
     window_selected = WINDOW_RULE in numbered_strategy(number).rule_set_contracts
     if window_selected:
         from src.trading_runtime.fixed_structural_lot_release_v18 import derive_fixed_structural_lot_release
+    from src.trading_runtime.selected_exit_publication_policy import RULE as EXIT_RULE
+    exit_selected = EXIT_RULE in numbered_strategy(number).rule_set_contracts
+    if exit_selected:
+        from src.trading_runtime.fixed_structural_lot_release_v19 import derive_fixed_structural_lot_release
     contract = declared_fixed_structural_lot_contract(number)
     if contract is None or parent.strategy_number != numbered_strategy_parent(number):
         raise ValueError('Fixed-lot registered parent differs')
@@ -176,6 +186,7 @@ def derive_registered_fixed_structural_lot_configuration(parent, *, number,
         **({'owned_snapshot_policy': contract.owned_snapshot_policy} if owned_selected else {}),
         **({'empty_confirmation_policy': contract.empty_confirmation_policy} if empty_selected else {}),
         **({'complete_market_policy': contract.complete_market_policy} if window_selected else {}),
+        **({'selected_exit_policy': contract.selected_exit_publication_policy} if exit_selected else {}),
         approved_code_commit=approved_code_commit,
         approved_code_fingerprint=approved_code_fingerprint, approval_reference=approval_reference)
 
