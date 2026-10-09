@@ -17,7 +17,8 @@ class CompactProgramRunner(SparseProgramRunner):
         self.registry=HoldingRegistry(self.b,holding_capacity,top_n,device=inputs.device)
         self.registry_ids=self.registry.ids;self.registry_overflow=self.registry.overflow
         self._state_names.extend(('registry_ids','registry_overflow'))
-        self.source_used=torch.zeros((self.b,len(inputs.offsets)-1),dtype=torch.bool,device=inputs.device)
+        # CUDA scatter-reduce has no Bool kernel; store 0/1 identity history.
+        self.source_used=torch.zeros((self.b,len(inputs.offsets)-1),dtype=torch.int64,device=inputs.device)
         self.source_swing=torch.full((self.b,len(self.union_ids)),float('nan'),dtype=torch.float64,device=inputs.device)
         self._state_names.extend(('source_used','source_swing'))
         self.source_rings={}
@@ -75,13 +76,13 @@ class CompactProgramRunner(SparseProgramRunner):
         retained=((self.quantity>0)|(self.remaining>0)|(self.reduce_remaining>0)).any(-1)
         retained|=(axis==self.rotation_wait[:,None])&(self.rotation_wait[:,None]>=0)
         retained|=(axis==self.rotation_confirm_ticker[:,None])&(self.rotation_since[:,None]>0)
-        self.source_used.scatter_reduce_(1,old.clamp_min(0),self.used&(old>=0),reduce='amax',include_self=True)
+        self.source_used.scatter_reduce_(1,old.clamp_min(0),(self.used&(old>=0)).to(torch.int64),reduce='amax',include_self=True)
         changed,self.current_membership=self.registry.reconcile(top,retained)
         self._archive(changed&(old>=0))
         for name in self.ticker_states:
             state=getattr(self,name);mask=changed.reshape(changed.shape+(1,)*(state.ndim-2))
             state.copy_(torch.where(mask,float('nan') if name=='swing_low' else 0,state))
-        self.used.copy_(self.source_used.gather(1,self.registry.ids.clamp_min(0))&(self.registry.ids>=0))
+        self.used.copy_(self.source_used.gather(1,self.registry.ids.clamp_min(0)).bool()&(self.registry.ids>=0))
         self.source_market=self.inputs.lookup(self.listing_ids,clock)
         self.source_indices=torch.searchsorted(self.listing_ids,self.registry.ids.clamp_min(0)).clamp_max(len(self.union_ids)-1)
         self.current_market=self.inputs.lookup(self.registry.ids,clock)
