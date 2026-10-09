@@ -6,6 +6,7 @@ intent and all four same-cursor financial roots. Cold native replay and writer
 admission must independently verify those persisted families before use.
 """
 from dataclasses import dataclass
+from copy import deepcopy
 from hashlib import sha256
 import json
 from types import MappingProxyType
@@ -33,11 +34,21 @@ EXIT = TableContract('trading_structural_rejection_exit_v1', (
 ), 'toYYYYMM(event_month)', 'run_id, parent_record_id, record_id')
 TABLES = (EXIT,)
 _ISSUED = WeakKeyDictionary()
+_BUFFERED = WeakKeyDictionary()
 
 
 @dataclass(frozen=True, slots=True, eq=False, weakref_slot=True)
 class PreparedStructuralRejectionExit:
     row: object
+
+
+@dataclass(frozen=True, slots=True, eq=False, weakref_slot=True)
+class BufferedStructuralRejectionExit:
+    """Frozen journal value, never a live execution or persistence capability."""
+    intent: object
+    fields: object
+    strategy_id: object
+    strategy_revision: object
 
 
 def _uuid(value):
@@ -53,14 +64,12 @@ def _intent_hash(intent):
                              allow_nan=False).encode()).hexdigest()
 
 
-def prepare_structural_rejection_exit(confirmation, intent, *, parent_record_id, batch_id):
-    """Freeze exact issued pending evidence; hashes alone cannot issue this row."""
+def capture_structural_rejection_exit(confirmation, intent):
+    """Detach exact evidence while the issued pending request is still live."""
     require_structural_rejection_confirmation(confirmation)
     expected = structural_rejection_exit_intent(confirmation)
     if type(intent) is not type(expected) or intent != expected:
         raise ValueError('Structural rejection exit differs from exact factory intent')
-    _uuid(parent_record_id)
-    _uuid(batch_id)
     request = confirmation.request
     # The actual issued owner supplies the declared number; no caller-selected
     # strategy number, inherited exit label, or release-name dispatch.
@@ -69,10 +78,8 @@ def prepare_structural_rejection_exit(confirmation, intent, *, parent_record_id,
     number = owner.manager.contract.strategy_number
     if type(number) is not int or not 0 < number < 2**32:
         raise ValueError('Structural rejection exit lacks declared strategy number')
-    row = dict(record_id=str(uuid5(NAMESPACE_URL,
-        f'{confirmation.run_id}:{parent_record_id}:structural-rejection-exit-v1')),
-        parent_record_id=parent_record_id, run_id=confirmation.run_id,
-        event_month=intent.event_time.strftime('%Y-%m-01'), batch_id=batch_id,
+    row = dict(run_id=confirmation.run_id,
+        event_month=intent.event_time.strftime('%Y-%m-01'),
         strategy_number=number, intent_id=_uuid(intent.intent_id),
         source_entry_intent_id=_uuid(request.source_entry_intent_id),
         account_id=request.financial.account_id, assignment_id=request.financial.assignment_id,
@@ -80,10 +87,51 @@ def prepare_structural_rejection_exit(confirmation, intent, *, parent_record_id,
         position_quantity=float(request.financial.position_quantity),
         reference_bid_int=request.witness.quote.bid_int, intent_hash=_intent_hash(intent),
         **structural_rejection_confirmation_reference(confirmation))
+    from src.backend.backtest_management_structural_guard import capture_management_structural_guard
+    frozen_intent = deepcopy(intent)
+    config = owner.manager.runtime.config
+    result = BufferedStructuralRejectionExit(frozen_intent, MappingProxyType(row),
+        config.strategy_id, config.strategy_revision)
+    _BUFFERED[result] = (result.intent, result.fields, result.strategy_id, result.strategy_revision,
+        capture_management_structural_guard(result.intent), capture_management_structural_guard(result.fields))
+    return result
+
+
+def require_buffered_structural_rejection_exit(buffered):
+    """Validate immutable journal content only, including after request retirement."""
+    if type(buffered) is not BufferedStructuralRejectionExit or buffered not in _BUFFERED:
+        raise ValueError('Unissued buffered structural rejection exit')
+    intent, row, strategy_id, revision, intent_guard, row_guard = _BUFFERED[buffered]
+    from src.backend.backtest_management_structural_guard import require_management_structural_guard
+    require_management_structural_guard(intent_guard, intent)
+    require_management_structural_guard(row_guard, row)
+    if (buffered.intent is not intent or buffered.fields is not row
+            or type(buffered.strategy_id) is not type(strategy_id) or buffered.strategy_id != strategy_id
+            or type(buffered.strategy_revision) is not type(revision) or buffered.strategy_revision != revision):
+        raise ValueError('Buffered structural rejection exit changed immutable evidence')
+    return buffered
+
+
+def project_buffered_structural_rejection_exit(buffered, *, parent_record_id, batch_id):
+    """Prepare a row for cold verification; does not grant writer admission."""
+    require_buffered_structural_rejection_exit(buffered)
+    _uuid(parent_record_id)
+    _uuid(batch_id)
+    row = dict(buffered.fields, record_id=str(uuid5(NAMESPACE_URL,
+        f'{buffered.fields["run_id"]}:{parent_record_id}:structural-rejection-exit-v1')),
+        parent_record_id=parent_record_id, batch_id=batch_id)
     row['content_hash'] = sha256(json.dumps(row, sort_keys=True, separators=(',', ':'),
                                            allow_nan=False).encode()).hexdigest()
     if set(row) != {name for name, _ in EXIT.columns}:
         raise ValueError('Structural rejection exit differs from complete own schema')
+    return row
+
+
+def prepare_structural_rejection_exit(confirmation, intent, *, parent_record_id, batch_id):
+    """Freeze exact issued pending evidence; hashes alone cannot issue this row."""
+    buffered = capture_structural_rejection_exit(confirmation, intent)
+    row = project_buffered_structural_rejection_exit(buffered,
+        parent_record_id=parent_record_id, batch_id=batch_id)
     from src.backend.backtest_management_structural_guard import capture_management_structural_guard
     result = PreparedStructuralRejectionExit(MappingProxyType(row))
     _ISSUED[result] = (confirmation, intent, result.row, capture_management_structural_guard(result.row),

@@ -202,6 +202,14 @@ def project_pending_backtest_v4_prefix(
                                if kind == ('strategy', 'strategy_intent') else None)
         liquidity_source = (journal.liquidity_fade_exit_for_record(record.record_id)
                             if kind == ('strategy', 'strategy_intent') else None)
+        # This own rule must never pass as an ordinary exit while its selected
+        # cold-prefix verifier and writer family are not yet admitted.
+        from src.trading_runtime.profit_armed_structural_rejection_exit import REASON as rejection_reason
+        if kind == ('strategy', 'strategy_intent') and record.payload.get('reason') == rejection_reason:
+            source = journal.structural_rejection_exit_for_record(record.record_id)
+            if source is None:
+                raise RuntimeError('Structural rejection intent lacks its own frozen evidence')
+            raise RuntimeError('Structural rejection exit native cold-prefix admission is not implemented')
         if kind == ("checkpoint", "market_boundary"):
             cursor = record.entity_id
         from src.trading_runtime.numbered_fixed_strategy import is_numbered_fixed_strategy

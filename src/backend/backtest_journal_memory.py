@@ -56,6 +56,8 @@ class BacktestMemoryJournal:
         self._confirmed_ah_intents: dict[str, Any] = {}
         self._liquidity_fade_exits: dict[str, Any] = {}
         self._liquidity_fade_intents: dict[str, Any] = {}
+        self._structural_rejection_exits: dict[str, Any] = {}
+        self._structural_rejection_intents: dict[str, Any] = {}
         self._entry_assignments: dict[str, str] = {}
         self._oms_groups: dict[str, Any] = {}
         self._oms_admissions: dict[str, dict[str, Any] | None] = {}
@@ -464,6 +466,48 @@ class BacktestMemoryJournal:
         with self._lock:
             return self._liquidity_fade_exits.get(record_id)
 
+    def append_structural_rejection_exit(self, *, confirmation, intent):
+        """Buffer issued own evidence; Portfolio/OMS still own order admission."""
+        from src.trading_runtime.arte_structural_rejection_exit_v1 import (
+            capture_structural_rejection_exit, require_buffered_structural_rejection_exit)
+        from src.trading_runtime.profit_armed_structural_rejection_confirmation import (
+            require_structural_rejection_confirmation)
+        frozen = capture_structural_rejection_exit(confirmation, intent)
+        values = frozen.fields
+        with self._lock:
+            self._require_open()
+            require_structural_rejection_confirmation(confirmation)
+            if (values['run_id'] != self.run_id
+                    or self._entry_assignments.get(values['source_entry_intent_id']) != values['assignment_id']
+                    or values['source_manager_checkpoint_sequence'] > self._next_sequence):
+                raise ValueError('Structural rejection journal differs from original entry/run/checkpoint')
+            prior = self._structural_rejection_intents.get(intent.intent_id)
+            if prior is not None:
+                record, previous = prior
+                require_buffered_structural_rejection_exit(previous)
+                if (dict(previous.fields) != dict(values) or previous.intent != frozen.intent
+                        or previous.strategy_id != frozen.strategy_id
+                        or previous.strategy_revision != frozen.strategy_revision):
+                    raise ValueError('Structural rejection retry changed frozen evidence')
+                return record
+            if len(self._structural_rejection_intents) >= self.max_pending_records:
+                raise ValueError('Structural rejection journal source capacity exhausted')
+            record = self.append(run_id=self.run_id, category='strategy', entity_type='strategy_intent',
+                entity_id=frozen.intent.intent_id, account_id=values['account_id'],
+                event_time=frozen.intent.event_time, payload={**frozen.intent.payload(),
+                    'strategy_id': frozen.strategy_id, 'strategy_revision': frozen.strategy_revision})
+            self._structural_rejection_intents[frozen.intent.intent_id] = (record, frozen)
+            self._structural_rejection_exits[record.record_id] = frozen
+            return record
+
+    def structural_rejection_exit_for_record(self, record_id):
+        """Return guarded frozen content, not a live confirmation."""
+        from src.trading_runtime.arte_structural_rejection_exit_v1 import (
+            require_buffered_structural_rejection_exit)
+        with self._lock:
+            source = self._structural_rejection_exits.get(record_id)
+            return None if source is None else require_buffered_structural_rejection_exit(source)
+
     def append_profit_giveback_exit(self, *, intent, witness, source_entry_intent_id,
                                    arm_reference, account_id, strategy_id,
                                    strategy_revision, assignment_id):
@@ -860,6 +904,7 @@ class BacktestMemoryJournal:
                     self._followthrough_diagnostics.pop(record.record_id, None)
                     self._profit_giveback_exits.pop(record.record_id, None)
                     self._liquidity_fade_exits.pop(record.record_id, None)
+                    self._structural_rejection_exits.pop(record.record_id, None)
                     self._oms_groups.pop(record.record_id, None)
                     self._oms_admissions.pop(record.record_id, None)
                     self._order_requests.pop(record.record_id, None)
@@ -1290,6 +1335,8 @@ class BacktestMemoryJournal:
             self._strategy_one_adds.clear()
             self._profit_giveback_exits.clear()
             self._profit_giveback_intents.clear()
+            self._structural_rejection_exits.clear()
+            self._structural_rejection_intents.clear()
             self._order_requests.clear()
             self._backtest_progress.clear()
             self._oms_groups.clear()
