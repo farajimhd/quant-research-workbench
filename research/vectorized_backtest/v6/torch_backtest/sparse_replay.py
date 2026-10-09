@@ -16,17 +16,25 @@ from .program import TorchPrograms
 from .evolution import STAGES
 
 
+def verify_sparse_receipt(root):
+    """Verify the immutable boundary without allocating feature/device arrays."""
+    root=Path(root)
+    receipt=json.loads((root/'complete.json').read_text())
+    if receipt.get('identity',{}).get('version')!=VERSION or not receipt.get('ready_for_replay') or receipt.get('validation_opened'):
+        raise ValueError('Require a completed training-only sparse input certificate')
+    for name,checksum in receipt['files'].items():
+        path=(root/name).resolve()
+        if path.parent!=root.resolve() or file_hash(path)!=checksum:
+            raise ValueError('Sparse input file identity/hash changed')
+    return receipt
+
+
 class SparseInputs:
     def __init__(self, root, *, device='cpu', maximum_gib=8.):
         self.root=Path(root);self.device=torch.device(device)
         if self.device.type=='cuda' and self.device.index is None:
             self.device=torch.device('cuda',torch.cuda.current_device())
-        self.receipt=json.loads((self.root/'complete.json').read_text())
-        if self.receipt.get('identity',{}).get('version')!=VERSION or not self.receipt.get('ready_for_replay') or self.receipt.get('validation_opened'):
-            raise ValueError('Require a completed training-only sparse input certificate')
-        for name,checksum in self.receipt['files'].items():
-            path=(self.root/name).resolve()
-            if path.parent!=self.root.resolve() or file_hash(path)!=checksum:raise ValueError('Sparse input file identity/hash changed')
+        self.receipt=verify_sparse_receipt(self.root)
         self.arrays={n:np.load(self.root/(n+'.npy'),mmap_mode='r',allow_pickle=False) for n in
             ('clocks','top_indices','market_keys','feature_keys','features','feature_valid')}
         market=pl.read_parquet(self.root/'market.parquet')

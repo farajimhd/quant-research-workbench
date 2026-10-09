@@ -2,6 +2,7 @@
 import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
 import argparse,json
+from types import SimpleNamespace
 from concurrent.futures import ProcessPoolExecutor,wait,FIRST_COMPLETED
 from datetime import date,datetime
 from pathlib import Path
@@ -11,7 +12,7 @@ import polars as pl
 from .availability import configure_reader
 from .runtime import require_runtime,file_hash,write_json
 from .materialize import scope,owned_run
-from .sparse_replay import SparseInputs
+from .sparse_replay import verify_sparse_receipt,KEY_STRIDE
 from .structural import FIELDS,algorithm_hash,_initialize_worker,_signature,_cache_key,_claim,_compute,_load,worker_budget
 from .reference_prefetch import ordered_references
 from .source import arte_source
@@ -37,19 +38,33 @@ def reference_transport():
     return reference
 
 
-def prepare(inputs_root,output,*,workers=2):
+def prepare(inputs_root,output,*,workers=2,reuse_cache=None,reuse_code=None,reuse_version='v4'):
     """Only daily-union identities can enter or become held; retain all their bars."""
     from research.rl_trading.v6.reference import read_reference
-    inputs=SparseInputs(inputs_root,device='cpu');output=require_runtime(output)
+    root=Path(inputs_root)
+    inputs=SimpleNamespace(root=root,receipt=verify_sparse_receipt(root),arrays={
+        name:np.load(root/(name+'.npy'),mmap_mode='r',allow_pickle=False) for name in ('clocks','top_indices','market_keys')})
+    output=require_runtime(output)
     if (output/'complete.json').exists():raise ValueError('Structural sidecar already complete; do not overwrite')
     item=inputs.receipt['identity']['session'];day=item['day'];members=inputs.receipt['listings']
     union=np.unique(inputs.arrays['top_indices']);union=union[union>=0].tolist()
     configure_reader(Path(__file__).resolve().parents[4])
     source=arte_source.load_build(item['source_manifest'],item['source_ledger'],[day])
     market=pl.read_parquet(inputs.root/'market.parquet')
+    if not np.array_equal(market['source_row'].to_numpy(),np.arange(market.height)) or not np.array_equal(
+        market['listing'].to_numpy().astype(np.int64)*KEY_STRIDE+market['clock'].to_numpy(),inputs.arrays['market_keys']):
+        raise ValueError('Structural source-row identity disagrees with certified sparse keys')
+    # Partition once instead of rescanning every market row for each ticker.
+    lanes=market.filter(pl.col('listing').is_in(union)).select(
+        'listing','clock','source_row','ask','observed','high','low','mark').partition_by('listing',as_dict=True)
     targets=np.full((market.height,15),np.inf,dtype=np.float64);valid=np.zeros(market.height,dtype=bool)
     origin=int(datetime.fromisoformat(day+'T00:00:00').replace(tzinfo=ZoneInfo('America/New_York')).timestamp())
     clocks=inputs.arrays['clocks'];selected=[members[i] for i in union]
+    if (reuse_cache is None)!=(reuse_code is None):raise ValueError('Both immutable legacy code and cache root are required for reuse')
+    reuse=None;reused=0;reuse_misses={}
+    if reuse_cache is not None:
+        from .structural_reuse import DenseCacheReuse
+        reuse=DenseCacheReuse(item['execution_root'],reuse_cache,reuse_code,day=day,clocks=clocks,version=reuse_version)
     ids={members[i]['ticker']:i for i in union}
     width=min(worker_budget(workers),len(union));pending={};receipts={};completed=0
     cache=require_runtime(output/'cache');algorithm=algorithm_hash()
@@ -82,7 +97,7 @@ def prepare(inputs_root,output,*,workers=2):
                 schema=dict(clock=pl.Int64,open_int=pl.Int64,high_int=pl.Int64,low_int=pl.Int64,close_int=pl.Int64,volume=pl.Float64)
                 frame=arte_source.frame(reader,statement,schema)
                 arte_source.verify_listing(reader,source,date.fromisoformat(day),ticker)
-                lane=market.filter(pl.col('listing')==ids[ticker]).select('clock','source_row','ask','observed','high','low','mark')
+                lane=lanes[(ids[ticker],)].drop('listing')
                 joined=frame.join(lane,on='clock',how='left',validate='1:1')
                 if joined['source_row'].null_count() or not joined['observed'].all():raise ValueError('Structural bars have no matching certified compact observation')
                 for raw,field in (('close_int','mark'),('high_int','high'),('low_int','low')):
@@ -92,6 +107,16 @@ def prepare(inputs_root,output,*,workers=2):
                 stamps=joined['clock'].to_numpy();indices=joined['source_row'].to_numpy()
                 rows=dict(zip(FIELDS,[stamps*1000000,*[joined[name].to_numpy() for name in ('open_int','high_int','low_int','close_int','volume')]]))
                 asks=joined['ask'].fill_null(float('nan')).to_numpy()
+                if reuse is not None:
+                    cached,reason=reuse.lookup(ticker,day,seed,splits,rows,asks,stamps)
+                    if cached is not None:
+                        levels,available,receipt=cached
+                        targets[indices]=levels;valid[indices]=available;receipts[ticker]=receipt
+                        completed+=1;reused+=1
+                        if completed%16==0:
+                            write_json(output/'status.json',dict(completed=completed,active=len(pending),total=len(union),reused=reused,validation_opened=False))
+                        continue
+                    reuse_misses[reason]=reuse_misses.get(reason,0)+1
                 signature=_signature(ticker,day,seed,splits,rows,asks,stamps,inputs.receipt['files'],algorithm)
                 path=require_runtime(cache/_cache_key(signature));claim=_claim(path);claim.__enter__()
                 future=pool.submit(_compute,ticker,day,seed,splits,rows,asks,stamps,str(path),signature)
@@ -106,13 +131,18 @@ def prepare(inputs_root,output,*,workers=2):
         market_keys_sha256=inputs.receipt['files']['market_keys.npy'],algorithm_sha256=algorithm,implementation_sha256=file_hash(Path(__file__)),listing_ids=union,
         files={n:file_hash(output/n) for n in ('targets.npy','valid.npy')},receipts=receipts,storage=storage,
         source_units={ticker:source['units'][day][ticker] for ticker in ids},validation_opened=False)
+    record['reuse']=dict(enabled=reuse is not None,reused=reused,miss_reasons=reuse_misses,
+        evidence=reuse.evidence if reuse is not None else None)
     write_json(output/'complete.json',record);return record
 
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--inputs',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--workers',type=int,default=2)
+    p.add_argument('--reuse-cache',type=Path);p.add_argument('--reuse-code',type=Path)
+    p.add_argument('--reuse-version',choices=['v4','v5'],default='v4')
     a=p.parse_args(argv)
-    with owned_run(require_runtime(a.output),version='v6-sparse-structural-v1'):prepare(a.inputs,a.output,workers=a.workers)
+    with owned_run(require_runtime(a.output),version='v6-sparse-structural-v1'):
+        prepare(a.inputs,a.output,workers=a.workers,reuse_cache=a.reuse_cache,reuse_code=a.reuse_code,reuse_version=a.reuse_version)
 
 
 if __name__=='__main__':main()
