@@ -28,6 +28,28 @@ def load_fixed_structural_lot_stop_ceiling(client, prefix, *, entry, intervals,
                                          intent, group_id, strategy_identity,
                                          entry_request=None,fixed_lot_contexts=(),now_ms=None,
                                          _checkpoint_closing=None):
+    from src.backend.backtest_fixed_lot_management_reuse import roster_read
+    # Contexts contain issued source objects; their independent authority is
+    # checked by the exact frontier. Retain identity here, not a whole source copy.
+    if _checkpoint_closing is not None:
+        # Closing has its own issued authority; never reuse a normal decision
+        # roster for that distinct checkpoint operation or mutable capability.
+        return _load_fixed_structural_lot_stop_ceiling(client,prefix,entry=entry,intervals=intervals,
+            intent=intent,group_id=group_id,strategy_identity=strategy_identity,
+            entry_request=entry_request,fixed_lot_contexts=fixed_lot_contexts,now_ms=now_ms,
+            _checkpoint_closing=_checkpoint_closing)
+    scalar=(entry,intent,group_id,strategy_identity,tuple(id(v) for v in fixed_lot_contexts),now_ms)
+    return roster_read(client,prefix,entry_request,scalar,
+        lambda: _load_fixed_structural_lot_stop_ceiling(client,prefix,entry=entry,intervals=intervals,
+            intent=intent,group_id=group_id,strategy_identity=strategy_identity,
+            entry_request=entry_request,fixed_lot_contexts=fixed_lot_contexts,now_ms=now_ms,
+            _checkpoint_closing=_checkpoint_closing))
+
+
+def _load_fixed_structural_lot_stop_ceiling(client, prefix, *, entry, intervals,
+                                         intent, group_id, strategy_identity,
+                                         entry_request=None,fixed_lot_contexts=(),now_ms=None,
+                                         _checkpoint_closing=None):
     """Freshly verify normalized OMS rows and preserve every frozen lot target.
 
     The prefix/OMS reader verifies committed content. Entry replay checks source

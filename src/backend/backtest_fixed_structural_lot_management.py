@@ -22,6 +22,7 @@ from src.trading_runtime.fixed_structural_lot_state import (
     confirm_fixed_structural_lot_state,
 )
 from src.trading_runtime.strategy_one_stateful import StrategyOneFinancialView
+from .backtest_fixed_lot_management_reuse import management_read_scope, prefix_read, group_read, verify_management_entry
 
 
 @dataclass(frozen=True,slots=True,eq=False,weakref_slot=True)
@@ -149,6 +150,9 @@ def recovery_contexts_by_batch(run_id,contexts,*,max_commits=100_000):
 
 
 class NativeFixedStructuralLotManagement:
+    from .backtest_fixed_lot_management_reuse import management_owner_constructor
+
+    @management_owner_constructor
     def __init__(self,*,operation,publisher,client):
         if (type(operation) is not NativeFixedStructuralLotOperation
                 or type(publisher) is not BacktestTypedJournalPublisher
@@ -165,7 +169,10 @@ class NativeFixedStructuralLotManagement:
         self.groups={}
         self.financials={}
         self._requests=WeakKeyDictionary()
+        self._management_reads=WeakKeyDictionary()
         self._recoveries=WeakKeyDictionary()
+        from .backtest_fixed_lot_management_reuse import issue_management_owner
+        issue_management_owner(self)
         self._recovery_observations=WeakKeyDictionary()
         self._recovery_executions=WeakKeyDictionary()
         self._recovery_records=WeakKeyDictionary()
@@ -179,6 +186,9 @@ class NativeFixedStructuralLotManagement:
 
     @observe_owner_stage('selected_prefix_read')
     def _prefix(self):
+        return prefix_read(self, self._load_prefix)
+
+    def _load_prefix(self):
         from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
         source=self.operation.source
         source.require_installed_admission()
@@ -200,6 +210,10 @@ class NativeFixedStructuralLotManagement:
 
     @observe_owner_stage('selected_oms_read')
     def _group(self,request,prefix,contexts,group_id):
+        return group_read(self,request,prefix,contexts,group_id,
+            lambda: self._load_group(request,prefix,contexts,group_id))
+
+    def _load_group(self,request,prefix,contexts,group_id):
         from src.trading_runtime.fixed_structural_lot_warm_proof import load_oms_groups
         groups=load_oms_groups(self.client,prefix,
             allowed_accounts=frozenset((request.entry.proposal.account_id,)),
@@ -273,12 +287,13 @@ class NativeFixedStructuralLotManagement:
         key=(financial.account_id,financial.assignment_id,financial.ticker)
         if key in self._states:
             request=self.entries[key]
-            request.verify()
+            verify_management_entry(self,request)
             if request.source is not self.operation.source:
                 raise ValueError('Selected financial observation has foreign source')
             self.financials[key]=financial
 
     @observe_owner_stage('selected_propose')
+    @management_read_scope
     def propose(self,entry_request,financial,**inputs):
         from src.trading_runtime.strategy_one_protection_intent import strategy_one_protection_intents
         if type(financial) is not StrategyOneFinancialView:
@@ -303,6 +318,7 @@ class NativeFixedStructuralLotManagement:
         return request
 
     @observe_owner_stage('selected_owner_verify')
+    @management_read_scope
     def verify_request(self,request,runtime):
         self._verify_issued_request(request)
         binding=self._requests[request]
@@ -637,6 +653,7 @@ class NativeFixedStructuralLotManagement:
             raise ValueError('Selected deferral substituted original command batch/content')
 
     @observe_owner_stage('selected_confirm')
+    @management_read_scope
     async def confirm(self,request):
         """Read exact committed effects; failure retains the prior owner state."""
         from src.trading_runtime.arte_journal_reader import load_complete_typed_protection_history,_journal_instant

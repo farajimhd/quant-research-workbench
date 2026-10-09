@@ -124,7 +124,7 @@ def derive_fixed_structural_lot_configuration(parent, policy, *, installed_confi
     return selected
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class FixedStructuralLotRequest:
     run_id: str
     strategy_id: str
@@ -135,6 +135,12 @@ class FixedStructuralLotRequest:
     intent: StrategyIntent
 
     def verify(self):
+        if type(self.source) is not PreparedFixedStructuralLotSource:
+            raise ValueError('Exact operation-local prepared lot source required')
+        from .backtest_fixed_lot_management_reuse import verify_entry
+        verify_entry(self)
+
+    def _verify_complete(self):
         if type(self.source) is not PreparedFixedStructuralLotSource:
             raise ValueError('Exact operation-local prepared lot source required')
         actual = self.source.request(self.entry.proposal)
@@ -226,6 +232,10 @@ class PreparedFixedStructuralLotSource:
         return json.loads(self.selected_json)
 
     def request(self, proposal):
+        from .backtest_fixed_lot_management_reuse import request_from_management_source
+        return request_from_management_source(self, proposal, lambda: self._request_complete(proposal))
+
+    def _request_complete(self, proposal):
         """Rebind native entry facts, with no full-source validation in this path."""
         self.require_prepared_source()
         _validate_entry_input(proposal, session_date=self.session_date, policy=self.policy,

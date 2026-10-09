@@ -5,17 +5,22 @@ from .fixed_structural_lot_contract import FixedStructuralLotStrategyContract
 from .packet_validation_reuse_policy import (
     INPUT, RULE, PacketValidationReusePolicy, declared_packet_validation_reuse_policy,
 )
+from .fixed_lot_management_reuse_policy import FixedLotManagementReusePolicy, declared_management_reuse_policy
 
 
 @dataclass(frozen=True, slots=True)
 class FixedStructuralLotReuseStrategyContract(FixedStructuralLotStrategyContract):
     validation_reuse_policy: PacketValidationReusePolicy | None = None
+    management_reuse_policy: FixedLotManagementReusePolicy | None = None
 
     def __post_init__(self):
         FixedStructuralLotStrategyContract.__post_init__(self)
         if type(self.validation_reuse_policy) is not PacketValidationReusePolicy:
             raise ValueError('Explicit typed packet reuse policy required')
         declared_packet_validation_reuse_policy(self.release, self.validation_reuse_policy.payload())
+        if self.management_reuse_policy is not None and type(self.management_reuse_policy) is not FixedLotManagementReusePolicy:
+            raise ValueError('Exact typed management reuse policy required')
+        declared_management_reuse_policy(self.release, None if self.management_reuse_policy is None else self.management_reuse_policy.payload())
 
 
 def require_declared_fixed_structural_lot_contract(contract, release):

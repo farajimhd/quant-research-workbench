@@ -216,7 +216,7 @@ def installed_numbered_fixed_strategy_numbers() -> tuple[int, ...]:
 
 
 def numbered_strategy(number: int) -> NumberedStrategyRelease:
-    if number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 65, 66, 68, 69, 70, 71, 72, 73, 74, 77, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 92, 93, 94, 95, 97, 98, 99):
+    if number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 65, 66, 68, 69, 70, 71, 72, 73, 74, 77, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 92, 93, 94, 95, 97, 98, 99, 101):
         initialize_numbered_fixed_strategies()
     with _LOCK:
         release = _NUMBERED_RELEASES.get(number)
@@ -795,7 +795,7 @@ def initialize_numbered_fixed_strategies() -> None:
         from .strategy_ninety_seven_contract import strategy_ninety_seven_contract, AssignedWaitingSwingLadder97
         from .declared_native_manifest import NativeManifestAuthority
         from .strategy_forty_two_release import release_contract as waiting_parent_release
-        from src.backend.backtest_declared_waiting_ladder_certification import certify_declared_waiting_ladder_source
+        from src.backend.backtest_fixed_structural_lot_compatibility_v20 import certify_retained_waiting_ladder_source
         waiting_observation = waiting_observation_release()
         register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
             strategy_id=waiting_observation.executor_strategy_id,
@@ -804,7 +804,7 @@ def initialize_numbered_fixed_strategies() -> None:
             contract_factory=strategy_ninety_seven_contract, strategy_factory=AssignedWaitingSwingLadder97,
             manifest_authority=NativeManifestAuthority(42, 'strategy-ninety-seven-from',
                 derive_strategy_ninety_seven_configuration, verify_strategy_ninety_seven_manifest,
-                certify_declared_waiting_ladder_source, waiting_parent_release)))
+                certify_retained_waiting_ladder_source, waiting_parent_release)))
         register_numbered_strategy(waiting_observation)
         from .strategy_fifty_release import release_contract as fiftieth_release_contract
         from .strategy_fifty_contract import strategy_fifty_contract
@@ -1148,6 +1148,22 @@ def initialize_numbered_fixed_strategies() -> None:
             strategy_factory=_strategy_two_factory,
             contract_factory=strategy_ninety_nine_contract))
         register_numbered_strategy(new_99)
+        from .strategy_one_hundred_one_release import (release_contract as management_release,
+            derive_strategy_one_hundred_one_configuration,
+            verify_prepared_strategy_one_hundred_one_configuration)
+        from .strategy_one_hundred_one_contract import strategy_one_hundred_one_contract
+        from .strategy_forty_two_release import release_contract as management_parent_release
+        from src.backend.backtest_fixed_structural_lot_certification_v20 import certify_fixed_structural_lot_source as certify_management_source
+        management = management_release()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=management.executor_strategy_id, revision=management.executor_revision,
+            evaluation_interval=management.evaluation_interval,
+            strategy_factory=_strategy_two_factory, contract_factory=strategy_one_hundred_one_contract,
+            manifest_authority=NativeManifestAuthority(42, 'fixed-structural-lots-from',
+                derive_strategy_one_hundred_one_configuration,
+                verify_prepared_strategy_one_hundred_one_configuration,
+                certify_management_source, management_parent_release)))
+        register_numbered_strategy(management)
         _NUMBERED_FIXED_REGISTERED = True
 
 

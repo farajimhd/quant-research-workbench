@@ -66,6 +66,13 @@ def verify_fixed_structural_lot_configuration(strategy):
     exit_selected = EXIT_RULE in contract.release.rule_set_contracts
     if exit_selected:
         expected.add('selected_exit_publication_policy')
+    from src.trading_runtime.fixed_lot_management_reuse_policy import declared_management_reuse_policy
+    management_policy = declared_management_reuse_policy(
+        contract.release, params.get('management_reuse_policy') if type(params) is dict else None)
+    if management_policy is not None:
+        expected.add('management_reuse_policy')
+    if management_policy != getattr(contract, 'management_reuse_policy', None):
+        raise ValueError('Management reuse differs from exact registered factory')
     if type(params) is not dict or set(params) != expected:
         raise ValueError('Fixed-lot parameter companions differ')
     if reuse_selected and parse_packet_validation_reuse_policy(params['packet_validation_reuse_policy']) != contract.validation_reuse_policy:
@@ -115,6 +122,15 @@ def verify_fixed_structural_lot_configuration(strategy):
 
 def derive_registered_fixed_structural_lot_configuration(parent, *, number,
         approved_code_commit, approved_code_fingerprint, approval_reference):
+    from src.trading_runtime.declared_native_manifest import registered_manifest_authority
+    authority = registered_manifest_authority(number)
+    if authority is not None:
+        if (declared_fixed_structural_lot_contract(number) is None
+                or parent.strategy_number != authority.parent_number):
+            raise ValueError('Native fixed-lot manifest differs from its exact registered parent')
+        return authority.derive(parent, approved_code_commit=approved_code_commit,
+            approved_code_fingerprint=approved_code_fingerprint,
+            approval_reference=approval_reference)
     from src.trading_runtime.fixed_structural_lot_release import derive_fixed_structural_lot_release
     if 'fixed-structural-lot-source@2' in numbered_strategy(number).input_contracts:
         from src.trading_runtime.fixed_structural_lot_release_v2 import derive_fixed_structural_lot_release

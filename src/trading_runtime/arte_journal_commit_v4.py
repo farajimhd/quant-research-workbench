@@ -1150,14 +1150,42 @@ def _batched_detail_rows_v4(client, family_specs, filters, *,
         from .selected_checkpoint_products import require_batched_product_read_scope
         require_batched_product_read_scope(fixed_lot_read_scope,client,filters)
         outer_select=True
-    for context in (fixed_lot_context, fixed_lot_recovery_context):
+    for slot, context in enumerate((fixed_lot_context, fixed_lot_recovery_context)):
         if context is None:
             continue
         from .fixed_structural_lot_entry_v4 import FixedStructuralLotPublicationContext
         from .fixed_structural_lot_cold_recovery import FixedStructuralLotColdRecoveryContext, require_cold_recovery_context
-        if type(context) not in (FixedStructuralLotPublicationContext, FixedStructuralLotColdRecoveryContext):
+        from src.backend.backtest_fixed_structural_lot_management import (
+            FixedStructuralLotRecoveryContext, NativeFixedStructuralLotManagement,
+            require_recovery_client, recovery_contexts_by_batch)
+        live_recovery = type(context) is FixedStructuralLotRecoveryContext
+        if live_recovery:
+            if slot != 1 or type(context.owner) is not NativeFixedStructuralLotManagement:
+                raise ValueError('Batched journal envelope has foreign recovery owner/slot')
+            require_recovery_client(client, context)
+            source = context.request.entry_request.source
+            issued = context.owner._recovery_batches.get(context)
+            if type(issued) is not dict or not issued or len(issued) > 100_000:
+                raise ValueError('Batched journal envelope has unissued recovery batches')
+            for key, value in issued.items():
+                if (type(key) is not str or str(UUID(key)) != key
+                        or type(value) is not tuple or len(value) != 3
+                        or type(value[0]) is not str or str(UUID(value[0])) != value[0]
+                        or type(value[1]) is not int or type(value[2]) is not int
+                        or value[1] <= 0 or value[2] < value[1]):
+                    raise ValueError('Batched journal envelope has malformed recovery binding')
+            inventory = recovery_contexts_by_batch(source.run_id,
+                tuple((key, context) for key in issued))
+            matches = tuple(key for key in inventory if filters == (
+                f"WHERE run_id={_literal(source.run_id)} "
+                f"AND batch_id=toUUID({_literal(key)}) "))
+            if len(matches) != 1:
+                raise ValueError('Batched journal envelope has foreign run/batch filters')
+            batch_id = matches[0]
+        elif type(context) in (FixedStructuralLotPublicationContext, FixedStructuralLotColdRecoveryContext):
+            source = context.source
+        else:
             raise ValueError('Batched journal envelope has foreign source context')
-        source = context.source
         installed = source.installed_payload
         if installed is None:
             continue
@@ -1166,7 +1194,9 @@ def _batched_detail_rows_v4(client, family_specs, filters, *,
             continue
         if type(rules) is not list or rules.count(BATCHED_DETAIL_SELECT_RULE) != 1:
             raise ValueError('Batched journal envelope requires one exact declared rule')
-        if type(context) is FixedStructuralLotPublicationContext:
+        if live_recovery:
+            pass  # Issued client, owner and exact batch filters were verified above.
+        elif type(context) is FixedStructuralLotPublicationContext:
             context.verify_admission()
             batch_id = context.base.batch_id
         else:
