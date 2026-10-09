@@ -12,6 +12,20 @@ from .sparse_replay import SparseInputs
 from .sparse_runner import SparseProgramRunner
 from .genome import StrategySpace
 from .evolution import sample
+from .financial_audit import audit_fills
+
+
+def audit_profile(root, metrics, *, full_session):
+    """Audit actual fills without presenting a prefix as terminal evidence."""
+    audited = dict(metrics)
+    if not full_session:
+        audited['terminal_valid'] = [quantity == 0 for quantity in metrics['open_quantity']]
+    reports = audit_fills(root/'fills.pt', audited)
+    record = dict(status='passed', ledger_sha256=file_hash(root/'fills.pt'),
+                  full_session=full_session, terminal_eligibility_qualified=full_session,
+                  candidates=len(reports), reports=reports, validation_opened=False)
+    write_json(root/'financial-audit.json', record)
+    return file_hash(root/'financial-audit.json')
 
 
 def main(argv=None):
@@ -21,6 +35,7 @@ def main(argv=None):
     p.add_argument('--seconds',type=int,default=256);p.add_argument('--repeats',type=int,default=2)
     p.add_argument('--backend',choices=['eager','compile','cudagraph','compiled_graph'],default='eager')
     p.add_argument('--seed',type=int,default=2236);p.add_argument('--maximum-input-gib',type=float,default=4.)
+    p.add_argument('--maximum-fills',type=int,default=4096,help='Per-candidate bounded ledger capacity; exhaustion fails closed')
     p.add_argument('--structure',type=Path,help='Certified sparse raw-level sidecar; enables both target modes')
     a=p.parse_args(argv)
     if not 1<=a.batch_size<=1024 or not 1<=a.seconds<=19800 or not 1<=a.repeats<=5:raise ValueError('Invalid bounded profile dimensions')
@@ -42,22 +57,33 @@ def main(argv=None):
         print('Compiling causal sparse lifecycle gates',flush=True)
         union=np.unique(inputs.arrays['top_indices']);union=union[union>=0].tolist()
         gates,rule_seconds=inputs.compile(members,listing_ids=union)
-        runner=SparseProgramRunner(inputs,space,members,gates,structure=a.structure,backend=a.backend,maximum_fills=4096,maximum_state_gib=4.)
+        runner=SparseProgramRunner(inputs,space,members,gates,structure=a.structure,backend=a.backend,maximum_fills=a.maximum_fills,maximum_state_gib=4.)
         setup=perf_counter();runner.compile();torch.cuda.synchronize();setup=perf_counter()-setup
-        measurements=[]
+        measurements=[];previous=None
         for repeat in range(a.repeats):
             torch.cuda.reset_peak_memory_stats();started=perf_counter()
             metrics=runner.run(steps=a.seconds);torch.cuda.synchronize();elapsed=perf_counter()-started
             measurements.append(dict(repeat=repeat,elapsed_seconds=elapsed,candidate_clock_updates_per_second=a.batch_size*a.seconds/elapsed,
                 peak_allocated_bytes=torch.cuda.max_memory_allocated(),fills=int(runner.fill_count.sum())))
             print(measurements[-1],flush=True)
-        count=int(runner.fill_count.max());torch.save(dict(ledger=runner.ledger[:,:count].detach().cpu(),counts=runner.fill_count.detach().cpu()),root/'fills.pt')
+            count=int(runner.fill_count.max())
+            saved=dict(ledger=runner.ledger[:,:count].detach().cpu().clone(),counts=runner.fill_count.detach().cpu().clone())
+            if previous is not None and any(not torch.equal(saved[k],previous[k]) for k in saved):
+                raise ValueError('Profiling repeats changed actual fill receipts')
+            previous=saved
+        torch.save(previous,root/'fills.pt')
         serial={k:v.detach().cpu().tolist() if isinstance(v,torch.Tensor) else v for k,v in metrics.items()}
+        full_session=a.seconds==len(inputs.arrays['clocks'])
+        financial_audit_sha256=audit_profile(root,serial,full_session=full_session)
         receipt=dict(status='complete',version='v6-sparse-profile-v1',code_sha256=code_hash(),day=a.day,arguments=vars(a)|{'inputs':str(a.inputs),'output':str(a.output),'structure':str(a.structure) if a.structure else None},
             input_receipt_sha256=file_hash(a.inputs/a.day/'complete.json'),population_sha256=file_hash(root/'population.json'),ledger_sha256=file_hash(root/'fills.pt'),
             backend=a.backend,load_seconds=load_seconds,rule_seconds=rule_seconds,setup_seconds=setup,input_bytes=inputs.bytes,
             daily_union_listings=runner.n,measurements=measurements,metrics=serial,validation_opened=False,optimization_started=False,
-            limitations=['Daily-union broker state baseline',*(['Percentage targets only; structural sidecar unqualified'] if a.structure is None else []),'Partial-session timing is not profitability evidence'])
+            full_session=full_session,financial_audit_sha256=financial_audit_sha256,
+            repeated_fill_receipts_exact=a.repeats>1,
+            limitations=['Daily-union broker state baseline',*(['Percentage targets only; structural sidecar unqualified'] if a.structure is None else []),
+                         *(['Partial-session timing is not profitability evidence'] if not full_session else []),
+                         'Training-session profiling is not out-of-sample evidence'])
         write_json(root/'receipt.json',receipt)
         print('Profiling complete; no optimization or validation performed',flush=True)
 
