@@ -31,6 +31,20 @@ def prepared():
     return parent, kwargs, derive_fixed_structural_lot_release(parent, **kwargs)
 
 
+def test_registered_publication_derivation_selects_projection_reuse():
+    from src.backend.backtest_fixed_structural_lot_configuration import (
+        derive_registered_fixed_structural_lot_configuration,
+    )
+    parent, kwargs, expected = prepared()
+    approval = {key: kwargs[key] for key in (
+        'approved_code_commit', 'approved_code_fingerprint', 'approval_reference',
+    )}
+    actual = derive_registered_fixed_structural_lot_configuration(
+        parent, number=release_contract().number, **approval,
+    )
+    assert actual == expected
+
+
 def test_complete_prepared_derivation_retains_parent_economics():
     parent, kwargs, result = prepared()
     own = result['payload']

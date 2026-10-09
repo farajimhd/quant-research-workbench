@@ -131,6 +131,10 @@ def derive_registered_fixed_structural_lot_configuration(parent, *, number,
     reuse_selected = REUSE_RULE in numbered_strategy(number).rule_set_contracts
     if reuse_selected:
         from src.trading_runtime.fixed_structural_lot_release_v14 import derive_fixed_structural_lot_release
+    from src.trading_runtime.projected_configuration_reuse_policy import RULE as PROJECTION_REUSE_RULE
+    projection_selected = PROJECTION_REUSE_RULE in numbered_strategy(number).rule_set_contracts
+    if projection_selected:
+        from src.trading_runtime.fixed_structural_lot_release_v15 import derive_fixed_structural_lot_release
     contract = declared_fixed_structural_lot_contract(number)
     if contract is None or parent.strategy_number != numbered_strategy_parent(number):
         raise ValueError('Fixed-lot registered parent differs')
@@ -138,6 +142,7 @@ def derive_registered_fixed_structural_lot_configuration(parent, *, number,
         parent_release=numbered_strategy(parent.strategy_number), release=contract.release,
         policy=contract.fixed_structural_lot_policy.payload(),
         **({'reuse_policy': contract.validation_reuse_policy} if reuse_selected else {}),
+        **({'projection_reuse_policy': contract.projection_reuse_policy} if projection_selected else {}),
         approved_code_commit=approved_code_commit,
         approved_code_fingerprint=approved_code_fingerprint, approval_reference=approval_reference)
 
