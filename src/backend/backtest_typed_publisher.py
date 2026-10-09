@@ -5,6 +5,7 @@ and the fixed-market execution path are validated end to end.
 """
 from __future__ import annotations
 from src.trading_runtime.numbered_fixed_strategy import declared_fixed_rule
+from src.trading_runtime.selected_exit_publication_policy import requires_selected_followthrough_context
 
 import asyncio
 from dataclasses import dataclass, replace
@@ -537,7 +538,7 @@ class BacktestTypedJournalPublisher:
                                if isinstance(unit, V4AutomaticLadderBatch)
                                else self.writer.submit_compound_v4(unit,
                                     **({'first_price_source': self._first_price_source}
-                                       if unit.children['profit_givebacks'] or unit.children['confirmed_ah_failures'] or unit.children['liquidity_fade_failures'] or unit.children.get('original_risk_diagnostics') else {}))
+                                       if unit.children['profit_givebacks'] or unit.children['confirmed_ah_failures'] or unit.children['liquidity_fade_failures'] or unit.children.get('original_risk_diagnostics') or requires_selected_followthrough_context(self._fixed_lot_source, unit) else {}))
                                if isinstance(unit, V4CompoundBatch)
                                else self.writer.submit_profit_exit_v4(unit,
                                     first_price_source=self._first_price_source)
@@ -549,7 +550,7 @@ class BacktestTypedJournalPublisher:
                                     first_price_source=self._first_price_source)
                                if isinstance(unit, V4LiquidityFadeFailureBatch)
                                else self.writer.submit_followthrough_exit_v4(unit,
-                                    **({'first_price_source':self._first_price_source} if unit.diagnostic is not None else {}))
+                                    **({'first_price_source':self._first_price_source} if unit.diagnostic is not None or requires_selected_followthrough_context(self._fixed_lot_source, unit) else {}))
                                if isinstance(unit, V4FollowThroughFailureBatch)
                                else self.writer.submit_strategy_one_entry_v4(unit)
                                if isinstance(unit, V4StrategyOneEntryBatch)

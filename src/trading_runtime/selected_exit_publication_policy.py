@@ -78,3 +78,21 @@ def installed_selected_exit_publication_policy(source):
     if getattr(factory, 'selected_exit_publication_policy', None) != policy:
         raise ValueError('Selected exit context differs from exact installed factory')
     return policy
+
+
+def requires_selected_followthrough_context(source, unit):
+    """Routing condition only; the writer still verifies complete exit facts."""
+    if source is None or installed_selected_exit_publication_policy(source) is None:
+        return False
+    from .arte_followthrough_failure_v4 import V4FollowThroughFailureBatch
+    from .arte_journal_compound_v4 import V4CompoundBatch
+    if type(unit) is V4FollowThroughFailureBatch:
+        return True
+    if type(unit) is V4CompoundBatch:
+        return bool(unit.children['followthrough_failures'])
+    raise ValueError('Selected followthrough routing requires an exact typed exit envelope')
+
+
+def requires_selected_followthrough_context_for_client(client, unit):
+    from .selected_checkpoint_products import source_for_client
+    return requires_selected_followthrough_context(source_for_client(client), unit)

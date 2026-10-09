@@ -4215,13 +4215,15 @@ class ArteJournalWriter:
     def submit_compound_v4(self, unit, *, first_price_source=None) -> Future[str]:
         """Queue one bounded mixed V4 commit without caller-side network I/O."""
         from .arte_journal_compound_v4 import V4CompoundBatch
+        from .selected_exit_publication_policy import requires_selected_followthrough_context_for_client
 
         if (self._journal_profile not in self._V4_PROFILES
                 or type(unit) is not V4CompoundBatch
                 or unit.base.run_id != self._run_id):
             raise ValueError("V4 compound requires its pinned writer")
         if (unit.children['profit_givebacks'] or unit.children['confirmed_ah_failures']
-                or unit.children['liquidity_fade_failures'] or unit.children.get('original_risk_diagnostics')):
+                or unit.children['liquidity_fade_failures'] or unit.children.get('original_risk_diagnostics')
+                or requires_selected_followthrough_context_for_client(self._client, unit)):
             return self._submit_profit_publication(unit, first_price_source=first_price_source)
         if first_price_source is not None:
             raise ValueError('Compound price context requires a profit witness')
@@ -4316,7 +4318,8 @@ class ArteJournalWriter:
         if self._journal_profile not in self._V4_PROFILES or not isinstance(
                 unit, V4FollowThroughFailureBatch):
             raise ValueError("Follow-through exit requires the V4 writer profile")
-        if unit.diagnostic is not None:
+        from .selected_exit_publication_policy import requires_selected_followthrough_context_for_client
+        if unit.diagnostic is not None or requires_selected_followthrough_context_for_client(self._client, unit):
             return self._submit_profit_publication(unit,first_price_source=first_price_source)
         if first_price_source is not None:
             raise ValueError('Legacy followthrough queue cannot carry selected diagnostic context')
@@ -4342,14 +4345,16 @@ class ArteJournalWriter:
 
     def _submit_profit_publication(self, unit, *, first_price_source=None) -> Future[str]:
         from .arte_journal_compound_v4 import V4CompoundBatch
+        from .selected_exit_publication_policy import requires_selected_followthrough_context_for_client
         from zoneinfo import ZoneInfo
         if (self._journal_profile != 'backtest_v4'
                 or type(unit) not in (V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch, V4LiquidityFadeFailureBatch, V4CompoundBatch, V4FollowThroughFailureBatch)
                 or unit.base.run_id != self._run_id):
             raise ValueError('Profit publication requires its exact Backtest writer')
-        if type(unit) is V4FollowThroughFailureBatch and unit.diagnostic is None:
+        selected_context = requires_selected_followthrough_context_for_client(self._client, unit) if type(unit) in (V4FollowThroughFailureBatch, V4CompoundBatch) else False
+        if type(unit) is V4FollowThroughFailureBatch and unit.diagnostic is None and not selected_context:
             raise ValueError('Source-fenced followthrough lane requires selected diagnostic')
-        selected_failures=((unit.failure,) if type(unit) is V4FollowThroughFailureBatch else
+        selected_failures=((unit.failure,) if unit.diagnostic is not None else ()) if type(unit) is V4FollowThroughFailureBatch else (
                            tuple(row for row in unit.children['followthrough_failures']
                                  if any(str(d['parent_record_id'])==str(row['parent_record_id'])
                                         for d in unit.children.get('original_risk_diagnostics',())))
@@ -4359,6 +4364,8 @@ class ArteJournalWriter:
             for row in selected_failures:
                 if getattr(self._client,'confirmed_original_risk_policy',None)!=diagnostic_policy(row['strategy_number']):
                     raise ValueError('Selected failure writer lacks its exact declared diagnostic capability')
+        if selected_context and type(unit) is V4CompoundBatch:
+            selected_failures = tuple(unit.children['followthrough_failures'])
         # A compound may start with a present-day run-creation event. Only the
         # linked historical exit clocks attest the native market session.
         exits = (unit.children['profit_givebacks'] + unit.children['confirmed_ah_failures'] + unit.children['liquidity_fade_failures'] + selected_failures
