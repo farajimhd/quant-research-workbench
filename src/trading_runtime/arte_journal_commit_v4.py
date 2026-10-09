@@ -1698,6 +1698,9 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
             or not 1 <= len(batch.events) <= MAX_V4_COMMIT_EVENTS
             or batch.status not in {"running", "completed", "stopped", "failed"}):
         raise ValueError("V4 publication needs one bounded typed event batch")
+    from .profit_armed_structural_rejection_exit import REASON as structural_rejection_reason
+    if any(row.get('reason')==structural_rejection_reason for row in batch.intents):
+        raise ValueError('Structural rejection exit requires its own native publication route')
     if (getattr(client, "typed_insert_strict", False) is not True
             or not isinstance(getattr(client, "typed_insert_dispatch", None),
                               TypedInsertDispatch)):

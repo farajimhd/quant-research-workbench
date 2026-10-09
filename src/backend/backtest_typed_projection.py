@@ -18,6 +18,7 @@ from src.trading_runtime.arte_profit_giveback_v4 import V4ProfitGivebackBatch
 from src.trading_runtime.strategy_profit_giveback_exit import profit_giveback_reason
 from src.trading_runtime.arte_confirmed_ah_failure_v4 import V4ConfirmedAhFailureBatch
 from src.trading_runtime.strategy_liquidity_fade_transport import V4LiquidityFadeFailureBatch
+from src.trading_runtime.structural_rejection_exit_transport import V4StructuralRejectionExitBatch
 from src.trading_runtime.strategy_liquidity_fade_exit import liquidity_fade_reason
 from src.trading_runtime.arte_journal_writer import V3SqueezeBatch
 from src.trading_runtime.arte_oms_tactic_projection import (
@@ -133,6 +134,7 @@ def project_pending_backtest_v4_prefix(
     committed_order_lineage_oms_records: Mapping[str, str] | None = None,
     through_sequence: int,
 ) -> tuple[TypedJournalBatch | V4StrategyOneEntryBatch
+           | V4StructuralRejectionExitBatch
            | V4ProfitGivebackBatch
            | V4ConfirmedAhFailureBatch
            | V4OmsTacticBatch
@@ -202,14 +204,13 @@ def project_pending_backtest_v4_prefix(
                                if kind == ('strategy', 'strategy_intent') else None)
         liquidity_source = (journal.liquidity_fade_exit_for_record(record.record_id)
                             if kind == ('strategy', 'strategy_intent') else None)
-        # This own rule must never pass as an ordinary exit while its selected
-        # cold-prefix verifier and writer family are not yet admitted.
+        # Own evidence must travel in its special unit, never an ordinary exit.
         from src.trading_runtime.profit_armed_structural_rejection_exit import REASON as rejection_reason
+        rejection_source=None
         if kind == ('strategy', 'strategy_intent') and record.payload.get('reason') == rejection_reason:
-            source = journal.structural_rejection_exit_for_record(record.record_id)
-            if source is None:
+            rejection_source = journal.structural_rejection_exit_for_record(record.record_id)
+            if rejection_source is None:
                 raise RuntimeError('Structural rejection intent lacks its own frozen evidence')
-            raise RuntimeError('Structural rejection exit native cold-prefix admission is not implemented')
         if kind == ("checkpoint", "market_boundary"):
             cursor = record.entity_id
         from src.trading_runtime.numbered_fixed_strategy import is_numbered_fixed_strategy
@@ -463,7 +464,7 @@ def project_pending_backtest_v4_prefix(
                     raise RuntimeError("Session exit has conflicting source authorities")
                 protection_source = session_exit_source
             if sum(value is not None for value in (
-                    automatic_source, sidecar, add_sidecar, protection_source, failure_source, profit_source, confirmation_source, liquidity_source)) > 1:
+                    automatic_source, sidecar, add_sidecar, protection_source, failure_source, profit_source, confirmation_source, liquidity_source, rejection_source)) > 1:
                 raise RuntimeError("Strategy 1 intent has two source authorities")
             if (kind == ("strategy", "strategy_intent")
                     and record.payload.get("reason") == "strategy_nine_followthrough_failure"
@@ -738,6 +739,15 @@ def project_pending_backtest_v4_prefix(
                 strategy_number=record.payload['strategy_revision'], **observation_source)
             unit = V4LiquidityFadeFailureBatch(batch, failure)
             sources[intent.intent_id] = (batch, intent)
+        if rejection_source is not None:
+            if type(unit) is not TypedJournalBatch:
+                raise ValueError('Structural rejection exit has conflicting typed publication authority')
+            if (record.payload.get('strategy_id')!=rejection_source.strategy_id
+                    or record.payload.get('strategy_revision')!=rejection_source.strategy_revision):
+                raise ValueError('Structural rejection exit changed its declared journal configuration')
+            from src.trading_runtime.structural_rejection_exit_transport import prepare_structural_rejection_exit_batch
+            unit=prepare_structural_rejection_exit_batch(unit,rejection_source)
+            sources[rejection_source.intent.intent_id]=(unit.base,rejection_source.intent)
         base = unit.base if not isinstance(unit, TypedJournalBatch) else unit
         if (base.first_sequence != sequence or base.last_sequence != sequence
                 or len(base.events) != 1 or base.batch_id != batch_id

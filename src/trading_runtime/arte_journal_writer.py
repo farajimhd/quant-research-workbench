@@ -1734,6 +1734,8 @@ def _insert(
                      else name)
     if contract_name not in _CONTRACTS:
         raise ValueError("Journal writer cannot insert outside typed journal tables")
+    if contract_name == STRUCTURAL_REJECTION_EXIT.name:
+        raise ValueError('Structural rejection exit requires its own native writer admission')
     if dispatch_structural_rejection_manager_context is not None:
         if dispatch_run_context or any(value is not None for value in (
                 dispatch_fixed_lot_manager_context,dispatch_terminal_account_id,

@@ -13,6 +13,14 @@ from src.trading_runtime.arte_structural_rejection_exit_v1 import (
 
 
 def journal_fixture(monkeypatch):
+    from test_profit_armed_structural_rejection_management import Runtime
+    original=Runtime.__init__
+    def initialize(self):
+        original(self)
+        # Native journal identity is a String. The reducer-only fixture uses
+        # an integer placeholder; set the runnable contract before issuance.
+        self.config.strategy_id='early-squeeze-strategy'
+    monkeypatch.setattr(Runtime,'__init__',initialize)
     _,confirmation,intent,context=prepared(monkeypatch)
     journal=BacktestMemoryJournal(run_id=confirmation.run_id,initial_sequence=9)
     # The real native original-entry prefix must be verified by the eventual
@@ -93,6 +101,14 @@ def test_unimplemented_native_prefix_cannot_publish_as_ordinary_exit(monkeypatch
     if own_source: journal.append_structural_rejection_exit(confirmation=confirmation,intent=intent)
     else: journal.append(run_id=journal.run_id,category='strategy',entity_type='strategy_intent',
         entity_id=intent.intent_id,account_id='DU1',event_time=intent.event_time,payload=intent.payload())
-    with pytest.raises(RuntimeError,match='cold-prefix admission|own frozen evidence'):
-        project_pending_backtest_v4_prefix(journal,attempt_id=BATCH,run_month=date(2026,8,1),
-            prior_sequence=9,prior_batch_id=PARENT,through_sequence=10,expected_config={'mode':'backtest'})
+    if not own_source:
+        with pytest.raises(RuntimeError,match='own frozen evidence'):
+            project_pending_backtest_v4_prefix(journal,attempt_id=BATCH,run_month=date(2026,8,1),
+                prior_sequence=9,prior_batch_id=PARENT,through_sequence=10,expected_config={'mode':'backtest'})
+    else:
+        from src.trading_runtime.structural_rejection_exit_transport import V4StructuralRejectionExitBatch
+        units=project_pending_backtest_v4_prefix(journal,attempt_id=BATCH,run_month=date(2026,8,1),
+            prior_sequence=9,prior_batch_id=PARENT,through_sequence=10,
+            expected_config={'mode':'backtest','strategy_id':'early-squeeze-strategy','strategy_revision':57})
+        assert len(units)==1 and type(units[0]) is V4StructuralRejectionExitBatch
+        assert units[0].evidence['intent_id']==intent.intent_id
