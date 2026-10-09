@@ -17,10 +17,29 @@ from .reference_prefetch import ordered_references
 from .source import arte_source
 
 
+def reference_transport():
+    """Existing V5 reference principal at the certified market endpoint.
+
+    Metadata credentials and market transport discovery are separate concerns.
+    Both SQL approval and server readonly=1 remain enforced, without fallback
+    credentials or granting privileges to the market-data principal.
+    """
+    from research.rl_trading.v1.arte_source import reader as reference_reader
+    from src.backend.backtest_market_data import readonly_clickhouse_client
+    from research.mlops.clickhouse import ClickHouseHttpClient
+    reference=reference_reader(threads=1);transport=readonly_clickhouse_client(v3_read_principal=True)
+    previous=reference._client
+    try:
+        reference._client=ClickHouseHttpClient(transport.base_url,previous.user,previous.password,
+            timeout_seconds=180,persistent=True,default_query_params=dict(readonly=1,max_threads=1,max_execution_time=150,
+                max_memory_usage=2147483648,max_result_rows=700000,max_result_bytes=100000000,result_overflow_mode='throw'))
+    finally:previous.close();transport.close()
+    return reference
+
+
 def prepare(inputs_root,output,*,workers=2):
     """Only daily-union identities can enter or become held; retain all their bars."""
     from research.rl_trading.v6.reference import read_reference
-    from research.rl_trading.v1.arte_source import reader as reference_reader
     inputs=SparseInputs(inputs_root,device='cpu');output=require_runtime(output)
     if (output/'complete.json').exists():raise ValueError('Structural sidecar already complete; do not overwrite')
     item=inputs.receipt['identity']['session'];day=item['day'];members=inputs.receipt['listings']
@@ -48,7 +67,7 @@ def prepare(inputs_root,output,*,workers=2):
     reader=arte_source.reader(threads=1)
     # Same reference-reader contract used by V5 offline_structure. The dedicated
     # market principal intentionally lacks float/split metadata table grants.
-    references=ordered_references(selected,date.fromisoformat(day),read_reference=read_reference,reader_factory=lambda:reference_reader(threads=1))
+    references=ordered_references(selected,date.fromisoformat(day),read_reference=read_reference,reader_factory=reference_transport)
     with ProcessPoolExecutor(max_workers=width,initializer=_initialize_worker) as pool:
         try:
             for listing,reference in references:
