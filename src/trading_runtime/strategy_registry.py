@@ -1194,6 +1194,21 @@ def initialize_numbered_fixed_strategies() -> None:
                 verify_prepared_strategy_one_hundred_three_configuration,
                 certify_isolation_source, management_parent_release)))
         register_numbered_strategy(isolation)
+        from .strategy_one_hundred_four_release import (release_contract as content_release,
+            derive_strategy_one_hundred_four_configuration,
+            verify_prepared_strategy_one_hundred_four_configuration)
+        from .strategy_one_hundred_four_contract import strategy_one_hundred_four_contract
+        from src.backend.backtest_fixed_structural_lot_certification_v23 import certify_fixed_structural_lot_source as certify_content_source
+        content = content_release()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=content.executor_strategy_id, revision=content.executor_revision,
+            evaluation_interval=content.evaluation_interval, strategy_factory=_strategy_two_factory,
+            contract_factory=strategy_one_hundred_four_contract,
+            manifest_authority=NativeManifestAuthority(42, 'fixed-structural-lots-from',
+                derive_strategy_one_hundred_four_configuration,
+                verify_prepared_strategy_one_hundred_four_configuration,
+                certify_content_source, management_parent_release)))
+        register_numbered_strategy(content)
         _NUMBERED_FIXED_REGISTERED = True
 
 
