@@ -1721,6 +1721,7 @@ def _insert(
     dispatch_manager_snapshot_hash: str | None = None,
     dispatch_fixed_lot_manager_context: Any | None = None,
     dispatch_structural_rejection_manager_context: Any | None = None,
+    dispatch_structural_rejection_exit_context: Any | None = None,
     dispatch_broker_snapshot_hash: str | None = None,
     dispatch_evidence_snapshot_hash: str | None = None,
     dispatch_campaign_snapshot_hash: str | None = None,
@@ -1735,7 +1736,21 @@ def _insert(
     if contract_name not in _CONTRACTS:
         raise ValueError("Journal writer cannot insert outside typed journal tables")
     if contract_name == STRUCTURAL_REJECTION_EXIT.name:
-        raise ValueError('Structural rejection exit requires its own native writer admission')
+        if (dispatch_structural_rejection_exit_context is None or journal_profile!='backtest_v4'
+                or getattr(client,'typed_insert_strict',False) is not True
+                or dispatch_run_context
+                or any(value is not None for value in (dispatch_fixed_lot_manager_context,
+                    dispatch_structural_rejection_manager_context,dispatch_manager_snapshot_hash,
+                    dispatch_broker_snapshot_hash,dispatch_oms_observation_snapshot_hash,
+                    dispatch_terminal_account_id,dispatch_snapshot_account_id,dispatch_evidence_snapshot_hash,
+                    dispatch_campaign_snapshot_hash,dispatch_policy_hash,dispatch_sync_account_id,dispatch_sync_revision))):
+            raise ValueError('Structural rejection exit requires its own native writer admission')
+        from .structural_rejection_exit_verified_publication import verify_structural_rejection_exit_insert
+        verify_structural_rejection_exit_insert(dispatch_structural_rejection_exit_context,client=client,
+            rows=rows,run_id=rows[0].get('run_id') if rows else None,
+            sequence=dispatch_sequence,batch_id=dispatch_batch_id)
+    elif dispatch_structural_rejection_exit_context is not None:
+        raise ValueError('Structural rejection exit context cannot authorize a foreign table')
     if dispatch_structural_rejection_manager_context is not None:
         if dispatch_run_context or any(value is not None for value in (
                 dispatch_fixed_lot_manager_context,dispatch_terminal_account_id,

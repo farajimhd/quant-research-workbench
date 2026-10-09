@@ -138,4 +138,5 @@ def require_native_structural_rejection_profile(profile,*,owner=None):
 def selected_structural_rejection_tables(profile):
     require_native_structural_rejection_profile(profile)
     from .profit_armed_structural_rejection_snapshot import TABLES
-    return TABLES
+    from .arte_structural_rejection_exit_v1 import EXIT
+    return (*TABLES,EXIT)
