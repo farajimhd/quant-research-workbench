@@ -323,6 +323,42 @@ class SqueezeRunner:
     def _average_move(self):
         return self.movement_ring.mean(0)[None]
 
+    def _advance_movement(self, close, observed):
+        """Advance source history before adaptive amendments at this clock.
+
+        Compact account allocators override source-history ownership while
+        preserving this ordering relative to fills and trailing decisions.
+        """
+        movement = torch.where(
+            observed & torch.isfinite(self.previous_close),
+            (close - self.previous_close).abs(),
+            float("nan"),
+        )
+        self.movement_ring.copy_(
+            torch.cat((movement[None], self.movement_ring[:-1]), 0)
+        )
+
+    def _advance_source_history(self, close, low, high, observed, notional, above, quote):
+        """Advance completed-bar histories after decisions, never on admission.
+
+        Market histories are shared across accounts and must survive changes
+        to which ticker identities occupy their financial-state slots.
+        """
+        if not getattr(self,'specialize',False) or not self.execution_key[3][1]:
+            self.attention_ring.copy_(torch.cat((notional[None], self.attention_ring[:-1]), 0))
+        if not getattr(self,'specialize',False):
+            self.price_ring.copy_(torch.cat((torch.where(observed, high, float("nan"))[None], self.price_ring[:-1]), 0))
+        if not getattr(self,'specialize',False) or not self.execution_key[3][0]:
+            self.close_ring.copy_(torch.cat((torch.where(observed, close, float("nan"))[None], self.close_ring[:-1]), 0))
+        if not getattr(self,'specialize',False) or self.execution_key[1][3]!=0:
+            self.low_ring.copy_(torch.cat((torch.where(observed, low, float("nan"))[None], self.low_ring[:-1]), 0))
+            self._confirm_swing()
+        self._observe_rule_history(close, observed)
+        self.previous_close.copy_(torch.where(observed, close, float("nan")))
+        self.previous_above.copy_(above[None].expand(self.b, -1))
+        valid_vwap = observed & quote & torch.isfinite(self._row("vwap"))
+        self.previous_valid.copy_(valid_vwap[None].expand(self.b, -1))
+
     def _swing_level(self):
         return self.swing_low[None]
 
@@ -986,14 +1022,7 @@ class SqueezeRunner:
         )
         trailing_mode=self.execution_key[1][2] if getattr(self,'specialize',False) else -1
         if trailing_mode!=0:
-            movement = torch.where(
-                observed & torch.isfinite(self.previous_close),
-                (close - self.previous_close).abs(),
-                float("nan"),
-            )
-            self.movement_ring.copy_(
-                torch.cat((movement[None], self.movement_ring[:-1]), 0)
-            )
+            self._advance_movement(close, observed)
             average_move = self._average_move()
             adaptive = self.peak_price - torch.maximum(
                 average_move[..., None] * self._value("adaptive_multiplier", 3),
@@ -1043,39 +1072,7 @@ class SqueezeRunner:
             self.exit_kind.copy_(torch.where(discretionary & (self.exit_kind == 0), 3, self.exit_kind))
         # Source-history rings [H,N], not [B,N,H]. They advance once per second;
         # NaN gaps reset complete-window evidence instead of repeating a bar.
-        if not getattr(self,'specialize',False) or not self.execution_key[3][1]:
-            self.attention_ring.copy_(
-                torch.cat((notional[None], self.attention_ring[:-1]), 0)
-            )
-        if not getattr(self,'specialize',False):
-            self.price_ring.copy_(
-                torch.cat(
-                    (torch.where(observed, high, float("nan"))[None], self.price_ring[:-1]),
-                    0,
-                )
-            )
-        if not getattr(self,'specialize',False) or not self.execution_key[3][0]:
-            self.close_ring.copy_(
-                torch.cat(
-                    (
-                        torch.where(observed, close, float("nan"))[None],
-                        self.close_ring[:-1],
-                    ),
-                    0,
-                )
-            )
-        if not getattr(self,'specialize',False) or self.execution_key[1][3]!=0:
-            self.low_ring.copy_(
-                torch.cat(
-                    (torch.where(observed, low, float("nan"))[None], self.low_ring[:-1]), 0
-                )
-            )
-            self._confirm_swing()
-        self._observe_rule_history(close, observed)
-        self.previous_close.copy_(torch.where(observed, close, float("nan")))
-        self.previous_above.copy_(above[None].expand(self.b, -1))
-        valid_vwap = observed & quote & torch.isfinite(self._row("vwap"))
-        self.previous_valid.copy_(valid_vwap[None].expand(self.b, -1))
+        self._advance_source_history(close, low, high, observed, notional, above, quote)
         mark = torch.where(torch.isfinite(close), close, 0)[None, :, None]
         self.financial_error.logical_or_(
             ((self.quantity > 0) & (mark <= 0)).any((1, 2))

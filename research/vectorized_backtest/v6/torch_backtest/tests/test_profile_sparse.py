@@ -3,7 +3,7 @@ import pytest
 import torch
 from research.vectorized_backtest.v6.torch_backtest.tests.test_sparse_runner import fixture
 from research.vectorized_backtest.v6.torch_backtest.sparse_runner import SparseProgramRunner
-from research.vectorized_backtest.v6.torch_backtest.profile_sparse import audit_profile
+from research.vectorized_backtest.v6.torch_backtest.profile_sparse import audit_profile, profile_metrics
 from research.vectorized_backtest.v6.torch_backtest.runtime import file_hash
 
 
@@ -28,3 +28,16 @@ def test_profile_audits_real_fills_and_preserves_prefix_eligibility(tmp_path, fu
     torch.save(saved, tmp_path/'fills.pt')
     with pytest.raises(ValueError, match='arithmetic mismatch'):
         audit_profile(tmp_path, serial, full_session=full_session)
+
+
+def test_undefined_diagnostics_are_null_but_nonfinite_finances_fail_closed():
+    _, inputs, space, member, gates = fixture()
+    runner = SparseProgramRunner(inputs, space, [member], gates, maximum_fills=512)
+    metrics = runner.run()
+    metrics['undefined_diagnostic'] = torch.tensor([float('nan')])
+    serial = profile_metrics(metrics)
+    assert serial['undefined_diagnostic'] == [None]
+    json.dumps(serial, allow_nan=False)
+    metrics['net_pnl'][0] = float('nan')
+    with pytest.raises(ValueError, match='Non-finite profiling financial metric'):
+        profile_metrics(metrics)

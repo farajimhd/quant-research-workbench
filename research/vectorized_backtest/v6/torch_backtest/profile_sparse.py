@@ -13,6 +13,15 @@ from .sparse_runner import SparseProgramRunner
 from .genome import StrategySpace
 from .evolution import sample
 from .financial_audit import audit_fills
+from .run_search import clean
+
+
+def profile_metrics(metrics):
+    """Missing statistical diagnostics are null; financial values must exist."""
+    for name in ('cash','equity','net_pnl','fees','drawdown','stop_risk_dollar_seconds','capital_dollar_seconds'):
+        if not torch.isfinite(torch.as_tensor(metrics[name])).all():
+            raise ValueError('Non-finite profiling financial metric: '+name)
+    return clean(metrics)
 
 
 def audit_profile(root, metrics, *, full_session):
@@ -75,7 +84,7 @@ def main(argv=None):
                 raise ValueError('Profiling repeats changed actual fill receipts')
             previous=saved
         torch.save(previous,root/'fills.pt')
-        serial={k:v.detach().cpu().tolist() if isinstance(v,torch.Tensor) else v for k,v in metrics.items()}
+        serial=profile_metrics(metrics)
         full_session=a.seconds==len(inputs.arrays['clocks'])
         financial_audit_sha256=audit_profile(root,serial,full_session=full_session)
         receipt=dict(status='complete',version='v6-sparse-profile-v1',code_sha256=code_hash(),day=a.day,arguments=vars(a)|{'inputs':str(a.inputs),'output':str(a.output),'structure':str(a.structure) if a.structure else None},
