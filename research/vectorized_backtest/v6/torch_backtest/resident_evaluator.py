@@ -79,7 +79,9 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
         # bounded cohort envelope before retaining them on device.
         free,_=torch.cuda.mem_get_info(self.device)
         residency=0
-        for session in remaining:
+        # Budget the complete training cohort even when durable receipts let
+        # this pass skip sessions. The next generation may load every session.
+        for session in training:
             folder=self.inputs/session['day'];certificate=json.loads((folder/'complete.json').read_text())
             if 'market_rows' not in certificate:
                 residency+=self.maximum_input_gib*1024**3
@@ -90,7 +92,7 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
             arrays=sum((folder/(name+'.npy')).stat().st_size for name in
                 ('clocks','top_indices','market_keys','feature_keys','features','feature_valid'))
             residency+=arrays+certificate['market_rows']*(105+121)
-        working=(len(remaining)*self.maximum_state_gib+workers*2.5+4)*1024**3
+        working=(len(training)*self.maximum_state_gib+workers*2.5+4)*1024**3
         if self._cohort_identity is None and residency+working>free*.75:
             raise MemoryError('Resident cohort inputs plus replay/rule envelopes exceed GPU headroom')
         resident_inputs=self._resident_inputs;runners=self._resident_runners;load_started=perf_counter();loads=0

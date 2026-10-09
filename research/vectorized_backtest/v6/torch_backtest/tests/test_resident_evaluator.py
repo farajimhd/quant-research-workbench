@@ -10,6 +10,27 @@ from research.vectorized_backtest.v6.torch_backtest.tests.test_sparse_runner imp
 from research.vectorized_backtest.v6.torch_backtest.runtime import file_hash,DEFAULT,configure_caches
 
 
+def test_partial_resume_budgets_next_complete_generation(tmp_path,monkeypatch):
+    class BudgetOnly(ResidentSessionEvaluator):
+        def contract(self,*args):return {}
+        def __call__(self,*args):return {}
+    evaluate=BudgetOnly.__new__(BudgetOnly)
+    evaluate.inputs=tmp_path/'inputs';evaluate.structures=tmp_path/'structures'
+    evaluate.device=torch.device('cuda');evaluate.maximum_input_gib=1.;evaluate.maximum_state_gib=1.
+    evaluate._cohort_identity=None
+    sessions=[dict(day='done'),dict(day='pending')];output=tmp_path/'output'
+    for session in sessions:
+        for root in (evaluate.inputs,evaluate.structures):
+            folder=root/session['day'];folder.mkdir(parents=True);(folder/'complete.json').write_text('{}')
+    completed=output/'done';completed.mkdir(parents=True);(completed/'receipt.json').write_text('{}')
+    monkeypatch.setattr(resident_evaluator,'require_runtime',lambda path:(path.mkdir(parents=True,exist_ok=True) or path))
+    # One remaining session would fit (8.5 GiB); the complete next generation
+    # requires 10.5 GiB and must fail before any device input is loaded.
+    monkeypatch.setattr(torch.cuda,'mem_get_info',lambda device:(int(13*1024**3),int(16*1024**3)))
+    with pytest.raises(MemoryError,match='Resident cohort'):
+        evaluate.prepare_pass(sessions,[],output,workers=1)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='Resident execution requires CUDA')
 def test_all_captures_precede_parallel_replay_and_receipts_resume(tmp_path,monkeypatch):
     configure_caches(DEFAULT/'tests'/'resident-cuda')
