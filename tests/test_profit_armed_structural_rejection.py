@@ -97,6 +97,30 @@ def test_current_crossing_bar_cannot_arm_and_cross():
     assert w is None and s.arm is not None and s.cross is None
 
 
+def test_unavailable_high_cannot_arm_even_when_stored_value_reaches_profit():
+    s,w=reduce(state(),Input(SOURCE,5000,bar(5000,high=20000,extremes_valid=False)),policy=POLICY)
+    assert w is None and s.arm is None and s.last_bar.price_valid
+
+
+def test_valid_rejection_close_remains_usable_when_high_is_unavailable():
+    s,bars=ready()
+    last=replace(bars[-1],high_int=0,extremes_valid=False)
+    result,w=reduce(s,Input(SOURCE,20000,last,activity=(*bars[:3],last),quote=quote()),policy=POLICY)
+    assert result.fired and w.rejections[-1]==last
+
+
+def test_restored_profit_arm_requires_valid_high():
+    s,_=reduce(state(),Input(SOURCE,5000,bar(5000)),policy=POLICY)
+    invalid=replace(s.arm,extremes_valid=False)
+    with pytest.raises(ValueError,match='Persisted arm'):
+        replace(s,arm=invalid,last_bar=invalid)
+
+
+def test_extreme_validity_requires_exact_boolean():
+    with pytest.raises(ValueError,match='Malformed completed'):
+        bar(5000,extremes_valid=1)
+
+
 def test_arm_and_geometry_must_be_strictly_prior_to_cross():
     s,_=reduce(state(),Input(SOURCE,5000,bar(5000)),policy=POLICY)
     s,_=reduce(s,Input(SOURCE,10000,bar(10000,close=11200),level(10000)),policy=POLICY)

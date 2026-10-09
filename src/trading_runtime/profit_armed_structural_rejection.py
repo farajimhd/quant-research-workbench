@@ -109,6 +109,7 @@ class HeldBar:
     macd_line: float | None = None
     macd_signal: float | None = None
     resolution_ms: int = 5000
+    extremes_valid: bool = True
 
     def __post_init__(self):
         _source(self.source)
@@ -119,8 +120,9 @@ class HeldBar:
         _integer(self.resolution_ms, 'bar resolution', 100)
         if (self.resolution_ms > 60000 or self.resolution_ms % 100
                 or self.boundary_ms % self.resolution_ms or self.trade_count > (1 << 64) - 1
-                or type(self.price_valid) is not bool
-                or self.price_valid and not 0 < self.close_int <= self.high_int):
+                or type(self.price_valid) is not bool or type(self.extremes_valid) is not bool
+                or self.price_valid and (self.close_int <= 0
+                    or self.extremes_valid and self.close_int > self.high_int)):
             raise ValueError('Malformed completed producer bar')
         for v in (self.macd_line, self.macd_signal):
             if v is not None and type(v) not in (int, float):
@@ -229,7 +231,7 @@ class StructuralRejectionState:
         if ((self.resistance is None) != (self.cross is None)
                 or (self.cross_prior is None) != (self.cross is None)):
             raise ValueError('Frozen geometry and cross must be paired')
-        if self.arm is not None and (not self.arm.price_valid
+        if self.arm is not None and (not self.arm.price_valid or not self.arm.extremes_valid
                 or self.arm.high_int * self.policy.arm_original_risk[1]
                 < self.original_ask_int * self.policy.arm_original_risk[1]
                 + (self.original_ask_int - self.original_stop_int) * self.policy.arm_original_risk[0]):
@@ -354,7 +356,7 @@ def reduce_structural_rejection(state, value, *, policy):
         return replace(next_state, rejections=()), None
     # Arming and crossing cannot share a completed bar. Arm is frozen once earned.
     if state.arm is None:
-        if (bar.high_int * policy.arm_original_risk[1]
+        if (bar.extremes_valid and bar.high_int * policy.arm_original_risk[1]
                 >= state.original_ask_int * policy.arm_original_risk[1]
                 + (state.original_ask_int - state.original_stop_int) * policy.arm_original_risk[0]):
             next_state = replace(next_state, arm=bar)
