@@ -34,6 +34,61 @@ def test_unissued_decision_constructor_cannot_grant_reads(monkeypatch):
         reuse._Decision(object(), ()).require()
 
 
+def test_original_authority_loader_can_verify_historical_roster_without_owner_cache(monkeypatch):
+    owner,proof,_=owner_and_proof(monkeypatch)
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    owner.client=object();proof.prefix=V4CommittedPrefix('run',3,'batch','cursor','running',('batch',))
+    proof.prefix_content=reuse._prefix_binding(proof.prefix)
+    historical_prefix=V4CommittedPrefix('run',2,'prior','cursor','running',('prior',))
+    entry=SimpleNamespace(source=owner.operation.source)
+    frontier=object();checked=[]
+    monkeypatch.setattr(reuse,'_context_frontier',lambda actual:frontier)
+    token=reuse._ACTIVE.set(proof)
+    def original():
+        assert reuse._CONTEXT_OWNER.get()==(owner,frontier)
+        return reuse.roster_read(owner.client,historical_prefix,entry,(),
+            lambda:checked.append('complete historical authority') or 'verified roster')
+    try:
+        assert reuse._owner_read_context(owner,original)=='verified roster'
+        assert checked==['complete historical authority'] and not proof.rosters
+        assert reuse._ACTIVE.get() is proof
+    finally:reuse._ACTIVE.reset(token)
+
+
+@pytest.mark.parametrize('kind',('authority-error','frontier','normalized-content'))
+def test_original_authority_still_rejects_changes_and_restores_scope(monkeypatch,kind):
+    owner,proof,_=owner_and_proof(monkeypatch)
+    frontier=[object()]
+    monkeypatch.setattr(reuse,'_context_frontier',lambda actual:frontier[0])
+    token=reuse._ACTIVE.set(proof)
+    def original():
+        assert reuse._ACTIVE.get() is None
+        if kind=='authority-error':raise ValueError('original verifier rejects')
+        if kind=='frontier':frontier[0]=object()
+        else:monkeypatch.setattr(reuse,'_normalized_context_snapshot',lambda *a:('changed',))
+        return 'untrusted'
+    try:
+        with pytest.raises(ValueError):reuse._owner_read_context(owner,original)
+        assert reuse._ACTIVE.get() is proof and reuse._CONTEXT_OWNER.get() is None
+        assert not proof.rosters and not proof.groups
+    finally:reuse._ACTIVE.reset(token)
+
+
+def test_direct_decision_roster_still_rejects_foreign_prefix(monkeypatch):
+    from dataclasses import replace
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    owner,proof,_=owner_and_proof(monkeypatch)
+    owner.client=object();proof.prefix=V4CommittedPrefix('run',3,'batch','cursor','running',('batch',))
+    proof.prefix_content=reuse._prefix_binding(proof.prefix)
+    entry=SimpleNamespace(source=owner.operation.source)
+    token=reuse._ACTIVE.set(proof)
+    try:
+        with pytest.raises(ValueError,match='crosses issued ownership'):
+            reuse.roster_read(owner.client,replace(proof.prefix,last_sequence=2),entry,(),
+                lambda:pytest.fail('Foreign direct decision roster reached authority loader'))
+    finally:reuse._ACTIVE.reset(token)
+
+
 def test_admission_failure_removes_stale_owner_proof(monkeypatch):
     owner, _, request = owner_and_proof(monkeypatch)
     monkeypatch.setattr(reuse, '_normalized_context_snapshot', lambda *args: ('advanced',))
