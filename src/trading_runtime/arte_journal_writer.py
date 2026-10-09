@@ -113,6 +113,9 @@ from src.trading_runtime.arte_entry_spread_risk_v4 import ENTRY_SPREAD_RISK
 _CONTRACTS = {table.name: table for table in TABLES}
 from .profit_armed_structural_rejection_snapshot import TABLES as STRUCTURAL_REJECTION_TABLES
 _CONTRACTS.update({table.name: table for table in STRUCTURAL_REJECTION_TABLES})
+from .arte_structural_rejection_exit_v1 import EXIT as STRUCTURAL_REJECTION_EXIT
+# Scalar schema registration alone grants no table scope or writer admission.
+_CONTRACTS[STRUCTURAL_REJECTION_EXIT.name] = STRUCTURAL_REJECTION_EXIT
 from .fixed_structural_lot_entry_schema import TABLES as FIXED_STRUCTURAL_LOT_ENTRY_TABLES
 _CONTRACTS.update({table.name: table for table in FIXED_STRUCTURAL_LOT_ENTRY_TABLES})
 from .fixed_structural_lot_snapshot import TABLES as FIXED_STRUCTURAL_LOT_PROTECTION_TABLES
