@@ -65,12 +65,12 @@ class SparseSessionEvaluator:
         if type(holding_capacity) is not int or holding_capacity<1:raise ValueError('Invalid holding capacity')
         self.holding_capacity=holding_capacity
 
-    def contract(self,training,workers):
+    def contract(self,training,workers,*,memory_required_gib=None):
         if self.device.type=='cuda':
             free,_=torch.cuda.mem_get_info(self.device)
             # Include rule workspace and sidecar headroom, beyond broker/input
             # declarations. Reject the proposed budget rather than overcommit.
-            required=workers*(self.maximum_input_gib+self.maximum_state_gib+2.5)*1024**3
+            required=(workers*(self.maximum_input_gib+self.maximum_state_gib+2.5) if memory_required_gib is None else memory_required_gib)*1024**3
             if required>free*.75:raise MemoryError('Concurrent session envelopes exceed free GPU headroom; choose measured smaller envelopes/concurrency')
         return dict(backend=self.backend,batch_size=self.batch_size,device=str(self.device),maximum_input_gib=self.maximum_input_gib,
             maximum_state_gib=self.maximum_state_gib,maximum_fills=self.maximum_fills,broker='compact',holding_capacity=self.holding_capacity,

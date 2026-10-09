@@ -50,13 +50,14 @@ def main(argv=None):
     p.add_argument('--worker-counts',help='Comma-separated resident concurrency sweep, for example 2,4,8,16')
     p.add_argument('--reference',type=Path,help='Completed serial-warm session directory for this exact population; skips serial passes')
     p.add_argument('--concurrent-only',action='store_true',help='Measure only requested concurrency; first pass is an independently audited batch-partition reference')
+    p.add_argument('--resident-repeats',type=int,default=1,help='Repeat the full pass with retained broker buffers; exact comparison against first pass')
     p.add_argument('--holding-capacity',type=int,default=40);p.add_argument('--maximum-fills',type=int,default=16384)
     p.add_argument('--backend',choices=['compile','cudagraph','compiled_graph'],default='compiled_graph')
     p.add_argument('--seed',type=int,default=2236)
     p.add_argument('--maximum-input-gib',type=float,default=4.);p.add_argument('--maximum-state-gib',type=float,default=4.)
     a=p.parse_args(argv)
     worker_counts=[a.workers] if a.worker_counts is None else [int(v) for v in a.worker_counts.split(',')]
-    if not worker_counts or len(set(worker_counts))!=len(worker_counts) or not 2<=a.session_count<=30 or any(not 1<=w<=a.session_count for w in worker_counts) or a.population<1:
+    if not worker_counts or len(set(worker_counts))!=len(worker_counts) or not 1<=a.resident_repeats<=3 or not 2<=a.session_count<=30 or any(not 1<=w<=a.session_count for w in worker_counts) or a.population<1:
         raise ValueError('Invalid bounded profiling dimensions')
     root=require_runtime(a.output)
     if (root/'identity.json').exists():raise ValueError('Use a new immutable profile identity')
@@ -77,10 +78,13 @@ def main(argv=None):
         rows=[]
         audits=[]
         modes=([] if a.reference or a.concurrent_only else [('serial-cold',1),('serial-warm',1)])+[(f'concurrent-warm-{w}',w) for w in worker_counts]
+        if a.resident_repeats>1:
+            if len(worker_counts)!=1:raise ValueError('Retained-repeat comparison requires one concurrency')
+            modes.extend((f'concurrent-warm-{worker_counts[0]}-repeat-{n}',worker_counts[0]) for n in range(2,a.resident_repeats+1))
         for mode,workers in modes:
             # Profiling trials measure fresh ownership consistently; production
             # evaluators retain compatible buffers across generations.
-            if hasattr(evaluate,'close'):evaluate.close()
+            if hasattr(evaluate,'close') and '-repeat-' not in mode:evaluate.close()
             # Whole-pass graph owners have gone out of scope. Release unused
             # allocator cache before measuring the next independent envelope.
             import gc
@@ -101,8 +105,8 @@ def main(argv=None):
             row=dict(mode=mode,elapsed_seconds=perf_counter()-started,peak_allocated_bytes=torch.cuda.max_memory_allocated(),
                 peak_reserved_bytes=torch.cuda.max_memory_reserved(),candidate_sessions=a.population*len(days))
             rows.append(row);write_json(root/'measurements.json',rows);print(row,flush=True)
-            if mode.startswith('concurrent-warm') and (a.reference or not a.concurrent_only):
-                reference=a.reference if a.reference else root/'serial-warm'
+            if mode.startswith('concurrent-warm') and (a.reference or not a.concurrent_only or '-repeat-' in mode):
+                reference=(root/f'concurrent-warm-{workers}') if '-repeat-' in mode else a.reference if a.reference else root/'serial-warm'
                 audits.extend(dict(workers=workers,**compare_sessions(reference/day,destination/day)) for day in days)
         write_json(root/'receipt.json',dict(status='complete',measurements=rows,audits=audits,validation_opened=False,
             optimization_started=False,backend=a.backend,partition_reference=bool(a.concurrent_only and not a.reference),

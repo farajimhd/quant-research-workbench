@@ -37,7 +37,10 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
 
     def contract(self,training,workers):
         if type(workers) is not int or not 1<=workers<=30:raise ValueError('Resident concurrency must be within the training-session count')
-        result=super().contract(training,workers)
+        # Retained inputs/account buffers are already allocated. Reserve only
+        # replacement state, one temporary gate buffer and rule workspaces.
+        required=self.maximum_state_gib+10. if self._resident_inputs else None
+        result=super().contract(training,workers,memory_required_gib=required)
         result['capture_barrier']='all resident graphs prepared before concurrent replay'
         return result
 
