@@ -272,46 +272,10 @@ class NativeStructuralRejectionManager:
                 or not bar.price_valid or prior.boundary_ms+self.declaration.policy.bar_resolution_ms!=bar.boundary_ms
                 or not state.arm.boundary_ms<bar.boundary_ms):
             return None
-        asof=bar.boundary_ms-100
-        seconds=self._valid_seconds[key[2]]
-        offset=bisect_right(seconds,asof)-1
-        if offset<0 or asof-seconds[offset]>1000:
+        selected=certified_structural_rejection_resistance(self,ticker=key[2],cross_boundary_ms=bar.boundary_ms)
+        if selected is None:
             return None
-        input_second=seconds[offset]
-        selected=self._geometry_index[key[2]].filter(
-            (pl.col('role')=='resistance') & (pl.col('valid_from')<=input_second)
-            & (pl.col('valid_to')>asof) & (pl.col('price_int')>=prior.close_int)
-            & (pl.col('price_int')<bar.close_int)).sort(['price_int','level_id']).head(1)
-        if selected.is_empty():
-            return None
-        chosen=selected.row(0,named=True)
-        row=self._intervals[key[2]][chosen['index']]
-        lower,upper,price=chosen['lower_int'],chosen['upper_int'],chosen['price_int']
-        if (lower,upper,price)!=self.declaration.geometry_ints(row.lower,row.upper):
-            raise ValueError('Indexed native geometry differs from exact scalar declared conversion')
-        raw_confirmed=row.confirmed_at_ms
-        origin_ms=self.origin_us//1000
-        if raw_confirmed>origin_ms+asof:
-            raise ValueError('Native resistance has future confirmation')
-        unit=self._coverage[key[2]]; seed=self._seed_units[key[2]]
-        if raw_confirmed<origin_ms:
-            if (not row.historical or not seed.get('level_count')
-                    or seed.get('session_date','')>=state.source.session_date
-                    or seed.get('source_checkpoint_hash')!=unit.source_checkpoint_hash):
-                raise ValueError('Historical resistance lacks actual certified prior seed')
-            confirmed=0
-        else:
-            confirmed=raw_confirmed-origin_ms
-        available=max(row.valid_from_ms,confirmed)
-        provenance=dict(interval=asdict(row),source_interval_token=self.intervals.token,
-            source_interval_attempt_id=unit.attempt_id,source_checkpoint_hash=unit.source_checkpoint_hash,
-            decoded_seed_hash=unit.decoded_seed_hash,seed_source_plan_hash=unit.seed_source_plan_hash,
-            seed_session=seed['session_date'],seed_available_at=str(seed['available_at']),
-            reference_basis=self.declaration.resistance_price_basis,price_int=price,
-            midpoint_arithmetic=self.declaration.midpoint_arithmetic,
-            geometry_bound_conversion=self.declaration.geometry_bound_conversion)
-        frozen=FrozenResistance(state.source,row.level_id,_digest(provenance),lower,upper,
-            price,confirmed,available)
+        frozen,provenance=selected
         self._geometries[key]=_freeze(provenance)
         return frozen
 
@@ -477,3 +441,54 @@ def prepare_native_structural_rejection_manager(manager,client,*,market,seeds,in
         market=market,seeds=seeds,intervals=intervals,price_authority=price_authority,
         through_boundary_ms=through_boundary_ms)
     return bind_prepared_structural_rejection_manager(manager,source)
+
+
+def certified_structural_rejection_resistance(owner,*,ticker,cross_boundary_ms):
+    """Recompute first crossed certified geometry without touching actor state."""
+    require_native_structural_rejection_owner(owner)
+    source=owner.lookup.sources[ticker]
+    bar=owner.lookup.bar_at(ticker,cross_boundary_ms)
+    prior=owner.lookup.bar_at(ticker,cross_boundary_ms-owner.declaration.policy.bar_resolution_ms)
+    if (bar is None or prior is None or not bar.price_valid or not prior.price_valid):
+        return None
+    asof=bar.boundary_ms-100
+    seconds=owner._valid_seconds[ticker]
+    offset=bisect_right(seconds,asof)-1
+    if offset<0 or asof-seconds[offset]>1000:
+        return None
+    input_second=seconds[offset]
+    selected=owner._geometry_index[ticker].filter(
+        (pl.col('role')=='resistance') & (pl.col('valid_from')<=input_second)
+        & (pl.col('valid_to')>asof) & (pl.col('price_int')>=prior.close_int)
+        & (pl.col('price_int')<bar.close_int)).sort(['price_int','level_id']).head(1)
+    if selected.is_empty():
+        return None
+    chosen=selected.row(0,named=True)
+    row=owner._intervals[ticker][chosen['index']]
+    lower,upper,price=chosen['lower_int'],chosen['upper_int'],chosen['price_int']
+    if (lower,upper,price)!=owner.declaration.geometry_ints(row.lower,row.upper):
+        raise ValueError('Indexed native geometry differs from exact scalar declared conversion')
+    raw_confirmed=row.confirmed_at_ms
+    origin_ms=owner.origin_us//1000
+    if raw_confirmed>origin_ms+asof:
+        raise ValueError('Native resistance has future confirmation')
+    unit=owner._coverage[ticker]; seed=owner._seed_units[ticker]
+    if raw_confirmed<origin_ms:
+        if (not row.historical or not seed.get('level_count')
+                or seed.get('session_date','')>=source.session_date
+                or seed.get('source_checkpoint_hash')!=unit.source_checkpoint_hash):
+            raise ValueError('Historical resistance lacks actual certified prior seed')
+        confirmed=0
+    else:
+        confirmed=raw_confirmed-origin_ms
+    available=max(row.valid_from_ms,confirmed)
+    provenance=dict(interval=asdict(row),source_interval_token=owner.intervals.token,
+        source_interval_attempt_id=unit.attempt_id,source_checkpoint_hash=unit.source_checkpoint_hash,
+        decoded_seed_hash=unit.decoded_seed_hash,seed_source_plan_hash=unit.seed_source_plan_hash,
+        seed_session=seed['session_date'],seed_available_at=str(seed['available_at']),
+        reference_basis=owner.declaration.resistance_price_basis,price_int=price,
+        midpoint_arithmetic=owner.declaration.midpoint_arithmetic,
+        geometry_bound_conversion=owner.declaration.geometry_bound_conversion)
+    frozen=FrozenResistance(source,row.level_id,_digest(provenance),lower,upper,
+        price,confirmed,available)
+    return frozen,provenance
