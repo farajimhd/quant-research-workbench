@@ -65,6 +65,7 @@ def prepare(inputs_root,output,*,workers=2):
         print(dict(completed=completed,total=len(union)),flush=True)
     for name in ('OMP_NUM_THREADS','OPENBLAS_NUM_THREADS','MKL_NUM_THREADS'):os.environ[name]='1'
     reader=arte_source.reader(threads=1)
+    storage=arte_source.storage_check(reader)
     # Same reference-reader contract used by V5 offline_structure. The dedicated
     # market principal intentionally lacks float/split metadata table grants.
     references=ordered_references(selected,date.fromisoformat(day),read_reference=read_reference,reader_factory=reference_transport)
@@ -74,11 +75,13 @@ def prepare(inputs_root,output,*,workers=2):
                 ticker=listing['ticker'];seed,splits,_,evidence=reference
                 if seed is None:
                     receipts[ticker]=dict(status='v6-missing-prior-v7-masked',reference_hash=evidence['hash']);completed+=1;continue
+                arte_source.verify_listing(reader,source,date.fromisoformat(day),ticker)
                 statement=(f'SELECT toInt64(bucket_index)+1+{origin} AS clock,open_int,high_int,low_int,close_int,volume '
                     f"FROM arte.bars_v1 WHERE {scope(source,day,[ticker],'bars')} AND resolution_ms=1000 AND price_valid=1 AND extremes_valid=1 "
                     f'AND bucket_index>={int(clocks[0])-origin-1} AND bucket_index<{int(clocks[-1])-origin} ORDER BY bucket_index')
                 schema=dict(clock=pl.Int64,open_int=pl.Int64,high_int=pl.Int64,low_int=pl.Int64,close_int=pl.Int64,volume=pl.Float64)
                 frame=arte_source.frame(reader,statement,schema)
+                arte_source.verify_listing(reader,source,date.fromisoformat(day),ticker)
                 lane=market.filter(pl.col('listing')==ids[ticker]).select('clock','source_row','ask','observed','high','low','mark')
                 joined=frame.join(lane,on='clock',how='left',validate='1:1')
                 if joined['source_row'].null_count() or not joined['observed'].all():raise ValueError('Structural bars have no matching certified compact observation')
@@ -101,7 +104,8 @@ def prepare(inputs_root,output,*,workers=2):
     np.save(output/'targets.npy',targets,allow_pickle=False);np.save(output/'valid.npy',valid,allow_pickle=False)
     record=dict(version='v6-sparse-structural-v1',status='complete',day=day,input_receipt_sha256=file_hash(inputs.root/'complete.json'),
         market_keys_sha256=inputs.receipt['files']['market_keys.npy'],algorithm_sha256=algorithm,implementation_sha256=file_hash(Path(__file__)),listing_ids=union,
-        files={n:file_hash(output/n) for n in ('targets.npy','valid.npy')},receipts=receipts,validation_opened=False)
+        files={n:file_hash(output/n) for n in ('targets.npy','valid.npy')},receipts=receipts,storage=storage,
+        source_units={ticker:source['units'][day][ticker] for ticker in ids},validation_opened=False)
     write_json(output/'complete.json',record);return record
 
 
