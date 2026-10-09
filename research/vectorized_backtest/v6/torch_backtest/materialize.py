@@ -85,6 +85,7 @@ def prepare(item, args):
                     window=args.window, top_n=args.top_n, minimum_close=args.minimum_close,
                     maximum_close=args.maximum_close, block_seconds=args.block_seconds,
                     source_manifest_sha256=file_hash(item['source_manifest']),
+                    prior_close_context_sha256=file_hash(args.prior_close_context) if args.prior_close_context else None,
                     implementation_sha256=file_hash(Path(__file__)))
     complete = folder / 'complete.json'
     if complete.exists():
@@ -96,23 +97,37 @@ def prepare(item, args):
     manifest = Path(item['source_manifest'])
     definition = json.loads(manifest.read_text())['definition']
     previous_manifest = manifest
+    context=None
     if previous not in definition['plan']['requested']:
-        if args.context_manifest is None:
+        if args.prior_close_context:
+            from .source.common import digest
+            from .previous_close import VERSION as CONTEXT_VERSION
+            context=json.loads(args.prior_close_context.read_text())
+            payload={k:v for k,v in context.items() if k!='hash'}
+            if (context.get('hash')!=digest(payload) or context.get('version')!=CONTEXT_VERSION
+                or context.get('status')!='complete' or context['previous_day']!=previous
+                or context['current_day']!=day or context['sessions_sha256']!=file_hash(args.sessions)
+                or context['source_manifest_sha256']!=file_hash(manifest) or context['validation_opened']):
+                raise ValueError('Canonical closing-context identity/hash mismatch')
+        elif args.context_manifest is None:
             raise ValueError(f'{day}: previous regular session {previous} requires certified --context-manifest')
-        previous_manifest = args.context_manifest
+        else:previous_manifest = args.context_manifest
     source = arte_source.load_build(manifest, item['source_ledger'], [day])
-    prior = arte_source.load_build(previous_manifest, args.context_ledger or item['source_ledger'], [previous])
+    prior = None if context else arte_source.load_build(previous_manifest, args.context_ledger or item['source_ledger'], [previous])
     reader = arte_source.reader(threads=1)
     files = {}
     try:
         arte_source.storage_check(reader)
         members, population = arte_source.population(reader, source, date.fromisoformat(day), regular_us_exchanges_only=True)
-        old_members, old_population = arte_source.population(reader, prior, date.fromisoformat(previous), regular_us_exchanges_only=True)
+        if context:
+            if context['population']!=population:raise ValueError('Closing context population changed')
+            old_members=context['matched'];old_population=dict(context_sha256=file_hash(args.prior_close_context),scope=context['identity_scope'])
+        else:old_members, old_population = arte_source.population(reader, prior, date.fromisoformat(previous), regular_us_exchanges_only=True)
         old = {row['listing_id']:row['ticker'] for row in old_members}
         paired = [row for row in members if old.get(row['listing_id']) == row['ticker']]
         from .encoding.clickhouse import _validate_units
         _validate_units(reader, source, date.fromisoformat(day), [r['ticker'] for r in members], None)
-        _validate_units(reader, prior, date.fromisoformat(previous), [r['ticker'] for r in paired], None)
+        if prior:_validate_units(reader, prior, date.fromisoformat(previous), [r['ticker'] for r in paired], None)
         # Certified per-listing split factors, already available at premarket opening.
         mapping = json.loads(Path(item['identity_map']).read_text())['listing_to_ticker']
         from .feature_bank import CertifiedBank
@@ -123,6 +138,8 @@ def prepare(item, args):
         factors = {mapping[k]:v['rvol_price_factor'] for k,v in split['listings'].items()}
         if split['day'] != day or set(factors) != set(mapping.values()):
             raise ValueError('Incomplete opening split identity coverage')
+        unsupported=[dict(**row,reason='certified_feature_and_opening_split_identity_unavailable') for row in paired if row['ticker'] not in factors]
+        paired=[row for row in paired if row['ticker'] in factors]
         from .splits import price_factor
         for key, evidence in split['listings'].items():
             if not np.isclose(factors[mapping[key]], price_factor(evidence['splits'], previous, day), rtol=1e-12, atol=0):
@@ -133,7 +150,11 @@ def prepare(item, args):
         origin = int(datetime.fromisoformat(previous+'T00:00:00').replace(tzinfo=ZoneInfo('America/New_York')).timestamp())
         low, high = int(opened.timestamp())-origin, int(closed.timestamp())-origin
         closes = {}
-        for offset in range(0, len(paired), 128):
+        if context:
+            allowed={row['ticker'] for row in paired}
+            closes={row['ticker']:float(row['closing'][0])/10000.*factors[row['ticker']]
+                for row in context['rows'] if row['ticker'] in allowed and row['eligible_trades']>0}
+        for offset in range(0, 0 if context else len(paired), 128):
             names = [r['ticker'] for r in paired[offset:offset+128]]
             rows = sql.query(reader, 'SELECT ticker,argMax(close_int,bucket_index)/10000. AS prior_close '
                 f"FROM arte.bars_v1 WHERE {scope(prior,previous,names,'bars')} AND resolution_ms=1000 "
@@ -143,8 +164,10 @@ def prepare(item, args):
         if not eligible:
             raise ValueError('No certified price-eligible listings')
         write_json(folder/'eligibility.json', dict(identity=identity, previous_day=previous,
-            prior_source=prior['build_id'], population=population, previous_population=old_population,
-            counts=dict(population=len(members), identity_unavailable=len(members)-len(paired),
+            prior_source=prior['build_id'] if prior else context['version'], population=population, previous_population=old_population,
+            unsupported=unsupported,
+            counts=dict(population=len(members), identity_unavailable=len(members)-len(paired)-len(unsupported),
+                        opening_context_unavailable=len(unsupported),
                         missing_close=len(paired)-len(closes), eligible=len(eligible),
                         price_rejected=len(closes)-len(eligible)), listings=eligible, adjusted_prior_close=closes))
         start=int(datetime.fromisoformat(item['start']).timestamp());end=int(datetime.fromisoformat(item['end']).timestamp())
@@ -196,6 +219,8 @@ def main(argv=None):
     p.add_argument('--top-n',type=int,default=10);p.add_argument('--minimum-close',type=float,default=.8)
     p.add_argument('--maximum-close',type=float,default=50);p.add_argument('--block-seconds',type=int,default=300)
     p.add_argument('--context-manifest',type=Path);p.add_argument('--context-ledger',type=Path)
+    p.add_argument('--prior-close-context',type=Path)
+    p.add_argument('--only-days',nargs='+',help='Prepare an explicit subset; never claim full training readiness')
     args=p.parse_args(argv);args.output=require_runtime(args.output)
     if not 1<=args.workers<=4 or min(args.window,args.top_n,args.block_seconds)<1 or not 0<args.minimum_close<=args.maximum_close:
         raise ValueError('Invalid bounded materialization arguments')
@@ -203,16 +228,20 @@ def main(argv=None):
     spec=json.loads(args.sessions.read_text());days=[s['day'] for s in spec['training']]
     if len(days)!=30 or len(set(days))!=30 or set(days)&{s['day'] for s in spec['validation']}:
         raise ValueError('Exactly 30 disjoint training dates required')
+    requested=spec['training']
+    if args.only_days:
+        if len(set(args.only_days))!=len(args.only_days) or set(args.only_days)-set(days):raise ValueError('Invalid training subset')
+        requested=[item for item in requested if item['day'] in args.only_days]
     results=[];failures=[]
     with owned_run(args.output), ThreadPoolExecutor(max_workers=args.workers) as pool:
-        jobs={pool.submit(prepare,item,args):item['day'] for item in spec['training']}
+        jobs={pool.submit(prepare,item,args):item['day'] for item in requested}
         for future in as_completed(jobs):
             try:result=future.result();results.append(result);event=dict(day=jobs[future],status='complete',elapsed_seconds=result['elapsed_seconds'])
             except Exception as error:event=dict(day=jobs[future],status='failed',error=str(error));failures.append(event)
             print(json.dumps(event),flush=True)
-            write_json(args.output/'status.json',dict(completed=len(results),failed=len(failures),total=30,failures=failures,validation_opened=False))
+            write_json(args.output/'status.json',dict(completed=len(results),failed=len(failures),total=len(requested),training_total=30,failures=failures,validation_opened=False))
     write_json(args.output/'receipt.json',dict(version=VERSION,status='failed' if failures else 'complete',sessions_sha256=file_hash(args.sessions),
-        completed=sorted(r['day'] for r in results),failures=failures,validation_opened=False,ready_for_replay=False))
+        completed=sorted(r['day'] for r in results),requested=[item['day'] for item in requested],training_total=30,failures=failures,validation_opened=False,ready_for_replay=False))
     return int(bool(failures))
 
 
