@@ -30,6 +30,10 @@ def require_declared_fixed_structural_lot_contract(contract, release):
     if OWNED_INPUT in release.input_contracts or OWNED_RULE in release.rule_set_contracts:
         from .fixed_structural_lot_owned_snapshot_contract import FixedStructuralLotOwnedSnapshotStrategyContract
         wanted = FixedStructuralLotOwnedSnapshotStrategyContract
+    from .empty_protection_confirmation_policy import INPUT as EMPTY_INPUT, RULE as EMPTY_RULE
+    if EMPTY_INPUT in release.input_contracts or EMPTY_RULE in release.rule_set_contracts:
+        from .fixed_structural_lot_empty_confirmation_contract import FixedStructuralLotEmptyConfirmationStrategyContract
+        wanted = FixedStructuralLotEmptyConfirmationStrategyContract
     if type(contract) is not wanted or contract.release != release:
         raise ValueError('Fixed-lot factory differs from exact declared release type')
     contract.__post_init__()

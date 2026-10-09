@@ -647,8 +647,13 @@ class NativeFixedStructuralLotManagement:
         group=self._group(request.entry_request,prefix,contexts,request.proposal.previous.roster.group_id)
         if self._legs(group)!=request.requested_legs:
             raise RuntimeError('Selected protection outcomes require reconciliation of changed legs')
-        history=load_complete_typed_protection_history(self.client,prefix,fixed_lot_contexts=contexts)
         recovery=self._request_recoveries.get(request)
+        from src.trading_runtime.empty_protection_confirmation_policy import (
+            installed_empty_protection_confirmation_policy, requires_protection_ack_history)
+        empty_policy=installed_empty_protection_confirmation_policy(request.entry_request.source)
+        history=(load_complete_typed_protection_history(self.client,prefix,fixed_lot_contexts=contexts)
+            if requires_protection_ack_history(empty_policy,command_count=len(request.intents),
+                recovery_pending=recovery is not None) else None)
         readback_events={}
         if recovery is not None:
             from src.trading_runtime.arte_journal_reader import load_typed_event_page

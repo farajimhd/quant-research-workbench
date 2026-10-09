@@ -58,3 +58,35 @@ def requires_protection_ack_history(policy, *, command_count, recovery_pending):
         return True
     policy.__post_init__()
     return command_count != 0 or recovery_pending
+
+
+def installed_empty_protection_confirmation_policy(source):
+    """Select only through an issued installed source and its exact factory.
+
+    Unselected sources retain the original read. A claimed capability cannot
+    fall back when its source, release, factory or complete policy differs.
+    """
+    if not source.installed_json:
+        return None
+    strategy = source.installed_payload['strategy']
+    manifest = strategy.get('numbered_release', {})
+    contract = manifest.get('contract', {})
+    value = strategy['parameters'].get('empty_protection_confirmation_policy')
+    if value is None and INPUT not in contract.get('input_contracts', ()) and RULE not in contract.get('rule_set_contracts', ()):
+        return None
+    from src.backend.backtest_fixed_structural_lot_source import require_native_fixed_structural_lot_source
+    from .strategy_registry import numbered_strategy, fixed_strategy_executor
+    from .fixed_structural_lot_empty_confirmation_contract import FixedStructuralLotEmptyConfirmationStrategyContract
+    from .fixed_structural_lot_reuse_contract import require_declared_fixed_structural_lot_contract
+    require_native_fixed_structural_lot_source(source)
+    source.require_installed_admission()
+    release = numbered_strategy(strategy['strategy_number'])
+    if contract != release.canonical_payload():
+        raise ValueError('Empty confirmation differs from issued installed release')
+    policy = declared_empty_protection_confirmation_policy(release, value)
+    factory = fixed_strategy_executor(release.executor_strategy_id, release.executor_revision).contract_factory()
+    require_declared_fixed_structural_lot_contract(factory, release)
+    if (type(factory) is not FixedStructuralLotEmptyConfirmationStrategyContract or
+            factory.empty_confirmation_policy != policy):
+        raise ValueError('Empty confirmation differs from exact installed factory')
+    return policy
