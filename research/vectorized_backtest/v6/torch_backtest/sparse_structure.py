@@ -38,6 +38,15 @@ def reference_transport():
     return reference
 
 
+def ranked_asks(asks,stamps,listing,clocks,top):
+    """Project targets only at ranked clocks; all prior raw bars still advance V7."""
+    positions=np.searchsorted(clocks,stamps)
+    if np.any(positions>=len(clocks)) or not np.array_equal(clocks[positions],stamps):
+        raise ValueError('Structural observation outside ranked clock identity')
+    membership=(top[positions]==listing).any(axis=1)
+    return np.where(membership,asks,np.nan)
+
+
 def prepare(inputs_root,output,*,workers=2,reuse_cache=None,reuse_code=None,reuse_version='v4'):
     """Only daily-union identities can enter or become held; retain all their bars."""
     from research.rl_trading.v6.reference import read_reference
@@ -118,7 +127,8 @@ def prepare(inputs_root,output,*,workers=2,reuse_cache=None,reuse_code=None,reus
                     receipts[ticker]=dict(status='no-eligible-structural-observations',reference_hash=evidence['hash']);completed+=1;continue
                 stamps=joined['clock'].to_numpy();indices=joined['source_row'].to_numpy()
                 rows=dict(zip(FIELDS,[stamps*1000000,*[joined[name].to_numpy() for name in ('open_int','high_int','low_int','close_int','volume')]]))
-                asks=joined['ask'].fill_null(float('nan')).to_numpy()
+                asks=ranked_asks(joined['ask'].fill_null(float('nan')).to_numpy(),stamps,
+                    ids[ticker],clocks,inputs.arrays['top_indices'])
                 if reuse is not None:
                     cached,reason=reuse.lookup(ticker,day,seed,splits,rows,asks,stamps)
                     if cached is not None:
@@ -145,6 +155,7 @@ def prepare(inputs_root,output,*,workers=2,reuse_cache=None,reuse_code=None,reus
         source_units={ticker:source['units'][day][ticker] for ticker in ids},validation_opened=False)
     record['reuse']=dict(enabled=reuse is not None,reused=reused,miss_reasons=reuse_misses,
         evidence=reuse.evidence if reuse is not None else None)
+    record['target_projection_scope']='ranked-top-n-only; full causal bar history retained'
     write_json(output/'complete.json',record);return record
 
 

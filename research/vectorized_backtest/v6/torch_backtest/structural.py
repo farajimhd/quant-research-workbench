@@ -117,10 +117,12 @@ def stream_ticker(ticker, day, seed, splits, rows, asks, clocks):
         valid[index] = True
         # Freshness and confirmed_at are checked at THIS boundary. Projection is
         # memoized by canonical engine revision; observations never replay twice.
+        ask = asks[index]
+        if not np.isfinite(ask) or ask <= 0:
+            continue
         geometry = stream.strategy_one_levels(as_of=datetime.fromtimestamp(stamp/1_000_000, timezone.utc),
                                               seed_policy=seed_policy)
-        ask = asks[index]
-        if not np.isfinite(ask) or ask <= 0 or not geometry:
+        if not geometry:
             continue
         if geometry is not cached_geometry:
             lower = np.fromiter((float(r['lower']) for r in geometry if r['role']=='resistance'), dtype=np.float64)

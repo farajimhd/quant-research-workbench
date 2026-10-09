@@ -91,6 +91,25 @@ def test_missing_seconds_are_not_structural_updates():
         stream_ticker('TEST',DAY,seed(),(),sparse,asks,clocks)
 
 
+def test_top_only_projection_retains_every_causal_bar(monkeypatch):
+    from research.vectorized_backtest.v6.torch_backtest.sparse_structure import ranked_asks
+    rows,asks,clocks=inputs()
+    expected,expected_valid,_=stream_ticker('TEST',DAY,seed(),(),rows,asks,clocks)
+    top=np.full((len(clocks),1),8,dtype=np.int64);top[20:]=7
+    filtered=ranked_asks(asks,clocks,7,clocks,top)
+    calls=[];original=FixedV7Stream.strategy_one_levels
+    def observed(self,*args,**kwargs):
+        calls.append(kwargs['as_of']);return original(self,*args,**kwargs)
+    monkeypatch.setattr(FixedV7Stream,'strategy_one_levels',observed)
+    actual,valid,metrics=stream_ticker('TEST',DAY,seed(),(),rows,filtered,clocks)
+    assert len(calls)==20 and metrics['consumed_bars']==len(clocks)
+    assert np.isposinf(actual[:20]).all()
+    np.testing.assert_array_equal(actual[20:],expected[20:])
+    np.testing.assert_array_equal(valid,expected_valid)
+    with pytest.raises(ValueError,match='clock identity'):
+        ranked_asks(asks,clocks+1,7,clocks,top)
+
+
 def test_process_preparation_cache_integrity_and_lock_restart(tmp_path):
     rows, asks, clocks = inputs()
     value_seed = seed()
