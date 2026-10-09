@@ -57,7 +57,7 @@ class SparseInputs:
     def lookup(self, listing, clock, *, maximum_quote_age_seconds=1., source_rows=None):
         """Arbitrary candidate/holding axes; carries never invent execution bars."""
         keys=self.tensors['market_keys'];query=listing.to(torch.int64)*KEY_STRIDE+clock
-        row=torch.searchsorted(keys,query,right=True)-1 if source_rows is None else source_rows
+        row=torch.searchsorted(keys,query,right=True)-1 if source_rows is None else torch.where(listing>=0,source_rows,-1)
         safe=row.clamp(0,len(keys)-1)
         known=(row>=0)&(listing>=0)&(keys[safe]//KEY_STRIDE==listing)&(keys[safe]%KEY_STRIDE<=clock)
         current=known&(keys[safe]%KEY_STRIDE==clock)
