@@ -1,6 +1,7 @@
 """Cold declared-source and real three-lot OMS recovery contracts."""
 import asyncio
 from dataclasses import asdict, replace
+from datetime import timezone
 from hashlib import sha256
 from types import SimpleNamespace
 from uuid import uuid4
@@ -135,7 +136,10 @@ def test_real_financial_ladder_recovers_all_nine_orders_from_proved_parent(monke
             state = RecoveredOmsGroupState(3, recovered.record_id,
                 {'run_id':RUN, 'batch_id':group_batch, 'account_id':'DU1', 'group_id':group.group_id,
                  'strategy_id':cold.native['strategy_id'], 'strategy_revision':1,
-                 'strategy_intent_id':intent.intent_id}, orders, tuple(0 for _ in orders),
+                 'strategy_intent_id':intent.intent_id,
+                 # Recovery consumes ClickHouse's UTC DateTime64 text.
+                 'updated_at':group.updated_at.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')},
+                orders, tuple(0 for _ in orders),
                 tuple(group.plan.order_slice_ids), (), (), ())
             history = CompleteProtectionHistory(RUN, 3, prefix.batch_ids, ())
             meta = group.intent.metadata
