@@ -125,7 +125,7 @@ def bind_session(item,args):
         a,b=offsets[i:i+2];feature_keys[a:b]=keys;feature_values[a:b]=values;feature_valid[a:b]=valid
     feature_keys.flush();feature_values.flush();feature_valid.flush();del chunks
     if np.any(np.diff(feature_keys)<=0):raise ValueError('Feature identity key ordering failed')
-    feature_table=pl.DataFrame(dict(feature_row=np.arange(count,dtype=np.int64),listing=np.asarray(feature_keys)//KEY_STRIDE,
+    feature_table=pl.DataFrame(dict(feature_row=np.arange(count,dtype=np.int64),listing=(np.asarray(feature_keys)//KEY_STRIDE).astype(np.int32),
         clock=np.asarray(feature_keys)%KEY_STRIDE)).sort('clock')
     configure_reader(Path(__file__).resolve().parents[4])
     source=arte_source.load_build(item['source_manifest'],item['source_ledger'],[day])
@@ -156,7 +156,7 @@ def bind_session(item,args):
     market_keys=rows['listing'].to_numpy().astype(np.int64)*KEY_STRIDE+rows['clock'].to_numpy()
     if np.any(np.diff(market_keys)<=0):raise ValueError('Market identity key ordering failed')
     np.save(target/'market_keys.npy',market_keys,allow_pickle=False)
-    selection=pl.DataFrame(dict(clock=np.repeat(clocks,top.shape[1]),slot=np.tile(np.arange(top.shape[1]),len(clocks)),listing=top.ravel(),rolling_volume=scores.ravel())).filter(pl.col('listing')>=0)
+    selection=pl.DataFrame(dict(clock=np.repeat(clocks,top.shape[1]),slot=np.tile(np.arange(top.shape[1]),len(clocks)),listing=top.ravel().astype(np.int32),rolling_volume=scores.ravel())).filter(pl.col('listing')>=0)
     selection=selection.sort('clock').join_asof(rows.select('listing','clock','source_row','feature_row'),on='clock',by='listing',strategy='backward',check_sortedness=False).sort('clock','slot')
     selection.write_parquet(target/'top_blocks.parquet')
     files={p.name:file_hash(p) for p in target.iterdir() if p.is_file() and p.name!='complete.json'}
