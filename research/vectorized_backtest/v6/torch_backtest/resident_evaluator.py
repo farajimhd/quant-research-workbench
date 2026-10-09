@@ -63,7 +63,18 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
         # Inputs are immutable across candidate batches. Reserve a separate
         # bounded cohort envelope before retaining them on device.
         free,_=torch.cuda.mem_get_info(self.device)
-        residency=len(remaining)*self.maximum_input_gib*1024**3
+        residency=0
+        for session in remaining:
+            folder=self.inputs/session['day'];certificate=json.loads((folder/'complete.json').read_text())
+            if 'market_rows' not in certificate:
+                residency+=self.maximum_input_gib*1024**3
+                continue
+            # NPY file sizes bound resident arrays (including harmless headers).
+            # Broker columns: 13 eight-byte columns and one Boolean. Structural
+            # sidecar: 15 float64 targets and one Boolean per source row.
+            arrays=sum((folder/(name+'.npy')).stat().st_size for name in
+                ('clocks','top_indices','market_keys','feature_keys','features','feature_valid'))
+            residency+=arrays+certificate['market_rows']*(105+121)
         working=(len(remaining)*self.maximum_state_gib+workers*2.5+4)*1024**3
         if residency+working>free*.75:
             raise MemoryError('Resident cohort inputs plus replay/rule envelopes exceed GPU headroom')
@@ -95,12 +106,15 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
                             parts[day].append(record['metrics']);batches[day].append(dict(directory=folder.name,sha256=file_hash(folder/'receipt.json')))
                             continue
                         union=sorted(set(int(v) for v in inputs[day].arrays['top_indices'].ravel() if v>=0))
+                        write_json(output/'resident-status.json',dict(stage='Evaluate causal lifecycle rules',day=day,candidate_offset=offset,population=len(population),validation_opened=False))
                         gates,rule_seconds=inputs[day].compile(members,listing_ids=union,backend='cudagraph',prepared=shared)
+                        broker_started=perf_counter()
                         runner=runners.get(day)
                         reused=runner is not None and runner.b==len(members) and runner.execution_key==CompactProgramRunner.specialization_key(members,space)
                         if reused:
                             runner.set_sparse_population(members,gates)
                         else:
+                            write_json(output/'resident-status.json',dict(stage='Build and capture financial broker',day=day,candidate_offset=offset,population=len(population),validation_opened=False))
                             # Drop incompatible captures before allocating replacement state.
                             runners.pop(day,None);runner=None;gc.collect()
                             runner=CompactProgramRunner(inputs[day],space,members,gates,structure=self.structures/day,
@@ -110,6 +124,7 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
                             runners[day]=runner
                         # No worker runs until this entire serial preparation loop finishes.
                         runner.preparation_reused=reused
+                        runner.broker_preparation_seconds=perf_counter()-broker_started
                         jobs.append((session,folder,runner,rule_seconds,torch.cuda.Stream(device=self.device)))
                     setup=perf_counter()-started_preparation
                     torch.cuda.synchronize(self.device);started=perf_counter()
@@ -126,7 +141,8 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
                         return session['day'],folder,record,dict(day=session['day'],replay_and_position_report_seconds=replay_seconds,
                             seal_and_financial_audit_seconds=perf_counter()-audit_started,rule_seconds=rule_seconds,
                             captured_preparation_seconds=0. if runner.preparation_reused else runner.setup_seconds,
-                            captured_preparation_reused=runner.preparation_reused,clocks=len(runner.tape.clocks))
+                            captured_preparation_reused=runner.preparation_reused,
+                            broker_preparation_seconds=runner.broker_preparation_seconds,clocks=len(runner.tape.clocks))
                     timings=[]
                     with ThreadPoolExecutor(max_workers=workers) as pool:
                         futures=[pool.submit(execute,job) for job in jobs]
