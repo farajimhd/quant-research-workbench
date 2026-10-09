@@ -86,7 +86,11 @@ class CompactProgramRunner(SparseProgramRunner):
         self.used.copy_(self.source_used.gather(1,self.registry.ids.clamp_min(0)).bool()&(self.registry.ids>=0))
         self.source_market=self.inputs.lookup(self.listing_ids,clock)
         self.source_indices=torch.searchsorted(self.listing_ids,self.registry.ids.clamp_min(0)).clamp_max(len(self.union_ids)-1)
-        self.current_market=self.inputs.lookup(self.registry.ids,clock)
+        # All retained identities belong to this session's ranked union.
+        # Reuse its already-resolved causal source rows instead of repeating
+        # a market-key binary search for every candidate/holding slot.
+        rows=self.source_market['source_row'][self.source_indices]
+        self.current_market=self.inputs.lookup(self.registry.ids,clock,source_rows=rows)
         # Call ProgramRunner through SparseProgramRunner's parent: its tick must
         # not replace our candidate-specific market rows with daily-union rows.
         super(SparseProgramRunner,self).tick()

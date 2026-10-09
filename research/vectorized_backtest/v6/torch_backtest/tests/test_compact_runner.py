@@ -83,3 +83,15 @@ def test_sparse_population_reuse_changes_parameters_and_gates_exactly():
     for name,value in before.items():
         if isinstance(value,torch.Tensor):torch.testing.assert_close(value,after[name],rtol=0,atol=0,equal_nan=True,msg=name)
     count=int(fresh.fill_count[0]);torch.testing.assert_close(fresh.ledger[0,:count],reused.ledger[0,:count],rtol=0,atol=0)
+
+
+def test_shared_source_rows_exact_for_repeated_held_and_empty_slots():
+    _,inputs,_,_,_=fixture()
+    union=torch.tensor([0,1]);ids=torch.tensor([[1,0,-1],[0,1,1]])
+    indices=torch.searchsorted(union,ids.clamp_min(0))
+    for clock in inputs.tensors['clocks']:
+        source=inputs.lookup(union,clock)
+        reference=inputs.lookup(ids,clock)
+        shared=inputs.lookup(ids,clock,source_rows=source['source_row'][indices])
+        for name,value in reference.items():
+            torch.testing.assert_close(value,shared[name],rtol=0,atol=0,equal_nan=True,msg=name)
