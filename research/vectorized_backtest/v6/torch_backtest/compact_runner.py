@@ -133,9 +133,14 @@ class CompactProgramRunner(SparseProgramRunner):
         return value[:,self.source_indices].permute(1,0,2)
 
     def _source_reduce(self,source,name,reduction='mean'):
-        values=self._gather_history(source);window=self._value(name,3)
+        window=self._value(name,3)
+        if reduction=='maximum':
+            # Each listing's prefix maxima are independent of the candidate.
+            # Gather only its requested window/identity, not the entire ring.
+            maxima=source.cummax(0).values
+            return maxima[(window.squeeze(1).to(torch.int64)-1),self.source_indices]
+        values=self._gather_history(source)
         selected=torch.arange(len(source),device=source.device)[None,:,None]<window
-        if reduction=='maximum':return torch.where(selected,values,-float('inf')).amax(1)
         return torch.where(selected,values,0).sum(1)/window.squeeze(1)
 
     def _recent_high(self):
@@ -148,9 +153,8 @@ class CompactProgramRunner(SparseProgramRunner):
         return self._source_reduce(self.source_movement_ring,'adaptive_window')
 
     def _momentum_close(self):
-        values=self._gather_history(self.source_rings['close_ring']).permute(0,2,1)
-        indices=(self._value('momentum_lookback_seconds',2).to(torch.int64)-1)[...,None].expand(self.b,self.n,1)
-        return values.gather(-1,indices).squeeze(-1)
+        indices=self._value('momentum_lookback_seconds',2).to(torch.int64)-1
+        return self.source_rings['close_ring'][indices,self.source_indices]
 
     def _swing_level(self):
         pair=(self._value('swing_left_seconds',2).to(torch.int64)-1)*self.swing_right_capacity+self._value('swing_right_seconds',2).to(torch.int64)-1

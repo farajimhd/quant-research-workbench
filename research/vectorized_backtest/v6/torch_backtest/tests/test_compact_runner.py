@@ -119,3 +119,16 @@ def test_shared_source_rows_exact_for_repeated_held_and_empty_slots():
         shared=inputs.lookup(ids,clock,source_rows=source['source_row'][indices])
         for name,value in reference.items():
             torch.testing.assert_close(value,shared[name],rtol=0,atol=0,equal_nan=True,msg=name)
+
+
+def test_shared_history_queries_preserve_nan_and_candidate_windows():
+    runner=CompactProgramRunner.__new__(CompactProgramRunner)
+    runner.b=3;runner.n=2;runner.source_indices=torch.tensor([[0,1],[1,2],[2,0]])
+    windows=torch.tensor([1,3,5])
+    runner._value=lambda name,rank:windows.reshape(3,*([1]*(rank-1)))
+    source=torch.tensor([[2.,4.,6.],[3.,float('nan'),5.],[1.,9.,3.],[8.,2.,float('nan')],[7.,1.,4.]],dtype=torch.float64)
+    expected=torch.stack([source[:int(window),ids].amax(0) for window,ids in zip(windows,runner.source_indices)])
+    torch.testing.assert_close(runner._source_reduce(source,'retest_lookback_seconds','maximum'),expected,rtol=0,atol=0,equal_nan=True)
+    runner.source_rings={'close_ring':source}
+    expected=torch.stack([source[int(window)-1,ids] for window,ids in zip(windows,runner.source_indices)])
+    torch.testing.assert_close(runner._momentum_close(),expected,rtol=0,atol=0,equal_nan=True)
