@@ -64,10 +64,10 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
         # bounded cohort envelope before retaining them on device.
         free,_=torch.cuda.mem_get_info(self.device)
         residency=len(remaining)*self.maximum_input_gib*1024**3
-        working=workers*(self.maximum_state_gib+2.5)*1024**3+4*1024**3
+        working=(len(remaining)*self.maximum_state_gib+workers*2.5+4)*1024**3
         if residency+working>free*.75:
             raise MemoryError('Resident cohort inputs plus replay/rule envelopes exceed GPU headroom')
-        resident_inputs={};load_started=perf_counter()
+        resident_inputs={};runners={};load_started=perf_counter()
         for session in remaining:
             day=session['day']
             write_json(output/'resident-status.json',dict(stage='Loading immutable cohort inputs once',day=day,loaded=len(resident_inputs),total=len(remaining),validation_opened=False))
@@ -96,11 +96,20 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
                             continue
                         union=sorted(set(int(v) for v in inputs[day].arrays['top_indices'].ravel() if v>=0))
                         gates,rule_seconds=inputs[day].compile(members,listing_ids=union,backend='cudagraph',prepared=shared)
-                        runner=CompactProgramRunner(inputs[day],space,members,gates,structure=self.structures/day,
-                            holding_capacity=self.holding_capacity,backend=self.backend,maximum_fills=self.maximum_fills,
-                            maximum_state_gib=self.maximum_state_gib)
+                        runner=runners.get(day)
+                        reused=runner is not None and runner.b==len(members) and runner.execution_key==CompactProgramRunner.specialization_key(members,space)
+                        if reused:
+                            runner.set_sparse_population(members,gates)
+                        else:
+                            # Drop incompatible captures before allocating replacement state.
+                            runners.pop(day,None);runner=None;gc.collect()
+                            runner=CompactProgramRunner(inputs[day],space,members,gates,structure=self.structures/day,
+                                holding_capacity=self.holding_capacity,backend=self.backend,maximum_fills=self.maximum_fills,
+                                maximum_state_gib=self.maximum_state_gib)
+                            torch.cuda.synchronize(self.device);runner.compile()
+                            runners[day]=runner
                         # No worker runs until this entire serial preparation loop finishes.
-                        torch.cuda.synchronize(self.device);runner.compile()
+                        runner.preparation_reused=reused
                         jobs.append((session,folder,runner,rule_seconds,torch.cuda.Stream(device=self.device)))
                     setup=perf_counter()-started_preparation
                     torch.cuda.synchronize(self.device);started=perf_counter()
@@ -116,7 +125,8 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
                             record=seal_batch(runner,result,session,token,offset,folder,rule_seconds)
                         return session['day'],folder,record,dict(day=session['day'],replay_and_position_report_seconds=replay_seconds,
                             seal_and_financial_audit_seconds=perf_counter()-audit_started,rule_seconds=rule_seconds,
-                            captured_preparation_seconds=runner.setup_seconds,clocks=len(runner.tape.clocks))
+                            captured_preparation_seconds=0. if runner.preparation_reused else runner.setup_seconds,
+                            captured_preparation_reused=runner.preparation_reused,clocks=len(runner.tape.clocks))
                     timings=[]
                     with ThreadPoolExecutor(max_workers=workers) as pool:
                         futures=[pool.submit(execute,job) for job in jobs]

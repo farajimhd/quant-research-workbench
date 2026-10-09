@@ -17,6 +17,15 @@ from .runtime import file_hash
 
 
 class SparseProgramRunner(ProgramRunner):
+    def set_sparse_population(self,individuals,gates):
+        """Update captured parameter/gate buffers without changing pointers."""
+        if gates.shape!=self.sparse_gates.shape or gates.dtype!=self.sparse_gates.dtype or gates.device!=self.sparse_gates.device:
+            raise ValueError('Sparse captured gate allocation changed')
+        # ProgramRunner owns policy/management validation and specialization.
+        self.set_population(individuals,self.program_gates)
+        if gates is not self.sparse_gates:self.sparse_gates.copy_(gates)
+        self.reset()
+
     def __init__(self, inputs, space, individuals, gates, *, structure=None, broker_capacity=None, **kwargs):
         if structure is None and (any(int(v.policy[6]) != 0 for v in individuals) or not kwargs.get('specialize',True)):
             raise ValueError('Sparse profiling baseline requires percentage targets; structural sidecar is not qualified')

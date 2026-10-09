@@ -45,10 +45,10 @@ def test_all_captures_precede_parallel_replay_and_receipts_resume(tmp_path,monke
         maximum_input_gib=.01,maximum_state_gib=.01,backend='cudagraph')
     population=[member,deepcopy(member),deepcopy(member),deepcopy(member)];output=mkdir(tmp_path/'result')
     evaluate.prepare_pass(sessions,population,output,workers=2)
-    assert events==['capture','capture','replay','replay']*2
+    assert events==['capture','capture','replay','replay','replay','replay']
     assert len(loads)==2
     records=[evaluate(session,population,output/session['day']) for session in sessions]
     assert records[0]['metrics']==records[1]['metrics'] and records[0]['metrics']['fill_count'][0]>0
     evaluate.prepare_pass(sessions,population,output,workers=2)
-    assert events==['capture','capture','replay','replay']*2
+    assert events==['capture','capture','replay','replay','replay','replay']
     assert len(loads)==2

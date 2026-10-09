@@ -175,6 +175,7 @@ class ProgramRunner(SearchRunner):
             values=[v.management[name] for v in individuals]
             if any(not lo<=v<=hi or (integer and int(v)!=v) for v in values):raise ValueError('Invalid management parameter: '+name)
             self.management_columns[name].copy_(torch.tensor(values,dtype=torch.float64,device=self.tape.device))
+        if gates is self.program_gates:return
         if isinstance(self.program_gates,torch.Tensor):
             if not isinstance(gates,torch.Tensor) or gates.shape!=self.program_gates.shape:raise ValueError('Packed gate allocation changed')
             if gates is not self.program_gates:self.program_gates.copy_(gates)
