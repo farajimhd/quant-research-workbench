@@ -95,7 +95,12 @@ def installed_complete_market_window_policy(source):
     policy = declared_complete_market_window_policy(release, parameters.get('complete_market_window_policy'))
     factory = fixed_strategy_executor(release.executor_strategy_id, release.executor_revision).contract_factory()
     require_declared_fixed_structural_lot_contract(factory, release)
-    if (type(factory) is not FixedStructuralLotCompleteMarketStrategyContract
+    wanted = FixedStructuralLotCompleteMarketStrategyContract
+    from .selected_exit_publication_policy import INPUT as EXIT_INPUT, RULE as EXIT_RULE
+    if EXIT_INPUT in release.input_contracts or EXIT_RULE in release.rule_set_contracts:
+        from .fixed_structural_lot_selected_exit_contract import FixedStructuralLotSelectedExitStrategyContract
+        wanted = FixedStructuralLotSelectedExitStrategyContract
+    if (type(factory) is not wanted
             or factory.complete_market_policy != policy):
         raise ValueError('Complete market windows differ from exact installed factory')
     return policy

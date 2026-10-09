@@ -988,7 +988,69 @@ REVIEWED_PARENT_DELTAS = {'src/backend/backtest_fixed_structural_lot_configurati
                                                 '\n'
                                                 'def _strategy_forty_six_contract():\n'
                                                 '    from .numbered_fixed_strategy import '
-                                                'numbered_fixed_strategy\n')))}
+                                                'numbered_fixed_strategy\n'))),
+ 'src/trading_runtime/complete_market_window_policy.py': ('2987d2aa0204c7327ea55712512a0b49b0cd65ad47d319abdfd1b3d35bd9a890',
+                                                          'f90f5bffb0dc00329d220dde33a6ffceccfbbd1366481f94db3dc0abec8d6a65',
+                                                          (('    if contract != '
+                                                            'release.canonical_payload():\n'
+                                                            "        raise ValueError('Complete "
+                                                            'market windows differ from issued '
+                                                            "installed release')\n"
+                                                            '    policy = '
+                                                            'declared_complete_market_window_policy(release, '
+                                                            "parameters.get('complete_market_window_policy'))\n"
+                                                            '    factory = '
+                                                            'fixed_strategy_executor(release.executor_strategy_id, '
+                                                            'release.executor_revision).contract_factory()\n'
+                                                            '    '
+                                                            'require_declared_fixed_structural_lot_contract(factory, '
+                                                            'release)\n'
+                                                            '    wanted = '
+                                                            'FixedStructuralLotCompleteMarketStrategyContract\n'
+                                                            '    from '
+                                                            '.selected_exit_publication_policy '
+                                                            'import INPUT as EXIT_INPUT, RULE as '
+                                                            'EXIT_RULE\n'
+                                                            '    if EXIT_INPUT in '
+                                                            'release.input_contracts or EXIT_RULE '
+                                                            'in release.rule_set_contracts:\n'
+                                                            '        from '
+                                                            '.fixed_structural_lot_selected_exit_contract '
+                                                            'import '
+                                                            'FixedStructuralLotSelectedExitStrategyContract\n'
+                                                            '        wanted = '
+                                                            'FixedStructuralLotSelectedExitStrategyContract\n'
+                                                            '    if (type(factory) is not wanted\n'
+                                                            '            or '
+                                                            'factory.complete_market_policy != '
+                                                            'policy):\n'
+                                                            "        raise ValueError('Complete "
+                                                            'market windows differ from exact '
+                                                            "installed factory')\n"
+                                                            '    return policy\n',
+                                                            '    if contract != '
+                                                            'release.canonical_payload():\n'
+                                                            "        raise ValueError('Complete "
+                                                            'market windows differ from issued '
+                                                            "installed release')\n"
+                                                            '    policy = '
+                                                            'declared_complete_market_window_policy(release, '
+                                                            "parameters.get('complete_market_window_policy'))\n"
+                                                            '    factory = '
+                                                            'fixed_strategy_executor(release.executor_strategy_id, '
+                                                            'release.executor_revision).contract_factory()\n'
+                                                            '    '
+                                                            'require_declared_fixed_structural_lot_contract(factory, '
+                                                            'release)\n'
+                                                            '    if (type(factory) is not '
+                                                            'FixedStructuralLotCompleteMarketStrategyContract\n'
+                                                            '            or '
+                                                            'factory.complete_market_policy != '
+                                                            'policy):\n'
+                                                            "        raise ValueError('Complete "
+                                                            'market windows differ from exact '
+                                                            "installed factory')\n"
+                                                            '    return policy\n'),))}
 
 def restore_reviewed_parent_source(source, relative):
     relative = relative if relative.startswith('src/') else 'src/' + relative
