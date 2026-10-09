@@ -589,12 +589,23 @@ class TypedInsertDispatch:
                              snapshot_account_id: str | None = None,
                              manager_snapshot_hash: str | None = None,
                              fixed_lot_manager_context: Any | None = None,
+                             structural_rejection_manager_context: Any | None = None,
                              broker_snapshot_hash: str | None = None,
                              evidence_snapshot_hash: str | None = None,
                              campaign_snapshot_hash: str | None = None,
                              oms_observation_snapshot_hash: str | None = None,
                              running_financial_checkpoint_hash: str | None = None) -> None:
         header = _request_header(sql)
+        if structural_rejection_manager_context is not None:
+            if manager_snapshot_hash is None or any(value is not None for value in (
+                    fixed_lot_manager_context,terminal_account_id,snapshot_account_id,
+                    broker_snapshot_hash,evidence_snapshot_hash,campaign_snapshot_hash,
+                    oms_observation_snapshot_hash,running_financial_checkpoint_hash)):
+                raise ValueError('Structural rejection dispatch has conflicting/missing manager context')
+            from .profit_armed_structural_rejection_publication import verify_manager_dispatch
+            selected=verify_manager_dispatch(structural_rejection_manager_context,client=client,
+                table=table,sql=sql,run_id=run_id,sequence=batch_last_sequence,
+                batch_id=batch_id,snapshot_hash=manager_snapshot_hash,token=token)
         if fixed_lot_manager_context is not None and manager_snapshot_hash is None:
             raise ValueError('Selected manager dispatch lacks selected parent hash')
         if (re.fullmatch(r"[a-z][a-z0-9_]*", table) is None
@@ -634,7 +645,7 @@ class TypedInsertDispatch:
                         fixed_lot_manager_context.run_id,fixed_lot_manager_context.sequence,
                         fixed_lot_manager_context.batch_id,selected[PARENT.name][0]['content_hash'])):
                     raise ValueError('Selected manager dispatch differs from issued cursor')
-            tables = (frozenset(selected) if fixed_lot_manager_context is not None
+            tables = (frozenset(selected) if fixed_lot_manager_context is not None or structural_rejection_manager_context is not None
                       else _manager_tables(getattr(client,'confirmed_original_risk_policy',None))
                       if manager_snapshot_hash is not None
                       else _BROKER_MATCH_TABLES if broker_snapshot_hash is not None
@@ -1175,6 +1186,27 @@ class TypedInsertDispatch:
             previous=previous,head_type=ManagerSnapshotHead,head_path=selected_manager_head_path(context.run_id),
             tables=frozenset(rows),root_table=PARENT.name,token_factory=_manager_token,
             label='Fixed structural lot manager snapshot')
+
+    def compact_verified_structural_rejection_manager_snapshot(self,*,client,session,context,
+            readback,financial,operations,previous):
+        from .profit_armed_structural_rejection_publication import (
+            require_manager_readback,_bound,selected_manager_head_path)
+        from .profit_armed_structural_rejection_financial_checkpoint import require_financial_verification
+        from .profit_armed_structural_rejection_snapshot import PARENT
+        from .strategy_one_management_snapshot import ManagerSnapshotHead
+        if require_manager_readback(readback,client=client) is not context:
+            raise ValueError('Structural rejection compaction has foreign readback')
+        require_financial_verification(financial,publication=context,client=client,session=session)
+        rows=_bound(context,client=client)[6];seal=rows[PARENT.name][0]
+        expected=tuple((name,_manager_token(context.run_id,context.sequence,seal['content_hash'],name))
+                       for name,values in rows.items() if values)
+        if set(operations)!=set(expected) or len(operations)!=len(expected):
+            raise ValueError('Structural rejection compaction lacks complete issued inventory')
+        self._compact_verified_checkpoint_family(run_id=context.run_id,batch_id=context.batch_id,
+            last_sequence=context.sequence,snapshot_hash=seal['content_hash'],operations=operations,
+            previous=previous,head_type=ManagerSnapshotHead,head_path=selected_manager_head_path(context.run_id),
+            tables=frozenset(rows),root_table=PARENT.name,token_factory=_manager_token,
+            label='Structural rejection manager snapshot')
 
     def _compact_verified_checkpoint_family(
         self, *, run_id: str, batch_id: str, last_sequence: int,

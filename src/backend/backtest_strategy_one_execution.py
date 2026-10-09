@@ -445,6 +445,14 @@ async def run_certified_strategy_one_session(
                     tickers=tuple(sorted({fact.ticker for fact in surviving_facts})),
                     through_boundary_ms=through_boundary_ms)
                 manager.bind_completed_risk_lookup(risk_lookup,risk_market)
+            from src.trading_runtime.profit_armed_structural_rejection_native_policy import native_structural_rejection_declaration
+            if native_structural_rejection_declaration(manager.contract) is not None:
+                from .backtest_profit_armed_structural_rejection_management import prepare_native_structural_rejection_manager
+                rejection_owner=await asyncio.to_thread(prepare_native_structural_rejection_manager,
+                    manager,reader,market=price_authority.plan.source.market,seeds=seeds,
+                    intervals=interval_plan,price_authority=price_authority,
+                    through_boundary_ms=through_boundary_ms)
+                manager.bind_structural_rejection_management(rejection_owner)
             if resume_manager_state is not None and selected_session is None:
                 if (runtime.config.strategy_revision in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-twenty-premarket-first-completed-one-second-price-break-v1')):
                     manager.restore_state(resume_manager_state, first_price_source=price_authority)

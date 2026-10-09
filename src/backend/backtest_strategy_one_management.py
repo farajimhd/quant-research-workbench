@@ -67,9 +67,25 @@ class OriginalRiskManagementState(StrategyOneManagementState):
     original_risk_requests: tuple = ()
 
 
+@dataclass(frozen=True, slots=True, eq=False, weakref_slot=True)
+class StructuralRejectionManagementState(OriginalRiskManagementState):
+    """Selected capture; its own checkpoint route must preserve these facts."""
+    structural_rejection_states: tuple = ()
+    structural_rejection_requests: tuple = ()
+    __eq__ = object.__eq__
+    __hash__ = object.__hash__
+
+
 def inherited_management_state_type(state, financial) -> bool:
     """Admit a closed declared capture type without changing inherited facts."""
     if type(state) is StrategyOneManagementState:
+        return True
+    if type(state) is StructuralRejectionManagementState:
+        from .backtest_profit_armed_structural_rejection_management import require_structural_rejection_capture
+        try:
+            require_structural_rejection_capture(state,financial=financial)
+        except (ValueError,TypeError):
+            return False
         return True
     if (type(state) is not OriginalRiskManagementState
             or type(financial) is not StrategyOneFinancialView
@@ -155,6 +171,20 @@ class StrategyOneManagementRunner:
         self._completed_risk_lookup = None
         self._original_risk_requests = {}
         self._fixed_lot_owner = None
+        self._structural_rejection_owner = None
+
+    def bind_structural_rejection_management(self, owner):
+        from .backtest_profit_armed_structural_rejection_management import require_native_structural_rejection_owner
+        require_native_structural_rejection_owner(owner)
+        if (owner.manager is not self or self._structural_rejection_owner is not None
+                or self._submitted or self._positions):
+            raise ValueError('Native rejection owner must bind before actual entries')
+        self._structural_rejection_owner = owner
+
+    def structural_rejection_requests(self, *, boundary_ms):
+        if self._structural_rejection_owner is None:
+            return ()
+        return self._structural_rejection_owner.requests(boundary_ms=boundary_ms)
 
     def bind_fixed_structural_lot_management(self,owner):
         from .backtest_fixed_structural_lot_management import NativeFixedStructuralLotManagement
@@ -349,10 +379,20 @@ class StrategyOneManagementRunner:
             state=OriginalRiskManagementState(**{f.name:getattr(state,f.name)
                 for f in fields(StrategyOneManagementState)},
                 original_risk_requests=self.original_risk_requests(boundary_ms=boundary_ms))
+        if self._structural_rejection_owner is not None:
+            from dataclasses import fields
+            state=StructuralRejectionManagementState(**{f.name:getattr(state,f.name)
+                for f in fields(StrategyOneManagementState)},
+                original_risk_requests=getattr(state,'original_risk_requests',()),
+                structural_rejection_states=self._structural_rejection_owner.capture(boundary_ms=boundary_ms),
+                structural_rejection_requests=self.structural_rejection_requests(boundary_ms=boundary_ms))
+            self._structural_rejection_owner.issue_capture(state)
         return state
 
     def restore_state(self, state: StrategyOneManagementState, *, first_price_source=None) -> None:
         """Cold typed restore only; a populated manager cannot be overwritten."""
+        if type(state) is StructuralRejectionManagementState:
+            raise ValueError('Selected rejection restore requires its verified native checkpoint route')
         if (self._submitted or self._positions or self._pending_breaks
                 or self._position_highs or self._closed_positions
                 or self._first_held_boundaries):
@@ -524,12 +564,16 @@ class StrategyOneManagementRunner:
         if self._fixed_lot_owner is not None:
             self._fixed_lot_owner.observe_checkpoint_financial(financial)
         key = (financial.account_id, financial.assignment_id, financial.ticker)
+        if self._structural_rejection_owner is not None:
+            self._structural_rejection_owner.begin_boundary(financial,boundary_ms)
         if (self.contract.strategy_number in (31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(self.contract.strategy_number, 'strategy-thirty-one-original-risk-profit-giveback-v1')):
             self._profit_arm_financials[key] = financial
         if financial.position_quantity <= 0:
             if not financial.pending_entry and not financial.pending_exit:
                 if self._fixed_lot_owner is not None and key in self._fixed_lot_owner.entries:
                     await self._fixed_lot_owner.retire(key)
+                if self._structural_rejection_owner is not None:
+                    self._structural_rejection_owner.retire(key)
                 source = self._submitted.get(key)
                 high_int = self._position_highs.pop(key, None)
                 if source is not None and high_int is not None:
@@ -564,6 +608,8 @@ class StrategyOneManagementRunner:
             self._position_highs[key] = round(source.reference_ask * 10_000)
             if self.contract.allows_followthrough_failure_exit:
                 self._first_held_boundaries[key] = boundary_ms
+            if self._structural_rejection_owner is not None:
+                self._structural_rejection_owner.first_held(financial)
             return
         previous = self._positions[key]
         if boundary_ms <= previous.boundary_ms:
@@ -771,6 +817,12 @@ class StrategyOneManagementRunner:
                         entry.intent_id,confirmed=confirmation)
                     self._profit_arm_financials.pop(key,None)
                     return
+        if self._structural_rejection_owner is not None:
+            request=self._structural_rejection_owner.observe(financial,resolutions,boundary_ms)
+            if request is not None:
+                # This is a deferred decision, never a direct unfenced exit.
+                # The service must attest financial/checkpoint heads first.
+                return
         pending = self._pending_breaks.setdefault(key, [])
         # A failed OMS acknowledgement retries the same completed boundary.
         # Preserve witnesses once, not once per retry.

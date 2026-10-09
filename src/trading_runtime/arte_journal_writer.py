@@ -111,6 +111,8 @@ from src.trading_runtime.arte_entry_activity_v4 import ENTRY_ACTIVITY
 from src.trading_runtime.arte_entry_spread_risk_v4 import ENTRY_SPREAD_RISK
 
 _CONTRACTS = {table.name: table for table in TABLES}
+from .profit_armed_structural_rejection_snapshot import TABLES as STRUCTURAL_REJECTION_TABLES
+_CONTRACTS.update({table.name: table for table in STRUCTURAL_REJECTION_TABLES})
 from .fixed_structural_lot_entry_schema import TABLES as FIXED_STRUCTURAL_LOT_ENTRY_TABLES
 _CONTRACTS.update({table.name: table for table in FIXED_STRUCTURAL_LOT_ENTRY_TABLES})
 from .fixed_structural_lot_snapshot import TABLES as FIXED_STRUCTURAL_LOT_PROTECTION_TABLES
@@ -1699,6 +1701,7 @@ def _insert(
     dispatch_snapshot_account_id: str | None = None,
     dispatch_manager_snapshot_hash: str | None = None,
     dispatch_fixed_lot_manager_context: Any | None = None,
+    dispatch_structural_rejection_manager_context: Any | None = None,
     dispatch_broker_snapshot_hash: str | None = None,
     dispatch_evidence_snapshot_hash: str | None = None,
     dispatch_campaign_snapshot_hash: str | None = None,
@@ -1712,6 +1715,24 @@ def _insert(
                      else name)
     if contract_name not in _CONTRACTS:
         raise ValueError("Journal writer cannot insert outside typed journal tables")
+    if dispatch_structural_rejection_manager_context is not None:
+        if dispatch_run_context or any(value is not None for value in (
+                dispatch_fixed_lot_manager_context,dispatch_terminal_account_id,
+                dispatch_snapshot_account_id,dispatch_broker_snapshot_hash,
+                dispatch_evidence_snapshot_hash,dispatch_campaign_snapshot_hash,
+                dispatch_oms_observation_snapshot_hash,dispatch_policy_hash,
+                dispatch_sync_account_id,dispatch_sync_revision)):
+            raise ValueError('Manager INSERT has conflicting selected contexts')
+        from .profit_armed_structural_rejection_publication import verify_manager_insert
+        verify_manager_insert(dispatch_structural_rejection_manager_context,client=client,
+            table=name,rows=rows,run_id=rows[0].get('run_id') if rows else None,
+            sequence=dispatch_sequence,batch_id=dispatch_batch_id,
+            snapshot_hash=dispatch_manager_snapshot_hash)
+        if (getattr(client,'typed_insert_strict',False) is not True
+                or getattr(client,'typed_insert_dispatch',None) is None):
+            raise ValueError('Structural rejection requires strict fenced typed INSERT')
+    elif contract_name in {t.name for t in STRUCTURAL_REJECTION_TABLES}:
+        raise ValueError('Structural rejection rows require exact issued manager context')
     if contract_name in RUNNING_FINANCIAL_TABLE_NAMES:
         raise RuntimeError('Running financial links require their fenced checkpoint publisher')
     if contract_name in DECLARED_NATIVE_TABLE_NAMES and journal_profile != 'backtest_v4':
@@ -1824,7 +1845,7 @@ def _insert(
             verify_manager_insert(dispatch_fixed_lot_manager_context,client=client,
                 table=name,rows=rows,run_id=rows[0].get('run_id'),sequence=dispatch_sequence,
                 batch_id=dispatch_batch_id,snapshot_hash=dispatch_manager_snapshot_hash)
-        if dispatch_fixed_lot_manager_context is None and dispatch_manager_snapshot_hash is not None and (
+        if dispatch_fixed_lot_manager_context is None and dispatch_structural_rejection_manager_context is None and dispatch_manager_snapshot_hash is not None and (
                 name not in {table.name for table in (
                     *PROTECTION_SNAPSHOT_TABLES, *MANAGER_SNAPSHOT_TABLES,
                     *(selected_snapshot_contracts() if getattr(client,'confirmed_original_risk_policy',None)
@@ -1870,6 +1891,7 @@ def _insert(
             snapshot_account_id=dispatch_snapshot_account_id,
             manager_snapshot_hash=dispatch_manager_snapshot_hash,
             fixed_lot_manager_context=dispatch_fixed_lot_manager_context,
+            structural_rejection_manager_context=dispatch_structural_rejection_manager_context,
             broker_snapshot_hash=dispatch_broker_snapshot_hash,
             evidence_snapshot_hash=dispatch_evidence_snapshot_hash,
             campaign_snapshot_hash=dispatch_campaign_snapshot_hash,
