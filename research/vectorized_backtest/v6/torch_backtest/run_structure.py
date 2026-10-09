@@ -2,6 +2,8 @@
 import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
 import argparse,json,subprocess,sys,time
+import shutil
+from uuid import uuid4
 from datetime import datetime,timezone
 from pathlib import Path
 from rich.console import Console
@@ -36,12 +38,39 @@ def display(snapshot):
     return table
 
 
-def run(inputs,output,*,session_workers=2,ticker_workers=4):
-    if not 1<=session_workers<=4 or ticker_workers<1:raise ValueError('Invalid worker count')
-    worker_budget(session_workers*ticker_workers)
+def validate_workers(session_workers,ticker_workers):
+    if not 1<=session_workers<=16 or not 1<=ticker_workers<=8:raise ValueError('Invalid worker count')
+    worker_budget(ticker_workers)
+    import psutil
+    if session_workers*ticker_workers>(os.cpu_count() or 1):raise ValueError('Ticker workers exceed logical CPUs')
+    # Account for per-session resident input arrays as well as fitter workers.
+    required=session_workers*(4*1024**3+ticker_workers*512*1024**2)
+    if required>psutil.virtual_memory().available*.75:raise MemoryError('Session and ticker workers exceed memory headroom')
+
+
+def completed_day(folder,input_folder,day):
+    path=folder/'complete.json';record=json.loads(path.read_text())
+    if (record.get('status')!='complete' or record.get('day')!=day or record.get('validation_opened',True)
+        or record.get('input_receipt_sha256')!=file_hash(input_folder/'complete.json')
+        or record.get('target_projection_scope')!='ranked-top-n-only; full causal bar history retained'):
+        raise ValueError('Completed day resume identity/scope mismatch')
+    for name,digest in record['files'].items():
+        target=(folder/name).resolve()
+        if not target.is_relative_to(folder.resolve()) or file_hash(target)!=digest:
+            raise ValueError('Completed output integrity mismatch')
+    return dict(receipt_sha256=file_hash(path),tickers=len(record['listing_ids']))
+
+
+def run(inputs,output,*,session_workers=2,ticker_workers=4,resume=False):
+    validate_workers(session_workers,ticker_workers)
     inputs=Path(inputs);days=training_days(inputs);output=require_runtime(output)
     if (output/'complete.json').exists():raise ValueError('Completed run cannot be overwritten')
     queued=list(days);active={};finished={};failed={};began=time.perf_counter()
+    if resume:
+        for day in days:
+            folder=output/day
+            if (folder/'complete.json').is_file():finished[day]=completed_day(folder,inputs/day,day)
+        queued=[day for day in days if day not in finished]
     def publish():
         sessions={day:dict(state='completed',completed=value['tickers'],total=value['tickers'],stage='sealed') for day,value in finished.items()}
         sessions.update({day:dict(state='failed',stage=value) for day,value in failed.items()})
@@ -62,6 +91,10 @@ def run(inputs,output,*,session_workers=2,ticker_workers=4):
                     while queued and len(active)<session_workers and not failed:
                         day=queued.pop(0);folder=require_runtime(output/day)
                         if (folder/'complete.json').exists():raise ValueError('Existing day cannot be replaced')
+                        if resume:
+                            for name in ('worker.log','worker.err','launch.json','exit.json'):
+                                path=folder/name
+                                if path.is_file():shutil.copyfile(path,folder/(name+'.previous-'+uuid4().hex))
                         handles=[(folder/'worker.log').open('w'),(folder/'worker.err').open('w')]
                         args=[sys.executable,'-B','-u','-m','research.vectorized_backtest.v6.torch_backtest.sparse_structure',
                             '--inputs',str(inputs/day),'--output',str(folder),'--workers',str(ticker_workers)]
@@ -75,12 +108,7 @@ def run(inputs,output,*,session_workers=2,ticker_workers=4):
                         del active[day]
                         write_json(output/day/'exit.json',dict(exit_code=code,finished_utc=datetime.now(timezone.utc).isoformat()))
                         if code:failed[day]=f'worker exit {code}; see worker.err';continue
-                        path=output/day/'complete.json';record=json.loads(path.read_text())
-                        if record.get('target_projection_scope')!='ranked-top-n-only; full causal bar history retained':
-                            raise ValueError('Incorrect target projection scope')
-                        for name,digest in record['files'].items():
-                            if file_hash(output/day/name)!=digest:raise ValueError('Completed output integrity mismatch')
-                        finished[day]=dict(receipt_sha256=file_hash(path),tickers=len(record['listing_ids']))
+                        finished[day]=completed_day(output/day,inputs/day,day)
                     live.update(display(publish()))
                     if failed and not active:break
                     time.sleep(1)
@@ -102,9 +130,10 @@ def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--inputs',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
     p.add_argument('--session-workers',type=int,default=2);p.add_argument('--ticker-workers',type=int,default=4)
+    p.add_argument('--resume',action='store_true',help='Verify completed days and reuse exact completed ticker caches')
     a=p.parse_args(argv);status=1
     try:
-        run(a.inputs,a.output,session_workers=a.session_workers,ticker_workers=a.ticker_workers);status=0
+        run(a.inputs,a.output,session_workers=a.session_workers,ticker_workers=a.ticker_workers,resume=a.resume);status=0
     finally:
         write_json(require_runtime(a.output)/'exit.json',dict(exit_code=status,finished_utc=datetime.now(timezone.utc).isoformat()))
     return status
