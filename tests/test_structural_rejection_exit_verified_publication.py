@@ -120,6 +120,45 @@ def test_queue_admission_checks_issued_unit_without_cold_reads(monkeypatch,kind)
     assert calls==initial_calls
 
 
+@pytest.mark.parametrize('kind',('valid','source','run','profile','batch','closed','full'))
+def test_own_manager_queue_preserves_capture_and_rejects_wrong_context(monkeypatch,kind):
+    from queue import Queue
+    from threading import Lock
+    from test_profit_armed_structural_rejection_confirmation import published
+    from src.trading_runtime.arte_journal_writer import ArteJournalWriter,JournalQueueFull
+    client,_,context,capture,*_=published(monkeypatch)
+    from src.trading_runtime import profit_armed_structural_rejection_financial_checkpoint as finance
+    require_capture=finance.require_financial_capture
+    # The publication fixture's financial-reader seam keeps only its join
+    # fields. Queue admission additionally checks the actual capture run.
+    monkeypatch.setattr(finance,'require_financial_capture',
+        lambda *a,**k:{**require_capture(*a,**k),'run_id':context.run_id})
+    writer=object.__new__(ArteJournalWriter)
+    writer._client=client;writer._run_id=context.run_id;writer._journal_profile='backtest_v4'
+    writer._closed=False;writer._error=None;writer._submission_lock=Lock()
+    writer._queue=Queue(maxsize=1);writer._accepted_writes=False
+    writer._validate_checkpoint_price_source=lambda *a:None
+    source=context.profile.owner.price_authority;batch=context.batch_id
+    if kind=='source':source=object()
+    elif kind=='run':writer._run_id='foreign'
+    elif kind=='profile':writer._journal_profile='live_v4'
+    elif kind=='batch':batch='bad'
+    elif kind=='closed':writer._closed=True
+    elif kind=='full':writer._queue.put_nowait(('existing',None))
+    if kind=='valid':
+        receipt=writer.submit_structural_rejection_manager_snapshot(capture,
+            journal_batch_id=batch,first_price_source=source)
+        queued,actual=writer._queue.get_nowait()
+        assert queued.structural_rejection_capture is capture and queued.state is capture.state
+        assert queued.first_price_source is source and queued.journal_batch_id==batch
+        assert actual is receipt and not receipt.done()
+    else:
+        with pytest.raises((ValueError,RuntimeError,JournalQueueFull)):
+            writer.submit_structural_rejection_manager_snapshot(capture,
+                journal_batch_id=batch,first_price_source=source)
+        assert not writer._accepted_writes
+
+
 @pytest.mark.parametrize('kind',('unissued','rows','base','source','bare'))
 def test_sealed_route_rejects_changed_graph_before_transport(monkeypatch,kind):
     from src.trading_runtime import arte_journal_commit_v4 as commit

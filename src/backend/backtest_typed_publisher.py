@@ -753,7 +753,9 @@ class BacktestTypedJournalPublisher:
                                     from src.backend.backtest_fixed_structural_lot_management import FixedStructuralLotManagerCheckpoint
                                     selected_manager=(isinstance(manager_state,tuple) and len(manager_state)==2
                                         and type(manager_state[1]) is FixedStructuralLotManagerCheckpoint)
-                                    if manager_state is not None and not selected_manager:
+                                    from src.trading_runtime.profit_armed_structural_rejection_financial_checkpoint import StructuralRejectionFinancialCapture
+                                    rejection_manager=type(manager_state) is StructuralRejectionFinancialCapture
+                                    if manager_state is not None and not selected_manager and not rejection_manager:
                                         manager_receipt = self.writer.submit_manager_snapshot(
                                             session_date=session_date,
                                             checkpoint_sequence=sequence,
@@ -818,6 +820,12 @@ class BacktestTypedJournalPublisher:
                                         if await asyncio.wrap_future(campaign_receipt) != self._batch_id:
                                             raise RuntimeError(
                                                 "Campaign snapshot differs from committed checkpoint")
+                                    if rejection_manager:
+                                        manager_receipt=self.writer.submit_structural_rejection_manager_snapshot(
+                                            manager_state,journal_batch_id=self._batch_id,
+                                            first_price_source=self._first_price_source)
+                                        if await asyncio.wrap_future(manager_receipt)!=self._batch_id:
+                                            raise RuntimeError('Structural rejection manager snapshot differs from committed checkpoint')
                                     if selected_manager:
                                         owner,capture=manager_state
                                         manager_receipt=self.writer.submit_fixed_structural_lot_manager_snapshot(
@@ -898,6 +906,19 @@ class BacktestTypedJournalPublisher:
                 manager_state=(fixed_lot_owner,fixed_lot_owner.freeze_checkpoint(manager_state))
             elif fixed_lot_owner is not None:
                 raise ValueError('Selected manager owner cannot replace an ordinary capture')
+            else:
+                from src.backend.backtest_strategy_one_management import StructuralRejectionManagementState
+                if type(manager_state) is StructuralRejectionManagementState:
+                    from src.trading_runtime.profit_armed_structural_rejection_financial_checkpoint import issue_financial_capture
+                    from src.trading_runtime.profit_armed_structural_rejection_profile import require_native_structural_rejection_profile
+                    profile=require_native_structural_rejection_profile(
+                        getattr(self.writer._client,'structural_rejection_profile',None))
+                    if (manager_state.boundary_ms!=pending[-1].payload.get('boundary_ms')
+                            or self._first_price_source is not profile.owner.price_authority
+                            or broker_state is None or oms_observations is None or not portfolio_captures):
+                        raise ValueError('Structural rejection capture needs exact source and all financial checkpoints')
+                    manager_state=issue_financial_capture(profile,manager_state,sequence=pending[-1].sequence)
+                    is_selected_capture=True
             from src.backend.backtest_strategy_one_management import (
                 StrategyOneManagementState,
             )

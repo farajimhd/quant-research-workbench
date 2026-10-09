@@ -4013,6 +4013,7 @@ class _ManagerSnapshotUnit:
     state: Any
     first_price_source: Any | None = None
     fixed_lot_context: Any | None = None
+    structural_rejection_capture: Any | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -4962,6 +4963,30 @@ class ArteJournalWriter:
                 raise JournalQueueFull('Selected manager checkpoint queue is full') from exc
             return receipt
 
+    def submit_structural_rejection_manager_snapshot(self, capture, *, journal_batch_id,
+                                                     first_price_source):
+        from .profit_armed_structural_rejection_financial_checkpoint import require_financial_capture
+        from .profit_armed_structural_rejection_profile import require_native_structural_rejection_profile
+        profile=require_native_structural_rejection_profile(getattr(self._client,'structural_rejection_profile',None))
+        image=require_financial_capture(capture,profile=profile)
+        runtime=profile.owner.manager.runtime
+        if (self._journal_profile!='backtest_v4' or runtime.run_id!=self._run_id
+                or image['run_id']!=self._run_id or first_price_source is not profile.owner.price_authority
+                or type(journal_batch_id) is not str or str(UUID(journal_batch_id))!=journal_batch_id
+                or UUID(journal_batch_id).int==0):
+            raise ValueError('Structural rejection manager queue differs from exact source cursor')
+        self._validate_checkpoint_price_source(first_price_source,runtime.config.anchor_date)
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError('Structural rejection manager writer is closed or failed')
+            receipt=Future()
+            unit=_ManagerSnapshotUnit(runtime.config.anchor_date,capture.sequence,journal_batch_id,
+                capture.state,first_price_source,structural_rejection_capture=capture)
+            try:self._queue.put_nowait((unit,receipt))
+            except Full as exc:raise JournalQueueFull('Structural rejection manager snapshot queue is full') from exc
+            self._accepted_writes=True
+        return receipt
+
     def submit_manager_snapshot(self, *, session_date: date,
                                 checkpoint_sequence: int,
                                 journal_batch_id: str,
@@ -5521,7 +5546,14 @@ class ArteJournalWriter:
                             "Manager snapshot has no preceding ordered V4 commit")
                     price_context = ({} if unit.first_price_source is None else
                                      {'first_price_source': unit.first_price_source})
-                    if unit.fixed_lot_context is not None:
+                    if unit.structural_rejection_capture is not None:
+                        from .profit_armed_structural_rejection_publication import issue_manager_publication,publish_manager_publication
+                        context=issue_manager_publication(self._client,unit.state,
+                            sequence=unit.checkpoint_sequence,batch_id=unit.journal_batch_id)
+                        publish_manager_publication(self._client,self._client.manager_keeper_session,
+                            context,unit.structural_rejection_capture)
+                        self._client.structural_rejection_manager_publication=context
+                    elif unit.fixed_lot_context is not None:
                         from .fixed_structural_lot_manager_snapshot import publish_manager_publication
                         publish_manager_publication(self._client,self._client.manager_keeper_session,
                             unit.fixed_lot_context)
