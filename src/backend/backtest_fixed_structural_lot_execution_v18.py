@@ -60,4 +60,9 @@ def prepare_fixed_structural_lot_session(*, plans, number, run_id, session_date,
     with issuer._LOCK:
         issuer._SESSIONS[prepared] = (market,candidates,entry,through_boundary_ms,
             run_id,number,operation,authorities,profile)
+    if visible.prepared:
+        from .backtest_installed_complete_market_source import _bind_complete_market_plans
+        with closing(client_factory()) as client:
+            _bind_complete_market_plans(prepared, plans=plans,
+                through_boundary_ms=through_boundary_ms, client=client)
     return prepared

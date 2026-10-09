@@ -349,7 +349,8 @@ async def run_certified_strategy_one_session(
         price_plan=projected_prices, through_boundary_ms=through_boundary_ms,
         client_factory=client_factory, max_workers=max_workers,
         activation_source_candidates=visible, stage_time=stage_time,
-        start_after_boundary_ms=start_after_boundary_ms)
+        start_after_boundary_ms=start_after_boundary_ms,
+        installed_session=selected_session)
     contract = resolve_numbered_fixed_strategy(
         assignments[0].strategy_id, assignments[0].strategy_revision)
     if contract.allows_session_exit:

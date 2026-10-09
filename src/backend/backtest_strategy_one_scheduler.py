@@ -90,6 +90,7 @@ def build_certified_strategy_one_scheduler(
     activation_source_candidates: CertifiedCandidatePlan | None = None,
     stage_time: Callable[[str, float], None] | None = None,
     start_after_boundary_ms: int = 0,
+    installed_session: object | None = None,
 ) -> StrategyOneBoundaryScheduler:
     """Build the sparse causal tape solely from certified arte products."""
     if (len(plan.sessions) != 1 or plan.execution_interval.kind != "fixed"
@@ -127,6 +128,12 @@ def build_certified_strategy_one_scheduler(
     if (expected_activations != actual_activations
             or len(actual_activations) != len(activations.rows)):
         raise ValueError("Strategy 1 activation schedule differs from candidates")
+    # Validate a selected session before opening sparse reads, including a
+    # terminal suffix. Constructing the reader does not fetch market rows.
+    from .backtest_installed_complete_market_source import installed_complete_market_source
+    source = installed_complete_market_source(installed_session, plan,
+        prices=price_plan, through_boundary_ms=through_boundary_ms,
+        client_factory=client_factory)
     if start_after_boundary_ms == through_boundary_ms:
         # The market suffix is empty. A checkpoint at the terminal boundary
         # still needs journal finalization, but must not query market rows.
@@ -140,10 +147,11 @@ def build_certified_strategy_one_scheduler(
         client_factory=client_factory, max_workers=max_workers,
         max_rows=max_candidate_rows)
     paired = attach_sparse_candidate_evidence(rows, candidates.prepared)
-    source = persisted_active_market_source(
-        plan, price_plan=price_plan,
-        through_boundary_ms=through_boundary_ms,
-        client_factory=client_factory, stage_time=stage_time)
+    if source is None:
+        source = persisted_active_market_source(
+            plan, price_plan=price_plan,
+            through_boundary_ms=through_boundary_ms,
+            client_factory=client_factory, stage_time=stage_time)
     return StrategyOneBoundaryScheduler(
         session_date=plan.sessions[0], candidate_rows=iter(paired),
         activation_rows=iter(activations.rows), active_source=source,
