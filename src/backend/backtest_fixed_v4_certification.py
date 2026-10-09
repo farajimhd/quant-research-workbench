@@ -95,7 +95,11 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
         from src.trading_runtime.projected_configuration_reuse_policy import RULE as PROJECTION_REUSE_RULE
         from src.trading_runtime.owned_scalar_snapshot_policy import RULE as OWNED_RULE
         from src.trading_runtime.complete_market_window_policy import RULE as WINDOW_RULE
-        if WINDOW_RULE in selected_lots.release.rule_set_contracts:
+        from src.trading_runtime.selected_exit_publication_policy import RULE as EXIT_RULE
+        if EXIT_RULE in selected_lots.release.rule_set_contracts:
+            from .backtest_fixed_structural_lot_certification_v19 import certify_fixed_structural_lot_source as certify_selected_exit_source
+            additional_proof = certify_selected_exit_source()
+        elif WINDOW_RULE in selected_lots.release.rule_set_contracts:
             from .backtest_fixed_structural_lot_certification_v18 import certify_fixed_structural_lot_source as certify_complete_source
             additional_proof = certify_complete_source()
         elif OWNED_RULE in selected_lots.release.rule_set_contracts:
@@ -1567,6 +1571,8 @@ def _reviewed_fixed_lot_configuration_projection(source: str, name: str, expecte
     from .backtest_fixed_structural_lot_compatibility_v9 import restore_reviewed_parent_source as restore_v9
     from .backtest_fixed_structural_lot_compatibility_v10 import restore_reviewed_parent_source as restore_v10
     from .backtest_fixed_structural_lot_compatibility_v11 import restore_reviewed_parent_source as restore_v11
+    from .backtest_fixed_structural_lot_compatibility_v19 import restore_reviewed_parent_source as restore_v19
+    source = restore_v19(source, 'src/backend/backtest_strategy_one_configuration.py')
     from .backtest_fixed_structural_lot_compatibility_v18 import restore_reviewed_parent_source as restore_v18
     source = restore_v18(source, 'src/backend/backtest_strategy_one_configuration.py')
     from .backtest_fixed_structural_lot_compatibility_v16 import restore_reviewed_parent_source as restore_v16
@@ -1635,6 +1641,8 @@ def _reviewed_fixed_lot_configuration_projection(source: str, name: str, expecte
 
 def _reviewed_fixed_lot_execution_projection(source: str, name: str, expected: str) -> bool:
     """Reinline the exact extracted legacy pipeline; selected route stays separately pinned."""
+    from .backtest_fixed_structural_lot_compatibility_v19 import restore_reviewed_parent_source as restore_v19
+    source = restore_v19(source, 'src/backend/backtest_strategy_one_execution.py')
     from .backtest_fixed_structural_lot_compatibility_v18 import restore_reviewed_parent_source as restore_v18
     source = restore_v18(source, 'src/backend/backtest_strategy_one_execution.py')
     if name != "run_certified_strategy_one_session":
@@ -1696,6 +1704,8 @@ def _reviewed_fixed_lot_management_projection(source: str, name: str, expected: 
     from .backtest_fixed_structural_lot_compatibility_v9 import restore_reviewed_parent_source as restore_v9
     from .backtest_fixed_structural_lot_compatibility_v10 import restore_reviewed_parent_source as restore_v10
     from .backtest_fixed_structural_lot_compatibility_v11 import restore_reviewed_parent_source as restore_v11
+    from .backtest_fixed_structural_lot_compatibility_v19 import restore_reviewed_parent_source as restore_v19
+    source = restore_v19(source, 'src/backend/backtest_strategy_one_management.py')
     from .backtest_fixed_structural_lot_compatibility_v18 import restore_reviewed_parent_source as restore_v18
     source = restore_v18(source, 'src/backend/backtest_strategy_one_management.py')
     from .backtest_fixed_structural_lot_compatibility_v16 import restore_reviewed_parent_source as restore_v16
@@ -1747,6 +1757,8 @@ def _reviewed_fixed_lot_typed_projection(source: str, name: str, expected: str) 
     from .backtest_fixed_structural_lot_compatibility_v9 import restore_reviewed_parent_source as restore_v9
     from .backtest_fixed_structural_lot_compatibility_v10 import restore_reviewed_parent_source as restore_v10
     from .backtest_fixed_structural_lot_compatibility_v11 import restore_reviewed_parent_source as restore_v11
+    from .backtest_fixed_structural_lot_compatibility_v19 import restore_reviewed_parent_source as restore_v19
+    source = restore_v19(source, 'src/backend/backtest_typed_projection.py')
     from .backtest_fixed_structural_lot_compatibility_v18 import restore_reviewed_parent_source as restore_v18
     source = restore_v18(source, 'src/backend/backtest_typed_projection.py')
     from .backtest_fixed_structural_lot_compatibility_v16 import restore_reviewed_parent_source as restore_v16
@@ -1806,6 +1818,8 @@ _FIXED_LOT_LEGACY_AST_RECIPES = {('backend/backtest_typed_publisher.py', '_drain
 def _reviewed_fixed_lot_ast_recipe(source: str, relative: str, name: str, expected: str) -> bool:
     """Apply only exact reviewed AST edits; complete retained legacy pin remains required."""
     supplied_source = source
+    from .backtest_fixed_structural_lot_compatibility_v19 import restore_reviewed_parent_source as restore_v19
+    source = restore_v19(source, relative)
     from .backtest_fixed_structural_lot_compatibility_v18 import restore_reviewed_parent_source as restore_v18
     source = restore_v18(source, relative)
     from .backtest_fixed_structural_lot_compatibility_v16 import restore_reviewed_parent_source as restore_v16
