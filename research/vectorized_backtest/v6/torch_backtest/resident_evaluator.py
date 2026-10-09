@@ -60,17 +60,31 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
             if (destination/'receipt.json').exists():self(session,population,destination)
             else:remaining.append(session)
         parts={s['day']:[] for s in remaining};batches={s['day']:[] for s in remaining}
+        # Inputs are immutable across candidate batches. Reserve a separate
+        # bounded cohort envelope before retaining them on device.
+        free,_=torch.cuda.mem_get_info(self.device)
+        residency=len(remaining)*self.maximum_input_gib*1024**3
+        working=workers*(self.maximum_state_gib+2.5)*1024**3+4*1024**3
+        if residency+working>free*.75:
+            raise MemoryError('Resident cohort inputs plus replay/rule envelopes exceed GPU headroom')
+        resident_inputs={};load_started=perf_counter()
+        for session in remaining:
+            day=session['day']
+            write_json(output/'resident-status.json',dict(stage='Loading immutable cohort inputs once',day=day,loaded=len(resident_inputs),total=len(remaining),validation_opened=False))
+            item=SparseInputs(self.inputs/day,device=self.device,maximum_gib=self.maximum_input_gib)
+            begin,end=[datetime.fromisoformat(session[k]).timestamp() for k in ('start','end')]
+            if item.receipt['identity']['session']!=session or len(item.arrays['clocks'])!=int(end-begin):
+                raise ValueError('Resident full-session contract changed')
+            resident_inputs[day]=item
+        write_json(output/'input-residency.json',dict(load_seconds=perf_counter()-load_started,session_loads=len(resident_inputs),
+            candidate_batches=(len(population)+self.batch_size-1)//self.batch_size,validation_opened=False))
         for offset in range(0,len(population),self.batch_size):
             members=population[offset:offset+self.batch_size]
             shared=SharedRuleBatch(members,self.device)
             try:
                 for cursor in range(0,len(remaining),workers):
-                    sessions=remaining[cursor:cursor+workers];inputs={}
-                    for session in sessions:
-                        day=session['day'];inputs[day]=SparseInputs(self.inputs/day,device=self.device,maximum_gib=self.maximum_input_gib)
-                        begin,end=[datetime.fromisoformat(session[k]).timestamp() for k in ('start','end')]
-                        if inputs[day].receipt['identity']['session']!=session or len(inputs[day].arrays['clocks'])!=int(end-begin):
-                            raise ValueError('Resident full-session contract changed')
+                    sessions=remaining[cursor:cursor+workers]
+                    inputs={s['day']:resident_inputs[s['day']] for s in sessions}
                     jobs=[];started_preparation=perf_counter()
                     write_json(output/'resident-status.json',dict(stage='Preparing resident graphs',sessions=[s['day'] for s in sessions],
                         candidate_offset=offset,population=len(population),validation_opened=False))
@@ -112,6 +126,7 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
                     torch.cuda.synchronize(self.device)
                     measurements.append(dict(sessions=[s['day'] for s in sessions],candidate_offset=offset,candidates=len(members),
                         setup_seconds=setup,replay_and_audit_seconds=perf_counter()-started,active=len(jobs),session_timings=timings))
+                    write_json(output/'resident-measurements.json',measurements)
                     # Release graphs, rule gates and account state before the next batch.
                     del jobs,futures
                     if 'runner' in locals():del runner,gates

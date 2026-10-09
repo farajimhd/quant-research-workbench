@@ -30,7 +30,10 @@ def test_all_captures_precede_parallel_replay_and_receipts_resume(tmp_path,monke
         (side/'complete.json').write_text(json.dumps(dict(status='complete',version='v6-sparse-structural-v1',validation_opened=False,
             input_receipt_sha256=file_hash(x.root/'complete.json'),market_keys_sha256='synthetic-keys',listing_ids=[0,1],
             files={n:file_hash(side/n) for n in ('targets.npy','valid.npy')})))
-    monkeypatch.setattr(resident_evaluator,'SparseInputs',lambda root,**kwargs:prepared[root.name])
+    loads=[]
+    def load(root,**kwargs):
+        loads.append(root.name);return prepared[root.name]
+    monkeypatch.setattr(resident_evaluator,'SparseInputs',load)
     def mkdir(path):path.mkdir(parents=True,exist_ok=True);return path
     monkeypatch.setattr(runtime,'require_runtime',mkdir);monkeypatch.setattr(resident_evaluator,'require_runtime',mkdir)
     events=[];original_compile=resident_evaluator.CompactProgramRunner.compile;original_run=resident_evaluator.CompactProgramRunner.run
@@ -40,10 +43,12 @@ def test_all_captures_precede_parallel_replay_and_receipts_resume(tmp_path,monke
     monkeypatch.setattr(resident_evaluator.CompactProgramRunner,'run',replay)
     evaluate=ResidentSessionEvaluator(source,structures,batch_size=2,holding_capacity=2,maximum_fills=512,
         maximum_input_gib=.01,maximum_state_gib=.01,backend='cudagraph')
-    population=[member,deepcopy(member)];output=mkdir(tmp_path/'result')
+    population=[member,deepcopy(member),deepcopy(member),deepcopy(member)];output=mkdir(tmp_path/'result')
     evaluate.prepare_pass(sessions,population,output,workers=2)
-    assert events==['capture','capture','replay','replay']
+    assert events==['capture','capture','replay','replay']*2
+    assert len(loads)==2
     records=[evaluate(session,population,output/session['day']) for session in sessions]
     assert records[0]['metrics']==records[1]['metrics'] and records[0]['metrics']['fill_count'][0]>0
     evaluate.prepare_pass(sessions,population,output,workers=2)
-    assert events==['capture','capture','replay','replay']
+    assert events==['capture','capture','replay','replay']*2
+    assert len(loads)==2
