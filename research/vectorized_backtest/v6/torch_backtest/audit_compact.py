@@ -41,7 +41,7 @@ def audit(root,sessions,emit=print):
         results.append(dict(day=item['day'],receipt_sha256=entry['sha256'],market_rows=market.height,feature_rows=len(keys),top_rows=top.height))
         emit(json.dumps(dict(stage='Input audit',completed=len(results),total=30,day=item['day'])),flush=True)
     result=dict(status='passed',version='v6-sparse-input-audit-v1',root_receipt_sha256=file_hash(root/'complete.json'),sessions_sha256=file_hash(sessions),training=results,validation_opened=False,broker_replay_qualified=False)
-    write_json(require_runtime(root/'input_audit.json'),result);return result
+    write_json(require_runtime(root)/'input_audit.json',result);return result
 
 
 def main():
