@@ -209,6 +209,20 @@ def test_actual_public_app_revision_selector_and_certifier(monkeypatch):
 from test_fixed_structural_lot_interval_validator_v2 import ordinal_transport_plan
 
 
+def controlled_price_rows(plans, query):
+    """Synthetic producer SELECT transport; the price verifier stays original."""
+    from tests.test_backtest_liquidity_price import Reader
+    response = Reader().execute(query)
+    if 'FROM arte.liquidity_execution_price_' not in query:
+        return response
+    unit = next(unit for unit in plans.execution_market.units if unit.stage == 'broker_100ms')
+    rows = [json.loads(line) for line in response.splitlines()]
+    for row in rows:
+        row.update(session_date=unit.session_date, ticker=unit.ticker,
+            source_attempt_text=unit.attempt_id)
+    return '\n'.join(json.dumps(row) for row in rows)
+
+
 def selected(monkeypatch, *, actual_loader=False, number=90, version=12):
     from importlib import import_module
     from src.backend.historical_runtime_versions import backend_source_fingerprint
@@ -269,16 +283,7 @@ def selected(monkeypatch, *, actual_loader=False, number=90, version=12):
             # not proof of actual market coverage. The price verifier is real.
             if not complete_selected:
                 raise AssertionError('Legacy fixture unexpectedly queried price transport')
-            from tests.test_backtest_liquidity_price import Reader
-            response = Reader().execute(query)
-            if 'FROM arte.liquidity_execution_price_' not in query:
-                return response
-            unit = next(unit for unit in plans.execution_market.units if unit.stage == 'broker_100ms')
-            rows = [json.loads(line) for line in response.splitlines()]
-            for row in rows:
-                row.update(session_date=unit.session_date, ticker=unit.ticker,
-                    source_attempt_text=unit.attempt_id)
-            return '\n'.join(json.dumps(row) for row in rows)
+            return controlled_price_rows(plans, query)
     if complete_selected:
         from src.backend.backtest_liquidity_price import certify_price_level_plan
         plans = replace(plans, prices=certify_price_level_plan(plans.execution_market, Client()))
@@ -1630,7 +1635,11 @@ def test_actual_earned_profit_arm_selected_checkpoint_and_historical_products(mo
             await publisher.await_fence()
             prepare_fixed_structural_lot_session=import_module(f"src.backend.backtest_fixed_structural_lot_execution_v{version}").prepare_fixed_structural_lot_session
             class SourceRows:
-                def execute(self,sql,*args,**kwargs):return client.execute(sql,*args,**kwargs)
+                def execute(self,sql,*args,**kwargs):
+                    if 'complete_market_window_policy' in actual.operation.source.installed_payload['strategy']['parameters'] and ('FROM arte.liquidity_execution_price_' in sql
+                            or ('FROM system.' in sql and 'liquidity_execution_price_' in sql)):
+                        return controlled_price_rows(plans, sql)
+                    return client.execute(sql,*args,**kwargs)
                 def close(self):pass
             fresh_prepared=prepare_fixed_structural_lot_session(plans=plans,number=number,
                 run_id=config.run_id,session_date=actual.operation.source.session_date,
