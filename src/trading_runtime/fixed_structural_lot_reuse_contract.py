@@ -38,6 +38,10 @@ def require_declared_fixed_structural_lot_contract(contract, release):
     if WINDOW_INPUT in release.input_contracts or WINDOW_RULE in release.rule_set_contracts:
         from .fixed_structural_lot_complete_market_contract import FixedStructuralLotCompleteMarketStrategyContract
         wanted = FixedStructuralLotCompleteMarketStrategyContract
+    from .selected_exit_publication_policy import INPUT as EXIT_INPUT, RULE as EXIT_RULE
+    if EXIT_INPUT in release.input_contracts or EXIT_RULE in release.rule_set_contracts:
+        from .fixed_structural_lot_selected_exit_contract import FixedStructuralLotSelectedExitStrategyContract
+        wanted = FixedStructuralLotSelectedExitStrategyContract
     if type(contract) is not wanted or contract.release != release:
         raise ValueError('Fixed-lot factory differs from exact declared release type')
     contract.__post_init__()

@@ -7,6 +7,7 @@ from src.trading_runtime.strategy_ninety_nine_contract import strategy_ninety_ni
 from src.trading_runtime.strategy_ninety_nine_release import release_contract
 from src.trading_runtime.selected_exit_publication_policy import INPUT, RULE
 from src.trading_runtime.fixed_structural_lot_selected_exit_contract import FixedStructuralLotSelectedExitStrategyContract
+from src.trading_runtime.fixed_structural_lot_reuse_contract import require_declared_fixed_structural_lot_contract
 
 
 def test_prepared_successor_preserves_complete_parent_trading_fields():
@@ -29,3 +30,13 @@ def test_prepared_factory_rejects_missing_policy_and_foreign_release():
     previous = strategy_ninety_eight_contract()
     with pytest.raises(ValueError, match='paired'):
         replace(current, strategy_number=previous.strategy_number, release=previous.release)
+
+
+def test_shared_factory_dispatch_requires_exact_semantic_shape():
+    previous = strategy_ninety_eight_contract()
+    current = strategy_ninety_nine_contract()
+    assert require_declared_fixed_structural_lot_contract(previous, previous.release) is previous
+    assert require_declared_fixed_structural_lot_contract(current, current.release) is current
+    for factory, release in ((previous, current.release), (current, previous.release)):
+        with pytest.raises(ValueError, match='exact declared release type'):
+            require_declared_fixed_structural_lot_contract(factory, release)
