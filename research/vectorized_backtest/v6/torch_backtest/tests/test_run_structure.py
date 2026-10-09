@@ -53,3 +53,13 @@ def test_controller_stops_dispatch_after_failed_child(tmp_path,monkeypatch):
         module.run(source,tmp_path/'run')
     assert len(calls)==2 and not (tmp_path/'run'/'complete.json').exists()
     assert len(json.loads((tmp_path/'run'/'failure.json').read_text())['queued'])==28
+
+
+def test_launcher_preserves_exact_controller_error(tmp_path,monkeypatch):
+    def fail(*args,**kwargs):raise RuntimeError('specific failure evidence')
+    monkeypatch.setattr(module,'run',fail)
+    with pytest.raises(RuntimeError,match='specific failure'):
+        module.main(['--inputs',str(tmp_path/'inputs'),'--output',str(tmp_path/'run')])
+    record=json.loads((tmp_path/'run'/'controller-error.json').read_text())
+    assert record['message']=='specific failure evidence' and 'RuntimeError' in record['traceback']
+    assert json.loads((tmp_path/'run'/'exit.json').read_text())['exit_code']==1

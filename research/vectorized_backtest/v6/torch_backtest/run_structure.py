@@ -3,6 +3,7 @@ import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
 import argparse,json,subprocess,sys,time
 import shutil
+import traceback
 from uuid import uuid4
 from datetime import datetime,timezone
 from pathlib import Path
@@ -76,7 +77,9 @@ def run(inputs,output,*,session_workers=2,ticker_workers=4,resume=False):
         sessions.update({day:dict(state='failed',stage=value) for day,value in failed.items()})
         for day,(child,handles) in active.items():
             path=output/day/'status.json'
-            item=json.loads(path.read_text()) if path.is_file() else dict(stage='certifying inputs and reading bars')
+            try:item=json.loads(path.read_text())
+            except FileNotFoundError:item=dict(stage='certifying inputs and reading bars')
+            except PermissionError:item=dict(stage='waiting for progress snapshot')
             sessions[day]=dict(item,state='running',pid=child.pid)
         snapshot=dict(completed=len(finished),active=len(active),queued=len(queued),failed=len(failed),total=30,
             sessions=dict(sorted(sessions.items())),elapsed_seconds=time.perf_counter()-began,validation_opened=False)
@@ -134,6 +137,10 @@ def main(argv=None):
     a=p.parse_args(argv);status=1
     try:
         run(a.inputs,a.output,session_workers=a.session_workers,ticker_workers=a.ticker_workers,resume=a.resume);status=0
+    except BaseException as error:
+        write_json(require_runtime(a.output)/'controller-error.json',dict(error=type(error).__name__,message=str(error),
+            traceback=traceback.format_exc(),finished_utc=datetime.now(timezone.utc).isoformat()))
+        raise
     finally:
         write_json(require_runtime(a.output)/'exit.json',dict(exit_code=status,finished_utc=datetime.now(timezone.utc).isoformat()))
     return status
