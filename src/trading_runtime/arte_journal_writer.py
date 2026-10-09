@@ -4073,6 +4073,13 @@ class _ProfitPublicationUnit:
         return self.unit.base
 
 
+@dataclass(frozen=True, slots=True)
+class _StructuralRejectionConfirmationUnit:
+    publication: Any
+    capture: Any
+    requests: tuple
+
+
 class ArteJournalWriter:
     """A bounded, single-owner persistence lane with asynchronous receipts."""
 
@@ -4963,6 +4970,34 @@ class ArteJournalWriter:
                 raise JournalQueueFull('Selected manager checkpoint queue is full') from exc
             return receipt
 
+    def submit_structural_rejection_confirmation(self, requests, *, checkpoint_sequence,
+                                               journal_batch_id):
+        """Read confirmation on the sole writer lane, never a shared HTTP lane."""
+        from .profit_armed_structural_rejection_publication import _bound
+        from .profit_armed_structural_rejection_financial_checkpoint import require_financial_capture
+        from src.backend.backtest_profit_armed_structural_rejection_management import require_structural_rejection_request
+        publication=getattr(self._client,'structural_rejection_manager_publication',None)
+        _bound(publication,client=self._client)
+        capture=getattr(self._client,'structural_rejection_manager_financial_capture',None)
+        require_financial_capture(capture,profile=publication.profile)
+        owner=publication.profile.owner
+        if (self._journal_profile!='backtest_v4' or publication.run_id!=self._run_id
+                or type(requests) is not tuple or not requests or len(requests)>65536
+                or type(checkpoint_sequence) is not int or checkpoint_sequence!=publication.sequence
+                or type(journal_batch_id) is not str or journal_batch_id!=publication.batch_id
+                or capture.sequence!=checkpoint_sequence
+                or requests!=owner.requests(boundary_ms=capture.state.boundary_ms)):
+            raise ValueError('Structural rejection confirmation queue differs from exact published cursor')
+        for request in requests:require_structural_rejection_request(request,owner=owner)
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError('Structural rejection confirmation writer is closed or failed')
+            receipt=Future()
+            try:self._queue.put_nowait((_StructuralRejectionConfirmationUnit(publication,capture,requests),receipt))
+            except Full as exc:raise JournalQueueFull('Structural rejection confirmation queue is full') from exc
+            self._accepted_writes=True
+        return receipt
+
     def submit_structural_rejection_manager_snapshot(self, capture, *, journal_batch_id,
                                                      first_price_source):
         from .profit_armed_structural_rejection_financial_checkpoint import require_financial_capture
@@ -5263,6 +5298,7 @@ class ArteJournalWriter:
                     break
             started_ns = perf_counter_ns()
             compound_timings_ns: dict[str, int] = {}
+            confirmation_result = None
             try:
                 if self._error is not None:
                     raise RuntimeError("Typed journal writer failed earlier") from self._error
@@ -5294,7 +5330,8 @@ class ArteJournalWriter:
                                      _BrokerMatchSnapshotUnit, _EvidenceSnapshotUnit,
                                      _OmsObservationSnapshotUnit,
                                      _CampaignSnapshotUnit,
-                                     _RunningPortfolioSnapshotUnit, _ProfitPublicationUnit)))):
+                                     _RunningPortfolioSnapshotUnit, _ProfitPublicationUnit,
+                                     _StructuralRejectionConfirmationUnit)))):
                     raise RuntimeError("Versioned journal cannot route legacy snapshot or admission units")
                 if type(group[0][0]) is FixedStructuralLotPublicationContext:
                     from .fixed_structural_lot_entry_v4 import publish_fixed_structural_lot_entry_v4
@@ -5305,6 +5342,14 @@ class ArteJournalWriter:
                         raise ValueError('Queued lot source conflicts with committed operation context')
                     if not any(c is context for c in prior):
                         self._client.fixed_structural_lot_contexts=(*prior,context)
+                elif type(group[0][0]) is _StructuralRejectionConfirmationUnit:
+                    from .profit_armed_structural_rejection_confirmation import confirm_structural_rejection_exits
+                    unit=group[0][0]
+                    if self._last_commit_id!=unit.publication.batch_id:
+                        raise RuntimeError('Structural rejection confirmation lacks its ordered preceding commit')
+                    confirmation_result=confirm_structural_rejection_exits(self._client,
+                        self._client.manager_keeper_session,unit.publication,unit.capture,unit.requests)
+                    committed_id=unit.publication.batch_id
                 elif isinstance(group[0][0], _ProfitPublicationUnit):
                     from .arte_journal_commit_v4 import (
                         load_writer_v4_snapshot_prefix, _publish_typed_batch_v4,
@@ -5553,6 +5598,7 @@ class ArteJournalWriter:
                         publish_manager_publication(self._client,self._client.manager_keeper_session,
                             context,unit.structural_rejection_capture)
                         self._client.structural_rejection_manager_publication=context
+                        self._client.structural_rejection_manager_financial_capture=unit.structural_rejection_capture
                     elif unit.fixed_lot_context is not None:
                         from .fixed_structural_lot_manager_snapshot import publish_manager_publication
                         publish_manager_publication(self._client,self._client.manager_keeper_session,
@@ -5703,7 +5749,7 @@ class ArteJournalWriter:
                     if receipt.cancelled():
                         continue
                     try:
-                        receipt.set_result(committed_id)
+                        receipt.set_result(confirmation_result if confirmation_result is not None else committed_id)
                     except InvalidStateError:
                         if not receipt.cancelled():
                             raise

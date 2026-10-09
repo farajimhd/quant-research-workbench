@@ -28,7 +28,7 @@ def test_runtime_rejects_bad_exit_channel_before_journal_or_actors(monkeypatch,k
     finally:journal.close()
 
 
-@pytest.mark.parametrize('kind',('valid','quantity','permission','status','identity','duplicate','portfolio','clock'))
+@pytest.mark.parametrize('kind',('valid','drain','quantity','permission','status','identity','duplicate','portfolio','clock'))
 def test_fresh_actor_state_is_required_after_confirmation(monkeypatch,kind):
     from src.backend.backtest_journal_memory import BacktestMemoryJournal
     from src.backend.backtest_market_data import market_day_boundary
@@ -65,8 +65,9 @@ def test_fresh_actor_state_is_required_after_confirmation(monkeypatch,kind):
         captured=financial.issue_financial_capture(profile,state,sequence=9)
         expected=await read_strategy_one_financial_view(selected,broker,runtime.order_manager)
         confirmation=SimpleNamespace(request=SimpleNamespace(financial=expected))
+        publication=SimpleNamespace(profile=profile)
         class Lookup:
-            def __getitem__(self,key):return (owner,confirmation.request,SimpleNamespace(profile=profile),captured)
+            def __getitem__(self,key):return (owner,confirmation.request,publication,captured)
         monkeypatch.setattr(submission,'_ISSUED',Lookup())
         def require(cap,*,runtime):
             assert cap is confirmation
@@ -81,7 +82,17 @@ def test_fresh_actor_state_is_required_after_confirmation(monkeypatch,kind):
         elif kind=='clock':runtime.last_event_time=market_day_boundary(day,25100)
         initial_sequence=journal.latest_sequence(run_id)
         try:
-            if kind=='valid':
+            if kind=='drain':
+                async with submission.runtime_structural_rejection_drain(runtime,(confirmation,)):
+                    runtime.portfolio.states['DU1'].peak_net_liquidation+=1
+                    assert await submission.require_runtime_structural_rejection_exit(runtime,confirmation,full_capture=True)==expected
+                    submission.complete_runtime_structural_rejection_exit(runtime,confirmation)
+                    with pytest.raises(ValueError):
+                        await submission.require_runtime_structural_rejection_exit(runtime,confirmation)
+                assert runtime not in submission._ACTIVE_DRAINS
+                with pytest.raises(ValueError):
+                    await submission.require_runtime_structural_rejection_exit(runtime,confirmation,full_capture=True)
+            elif kind=='valid':
                 assert await submission.require_runtime_structural_rejection_exit(runtime,confirmation,full_capture=True)==expected
             else:
                 with pytest.raises(ValueError):

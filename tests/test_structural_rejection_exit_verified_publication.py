@@ -159,6 +159,69 @@ def test_own_manager_queue_preserves_capture_and_rejects_wrong_context(monkeypat
         assert not writer._accepted_writes
 
 
+@pytest.mark.parametrize('kind',('valid','sequence','batch','empty','closed','full'))
+def test_confirmation_is_queued_with_exact_published_inventory(monkeypatch,kind):
+    from queue import Queue
+    from threading import Lock
+    from test_profit_armed_structural_rejection_confirmation import published
+    from src.trading_runtime.arte_journal_writer import ArteJournalWriter,JournalQueueFull
+    client,_,context,capture,requests,*_=published(monkeypatch)
+    client.structural_rejection_manager_publication=context
+    client.structural_rejection_manager_financial_capture=capture
+    writer=object.__new__(ArteJournalWriter)
+    writer._client=client;writer._run_id=context.run_id;writer._journal_profile='backtest_v4'
+    writer._closed=False;writer._error=None;writer._submission_lock=Lock()
+    writer._queue=Queue(maxsize=1);writer._accepted_writes=False
+    sequence=context.sequence;batch=context.batch_id
+    if kind=='sequence':sequence+=1
+    elif kind=='batch':batch='foreign'
+    elif kind=='empty':requests=()
+    elif kind=='closed':writer._closed=True
+    elif kind=='full':writer._queue.put_nowait(('existing',None))
+    if kind=='valid':
+        receipt=writer.submit_structural_rejection_confirmation(requests,
+            checkpoint_sequence=sequence,journal_batch_id=batch)
+        queued,actual=writer._queue.get_nowait()
+        assert queued.publication is context and queued.capture is capture and queued.requests is requests
+        assert actual is receipt and not receipt.done()
+    else:
+        with pytest.raises((ValueError,RuntimeError,JournalQueueFull)):
+            writer.submit_structural_rejection_confirmation(requests,
+                checkpoint_sequence=sequence,journal_batch_id=batch)
+        assert not writer._accepted_writes
+
+
+def test_actual_writer_loop_returns_confirmations_and_keeps_same_commit(monkeypatch):
+    from queue import Queue
+    from threading import Lock
+    from test_profit_armed_structural_rejection_confirmation import published
+    from src.trading_runtime.arte_journal_writer import ArteJournalWriter
+    from src.trading_runtime.profit_armed_structural_rejection_confirmation import require_structural_rejection_confirmation
+    client,session,context,capture,requests,*_=published(monkeypatch)
+    client.manager_keeper_session=session
+    client.structural_rejection_manager_publication=context
+    client.structural_rejection_manager_financial_capture=capture
+    writer=object.__new__(ArteJournalWriter)
+    writer._client=client;writer._run_id=context.run_id;writer._journal_profile='backtest_v4'
+    writer._closed=False;writer._error=None;writer._submission_lock=Lock();writer._metrics_lock=Lock()
+    writer._queue=Queue(maxsize=2);writer._accepted_writes=False;writer._coalesce_batches=False
+    writer._live_v4_lease=None;writer._backtest_v4_lease=None;writer._last_commit_id=context.batch_id
+    for name in ('_committed_units','_committed_event_rows','_failed_units','_publish_ns_total',
+                 '_publish_ns_max','_compound_prepare_ns_total','_compound_publish_ns_total'):
+        setattr(writer,name,0)
+    writer._compound_publish_stages_ns={};writer._publish_by_unit={}
+    receipt=writer.submit_structural_rejection_confirmation(requests,
+        checkpoint_sequence=context.sequence,journal_batch_id=context.batch_id)
+    writer._queue.put_nowait(None)
+    writer._run()
+    result=receipt.result()
+    assert type(result) is tuple and len(result)==len(requests)
+    for actual,request in zip(result,requests,strict=True):
+        require_structural_rejection_confirmation(actual,request=request,runtime=context.profile.owner.manager.runtime)
+    assert writer._last_commit_id==context.batch_id and writer._error is None
+    assert writer._queue.unfinished_tasks==0 and writer._committed_event_rows==0
+
+
 @pytest.mark.parametrize('kind',('unissued','rows','base','source','bare'))
 def test_sealed_route_rejects_changed_graph_before_transport(monkeypatch,kind):
     from src.trading_runtime import arte_journal_commit_v4 as commit

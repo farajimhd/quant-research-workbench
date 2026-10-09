@@ -2734,6 +2734,62 @@ class ReplayRunController:
                 request.source_entry_intent_id, source)
         manager.complete_liquidity_fade_requests(requests, boundary_ms=boundary)
 
+    async def _confirm_structural_rejection_checkpoint(self, requests: tuple, *, event_time):
+        """Keep snapshot, confirmation and exit draining at one completed clock."""
+        manager,publisher=self._strategy_one_manager,self._journal_publisher
+        owner=getattr(manager,'_structural_rejection_owner',None)
+        boundary=dict(self._source_cursor).get('boundary_ms')
+        if (self.definition.mode is not RunMode.BACKTEST or owner is None
+                or publisher is None or publisher.writer.journal_profile!='backtest_v4'
+                or self._fixed_keeper_session is None or type(requests) is not tuple or not requests
+                or requests!=owner.requests(boundary_ms=boundary)):
+            raise RuntimeError('Structural rejection lacks its completed native Backtest boundary')
+        receipt=await self._save_restart_checkpoint_responsive(event_time,require_fresh_capture=True)
+        future=publisher.writer.submit_structural_rejection_confirmation(requests,
+            checkpoint_sequence=receipt.last_sequence,journal_batch_id=receipt.last_batch_id)
+        task=asyncio.ensure_future(asyncio.wrap_future(future))
+        try:confirmations=await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
+        drain=asyncio.create_task(self._submit_structural_rejection_requests(requests,confirmations,boundary=boundary))
+        try:await asyncio.shield(drain)
+        except asyncio.CancelledError:
+            await drain
+            raise
+
+    async def _submit_structural_rejection_requests(self,requests,confirmations,*,boundary):
+        from src.trading_runtime.structural_rejection_runtime_submission import runtime_structural_rejection_drain
+        async with runtime_structural_rejection_drain(self._runtime,confirmations):
+            await self._drain_structural_rejection_requests(requests,confirmations,boundary=boundary)
+
+    async def _drain_structural_rejection_requests(self,requests,confirmations,*,boundary):
+        from src.trading_runtime.profit_armed_structural_rejection_confirmation import require_structural_rejection_confirmation
+        from src.trading_runtime.profit_armed_structural_rejection_exit import structural_rejection_exit_intent
+        from src.trading_runtime.order_management import OrderManagementState
+        owner=self._strategy_one_manager._structural_rejection_owner
+        if (type(requests) is not tuple or requests!=owner.requests(boundary_ms=boundary)
+                or type(confirmations) is not tuple or len(confirmations)!=len(requests)):
+            raise RuntimeError('Structural rejection drain differs from its exact pending inventory')
+        accepted={OrderManagementState.ACKNOWLEDGED,OrderManagementState.WORKING,
+                  OrderManagementState.PARTIALLY_FILLED,OrderManagementState.FILLED}
+        for request,confirmation in zip(requests,confirmations,strict=True):
+            require_structural_rejection_confirmation(confirmation,request=request,runtime=self._runtime)
+            expected=structural_rejection_exit_intent(confirmation)
+            result=await self._runtime.submit_structural_rejection_exit(confirmation)
+            group=(result[0].get('order_group') if type(result) is list and len(result)==1
+                   and type(result[0]) is dict else None)
+            if (type(group) is not dict or result[0].get('decision',{}).get('status')!='approved'
+                    or group.get('state') not in accepted or not group.get('group_id')
+                    or group.get('intent_id')!=expected.intent_id
+                    or group.get('account_id')!=request.financial.account_id
+                    or group.get('assignment_id')!=request.financial.assignment_id
+                    or group.get('ticker')!=request.financial.ticker or group.get('action')!='exit'):
+                raise RuntimeError('Structural rejection drain lacks its exact accepted OMS result')
+            from src.trading_runtime.structural_rejection_runtime_submission import complete_runtime_structural_rejection_exit
+            complete_runtime_structural_rejection_exit(self._runtime,confirmation)
+        owner.complete_requests(requests,boundary_ms=boundary)
+
     async def _confirm_original_risk_checkpoint(self, requests: tuple, *, event_time):
         """Fence the completed decision before ordinary Portfolio/OMS submission."""
         manager, publisher = self._strategy_one_manager, self._journal_publisher
@@ -4042,6 +4098,10 @@ class ReplayRunController:
             self.processed_events += len(work.broker_rows)
             await self._after_event(at)
             manager = self._strategy_one_manager
+            if getattr(manager,'_structural_rejection_owner',None) is not None:
+                requests=manager.structural_rejection_requests(boundary_ms=work.boundary_ms)
+                if requests:
+                    await self._confirm_structural_rejection_checkpoint(requests,event_time=at)
             if getattr(manager.contract, 'confirmed_original_risk_policy', None) is not None:
                 original_risk_requests=manager.original_risk_requests(boundary_ms=work.boundary_ms)
                 if original_risk_requests:
