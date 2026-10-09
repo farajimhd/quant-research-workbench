@@ -34,7 +34,7 @@ def declared_owned_scalar_caches(source):
         return None
     from src.backend.backtest_fixed_structural_lot_source import require_native_fixed_structural_lot_source
     from .strategy_registry import numbered_strategy, fixed_strategy_executor
-    from .fixed_structural_lot_owned_snapshot_contract import FixedStructuralLotOwnedSnapshotStrategyContract
+    from .fixed_structural_lot_reuse_contract import require_declared_fixed_structural_lot_contract
     from .fixed_structural_lot_entry_v4 import FixedStructuralLotEntryRows
     require_native_fixed_structural_lot_source(source)
     source.require_installed_admission()
@@ -46,8 +46,8 @@ def declared_owned_scalar_caches(source):
     projection = declared_projected_configuration_reuse_policy(release,
         parameters.get('projected_configuration_reuse_policy'))
     factory = fixed_strategy_executor(release.executor_strategy_id, release.executor_revision).contract_factory()
-    if (type(factory) is not FixedStructuralLotOwnedSnapshotStrategyContract
-            or factory.release != release or factory.owned_snapshot_policy != owned
+    require_declared_fixed_structural_lot_contract(factory, release)
+    if (factory.owned_snapshot_policy != owned
             or factory.validation_reuse_policy != packet or factory.projection_reuse_policy != projection):
         raise ValueError('Owned scalar reuse differs from exact typed factory')
     factory.__post_init__()

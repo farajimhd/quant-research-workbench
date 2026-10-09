@@ -34,6 +34,10 @@ def require_declared_fixed_structural_lot_contract(contract, release):
     if EMPTY_INPUT in release.input_contracts or EMPTY_RULE in release.rule_set_contracts:
         from .fixed_structural_lot_empty_confirmation_contract import FixedStructuralLotEmptyConfirmationStrategyContract
         wanted = FixedStructuralLotEmptyConfirmationStrategyContract
+    from .complete_market_window_policy import INPUT as WINDOW_INPUT, RULE as WINDOW_RULE
+    if WINDOW_INPUT in release.input_contracts or WINDOW_RULE in release.rule_set_contracts:
+        from .fixed_structural_lot_complete_market_contract import FixedStructuralLotCompleteMarketStrategyContract
+        wanted = FixedStructuralLotCompleteMarketStrategyContract
     if type(contract) is not wanted or contract.release != release:
         raise ValueError('Fixed-lot factory differs from exact declared release type')
     contract.__post_init__()

@@ -63,14 +63,33 @@ def test_exact_typed_policy_and_complete_release_pair_are_mandatory():
             'release': replace(draft, approved_digest=draft.digest())})
 
 
-def test_prepared_successor_is_unregistered_and_generic_native_gate_stays_closed():
+def test_prepared_successor_is_unregistered_but_exact_factory_shape_is_recognized():
     from src.trading_runtime.strategy_registry import numbered_strategy
     from src.trading_runtime.fixed_structural_lot_reuse_contract import require_declared_fixed_structural_lot_contract
     with pytest.raises(ValueError):
         numbered_strategy(98)
     factory = strategy_ninety_eight_contract()
+    assert require_declared_fixed_structural_lot_contract(factory, factory.release) is factory
+    # Type recognition cannot register a release or mint installed source admission.
+    from src.trading_runtime.strategy_ninety_six_contract import strategy_ninety_six_contract
+    with pytest.raises(ValueError, match='exact declared release type'):
+        require_declared_fixed_structural_lot_contract(strategy_ninety_six_contract(), factory.release)
+
+
+def test_factory_selection_rejects_unpaired_window_declaration_and_subclasses():
+    from src.trading_runtime.fixed_structural_lot_reuse_contract import require_declared_fixed_structural_lot_contract
+    from src.trading_runtime.fixed_structural_lot_complete_market_contract import FixedStructuralLotCompleteMarketStrategyContract
+    factory = strategy_ninety_eight_contract()
+    draft = replace(factory.release, rule_set_contracts=tuple(
+        rule for rule in factory.release.rule_set_contracts if rule != RULE), approved_digest='')
+    unpaired = replace(draft, approved_digest=draft.digest())
     with pytest.raises(ValueError):
-        require_declared_fixed_structural_lot_contract(factory, factory.release)
+        require_declared_fixed_structural_lot_contract(replace(factory, release=unpaired), unpaired)
+    class ExtraFactory(FixedStructuralLotCompleteMarketStrategyContract):
+        pass
+    forged = ExtraFactory(**{name: getattr(factory, name) for name in factory.__dataclass_fields__})
+    with pytest.raises(ValueError, match='exact declared release type'):
+        require_declared_fixed_structural_lot_contract(forged, factory.release)
 
 
 def test_exact_successor_wrapper_rejects_another_valid_lot_count():
