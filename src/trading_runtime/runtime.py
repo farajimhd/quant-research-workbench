@@ -923,7 +923,23 @@ class TradingRuntime:
         declared_submission: Any | None = None,
         declared_management: Any | None = None,
         fixed_structural_lot_request: Any | None = None,
+        structural_rejection_confirmation: Any | None = None,
     ) -> list[dict[str, Any]]:
+        from .profit_armed_structural_rejection_exit import REASON as structural_rejection_reason, structural_rejection_exit_intent
+        if structural_rejection_confirmation is not None:
+            from .structural_rejection_runtime_submission import require_runtime_structural_rejection_exit
+            if (event is not None or any(value is not None for value in (
+                    strategy_one_proposal, strategy_one_add_proposal, strategy_one_assignment_id,
+                    numbered_exit_assignment_id, followthrough_source, profit_giveback_source,
+                    confirmed_ah_source, liquidity_fade_source, automatic_entry,
+                    declared_submission, declared_management, fixed_structural_lot_request))
+                    or evaluation.intents != (structural_rejection_exit_intent(structural_rejection_confirmation),)
+                    or account_id != structural_rejection_confirmation.request.financial.account_id):
+                raise ValueError('Structural rejection requires its exclusive exact confirmed exit channel')
+            await require_runtime_structural_rejection_exit(self, structural_rejection_confirmation,
+                                                          full_capture=True)
+        elif any(intent.reason == structural_rejection_reason for intent in evaluation.intents):
+            raise ValueError('Structural rejection exit lacks its issued native confirmation')
         from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
         if (self.config.mode == RunMode.BACKTEST
                 and self.config.strategy_id == STRATEGY_ID
@@ -1231,6 +1247,9 @@ class TradingRuntime:
                     diagnostic=followthrough_source[3] if len(followthrough_source) == 4 else None,
                     account_id=account_id, strategy_id=self.config.strategy_id,
                     strategy_revision=self.config.strategy_revision)
+            elif structural_rejection_confirmation is not None:
+                self.journal.append_structural_rejection_exit(
+                    confirmation=structural_rejection_confirmation, intent=intent)
             elif liquidity_fade_source is not None:
                 witness, financial, source_entry_intent_id, observation_source = liquidity_fade_source
                 self.journal.append_liquidity_fade_exit(intent=intent, witness=witness, financial=financial,
@@ -1329,6 +1348,8 @@ class TradingRuntime:
                              if profit_giveback_source is not None
                              else confirmed_ah_source[1].assignment_id
                              if confirmed_ah_source is not None
+                             else structural_rejection_confirmation.request.financial.assignment_id
+                             if structural_rejection_confirmation is not None
                              else liquidity_fade_source[1].assignment_id
                              if liquidity_fade_source is not None
                              else numbered_exit_assignment_id)
@@ -1386,6 +1407,8 @@ class TradingRuntime:
             if recovery is not None:
                 recovery.owner.bind_recovery_execution(recovery,self,intent,approved_intent,decision)
             try:
+                if structural_rejection_confirmation is not None:
+                    await require_runtime_structural_rejection_exit(self, structural_rejection_confirmation)
                 order_group = await self.order_manager.submit_intent(
                     approved_intent,
                     account_id=account_id,
@@ -1492,6 +1515,14 @@ class TradingRuntime:
             StrategyEvaluation(intents=(intent,)), financial.account_id, None,
             followthrough_source=((witness, financial, source_entry_intent_id, diagnostic)
                                  if diagnostic is not None else (witness, financial, source_entry_intent_id)))
+
+    async def submit_structural_rejection_exit(self, confirmation):
+        """Route an issued exit through current Portfolio and OMS admission."""
+        from .profit_armed_structural_rejection_exit import structural_rejection_exit_intent
+        intent = structural_rejection_exit_intent(confirmation)
+        return await self._execute_intents(StrategyEvaluation(intents=(intent,)),
+            confirmation.request.financial.account_id, None,
+            structural_rejection_confirmation=confirmation)
 
     async def submit_profit_giveback(self, financial, witness,
                                     source_entry_intent_id, arm_reference):
