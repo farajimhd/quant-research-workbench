@@ -36,3 +36,6 @@ def test_sparse_chunks_match_whole_listing_temporal_programs():
         value,known=TorchPrograms(programs,CATALOG)(features[a:b],valid[a:b])
         expected.append(((value!=0)&known).to(torch.uint8)*sum(1<<i for i in range(len(STAGES))))
     assert torch.equal(actual,torch.cat(expected,dim=1))
+    subset,_=x.compile(individuals,chunk_candles=33,listing_batch=3,listing_ids=[1])
+    assert not subset[:,:131].any()
+    assert torch.equal(subset[:,131:],actual[:,131:])

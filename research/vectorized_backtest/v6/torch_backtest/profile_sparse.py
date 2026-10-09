@@ -39,7 +39,8 @@ def main(argv=None):
             if draws>100*a.batch_size:raise ValueError('Percentage-target profiling stratum not found')
         write_json(root/'population.json',dict(seed=a.seed,draws=draws,stratum='percentage_targets_only',population=[v.payload() for v in members]))
         print('Compiling causal sparse lifecycle gates',flush=True)
-        gates,rule_seconds=inputs.compile(members)
+        union=np.unique(inputs.arrays['top_indices']);union=union[union>=0].tolist()
+        gates,rule_seconds=inputs.compile(members,listing_ids=union)
         runner=SparseProgramRunner(inputs,space,members,gates,backend=a.backend,maximum_fills=4096,maximum_state_gib=4.)
         setup=perf_counter();runner.compile();torch.cuda.synchronize();setup=perf_counter()-setup
         measurements=[]

@@ -19,6 +19,8 @@ from .evolution import STAGES
 class SparseInputs:
     def __init__(self, root, *, device='cpu', maximum_gib=8.):
         self.root=Path(root);self.device=torch.device(device)
+        if self.device.type=='cuda' and self.device.index is None:
+            self.device=torch.device('cuda',torch.cuda.current_device())
         self.receipt=json.loads((self.root/'complete.json').read_text())
         if self.receipt.get('identity',{}).get('version')!=VERSION or not self.receipt.get('ready_for_replay') or self.receipt.get('validation_opened'):
             raise ValueError('Require a completed training-only sparse input certificate')
@@ -64,7 +66,7 @@ class SparseInputs:
         result['feature_row']=torch.where(known,result['feature_row'],-1).to(torch.int64)
         return result
 
-    def compile(self, individuals, *, chunk_candles=2048, listing_batch=16, workspace_gib=2., maximum_gate_gib=4.):
+    def compile(self, individuals, *, chunk_candles=2048, listing_batch=16, workspace_gib=2., maximum_gate_gib=4., listing_ids=None):
         """[candidate, observed row] gates, never [clock,candidate,all tickers]."""
         began=perf_counter();b=len(individuals);r=len(self.arrays['feature_keys'])
         if not b or min(chunk_candles,listing_batch)<1 or workspace_gib<=0 or b*r>maximum_gate_gib*1024**3:
@@ -72,7 +74,10 @@ class SparseInputs:
         gates=torch.zeros((b,r),dtype=torch.uint8,device=self.device)
         programs={stage:TorchPrograms([v.programs()[stage] for v in individuals],CATALOG,self.device) for stage in STAGES}
         buckets={};width=max(p.width for p in programs.values())
-        for left,right in zip(self.offsets[:-1],self.offsets[1:]):
+        selected=set(range(len(self.offsets)-1)) if listing_ids is None else set(listing_ids)
+        if any(type(i) is not int or not 0<=i<len(self.offsets)-1 for i in selected):raise ValueError('Invalid sparse rule listing identity')
+        for listing,(left,right) in enumerate(zip(self.offsets[:-1],self.offsets[1:])):
+            if listing not in selected:continue
             for begin in range(left,right,chunk_candles):
                 warm=max(left,begin-119);end=min(right,begin+chunk_candles)
                 size=1<<(end-warm-1).bit_length();buckets.setdefault(size,[]).append((warm,begin,end))
