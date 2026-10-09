@@ -19,6 +19,42 @@ from .inactivity import area
 from .run_search import seal_ledger,clean
 
 
+def seal_batch(runner,result,session,population_token,offset,folder,rule_seconds):
+    """One financial receipt contract for streamed and resident execution."""
+    metrics={k:clean(v) for k,v in result.items() if isinstance(v,torch.Tensor) or k in ('closed_position_duration_samples','closed_position_pnl_samples')}
+    counts=runner.fill_count.detach().cpu()
+    ledger=runner.ledger[:,:int(counts.max())].detach().cpu()
+    ledger_hash=seal_ledger(folder/'fills.pt',ledger,counts)
+    audit_fills(folder/'fills.pt',metrics)
+    begin,end=[datetime.fromisoformat(session[k]).timestamp() for k in ('start','end')]
+    inactivity=[]
+    for lane,count in enumerate(counts.tolist()):
+        fills=ledger[lane,:count];entries=sorted(set(fills[fills[:,3]==1,0].tolist()))
+        if any(t<begin or t>end for t in entries):raise ValueError('Entry outside full session boundary')
+        boundaries=[begin,*entries,end]
+        inactivity.append(sum(area(b-a) for a,b in zip(boundaries,boundaries[1:]))/(end-begin))
+    metrics['inactivity_fraction']=inactivity
+    record=dict(day=session['day'],population_sha256=population_token,candidate_indices=list(range(offset,offset+runner.b)),metrics=metrics,
+        ledger_sha256=ledger_hash,full_session=True,validation_opened=False,financial_audit_passed=True,rule_seconds=rule_seconds,
+        input_receipt_sha256=file_hash(runner.inputs.root/'complete.json'),
+        structural_receipt_sha256=runner.tape.provenance['structural_receipt_sha256'],
+        broker='compact',holding_capacity=runner.n)
+    write_json(folder/'receipt.json',record)
+    return record
+
+
+def seal_session(session,population_token,population_size,destination,parts,batches,inputs,structures,holding_capacity):
+    keys=set(parts[0])
+    if any(set(part)!=keys for part in parts):raise ValueError('Candidate batch metric schema changed')
+    merged={k:sum((part[k] for part in parts),[]) for k in keys}
+    record=dict(day=session['day'],population_sha256=population_token,candidate_indices=list(range(population_size)),full_session=True,
+        validation_opened=False,broker='compact',holding_capacity=holding_capacity,metrics=merged,batch_receipts=batches,
+        input_receipt_sha256=file_hash(inputs/session['day']/'complete.json'),
+        structural_receipt_sha256=file_hash(structures/session['day']/'complete.json'),financial_audit_passed=True)
+    write_json(destination/'receipt.json',record)
+    return record
+
+
 class SparseSessionEvaluator:
     def __init__(self,inputs,structures,*,batch_size=128,device='cuda',backend='compile',maximum_input_gib=4.,maximum_state_gib=4.,maximum_fills=16384,holding_capacity=40):
         if backend not in ('eager','compile'):raise ValueError('Concurrent sparse evaluator supports eager/compile; capture concurrency is not qualified')
@@ -75,28 +111,7 @@ class SparseSessionEvaluator:
                     backend=self.backend,maximum_state_gib=self.maximum_state_gib,maximum_fills=self.maximum_fills)
                 runner.compile();result=runner.run()
                 if stream is not None:stream.synchronize()
-                # Only per-candidate metrics survive the session/batch residency.
-                metrics={k:clean(v) for k,v in result.items() if isinstance(v,torch.Tensor) or k in ('closed_position_duration_samples','closed_position_pnl_samples')}
-                ledger=runner.ledger.detach().cpu();counts=runner.fill_count.detach().cpu()
-                ledger_hash=seal_ledger(folder/'fills.pt',ledger,counts)
-                audit_fills(folder/'fills.pt',metrics)
-                inactivity=[]
-                for lane,count in enumerate(counts.tolist()):
-                    fills=ledger[lane,:count];entries=sorted(set(fills[fills[:,3]==1,0].tolist()))
-                    if any(t<begin or t>end for t in entries):raise ValueError('Entry outside full session boundary')
-                    boundaries=[begin,*entries,end]
-                    inactivity.append(sum(area(b-a) for a,b in zip(boundaries,boundaries[1:]))/(end-begin))
-                metrics['inactivity_fraction']=inactivity
-                record=dict(day=day,population_sha256=token,candidate_indices=list(range(offset,offset+len(members))),metrics=metrics,
-                    ledger_sha256=ledger_hash,full_session=True,validation_opened=False,financial_audit_passed=True,rule_seconds=rule_seconds)
-                write_json(folder/'receipt.json',record)
-                batches.append(dict(directory=folder.name,sha256=file_hash(folder/'receipt.json')));parts.append(metrics)
+                record=seal_batch(runner,result,session,token,offset,folder,rule_seconds)
+                batches.append(dict(directory=folder.name,sha256=file_hash(folder/'receipt.json')));parts.append(record['metrics'])
                 del runner,gates
-            keys=set(parts[0])
-            if any(set(part)!=keys for part in parts):raise ValueError('Candidate batch metric schema changed')
-            merged={k:sum((part[k] for part in parts),[]) for k in keys}
-            record=dict(day=day,population_sha256=token,candidate_indices=list(range(len(population))),full_session=True,validation_opened=False,broker='compact',holding_capacity=self.holding_capacity,
-                metrics=merged,batch_receipts=batches,input_receipt_sha256=file_hash(self.inputs/day/'complete.json'),
-                structural_receipt_sha256=file_hash(self.structures/day/'complete.json'),financial_audit_passed=True)
-            write_json(destination/'receipt.json',record)
-            return record
+            return seal_session(session,token,len(population),destination,parts,batches,self.inputs,self.structures,self.holding_capacity)

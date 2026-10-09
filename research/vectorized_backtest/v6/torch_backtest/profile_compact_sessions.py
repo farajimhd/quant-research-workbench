@@ -12,6 +12,7 @@ from .runtime import require_runtime,configure_caches,write_json,file_hash,code_
 from .materialize import owned_run
 from .run_structure import training_days
 from .sparse_evaluator import SparseSessionEvaluator
+from .resident_evaluator import ResidentSessionEvaluator
 from .evolution import sample
 from .genome import StrategySpace
 from .training_pass import population_hash
@@ -42,6 +43,7 @@ def main(argv=None):
     p.add_argument('--population',type=int,default=128);p.add_argument('--batch-size',type=int,default=128)
     p.add_argument('--session-count',type=int,default=2);p.add_argument('--workers',type=int,default=2)
     p.add_argument('--holding-capacity',type=int,default=40);p.add_argument('--maximum-fills',type=int,default=16384)
+    p.add_argument('--backend',choices=['compile','cudagraph','compiled_graph'],default='compiled_graph')
     p.add_argument('--seed',type=int,default=2236)
     p.add_argument('--maximum-input-gib',type=float,default=4.);p.add_argument('--maximum-state-gib',type=float,default=4.)
     a=p.parse_args(argv)
@@ -55,7 +57,8 @@ def main(argv=None):
         days=training_days(a.inputs)[:a.session_count]
         sessions=[json.loads((a.inputs/day/'complete.json').read_text())['identity']['session'] for day in days]
         members=sample(np.random.default_rng(a.seed),StrategySpace(),a.population)
-        evaluate=SparseSessionEvaluator(a.inputs,a.structure,batch_size=a.batch_size,backend='compile',
+        evaluator_type=SparseSessionEvaluator if a.backend=='compile' else ResidentSessionEvaluator
+        evaluate=evaluator_type(a.inputs,a.structure,batch_size=a.batch_size,backend=a.backend,
             maximum_input_gib=a.maximum_input_gib,maximum_state_gib=a.maximum_state_gib,
             maximum_fills=a.maximum_fills,holding_capacity=a.holding_capacity)
         contract=evaluate.contract(sessions,a.workers)
@@ -67,6 +70,7 @@ def main(argv=None):
             destination=require_runtime(root/mode)
             write_json(root/'status.json',dict(stage=mode,sessions=days,workers=workers,validation_opened=False))
             torch.cuda.synchronize();torch.cuda.reset_peak_memory_stats();started=perf_counter()
+            if hasattr(evaluate,'prepare_pass'):evaluate.prepare_pass(sessions,members,destination,workers=workers)
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures=[pool.submit(evaluate,session,members,destination/session['day']) for session in sessions]
                 for future in futures:future.result()
@@ -76,7 +80,7 @@ def main(argv=None):
             rows.append(row);write_json(root/'measurements.json',rows);print(row,flush=True)
         audits=[compare_sessions(root/'serial-warm'/day,root/'concurrent-warm'/day) for day in days]
         write_json(root/'receipt.json',dict(status='complete',measurements=rows,audits=audits,validation_opened=False,
-            optimization_started=False,limitations=['Training-only throughput evidence','Concurrent graph capture not qualified']))
+            optimization_started=False,backend=a.backend,limitations=['Training-only throughput evidence']))
         write_json(root/'status.json',dict(status='complete',stage='Exact full-session concurrency audit passed',validation_opened=False))
     return 0
 

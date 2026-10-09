@@ -64,6 +64,8 @@ def run_generations(spec,population_size,generations,evaluator,output,*,seed=223
                 if record['population_sha256']!=population_hash(population) or record['objective']!=asdict(objective):raise ValueError('Completed generation resume contract changed')
                 ranking={k:torch.as_tensor(record['ranking'][k],dtype=torch.bool if k=='feasible' else torch.float64) for k in ('score','feasible')}
             else:
+                if hasattr(evaluator,'prepare_pass'):
+                    evaluator.prepare_pass(spec['training'],population,root,workers=workers)
                 ranking,_=full_training_pass(spec['training'],[s['day'] for s in spec['validation']],population,evaluator,root,workers=workers,objective=objective)
             eligible=[i for i,v in enumerate(ranking['feasible'].tolist()) if v]
             scores=ranking['score'].tolist();rank=sorted(eligible,key=lambda i:(-scores[i],i))

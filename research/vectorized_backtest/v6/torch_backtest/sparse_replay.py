@@ -74,9 +74,11 @@ class SparseInputs:
         result['feature_row']=torch.where(known,result['feature_row'],-1).to(torch.int64)
         return result
 
-    def compile(self, individuals, *, chunk_candles=2048, listing_batch=16, workspace_gib=2., maximum_gate_gib=4., listing_ids=None):
+    def compile(self, individuals, *, chunk_candles=2048, listing_batch=16, workspace_gib=2., maximum_gate_gib=4., listing_ids=None,backend='eager'):
         """[candidate, observed row] gates, never [clock,candidate,all tickers]."""
         began=perf_counter();b=len(individuals);r=len(self.arrays['feature_keys'])
+        if backend not in ('eager','cudagraph') or (backend=='cudagraph' and self.device.type!='cuda'):
+            raise ValueError('Rule capture requires CUDA and a caller-owned preparation barrier')
         if not b or min(chunk_candles,listing_batch)<1 or workspace_gib<=0 or b*r>maximum_gate_gib*1024**3:
             raise MemoryError('Invalid or excessive sparse rule workspace/gates')
         gates=torch.zeros((b,r),dtype=torch.uint8,device=self.device)
@@ -88,23 +90,38 @@ class SparseInputs:
             if listing not in selected:continue
             for begin in range(left,right,chunk_candles):
                 warm=max(left,begin-119);end=min(right,begin+chunk_candles)
-                size=1<<(end-warm-1).bit_length();buckets.setdefault(size,[]).append((warm,begin,end))
+                size=1<<int(end-warm-1).bit_length();buckets.setdefault(size,[]).append((warm,begin,end))
         for size,tasks in buckets.items():
+            captures={}
             per_listing=size*(len(CATALOG)*5+b*(width*20+128)+32)
             batch_size=min(listing_batch,int(workspace_gib*1024**3)//per_listing)
             if batch_size<1:raise MemoryError('Sparse rule workspace cannot fit one listing chunk')
             for cursor in range(0,len(tasks),batch_size):
                 task=tasks[cursor:cursor+batch_size];n=len(task)
-                values=torch.zeros((n,size,len(CATALOG)),device=self.device)
-                valid=torch.zeros_like(values,dtype=torch.bool)
+                if backend=='cudagraph':
+                    from .captured_rules import CapturedRules
+                    if n not in captures:captures[n]=CapturedRules(programs,(n,size,len(CATALOG)),self.device)
+                    values=captures[n].values;valid=captures[n].valid
+                    values.zero_();valid.zero_()
+                else:
+                    values=torch.zeros((n,size,len(CATALOG)),device=self.device)
+                    valid=torch.zeros_like(values,dtype=torch.bool)
                 indices=torch.zeros((n,size),device=self.device,dtype=torch.int64)
                 core=torch.zeros((n,size),device=self.device,dtype=torch.bool)
                 for i,(warm,begin,end) in enumerate(task):
                     length=end-warm;values[i,:length]=self.tensors['features'][warm:end];valid[i,:length]=self.tensors['feature_valid'][warm:end]
                     indices[i,:length]=torch.arange(warm,end,device=self.device);core[i,begin-warm:length]=True
-                for bit,stage in enumerate(STAGES):
-                    value,known=programs[stage](values,valid)
-                    signal=((value!=0)&known&core[None]).to(torch.uint8)*(1<<bit)
+                if backend=='cudagraph':
+                    signal=torch.where(core[None],captures[n].replay(),0)
                     gates.scatter_add_(1,indices.reshape(1,-1).expand(b,-1),signal.reshape(b,-1))
+                else:
+                    for bit,stage in enumerate(STAGES):
+                        value,known=programs[stage](values,valid)
+                        signal=((value!=0)&known&core[None]).to(torch.uint8)*(1<<bit)
+                        gates.scatter_add_(1,indices.reshape(1,-1).expand(b,-1),signal.reshape(b,-1))
+            if backend=='cudagraph':
+                # Release each shape bucket only after its last replay/scatter.
+                # Do not retain a graph pool for every possible chunk shape.
+                torch.cuda.current_stream().synchronize();captures.clear()
         if self.device.type=='cuda':torch.cuda.current_stream().synchronize()
         return gates,perf_counter()-began

@@ -45,6 +45,7 @@ def main(argv=None):
     p.add_argument('--seconds',type=int,default=256);p.add_argument('--repeats',type=int,default=2)
     p.add_argument('--backend',choices=['eager','compile','cudagraph','compiled_graph'],default='eager')
     p.add_argument('--broker',choices=['daily-union','compact'],default='compact')
+    p.add_argument('--rule-backend',choices=['eager','cudagraph'],default='cudagraph')
     p.add_argument('--holding-capacity',type=int,default=40)
     p.add_argument('--seed',type=int,default=2236);p.add_argument('--maximum-input-gib',type=float,default=4.)
     p.add_argument('--maximum-fills',type=int,default=4096,help='Per-candidate bounded ledger capacity; exhaustion fails closed')
@@ -67,11 +68,14 @@ def main(argv=None):
             if draws>100*a.batch_size:raise ValueError('Percentage-target profiling stratum not found')
         write_json(root/'population.json',dict(seed=a.seed,draws=draws,stratum='all_target_modes' if a.structure is not None else 'percentage_targets_only',population=[v.payload() for v in members]))
         print('Compiling causal sparse lifecycle gates',flush=True)
+        write_json(root/'status.json',dict(stage='Compiling causal lifecycle gates',validation_opened=False))
         union=np.unique(inputs.arrays['top_indices']);union=union[union>=0].tolist()
-        gates,rule_seconds=inputs.compile(members,listing_ids=union)
+        gates,rule_seconds=inputs.compile(members,listing_ids=union,backend=a.rule_backend)
         runner_type=CompactProgramRunner if a.broker=='compact' else SparseProgramRunner
         dimensions={'holding_capacity':a.holding_capacity} if a.broker=='compact' else {}
         runner=runner_type(inputs,space,members,gates,structure=a.structure,backend=a.backend,maximum_fills=a.maximum_fills,maximum_state_gib=4.,**dimensions)
+        print('Preparing financial compiled graphs',flush=True)
+        write_json(root/'status.json',dict(stage='Preparing financial compiled graphs',validation_opened=False))
         setup=perf_counter();runner.compile();torch.cuda.synchronize();setup=perf_counter()-setup
         measurements=[];previous=None
         for repeat in range(a.repeats):
@@ -79,7 +83,10 @@ def main(argv=None):
             # Full captured sessions include the separately captured remainder;
             # an explicit prefix is required to contain whole graph blocks.
             steps=None if a.seconds==len(inputs.arrays['clocks']) else a.seconds
-            metrics=runner.run(steps=steps);torch.cuda.synchronize();elapsed=perf_counter()-started
+            def emit(progress):
+                snapshot=dict(stage='Financial replay',repeat=repeat,**progress,validation_opened=False)
+                write_json(root/'status.json',snapshot);print(snapshot,flush=True)
+            metrics=runner.run(steps=steps,progress=emit);torch.cuda.synchronize();elapsed=perf_counter()-started
             measurements.append(dict(repeat=repeat,elapsed_seconds=elapsed,candidate_clock_updates_per_second=a.batch_size*a.seconds/elapsed,
                 peak_allocated_bytes=torch.cuda.max_memory_allocated(),fills=int(runner.fill_count.sum())))
             print(measurements[-1],flush=True)
@@ -102,6 +109,7 @@ def main(argv=None):
                          *(['Partial-session timing is not profitability evidence'] if not full_session else []),
                          'Training-session profiling is not out-of-sample evidence'])
         write_json(root/'receipt.json',receipt)
+        write_json(root/'status.json',dict(status='complete',stage='Exact fill and financial audits passed',validation_opened=False))
         print('Profiling complete; no optimization or validation performed',flush=True)
 
 

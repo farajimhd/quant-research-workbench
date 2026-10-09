@@ -78,6 +78,7 @@ class CompactProgramRunner(SparseProgramRunner):
         retained|=(axis==self.rotation_confirm_ticker[:,None])&(self.rotation_since[:,None]>0)
         self.source_used.scatter_reduce_(1,old.clamp_min(0),(self.used&(old>=0)).to(torch.int64),reduce='amax',include_self=True)
         changed,self.current_membership=self.registry.reconcile(top,retained)
+        self.ledger_ticker_order=self.registry.ids.argsort(dim=-1,stable=True)
         self._archive(changed&(old>=0))
         for name in self.ticker_states:
             state=getattr(self,name);mask=changed.reshape(changed.shape+(1,)*(state.ndim-2))
@@ -118,7 +119,7 @@ class CompactProgramRunner(SparseProgramRunner):
 
     def _log(self,qty,price,fee,now,side,reason):
         compact_ledger_append(self.ledger_storage,self.fill_count,self.overflow,qty,price,fee,now,reason,
-            self.index,self.registry.ids,side,self.maximum_fills)
+            self.index,self.registry.ids,self.ledger_ticker_order,side,self.maximum_fills)
 
     def _gather_history(self,value):
         return value[:,self.source_indices].permute(1,0,2)

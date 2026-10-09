@@ -5,7 +5,7 @@ import argparse
 import json
 from pathlib import Path
 from .full_search import run_generations
-from .sparse_evaluator import SparseSessionEvaluator
+from .resident_evaluator import ResidentSessionEvaluator
 from .runtime import configure_caches,require_runtime
 from .stability import LowerTailDollarObjective
 
@@ -24,7 +24,7 @@ def main(argv=None):
     a=p.parse_args(argv)
     spec=json.loads(a.sessions.read_text())
     root=require_runtime(a.output);configure_caches(root/'cache')
-    evaluate=SparseSessionEvaluator(a.inputs,a.structure,batch_size=a.batch_size,holding_capacity=a.holding_capacity,
+    evaluate=ResidentSessionEvaluator(a.inputs,a.structure,batch_size=a.batch_size,holding_capacity=a.holding_capacity,
         maximum_fills=a.maximum_fills,maximum_input_gib=a.maximum_input_gib,maximum_state_gib=a.maximum_state_gib)
     return run_generations(spec,a.population,a.generations,evaluate,root,seed=a.seed,
         workers=a.session_workers,objective=LowerTailDollarObjective())
