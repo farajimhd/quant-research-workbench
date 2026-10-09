@@ -12,8 +12,9 @@ def test_partial_fills_preserve_first_fill_duration_and_slot_reuse():
     runner.ledger=torch.tensor([rows],dtype=torch.float64)
     runner.fill_count=torch.tensor([4]);runner._report_counts=torch.tensor([0])
     runner._report_lots=[{}];runner._trade_totals=torch.zeros(1,5,dtype=torch.float64)
-    runner._report_durations=[[]];runner._holding_totals=torch.zeros(1,2,dtype=torch.float64)
+    runner._report_durations=[[]];runner._report_pnls=[[]];runner._holding_totals=torch.zeros(1,2,dtype=torch.float64)
     runner._update_trade_report()
+    assert runner._report_pnls==[[14.]]
     assert runner._report_durations==[[12]]
     assert runner._holding_totals.tolist()==[[106,10]]
     runner.fill_count[0]=6;runner._update_trade_report();runner._update_trade_report()

@@ -179,7 +179,7 @@ class BatchedEvaluator:
                     if steps==len(tape.clocks):steps=None
                     result = self.runner.run(progress=progress,steps=steps)
                     if prefetch.index is not None:replay_intervals[prefetch.index]=(replay_started,time.perf_counter())
-                    metrics = {k: clean(v) for k, v in result.items() if isinstance(v, torch.Tensor) or k == 'closed_position_duration_samples'}
+                    metrics = {k: clean(v) for k, v in result.items() if isinstance(v, torch.Tensor) or k in ('closed_position_duration_samples','closed_position_pnl_samples')}
                     ledger = self.runner.ledger[:, :int(self.runner.fill_count.max())].detach().cpu()
                     if ledger.device==self.runner.ledger.device:ledger=ledger.clone()
                     counts=self.runner.fill_count.detach().cpu().clone()

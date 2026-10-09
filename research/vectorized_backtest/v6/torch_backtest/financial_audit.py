@@ -47,5 +47,9 @@ def audit_fills(path,metrics,*,initial_cash=10000.):
                 raise ValueError('Closed-position reporting mismatch: '+name)
         if 'closed_position_duration_samples' in metrics and durations!=metrics['closed_position_duration_samples'][lane]:
             raise ValueError('Closed-position elapsed duration disagrees with actual fills')
+        if 'closed_position_pnl_samples' in metrics:
+            reported=metrics['closed_position_pnl_samples'][lane]
+            if len(reported)!=len(closed) or any(not math.isclose(actual,saved,rel_tol=1e-10,abs_tol=1e-6) for actual,saved in zip(closed,reported)):
+                raise ValueError('Closed-position P&L samples disagree with actual fills')
         reports.append(dict(**expected,**trade,position_win_rate=trade['winning_positions']/len(closed) if closed else None))
     return reports

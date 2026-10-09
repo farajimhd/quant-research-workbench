@@ -25,12 +25,14 @@ class ProgramRunner(SearchRunner):
             self._report_lots=[{} for _ in range(len(self.fill_count))]
             self._trade_totals=torch.zeros((len(self.fill_count),5),dtype=torch.float64)
             self._report_durations=[[] for _ in range(len(self.fill_count))]
+            self._report_pnls=[[] for _ in range(len(self.fill_count))]
             self._holding_totals=torch.zeros((len(self.fill_count),2),dtype=torch.float64)
         result=super().run(**kwargs)
         self.live_metrics()
         for i,name in enumerate(('closed_positions','winning_positions','losing_positions','gross_profit','gross_loss')):
             result[name]=self._trade_totals[:,i].clone()
         result['closed_position_duration_samples']=[list(values) for values in self._report_durations]
+        result['closed_position_pnl_samples']=[list(values) for values in self._report_pnls]
         return result
 
     def _update_trade_report(self):
@@ -53,6 +55,7 @@ class ProgramRunner(SearchRunner):
                         totals[0]+=1;totals[1]+=pnl>0;totals[2]+=pnl<0
                         totals[3]+=max(pnl,0.);totals[4]+=max(-pnl,0.)
                         self._report_durations[lane].append(int(stamp-lot[2]))
+                        self._report_pnls[lane].append(pnl)
             # CPU eager readers otherwise alias the mutable fill-count tensor.
             self._report_counts=counts.clone()
 
@@ -64,6 +67,7 @@ class ProgramRunner(SearchRunner):
         if not hasattr(self,'_report_counts'):
             self._report_counts=torch.zeros_like(self.fill_count,device='cpu');self._report_lots=[{} for _ in range(len(self.fill_count))];self._trade_totals=torch.zeros((len(self.fill_count),5),dtype=torch.float64)
             self._report_durations=[[] for _ in range(len(self.fill_count))];self._holding_totals=torch.zeros((len(self.fill_count),2),dtype=torch.float64)
+            self._report_pnls=[[] for _ in range(len(self.fill_count))]
         self._update_trade_report()
         trades=self._trade_totals.sum(0);closed,wins,losses,profit,loss=trades.tolist()
         values=torch.stack((self.equity-self.settings.initial_cash,self.drawdown,

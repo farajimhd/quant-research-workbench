@@ -21,7 +21,10 @@ def compare(reference,target):
           'identity_map_sha256','split_certificate_sha256','previous_split_certificate_sha256','profile_seconds')
     if any(before[k]!=after[k] for k in keys):raise ValueError('Before/after population, input or duration differs')
     for name,values in before['metrics'].items():
-        if name=='closed_position_duration_samples':
+        if name=='closed_position_pnl_samples':
+            if len(values)!=len(after['metrics'][name]):raise ValueError('Position sample lanes changed')
+            for actual,reference in zip(after['metrics'][name],values):assert_metric_equal(actual,reference)
+        elif name=='closed_position_duration_samples':
             if values!=after['metrics'][name]:raise ValueError('Holding samples changed')
         else:
             assert_metric_equal(after['metrics'][name],values)
