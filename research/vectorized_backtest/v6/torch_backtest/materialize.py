@@ -73,6 +73,13 @@ def prior_session(day):
     return str(earlier.index[-1].date()), row['market_open'].to_pydatetime(), row['market_close'].to_pydatetime()
 
 
+def prior_close_factors(split,mapping,previous,day):
+    """Price context is independent of whether a bank has an RVOL denominator."""
+    from .splits import price_factor
+    return {mapping[key]:price_factor(evidence['splits'],previous,day)
+            for key,evidence in split['listings'].items()}
+
+
 def scope(source, day, tickers, stage):
     attempts = ','.join(f"({sql.literal(t)},toUUID({sql.literal(source['units'][day][t][stage]['attempt_id'])}))" for t in tickers)
     return (f"build_id={sql.literal(source['build_id'])} AND session_date=toDate({sql.literal(day)}) "
@@ -140,10 +147,7 @@ def prepare(item, args):
             raise ValueError('Incomplete opening split identity coverage')
         unsupported=[dict(**row,reason='certified_feature_and_opening_split_identity_unavailable') for row in paired if row['ticker'] not in factors]
         paired=[row for row in paired if row['ticker'] in factors]
-        from .splits import price_factor
-        for key, evidence in split['listings'].items():
-            if not np.isclose(factors[mapping[key]], price_factor(evidence['splits'], previous, day), rtol=1e-12, atol=0):
-                raise ValueError('Prior-close split factor mismatch')
+        factors=prior_close_factors(split,mapping,previous,day)
         origin = int(datetime.fromisoformat(previous+'T00:00:00').replace(tzinfo=opened.tzinfo).timestamp())
         # Derive bucket bounds in source timezone via explicit UTC epoch offset.
         from zoneinfo import ZoneInfo

@@ -3,6 +3,12 @@ import polars as pl
 from io import StringIO
 from research.vectorized_backtest.v6.torch_backtest.materialize import rank_indices, rolling_volume
 from research.vectorized_backtest.v6.torch_backtest.materialize import BAR_SCHEMA
+from research.vectorized_backtest.v6.torch_backtest.materialize import prior_close_factors
+
+
+def test_prior_close_split_adjustment_does_not_use_missing_rvol_context():
+    split=dict(listings={'id':dict(rvol_price_factor=1.,splits=[dict(execution_date='2026-07-30',split_from=5,split_to=1)])})
+    assert prior_close_factors(split,{'id':'YAAS'},'2026-07-29','2026-07-30')=={'YAAS':5.}
 
 
 def test_fractional_share_volume_uses_explicit_float_schema():
