@@ -10,7 +10,7 @@ from pathlib import Path
 import json
 import torch
 from .sparse_replay import SparseInputs
-from .sparse_runner import SparseProgramRunner
+from .compact_runner import CompactProgramRunner
 from .runtime import require_runtime,write_json,file_hash
 from .genome import StrategySpace
 from .training_pass import population_hash
@@ -20,12 +20,14 @@ from .run_search import seal_ledger,clean
 
 
 class SparseSessionEvaluator:
-    def __init__(self,inputs,structures,*,batch_size=128,device='cuda',backend='compile',maximum_input_gib=4.,maximum_state_gib=4.,maximum_fills=16384):
+    def __init__(self,inputs,structures,*,batch_size=128,device='cuda',backend='compile',maximum_input_gib=4.,maximum_state_gib=4.,maximum_fills=16384,holding_capacity=40):
         if backend not in ('eager','compile'):raise ValueError('Concurrent sparse evaluator supports eager/compile; capture concurrency is not qualified')
         if type(batch_size) is not int or not 1<=batch_size<=1024:raise ValueError('Invalid bounded candidate batch')
         self.inputs=Path(inputs);self.structures=Path(structures);self.batch_size=batch_size
         self.device=torch.device(device);self.backend=backend;self.maximum_input_gib=maximum_input_gib
         self.maximum_state_gib=maximum_state_gib;self.maximum_fills=maximum_fills
+        if type(holding_capacity) is not int or holding_capacity<1:raise ValueError('Invalid holding capacity')
+        self.holding_capacity=holding_capacity
 
     def contract(self,training,workers):
         if self.device.type=='cuda':
@@ -35,7 +37,7 @@ class SparseSessionEvaluator:
             required=workers*(self.maximum_input_gib+self.maximum_state_gib+2.5)*1024**3
             if required>free*.75:raise MemoryError('Concurrent session envelopes exceed free GPU headroom; choose measured smaller envelopes/concurrency')
         return dict(backend=self.backend,batch_size=self.batch_size,device=str(self.device),maximum_input_gib=self.maximum_input_gib,
-            maximum_state_gib=self.maximum_state_gib,maximum_fills=self.maximum_fills,
+            maximum_state_gib=self.maximum_state_gib,maximum_fills=self.maximum_fills,broker='compact',holding_capacity=self.holding_capacity,
             inputs={s['day']:file_hash(self.inputs/s['day']/'complete.json') for s in training},
             structures={s['day']:file_hash(self.structures/s['day']/'complete.json') for s in training})
 
@@ -46,6 +48,7 @@ class SparseSessionEvaluator:
             if (record.get('population_sha256')!=population_hash(population) or record.get('day')!=day
                 or record.get('input_receipt_sha256')!=file_hash(self.inputs/day/'complete.json')
                 or record.get('structural_receipt_sha256')!=file_hash(self.structures/day/'complete.json')
+                or record.get('broker')!='compact' or record.get('holding_capacity')!=self.holding_capacity
                 or record.get('validation_opened',True) or not record.get('full_session')):raise ValueError('Completed session resume contract changed')
             for batch in record['batch_receipts']:
                 folder=destination/batch['directory']
@@ -68,7 +71,7 @@ class SparseSessionEvaluator:
                 members=population[offset:offset+self.batch_size]
                 folder=require_runtime(destination/f'batch-{offset:06d}')
                 gates,rule_seconds=inputs.compile(members,listing_ids=union)
-                runner=SparseProgramRunner(inputs,space,members,gates,structure=self.structures/day,
+                runner=CompactProgramRunner(inputs,space,members,gates,structure=self.structures/day,holding_capacity=self.holding_capacity,
                     backend=self.backend,maximum_state_gib=self.maximum_state_gib,maximum_fills=self.maximum_fills)
                 runner.compile();result=runner.run()
                 if stream is not None:stream.synchronize()
@@ -92,7 +95,7 @@ class SparseSessionEvaluator:
             keys=set(parts[0])
             if any(set(part)!=keys for part in parts):raise ValueError('Candidate batch metric schema changed')
             merged={k:sum((part[k] for part in parts),[]) for k in keys}
-            record=dict(day=day,population_sha256=token,candidate_indices=list(range(len(population))),full_session=True,validation_opened=False,
+            record=dict(day=day,population_sha256=token,candidate_indices=list(range(len(population))),full_session=True,validation_opened=False,broker='compact',holding_capacity=self.holding_capacity,
                 metrics=merged,batch_receipts=batches,input_receipt_sha256=file_hash(self.inputs/day/'complete.json'),
                 structural_receipt_sha256=file_hash(self.structures/day/'complete.json'),financial_audit_passed=True)
             write_json(destination/'receipt.json',record)

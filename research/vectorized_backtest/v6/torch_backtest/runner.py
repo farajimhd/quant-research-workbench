@@ -345,7 +345,7 @@ class SqueezeRunner:
         to which ticker identities occupy their financial-state slots.
         """
         if not getattr(self,'specialize',False) or not self.execution_key[3][1]:
-            self.attention_ring.copy_(torch.cat((notional[None], self.attention_ring[:-1]), 0))
+            self.attention_ring.copy_(torch.cat((self._market_value(notional,2), self.attention_ring[:-1]), 0))
         if not getattr(self,'specialize',False):
             self.price_ring.copy_(torch.cat((torch.where(observed, high, float("nan"))[None], self.price_ring[:-1]), 0))
         if not getattr(self,'specialize',False) or not self.execution_key[3][0]:
@@ -355,7 +355,7 @@ class SqueezeRunner:
             self._confirm_swing()
         self._observe_rule_history(close, observed)
         self.previous_close.copy_(torch.where(observed, close, float("nan")))
-        self.previous_above.copy_(above[None].expand(self.b, -1))
+        self.previous_above.copy_(self._market_value(above,2).expand(self.b, -1))
         valid_vwap = observed & quote & torch.isfinite(self._row("vwap"))
         self.previous_valid.copy_(valid_vwap[None].expand(self.b, -1))
 
@@ -375,6 +375,16 @@ class SqueezeRunner:
 
     def _entry_filter(self, now, close):
         return True
+
+    def _market_value(self,value,rank):
+        """Shared source rows or candidate-specific compact ticker rows."""
+        if not getattr(self,'candidate_market',False):value=value[None]
+        while value.ndim<rank:value=value.unsqueeze(-1)
+        return value
+
+    def _select_ticker(self,scores):return scores.argmax(-1)
+
+    def _select_lot(self,scores):return scores.argmin(-1)
 
     def _observe_rule_history(self, close, observed):
         pass
@@ -463,20 +473,18 @@ class SqueezeRunner:
         # The interval just completed may fill only previously submitted orders.
         spread = (ask - bid).nan_to_num(0).clamp_min(0)
         safe_fill = fill_price.nan_to_num(0)
-        sell_price = (safe_fill - spread / 2).clamp_min(0)[None, :, None]
-        buy_price = (safe_fill + spread / 2)[None, :, None]
+        sell_price = self._market_value((safe_fill - spread / 2).clamp_min(0),3)
+        buy_price = self._market_value(safe_fill + spread / 2,3)
         executable = (
             quote & torch.isfinite(fill_price) & (fill_price > 0) & (volume > 0)
         )
         capacity = (
-            torch.floor(volume * s.participation)
-            .to(torch.int64)[None]
-            .expand(self.b, -1)
+            self._market_value(torch.floor(volume * s.participation).to(torch.int64),2).expand(self.b,-1)
         )
         eligible_sell = (
             (self.exit_kind > 0)
             & (self.quantity > 0)
-            & executable[None, :, None]
+            & self._market_value(executable,3)
             & (sell_price > 0)
         )
         eligible_sell &= (self.exit_kind != 1) | (sell_price >= self.target)
@@ -518,7 +526,7 @@ class SqueezeRunner:
         self.exit_kind.copy_(torch.where(self.quantity > 0, self.exit_kind, 0))
         self.exit_kind.copy_(torch.where((self.exit_kind==5)&(self.reduce_remaining==0),0,self.exit_kind))
         age_ok = (now > self.buy_submitted) & (now <= self.buy_deadline)
-        allowed = age_ok & (self.remaining > 0) & executable[None, :, None]
+        allowed = age_ok & (self.remaining > 0) & self._market_value(executable,3)
         allowed &= (
             (buy_price > 0) & (buy_price <= self.buy_limit) & (self.exit_kind == 0)
         )
@@ -598,14 +606,14 @@ class SqueezeRunner:
         )
         self._log(bought, buy_price, buy_fee, now, 1, torch.zeros_like(self.exit_kind))
         # Parent's fill interval cannot trigger its newly activated children.
-        active = (previous_quantity > 0) & (self.quantity > 0) & observed[None, :, None]
+        active = (previous_quantity > 0) & (self.quantity > 0) & self._market_value(observed,3)
         self.financial_error.logical_or_(
             (
-                active & (~torch.isfinite(low) | ~torch.isfinite(high))[None, :, None]
+                active & self._market_value(~torch.isfinite(low) | ~torch.isfinite(high),3)
             ).any((1, 2))
         )
-        stop_hit = active & (low[None, :, None] <= self.stop)
-        target_hit = active & (high[None, :, None] >= self.target)
+        stop_hit = active & (self._market_value(low,3) <= self.stop)
+        target_hit = active & (self._market_value(high,3) >= self.target)
         target_hit &= now - self.first_fill >= s.minimum_position_hold_seconds
         # Ambiguous completed bars use stop-first; an existing target can become
         # a stop, which has its own cumulative per-order fee history.
@@ -692,14 +700,14 @@ class SqueezeRunner:
         )
         watching = active_signal & ~self.used & (now >= self.start_boundary)
         if not getattr(self,'specialize',False):
-            crossed = above[None] & ~self.previous_above & self.previous_valid & watching
+            crossed = self._market_value(above,2) & ~self.previous_above & self.previous_valid & watching
             self.hold_since.copy_(
                 torch.where(
-                    crossed, now, torch.where(above[None] & watching, self.hold_since, 0)
+                    crossed, now, torch.where(self._market_value(above,2) & watching, self.hold_since, 0)
                 )
             )
             hold = (
-                above[None]
+                self._market_value(above,2)
                 & (self.hold_since > 0)
                 & (now - self.hold_since >= p[:, 3, None])
             )
@@ -713,19 +721,19 @@ class SqueezeRunner:
                 (~selected | opened).all(-1),
                 (selected & opened).any(-1),
             )
-            macd &= above[None]
+            macd &= self._market_value(above,2)
             old_high = self._recent_high()
             breakout = (
-                observed[None]
-                & above[None]
-                & (close[None] > old_high)
+                self._market_value(observed,2)
+                & self._market_value(above,2)
+                & (self._market_value(close,2) > old_high)
                 & (self.previous_close[None] <= old_high)
             )
             phase = self.retest_phase.clone()
-            invalid = ~above[None] | (
+            invalid = ~self._market_value(above,2) | (
                 now - self.retest_at > self._value("retest_timeout_seconds", 2)
             )
-            invalid |= close[None] < self.retest_level * (
+            invalid |= self._market_value(close,2) < self.retest_level * (
                 1 - self._value("retest_tolerance_fraction", 2)
             )
             reset = invalid | ~watching
@@ -733,34 +741,34 @@ class SqueezeRunner:
             begin = (phase == 0) & breakout & watching
             self.retest_level.copy_(torch.where(begin, old_high, self.retest_level))
             self.retest_at.copy_(torch.where(begin, now, self.retest_at))
-            touch = (phase == 1) & observed[None] & (now > self.retest_at)
+            touch = (phase == 1) & self._market_value(observed,2) & (now > self.retest_at)
             touch &= (
-                low[None]
+                self._market_value(low,2)
                 <= self.retest_level * (1 + self._value("retest_tolerance_fraction", 2))
-            ) & (close[None] >= self.retest_level)
-            self.retest_high.copy_(torch.where(touch, high[None], self.retest_high))
-            resume = (phase == 2) & observed[None] & (close[None] > self.retest_high)
+            ) & (self._market_value(close,2) >= self.retest_level)
+            self.retest_high.copy_(torch.where(touch, self._market_value(high,2), self.retest_high))
+            resume = (phase == 2) & self._market_value(observed,2) & (self._market_value(close,2) > self.retest_high)
             phase = torch.where(begin, 1, torch.where(touch, 2, phase))
             self.retest_phase.copy_(phase)
             gate = torch.where(
                 p[:, 0, None] == 0,
-                observed[None] & (now == self.tape.admission)[None],
+                self._market_value(observed,2) & (now == self.tape.admission)[None],
                 torch.where(
                     p[:, 0, None] == 1, hold, torch.where(p[:, 0, None] == 2, resume, macd)
                 ),
             )
         else:
-            gate=observed[None].expand(self.b,-1)
+            gate=self._market_value(observed,2).expand(self.b,-1)
         spread = (ask - bid) / ask.clamp_min(s.price_tick)
         basic = (
-            (observed & quote & (bid > 0) & (ask >= bid))[None]
+            self._market_value(observed & quote & (bid > 0) & (ask >= bid),2)
             .expand(self.b, -1)
             .clone()
         )
-        basic &= spread[None] <= self._value("maximum_spread_fraction", 2)
-        basic &= (torch.isfinite(low) & torch.isfinite(high))[None]
-        basic &= (notional[None] >= self._value("minimum_dollar_volume", 2)) & (
-            trades[None] >= self._value("minimum_trade_count", 2)
+        basic &= self._market_value(spread,2) <= self._value("maximum_spread_fraction", 2)
+        basic &= self._market_value(torch.isfinite(low) & torch.isfinite(high),2)
+        basic &= (self._market_value(notional,2) >= self._value("minimum_dollar_volume", 2)) & (
+            self._market_value(trades,2) >= self._value("minimum_trade_count", 2)
         )
         terminal = now >= self.end_boundary - self._value(
             "terminal_exit_lead_seconds", 2
@@ -768,10 +776,10 @@ class SqueezeRunner:
         # V4 program entry replaces the fixed squeeze/MACD mode gate. Admission
         # and broker/cash/risk contracts remain independent of program syntax.
         if getattr(self, 'native_programs', False):
-            gate = observed[None].expand(self.b, -1)
+            gate = self._market_value(observed,2).expand(self.b, -1)
         ready = gate & basic & watching & ~terminal
         ready &= self._entry_filter(now, close)
-        remainder_signal = above[None] if not getattr(self, 'native_programs', False) else observed[None]
+        remainder_signal = self._market_value(above,2) if not getattr(self, 'native_programs', False) else self._market_value(observed,2)
         self._manage_remainders(now, ask, basic & active_signal & remainder_signal
                                 & self._entry_filter(now, close) & ~terminal)
         # Shared market geometry is selected once per tick, not once per B.
@@ -779,7 +787,7 @@ class SqueezeRunner:
         if target_mode!=0:
             if self.tape.structural_targets is not None:
                 # [N,15] already selected causally once per ticker/second, shared by B candidates.
-                structural = self._row("structural_targets")[:, :self.slots] - s.price_tick
+                structural = self._row("structural_targets")[..., :self.slots] - s.price_tick
             else:
                 geometry = (
                     (self.tape.level_from <= now)
@@ -792,26 +800,26 @@ class SqueezeRunner:
                 )
                 structural = levels.topk(self.slots, dim=-1, largest=False, sorted=True).values
             structural = torch.where(
-                self._row("structural_clock")[:, None], structural, float("inf")
+                self._row("structural_clock")[...,None], structural, float("inf")
             )
         if target_mode!=1:
-            percentage=ask[None,:,None]*(1+self.rank*self._value('target_step_fraction',3))
+            percentage=self._market_value(ask,3)*(1+self.rank*self._value('target_step_fraction',3))
         if target_mode==0:target=percentage
-        elif target_mode==1:target=structural[None].expand(self.b,-1,-1)
-        else:target=torch.where(p[:,6,None,None]==1,structural[None],percentage)
+        elif target_mode==1:target=self._market_value(structural,3).expand(self.b,-1,-1)
+        else:target=torch.where(p[:,6,None,None]==1,self._market_value(structural,3),percentage)
         stop_mode=self.execution_key[1][3] if getattr(self,'specialize',False) else -1
-        if stop_mode==0:initial=ask[None]*(1-self._value('initial_stop_fraction',2))
+        if stop_mode==0:initial=self._market_value(ask,2)*(1-self._value('initial_stop_fraction',2))
         elif stop_mode==1:initial=self._swing_level()-s.price_tick
-        else:initial=torch.where(p[:,8,None]==1,self._swing_level()-s.price_tick,ask[None]*(1-self._value('initial_stop_fraction',2)))
+        else:initial=torch.where(p[:,8,None]==1,self._swing_level()-s.price_tick,self._market_value(ask,2)*(1-self._value('initial_stop_fraction',2)))
         slots = self.rank <= p[:, 4, None, None]
-        geometry_ok = torch.isfinite(initial) & (initial > 0) & (initial < bid[None])
+        geometry_ok = torch.isfinite(initial) & (initial > 0) & (initial < self._market_value(bid,2))
         geometry_ok &= (
             (~slots)
             | (
                 torch.isfinite(target)
                 & (
                     target
-                    > ask[None, :, None]
+                    > self._market_value(ask,3)
                     * (1 + self._value("maximum_entry_drift_fraction", 3))
                 )
             )
@@ -824,12 +832,12 @@ class SqueezeRunner:
             prior_close = self._momentum_close()
             # Comparable bounded score for incoming tickers and held positions.
             momentum = (
-                ((close[None] / prior_close - 1) / self._value("momentum_scale", 2))
+                ((self._market_value(close,2) / prior_close - 1) / self._value("momentum_scale", 2))
                 .nan_to_num(0)
                 .clamp(-1, 1)
             )
         strength = (
-            ((close[None] / self._row("vwap") - 1) / self._value("strength_scale", 2))
+            ((self._market_value(close,2) / self._row("vwap") - 1) / self._value("strength_scale", 2))
             .nan_to_num(0)
             .clamp(-1, 1)
         )
@@ -838,13 +846,13 @@ class SqueezeRunner:
         else:
             cap = self._value("attention_cap", 2)
             attention = (
-                (notional[None] / self._attention_mean())
+                (self._market_value(notional,2) / self._attention_mean())
                 .nan_to_num(0, posinf=1e100)
                 .clamp_min(0)
             )
             attention = attention.clamp(max=cap) / cap
         liquidity = (
-            volume[None] * s.participation * bid / self.settings.initial_cash
+            self._market_value(volume,2) * s.participation * bid / self.settings.initial_cash
         ).clamp(0, 1)
         common_score = (
             self._value("momentum_weight", 2) * momentum
@@ -852,8 +860,8 @@ class SqueezeRunner:
             + self._value("attention_weight", 2) * attention
             + self._value("liquidity_weight", 2) * liquidity
         )
-        up = (target[..., 0] - ask[None]).clamp_min(0)
-        down = (ask[None] - initial).clamp_min(s.price_tick)
+        up = (target[..., 0] - self._market_value(ask,2)).clamp_min(0)
+        down = (self._market_value(ask,2) - initial).clamp_min(s.price_tick)
         incoming = common_score + self._value("reward_risk_weight", 2) * up / (
             up + down
         )
@@ -882,7 +890,7 @@ class SqueezeRunner:
         requested_mask = self.ticker_axis == self.rotation_wait[:, None]
         ranked_ready = ready & torch.where(requested[:, None], requested_mask, True)
         scores = torch.where(ranked_ready & ~waiting[:, None], incoming, -float("inf"))
-        chosen = scores.argmax(-1)
+        chosen = self._select_ticker(scores)
         choose_mask = self.ticker_axis == chosen[:, None]
         weights = torch.where(
             p[:, 5, None, None] == 0,
@@ -902,7 +910,7 @@ class SqueezeRunner:
             free_cash
             - p[:, 4].to(torch.float64) * (1 + exit_roles) * s.minimum_order_fee
         ).clamp_min(0)
-        limit = ask.nan_to_num(0)[None] * (
+        limit = self._market_value(ask.nan_to_num(0),2) * (
             1 + self._value("maximum_entry_drift_fraction", 2)
         )
         desired = torch.floor(
@@ -934,7 +942,7 @@ class SqueezeRunner:
         self.buy_created.copy_(torch.where(order_mask, now, self.buy_created))
         self.buy_last_retry.copy_(torch.where(order_mask, now, self.buy_last_retry))
         self.buy_retries.copy_(torch.where(order_mask, 0, self.buy_retries))
-        self.buy_reference.copy_(torch.where(order_mask, ask[None, :, None], self.buy_reference))
+        self.buy_reference.copy_(torch.where(order_mask, self._market_value(ask,3), self.buy_reference))
         self.buy_deadline.copy_(
             torch.where(
                 order_mask,
@@ -948,7 +956,7 @@ class SqueezeRunner:
         )
         self.target.copy_(torch.where(order_mask, target, self.target))
         self.entry_reference.copy_(
-            torch.where(order_mask, ask[None, :, None], self.entry_reference)
+            torch.where(order_mask, self._market_value(ask,3), self.entry_reference)
         )
         self.used.logical_or_(enter)
         self.entered.add_(can_enter.to(torch.int64))
@@ -956,8 +964,8 @@ class SqueezeRunner:
         # cash remains cash, never a forced acquisition.
         self.rotation_wait.copy_(torch.where(requested, -1, self.rotation_wait))
         if not getattr(self,'specialize',False) or self.execution_key[1][4]!=0:
-            holding_up = (self.target - bid[None, :, None]).clamp_min(0)
-            holding_down = (bid[None, :, None] - self.stop).clamp_min(s.price_tick)
+            holding_up = (self.target - self._market_value(bid,3)).clamp_min(0)
+            holding_down = (self._market_value(bid,3) - self.stop).clamp_min(s.price_tick)
             stagnation = (
                 (now - self.last_high).to(torch.float64)
                 / self._value("stagnation_seconds", 3)
@@ -977,7 +985,7 @@ class SqueezeRunner:
             weak_scores = torch.where(replaceable, held_score, float("inf")).reshape(
                 self.b, -1
             )
-            weak = weak_scores.argmin(-1)
+            weak = self._select_lot(weak_scores)
             weak_score = weak_scores.gather(1, weak[:, None]).squeeze(1)
             new_score = scores.gather(1, chosen[:, None]).squeeze(1)
             qualified = (p[:, 9] == 1) & chosen_ready & ~can_enter & ~waiting & ~requested
@@ -1014,11 +1022,11 @@ class SqueezeRunner:
             )
             self.rotations.add_(rotate.to(torch.int64))
         # Amend protection only AFTER frozen interval processing.
-        live = (self.quantity > 0) & observed[None, :, None] & (now > self.first_fill)
-        new_high = live & (high[None, :, None] > self.peak_price)
+        live = (self.quantity > 0) & self._market_value(observed,3) & (now > self.first_fill)
+        new_high = live & (self._market_value(high,3) > self.peak_price)
         self.last_high.copy_(torch.where(new_high, now, self.last_high))
         self.peak_price.copy_(
-            torch.where(new_high, high[None, :, None], self.peak_price)
+            torch.where(new_high, self._market_value(high,3), self.peak_price)
         )
         trailing_mode=self.execution_key[1][2] if getattr(self,'specialize',False) else -1
         if trailing_mode!=0:
@@ -1048,8 +1056,8 @@ class SqueezeRunner:
         if trailing_mode==0:proposed=stepped
         elif trailing_mode==1:proposed=torch.where(enough,adaptive,self.stop)
         else:proposed=torch.where(p[:,7,None,None]==1,torch.where(enough,adaptive,self.stop),stepped)
-        proposed = torch.minimum(proposed, bid[None, :, None] - s.price_tick)
-        amend = live & quote[None, :, None] & (self.exit_kind == 0)
+        proposed = torch.minimum(proposed, self._market_value(bid,3) - s.price_tick)
+        amend = live & self._market_value(quote,3) & (self.exit_kind == 0)
         if getattr(self, 'native_programs', False):
             amend &= self._program_gate('trail')[..., None]
         self.stop.copy_(
@@ -1073,7 +1081,7 @@ class SqueezeRunner:
         # Source-history rings [H,N], not [B,N,H]. They advance once per second;
         # NaN gaps reset complete-window evidence instead of repeating a bar.
         self._advance_source_history(close, low, high, observed, notional, above, quote)
-        mark = torch.where(torch.isfinite(close), close, 0)[None, :, None]
+        mark = self._market_value(torch.where(torch.isfinite(close), close, 0),3)
         self.financial_error.logical_or_(
             ((self.quantity > 0) & (mark <= 0)).any((1, 2))
         )
@@ -1235,16 +1243,7 @@ class SqueezeRunner:
                 "terminal_cancelled_entry_shares",
             )
         }
-        result["requested_entry_shares"] = self.requested_quantity.sum((1, 2))
-        result["filled_entry_shares"] = self.buy_filled.sum((1, 2))
-        result["pending_entry_shares"] = self.remaining.sum((1, 2))
-        result["filled_entry_orders"] = (self.buy_filled > 0).sum((1, 2))
-        result["unfilled_entry_orders"] = (
-            (self.requested_quantity > 0) & (self.buy_filled == 0)
-        ).sum((1, 2))
-        result["partially_filled_entry_orders"] = (
-            (self.buy_filled > 0) & (self.buy_filled < self.requested_quantity)
-        ).sum((1, 2))
+        result.update(self._entry_accounting())
         cancelled = (
             self.expired_entry_shares
             + self.policy_cancelled_entry_shares
@@ -1267,11 +1266,9 @@ class SqueezeRunner:
         # entered counts submitted acquisition batches; activity constraints
         # must instead use child position orders that actually received fills.
         result["positions_opened"] = result["filled_entry_orders"]
-        result['entry_retry_count'] = self.buy_retries.sum((1, 2))
         # A batch is one ticker acquisition. Fifteen child orders or many
         # partial-fill events still count as ONE activity unit.
-        result["filled_batches"] = (self.buy_filled.sum(-1) > 0).sum(-1)
-        result["sold_shares"] = self.buy_filled.sum((1, 2)) - self.quantity.sum((1, 2))
+        result["sold_shares"] = result["filled_entry_shares"] - self.quantity.sum((1, 2))
         result["terminal"] = terminal
         result["terminal_valid"] = (
             (result["open_quantity"] == 0)
@@ -1293,6 +1290,14 @@ class SqueezeRunner:
                 }
             )
         return result
+
+    def _entry_accounting(self):
+        return dict(requested_entry_shares=self.requested_quantity.sum((1,2)),
+            filled_entry_shares=self.buy_filled.sum((1,2)),pending_entry_shares=self.remaining.sum((1,2)),
+            filled_entry_orders=(self.buy_filled>0).sum((1,2)),
+            unfilled_entry_orders=((self.requested_quantity>0)&(self.buy_filled==0)).sum((1,2)),
+            partially_filled_entry_orders=((self.buy_filled>0)&(self.buy_filled<self.requested_quantity)).sum((1,2)),
+            entry_retry_count=self.buy_retries.sum((1,2)),filled_batches=(self.buy_filled.sum(-1)>0).sum(-1))
 
     def state_dict(self):
         return {

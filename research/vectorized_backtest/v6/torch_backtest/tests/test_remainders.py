@@ -16,6 +16,7 @@ def runner(mode=3, **kwargs):
     r.requested_quantity[0,0,0]=10
     r.remaining[0,0,0]=8
     r.buy_filled[0,0,0]=2
+    r.buy_order_filled[0,0,0]=2
     r.quantity[0,0,0]=2
     r.average[0,0,0]=10
     r.buy_paid[0,0,0]=1
@@ -114,7 +115,7 @@ def test_repricing_bounded_by_reference_and_cash_reservation():
     manage(r,2,ask=12)
     assert r.buy_limit[0,0,0]<=10.05+1e-10
     r=runner(mode=2,maximum_chase_bps=500)
-    r.cash.fill_(85)  # existing cover, no free cash for the whole price increase
+    r.cash.fill_(86)  # existing buy/exit cover, insufficient for the full chase
     manage(r,2,ask=12)
     cover=(r.remaining*r.buy_limit).sum()+r._exit_fee_reserve().sum()
     assert cover<=r.cash[0]+1e-7
@@ -122,7 +123,7 @@ def test_repricing_bounded_by_reference_and_cash_reservation():
 
 
 def test_unfilled_orders_do_not_gain_partial_retry_privileges():
-    r=runner(); r.buy_filled.zero_(); r.quantity.zero_()
+    r=runner(); r.buy_filled.zero_(); r.buy_order_filled.zero_(); r.quantity.zero_()
     manage(r,2)
     assert r.buy_retries.sum()==0 and r.remaining.sum()==0
 

@@ -17,7 +17,7 @@ from .runtime import file_hash
 
 
 class SparseProgramRunner(ProgramRunner):
-    def __init__(self, inputs, space, individuals, gates, *, structure=None, **kwargs):
+    def __init__(self, inputs, space, individuals, gates, *, structure=None, broker_capacity=None, **kwargs):
         if structure is None and (any(int(v.policy[6]) != 0 for v in individuals) or not kwargs.get('specialize',True)):
             raise ValueError('Sparse profiling baseline requires percentage targets; structural sidecar is not qualified')
         if gates.shape != (len(individuals), len(inputs.arrays['feature_keys'])) or gates.dtype != torch.uint8 or gates.device != inputs.device:
@@ -44,9 +44,9 @@ class SparseProgramRunner(ProgramRunner):
                 raise ValueError('Structural sidecar raw-price/clock shape mismatch')
             if np.isnan(arrays['targets']).any():raise ValueError('Structural raw targets contain NaN')
             self.structural={name:inputs._transfer(value) for name,value in arrays.items()}
-        clocks=inputs.tensors['clocks'];n=len(union)
+        clocks=inputs.tensors['clocks'];n=len(union) if broker_capacity is None else broker_capacity
         tape=SimpleNamespace(device=inputs.device,clocks=clocks,
-            tickers=tuple(str(i) for i in self.union_ids),
+            tickers=tuple(str(i) for i in self.union_ids) if broker_capacity is None else tuple(f'compact-{i}' for i in range(n)),
             admission=torch.full((n,),int(clocks[0]),device=inputs.device,dtype=torch.int64),
             structural_targets=True if self.structural is not None else None,
             provenance=dict(version='v6-sparse-union-profiling-v1',input_identity=inputs.receipt['identity'],

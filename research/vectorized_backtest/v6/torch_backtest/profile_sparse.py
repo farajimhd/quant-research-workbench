@@ -10,6 +10,7 @@ from .runtime import require_runtime,write_json,configure_caches,code_hash,file_
 from .materialize import owned_run
 from .sparse_replay import SparseInputs
 from .sparse_runner import SparseProgramRunner
+from .compact_runner import CompactProgramRunner
 from .genome import StrategySpace
 from .evolution import sample
 from .financial_audit import audit_fills
@@ -43,6 +44,8 @@ def main(argv=None):
     p.add_argument('--day',required=True);p.add_argument('--batch-size',type=int,default=8)
     p.add_argument('--seconds',type=int,default=256);p.add_argument('--repeats',type=int,default=2)
     p.add_argument('--backend',choices=['eager','compile','cudagraph','compiled_graph'],default='eager')
+    p.add_argument('--broker',choices=['daily-union','compact'],default='compact')
+    p.add_argument('--holding-capacity',type=int,default=40)
     p.add_argument('--seed',type=int,default=2236);p.add_argument('--maximum-input-gib',type=float,default=4.)
     p.add_argument('--maximum-fills',type=int,default=4096,help='Per-candidate bounded ledger capacity; exhaustion fails closed')
     p.add_argument('--structure',type=Path,help='Certified sparse raw-level sidecar; enables both target modes')
@@ -66,7 +69,9 @@ def main(argv=None):
         print('Compiling causal sparse lifecycle gates',flush=True)
         union=np.unique(inputs.arrays['top_indices']);union=union[union>=0].tolist()
         gates,rule_seconds=inputs.compile(members,listing_ids=union)
-        runner=SparseProgramRunner(inputs,space,members,gates,structure=a.structure,backend=a.backend,maximum_fills=a.maximum_fills,maximum_state_gib=4.)
+        runner_type=CompactProgramRunner if a.broker=='compact' else SparseProgramRunner
+        dimensions={'holding_capacity':a.holding_capacity} if a.broker=='compact' else {}
+        runner=runner_type(inputs,space,members,gates,structure=a.structure,backend=a.backend,maximum_fills=a.maximum_fills,maximum_state_gib=4.,**dimensions)
         setup=perf_counter();runner.compile();torch.cuda.synchronize();setup=perf_counter()-setup
         measurements=[];previous=None
         for repeat in range(a.repeats):
@@ -90,10 +95,10 @@ def main(argv=None):
         receipt=dict(status='complete',version='v6-sparse-profile-v1',code_sha256=code_hash(),day=a.day,arguments=vars(a)|{'inputs':str(a.inputs),'output':str(a.output),'structure':str(a.structure) if a.structure else None},
             input_receipt_sha256=file_hash(a.inputs/a.day/'complete.json'),population_sha256=file_hash(root/'population.json'),ledger_sha256=file_hash(root/'fills.pt'),
             backend=a.backend,load_seconds=load_seconds,rule_seconds=rule_seconds,setup_seconds=setup,input_bytes=inputs.bytes,
-            daily_union_listings=runner.n,measurements=measurements,metrics=serial,validation_opened=False,optimization_started=False,
+            daily_union_listings=len(union),broker_slots=runner.n,broker=a.broker,measurements=measurements,metrics=serial,validation_opened=False,optimization_started=False,
             full_session=full_session,financial_audit_sha256=financial_audit_sha256,
             repeated_fill_receipts_exact=a.repeats>1,
-            limitations=['Daily-union broker state baseline',*(['Percentage targets only; structural sidecar unqualified'] if a.structure is None else []),
+            limitations=[*(['Daily-union broker state baseline'] if a.broker=='daily-union' else ['Compact holding capacity is bounded; overflow invalidates results']),*(['Percentage targets only; structural sidecar unqualified'] if a.structure is None else []),
                          *(['Partial-session timing is not profitability evidence'] if not full_session else []),
                          'Training-session profiling is not out-of-sample evidence'])
         write_json(root/'receipt.json',receipt)

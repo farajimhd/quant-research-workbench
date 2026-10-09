@@ -16,6 +16,7 @@ from research.vectorized_backtest.v6.torch_backtest.runtime import file_hash
 def fixture():
     tape=synthetic_tape(seconds=60,listings=2);tape.admission.fill_(1)
     x=SparseInputs.__new__(SparseInputs);x.device=torch.device('cpu')
+    x.offsets=np.array([0,60,120])
     top=np.zeros((60,1),dtype=np.int64);top[20:]=1
     x.arrays={'top_indices':top,'feature_keys':np.arange(120)}
     x.tensors={'clocks':tape.clocks,'top_indices':torch.tensor(top),

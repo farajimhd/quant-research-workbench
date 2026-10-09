@@ -20,7 +20,8 @@ def _advance(remaining: torch.Tensor, buy_filled: torch.Tensor,
              now: torch.Tensor, ask: torch.Tensor, signal_valid: torch.Tensor,
              cash: torch.Tensor, fee_cover: torch.Tensor,
              fee_per_share: float, minimum_order_fee: float) -> None:
-    slots = remaining.shape[1] // ask.shape[0]
+    slots = remaining.shape[1] // ask.shape[-1]
+    account_ask = (ask[None] if ask.ndim == 1 else ask).repeat_interleave(slots, dim=1)
     mode = values[0]
     pending = remaining > 0
     partial = pending & (buy_filled > 0)
@@ -35,10 +36,10 @@ def _advance(remaining: torch.Tensor, buy_filled: torch.Tensor,
     retry = (partial & ~policy_cancel & room & due & (now < age_limit)
              & (exit_kind == 0)
              & ((mode == 2) | ((mode == 3) & (now >= buy_deadline))))
-    valid_ask = torch.isfinite(ask).repeat_interleave(slots)[None] & (ask.repeat_interleave(slots)[None] > 0)
+    valid_ask = torch.isfinite(account_ask) & (account_ask > 0)
     retry &= (mode != 2) | valid_ask
     proposed = torch.minimum(
-        ask.nan_to_num(0).repeat_interleave(slots)[None] * (1 + values[5]),
+        account_ask.nan_to_num(0) * (1 + values[5]),
         buy_reference * (1 + values[6] / 10000))
     proposed = torch.where(retry & (mode == 2), proposed, buy_limit)
     # Price chasing cannot spend reserved cash a second time. Distribute

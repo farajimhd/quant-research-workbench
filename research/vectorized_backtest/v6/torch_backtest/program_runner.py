@@ -15,11 +15,11 @@ class ProgramRunner(SearchRunner):
     def _manage_positions(self,now,ask,bid,valid,add,reduce,exit):
         s=self.settings
         def value(name):return self.management_columns[name][:,None,None]
-        live=(self.quantity>0)&valid[None,:,None]&(self.remaining==0)&(self.exit_kind==0)
+        live=(self.quantity>0)&self._market_value(valid,3)&(self.remaining==0)&(self.exit_kind==0)
         live&=(now-self.first_fill>=s.minimum_position_hold_seconds)&(now-self.management_at>=value('management_cooldown_seconds'))
         terminal=now>=self.end_boundary-self._value('terminal_exit_lead_seconds',3)
         live&=~terminal
-        profitable=bid[None,:,None]>=self.average*(1+value('reduce_minimum_profit_fraction'))
+        profitable=self._market_value(bid,3)>=self.average*(1+value('reduce_minimum_profit_fraction'))
         reduce_mask=live&reduce[...,None]&profitable&~exit[...,None]
         amount=torch.floor(self.quantity*value('reduce_fraction')).to(torch.int64)
         reduce_mask&=amount>0
@@ -33,9 +33,9 @@ class ProgramRunner(SearchRunner):
         self.reduce_remaining.copy_(torch.where(full,0,self.reduce_remaining))
         eligible=live&add[...,None]&~reduce_mask&~exit[...,None]&(self.exit_kind==0)
         eligible&=self.add_count<value('maximum_adds')
-        eligible&=bid[None,:,None]>=self.average*(1+value('add_minimum_profit_fraction'))
+        eligible&=self._market_value(bid,3)>=self.average*(1+value('add_minimum_profit_fraction'))
         wanted=torch.where(eligible,torch.floor(self.quantity*value('add_fraction')).to(torch.int64),0)
-        limit=ask.nan_to_num(0)[None,:,None]*(1+self._value('maximum_entry_drift_fraction',3))
+        limit=self._market_value(ask.nan_to_num(0),3)*(1+self._value('maximum_entry_drift_fraction',3))
         pending=(self.remaining*self.buy_limit).sum((1,2))
         pending_fee=(torch.maximum(torch.full_like(self.buy_paid,s.minimum_order_fee),
             (self.buy_order_filled+self.remaining)*s.fee_per_share)-self.buy_paid).clamp_min(0)
@@ -50,7 +50,7 @@ class ProgramRunner(SearchRunner):
         wanted=torch.floor(wanted*(room/risk.clamp_min(1e-12)).clamp(max=1)[:,None,None]).to(torch.int64)
         add_mask=wanted>0
         self.requested_quantity.add_(wanted);self.remaining.add_(wanted)
-        for name,new in (('buy_limit',limit),('buy_reference',ask[None,:,None]),('buy_submitted',now),('buy_created',now),('buy_last_retry',now),
+        for name,new in (('buy_limit',limit),('buy_reference',self._market_value(ask,3)),('buy_submitted',now),('buy_created',now),('buy_last_retry',now),
             ('buy_deadline',now+self._value('entry_deadline_seconds',3)),('buy_retries',0),('buy_order_filled',0),('buy_paid',0)):
             state=getattr(self,name);state.copy_(torch.where(add_mask,new,state))
         self.add_count.add_(add_mask.to(torch.int64))
