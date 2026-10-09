@@ -19,7 +19,11 @@ class CompactProgramRunner(SparseProgramRunner):
         self._state_names.extend(('registry_ids','registry_overflow'))
         # CUDA scatter-reduce has no Bool kernel; store 0/1 identity history.
         self.source_used=torch.zeros((self.b,len(inputs.offsets)-1),dtype=torch.int64,device=inputs.device)
-        self.source_swing=torch.full((self.b,len(self.union_ids)),float('nan'),dtype=torch.float64,device=inputs.device)
+        left_max,right_max=self.execution_key[2][1:3]
+        self.swing_right_capacity=right_max
+        pairs=torch.cartesian_prod(torch.arange(1,left_max+1,device=inputs.device),torch.arange(1,right_max+1,device=inputs.device))
+        self.swing_pair_right=pairs[:,1];self.swing_pair_length=pairs.sum(-1)+1
+        self.source_swing=torch.full((len(pairs),len(self.union_ids)),float('nan'),dtype=torch.float64,device=inputs.device)
         self._state_names.extend(('source_used','source_swing'))
         self.source_rings={}
         for name in ('price_ring','close_ring','low_ring','movement_ring','attention_ring'):
@@ -148,7 +152,9 @@ class CompactProgramRunner(SparseProgramRunner):
         indices=(self._value('momentum_lookback_seconds',2).to(torch.int64)-1)[...,None].expand(self.b,self.n,1)
         return values.gather(-1,indices).squeeze(-1)
 
-    def _swing_level(self):return self.source_swing.gather(1,self.source_indices)
+    def _swing_level(self):
+        pair=(self._value('swing_left_seconds',2).to(torch.int64)-1)*self.swing_right_capacity+self._value('swing_right_seconds',2).to(torch.int64)-1
+        return self.source_swing[pair,self.source_indices]
 
     def _advance_movement(self,close,observed):
         market=self.source_market;close=market['mark'];observed=market['observed']
@@ -166,11 +172,10 @@ class CompactProgramRunner(SparseProgramRunner):
             if name!='attention_ring':value=torch.where(observed,value,float('nan'))
             ring=self.source_rings[name];ring.copy_(torch.cat((value[None],ring[:-1]),0))
         if self.execution_key[1][3]!=0:
-            ring=self.source_rings['low_ring'];right=self._value('swing_right_seconds',2).to(torch.int64)
-            length=self._value('swing_left_seconds',3)+self._value('swing_right_seconds',3)+1
-            selected=torch.arange(len(ring),device=ring.device)[None,:,None]<length
-            values=ring[None].expand(self.b,-1,-1)
-            pivot=ring.T[None].expand(self.b,-1,-1).gather(-1,right[...,None].expand(self.b,len(self.union_ids),1)).squeeze(-1)
+            ring=self.source_rings['low_ring'];pairs=len(self.swing_pair_right)
+            selected=torch.arange(len(ring),device=ring.device)[None,:,None]<self.swing_pair_length[:,None,None]
+            values=ring[None].expand(pairs,-1,-1)
+            pivot=ring[self.swing_pair_right]
             confirmed=(~selected|torch.isfinite(values)).all(1)&(pivot==torch.where(selected,values,float('inf')).amin(1))
             self.source_swing.copy_(torch.where(confirmed,pivot,self.source_swing))
         self.source_previous_close.copy_(torch.where(observed,close,float('nan')))

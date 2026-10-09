@@ -10,11 +10,18 @@ from research.vectorized_backtest.v6.torch_backtest.genome import NAMES
 from research.vectorized_backtest.v6.torch_backtest.runtime import file_hash
 
 
-def compare(*,cycling=False,population=1,compiled=False,structure=None,capacity=2):
+def compare(*,cycling=False,population=1,compiled=False,structure=None,capacity=2,swing=False):
     tape,x,space,member,gates=fixture();x.offsets=np.array([0,60,120])
     x.arrays['top_indices']=x.arrays['top_indices'].astype(np.int32)
     x.tensors['top_indices']=torch.tensor(x.arrays['top_indices'])
     members=[deepcopy(member) for _ in range(population)]
+    if swing:
+        tape.low.copy_(tape.close*torch.where(torch.arange(60)[:,None]%12==6,.96,.999))
+        x.market['low']=tape.low.T.reshape(-1)
+        for i,v in enumerate(members):
+            v.policy[8]=1
+            v.policy[space.policy_start+NAMES.index('swing_left_seconds')]=1+(i%25)//5
+            v.policy[space.policy_start+NAMES.index('swing_right_seconds')]=1+i%5
     if structure is not None:
         x.root=structure/'input';x.root.mkdir();(x.root/'complete.json').write_text('{}')
         x.arrays['market_keys']=x.tensors['market_keys'].numpy()
@@ -75,6 +82,12 @@ def test_compact_structural_targets_match_financial_reference(tmp_path):
 
 def test_compact_capacity_exhaustion_rejects_result():
     with pytest.raises(RuntimeError,match='overflow|capacity|exhaust',):compare(capacity=1)
+
+
+@pytest.mark.parametrize('compiled',[False,True])
+def test_shared_swing_pairs_match_all_candidate_financial_windows(compiled):
+    runner=compare(population=50,swing=True,compiled=compiled)
+    assert runner.source_swing.shape==(25,2)
 
 
 def test_sparse_population_reuse_changes_parameters_and_gates_exactly():
