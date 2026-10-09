@@ -71,6 +71,86 @@ PARENT=TableContract('trading_structural_rejection_manager_snapshot_v1',(
     PARENT_V3.columns[-1]),PARENT_V3.partition,PARENT_V3.order)
 TABLES=(*CHILDREN,PARENT)
 _PREFIXES=('rejection_state','rejection_bar','rejection_link','rejection_level')
+MAX_COLD_RESPONSE_BYTES=64*1024*1024
+MAX_COLD_TOTAL_BYTES=128*1024*1024
+
+
+def load_unattested_structural_rejection_snapshot(client,*,run_id,checkpoint_sequence):
+    """Bounded complete historical read; caller must prove prefix and source.
+
+    A selected parent is read directly, without borrowing a legacy manager
+    seal. The inherited root is reconstructed and independently rehashed from
+    its exact retained columns, then all inherited children are restored.
+    Content integrity is not a journal-head or market-source attestation.
+    """
+    from src.backend.backtest_market_data import assert_select_only
+    from .arte_journal_writer import _literal,_wire_row,typed_row
+    from .strategy_one_management_snapshot import (
+        ManagerSnapshotRows,SOURCE as ENTRY_SOURCE,BREAK,HIGH,CLOSED,FIRST_HELD,
+        restore_manager_snapshot)
+    from .strategy_one_protection_snapshot import load_protection_snapshot_rows
+    if (type(run_id) is not str or str(UUID(run_id))!=run_id or UUID(run_id).int==0
+            or type(checkpoint_sequence) is not int or not 0<checkpoint_sequence<2**64
+            or not callable(getattr(client,'execute',None))):
+        raise ValueError('Structural rejection cold read requires exact run and cursor')
+
+    class BoundedReader:
+        total=0
+
+        def execute(self,sql):
+            assert_select_only(sql)
+            result=client.execute(sql)
+            if type(result) is not str or len(result)>MAX_COLD_RESPONSE_BYTES:
+                raise ValueError('Structural rejection cold response exceeds text byte bound')
+            count=len(result.encode('utf-8'))
+            self.total+=count
+            if count>MAX_COLD_RESPONSE_BYTES or self.total>MAX_COLD_TOTAL_BYTES:
+                raise ValueError('Structural rejection cold response exceeds aggregate byte bound')
+            return result
+
+    bounded=BoundedReader()
+
+    def read(contract,predicate,limit):
+        columns=','.join(f'toString({name}) AS {name}' if 'Decimal(' in kind else name
+                         for name,kind in contract.columns)
+        sql=assert_select_only(f'SELECT {columns} FROM arte.{contract.name} WHERE {predicate} '
+            f'ORDER BY {contract.order} LIMIT {limit} FORMAT JSONEachRow')
+        raw=tuple(json.loads(line) for line in bounded.execute(sql).splitlines() if line.strip())
+        if len(raw)>=limit:
+            raise ValueError('Structural rejection cold family exceeds exact cardinality')
+        return tuple(_wire_row(contract.name,row) for row in raw)
+
+    scope=f'run_id={_literal(run_id)} AND checkpoint_sequence={checkpoint_sequence}'
+    seals=read(PARENT,scope,2)
+    if len(seals)!=1:
+        raise ValueError('Structural rejection cold read lacks exactly one own parent')
+    root=seals[0]
+    if (root['run_id']!=run_id or root['checkpoint_sequence']!=checkpoint_sequence
+            or _sealed(PARENT,{k:v for k,v in root.items() if k!='content_hash'})!=root):
+        raise ValueError('Structural rejection cold parent differs from exact hash/run/cursor')
+    predicate=f"snapshot_id=toUUID({_literal(root['snapshot_id'])})"
+
+    def children(contract,prefix,maximum=100000):
+        count=root[prefix+'_count']
+        if type(count) is not int or not 0<=count<=maximum:
+            raise ValueError('Structural rejection cold child inventory exceeds bound')
+        values=read(contract,predicate,count+1)
+        if len(values)!=count:
+            raise ValueError('Structural rejection cold family is incomplete')
+        return values
+
+    inherited_root=typed_row(PARENT_V3.name,
+        {name:root[name] for name,_ in PARENT_V3.columns if name!='content_hash'})
+    inherited=ManagerSnapshotRows(inherited_root,
+        children(ENTRY_SOURCE,'source'),children(BREAK,'pending_break'),
+        load_protection_snapshot_rows(bounded,run_id=run_id,checkpoint_sequence=checkpoint_sequence),
+        children(HIGH,'position_high'),children(CLOSED,'closed_position'),
+        children(FIRST_HELD,'first_held'))
+    restore_manager_snapshot(inherited)
+    rows=StructuralRejectionSnapshotRows(root,inherited,
+        *(children(contract,prefix,2000000) for contract,prefix in zip(CHILDREN,_PREFIXES)))
+    _verify_rows(rows)
+    return rows
 
 
 def _digest(value):
