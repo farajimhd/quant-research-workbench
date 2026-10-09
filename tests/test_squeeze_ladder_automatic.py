@@ -13,6 +13,7 @@ from src.backend.backtest_market_data import market_day_boundary
 from src.backend.backtest_strategy_one_configuration import CertifiedStrategyOneConfiguration
 from src.trading_runtime.domain import InstrumentContract
 from src.trading_runtime.journal_contract import canonical_json
+from src.trading_runtime.ibkr_schema import OPEN_ORDER_STATUSES
 from src.trading_runtime.portfolio import PortfolioAccountProfile, PortfolioManagementEngine, PortfolioPolicy
 from src.trading_runtime.runtime import RunConfig, RunMode, TradingRuntime
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
@@ -117,6 +118,53 @@ def test_real_portfolio_oms_cash_and_independent_oca_targets():
                        if record.entity_type == 'strategy_intent']
             assert len(parents) == 1
             assert runtime.journal.automatic_entry_for_record(parents[0].record_id).intent.quantity == 0
+        finally:
+            await runtime.order_manager.close()
+            runtime.journal.close()
+    asyncio.run(exercise())
+
+
+def test_full_lot_exit_releases_cash_but_does_not_reset_session_acquisition():
+    async def exercise():
+        runtime, context, policy, assignment, decision, event = await runtime_fixture()
+        try:
+            result = await submit_automatic_ladder(runtime, decision, assignment=assignment,
+                market_context=context, policy=policy)
+            assert result[0]['order_group'] is not None
+            await runtime.process_event(replace(event,
+                ts=event.ts + timedelta(milliseconds=100),
+                ingest_ts=event.ts + timedelta(milliseconds=100), sequence=2),
+                evaluate_strategy=False)
+            held = sum(float(row.position) for row in await runtime.broker.positions('DU1'))
+            assert held > 0
+            invested_cash = float((await runtime.broker.account_summary('DU1')).totalcashvalue)
+            remaining = held
+            for sequence, bid in enumerate((11., 12., 13.), start=3):
+                offset = timedelta(milliseconds=(sequence - 1) * 100)
+                await runtime.process_event(replace(event, bid_price=bid, ask_price=bid + .01,
+                    bid_size=1000, ts=event.ts + offset, ingest_ts=event.ts + offset,
+                    sequence=sequence), evaluate_strategy=False)
+                current = sum(float(row.position) for row in await runtime.broker.positions('DU1'))
+                assert 0 <= current < remaining
+                remaining = current
+            assert remaining == 0
+            terminal_orders = await runtime.broker.live_orders()
+            assert len(terminal_orders) == 9
+            assert not any(order.order_status in OPEN_ORDER_STATUSES for order in terminal_orders)
+            released_cash = float((await runtime.broker.account_summary('DU1')).totalcashvalue)
+            assert released_cash > invested_cash
+            assert released_cash > 10000
+            parents_before = tuple(record.record_id for record in runtime.journal.records(RUN)
+                if record.entity_type == 'strategy_intent')
+            assert len(parents_before) == 1
+            repeat = await submit_automatic_ladder(runtime,
+                replace(decision, boundary_ms=65500), assignment=assignment,
+                market_context=context, policy=policy)
+            assert repeat[0]['decision']['status'] == 'accepted_batch_consumed_session'
+            assert await runtime.broker.live_orders() == terminal_orders
+            assert float((await runtime.broker.account_summary('DU1')).totalcashvalue) == released_cash
+            assert tuple(record.record_id for record in runtime.journal.records(RUN)
+                if record.entity_type == 'strategy_intent') == parents_before
         finally:
             await runtime.order_manager.close()
             runtime.journal.close()
