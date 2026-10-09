@@ -14,6 +14,8 @@ from src.trading_runtime.native_completed_bar_sequences import (
     CompletedBarSequencePolicy, completed_bar_sequence_windows,
     qualify_completed_sequences_after_acquisition,
 )
+from src.trading_runtime.native_channel_qualification import _require_policy_json
+from src.trading_runtime.journal_contract import canonical_json
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +53,43 @@ class NativeChannelSequencePolicy:
             resolution_ms=self.resolution_ms, channel=self.channel,
             comparison=self.comparison, threshold=self.threshold,
             max_decisions=self.max_decisions, reference_mode=self.reference_mode)
+
+
+def parse_native_channel_sequence_policy(value):
+    """Read an exact installed JSON declaration without supplying defaults.
+
+    Parsing is not release/source admission. That owner must verify the paired
+    rule, producer scope and acquisition witness independently before execution.
+    """
+    _require_policy_json(value)
+    required = {'rule', 'input_policy', 'input_policy_digest', 'minimum_bars',
+        'max_rows', 'resolution_ms', 'channel', 'comparison', 'threshold',
+        'max_decisions', 'reference_mode'}
+    if type(value) is not dict or set(value) != required:
+        raise ValueError('Complete native sequence declaration required')
+    inputs = value['input_policy']
+    parameters = {'resolutions_ms', 'decision_interval_ms', 'freshness_by_resolution',
+                  'participation_lookback_bars', 'volatility_lookback_bars'}
+    if type(inputs) is not dict or not parameters <= set(inputs):
+        raise ValueError('Complete native sequence input policy required')
+    resolutions = inputs['resolutions_ms']
+    freshness = inputs['freshness_by_resolution']
+    if (type(resolutions) is not list or not 1 <= len(resolutions) <= 32 or
+            type(freshness) is not list or len(freshness) != len(resolutions) or
+            any(type(pair) is not list or len(pair) != 2 for pair in freshness)):
+        raise ValueError('Bounded native sequence input JSON arrays required')
+    declared = NativeChannelPolicy(tuple(resolutions), inputs['decision_interval_ms'],
+        tuple(tuple(pair) for pair in freshness), inputs['participation_lookback_bars'],
+        inputs['volatility_lookback_bars'])
+    if canonical_json(inputs) != canonical_json(declared.payload()):
+        raise ValueError('Native sequence input semantics differ')
+    result = NativeChannelSequencePolicy(declared,
+        CompletedBarSequencePolicy(value['minimum_bars'], value['max_rows']),
+        value['resolution_ms'], value['channel'], value['comparison'],
+        value['threshold'], value['max_decisions'], value['reference_mode'])
+    if canonical_json(value) != canonical_json(result.payload()):
+        raise ValueError('Native sequence rule or input digest differs')
+    return result
 
 
 def _reference_confirmation(features, decisions, acquired):

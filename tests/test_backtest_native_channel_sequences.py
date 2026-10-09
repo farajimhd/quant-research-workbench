@@ -1,5 +1,6 @@
 """Installed source/fence path with controlled transport, not financial fills."""
 from dataclasses import replace
+import json
 
 import numpy as np
 import polars as pl
@@ -8,9 +9,11 @@ import pytest
 from tests.test_backtest_native_channel_qualification import installed, unit  # noqa: F401
 from src.backend.backtest_native_channel_sequences import (
     NativeChannelSequencePolicy, qualify_installed_native_channel_sequences,
+    parse_native_channel_sequence_policy,
 )
 from src.market_engine.native_causal_channel_contract import issue_source_plan
 from src.trading_runtime.native_completed_bar_sequences import CompletedBarSequencePolicy
+from src.trading_runtime.journal_contract import canonical_json
 
 
 def call(inputs, *, acquired=None, held=None, decisions=None, comparison='ge', bars=1,
@@ -101,5 +104,23 @@ def test_installed_reference_remains_intersected_with_sequence_and_held(installe
     assert not output.flags.writeable
     assert not call(installed, held=np.zeros(4, dtype=bool),
                     reference_mode='below-first-post-acquisition-close').any()
+
+
+def test_complete_sequence_manifest_roundtrip_and_tampering(installed):
+    policy = NativeChannelSequencePolicy(installed[2].request.policy,
+        CompletedBarSequencePolicy(2, 1000), 60000, 'close_return', 'lt', 0.0, 1000,
+        'below-first-post-acquisition-close')
+    value = json.loads(canonical_json(policy.payload()))
+    assert parse_native_channel_sequence_policy(value) == policy
+    for name, changed in [('rule', 'native-post-acquisition-channel-sequence@1'),
+                          ('input_policy_digest', 'f' * 64), ('minimum_bars', True),
+                          ('threshold', 0), ('reference_mode', 'entry-price')]:
+        with pytest.raises(ValueError):
+            parse_native_channel_sequence_policy({**value, name: changed})
+    with pytest.raises(ValueError, match='Complete'):
+        parse_native_channel_sequence_policy({k: v for k, v in value.items() if k != 'reference_mode'})
+    with pytest.raises(ValueError, match='semantics'):
+        parse_native_channel_sequence_policy({**value,
+            'input_policy': {**value['input_policy'], 'future_baseline': True}})
     assert not call(installed, acquired=installed[3]['decision_day_ms'].to_numpy() * 1000,
                     reference_mode='below-first-post-acquisition-close').any()
