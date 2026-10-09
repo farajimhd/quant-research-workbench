@@ -64,6 +64,9 @@ class ProgramRunner(SearchRunner):
         modes=tuple(int(rows[0,i]) if (rows[:,i]==rows[0,i]).all() else -1 for i in (5,6,7,8,9))
         windows=tuple(int(rows[:,space.policy_start+NAMES.index(name)].max()) for name in
                       ('adaptive_window','swing_left_seconds','swing_right_seconds','momentum_lookback_seconds','attention_lookback_seconds'))
+        # Allocation capacity only: candidate masks still select their exact
+        # lookback. Avoid recapturing equivalent 31/32-row history buffers.
+        windows=(1<<(windows[0]-1).bit_length(),*windows[1:])
         zero_weights=tuple(bool((rows[:,space.policy_start+NAMES.index(name)]==0).all()) for name in
                            ('momentum_weight','attention_weight'))
         return (int(rows[:,4].max()),modes,windows,zero_weights)

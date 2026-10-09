@@ -79,9 +79,11 @@ def test_compact_capacity_exhaustion_rejects_result():
 
 def test_sparse_population_reuse_changes_parameters_and_gates_exactly():
     _,inputs,space,member,gates=fixture()
+    member.policy[space.policy_start+NAMES.index('adaptive_window')]=31
     reused=CompactProgramRunner(inputs,space,[member],gates.clone(),holding_capacity=2,maximum_fills=512)
     reused.run()
     changed=deepcopy(member)
+    changed.policy[space.policy_start+NAMES.index('adaptive_window')]=32
     changed.policy[space.policy_start+NAMES.index('target_step_fraction')]=.01
     changed_gates=gates.clone();changed_gates[:,:10]=0
     pointer=reused.sparse_gates.data_ptr()
