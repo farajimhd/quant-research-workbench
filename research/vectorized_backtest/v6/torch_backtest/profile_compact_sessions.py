@@ -49,6 +49,7 @@ def main(argv=None):
     p.add_argument('--session-count',type=int,default=2);p.add_argument('--workers',type=int,default=2)
     p.add_argument('--worker-counts',help='Comma-separated resident concurrency sweep, for example 2,4,8,16')
     p.add_argument('--reference',type=Path,help='Completed serial-warm session directory for this exact population; skips serial passes')
+    p.add_argument('--concurrent-only',action='store_true',help='Measure only requested concurrency; first pass is an independently audited batch-partition reference')
     p.add_argument('--holding-capacity',type=int,default=40);p.add_argument('--maximum-fills',type=int,default=16384)
     p.add_argument('--backend',choices=['compile','cudagraph','compiled_graph'],default='compiled_graph')
     p.add_argument('--seed',type=int,default=2236)
@@ -75,7 +76,7 @@ def main(argv=None):
         write_json(root/'population.json',[v.payload() for v in members])
         rows=[]
         audits=[]
-        modes=([] if a.reference else [('serial-cold',1),('serial-warm',1)])+[(f'concurrent-warm-{w}',w) for w in worker_counts]
+        modes=([] if a.reference or a.concurrent_only else [('serial-cold',1),('serial-warm',1)])+[(f'concurrent-warm-{w}',w) for w in worker_counts]
         for mode,workers in modes:
             # Whole-pass graph owners have gone out of scope. Release unused
             # allocator cache before measuring the next independent envelope.
@@ -97,12 +98,13 @@ def main(argv=None):
             row=dict(mode=mode,elapsed_seconds=perf_counter()-started,peak_allocated_bytes=torch.cuda.max_memory_allocated(),
                 peak_reserved_bytes=torch.cuda.max_memory_reserved(),candidate_sessions=a.population*len(days))
             rows.append(row);write_json(root/'measurements.json',rows);print(row,flush=True)
-            if mode.startswith('concurrent-warm'):
+            if mode.startswith('concurrent-warm') and (a.reference or not a.concurrent_only):
                 reference=a.reference if a.reference else root/'serial-warm'
                 audits.extend(dict(workers=workers,**compare_sessions(reference/day,destination/day)) for day in days)
         write_json(root/'receipt.json',dict(status='complete',measurements=rows,audits=audits,validation_opened=False,
-            optimization_started=False,backend=a.backend,limitations=['Training-only throughput evidence']))
-        write_json(root/'status.json',dict(status='complete',stage='Exact full-session concurrency audit passed',validation_opened=False))
+            optimization_started=False,backend=a.backend,partition_reference=bool(a.concurrent_only and not a.reference),
+            limitations=['Training-only throughput evidence']+(['Independent financial audit; no scheduling parity reference in this pass'] if a.concurrent_only and not a.reference else [])))
+        write_json(root/'status.json',dict(status='complete',stage='Full-session financial audit passed' if a.concurrent_only and not a.reference else 'Exact full-session comparison audit passed',validation_opened=False))
     return 0
 
 
