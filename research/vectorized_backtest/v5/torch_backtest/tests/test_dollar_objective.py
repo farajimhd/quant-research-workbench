@@ -42,7 +42,7 @@ def test_fill_time_restored_to_candidate_and_session_reset(tmp_path):
 def test_full_population_backward_wrap():
     from research.vectorized_backtest.v5.torch_backtest.staged_dashboard import navigate
     status={'top_strategies':[{'rank':i} for i in range(1,4097)]}
-    assert navigate(status,'b',height=38)==(4089,511,0)
+    assert navigate(status,'b',height=38)==(4051,81,0)
     assert navigate(status,'n',rank=4089,rank_page=511,height=38)==(1,0,0)
 
 

@@ -20,7 +20,11 @@ def ranked_rows(status):
 
 
 def ranking_page_size(height):
-    return max(1,min(10,(height-22)//2))
+    return 50
+
+
+def ranking_viewport_size(height):
+    return max(1,min(50,height-24))
 
 
 def navigate(status,key,*,rank=1,rank_page=0,detail_page=0,height=38):
@@ -47,14 +51,15 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     queued=status.get('queued_campaign') or {}
     progress_height=7 if queued else 5
     page_size=ranking_page_size(height)
-    leader_height=page_size+4
+    visible_size=ranking_viewport_size(height)
+    leader_height=visible_size+4
     layout=Layout()
     layout.split_column(Layout(name='header',size=2),Layout(name='progress',size=progress_height),
                         Layout(name='leaders',size=leader_height),Layout(name='metrics',ratio=1),
                         Layout(name='timing',size=2),Layout(name='messages',size=5 if height>=30 else 3),Layout(name='keys',size=1))
     population=queued.get('population') if queued else config.get('population')
     population_label=('Queued population' if queued else 'Population')
-    layout['header'].update(Text(f"V5 {status.get('status','starting').upper()} | {status.get('stage','Preflight')} | updated {age:.0f}s ago\n{population_label} {number(population,',.0f')} | {status.get('focus','')} | validation {status.get('validation_status','SEALED')}",style='cyan' if age<30 else 'yellow'))
+    layout['header'].update(Text(f"V6 {status.get('status','starting').upper()} | {status.get('stage','Preflight')} | updated {age:.0f}s ago\n{population_label} {number(population,',.0f')} | {status.get('focus','')} | validation {status.get('validation_status','SEALED')}",style='cyan' if age<30 else 'yellow'))
     bars=Progress(TextColumn('{task.description}',table_column=Column(min_width=18,no_wrap=True)),BarColumn(bar_width=None),TaskProgressColumn(),TextColumn('{task.completed:,.0f}/{task.total:,.0f}'),expand=True)
     if queued:
         bars.add_task('Campaign generations (queued)',total=queued['generations'],completed=0)
@@ -77,15 +82,24 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     if width>=110:
         table.add_column('Drawdown $',justify='right',no_wrap=True)
         table.add_column('Profit factor',justify='right',no_wrap=True)
-    for leader in leaders[rank_page*page_size:(rank_page+1)*page_size]:
+    if width>=160:
+        for label in ('Ex-best $','Best day $','Profitable days %','Worst day $','Position tail $'):
+            table.add_column(label,justify='right',no_wrap=True)
+    page_rows=leaders[rank_page*page_size:(rank_page+1)*page_size]
+    selected_index=next((i for i,row in enumerate(page_rows) if row['rank']==selected),0)
+    viewport=min(max(0,selected_index-visible_size+1),max(0,len(page_rows)-visible_size))
+    for leader in page_rows[viewport:viewport+visible_size]:
         metrics=leader.get('metrics',{});rank=leader['rank']
         values=[f'{rank}'+(' *' if rank==selected else ''),number(leader.get('score'),',.2f') if leader.get('valid',True) else 'INVALID',number(metrics.get('total_pnl')),
                 number(None if metrics.get('position_win_rate') is None else metrics['position_win_rate']*100),number(metrics.get('positions'),',.0f')]
         if width>=110:values.extend([number(metrics.get('worst_drawdown')),number(metrics.get('profit_factor'))])
+        if width>=160:values.extend([number(metrics.get('other_days_pnl')),number(metrics.get('best_day_pnl')),
+            number(None if metrics.get('profitable_day_fraction') is None else 100*metrics['profitable_day_fraction']),
+            number(metrics.get('worst_pnl')),number(metrics.get('position_tail_mean_pnl'))])
         table.add_row(*values,style='bold cyan' if rank==selected else '')
     if not leaders:table.add_row('--','Pending completed ranking',*(['--']*(len(table.columns)-2)))
     basis=status.get('evaluation_basis','No completed ranking yet')
-    layout['leaders'].update(Panel(table,title=f'Ranked {len(leaders)} | page {rank_page+1}/{rank_pages}',subtitle=basis,padding=0))
+    layout['leaders'].update(Panel(table,title=f'Ranked {len(leaders)} | page {rank_page+1}/{rank_pages} | 50 rows | view {viewport+1}–{min(viewport+visible_size,len(page_rows))}',subtitle=basis,padding=0))
     leader=next((v for v in leaders if v['rank']==selected),{});metrics=leader.get('metrics',{})
     active=status.get('active_session') or {}
     grid=Table(expand=True,padding=(0,1));grid.add_column('Metric');grid.add_column('Value',justify='right')
@@ -99,6 +113,8 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
               ('Closed hold min / max s',f"{number(metrics.get('closed_hold_min_seconds'))} / {number(metrics.get('closed_hold_max_seconds'))}"),
               ('Closed hold mean / median / P90 s',' / '.join(number(metrics.get(k)) for k in ('closed_hold_mean_seconds','closed_hold_median_seconds','closed_hold_p90_seconds'))),
               ('Share-weighted hold s',number(metrics.get('mean_hold_seconds'))),
+              ('Worst 20% closed-position mean P&L $',number(metrics.get('position_tail_mean_pnl'))),
+              ('Position tail count / closed',f"{number(metrics.get('position_tail_count'),',.0f')} / {number(metrics.get('closed_positions'),',.0f')}"),
               ('Stop-risk / capital hours',f"{number(metrics.get('stop_risk_hours'))} / {number(metrics.get('capital_hours'))}")]
     elif view=='performance':
         timing=status.get('timing') or {};rows=[('Allocated lots / stock',number(status.get('execution_lot_capacity'),',.0f')),
@@ -112,6 +128,9 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     else:
         rows=[('Net P&L $',number(metrics.get('total_pnl'))),('P&L excluding best day $',number(metrics.get('other_days_pnl'))),
               ('Best day P&L $',number(metrics.get('best_day_pnl'))),('Win rate %',number(None if metrics.get('position_win_rate') is None else 100*metrics['position_win_rate'])),
+              ('Profitable sessions %',number(None if metrics.get('profitable_day_fraction') is None else 100*metrics['profitable_day_fraction'])),
+              ('Worst session P&L $',number(metrics.get('worst_pnl'))),
+              ('Worst 20% position mean P&L $',number(metrics.get('position_tail_mean_pnl'))),
               ('Profit factor',number(metrics.get('profit_factor'))),('Worst drawdown $',number(metrics.get('worst_drawdown'))),
               ('Daily Sharpe / annualized estimate',f"{number(metrics.get('sharpe_daily'),'.3f')} / {number(metrics.get('sharpe_annualized_estimate'),'.3f')}"),
               ('Median return / worst-tail loss %',f"{number(None if metrics.get('median_return') is None else metrics['median_return']*100)} / {number(None if metrics.get('tail_loss') is None else metrics['tail_loss']*100)}"),
