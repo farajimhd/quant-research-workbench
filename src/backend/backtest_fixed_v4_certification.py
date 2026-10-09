@@ -71,6 +71,20 @@ def _certify_numbered_identity(path: Path = _NUMBERED_FIXED_CONTRACT) -> str:
 
 def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
     """Extend the full inventory proof with Strategy 2's explicit session lane."""
+    from src.trading_runtime.declared_native_manifest import registered_manifest_authority
+    authority = registered_manifest_authority(strategy_number)
+    if authority is not None:
+        from src.trading_runtime.strategy_registry import numbered_strategy, fixed_strategy_executor
+        from src.trading_runtime.numbered_fixed_strategy import declared_automatic_ladder_release
+        if not declared_automatic_ladder_release(strategy_number):
+            raise ValueError('Native waiting manifest lacks declared automatic semantics')
+        parent_proof = certify_numbered_fixed_v4_projection(authority.parent_number)
+        additional_proof = authority.certify_source()
+        release = numbered_strategy(strategy_number)
+        release.verify()
+        fixed_strategy_executor(release.executor_strategy_id, release.executor_revision).verify()
+        return sha256(json.dumps((parent_proof, additional_proof, release.approved_digest),
+                                 separators=(',', ':')).encode()).hexdigest()
     from .backtest_fixed_structural_lot_configuration import declared_fixed_structural_lot_contract
     selected_lots = declared_fixed_structural_lot_contract(strategy_number)
     if selected_lots is not None:
@@ -1568,6 +1582,8 @@ def _reviewed_fixed_lot_journal_projection(source: str, name: str, expected: str
 
 def _reviewed_fixed_lot_configuration_projection(source: str, name: str, expected: str) -> bool:
     """Pin this exact registration delta and prove whole legacy module restoration."""
+    from .backtest_declared_waiting_ladder_compatibility import restore_reviewed_parent_source as restore_waiting
+    source = restore_waiting(source, 'backend/backtest_strategy_one_configuration.py')
     from .backtest_fixed_structural_lot_compatibility_v9 import restore_reviewed_parent_source as restore_v9
     from .backtest_fixed_structural_lot_compatibility_v10 import restore_reviewed_parent_source as restore_v10
     from .backtest_fixed_structural_lot_compatibility_v11 import restore_reviewed_parent_source as restore_v11
@@ -1818,6 +1834,8 @@ _FIXED_LOT_LEGACY_AST_RECIPES = {('backend/backtest_typed_publisher.py', '_drain
 def _reviewed_fixed_lot_ast_recipe(source: str, relative: str, name: str, expected: str) -> bool:
     """Apply only exact reviewed AST edits; complete retained legacy pin remains required."""
     supplied_source = source
+    from .backtest_declared_waiting_ladder_compatibility import restore_reviewed_parent_source as restore_waiting
+    source = restore_waiting(source, relative)
     from .backtest_fixed_structural_lot_compatibility_v19 import restore_reviewed_parent_source as restore_v19
     source = restore_v19(source, relative)
     from .backtest_fixed_structural_lot_compatibility_v18 import restore_reviewed_parent_source as restore_v18
@@ -1954,6 +1972,8 @@ _DRAWDOWN_CORE_LEGACY_SELF_AST = "fb07a0cb88e0e19b384ddd6a86bf19baed495378708dd7
 def _reviewed_fixed_lot_core_projection(source: str, relative: str, name: str, expected: str) -> bool:
     """Retain core source pins under the same bounded, independently reviewed projection."""
     relative = relative.removeprefix("src/")
+    from .backtest_declared_waiting_ladder_compatibility import restore_reviewed_parent_source as restore_waiting
+    source = restore_waiting(source, relative)
     return ((relative == "backend/backtest_strategy_one_configuration.py"
              and _reviewed_fixed_lot_configuration_projection(source, name, expected))
             or _reviewed_fixed_lot_ast_recipe(source, relative, name, expected))

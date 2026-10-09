@@ -70,6 +70,10 @@ def certify_numbered_configuration(client: Any, strategy_number: int = 1) -> Cer
     if len(releases) != 1:
         raise RuntimeError(f"Strategy {strategy_number} needs exactly one immutable typed configuration release")
     release = releases[0]
+    from src.trading_runtime.declared_native_manifest import registered_manifest_authority
+    authority = registered_manifest_authority(strategy_number)
+    if authority is not None and not str(release.get('source_candidate_id') or '').startswith(authority.source_prefix + ':'):
+        raise RuntimeError('Native configuration source prefix differs from registered authority')
     attempt = str(release.get("release_attempt_id") or "")
     if (release.get("strategy_id") != STRATEGY_ID
             or not re.fullmatch(r"[0-9a-fA-F-]{36}", attempt)
@@ -102,7 +106,11 @@ def certify_numbered_configuration(client: Any, strategy_number: int = 1) -> Cer
         from src.trading_runtime.strategy_registry import numbered_strategy_parent
         source_number = numbered_strategy_parent(strategy_number)
         source = certify_numbered_configuration(client, source_number)
-        if declared_fixed_structural_lot_contract(strategy_number) is not None:
+        from src.trading_runtime.declared_native_manifest import registered_manifest_authority
+        authority = registered_manifest_authority(strategy_number)
+        if authority is not None:
+            derive = authority.derive
+        elif declared_fixed_structural_lot_contract(strategy_number) is not None:
             from functools import partial
             derive = partial(derive_registered_fixed_structural_lot_configuration, number=strategy_number)
         elif strategy_number == 2:
@@ -294,6 +302,11 @@ def is_numbered_fixed_configuration(configuration: dict[str, Any]) -> bool:
         raise ValueError("Unknown numbered fixed strategy")
     if declared_fixed_structural_lot_contract(number) is not None:
         verify_fixed_structural_lot_configuration(strategy)
+        return True
+    from src.trading_runtime.declared_native_manifest import registered_manifest_authority
+    authority = registered_manifest_authority(number)
+    if authority is not None:
+        authority.verify_manifest(strategy)
         return True
     if number == 1:
         return True  # Existing full-release boundaries retain exact identity checks.

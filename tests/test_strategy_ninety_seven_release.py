@@ -58,7 +58,13 @@ def test_prepared_factory_declares_once_session_and_no_extra_trading_behaviors()
     assert 'completed-vwap-below-above-cross@1' not in child.RULE_CONTRACTS
 
 
-def test_prepared_release_has_no_installed_execution_authority():
+def test_installed_catalog_still_requires_immutable_normalized_publication():
+    from src.backend.backtest_strategy_one_configuration import certify_numbered_configuration
     strategy = child.derive_strategy_ninety_seven_configuration(source_fixture(), **APPROVAL)['payload']['strategy']
-    with pytest.raises(ValueError):
-        child.verify_strategy_ninety_seven_manifest(strategy)
+    assert child.verify_strategy_ninety_seven_manifest(strategy)
+    class UnpublishedReader:
+        def execute(self, query):
+            assert query.startswith('SELECT ')
+            return ''
+    with pytest.raises(RuntimeError, match='exactly one immutable typed configuration release'):
+        certify_numbered_configuration(UnpublishedReader(), 97)

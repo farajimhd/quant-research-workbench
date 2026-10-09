@@ -98,8 +98,10 @@ REQUIRED_SOURCE_FILES = ('pipelines/strategy_one/configuration_publisher.py',
  'src/trading_runtime/strategy_ninety_seven_contract.py',
  'src/trading_runtime/strategy_ninety_seven_release.py',
  'src/backend/backtest_fixed_structural_lot_configuration.py',
- 'src/backend/backtest_fixed_structural_lot_projection_runtime_authority.py')
-REVIEWED_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': '433cfe48ec94f539760284fb425381a52f79a655f93813216bc8b65e0f4ebe31',
+ 'src/backend/backtest_fixed_structural_lot_projection_runtime_authority.py',
+ 'src/trading_runtime/declared_native_manifest.py',
+ 'src/backend/backtest_declared_waiting_ladder_compatibility.py')
+REVIEWED_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': 'c0fb30741372451c93847f02a029efca753ea3850c232cead77af67dd21b33c8',
  'pipelines/strategy_one/strategy_sixty_five_configuration.py': 'aaadd3e34ede7385d3b36175af5549fec334bdae96dc9b64c17fe7b5c1c5a80e',
  'scripts/clickhouse/provision_backtest_v4_ladder_runner.py': 'ef34b7dfc73d05919f04b55d616f4950b7f6f3547a88e3a2d342ed2e6ab57f8e',
  'scripts/clickhouse/provision_backtest_v4_waiting_ladder_runner.py': 'f66d6eb0280ce8c7ac849784d8ab2641572eb24809a4865e5f670b34dc77e732',
@@ -120,7 +122,7 @@ REVIEWED_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': '433
  'src/backend/backtest_squeeze_ladder_loader.py': 'c905275276fe6e3b85814486c5c5e58df7b8e612a9595178b4a829753713ffd3',
  'src/backend/backtest_squeeze_ladder_readback.py': 'ebe50e9a4fa2bb1f620ef4067f8cb5152f2b1802d17388c1fd70a6857b26d066',
  'src/backend/backtest_squeeze_ladder_setup.py': 'f86fab2f6a863bed811b9e1785efd17f55447f6ce84da8ad2adc9654ee1fde41',
- 'src/backend/backtest_strategy_one_configuration.py': '291fe7f7aed8c36743afc08d3420ce224bb191f7c87e5b3968431404d2fb4765',
+ 'src/backend/backtest_strategy_one_configuration.py': '4e65c16f50ebd070f41c88669ef6fff0be054161c5c21dfb20c6f08379e3c9de',
  'src/backend/backtest_strategy_one_coordinator.py': '7d40c9a3d75872e1ff263729eb578cf9860e913bae3863ec8889ca999e5df334',
  'src/backend/backtest_strategy_one_execution.py': '27f08b4462797b4b04d72ae28a226406352362f901a4dfb08ec95f2f154d3419',
  'src/backend/backtest_typed_projection.py': 'e4459c9091a5cc57f10f78226a8bdd71a4947cf0a7152aff205b887cd25c4a7b',
@@ -138,7 +140,7 @@ REVIEWED_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': '433
  'src/trading_runtime/entry_momentum_growth.py': '8acec288e9cf7d1c62bf8cb2fa386f82d5db69a63fc9306b90168f8cee3c0b5c',
  'src/trading_runtime/execution_policies.py': 'c0766986efe8afc2d3276e2cbb1f303a4abb99427724f2ee2c1d0a29e4e2f36c',
  'src/trading_runtime/independent_lot_protection.py': '498b88e02d483d3b8c8c327b874045df3946a80cb2cc02ac472737e1ccdd36af',
- 'src/trading_runtime/numbered_fixed_strategy.py': '4037436deb90717ec193246eac5269374e5ffaf2f6d238e1b46cbced4bb12714',
+ 'src/trading_runtime/numbered_fixed_strategy.py': 'a94f7b006a96f706b1f6770e4ea396cd2fd0bc21f11d69c1ba9ab816f09e11c6',
  'src/trading_runtime/order_management.py': '2c6d028018e2756b6295640f5e61fc71797d3120ef7c9062561cf258a742596e',
  'src/trading_runtime/portfolio.py': 'd14c31fd8d4c392f2f98c748b401a0b50042524a4d0b56a586b059e19056bf8f',
  'src/trading_runtime/portfolio_config.py': '370094eb372aea53b97c0a5185fc95421065d0ffc9c2a6481496e006e1c60688',
@@ -153,11 +155,11 @@ REVIEWED_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': '433
  'src/trading_runtime/squeeze_ladder_protection.py': '31b1a3c9995f80d6dc1d314a8de26a909917bf892d9eafacc62e3ae27ac8a374',
  'src/trading_runtime/squeeze_ladder_setup.py': 'f8a63bbbb9b9312c3eb88eaaddd9e74a5fb053f9d5bdee7260fce20b9a52fe9a',
  'src/trading_runtime/strategy_orders.py': '51fab3c48cc22dd41d3438f85ab2df92a7c4e80275fc9fd985494ccbb4cd7517',
- 'src/trading_runtime/strategy_registry.py': 'ed9a3abf621c38caefb3442a5a8a897db2a644a83907e255fa8d99113e6238d2',
+ 'src/trading_runtime/strategy_registry.py': 'ef1c36159a223ce6aacdd17a7f4feed61c061c4f36a3e6bd6951f2b7db4e8e25',
  'src/trading_runtime/strategy_sixty_five_contract.py': '491691d4ffc7e750cce203e19f2359a52957e13db08958255de606f8e8ce48b1',
  'src/trading_runtime/strategy_sixty_five_release.py': '4c5015d7b3923272affe263eee8c8c2d18cf452fb7d229376203480f4078b256',
  'src/backend/backtest_market_data.py': 'ad4135f16a0979b5af821b0c00c294511635b3b84b37b90f7bdff79e503cf9d3',
- 'src/backend/backtest_fixed_v4_certification.py': {'certify_numbered_fixed_v4_projection': '1381516d965ee71b5ddcb4c43dabc543304f4b39562484c24c27560c37164def'},
+ 'src/backend/backtest_fixed_v4_certification.py': '9328f19a53812e9a27d4dc1f5ccfe3dab17fbada403606a4c3cc07ede89649ad',
  'src/backend/backtest_fixed_run_context.py': 'b85bfc7b517a0f0fab18062f81388516d5494fb11569e1c11e0a73760f878be0',
  'src/backend/backtest_fixed_v3_preflight.py': 'a2c8e76fd5518de9abce460427a2cf860f6db5872595336a34302f50c00b2452',
  'src/backend/backtest_v4_keeper_lease.py': '7f3a0f228d1df853b9b2bf58d640eccc37b80aa7efda17f4e878b5d2614e4637',
@@ -190,8 +192,10 @@ REVIEWED_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': '433
  'src/trading_runtime/strategy_ninety_seven_contract.py': '1123bbca56fa23c7488f818eedd199573c2d092b5fb4d7a238df55171b330cab',
  'src/trading_runtime/strategy_ninety_seven_release.py': '18a3e3b53b85ab70f7c8ad0991b7b43a4d9872c2b5dbaf71e13b41fab64119be',
  'src/backend/backtest_fixed_structural_lot_configuration.py': 'b4e996f671d4a5071da91afceabd520b74bae654015933a745479a3dea2ed821',
- 'src/backend/backtest_fixed_structural_lot_projection_runtime_authority.py': '1699f6149dc487e0e751bbace4a666a528bae680d4e87d1f2508a6ba00a0b178'}
-SOURCE_REVIEW_ORIGINS = {'pipelines/strategy_one/configuration_publisher.py': 'selected-exit-reviewed-module',
+ 'src/backend/backtest_fixed_structural_lot_projection_runtime_authority.py': '1699f6149dc487e0e751bbace4a666a528bae680d4e87d1f2508a6ba00a0b178',
+ 'src/trading_runtime/declared_native_manifest.py': 'c47104ec813acd9f299b4152176ba65d339892c4dcb5c1b6a2f4a9be4838c39b',
+ 'src/backend/backtest_declared_waiting_ladder_compatibility.py': '76c1110f896c3aeda9b558df0640cb3ae7a616699c87e50144b2c7a5868905a1'}
+SOURCE_REVIEW_ORIGINS = {'pipelines/strategy_one/configuration_publisher.py': 'reviewed-declared-native-manifest-route-v1',
  'pipelines/strategy_one/strategy_sixty_five_configuration.py': 'waiting-baseline-reviewed-module',
  'scripts/clickhouse/provision_backtest_v4_ladder_runner.py': 'waiting-baseline-reviewed-module',
  'scripts/clickhouse/provision_backtest_v4_waiting_ladder_runner.py': 'waiting-baseline-reviewed-module',
@@ -212,7 +216,7 @@ SOURCE_REVIEW_ORIGINS = {'pipelines/strategy_one/configuration_publisher.py': 's
  'src/backend/backtest_squeeze_ladder_loader.py': 'waiting-baseline-reviewed-module',
  'src/backend/backtest_squeeze_ladder_readback.py': 'waiting-baseline-reviewed-module',
  'src/backend/backtest_squeeze_ladder_setup.py': 'waiting-baseline-reviewed-module',
- 'src/backend/backtest_strategy_one_configuration.py': 'selected-exit-reviewed-module',
+ 'src/backend/backtest_strategy_one_configuration.py': 'reviewed-declared-native-manifest-route-v1',
  'src/backend/backtest_strategy_one_coordinator.py': 'waiting-baseline-reviewed-module',
  'src/backend/backtest_strategy_one_execution.py': 'selected-exit-reviewed-module',
  'src/backend/backtest_typed_projection.py': 'selected-exit-reviewed-module',
@@ -230,7 +234,7 @@ SOURCE_REVIEW_ORIGINS = {'pipelines/strategy_one/configuration_publisher.py': 's
  'src/trading_runtime/entry_momentum_growth.py': 'waiting-baseline-reviewed-module',
  'src/trading_runtime/execution_policies.py': 'waiting-baseline-reviewed-module',
  'src/trading_runtime/independent_lot_protection.py': 'waiting-baseline-reviewed-module',
- 'src/trading_runtime/numbered_fixed_strategy.py': 'selected-exit-reviewed-module',
+ 'src/trading_runtime/numbered_fixed_strategy.py': 'reviewed-declared-native-manifest-route-v1',
  'src/trading_runtime/order_management.py': 'selected-exit-reviewed-module',
  'src/trading_runtime/portfolio.py': 'waiting-baseline-reviewed-module',
  'src/trading_runtime/portfolio_config.py': 'waiting-baseline-reviewed-module',
@@ -245,11 +249,11 @@ SOURCE_REVIEW_ORIGINS = {'pipelines/strategy_one/configuration_publisher.py': 's
  'src/trading_runtime/squeeze_ladder_protection.py': 'waiting-baseline-reviewed-module',
  'src/trading_runtime/squeeze_ladder_setup.py': 'waiting-baseline-reviewed-module',
  'src/trading_runtime/strategy_orders.py': 'waiting-baseline-reviewed-module',
- 'src/trading_runtime/strategy_registry.py': 'selected-exit-reviewed-module',
+ 'src/trading_runtime/strategy_registry.py': 'reviewed-declared-native-manifest-route-v1',
  'src/trading_runtime/strategy_sixty_five_contract.py': 'waiting-baseline-reviewed-module',
  'src/trading_runtime/strategy_sixty_five_release.py': 'waiting-baseline-reviewed-module',
  'src/backend/backtest_market_data.py': 'waiting-baseline-reviewed-module',
- 'src/backend/backtest_fixed_v4_certification.py': 'numbered-route-diff-review-from:18bd9890a0f60237b5e337046cceaeb56dcfbd85',
+ 'src/backend/backtest_fixed_v4_certification.py': 'reviewed-declared-native-manifest-whole-dispatcher-and-compatibility-v1',
  'src/backend/backtest_fixed_run_context.py': 'waiting-baseline-reviewed-module',
  'src/backend/backtest_fixed_v3_preflight.py': 'waiting-baseline-reviewed-module',
  'src/backend/backtest_v4_keeper_lease.py': 'waiting-baseline-reviewed-module',
@@ -282,9 +286,11 @@ SOURCE_REVIEW_ORIGINS = {'pipelines/strategy_one/configuration_publisher.py': 's
  'src/trading_runtime/strategy_ninety_seven_contract.py': 'prepared-waiting-swing-contract-review',
  'src/trading_runtime/strategy_ninety_seven_release.py': 'prepared-waiting-swing-contract-review',
  'src/backend/backtest_fixed_structural_lot_configuration.py': 'selected-exit-reviewed-module',
- 'src/backend/backtest_fixed_structural_lot_projection_runtime_authority.py': 'selected-exit-reviewed-module'}
+ 'src/backend/backtest_fixed_structural_lot_projection_runtime_authority.py': 'selected-exit-reviewed-module',
+ 'src/trading_runtime/declared_native_manifest.py': 'reviewed-declared-native-manifest-route-v1',
+ 'src/backend/backtest_declared_waiting_ladder_compatibility.py': 'reviewed-declared-native-manifest-route-v1'}
 PENDING_SOURCE_REVIEWS = ()
-APPROVED_METADATA_ANCHOR = '37240ac9a4f388146ae1f54ca01276830702a472a7409e91e4940bece193a0b3'
+APPROVED_METADATA_ANCHOR = 'b5b98e99d25d1238107e0decdc650631b36ad0dc3c6b77554be689460d313cf3'
 APPROVED_SELF_AST = '505ca8b96cb7957e04a5e87f41e1718c3596d0ad0712bc77cfaac9f577c95377'
 
 def certify_declared_waiting_ladder_source() -> str:

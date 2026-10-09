@@ -13,7 +13,7 @@ def test_current_separate_source_review_passes_without_publication():
     assert len(first) == 64
     assert certificate.certify_declared_waiting_ladder_source() == first
     assert installed_numbered_fixed_strategy_numbers() == before
-    assert 97 not in before
+    assert 97 in before  # Catalog installation does not publish normalized configuration.
     assert not certificate.PENDING_SOURCE_REVIEWS
     assert 'src/trading_runtime/strategy_ninety_seven_contract.py' in certificate.REQUIRED_SOURCE_FILES
     assert 'src/trading_runtime/strategy_ninety_seven_release.py' in certificate.REQUIRED_SOURCE_FILES
@@ -41,6 +41,24 @@ def test_reviewed_contract_drift_rejected(monkeypatch):
 
     monkeypatch.setattr(Path, 'read_text', read)
     with pytest.raises(ValueError, match='reviewed source changed:.*strategy_ninety_seven_contract'):
+        certificate.certify_declared_waiting_ladder_source()
+
+
+def test_whole_dispatcher_module_rejects_compatibility_helper_drift(monkeypatch):
+    relative = 'src/backend/backtest_fixed_v4_certification.py'
+    assert type(certificate.REVIEWED_SOURCE_AST[relative]) is str
+    original = Path.read_text
+
+    def read(path, *args, **kwargs):
+        source = original(path, *args, **kwargs)
+        if path.name == 'backtest_fixed_v4_certification.py':
+            before = "source = restore_waiting(source, 'backend/backtest_strategy_one_configuration.py')"
+            assert source.count(before) == 1
+            return source.replace(before, 'source = source')
+        return source
+
+    monkeypatch.setattr(Path, 'read_text', read)
+    with pytest.raises(ValueError, match='reviewed source changed:.*backtest_fixed_v4_certification'):
         certificate.certify_declared_waiting_ladder_source()
 
 

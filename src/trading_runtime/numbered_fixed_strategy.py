@@ -32,6 +32,15 @@ def declared_fixed_rule(number: int, rule_id: str | None = None) -> bool:
     return rule_id is None or rule_id in release.rule_set_contracts
 
 
+def automatic_ladder_qualification(release):
+    rules = {'completed-vwap-below-above-cross@1': 'vwap_cross',
+             'completed-first-eligible-above-vwap@1': 'first_eligible_above_vwap'}
+    selected = tuple(rule for rule in release.rule_set_contracts if rule in rules)
+    if len(selected) != 1:
+        raise ValueError('Automatic ladder needs exactly one supported qualification rule')
+    return selected[0], rules[selected[0]]
+
+
 def declared_automatic_ladder_release(number):
     """Recognize only the sealed waiting adapter's exact semantic contract."""
     if type(number) is not int:
@@ -50,9 +59,10 @@ def declared_automatic_ladder_release(number):
     release.verify()
     required_inputs = (marker, 'ladder-wait-first-complete-geometry-v1',
         'arte.trading_squeeze_ladder_geometry_binding_v1@exact-parent:earliest-causal-pair')
+    qualification_rule, _ = automatic_ladder_qualification(release)
     required_rules = (
         'ladder-wait-first-complete-geometry-v1', 'certified-early-squeeze-admission@1',
-        'completed-vwap-below-above-cross@1', 'prepared-ladder-strict-liquidity@1',
+        qualification_rule, 'prepared-ladder-strict-liquidity@1',
         'later-frozen-v7-upper-break@1', 'confirmed-swing-low-fixed-stop@1',
         'three-nearest-complete-overhead-targets-equal@1',
         'fixed-swing-three-equal-once-session@1', 'native-portfolio-mandate-third@1',
@@ -80,7 +90,7 @@ def _declared_automatic_ladder_contract(release):
             or type(contract.automatic_entry_policy) is not AutomaticLadderPolicy
             or contract.automatic_entry_policy != AutomaticLadderPolicy()
             or declared_geometry_binding_policy(contract.automatic_market_policy) != LadderGeometryBindingPolicy()
-            or contract.automatic_market_policy['gate']['qualification_mode'] != 'vwap_cross'):
+            or contract.automatic_market_policy['gate']['qualification_mode'] != automatic_ladder_qualification(release)[1]):
         raise ValueError('Automatic ladder typed factory differs from declared waiting policy')
     return contract
 
