@@ -1,0 +1,63 @@
+"""Bounded sparse replay profiling; never runs optimization or validation."""
+import os
+os.environ['PYTHONDONTWRITEBYTECODE']='1'
+import argparse
+from pathlib import Path
+from time import perf_counter
+import numpy as np
+import torch
+from .runtime import require_runtime,write_json,configure_caches,code_hash,file_hash
+from .materialize import owned_run
+from .sparse_replay import SparseInputs
+from .sparse_runner import SparseProgramRunner
+from .genome import StrategySpace
+from .evolution import sample
+
+
+def main(argv=None):
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--inputs',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--day',required=True);p.add_argument('--batch-size',type=int,default=8)
+    p.add_argument('--seconds',type=int,default=256);p.add_argument('--repeats',type=int,default=2)
+    p.add_argument('--backend',choices=['eager','compile','cudagraph','compiled_graph'],default='eager')
+    p.add_argument('--seed',type=int,default=2236);p.add_argument('--maximum-input-gib',type=float,default=4.)
+    a=p.parse_args(argv)
+    if not 1<=a.batch_size<=1024 or not 1<=a.seconds<=19800 or not 1<=a.repeats<=5:raise ValueError('Invalid bounded profile dimensions')
+    root=require_runtime(a.output)
+    if (root/'receipt.json').exists():raise ValueError('A profiling receipt already exists; use a new run identity')
+    configure_caches(root/'cache')
+    if not torch.cuda.is_available():raise RuntimeError('Workstation CUDA required; no CPU timing fallback')
+    with owned_run(root,version='v6-sparse-profile-v1'):
+        began=perf_counter();inputs=SparseInputs(a.inputs/a.day,device='cuda',maximum_gib=a.maximum_input_gib)
+        if inputs.receipt['identity']['session']['day']!=a.day:raise ValueError('Day identity mismatch')
+        torch.cuda.synchronize();load_seconds=perf_counter()-began
+        rng=np.random.default_rng(a.seed);space=StrategySpace();members=[];draws=0
+        # Explicit profiling stratum, not a change to the full search space.
+        while len(members)<a.batch_size:
+            value=sample(rng,space,1)[0];draws+=1
+            if int(value.policy[6])==0:members.append(value)
+            if draws>100*a.batch_size:raise ValueError('Percentage-target profiling stratum not found')
+        write_json(root/'population.json',dict(seed=a.seed,draws=draws,stratum='percentage_targets_only',population=[v.payload() for v in members]))
+        print('Compiling causal sparse lifecycle gates',flush=True)
+        gates,rule_seconds=inputs.compile(members)
+        runner=SparseProgramRunner(inputs,space,members,gates,backend=a.backend,maximum_fills=4096,maximum_state_gib=4.)
+        setup=perf_counter();runner.compile();torch.cuda.synchronize();setup=perf_counter()-setup
+        measurements=[]
+        for repeat in range(a.repeats):
+            torch.cuda.reset_peak_memory_stats();started=perf_counter()
+            metrics=runner.run(steps=a.seconds);torch.cuda.synchronize();elapsed=perf_counter()-started
+            measurements.append(dict(repeat=repeat,elapsed_seconds=elapsed,candidate_clock_updates_per_second=a.batch_size*a.seconds/elapsed,
+                peak_allocated_bytes=torch.cuda.max_memory_allocated(),fills=int(runner.fill_count.sum())))
+            print(measurements[-1],flush=True)
+        count=int(runner.fill_count.max());torch.save(dict(ledger=runner.ledger[:,:count].detach().cpu(),counts=runner.fill_count.detach().cpu()),root/'fills.pt')
+        serial={k:v.detach().cpu().tolist() if isinstance(v,torch.Tensor) else v for k,v in metrics.items()}
+        receipt=dict(status='complete',version='v6-sparse-profile-v1',code_sha256=code_hash(),day=a.day,arguments=vars(a)|{'inputs':str(a.inputs),'output':str(a.output)},
+            input_receipt_sha256=file_hash(a.inputs/a.day/'complete.json'),population_sha256=file_hash(root/'population.json'),ledger_sha256=file_hash(root/'fills.pt'),
+            backend=a.backend,load_seconds=load_seconds,rule_seconds=rule_seconds,setup_seconds=setup,input_bytes=inputs.bytes,
+            daily_union_listings=runner.n,measurements=measurements,metrics=serial,validation_opened=False,optimization_started=False,
+            limitations=['Daily-union broker state baseline','Percentage targets only; structural sidecar unqualified','Partial-session timing is not profitability evidence'])
+        write_json(root/'receipt.json',receipt)
+        print('Profiling complete; no optimization or validation performed',flush=True)
+
+
+if __name__=='__main__':main()
