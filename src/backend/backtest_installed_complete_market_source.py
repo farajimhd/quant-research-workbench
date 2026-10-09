@@ -33,7 +33,10 @@ def _bind_complete_market_plans(session, *, plans, through_boundary_ms, client):
     actual = certify_price_level_plan(plans.execution_market, client)
     if actual != plans.prices:
         raise ValueError('Complete market reader differs from certified execution prices')
-    binding = session.operation.source, plans.execution_market, plans.prices, through_boundary_ms, policy
+    # Scheduler projections originate from the whole certified market. A
+    # projection of execution_market would introduce a different parent token.
+    # The separately certified prices retain the admitted execution population.
+    binding = session.operation.source, plans.market, plans.prices, through_boundary_ms, policy
     with _LOCK:
         previous = _BINDINGS.get(session)
         if previous is not None and previous != binding:
@@ -57,7 +60,7 @@ def installed_complete_market_source(session, plan, *, prices, through_boundary_
             or type(plan) is not CertifiedMarketDayPlan or type(prices) is not PriceLevelPlan
             or type(through_boundary_ms) is not int or through_boundary_ms != binding[3]
             or policy != binding[4] or not plan.tickers
-            or set(plan.tickers) - set(binding[1].tickers)):
+            or set(plan.tickers) - {unit.ticker for unit in binding[2].units}):
         raise ValueError('Complete market reader escaped its issued session binding')
     if (plan != project_market_day_plan(binding[1], plan.tickers)
             or prices != binding[2].projected(plan)):

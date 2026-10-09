@@ -244,6 +244,13 @@ def selected(monkeypatch, *, actual_loader=False, number=90, version=12):
     from src.trading_runtime.owned_scalar_snapshot_policy import RULE as OWNED_RULE
     if OWNED_RULE in release.rule_set_contracts:
         reuse_options['owned_snapshot_policy'] = contract.owned_snapshot_policy
+    from src.trading_runtime.empty_protection_confirmation_policy import RULE as EMPTY_RULE
+    if EMPTY_RULE in release.rule_set_contracts:
+        reuse_options['empty_confirmation_policy'] = contract.empty_confirmation_policy
+    from src.trading_runtime.complete_market_window_policy import RULE as WINDOW_RULE
+    complete_selected = WINDOW_RULE in release.rule_set_contracts
+    if complete_selected:
+        reuse_options['complete_market_policy'] = contract.complete_market_policy
     own = cert(derive_fixed_structural_lot_release(parent, parent_release=parent_release, release=release, policy=old.policy.payload(), **reuse_options, approved_code_commit=subprocess.check_output(['git','rev-parse','HEAD']).decode().strip(), approved_code_fingerprint=backend_source_fingerprint(), approval_reference='controlled immutable installation seam')['payload'])
     monkeypatch.setattr(source, 'certify_numbered_configuration', lambda *a: parent)
     if actual_loader:
@@ -257,6 +264,24 @@ def selected(monkeypatch, *, actual_loader=False, number=90, version=12):
 
         def close(self):
             calls.append(('closed',))
+        def execute(self, query):
+            # This is synthetic producer transport for owner/recovery tests,
+            # not proof of actual market coverage. The price verifier is real.
+            if not complete_selected:
+                raise AssertionError('Legacy fixture unexpectedly queried price transport')
+            from tests.test_backtest_liquidity_price import Reader
+            response = Reader().execute(query)
+            if 'FROM arte.liquidity_execution_price_' not in query:
+                return response
+            unit = next(unit for unit in plans.execution_market.units if unit.stage == 'broker_100ms')
+            rows = [json.loads(line) for line in response.splitlines()]
+            for row in rows:
+                row.update(session_date=unit.session_date, ticker=unit.ticker,
+                    source_attempt_text=unit.attempt_id)
+            return '\n'.join(json.dumps(row) for row in rows)
+    if complete_selected:
+        from src.backend.backtest_liquidity_price import certify_price_level_plan
+        plans = replace(plans, prices=certify_price_level_plan(plans.execution_market, Client()))
     actual = session.prepare_fixed_structural_lot_session(plans=plans, number=number, run_id=old.run_id, session_date=old.session_date, market=plans.market, candidates=plans.candidates, entry=plans.entry, seeds=plans.seeds, through_boundary_ms=57600000, client_factory=Client)
     actual.require(market=plans.market, candidates=plans.candidates, entry=plans.entry, through_boundary_ms=57600000, run_id=old.run_id, number=number)
     from test_strategy_one_intent import _proposal
@@ -321,6 +346,33 @@ def _actual_native_factory_declaration(monkeypatch, number):
 def actual_policy_payload():
     from src.trading_runtime.fixed_structural_lot_policy import FixedStructuralLotPolicy
     return FixedStructuralLotPolicy().payload()
+
+
+def test_complete_reader_binding_with_controlled_source_fixture(monkeypatch):
+    """Fast fixture check; source/installation seams are deliberately controlled.
+
+    This does not replace the full source proof, actual market preflight,
+    native recovery exercise or a financial run.
+    """
+    actual, _, plans = selected(monkeypatch, number=98, version=18)
+    from src.backend.backtest_installed_complete_market_source import installed_complete_market_source
+    source = installed_complete_market_source(actual, plans.execution_market,
+        prices=plans.prices, through_boundary_ms=57600000,
+        client_factory=lambda: pytest.fail('Reader construction fetched market rows'))
+    assert callable(source)
+    with pytest.raises(ValueError, match='another market or price authority'):
+        installed_complete_market_source(actual, plans.execution_market,
+            prices=replace(plans.prices, token='f' * 64), through_boundary_ms=57600000,
+            client_factory=lambda: None)
+    from src.backend.backtest_market_data import project_market_day_plan
+    nested = project_market_day_plan(plans.execution_market, plans.execution_market.tickers)
+    with pytest.raises(ValueError, match='another market or price authority'):
+        installed_complete_market_source(actual, nested, prices=plans.prices,
+            through_boundary_ms=57600000, client_factory=lambda: None)
+    foreign = project_market_day_plan(plans.market, ('ZZZ',))
+    with pytest.raises(ValueError, match='escaped its issued session binding'):
+        installed_complete_market_source(actual, foreign, prices=plans.prices,
+            through_boundary_ms=57600000, client_factory=lambda: None)
 
 
 def test_actual_native_installation_calls_real_source_certifier_and_source_preflight(monkeypatch):
@@ -1224,7 +1276,7 @@ def test_batched_helper_rejects_foreign_context_before_transport():
     with pytest.raises(ValueError,match='foreign source context'):
         _batched_detail_rows_v4(Reader(),(),'',fixed_lot_context=SimpleNamespace(source=None))
 
-@pytest.mark.parametrize("number,version,strip_decimal", [(90,12,False),(92,13,True),(93,14,True),(94,15,True),(95,16,True)])
+@pytest.mark.parametrize("number,version,strip_decimal", [(90,12,False),(92,13,True),(93,14,True),(94,15,True),(95,16,True),(98,18,True)])
 def test_actual_earned_profit_arm_selected_checkpoint_and_historical_products(monkeypatch,number,version,strip_decimal):
     quote_offset_us=25515
     from importlib import import_module
