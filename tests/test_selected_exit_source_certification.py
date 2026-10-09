@@ -3,6 +3,7 @@
 import ast
 from hashlib import sha256
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 
@@ -35,8 +36,26 @@ def test_unknown_source_mutation_remains_visible(relative):
     assert restore_reviewed_parent_source(altered, relative) == altered
 
 
-def test_prepared_inventory_cannot_issue_source_authority():
+def test_reviewed_inventory_issues_exact_source_proof():
     assert len(REQUIRED_SOURCE_FILES) == len(set(REQUIRED_SOURCE_FILES))
     assert all((ROOT / relative).is_file() for relative in REQUIRED_SOURCE_FILES)
-    with pytest.raises(ValueError, match="source seal is unapproved"):
-        certify_fixed_structural_lot_source()
+    proof = certify_fixed_structural_lot_source()
+    assert len(proof) == 64 and all(c in "0123456789abcdef" for c in proof)
+
+
+def test_unapproved_certifier_copy_cannot_issue_source_authority():
+    relative = "src/backend/backtest_fixed_structural_lot_certification_v19.py"
+    tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
+    tree.body[6].value = ast.Dict(keys=[], values=[])
+    tree.body[7].value = ast.Constant("")
+    tree.body[8].value = ast.Constant("")
+    ast.fix_missing_locations(tree)
+    with TemporaryDirectory(dir="D:/TradingML/runtimes") as directory:
+        path = Path(directory) / relative
+        path.parent.mkdir(parents=True)
+        source = ast.unparse(tree) + "\n"
+        path.write_text(source, encoding="utf-8")
+        namespace = {"__file__": str(path)}
+        exec(compile(source, str(path), "exec"), namespace)
+        with pytest.raises(ValueError, match="source seal is unapproved"):
+            namespace["certify_fixed_structural_lot_source"]()

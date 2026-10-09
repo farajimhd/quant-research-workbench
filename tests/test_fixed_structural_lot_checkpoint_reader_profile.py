@@ -265,6 +265,9 @@ def selected(monkeypatch, *, actual_loader=False, number=90, version=12):
     complete_selected = WINDOW_RULE in release.rule_set_contracts
     if complete_selected:
         reuse_options['complete_market_policy'] = contract.complete_market_policy
+    from src.trading_runtime.selected_exit_publication_policy import RULE as EXIT_RULE
+    if EXIT_RULE in release.rule_set_contracts:
+        reuse_options['selected_exit_policy'] = contract.selected_exit_publication_policy
     own = cert(derive_fixed_structural_lot_release(parent, parent_release=parent_release, release=release, policy=old.policy.payload(), **reuse_options, approved_code_commit=subprocess.check_output(['git','rev-parse','HEAD']).decode().strip(), approved_code_fingerprint=backend_source_fingerprint(), approval_reference='controlled immutable installation seam')['payload'])
     monkeypatch.setattr(source, 'certify_numbered_configuration', lambda *a: parent)
     if actual_loader:
@@ -1281,7 +1284,7 @@ def test_batched_helper_rejects_foreign_context_before_transport():
     with pytest.raises(ValueError,match='foreign source context'):
         _batched_detail_rows_v4(Reader(),(),'',fixed_lot_context=SimpleNamespace(source=None))
 
-@pytest.mark.parametrize("number,version,strip_decimal", [(90,12,False),(92,13,True),(93,14,True),(94,15,True),(95,16,True),(98,18,True)])
+@pytest.mark.parametrize("number,version,strip_decimal", [(90,12,False),(92,13,True),(93,14,True),(94,15,True),(95,16,True),(98,18,True),(99,19,True)])
 def test_actual_earned_profit_arm_selected_checkpoint_and_historical_products(monkeypatch,number,version,strip_decimal):
     quote_offset_us=25515
     from importlib import import_module
