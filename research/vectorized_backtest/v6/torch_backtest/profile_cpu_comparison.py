@@ -74,10 +74,14 @@ def profile_one(root,day,args,threads):
         '--rule-workspace-gib',str(getattr(args,'rule_workspace_gib',2.)),
         '--population-file',str(args.gpu_reference/'population.json')]
     started=perf_counter();peak=0
+    environment=os.environ.copy()
+    environment.update(OMP_NUM_THREADS=str(threads),MKL_NUM_THREADS=str(threads),
+        OPENBLAS_NUM_THREADS='1',POLARS_MAX_THREADS='1',NUMEXPR_NUM_THREADS='1')
     with (folder/'worker.log').open('w') as log,(folder/'worker.err').open('w') as err:
-        child=subprocess.Popen(command,stdout=log,stderr=err)
+        child=subprocess.Popen(command,stdout=log,stderr=err,env=environment)
         proc=psutil.Process(child.pid)
-        write_json(folder/'launch.json',dict(pid=child.pid,creation_epoch=proc.create_time(),command=command))
+        write_json(folder/'launch.json',dict(pid=child.pid,creation_epoch=proc.create_time(),command=command,
+            cpu_thread_limits={k:environment[k] for k in ('OMP_NUM_THREADS','MKL_NUM_THREADS','OPENBLAS_NUM_THREADS','POLARS_MAX_THREADS','NUMEXPR_NUM_THREADS')}))
         try:
             while child.poll() is None:
                 try:
