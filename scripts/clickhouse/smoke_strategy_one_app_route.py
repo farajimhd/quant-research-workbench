@@ -31,12 +31,26 @@ from scripts.clickhouse.smoke_strategy_one_backtest import (  # noqa: E402
 )
 
 
-async def _await_run_with_progress(controller, *, interval_s: float = 30) -> None:
-    """Observe the existing task without cancelling it on observation timeout."""
+async def _await_run_with_progress(controller, *, interval_s: float = 30,
+                                   max_execution_s: float | None = None) -> None:
+    """Observation polls do not cancel; an explicit execution deadline requests stop."""
     began = perf_counter()
     task = controller._task
     while not task.done():
-        done, _ = await asyncio.wait({task}, timeout=interval_s)
+        remaining = (max_execution_s - (perf_counter() - began)
+                     if max_execution_s is not None else None)
+        if remaining is not None and remaining <= 0:
+            print(f"App timeout: run_id={controller.run_id} "
+                  f"limit_s={max_execution_s:g} status=incomplete "
+                  "action=graceful_stop financial_result_valid=false", flush=True)
+            await controller.command("stop")
+            # Drain the original controller, including its journal writer and lease.
+            # Cancelling a to_thread await cannot stop its underlying worker safely.
+            await task
+            raise TimeoutError(f"Backtest {controller.run_id} exceeded "
+                               f"{max_execution_s:g}s; incomplete financial result")
+        done, _ = await asyncio.wait({task}, timeout=(min(interval_s, remaining)
+                                     if remaining is not None else interval_s))
         if not done:
             current = getattr(controller, "current_time", None)
             requested = getattr(getattr(controller, "definition", None),
@@ -293,7 +307,8 @@ async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
                profile_v7_seeds: bool = False,
                profile_entry: bool = False,
                start_time: time = time(4),
-               configuration_revision_id: str = "") -> None:
+               configuration_revision_id: str = "",
+               max_execution_s: float = 3600) -> None:
     from src.backend.app import (  # noqa: PLC0415
         BacktestRunCreateRequest, HistoricalPreflightRequest,
         _trading_historical_preflight_payload, backtest_run_service,
@@ -367,7 +382,7 @@ async def _run(day: date, ticker: str, minutes: int, cash: float, apply: bool,
         began = perf_counter()
         task_error = None
         try:
-            await _await_run_with_progress(controller)
+            await _await_run_with_progress(controller, max_execution_s=max_execution_s)
         except Exception as exc:
             task_error = exc
         execution_s = perf_counter() - began
@@ -420,14 +435,17 @@ def main() -> None:
                         help="repeat identical read-only preflight in one process")
     parser.add_argument("--repeat-runs", type=int, default=1,
                         help="run one or two full app probes in this process to compare warm reuse; requires --apply")
+    parser.add_argument("--max-execution-seconds", type=float, default=3600,
+                        help="execution deadline (default 3600s); request graceful stop and drain cleanup; timed-out P&L is invalid")
     args = parser.parse_args()
-    if (not 1 <= args.minutes <= 960 or not 1 <= args.repeat_preflight <= 5
+    if (not 0 < args.max_execution_seconds <= 86400
+            or not 1 <= args.minutes <= 960 or not 1 <= args.repeat_preflight <= 5
             or not 1 <= args.repeat_runs <= 2
             or not 1_000 <= args.cash <= 1_000_000_000
             or args.cash != args.cash or args.cash in (float("inf"), float("-inf"))
             or (args.ticker and (not args.ticker.isascii()
                                  or not args.ticker.isalnum()))):
-        parser.error("require 1..960 minutes, 1,000..1,000,000,000 finite cash, "
+        parser.error("require 0 < execution deadline <= 86400 seconds, 1..960 minutes, 1,000..1,000,000,000 finite cash, "
                      "and an optional ASCII ticker")
     if args.repeat_runs > 1 and not args.apply:
         parser.error("--repeat-runs requires --apply")
@@ -442,7 +460,7 @@ def main() -> None:
                        args.apply, args.profile_v7, args.profile_preflight,
                        args.repeat_preflight, args.profile_v7_seeds,
                        args.profile_entry, args.start_time,
-                       args.configuration_revision_id)
+                       args.configuration_revision_id, args.max_execution_seconds)
     asyncio.run(probes())
 
 
