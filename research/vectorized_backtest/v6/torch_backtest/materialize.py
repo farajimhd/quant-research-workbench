@@ -1,0 +1,211 @@
+"""Bounded, SELECT-only training preparation; price gate precedes volume reads.
+
+Materializes causal top-N execution rows and a sparse backing store. Validation
+is never opened. Missing prior-day certification fails that session closed.
+"""
+import os
+os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+os.environ.setdefault('POLARS_MAX_THREADS', '2')
+import argparse
+from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime, timedelta
+import json
+from pathlib import Path
+from time import time
+import numpy as np
+import polars as pl
+from .runtime import file_hash, require_runtime
+from .source import arte_source, arte_sql as sql
+from .availability import configure_reader
+
+VERSION = 'v6-volume-market-blocks-v1'
+
+
+@contextmanager
+def owned_run(root):
+    lock=root/'owner.lock'
+    with lock.open('x',encoding='utf-8') as stream:
+        json.dump(dict(pid=os.getpid(),version=VERSION,started_epoch=time()),stream)
+    try:yield
+    finally:lock.unlink()
+
+
+def write_json(path, value):
+    temporary = path.with_suffix('.json.tmp')
+    temporary.write_text(json.dumps(value, sort_keys=True, default=str), encoding='utf-8')
+    temporary.replace(path)
+
+
+def rolling_volume(volume, window):
+    """Dense elapsed-second grid; current completed second included."""
+    if window < 1 or volume.ndim != 2 or not np.isfinite(volume).all() or (volume < 0).any():
+        raise ValueError('Invalid rolling-volume input')
+    sums = np.cumsum(volume, axis=0, dtype=np.float64)
+    result = sums.copy()
+    result[window:] -= sums[:-window]
+    return result
+
+
+def rank_indices(volume, available, window, top_n):
+    if available.shape != volume.shape or top_n < 1:
+        raise ValueError('Invalid availability/top-N')
+    scores = rolling_volume(volume, window)
+    scores[~available | (scores <= 0)] = -np.inf
+    # Columns are sorted listing identities; stable ties preserve that order.
+    indices = np.argsort(-scores, axis=1, kind='stable')[:, :min(top_n, volume.shape[1])]
+    selected = np.take_along_axis(scores, indices, axis=1)
+    return np.where(np.isfinite(selected), indices, -1), selected
+
+
+def prior_session(day):
+    import pandas_market_calendars as mcal
+    current = date.fromisoformat(day)
+    schedule = mcal.get_calendar('XNYS').schedule(start_date=current-timedelta(days=15), end_date=current)
+    earlier = schedule[schedule.index.date < current]
+    if earlier.empty:
+        raise ValueError('Previous exchange session unavailable')
+    row = earlier.iloc[-1]
+    return str(earlier.index[-1].date()), row['market_open'].to_pydatetime(), row['market_close'].to_pydatetime()
+
+
+def scope(source, day, tickers, stage):
+    attempts = ','.join(f"({sql.literal(t)},toUUID({sql.literal(source['units'][day][t][stage]['attempt_id'])}))" for t in tickers)
+    return (f"build_id={sql.literal(source['build_id'])} AND session_date=toDate({sql.literal(day)}) "
+            f"AND (ticker,attempt_id) IN ({attempts})")
+
+
+def prepare(item, args):
+    day = item['day']; folder = args.output / day; folder.mkdir(exist_ok=True)
+    identity = dict(version=VERSION, session=item, sessions_sha256=file_hash(args.sessions),
+                    window=args.window, top_n=args.top_n, minimum_close=args.minimum_close,
+                    maximum_close=args.maximum_close, block_seconds=args.block_seconds,
+                    source_manifest_sha256=file_hash(item['source_manifest']),
+                    implementation_sha256=file_hash(Path(__file__)))
+    complete = folder / 'complete.json'
+    if complete.exists():
+        saved = json.loads(complete.read_text())
+        if saved['identity'] != identity or any(file_hash(folder/name) != checksum for name, checksum in saved['files'].items()):
+            raise ValueError('Exact materialization resume identity/hash mismatch')
+        return saved
+    started = time(); previous, opened, closed = prior_session(day)
+    manifest = Path(item['source_manifest'])
+    definition = json.loads(manifest.read_text())['definition']
+    previous_manifest = manifest
+    if previous not in definition['plan']['requested']:
+        if args.context_manifest is None:
+            raise ValueError(f'{day}: previous regular session {previous} requires certified --context-manifest')
+        previous_manifest = args.context_manifest
+    source = arte_source.load_build(manifest, item['source_ledger'], [day])
+    prior = arte_source.load_build(previous_manifest, args.context_ledger or item['source_ledger'], [previous])
+    reader = arte_source.reader(threads=1)
+    files = {}
+    try:
+        arte_source.storage_check(reader)
+        members, population = arte_source.population(reader, source, date.fromisoformat(day), regular_us_exchanges_only=True)
+        old_members, old_population = arte_source.population(reader, prior, date.fromisoformat(previous), regular_us_exchanges_only=True)
+        old = {row['listing_id']:row['ticker'] for row in old_members}
+        paired = [row for row in members if old.get(row['listing_id']) == row['ticker']]
+        from .encoding.clickhouse import _validate_units
+        _validate_units(reader, source, date.fromisoformat(day), [r['ticker'] for r in members], None)
+        _validate_units(reader, prior, date.fromisoformat(previous), [r['ticker'] for r in paired], None)
+        # Certified per-listing split factors, already available at premarket opening.
+        split = json.loads(Path(item['split_certificate']).read_text())
+        mapping = json.loads(Path(item['identity_map']).read_text())['listing_to_ticker']
+        factors = {mapping[k]:v['rvol_price_factor'] for k,v in split['listings'].items()}
+        if split['day'] != day or set(factors) != set(mapping.values()):
+            raise ValueError('Incomplete opening split identity coverage')
+        from .splits import price_factor
+        for key, evidence in split['listings'].items():
+            if not np.isclose(factors[mapping[key]], price_factor(evidence['splits'], previous, day), rtol=1e-12, atol=0):
+                raise ValueError('Prior-close split factor mismatch')
+        origin = int(datetime.fromisoformat(previous+'T00:00:00').replace(tzinfo=opened.tzinfo).timestamp())
+        # Derive bucket bounds in source timezone via explicit UTC epoch offset.
+        from zoneinfo import ZoneInfo
+        origin = int(datetime.fromisoformat(previous+'T00:00:00').replace(tzinfo=ZoneInfo('America/New_York')).timestamp())
+        low, high = int(opened.timestamp())-origin, int(closed.timestamp())-origin
+        closes = {}
+        for offset in range(0, len(paired), 128):
+            names = [r['ticker'] for r in paired[offset:offset+128]]
+            rows = sql.query(reader, 'SELECT ticker,argMax(close_int,bucket_index)/10000. AS prior_close '
+                f"FROM arte.bars_v1 WHERE {scope(prior,previous,names,'bars')} AND resolution_ms=1000 "
+                f'AND bucket_index>={low} AND bucket_index<{high} AND price_valid=1 AND volume>0 GROUP BY ticker')
+            closes.update({r['ticker']:float(r['prior_close'])*factors[r['ticker']] for r in rows})
+        eligible = sorted([r for r in paired if args.minimum_close <= closes.get(r['ticker'],np.nan) <= args.maximum_close], key=lambda r:r['listing_id'])
+        if not eligible:
+            raise ValueError('No certified price-eligible listings')
+        write_json(folder/'eligibility.json', dict(identity=identity, previous_day=previous,
+            prior_source=prior['build_id'], population=population, previous_population=old_population,
+            counts=dict(population=len(members), identity_unavailable=len(members)-len(paired),
+                        missing_close=len(paired)-len(closes), eligible=len(eligible),
+                        price_rejected=len(closes)-len(eligible)), listings=eligible, adjusted_prior_close=closes))
+        start=int(datetime.fromisoformat(item['start']).timestamp());end=int(datetime.fromisoformat(item['end']).timestamp())
+        clocks=np.arange(start,end,dtype=np.int64)+1
+        day_origin=int(datetime.fromisoformat(day+'T00:00:00').replace(tzinfo=ZoneInfo('America/New_York')).timestamp())
+        columns={row['ticker']:i for i,row in enumerate(eligible)}
+        volume=np.zeros((len(clocks),len(eligible)),dtype=np.float64)
+        available=np.zeros(volume.shape,dtype=bool)
+        pieces=[]
+        # Price gate has completed: no rejected listing enters these volume reads.
+        for offset in range(0,len(eligible),64):
+            names=[r['ticker'] for r in eligible[offset:offset+64]]
+            statement=(f'SELECT ticker,toInt64(bucket_index)+1+{day_origin} AS clock,close_int/10000. AS close,'
+                'high_int/10000. AS high,low_int/10000. AS low,volume,trade_count,execution_volume,execution_notional,price_valid,extremes_valid '
+                f"FROM arte.bars_v1 WHERE {scope(source,day,names,'bars')} AND resolution_ms=1000 "
+                f'AND bucket_index>={start-day_origin} AND bucket_index<{end-day_origin} ORDER BY ticker,bucket_index')
+            frame=arte_source.frame(reader,statement,dict(ticker=pl.String,clock=pl.Int64))
+            if frame.height:
+                frame=frame.with_columns(pl.col('ticker').replace_strict(columns).cast(pl.Int32).alias('listing'))
+                rows=frame['clock'].to_numpy()-clocks[0];cols=frame['listing'].to_numpy()
+                if np.unique(rows*len(eligible)+cols).size != len(rows):raise ValueError('Duplicate source row')
+                volume[rows,cols]=frame['volume'].to_numpy()
+                available[rows,cols]=frame['price_valid'].to_numpy()==1
+                pieces.append(frame)
+        backing=pl.concat(pieces).sort(['clock','listing'])
+        backing.write_parquet(folder/'backing.parquet')
+        indices,scores=rank_indices(volume,available,args.window,args.top_n)
+        np.save(folder/'clocks.npy',clocks,allow_pickle=False)
+        np.save(folder/'top_indices.npy',indices.astype(np.int32),allow_pickle=False)
+        for begin in range(0,len(clocks),args.block_seconds):
+            stop=min(len(clocks),begin+args.block_seconds);idx=indices[begin:stop]
+            selection=pl.DataFrame(dict(clock=np.repeat(clocks[begin:stop],idx.shape[1]),
+                slot=np.tile(np.arange(idx.shape[1]),stop-begin),listing=idx.ravel(),rolling_volume=scores[begin:stop].ravel())).filter(pl.col('listing')>=0)
+            block=selection.join(backing,on=['clock','listing'],how='left',validate='1:1').sort(['clock','slot'])
+            name=f'block_{begin//args.block_seconds:04d}.parquet';block.write_parquet(folder/name);files[name]=file_hash(folder/name)
+        for name in ('eligibility.json','backing.parquet','clocks.npy','top_indices.npy'):files[name]=file_hash(folder/name)
+        saved=dict(status='complete',identity=identity,day=day,files=files,clocks=len(clocks),eligible_listings=len(eligible),
+            source_rows=backing.height,compact_rows=int((indices>=0).sum()),elapsed_seconds=time()-started,
+            feature_root=item['feature_root'],split_certificate=item['split_certificate'],validation_opened=False,
+            ready_for_replay=False,remaining='Causal feature/history and quote/execution binding required')
+        write_json(complete,saved);return saved
+    finally:reader.close()
+
+
+def main(argv=None):
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--sessions',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--workers',type=int,default=2);p.add_argument('--window',type=int,default=30)
+    p.add_argument('--top-n',type=int,default=10);p.add_argument('--minimum-close',type=float,default=.8)
+    p.add_argument('--maximum-close',type=float,default=50);p.add_argument('--block-seconds',type=int,default=300)
+    p.add_argument('--context-manifest',type=Path);p.add_argument('--context-ledger',type=Path)
+    args=p.parse_args(argv);args.output=require_runtime(args.output)
+    if not 1<=args.workers<=4 or min(args.window,args.top_n,args.block_seconds)<1 or not 0<args.minimum_close<=args.maximum_close:
+        raise ValueError('Invalid bounded materialization arguments')
+    configure_reader(Path(__file__).resolve().parents[4])
+    spec=json.loads(args.sessions.read_text());days=[s['day'] for s in spec['training']]
+    if len(days)!=30 or len(set(days))!=30 or set(days)&{s['day'] for s in spec['validation']}:
+        raise ValueError('Exactly 30 disjoint training dates required')
+    results=[];failures=[]
+    with owned_run(args.output), ThreadPoolExecutor(max_workers=args.workers) as pool:
+        jobs={pool.submit(prepare,item,args):item['day'] for item in spec['training']}
+        for future in as_completed(jobs):
+            try:result=future.result();results.append(result);event=dict(day=jobs[future],status='complete',elapsed_seconds=result['elapsed_seconds'])
+            except Exception as error:event=dict(day=jobs[future],status='failed',error=str(error));failures.append(event)
+            print(json.dumps(event),flush=True)
+            write_json(args.output/'status.json',dict(completed=len(results),failed=len(failures),total=30,failures=failures,validation_opened=False))
+    write_json(args.output/'receipt.json',dict(version=VERSION,status='failed' if failures else 'complete',sessions_sha256=file_hash(args.sessions),
+        completed=sorted(r['day'] for r in results),failures=failures,validation_opened=False,ready_for_replay=False))
+    return int(bool(failures))
+
+
+if __name__=='__main__':raise SystemExit(main())
