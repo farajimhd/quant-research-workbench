@@ -73,6 +73,27 @@ def test_duplicate_and_foreign_broker_order_rejected():
         call(coid_by_broker_id={'ORDER-1': 'foreign'})
 
 
+def test_declared_clickhouse_utc_and_quoted_uint64_wire_formats():
+    _, _, fill = facts()
+    stored = {**fill, 'source_event_time': '2026-08-04 08:01:00.000123000', 'conid': '123'}
+    assert call((stored,)) == call()
+
+
+@pytest.mark.parametrize('stamp', ['2026-08-04 08:01:00.000123001',
+    '2026-08-04T08:01:00.000123001+00:00', '2026-08-04T08:02:00.000000001+00:00'])
+def test_submicrosecond_precision_cannot_be_silently_truncated(stamp):
+    _, _, fill = facts()
+    with pytest.raises(ValueError, match='Submicrosecond'):
+        call(({**fill, 'source_event_time': stamp},))
+
+
+@pytest.mark.parametrize('conid', [True, 123.0, '0123', '+123', str(2**64)])
+def test_uint64_wire_aliases_rejected(conid):
+    _, _, fill = facts()
+    with pytest.raises(ValueError, match='UInt64'):
+        call(({**fill, 'conid': conid},))
+
+
 def test_original_committed_reader_checks_event_detail_envelope():
     prefix, request, fill = facts()
     record = '33333333-3333-4333-8333-333333333333'
@@ -99,6 +120,11 @@ def test_original_committed_reader_checks_event_detail_envelope():
     assert load() == call()
     assert len(client.sql) == 2
     assert all(sql.startswith('SELECT') and 'trading_commit_v4' in sql for sql in client.sql)
+    # Exercise the actual typed column wire spellings through the reader,
+    # including its independent event/detail equality check.
+    detail['conid'] = '123'
+    detail['source_event_time'] = event['event_time'] = '2026-08-04 08:01:00.000123000'
+    assert load() == call()
     detail['source_event_time'] = '2026-08-04T08:01:00.000124+00:00'
     with pytest.raises(RuntimeError, match='event envelope'):
         load()

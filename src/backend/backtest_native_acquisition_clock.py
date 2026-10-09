@@ -7,11 +7,14 @@ from dataclasses import dataclass
 from collections.abc import Mapping
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
+import re
 from zoneinfo import ZoneInfo
 
 from src.backend.backtest_v4_execution_restore import _pages
 from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
-from src.trading_runtime.arte_journal_writer import load_committed_execution_page
+from src.trading_runtime.arte_journal_writer import (
+    load_committed_execution_page, _datetime_wire, _CONTRACTS,
+)
 from src.trading_runtime.ibkr_schema import OrderRequest
 
 
@@ -29,6 +32,26 @@ class NativeAcquisitionClock:
     execution_batch_id: str
     source_event_time: str
     acquisition_day_us: int
+
+
+def _execution_time(value):
+    """Normalize only the declared UTC column, rejecting precision loss."""
+    schema = dict(_CONTRACTS['trading_execution_v1'].columns)
+    if schema.get('source_event_time') != "DateTime64(9, 'UTC')" or type(value) is not str:
+        raise ValueError('Exact normalized UTC execution column required')
+    stored = re.fullmatch(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}(?:\d{3})?', value) is not None
+    wire = _datetime_wire(value, 6, stored_utc=stored)
+    return datetime.fromisoformat(wire).replace(tzinfo=timezone.utc)
+
+
+def _execution_conid(value):
+    if dict(_CONTRACTS['trading_execution_v1'].columns).get('conid') != 'UInt64':
+        raise ValueError('Exact normalized instrument column required')
+    if type(value) is str and re.fullmatch(r'0|[1-9][0-9]{0,19}', value):
+        value = int(value)
+    if type(value) is not int or not 0 < value < 2**64:
+        raise ValueError('Exact positive UInt64 instrument required')
+    return value
 
 
 def project_native_acquisition_clock(fills, prefix, requests, *,
@@ -73,12 +96,12 @@ def project_native_acquisition_clock(fills, prefix, requests, *,
             raise ValueError('Execution facts differ from exact committed prefix')
         prior_sequence = sequence
         seen.add(execution_id)
-        at = datetime.fromisoformat(fill['source_event_time'].replace('Z', '+00:00'))
-        if at.tzinfo is None or at > decision_at:
+        at = _execution_time(fill['source_event_time'])
+        if at > decision_at:
             raise ValueError('Execution timestamp is naive or future')
         if fill['client_order_id'] not in coids:
             continue
-        if (fill['account_id'], fill['ticker'], fill['conid']) != identity or fill['side'] != 'B':
+        if (fill['account_id'], fill['ticker'], _execution_conid(fill['conid'])) != identity or fill['side'] != 'B':
             raise ValueError('Acquisition execution differs from exact OMS request')
         if coid_by_broker_id.get(fill['broker_order_id']) != fill['client_order_id']:
             raise ValueError('Acquisition execution lacks exact broker order ownership')
