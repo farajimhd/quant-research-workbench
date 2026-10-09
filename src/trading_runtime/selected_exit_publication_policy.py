@@ -51,3 +51,30 @@ def declared_selected_exit_publication_policy(release, value):
     if inputs != 1 or rules != 1:
         raise ValueError('Exactly paired selected exit input and rule required')
     return parse_selected_exit_publication_policy(value)
+
+
+def installed_selected_exit_publication_policy(source):
+    """A claimed capability must match the issued source, release and factory."""
+    if not source.installed_json:
+        return None
+    strategy = source.installed_payload['strategy']
+    contract = strategy.get('numbered_release', {}).get('contract', {})
+    value = strategy['parameters'].get('selected_exit_publication_policy')
+    if (value is None and INPUT not in contract.get('input_contracts', ()) and
+            RULE not in contract.get('rule_set_contracts', ())):
+        return None
+    from src.backend.backtest_fixed_structural_lot_source import require_native_fixed_structural_lot_source
+    from .strategy_registry import numbered_strategy, fixed_strategy_executor
+    from .fixed_structural_lot_reuse_contract import require_declared_fixed_structural_lot_contract
+    require_native_fixed_structural_lot_source(source)
+    source.require_installed_admission()
+    release = numbered_strategy(strategy['strategy_number'])
+    if contract != release.canonical_payload():
+        raise ValueError('Selected exit context differs from issued installed release')
+    policy = declared_selected_exit_publication_policy(release, value)
+    factory = fixed_strategy_executor(release.executor_strategy_id,
+                                     release.executor_revision).contract_factory()
+    require_declared_fixed_structural_lot_contract(factory, release)
+    if getattr(factory, 'selected_exit_publication_policy', None) != policy:
+        raise ValueError('Selected exit context differs from exact installed factory')
+    return policy

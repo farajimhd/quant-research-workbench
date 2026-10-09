@@ -1,4 +1,5 @@
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -6,6 +7,7 @@ from src.trading_runtime.selected_exit_publication_policy import (
     INPUT, RULE, SelectedExitPublicationPolicy,
     declared_selected_exit_publication_policy,
     parse_selected_exit_publication_policy,
+    installed_selected_exit_publication_policy,
 )
 from src.trading_runtime.strategy_ninety_eight_release import release_contract
 
@@ -56,3 +58,18 @@ def test_weakened_or_noncanonical_policy_is_rejected(change):
     payload = {**SelectedExitPublicationPolicy(1).payload(), **change}
     with pytest.raises(ValueError):
         parse_selected_exit_publication_policy(payload)
+
+
+def test_unselected_installed_source_and_counterfeit_claim():
+    source = SimpleNamespace(installed_json='', installed_payload=None)
+    assert installed_selected_exit_publication_policy(source) is None
+    source.installed_json = 'controlled-unselected-source'
+    source.installed_payload = {'strategy': {
+        'parameters': {}, 'numbered_release': {'contract': {}}}}
+    assert installed_selected_exit_publication_policy(source) is None
+    source.installed_payload['strategy']['parameters']['selected_exit_publication_policy'] = (
+        SelectedExitPublicationPolicy(1).payload())
+    # This is intentionally not an issued native source. No source certificate
+    # or installed-owner check is overridden to make the claim pass.
+    with pytest.raises((ValueError, TypeError)):
+        installed_selected_exit_publication_policy(source)
