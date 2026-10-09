@@ -34,7 +34,9 @@ V5 must not stop merely because these preliminary blocks are complete.
 `compact_prepare` binds all causal feature history and certified quote/fill
 evidence. `sparse_runner` is a profiling baseline with stable daily-union broker
 state and sparse market/gate lookups; it avoids full-time dense market and gate
-tensors, but does not yet implement the final top-N-plus-held state allocator.
+tensors. `compact_runner` implements candidate-specific top-N-plus-held/pending
+financial slots with stable ledger identities and shared causal source history.
+Capacity exhaustion rejects the run; retained identities are never discarded.
 Dense-reference fixtures verify exact fills/financial metrics including a
 departed holding and raw structural targets. `sparse_structure` prepares raw
 V7 structural targets outside replay with opening-known references; absent
@@ -44,8 +46,15 @@ and receipt hashes. Structural modes fail closed without this sidecar.
 `training_pass` supplies a bounded concurrent all-30-session selection barrier
 and the lower-tail objective. `sparse_evaluator` owns independent accounts and
 audits durable fill receipts; `full_search` preserves exact RNG/population
-checkpoints and reuses completed generations on resume. Concurrent execution
-uses eager/compiled streams; shared CUDA capture concurrency is not qualified.
+checkpoints and reuses completed generations on resume. `resident_evaluator`
+loads immutable training inputs once and retains compatible broker captures
+across candidate batches and generations. It evaluates shared rule programs
+behind a serial preparation barrier, then replays independent accounts on
+separate CUDA streams. All accounts finish and publish audited receipts before
+the next batch or selection. A changed input/structural identity fails closed.
+Rule histories use batched causal gathers. Swing confirmations are shared by
+exact left/right window pair; prefix maxima and momentum lags are selected from
+shared listing history without repeating it across candidate account slots.
 Declared concurrent memory envelopes are checked before launching evaluation.
 Terminal 50-row pages and
 session/complete-position diagnostics are implemented.
@@ -53,7 +62,12 @@ session/complete-position diagnostics are implemented.
 `profile_sparse` is workstation-CUDA profiling only, with explicit percentage
 target stratification unless a structural sidecar is supplied. Short profiles
 are timing evidence, not profitability or full-generation throughput evidence.
-Remaining qualification includes representative full-session GPU financial
-audits, all-target sidecars, held-state compaction, concurrency and the measured
-population/generation report.
+`profile_compact_sessions` measures complete candidate-session throughput,
+preparation, replay/audit time and peak allocated/reserved GPU memory. External
+reference comparison checks candidate metrics and exact fills independently of
+batch partitioning. `--resident-repeats 2` distinguishes initial preparation
+from a second full pass retaining input and broker buffers. Local fixture and
+partial-cohort checks do not certify full-training throughput: the current
+optimized deployment still requires completed 30-session financial audits,
+exact reference/repeat comparisons and the measured population/generation report.
 Full optimization requires the user's final parameter decision.
