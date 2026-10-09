@@ -162,6 +162,25 @@ def test_copied_or_mutated_prepared_source_is_not_authority(monkeypatch):
         native.require_prepared_structural_rejection_source(source)
 
 
+@pytest.mark.parametrize('kind',('witness-quote','nested-quote','financial-quantity','nested-permissions','current-state'))
+def test_issued_request_rechecks_every_mutable_decision_descendant(monkeypatch,kind):
+    manager,owner,_=fixture(monkeypatch);start(manager)
+    async def run():
+        for clock in (10000,15000,20000,25000):
+            await manager.on_management(financial(),quote(owner,clock),clock)
+    asyncio.run(run())
+    request=owner.requests(boundary_ms=25000)[0]
+    if kind=='witness-quote':
+        object.__setattr__(request,'witness',replace(request.witness,
+            quote=replace(request.witness.quote,bid_int=103000)))
+    elif kind=='nested-quote': object.__setattr__(request.witness.quote,'bid_int',103000)
+    elif kind=='financial-quantity': object.__setattr__(request.financial,'position_quantity',1000)
+    elif kind=='nested-permissions': object.__setattr__(request.financial.permissions,'enter',False)
+    else: object.__setattr__(owner._states[KEY],'fired',False)
+    with pytest.raises(ValueError,match='mutated|content changed'):
+        native.require_structural_rejection_request(request,owner=owner)
+
+
 @pytest.mark.parametrize('number',(1,42,57))
 def test_genuine_legacy_contract_is_unselected(number):
     assert native_structural_rejection_declaration(numbered_fixed_strategy(number)) is None

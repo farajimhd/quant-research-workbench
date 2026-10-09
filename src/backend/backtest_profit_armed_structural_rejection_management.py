@@ -118,15 +118,18 @@ class StructuralRejectionCheckpointRequest:
 def require_structural_rejection_request(request, *, owner=None):
     if type(request) is not StructuralRejectionCheckpointRequest or request not in _REQUESTS:
         raise ValueError('Unissued structural rejection request')
-    issued_owner,key,source,state = _REQUESTS[request]
+    issued_owner,key,source,state,witness_image,state_image,financial_guard = _REQUESTS[request]
     require_native_structural_rejection_owner(issued_owner)
     if (owner is not None and owner is not issued_owner or issued_owner._pending.get(key) is not request
             or issued_owner._states.get(key) is not state
             or source != request.source_entry_intent_id or type(request.witness) is not StructuralRejectionWitness
             or type(request.financial) is not StrategyOneFinancialView
             or request.geometry is not issued_owner._geometries.get(key)
-            or _digest(_plain(request.geometry))!=request.witness.resistance.geometry_hash):
+            or _digest(_plain(request.geometry))!=request.witness.resistance.geometry_hash
+            or _tree(request.witness)!=witness_image or _tree(state)!=state_image):
         raise ValueError('Foreign/mutated structural rejection request')
+    from .backtest_management_structural_guard import require_management_structural_guard
+    require_management_structural_guard(financial_guard,request.financial)
     issued_owner._verify_entry(key,request.financial)
     return request
 
@@ -351,7 +354,9 @@ class NativeStructuralRejectionManager:
             request=StructuralRejectionCheckpointRequest(witness,financial,
                 next_state.position_intent_id,self._geometries[key])
             self._pending[key]=request
-            _REQUESTS[request]=(self,key,next_state.position_intent_id,next_state)
+            from .backtest_management_structural_guard import capture_management_structural_guard
+            _REQUESTS[request]=(self,key,next_state.position_intent_id,next_state,
+                _tree(witness),_tree(next_state),capture_management_structural_guard(financial))
             return request
         return None
 
