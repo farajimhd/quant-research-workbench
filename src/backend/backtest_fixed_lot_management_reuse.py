@@ -620,6 +620,10 @@ def _owner_read_context(owner, loader):
         return loader()
     frontier = _context_frontier(owner)
     token = _CONTEXT_OWNER.set((owner,frontier))
+    # Original authority can replay historical predecessors. Its nested reads
+    # must execute their complete verifiers, rather than inherit the current
+    # decision's prefix-bound cache or recursively reuse its authority.
+    suspended = _ACTIVE.set(None)
     try:
         result = loader()
         if _context_frontier(owner) != frontier:
@@ -627,6 +631,7 @@ def _owner_read_context(owner, loader):
         proof.require()
         return result
     finally:
+        _ACTIVE.reset(suspended)
         _CONTEXT_OWNER.reset(token)
 
 
