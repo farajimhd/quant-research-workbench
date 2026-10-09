@@ -55,6 +55,17 @@ def test_mismatched_row_bounds_and_unpaired_rule_fail_closed():
     assert declared_owned_scalar_snapshot_policy(prior_release(), None) is None
 
 
+def test_prepared_typed_factory_rejects_wrong_ownership_or_bounds():
+    from src.trading_runtime.strategy_ninety_five_contract import strategy_ninety_five_contract
+    contract = strategy_ninety_five_contract()
+    assert contract.release == release_contract()
+    assert contract.owned_snapshot_policy == OWNED_SNAPSHOT_POLICY
+    with pytest.raises(ValueError, match='typed owned'):
+        replace(contract, owned_snapshot_policy=None)
+    with pytest.raises(ValueError, match='bounds differ'):
+        replace(contract, owned_snapshot_policy=replace(OWNED_SNAPSHOT_POLICY, max_rows=1))
+
+
 @pytest.mark.parametrize('key,value', [('max_rows', True), ('max_entries', 0),
     ('max_bytes', -1), ('scope', 'source admission'), ('ownership', 'caller aliases')])
 def test_owned_policy_semantic_and_type_changes_rejected(key, value):
