@@ -11,6 +11,7 @@ from src.trading_runtime.native_channel_exit_journal_context import NativeChanne
 from src.trading_runtime.native_channel_exit_publication import (
     issue_native_channel_exit_publication,require_native_channel_exit_publication,
     refresh_native_channel_exit_publication,
+    verify_native_channel_exit_publication_graph,
 )
 from src.trading_runtime.arte_journal_writer import _insert,_CONTRACTS
 from src.trading_runtime.arte_native_channel_exit_schema import TABLES
@@ -45,6 +46,25 @@ def test_image_reproves_current_native_unit_and_freezes_complete_families(instal
     assert image.sequence==scope['receipt'].last_sequence+1
     assert refresh_native_channel_exit_publication(image,client=writer) is context
     assert all(table.name not in _CONTRACTS for table in TABLES)
+
+
+@pytest.mark.parametrize('defect',[None,'envelope','missing','duplicate','extra','base'])
+def test_complete_publication_graph_is_bound_before_reservation(installed,monkeypatch,defect):
+    writer,scope,context=publication_case(installed,monkeypatch)
+    image=issue(writer,scope,context)
+    families=list(context.unit.sealed_families())
+    base=[(name,rows) for name,rows in families if name in _CONTRACTS]
+    batch=context.unit.base
+    if defect=='envelope': batch=replace(batch,batch_id='11111111-1111-4111-8111-111111111111')
+    elif defect=='missing': families=[(name,rows) for name,rows in families if name!=TABLES[1].name]
+    elif defect=='duplicate': families.append(families[0])
+    elif defect=='extra': families.append(('unselected_exit_v1',()))
+    elif defect=='base': base=[]
+    kwargs=dict(client=writer,batch=batch,base_families=tuple(base),families=tuple(families))
+    if defect is None:
+        assert verify_native_channel_exit_publication_graph(image,**kwargs) is context
+    else:
+        with pytest.raises(ValueError): verify_native_channel_exit_publication_graph(image,**kwargs)
 
 
 @pytest.mark.parametrize('defect',['copy','client','policy','rows','sequence','writer_profile','read_policy'])

@@ -112,3 +112,38 @@ def refresh_native_channel_exit_publication(image,*,client):
     if canonical_json(_wire_families(fresh,context.policy))!=image.rows_json:
         raise ValueError('Channel exit publication no longer matches current native authority')
     return context
+
+
+def verify_native_channel_exit_publication_graph(image,*,client,batch,base_families,families):
+    """Bind the complete shared-publisher graph, without reserving or writing.
+
+    Empty regular families are permitted, but repeated names, omitted children,
+    additional records and a different journal envelope are never admitted.
+    Current-head refresh and historical retry verification remain separate.
+    """
+    from .arte_journal_writer import _CONTRACTS,_wire_row,verify_typed_contract_row
+    context,expected=require_native_channel_exit_publication(image,client=client)
+    if batch!=context.unit.base:
+        raise ValueError('Channel exit publication has a foreign journal envelope')
+    contracts={contract.name:contract for contract in selected_exit_contracts(context.policy)}
+
+    def normalize(graph,*,regular_only=False):
+        result={}
+        seen=set()
+        for name,rows in graph:
+            if name in seen:
+                raise ValueError('Channel exit publication repeats a family')
+            seen.add(name)
+            contract=_CONTRACTS.get(name) or (None if regular_only else contracts.get(name))
+            if contract is None:
+                raise ValueError('Channel exit publication contains an unselected family')
+            if rows:
+                result[name]=[_wire_row(name,row) if name in _CONTRACTS else
+                    verify_typed_contract_row(contract,row,stored_utc=True) for row in rows]
+        return result
+
+    expected_base={name:rows for name,rows in expected.items() if name in _CONTRACTS}
+    if (canonical_json(normalize(base_families,regular_only=True))!=canonical_json(expected_base)
+            or canonical_json(normalize(families))!=image.rows_json):
+        raise ValueError('Channel exit publication differs from its complete issued graph')
+    return context
