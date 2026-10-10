@@ -18,6 +18,12 @@ class LaptopGpuPacer:
         self.clock, self.sleep = clock, sleep
         self.started = clock()
 
+    def begin_activity(self):
+        """Exclude loading/idle time before a chronological compute chunk."""
+        free = self.check_reserve()
+        self.started = self.clock()
+        return free
+
     def check_reserve(self):
         self.cuda.synchronize(self.device)
         free, total = self.cuda.mem_get_info(self.device)

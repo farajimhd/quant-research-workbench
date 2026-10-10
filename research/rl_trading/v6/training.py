@@ -383,7 +383,11 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
     for chunk in _event_chunks(session.candle_events(), clocks_per_chunk,
                                learning_start_us):
         resource_pacer = getattr(policy, 'resource_pacer', None)
-        reserve_check = getattr(resource_pacer, 'check_reserve', None)
+        # Start timing only after the iterator has loaded this chunk. Encoder
+        # pauses still reset the timer, leaving backward/refresh work paced.
+        reserve_check = getattr(resource_pacer, 'begin_activity', None)
+        if reserve_check is None:
+            reserve_check = getattr(resource_pacer, 'check_reserve', None)
         if reserve_check is not None:
             reserve_check()
         labeled = any(event.close_us in decision_groups for event in chunk)

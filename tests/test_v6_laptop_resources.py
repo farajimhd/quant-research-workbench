@@ -44,6 +44,23 @@ def test_prechunk_reserve_check_does_not_sleep_or_reset_clock():
     assert pauses == pytest.approx([1.])
 
 
+def test_activity_boundary_excludes_loading_and_retains_compute_pacing():
+    cuda = Cuda(); cuda.free = 8*1024**3
+    now = [0.]; pauses = []
+    def sleep(seconds):
+        pauses.append(seconds); now[0] += seconds
+    pacer = LaptopGpuPacer('cuda:0', cuda=cuda, clock=lambda:now[0], sleep=sleep)
+    now[0] = 1000.
+    assert pacer.begin_activity() == cuda.free
+    assert not pauses
+    now[0] += 3.
+    assert pacer()['active_seconds'] == 3.
+    assert pauses == pytest.approx([1.])
+    cuda.free = 3*1024**3
+    with pytest.raises(RuntimeError, match='reserve breached'):
+        pacer.begin_activity()
+
+
 def test_encoder_stops_before_forward_when_reserve_is_low():
     import torch
     from research.rl_trading.v6.temporal_encoders import TemporalCandleEncoder
