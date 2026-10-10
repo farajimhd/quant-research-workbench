@@ -2282,7 +2282,8 @@ def _existing_detail_identities_v4(client, batch, families):
     return {name: sorted(identities) for name, identities in by_name.items()}
 
 
-def _insert_detail_families_v4(client, batch, pending, *, journal_profile):
+def _insert_detail_families_v4(client, batch, pending, *, journal_profile,
+                             native_channel_publication=None):
     """Insert independent detail families in bounded lanes, before any commit.
 
     Every lane has its own HTTP connection. The shared Keeper dispatch registers
@@ -2293,6 +2294,30 @@ def _insert_detail_families_v4(client, batch, pending, *, journal_profile):
     if journal_profile not in {"backtest_v4", "live_v4"}:
         raise ValueError("V4 detail publication requires its explicit owner profile")
     from src.trading_runtime.arte_journal_writer import _insert
+
+    if native_channel_publication is not None:
+        from .native_channel_exit_publication import (
+            require_native_channel_exit_publication,verify_native_channel_exit_insert,
+        )
+        context,_=require_native_channel_exit_publication(native_channel_publication,client=client)
+        if journal_profile!='backtest_v4' or batch!=context.unit.base:
+            raise ValueError('Channel detail writer requires its exact Backtest envelope')
+        work=tuple((name,tuple(rows)) for name,rows in pending)
+        if len({name for name,_ in work})!=len(work):
+            raise ValueError('Channel detail writer repeats a pending family')
+        # Validate the entire pending subset before the first INSERT. The caller
+        # must independently admit the complete graph and reserve its predecessor.
+        for name,rows in work:
+            verify_native_channel_exit_insert(native_channel_publication,client=client,
+                table=name,rows=rows,sequence=batch.last_sequence,batch_id=batch.batch_id,
+                token=f'{batch.batch_id}:{name}:v4')
+        # Image authority belongs to this client; never lend it to HTTP lanes.
+        for name,rows in work:
+            _insert(client,name,rows,f'{batch.batch_id}:{name}:v4',
+                journal_profile=journal_profile,dispatch_batch_id=batch.batch_id,
+                dispatch_sequence=batch.last_sequence,
+                dispatch_native_channel_exit_image=native_channel_publication)
+        return
 
     factory = getattr(client, "v4_insert_lane_factory", None)
     lane_limit = getattr(client, "v4_insert_lane_limit", 1)

@@ -118,3 +118,38 @@ def test_real_encoder_accepts_only_complete_owner_issued_exit_families(installed
             _insert(writer,table,tuple(families[table]),token,**{**kwargs,**changes})
     with pytest.raises(ValueError): _insert(writer,table,tuple(families[table]),'foreign',**kwargs)
     assert len(calls)==3
+
+
+@pytest.mark.parametrize('defect',[None,'late_changed','duplicate','envelope','live','lost_response'])
+def test_shared_detail_writer_uses_owner_and_prevalidates_all_pending(installed,monkeypatch,defect):
+    from src.trading_runtime.arte_journal_commit_v4 import _insert_detail_families_v4
+    writer,scope,context=publication_case(installed,monkeypatch)
+    image=issue(writer,scope,context)
+    _,families=require_native_channel_exit_publication(image,client=writer)
+    pending=[(name,tuple(rows)) for name,rows in context.unit.sealed_families() if rows]
+    batch=context.unit.base
+    calls=[]
+    class Dispatch:
+        def execute_typed_insert(self,client,**kwargs):
+            assert client is writer
+            calls.append(kwargs)
+            if defect=='lost_response': raise TimeoutError('controlled lost INSERT response')
+    writer.typed_insert_dispatch=Dispatch()
+    writer.v4_insert_lane_factory=lambda: pytest.fail('issued owner authority must not be lent')
+    writer.v4_insert_lane_limit=2
+    if defect=='late_changed':
+        name,rows=pending[-1]
+        pending[-1]=(name,rows+rows)
+    elif defect=='duplicate': pending.append(pending[0])
+    elif defect=='envelope': batch=replace(batch,batch_id='11111111-1111-4111-8111-111111111111')
+    kwargs=dict(journal_profile='live_v4' if defect=='live' else 'backtest_v4',
+        native_channel_publication=image)
+    if defect is None:
+        _insert_detail_families_v4(writer,batch,pending,**kwargs)
+        assert len(calls)==5
+    elif defect=='lost_response':
+        with pytest.raises(TimeoutError): _insert_detail_families_v4(writer,batch,pending,**kwargs)
+        assert len(calls)==1
+    else:
+        with pytest.raises(ValueError): _insert_detail_families_v4(writer,batch,pending,**kwargs)
+        assert calls==[]
