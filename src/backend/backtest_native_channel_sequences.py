@@ -9,6 +9,7 @@ from research.causal_strategy_features.v5.decisions import DECISION_IDENTITY
 from src.backend.backtest_native_channel_store import load_declared_native_channels
 from src.market_engine.native_causal_channel_contract import (
     NativeChannelPolicy, NativeChannelRequest, RELATIVE_FIELDS,
+    NativeChannelSourcePlan, issue_source_plan,
 )
 from src.trading_runtime.native_completed_bar_sequences import (
     CompletedBarSequencePolicy, completed_bar_sequence_windows,
@@ -185,6 +186,7 @@ class PreparedNativeChannelSequence:
     features: pl.DataFrame
     windows: pl.DataFrame
     scope: pl.DataFrame
+    source_plan: NativeChannelSourcePlan
 
     def qualify(self, decisions, mandatory_held, acquisition_day_us):
         result = self.decision_evidence(decisions, mandatory_held, acquisition_day_us)['qualified'].to_numpy()
@@ -254,4 +256,4 @@ def _prepare_loaded_sequence(packet, policy):
     eligible = features.select((value.is_not_null() & value.is_finite() & compare)
                               .fill_null(False).alias('eligible'))['eligible'].to_numpy()
     windows = completed_bar_sequence_windows(features, eligible, policy.sequence)
-    return PreparedNativeChannelSequence(packet, policy, features, windows, scope)
+    return PreparedNativeChannelSequence(packet, policy, features, windows, scope, issue_source_plan(packet))
