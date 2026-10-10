@@ -106,3 +106,58 @@ def test_field_labels_keep_columns_when_values_become_available(tmp_path):
     for index,label in ((0,'replay ETA'),(0,'generation ETA'),(1,'avg batch')):
         assert old[index].index(label)==new[index].index(label)
     assert render(before)['header'].renderable.plain.index('updated')==render(after)['header'].renderable.plain.index('updated')
+
+
+def test_fixed_terminal_preserves_colors_and_style_only_changes():
+    from rich.text import Text
+    from research.vectorized_backtest.v7.fixed_terminal import FixedTerminal
+    stream=io.StringIO();console=Console(file=stream,width=12,height=2,force_terminal=True,color_system='truecolor',no_color=False,legacy_windows=False)
+    screen=FixedTerminal(console)
+    screen.update(Text('same',style='red'))
+    assert '\x1b[31m' in stream.getvalue()
+    stream.seek(0);stream.truncate()
+    screen.update(Text('same',style='cyan'))
+    assert '\x1b[36m' in stream.getvalue() and 'same' in stream.getvalue()
+    stream.seek(0);stream.truncate();screen.update(Text('same',style='cyan'))
+    assert stream.getvalue()==''
+    console.no_color=True;screen.update(Text('same',style='cyan'))
+    assert '\x1b[36m' not in stream.getvalue()
+
+
+def test_resize_reconciles_every_row_then_returns_to_incremental_updates():
+    from research.vectorized_backtest.v7.fixed_terminal import FixedTerminal
+    stream=io.StringIO();console=Console(file=stream,width=30,height=4,force_terminal=True,legacy_windows=False)
+    screen=FixedTerminal(console);sizes=[]
+    def frame(width,height):
+        sizes.append((width,height));return 'Progress 10/20'
+    screen.update(frame)
+    for width,height in ((180,55),(300,90),(80,24),(110,38)):
+        console.width=width;console.height=height
+        for _ in range(2):
+            stream.seek(0);stream.truncate();screen.update(frame)
+            assert sizes[-1]==(width,height)
+            assert all(f'\x1b[{row};1H' in stream.getvalue() for row in range(1,height+1))
+            assert '\x1b[2J' not in stream.getvalue()
+        stream.seek(0);stream.truncate();screen.update(frame)
+        assert stream.getvalue()==''
+
+
+def test_real_ranking_at_maximized_size_has_color_and_supported_columns(tmp_path):
+    from research.vectorized_backtest.v7.fixed_terminal import FixedTerminal
+    ui=CampaignProgress(tmp_path,contract(),console=Console(file=io.StringIO()),clock=lambda:100.)
+    ui.begin_generation(3);ui.begin_sessions(['2026-08-03','2026-08-04'])
+    status=ui.snapshot();status['completed_generations']=2
+    status['top_strategies']=[dict(rank=i,score=100-i,metrics=dict(total_pnl=200-i,
+        position_win_rate=.4,positions=225,other_days_pnl=370,session_tail_mean_pnl=-235,
+        profitable_day_fraction=1/3,worst_drawdown=442,best_day_pnl=4847,worst_pnl=-297)) for i in range(1,1025)]
+    for width,height in ((80,24),(110,38),(180,55),(300,90)):
+        layout=render(status,width=width,height=height,now=100.)
+        assert all(str(c.header) not in ('Position tail $','PF') for c in layout['leaders'].renderable.renderable.columns)
+        stream=io.StringIO();console=Console(file=stream,width=width,height=height,force_terminal=True,color_system='truecolor',no_color=False,legacy_windows=False)
+        screen=FixedTerminal(console);screen.update(layout)
+        assert '\x1b[36m' in stream.getvalue()
+        assert len(screen.previous)==height
+        assert all(len(line)==width for line in screen.previous)
+        plain='\n'.join(''.join(cell[0] for cell in line) for line in screen.previous)
+        assert 'Campaign ETA' in plain and 'Messages' in plain
+        if height==90:assert 'Not recorded in V7' in plain

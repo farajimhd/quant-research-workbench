@@ -15,14 +15,14 @@ def main(argv=None):
     p.add_argument('--view',choices=('financial','objective','positions','performance'),default='financial')
     args=p.parse_args(argv);console=Console(no_color=bool(os.environ.get('NO_COLOR')))
     last={};rank=1;page=0;rank_page=0
-    def read():
+    def read(width=None,height=None):
         nonlocal last
         try:
             candidate=json.loads((args.output/'status.json').read_text(encoding='utf-8'))
             if candidate.get('validation_opened') is not False:raise ValueError('Invalid training snapshot')
             last=candidate
         except (OSError,ValueError):last={**last,'error':'Snapshot unavailable; retaining last good values'}
-        return render({**last,'_rank':rank,'_page':page,'_rank_page':rank_page},width=console.width,height=console.height,view=args.view)
+        return render({**last,'_rank':rank,'_page':page,'_rank_page':rank_page},width=width or console.width,height=height or console.height,view=args.view)
     if args.once or not console.is_terminal:console.print(read());return 0
     with FixedTerminal(console) as live:
         try:
@@ -34,7 +34,7 @@ def main(argv=None):
                         if key=='q':break
                         rank,rank_page,page=navigate(last,key,rank=rank,rank_page=rank_page,detail_page=page,height=console.height)
                         if key in 'fotp':args.view={'f':'financial','o':'objective','t':'positions','p':'performance'}[key];page=0
-                live.update(read());time.sleep(1)
+                live.update(read);time.sleep(1)
         except KeyboardInterrupt:pass
     return 0
 

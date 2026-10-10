@@ -47,6 +47,10 @@ def render(status, *, width=110, height=38, now=None, view='financial'):
     layout['progress'].size=max(5,len(tasks))
     layout['progress'].update(bars)
     leaders_panel=layout['leaders'].renderable
+    # The lightweight receipts do not retain closed-position P&L distributions.
+    # These V6 columns therefore have no V7 authority and must not imply coverage.
+    leaders_panel.renderable.columns=[column for column in leaders_panel.renderable.columns
+                                      if str(column.header) not in ('Position tail $','PF')]
     tail_count=max(1,math.ceil(config.get('training_sessions',30)*.2))
     names={'Win %':'Position\nwin %','Ex-best $':'P&L excluding\nbest day $',
            'Tail day $':f'Worst {tail_count} days\navg P&L $','Days +%':'Profitable\ndays %'}
@@ -58,6 +62,11 @@ def render(status, *, width=110, height=38, now=None, view='financial'):
     if not status.get('top_strategies'):leaders_panel.title='Rankings | awaiting completed generation'
     grid=layout['metrics'].renderable.renderable
     grid.box=None;grid.show_edge=False
+    if len(grid.columns)==2:
+        unsupported=('position mean P&L','Profit factor','Position tail count')
+        for index,label in enumerate(grid.columns[0]._cells):
+            if any(text in str(label) for text in unsupported):
+                grid.columns[1]._cells[index]='Not recorded in V7'
     layout['timing'].update(Text(f"Elapsed {duration(end-status.get('started_epoch',end)):>9} | replay ETA {duration(status.get('replay_eta')):>9} | generation ETA {duration(status.get('generation_eta')):>9}\n"
         f"Campaign ETA {duration(status.get('campaign_eta')):>9} | avg batch {duration(status.get('average_batch_seconds')):>9} | estimated"))
     # Keep the same V6 regions and controls within compact terminal bounds.
@@ -168,7 +177,7 @@ class CampaignProgress:
 
     def publish(self):
         snapshot=self.snapshot();write_json(self.output/'status.json',snapshot)
-        if self.live is not None:self.live.update(render(snapshot,width=self.console.width,height=self.console.height))
+        if self.live is not None:self.live.update(lambda width,height:render(snapshot,width=width,height=height))
         with self.lock:events=list(self.events);self.events.clear()
         if events:
             import json
@@ -186,7 +195,7 @@ class CampaignProgress:
         self.publish()
         if self.console.is_terminal:
             self.live=FixedTerminal(self.console);self.live.__enter__()
-            self.live.update(render(self.snapshot(),width=self.console.width,height=self.console.height))
+            self.live.update(lambda width,height:render(self.snapshot(),width=width,height=height))
         self.thread=threading.Thread(target=self.pump,name='v7-terminal',daemon=True);self.thread.start();return self
 
     def __exit__(self,kind,error,traceback):
