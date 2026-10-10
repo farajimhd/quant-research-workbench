@@ -1,5 +1,6 @@
 """Read-only full-training receipt adapter for the existing terminal renderer."""
 import json
+import re
 from pathlib import Path
 from .runtime import file_hash
 
@@ -64,6 +65,21 @@ class FullTrainingView:
         resident=current/'resident-status.json'
         active=json.loads(resident.read_text()) if resident.exists() and done<total else {}
         if active:updated=max(updated,resident.stat().st_mtime)
+        # Preparation has its own durable progress file. Read only the family
+        # named by the worker, never an unrelated or previously completed one.
+        restoring=re.fullmatch(r'Restoring compiler context (\d+)/(\d+); no full-session evaluation',active.get('stage',''))
+        if restoring:
+            family=int(restoring.group(1))
+            if not 1<=family<=int(restoring.group(2)):raise ValueError('Invalid compiler restoration family')
+            child=output/'compiler-priming'/f'family-{family-1:04d}'/'resident-status.json'
+            if child.exists():
+                preparation=json.loads(child.read_text())
+                if preparation.get('validation_opened',False):raise ValueError('Compiler preparation opened validation')
+                active={**active,'stage':active['stage']+' | '+preparation.get('stage','Preparing'),
+                    'sessions':[],'day':preparation.get('day','')}
+                updated=max(updated,child.stat().st_mtime)
+        launch=output/'active.json'
+        started=json.loads(launch.read_text())['creation_time'] if launch.exists() else output.stat().st_ctime
         measurements=current/'resident-measurements.json'
         batches=json.loads(measurements.read_text()) if measurements.exists() and done<total else []
         completed_batches=sum(len(v['session_timings']) for v in batches)
@@ -72,6 +88,6 @@ class FullTrainingView:
             config=dict(population=n,generations=total,training_sessions=30),completed_generations=done,
             completed_sessions=sum(1 for p in current.glob('*/receipt.json')) if done<total else 30,
             completed_batches=completed_batches,total_batches=30*((n+batch_size-1)//batch_size),
-            updated_epoch=updated,started_epoch=stat.st_ctime,validation_status='SEALED',top_strategies=self.rows,
+            updated_epoch=updated,started_epoch=started,validation_status='SEALED',top_strategies=self.rows,
             evaluation_basis=f'Generation {done}: all30 training-session search ranking' if done else 'No completed all30 ranking yet',
             focus=', '.join(active.get('sessions',[])) or active.get('day',''),validation_opened=False)

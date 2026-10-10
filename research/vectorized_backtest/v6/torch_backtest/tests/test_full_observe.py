@@ -76,6 +76,26 @@ def test_first_generation_has_no_completed_ranking(tmp_path):
     assert not s['top_strategies'] and s['completed_batches']==0 and s['total_batches']==30
 
 
+def test_restoration_reports_current_family_progress_and_stable_launch_time(tmp_path):
+    import os
+    fixture(tmp_path)
+    (tmp_path/'active.json').write_text(json.dumps(dict(creation_time=1234.5)))
+    resident=tmp_path/'generation-0002/resident-status.json'
+    resident.write_text(json.dumps(dict(stage='Restoring compiler context 2/6; no full-session evaluation',sessions=['all30'])))
+    child=tmp_path/'compiler-priming/family-0001/resident-status.json';child.parent.mkdir(parents=True)
+    child.write_text(json.dumps(dict(stage='Build and capture financial broker',day='2026-08-06',validation_opened=False)))
+    os.utime(child,(2000000000,2000000000))
+    view=FullTrainingView();s=view.read(tmp_path)
+    assert s['started_epoch']==1234.5 and s['updated_epoch']==2000000000
+    assert s['focus']=='2026-08-06' and 'Build and capture' in s['stage']
+    assert s['completed_generations']==1 and s['completed_sessions']==0
+    checkpoint=tmp_path/'checkpoint.json'
+    checkpoint.write_text(checkpoint.read_text()+' ')
+    assert view.read(tmp_path)['started_epoch']==1234.5
+    child.write_text(json.dumps(dict(validation_opened=True)))
+    with pytest.raises(ValueError,match='opened validation'):view.read(tmp_path)
+
+
 def test_full_training_position_tail_uses_complete_episodes_and_indices(tmp_path):
     import torch
     from research.vectorized_backtest.v6.torch_backtest.ranking_diagnostics import diagnostics
