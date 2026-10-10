@@ -55,6 +55,11 @@ the next batch or selection. A changed input/structural identity fails closed.
 Rule histories use batched causal gathers. Swing confirmations are shared by
 exact left/right window pair; prefix maxima and momentum lags are selected from
 shared listing history without repeating it across candidate account slots.
+Rule evaluation retains instruction results in one buffer instead of repeatedly
+copying all earlier instruction results. Exact history allocation remains part
+of the broker capture identity: rounding 31-row histories to 32 changed compiled
+financial arithmetic despite identical fills, and was removed. Compatible
+captures are reused; different exact allocations require a new capture.
 Declared concurrent memory envelopes are checked before launching evaluation.
 Terminal 50-row pages and
 session/complete-position diagnostics are implemented.

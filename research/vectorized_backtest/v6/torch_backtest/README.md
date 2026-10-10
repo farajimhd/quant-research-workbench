@@ -1,5 +1,8 @@
+# V6 Torch replay and optimization
 
+See [the V6 README](../README.md) for the current data authority, compact replay,
+six lifecycle programs, lower-tail objective, profiling and launch constraints.
 
-## Approved dollar objective (2026-10-08)
-The restarted staged campaign maximizes total net profit minus 0.25*T*worst-20%-mean-loss, 0.25*sum(maximum session dollar drawdown), 0.10*sum(stop-risk dollar-hours), 0.002*sum(capital dollar-hours), 10*T*active-nodes/32 and 10*T*I, with initial cash $10,000. I is the duration-weighted integral of min(1,floor(consecutive inactivity hours)/5); each certified session starts a fresh clock. Actual buy/entry-add fills reset it; sells do not. Eligible time is the certified UTC session interval, excluding calendar gaps. No median or excluding-best-day reward is used. Financial validity remains mandatory. Seeded selection randomly removes floor(50% of inactive valid candidates) from archive/parent eligibility per selection boundary, retaining the rest. Ranking displays every evaluated candidate, invalid candidates last, and N/B wrap across the entire population.
-Original campaign artifacts remain immutable. Profiling may be inherited only with explicit --qualified-source and byte-identical execution modules plus unchanged passed report/input/batch identity; controller/scoring/display changes are tested separately. No inherited profiling is claimed to be new-source GPU profiling.
+V5 staged-campaign objectives and inherited profiling are not V6 qualification.
+Full optimization requires the user's final parameter decision. Sealed
+validation is outside the current implementation and profiling scope.
