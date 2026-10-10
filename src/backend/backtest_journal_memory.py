@@ -56,6 +56,8 @@ class BacktestMemoryJournal:
         self._confirmed_ah_intents: dict[str, Any] = {}
         self._liquidity_fade_exits: dict[str, Any] = {}
         self._liquidity_fade_intents: dict[str, Any] = {}
+        self._native_channel_exits: dict[str, Any] = {}
+        self._native_channel_intents: dict[str, Any] = {}
         self._entry_assignments: dict[str, str] = {}
         self._oms_groups: dict[str, Any] = {}
         self._oms_admissions: dict[str, dict[str, Any] | None] = {}
@@ -464,6 +466,46 @@ class BacktestMemoryJournal:
         with self._lock:
             return self._liquidity_fade_exits.get(record_id)
 
+    def append_native_channel_exit(self,*,intent,request,context,strategy_id,strategy_revision):
+        """Buffer complete pending evidence; this grants no execution/write rights."""
+        from .backtest_native_channel_exit_unit import native_channel_exit_intent
+        from src.trading_runtime.native_channel_exit_journal_context import NativeChannelExitJournalContext
+        from src.trading_runtime.strategy_one_contract import STRATEGY_ID
+        from src.trading_runtime.arte_intent_projection import project_strategy_intent
+        if (type(context) is not NativeChannelExitJournalContext or strategy_id!=STRATEGY_ID
+                or context.unit.base.run_id!=self.run_id):
+            raise ValueError('Channel journal requires its own complete source context')
+        context.unit.__post_init__()
+        expected=native_channel_exit_intent(request,strategy_number=strategy_revision,
+            management_policy=context.policy)
+        projected=project_strategy_intent(expected).core
+        detail=context.unit.base.intents[0]
+        if (intent!=expected or any(detail.get(key)!=value for key,value in projected.items()
+                if key!='event_time')):
+            raise ValueError('Channel journal intent differs from complete factory transport')
+        source=(request,context,strategy_id,strategy_revision)
+        with self._lock:
+            self._require_open()
+            prior=self._native_channel_intents.get(intent.intent_id)
+            if prior is not None:
+                record,previous=prior
+                if previous!=source:
+                    raise ValueError('Channel journal retry changed its pending source context')
+                return record
+            if self._next_sequence!=context.unit.base.first_sequence-1:
+                raise ValueError('Channel journal source crosses its exact pending frontier')
+            record=self.append(run_id=self.run_id,category='strategy',entity_type='strategy_intent',
+                entity_id=intent.intent_id,account_id=request.financial.account_id,
+                event_time=intent.event_time,payload={**intent.payload(),
+                    'strategy_id':strategy_id,'strategy_revision':strategy_revision})
+            self._native_channel_intents[intent.intent_id]=(record,source)
+            self._native_channel_exits[record.record_id]=source
+            return record
+
+    def native_channel_exit_for_record(self,record_id):
+        with self._lock:
+            return self._native_channel_exits.get(record_id)
+
     def append_profit_giveback_exit(self, *, intent, witness, source_entry_intent_id,
                                    arm_reference, account_id, strategy_id,
                                    strategy_revision, assignment_id):
@@ -860,6 +902,8 @@ class BacktestMemoryJournal:
                     self._followthrough_diagnostics.pop(record.record_id, None)
                     self._profit_giveback_exits.pop(record.record_id, None)
                     self._liquidity_fade_exits.pop(record.record_id, None)
+                    if self._native_channel_exits.pop(record.record_id,None) is not None:
+                        self._native_channel_intents.pop(record.entity_id,None)
                     self._oms_groups.pop(record.record_id, None)
                     self._oms_admissions.pop(record.record_id, None)
                     self._order_requests.pop(record.record_id, None)
