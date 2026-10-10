@@ -265,3 +265,31 @@ def test_stateful_compiled_graph_cohorts_match_eager(monkeypatch):
     # Adds clock2/3 must not reset the entry clock1 age: exit clock4.
     assert actual[0]['add_count'].item()==2
     assert actual[0]['closed_positions'].item()==1
+
+
+def test_prefetch_reads_next_tile_while_consumer_works_and_drains():
+    import threading
+    from research.vectorized_backtest.v7.io_pipeline import feature_tiles
+    read_next=threading.Event();release=threading.Event()
+    class Cache:
+        def block(self,begin,end,listings):
+            if end==4:read_next.set();assert release.wait(5)
+            return np.zeros((1,end-begin,1),dtype=np.float32),np.ones((1,end-begin,1),dtype=bool)
+    data=SimpleNamespace(device=torch.device('cpu'),feature_cache=Cache())
+    stream=feature_tiles(data,[(0,2,[0]),(2,4,[0])])
+    try:
+        next(stream)
+        assert read_next.wait(5)
+        release.set();next(stream)
+    finally:release.set();stream.close()
+
+
+def test_background_publication_flushes_and_propagates_errors(tmp_path,monkeypatch):
+    from research.vectorized_backtest.v7 import io_pipeline
+    with io_pipeline.Publisher(capacity=1) as publisher:
+        publisher.write(tmp_path/'a.json',{'n':1});publisher.write(tmp_path/'b.json',{'n':2})
+    assert json.loads((tmp_path/'b.json').read_text())=={'n':2}
+    def fail(*args):raise OSError('disk failure')
+    monkeypatch.setattr(io_pipeline,'write_json',fail)
+    with pytest.raises(OSError,match='disk failure'):
+        with io_pipeline.Publisher() as publisher:publisher.write(tmp_path/'c.json',{})

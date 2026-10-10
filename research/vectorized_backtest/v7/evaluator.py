@@ -89,22 +89,24 @@ class PopulationPrograms:
         self.members=members;self.device=torch.device(device)
         self.open_programs={s:TorchPrograms([m.open_rules[s] if m.open_rules is not None else m.rules[s] for m in members],CATALOG,self.device) for s in STAGES}
         self.programs={s:TorchPrograms([m.rules[s] for m in members],CATALOG,self.device) for s in STAGES}
-    def evaluate(self,data,chunk=2048,listing_batch=4,workspace_gib=2.,maximum_gate_gib=2.):
+    def evaluate(self,data,chunk=2048,listing_batch=4,workspace_gib=None,maximum_gate_gib=2.):
         b=len(self.members);u=len(data.listing_ids)
         if 2*b*data.clocks*u>maximum_gate_gib*1024**3:raise MemoryError('V7 rule gates exceed declared budget')
         gates=torch.zeros((b,data.clocks,u),dtype=torch.int16,device=self.device)
         width=max(v.width for v in (*self.programs.values(),*self.open_programs.values()))
         estimate=(chunk+119)*(len(CATALOG)*5+b*(width*20+64))*listing_batch
+        if workspace_gib is None:
+            workspace_gib=torch.cuda.mem_get_info(self.device)[0]*.8/1024**3 if self.device.type=='cuda' else 2.
         if estimate>workspace_gib*1024**3:raise MemoryError('V7 rule workspace exceeds declared budget')
-        for first in range(0,u,listing_batch):
-            listings=list(range(first,min(u,first+listing_batch)))
-            for begin in range(0,data.clocks,chunk):
-                warm=max(0,begin-119);end=min(data.clocks,begin+chunk)
-                inputs,known=data.feature_block(warm,end,listings)
-                for branch,programs in enumerate((self.programs,self.open_programs)):
-                    for bit,stage in enumerate(STAGES):
-                        signal,mask=programs[stage](inputs,known)
-                        gates[:,begin:end,first:first+len(listings)]|=((signal[:,:,begin-warm:]!=0)&mask[:,:,begin-warm:]).transpose(1,2).to(torch.int16)*(1<<(bit+8*branch))
+        from .io_pipeline import feature_tiles
+        requests=((begin,min(data.clocks,begin+chunk),list(range(first,min(u,first+listing_batch))))
+                  for first in range(0,u,listing_batch) for begin in range(0,data.clocks,chunk))
+        for (begin,end,listings),(inputs,known) in feature_tiles(data,requests):
+            first=listings[0];warm=max(0,begin-119)
+            for branch,programs in enumerate((self.programs,self.open_programs)):
+                for bit,stage in enumerate(STAGES):
+                    signal,mask=programs[stage](inputs,known)
+                    gates[:,begin:end,first:first+len(listings)]|=((signal[:,:,begin-warm:]!=0)&mask[:,:,begin-warm:]).transpose(1,2).to(torch.int16)*(1<<(bit+8*branch))
         return gates
 
 

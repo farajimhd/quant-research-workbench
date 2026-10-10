@@ -138,3 +138,23 @@ range; configured age predicates are preserved by mutation.
 
 Profiling sizes must come from the intended optimization configuration. The
 previous arbitrary pilot results do not qualify optimization wall time.
+
+### Overlapped I/O
+
+A bounded background loader prepares the next session cohort while the current
+one computes. Feature tiles are read/decoded by one worker per active cache,
+with two-tile lookahead; mutable cache integrity/LRU state has a single owner.
+Pinned host tensors transfer on a separate CUDA stream, using nonblocking
+copies and event dependencies. Status, timing and session receipts use a bounded
+background publisher. Missing-data dependencies and full queues still cause
+explicit waits; durable receipts are flushed before scoring/checkpoint sealing.
+No claim of literally zero blocking is made.
+
+The profiling options are explicit. Candidate batch comparisons approved by
+the user are 128,256,512,1024; cohort bounds derive from available GPU memory.
+Memory-budget failures are recorded, never silently downgraded. The chosen
+throughput option receives one complete all30 evaluation through run_search,
+including net scoring and publication, without generating another population.
+
+GPU rule workspace is bounded by 80% of currently free device memory unless an
+explicit workspace limit is supplied; gate residency has its separate bound.

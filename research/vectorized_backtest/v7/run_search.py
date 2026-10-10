@@ -2,6 +2,8 @@
 import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
 import argparse,json,gc,math
+from concurrent.futures import ThreadPoolExecutor
+from .io_pipeline import Publisher,prepare_host,activate_nonblocking
 from dataclasses import asdict
 from hashlib import sha256
 from pathlib import Path
@@ -44,7 +46,7 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
         device=device,backend=backend,seed=seed,execution=asdict(execution),maximum_data_gib=maximum_data_gib,maximum_gate_gib=maximum_gate_gib,
         objective=asdict(LowerTailDollarObjective()),timing='signals at second close; assumed fill at next observed close; terminal liquidation at last known mark')
     checkpoint=output/'checkpoint.json';rng=np.random.default_rng(seed);completed=0
-    with owned_run(output,version=VERSION),Progress(TextColumn('{task.description}'),BarColumn(),TextColumn('{task.completed}/{task.total}'),TimeElapsedColumn(),TimeRemainingColumn()) as panel:
+    with Publisher() as publisher,ThreadPoolExecutor(max_workers=1,thread_name_prefix="v7-session") as loader,owned_run(output,version=VERSION),Progress(TextColumn('{task.description}'),BarColumn(),TextColumn('{task.completed}/{task.total}'),TimeElapsedColumn(),TimeRemainingColumn()) as panel:
         generation_task=panel.add_task('Generations sealed',total=generations)
         batch_task=panel.add_task('Session cohorts × strategy batches',total=math.ceil(len(days)/session_workers)*math.ceil(population_size/batch_size))
         clock_task=panel.add_task('Current cohort replay clocks',total=1)
@@ -81,6 +83,10 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
                             for offset in range(0,len(population),batch_size)} if not already_complete else {}
             # Cohorts share one replay kernel over the session axis. No separate
             # thread invokes Python transitions for every session.
+            def load_cohort(cohort):
+                return [(day,prepare_host(host_cache[day] if day in host_cache else SessionData(inputs/day,history/day,device='cpu',maximum_gib=maximum_data_gib,
+                    feature_cache=Path(feature_cache)/day if feature_cache else None),pin=torch.device(device).type=='cuda')) for day in cohort]
+            loaded=loader.submit(load_cohort,days[:session_workers]) if not already_complete else None
             for first in ([] if already_complete else range(0,len(days),session_workers)):
                 cohort=days[first:first+session_workers];data=[]
                 try:
@@ -89,41 +95,42 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
                         reserve=len(cohort)*(maximum_data_gib+maximum_gate_gib+2.)*1024**3
                         if reserve>free*.8:raise MemoryError('Proposed V7 cohort exceeds GPU memory budget')
                     load_start=perf_counter()
-                    for day in cohort:
-                        if day not in host_cache:host_cache[day]=SessionData(inputs/day,history/day,device='cpu',maximum_gib=maximum_data_gib,
-                            feature_cache=Path(feature_cache)/day if feature_cache else None)
-                        item=host_cache[day]
-                        if hasattr(item,'activate'):item.activate(device)
+                    for day,item in loaded.result():
+                        host_cache[day]=item
+                        activate_nonblocking(item,device)
                         data.append(item)
+                    next_cohort=days[first+session_workers:first+2*session_workers]
+                    loaded=loader.submit(load_cohort,next_cohort) if next_cohort else None
                     load_seconds=perf_counter()-load_start
                     for offset in range(0,len(population),batch_size):
                         members=population[offset:offset+batch_size];shared=shared_batches[offset]
                         status=dict(stage='strategy feature programs',generation=generation,total_generations=generations,
                             sessions=cohort,candidate_offset=offset,candidates=len(members),population=population_size,validation_opened=False)
-                        write_json(output/'status.json',status)
+                        publisher.write(output/'status.json',status)
                         rule_start=perf_counter();gates=[shared.evaluate(v,maximum_gate_gib=maximum_gate_gib) for v in data]
                         if torch.device(device).type=='cuda':torch.cuda.synchronize()
                         rule_seconds=perf_counter()-rule_start;replay_start=perf_counter()
-                        write_json(output/'status.json',dict(status,stage='batched position replay'))
+                        publisher.write(output/'status.json',dict(status,stage='batched position replay'))
                         panel.update(clock_task,total=max(v.clocks for v in data)-1,completed=0)
                         def clock_progress(clock,total):
                             panel.update(clock_task,completed=clock,total=total)
-                            write_json(output/'status.json',dict(status,stage='batched position replay',replay_clock=clock,replay_clocks=total))
+                            publisher.write(output/'status.json',dict(status,stage='batched position replay',replay_clock=clock,replay_clocks=total))
                         metrics=replay_cohort(data,members,gates,execution=execution,backend=backend,progress=clock_progress)
                         timings.append(dict(sessions=cohort,offset=offset,candidates=len(members),load_seconds=load_seconds,
                             rule_seconds=rule_seconds,replay_seconds=perf_counter()-replay_start))
                         for day,result in zip(cohort,metrics):parts[day].append({k:v.detach().cpu().tolist() for k,v in result.items()})
-                        write_json(root/'timings.json',timings);del gates,metrics
+                        publisher.write(root/'timings.json',timings);del gates,metrics
                         panel.advance(batch_task)
                     for day,item in zip(cohort,data):
                         merged={k:sum((p[k] for p in parts[day]),[]) for k in parts[day][0]}
-                        write_json(require_runtime(root/day)/'receipt.json',dict(day=day,metrics=merged,identity=item.identity,
+                        publisher.write(require_runtime(root/day)/'receipt.json',dict(day=day,metrics=merged,identity=item.identity,
                             population_sha256=token,full_session=True,validation_opened=False,execution=asdict(execution)))
                 finally:
                     for item in data:
                         if hasattr(item,'deactivate'):item.deactivate()
                     del data;gc.collect()
                     if torch.device(device).type=='cuda':torch.cuda.empty_cache()
+            publisher.flush()
             shared_batches.clear()
             ordered=[json.loads((root/d/'receipt.json').read_text())['metrics'] for d in days]
             matrix=lambda name:torch.tensor([v[name] for v in ordered],dtype=torch.bool if name=='terminal_valid' else torch.float64)
@@ -155,7 +162,7 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
                 population=next_population[:population_size]
             save(generation,file_hash(root/'complete.json'))
             panel.update(generation_task,completed=generation)
-            write_json(output/'status.json',dict(stage='complete' if generation==generations else 'generation sealed',completed_generations=generation,
+            publisher.write(output/'status.json',dict(stage='complete' if generation==generations else 'generation sealed',completed_generations=generation,
                 total_generations=generations,wall_seconds=perf_counter()-started,validation_opened=False))
             if (output/'STOP').exists():return 130
     return 0

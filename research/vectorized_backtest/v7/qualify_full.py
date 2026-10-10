@@ -39,6 +39,7 @@ def main():
     members[2]=replace(members[2],policy=replace(members[2].policy,reduce_fraction=1.))
     members[3]=replace(members[3],policy=replace(members[3].policy,swing_left=1,swing_right=1))
     members[4]=replace(members[4],policy=replace(members[4].policy,stop_fraction=.005,trail_fraction=.005))
+    members[5]=replace(members[5],minimum_age={"exit":30,"add":10,"reduce":15})
     started=perf_counter();records=[]
     with owned_run(root,version='v7-full-session-qualification-v1'):
         for day in a.days:
