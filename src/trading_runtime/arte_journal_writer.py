@@ -1468,6 +1468,23 @@ def typed_row(name: str, values: Mapping[str, Any]) -> dict[str, Any]:
     return row
 
 
+def typed_contract_row(contract, values: Mapping[str, Any]) -> dict[str, Any]:
+    """Project explicit normalized schemas without registering or admitting them.
+
+    Publication still uses the installed family catalog and native semantic
+    validators. An arbitrary schema cannot acquire journal writer authority.
+    """
+    from .arte_journal_schema import TableContract
+    if type(contract) is not TableContract:
+        raise ValueError('Exact normalized table contract required')
+    row = dict(values)
+    if 'content_hash' in row:
+        raise ValueError('Caller cannot provide a content hash')
+    row['content_hash'] = sha256(canonical_json(_canonical_typed_content(
+        contract.name, row, _contract=contract)).encode('utf-8')).hexdigest()
+    return row
+
+
 def _literal(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
@@ -1519,7 +1536,15 @@ def _decimal_content_bounds(base: str) -> tuple[int, Decimal, Decimal]:
 @lru_cache(maxsize=None)
 def _typed_content_fields(name: str) -> tuple[tuple[str, str, bool, Any], ...]:
     """Compile immutable schema dispatch once, never once per journal row."""
-    _, columns = _typed_content_shape(name)
+    return _compile_typed_content_fields(name, _typed_content_shape(name)[1])
+
+
+@lru_cache(maxsize=128)
+def _explicit_typed_content_fields(contract):
+    return _compile_typed_content_fields(contract.name, contract.columns)
+
+
+def _compile_typed_content_fields(name, columns):
     fields = []
     for column, kind in columns:
         if column == "content_hash":
@@ -1544,14 +1569,22 @@ def _typed_content_fields(name: str) -> tuple[tuple[str, str, bool, Any], ...]:
 
 
 def _canonical_typed_content(
-    name: str, row: Mapping[str, Any], *, stored_utc: bool = False,
+    name: str, row: Mapping[str, Any], *, stored_utc: bool = False, _contract=None,
 ) -> dict[str, Any]:
     """Canonicalize every persisted field for reproducible row-hash recovery."""
-    expected, _ = _typed_content_shape(name)
+    if _contract is None:
+        expected, _ = _typed_content_shape(name)
+        compiled = _typed_content_fields(name)
+    else:
+        from .arte_journal_schema import TableContract
+        if type(_contract) is not TableContract or _contract.name != name:
+            raise ValueError('Explicit typed projection schema differs from family identity')
+        expected = frozenset(column for column, _ in _contract.columns if column != 'content_hash')
+        compiled = _explicit_typed_content_fields(_contract)
     if set(row) != expected:
         raise ValueError(f"{name} has missing or extra typed columns")
     canonical: dict[str, Any] = {}
-    for column, conversion, nullable, parameter in _typed_content_fields(name):
+    for column, conversion, nullable, parameter in compiled:
         value = row[column]
         if value is None:
             if not nullable:
