@@ -13,9 +13,35 @@ from .materialize import owned_run
 from .run_structure import training_days
 from .sparse_evaluator import SparseSessionEvaluator
 from .resident_evaluator import ResidentSessionEvaluator
-from .evolution import sample
+from .evolution import sample,Individual,STAGES
+from .program import Program
+from .feature_bank import CATALOG
 from .genome import StrategySpace
 from .training_pass import population_hash
+
+
+def frozen_profile_population(path,count):
+    """Select an exact prefix from a completed training-only profile."""
+    path=Path(path);folder=path.parent
+    receipt=json.loads((folder/'receipt.json').read_text())
+    identity=json.loads((folder/'identity.json').read_text())
+    if receipt.get('status')!='complete' or any(record.get('validation_opened') is not False or record.get('optimization_started') is not False for record in (receipt,identity)):
+        raise ValueError('Frozen population requires a completed training-only profile')
+    rows=json.loads(path.read_text());members=[]
+    if type(count) is not int or not 1<=count<=len(rows):raise ValueError('Frozen population prefix exceeds source coverage')
+    for row in rows:
+        if set(row['programs'])!=set(STAGES):raise ValueError('Frozen lifecycle coverage changed')
+        programs={stage:Program.from_payload(row['programs'][stage]) for stage in STAGES}
+        for program in programs.values():program.validate(CATALOG)
+        member=Individual(list(row['policy']),{stage:[(list(program.nodes),program.output)] for stage,program in programs.items()},
+            {stage:[] for stage in STAGES},dict(row['management']))
+        if member.payload()!=row:raise ValueError('Frozen candidate payload changed on reconstruction')
+        members.append(member)
+    if population_hash(members)!=identity['population_sha256']:raise ValueError('Frozen population identity changed')
+    StrategySpace().validate([m.policy for m in members])
+    return members[:count],dict(population_file_sha256=file_hash(path),source_population_sha256=identity['population_sha256'],
+        source_identity_sha256=file_hash(folder/'identity.json'),source_receipt_sha256=file_hash(folder/'receipt.json'),
+        source_candidates=len(members),selected_indices=list(range(count)))
 
 
 def compare_sessions(reference,actual):
@@ -55,6 +81,7 @@ def main(argv=None):
     p.add_argument('--backend',choices=['compile','cudagraph','compiled_graph'],default='compiled_graph')
     p.add_argument('--graph-steps',type=int,default=16,help='Ticks per captured broker block, 1..64; default preserves existing allocation')
     p.add_argument('--seed',type=int,default=2236)
+    p.add_argument('--population-reference',type=Path,help='Frozen population.json from a completed training-only profile; uses the first --population candidates without resampling')
     p.add_argument('--maximum-input-gib',type=float,default=4.);p.add_argument('--maximum-state-gib',type=float,default=4.)
     a=p.parse_args(argv)
     worker_counts=[a.workers] if a.worker_counts is None else [int(v) for v in a.worker_counts.split(',')]
@@ -67,7 +94,7 @@ def main(argv=None):
     with owned_run(root,version='v6-compact-concurrent-profile-v1'):
         days=training_days(a.inputs)[:a.session_count]
         sessions=[json.loads((a.inputs/day/'complete.json').read_text())['identity']['session'] for day in days]
-        members=sample(np.random.default_rng(a.seed),StrategySpace(),a.population)
+        members,population_source=frozen_profile_population(a.population_reference,a.population) if a.population_reference else (sample(np.random.default_rng(a.seed),StrategySpace(),a.population),None)
         evaluator_type=SparseSessionEvaluator if a.backend=='compile' else ResidentSessionEvaluator
         capture_options={} if a.backend=='compile' else dict(graph_steps=a.graph_steps)
         evaluate=evaluator_type(a.inputs,a.structure,batch_size=a.batch_size,backend=a.backend,
@@ -75,7 +102,7 @@ def main(argv=None):
             maximum_fills=a.maximum_fills,holding_capacity=a.holding_capacity,**capture_options)
         contract=evaluate.contract(sessions,a.workers)
         write_json(root/'identity.json',dict(code_sha256=code_hash(),arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items()},contract=contract,
-            population_sha256=population_hash(members),validation_opened=False,optimization_started=False))
+            population_sha256=population_hash(members),population_source=population_source,validation_opened=False,optimization_started=False))
         write_json(root/'population.json',[v.payload() for v in members])
         rows=[]
         audits=[]

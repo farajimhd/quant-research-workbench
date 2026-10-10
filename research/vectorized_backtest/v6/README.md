@@ -77,8 +77,12 @@ warm-up, captured blocks and final reset enqueue; reused captures report no
 new compilation phases. These host timings use existing synchronization points.
 External reference comparison checks candidate metrics and exact fills independently of
 batch partitioning. `--resident-repeats 2` distinguishes initial preparation
-from a second full pass retaining input and broker buffers. `--graph-steps`
-controls captured broker block length (1..64, default 16). The block
+from a second full pass retaining input and broker buffers.
+`--population-reference` can select a prefix of a completed training-only
+profile's frozen `population.json`, preserving its exact policies, management
+parameters and programs instead of sampling different candidates at a smaller
+population count. The source hashes and selected indices are recorded.
+`--graph-steps` controls captured broker block length (1..64, default 16). The block
 length is recorded in the profile identity and resident contract; changing it
 requires new capture rather than reuse of an incompatible graph. Performance
 choices require measured full-session timing and exact financial/fill parity.
