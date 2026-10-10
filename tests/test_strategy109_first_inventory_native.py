@@ -72,7 +72,7 @@ def actual_successor(monkeypatch, *, tag, paired=False, cold_probe=False, fault_
     namespace = dict(vars(prior), first_source=first_source)
     if cold_graph:
         from tests.test_strategy109_configuration_transport import (
-            ConfigurationSelectTransport, bind_complete_cold_configuration,
+            ConfigurationSelectTransport, bind_complete_cold_configuration, prepared_quote_select_rows,
         )
         from src.backend import backtest_fixed_structural_lot_native as root_native
         from src.backend import backtest_fixed_structural_lot_native_v20 as normal_native
@@ -85,7 +85,7 @@ def actual_successor(monkeypatch, *, tag, paired=False, cold_probe=False, fault_
         sql = 'def execute(self,sql,*args,**kwargs):return controlled_price_rows(plans,sql)'
         assert text.count(sql) == 1
         text = text.replace(sql,
-            'def execute(self,sql,*args,**kwargs):return cold_sql.execute(sql) if sql in cold_sql.responses else controlled_price_rows(plans,sql)')
+            'def execute(self,sql,*args,**kwargs):return cold_sql.execute(sql) if sql in cold_sql.responses else prepared_quote_select_rows(source,sql) if \\'FROM arte.liquidity_100ms_v1 AS l \\' in sql else controlled_price_rows(plans,sql)')
         cold = '            class SourceRows:'
         assert text.count(cold) == 1
         text = text.replace(cold,
@@ -95,7 +95,7 @@ def actual_successor(monkeypatch, *, tag, paired=False, cold_probe=False, fault_
         execute = "    exec(compile(source,'<controlled-native109>','exec'),namespace)"
         assert text.count(execute) == 1
         injected = "    source=source.replace('parent=source_fixture()', 'parent=configuration_transport.parent')\\n"
-        for name in ('configuration_transport','bind_complete_cold_configuration',
+        for name in ('configuration_transport','bind_complete_cold_configuration','prepared_quote_select_rows',
                      'source_guard','root_native','normal_native'):
             injected += "    namespace[" + repr(name) + "]=" + name + "\\n"
         text = text.replace(execute, injected + execute)
@@ -106,9 +106,11 @@ def actual_successor(monkeypatch, *, tag, paired=False, cold_probe=False, fault_
         source = source.replace(execute,
             "    namespace.update(configuration_transport=configuration_transport,"
             "bind_complete_cold_configuration=bind_complete_cold_configuration,"
+            "prepared_quote_select_rows=prepared_quote_select_rows,"
             "source_guard=source_guard,root_native=root_native,normal_native=normal_native)\n" + execute)
         namespace.update(configuration_transport=transport,
             bind_complete_cold_configuration=bind_complete_cold_configuration,
+            prepared_quote_select_rows=prepared_quote_select_rows,
             source_guard=source_guard, root_native=root_native, normal_native=normal_native)
     exec(compile(source, '<reviewable-native109-fixture>', 'exec'), namespace)
     counts = namespace['_actual109'](monkeypatch, paired=paired, cold_probe=cold_probe,

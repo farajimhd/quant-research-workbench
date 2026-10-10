@@ -3,6 +3,7 @@ from dataclasses import asdict
 import json
 from pathlib import Path
 import subprocess
+import re
 from uuid import uuid4
 
 import pytest
@@ -83,6 +84,27 @@ def bind_complete_cold_configuration(source, transport, source_guard):
     candidate = certify_numbered_configuration(transport, 109)
     source_guard(candidate)
     return transport
+
+
+def prepared_quote_select_rows(source, query):
+    """Expose the same prepared synthetic quotes; keep the actual loader intact."""
+    from src.backend.backtest_market_data import SESSION_OPEN_OFFSET_MS, _literal
+    assert 'FROM arte.liquidity_100ms_v1 AS l ' in query
+    assert f'l.build_id={_literal(source.price_authority.plan.source.market.build_id)} ' in query
+    assert f"l.session_date=toDate({_literal(source.session_date.isoformat())}) " in query
+    requested = tuple((ticker, int(bucket), attempt) for ticker, bucket, attempt in
+        re.findall(r"\('([^']+)',(\d+),toUUID\('([^']+)'\)\)", query))
+    assert requested and len(set(requested)) == len(requested)
+    quotes = {(quote.ticker, (quote.boundary_ms + SESSION_OPEN_OFFSET_MS) // 100 - 1,
+               quote.broker_attempt_id): quote for quote in source.quotes}
+    rows = []
+    for key in requested:
+        assert key in quotes, 'Requested quote is absent from prepared fixture evidence'
+        quote = quotes[key]
+        rows.append(dict(ticker=key[0], bucket_index=key[1], liquidity_attempt_id=key[2],
+            bid_int=quote.bid_int, ask_int=quote.ask_int,
+            quote_timestamp_us=quote.quote_timestamp_us, quote_valid=quote.quote_valid))
+    return '\n'.join(json.dumps(row) for row in rows)
 
 
 def test_normal_reader_reconstructs_complete_real_parent_and_draft_successor():
