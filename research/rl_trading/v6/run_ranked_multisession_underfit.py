@@ -49,6 +49,8 @@ def validate_continuation(root, epoch, plan):
     if any(old.get(k) is not False for k in ('sealed_labels_read', 'development_labels_read', 'generalization_evaluated', 'workstation_gpu_used')):
         raise ValueError('Continuation must remain TRAIN-only on laptop')
     runner = Path(__file__).name
+    if old.get('clocks_per_chunk',32) != plan.get('clocks_per_chunk',32):
+        raise ValueError('Continuation chronological optimizer chunk changed')
     if old['source_files_sha256'].get(runner) not in {
             'e90f8d6f679d715b1d2df0e4b7a23a58c29187e4513a60f8138be3f272d0b101',
             plan['source_files_sha256'][runner]}:
@@ -89,11 +91,14 @@ def main(argv=None):
     parser.add_argument('--gpu-duty-cycle', type=float, default=.75)
     parser.add_argument('--cpu-saved-tensors', action='store_true')
     parser.add_argument('--natural-train', action='store_true', help='TRAIN-only full target population; separate from the balanced admission contract')
+    parser.add_argument('--clocks-per-chunk', type=int, default=32, help='Chronological optimizer block size; smaller blocks bound CPU-offloaded graphs')
     parser.add_argument('--continue-from', type=Path, help='Preserved run; new output and pre-training replay required')
     parser.add_argument('--continue-epoch', type=int)
     args = parser.parse_args(argv)
     if not 1 <= args.history_microbatch <= 32 or not 0 < args.gpu_duty_cycle <= .8:
         raise ValueError('Laptop requires bounded history batches and at most 80% duty cycle')
+    if not 1 <= args.clocks_per_chunk <= 32:
+        raise ValueError('Chronological computation chunks must be between 1 and 32 clocks')
     runtime = Path('D:/TradingML/runtimes').resolve()
     paths = [args.underfit, args.selection, args.initial_cache, args.initial_source, args.additional_cache, args.output]
     if (args.continue_from is None) != (args.continue_epoch is None):
@@ -151,6 +156,7 @@ def main(argv=None):
         target_population='all_certified_cached_TRAIN_targets' if args.natural_train else 'balanced_128',
         normalization_origin='frozen_verified_single_TRAIN_contract_no_refitting', initialization='fresh_weights',
         epochs=args.epochs, width=args.width, activation_checkpointing=args.activation_checkpointing,
+        clocks_per_chunk=args.clocks_per_chunk, system_ram_reserve_bytes=8*1024**3,
         cpu_saved_tensors=args.cpu_saved_tensors,
         laptop_resources=dict(history_microbatch=args.history_microbatch,duty_cycle=args.gpu_duty_cycle,reserve_bytes=4*1024**3),
         seed=17, learning_rate=3e-4, weight_decay=1e-4,
@@ -187,6 +193,7 @@ def main(argv=None):
         for s,t in sessions:
             evidence = {}
             report = asdict(train_session(p, None, s, t, (), device=device, evaluation=True,
+                clocks_per_chunk=args.clocks_per_chunk,
                 evaluate_train=True, teacher_loss='branch-balanced-v3', regression_weights=(0.,0.),
                 regression_evidence=evidence))
             report.update(evidence); reports.append(report)
@@ -220,6 +227,7 @@ def main(argv=None):
             for s,t in sessions:
                 write('progress.json', dict(phase='training', epoch=epoch, day=s.day.isoformat()))
                 train_session(policy, optimizer, s, t, (), device=device,
+                    clocks_per_chunk=args.clocks_per_chunk,
                     teacher_loss='branch-balanced-v3', regression_weights=(0.,0.))
             if epoch != 1 and epoch % 5 and epoch != args.epochs: continue
             write('progress.json', dict(phase='evaluation', epoch=epoch))

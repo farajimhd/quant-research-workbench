@@ -14,7 +14,8 @@ from test_rl_trading_v6_teacher_forecast import fixture
 
 
 @pytest.mark.parametrize('checkpointing',[False,True])
-def test_capacity512_actual_training_and_checkpoint_replay(checkpointing):
+@pytest.mark.parametrize('clocks',[1,32])
+def test_capacity512_actual_training_and_checkpoint_replay(checkpointing,clocks):
     from research.rl_trading.v6.run_ranked_teacher_generalization import build_policy
     from research.rl_trading.v6.market_attention import MarketAttentionConfig
     torch.set_num_threads(2)
@@ -24,13 +25,13 @@ def test_capacity512_actual_training_and_checkpoint_replay(checkpointing):
     policy=build_policy(ranking,torch.device('cpu'),width=512)
     policy.encoder.activation_checkpointing=checkpointing
     optimizer=torch.optim.AdamW(policy.parameters(),lr=.001)
-    fitted=train_session(policy,optimizer,session,labels,(),device=torch.device('cpu'),teacher_loss='branch-balanced-v3',regression_weights=(0.,0.))
+    fitted=train_session(policy,optimizer,session,labels,(),device=torch.device('cpu'),clocks_per_chunk=clocks,teacher_loss='branch-balanced-v3',regression_weights=(0.,0.))
     assert fitted.optimizer_steps>0 and np.isfinite(fitted.mean_loss)
     restored=build_policy(ranking,torch.device('cpu'),width=512)
     restored.encoder.activation_checkpointing=checkpointing
     restored.load_state_dict(policy.state_dict(),strict=True)
     def evaluate(p):
-        return asdict(train_session(p,None,session,labels,(),device=torch.device('cpu'),evaluation=True,evaluate_train=True,teacher_loss='branch-balanced-v3',regression_weights=(0.,0.)))
+        return asdict(train_session(p,None,session,labels,(),device=torch.device('cpu'),clocks_per_chunk=clocks,evaluation=True,evaluate_train=True,teacher_loss='branch-balanced-v3',regression_weights=(0.,0.)))
     assert evaluate(policy)==evaluate(restored)
 
 

@@ -5,11 +5,19 @@ import time
 
 class LaptopGpuPacer:
     def __init__(self, device, *, duty_cycle=.75, reserve_bytes=4*1024**3,
-                 clock=time.perf_counter, sleep=time.sleep, cuda=None):
+                 clock=time.perf_counter, sleep=time.sleep, cuda=None,
+                 system_reserve_bytes=8*1024**3, system_available=None):
         if not math.isfinite(duty_cycle) or not 0 < duty_cycle < 1:
             raise ValueError('GPU duty cycle must be strictly between zero and one')
         if not isinstance(reserve_bytes, int) or reserve_bytes <= 0:
             raise ValueError('Positive VRAM reserve required')
+        if not isinstance(system_reserve_bytes, int) or system_reserve_bytes <= 0:
+            raise ValueError('Positive system RAM reserve required')
+        if system_available is None:
+            import psutil
+            system_available = lambda: psutil.virtual_memory().available
+        self.system_available = system_available
+        self.system_reserve_bytes = system_reserve_bytes
         if cuda is None:
             import torch
             cuda = torch.cuda
@@ -25,6 +33,10 @@ class LaptopGpuPacer:
         return free
 
     def check_reserve(self):
+        available = self.system_available()
+        if available < self.system_reserve_bytes:
+            raise RuntimeError(f'Laptop system RAM reserve breached: {available} available bytes; '
+                               f'{self.system_reserve_bytes} required')
         self.cuda.synchronize(self.device)
         free, total = self.cuda.mem_get_info(self.device)
         if free < self.reserve_bytes:

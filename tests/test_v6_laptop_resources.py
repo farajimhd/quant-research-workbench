@@ -33,6 +33,15 @@ def test_reserve_fails_before_another_chunk():
         pacer()
 
 
+def test_system_memory_reserve_stops_before_cuda_work():
+    cuda=Cuda();cuda.free=8*1024**3
+    pacer=LaptopGpuPacer('cuda:0',cuda=cuda,system_available=lambda:7*1024**3,
+        sleep=lambda _:pytest.fail('must stop before sleeping'))
+    with pytest.raises(RuntimeError,match='system RAM reserve breached'):
+        pacer.begin_activity()
+    assert not hasattr(cuda,'synchronized')
+
+
 def test_prechunk_reserve_check_does_not_sleep_or_reset_clock():
     cuda = Cuda(); cuda.free = 8*1024**3
     now = [0.]; pauses = []
