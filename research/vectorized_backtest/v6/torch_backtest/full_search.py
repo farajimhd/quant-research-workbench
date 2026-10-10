@@ -57,6 +57,8 @@ def run_generations(spec,population_size,generations,evaluator,output,*,seed=223
             population=sample(rng,space,population_size)
             write_json(checkpoint,dict(contract=contract,completed_generations=0,population=[state(v) for v in population],
                 population_sha256=population_hash(population),rng_state=deepcopy(rng.bit_generator.state),last_generation_sha256=None))
+        if completed<generations and hasattr(evaluator,'restore_capture_context'):
+            evaluator.restore_capture_context(spec['training'],output,workers=workers)
         for generation in range(completed+1,generations+1):
             root=require_runtime(output/f'generation-{generation:04d}')
             if (root/'complete.json').exists():

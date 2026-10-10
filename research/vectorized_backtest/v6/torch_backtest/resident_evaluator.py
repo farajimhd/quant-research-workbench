@@ -20,7 +20,8 @@ from .training_pass import population_hash
 from .runtime import require_runtime,write_json,file_hash
 from .financial_audit import audit_fills
 from .captured_rules import SharedRuleBatch
-from .capture_seed import seed_population
+from .capture_seed import seed_population,family_token
+from .run_search import restore
 
 
 class ResidentSessionEvaluator(SparseSessionEvaluator):
@@ -94,6 +95,36 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
             warm=sum(key in cache for cache in self._resident_runners.values())
             return (-warm,-len(offsets),offsets[0])
         return [offset for _,offsets in sorted(groups.items(),key=priority) for offset in offsets]
+
+    def restore_capture_context(self,training,output,*,workers):
+        """Restore finite compilation shape history without evaluating sessions."""
+        if self.capture_seed_root is None:return
+        order_path=self.capture_seed_root/'order.json'
+        if not order_path.exists():return
+        if self._resident_runners:raise ValueError('Compiler restoration requires a fresh serial capture barrier')
+        order=json.loads(order_path.read_text())
+        families=order.get('families',[])
+        if (order.get('version')!='compiler-priming-order-v2' or order.get('validation_opened') is not False
+                or not isinstance(families,list) or any(type(v) is not str for v in families) or len(set(families))!=len(families)
+                or len(families)*len(training)>self.compiler_specialization_budget):
+            raise ValueError('Compiler priming history exceeds its exact bounded contract')
+        output=require_runtime(output);checkpoint=output/'checkpoint.json'
+        completed=json.loads(checkpoint.read_text())['completed_generations'] if checkpoint.exists() else None
+        progress=output/f'generation-{completed+1:04d}'/'resident-status.json' if completed is not None else output/'compiler-priming-status.json'
+        for index,token in enumerate(families):
+            if type(token) is not str or len(token)!=64 or any(c not in '0123456789abcdef' for c in token):
+                raise ValueError('Invalid compiler priming family identity')
+            record=order['initializers'][token]
+            members=[restore(v) for v in record['population']]
+            key=(len(members),self.graph_steps,CompactProgramRunner.specialization_key(members,StrategySpace()))
+            if family_token(key)!=token or population_hash(members)!=record['population_sha256']:
+                raise ValueError('Compiler priming initializer changed')
+            seed_population(self.capture_seed_root,key,members)
+            write_json(progress,dict(stage=f'Restoring compiler context {index+1}/{len(families)}; no full-session evaluation',
+                sessions=[s['day'] for s in training],validation_opened=False))
+            self.prepare_pass(training,members,output/'compiler-priming'/f'family-{index:04d}',workers=workers,prime_only=True)
+        write_json(output/'compiler-priming'/'complete.json',dict(priming_only=True,selection_allowed=False,full_session=False,
+            order_sha256=file_hash(order_path),families=families,validation_opened=False))
 
     def __call__(self,session,population,destination):
         if not (destination/'receipt.json').exists():raise ValueError('Resident full pass must be prepared before selection')
