@@ -37,7 +37,7 @@ class Keeper:
     def create(self, path, value, *, acl, ephemeral=False, makepath=False):
         assert makepath is False
         if path in self.nodes: raise NodeExistsError()
-        assert path.rsplit('/', 1)[0] in self.nodes
+        assert (path.rsplit('/', 1)[0] or '/') in self.nodes
         self.nodes[path] = (value, 0, tuple(acl))
         return path
     def get(self, path):
