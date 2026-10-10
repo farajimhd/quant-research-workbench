@@ -50,7 +50,7 @@ def parse_original_risk_verification_reuse_policy(release, policies):
     return result
 
 
-def exclusive_writer_frontier_fence(client, source):
+def exclusive_writer_frontier_fence(client, source, *, allow_unavailable=False):
     """Recheck exact native source, owner, dispatch gate and immutable commit.
 
 A cold reader lacks this capability and must retain full verification. The
@@ -75,6 +75,8 @@ caller must not turn a failed check into an apparently valid reuse scope.
     gate, _ = dispatch._read_gate(source.run_id)
     if (gate.mode != 'open' or gate.inflight or gate.registered
             or gate.active_batch_id != str(UUID(int=0)) or gate.compacted_through < 1):
+        if allow_unavailable is True:
+            return None
         raise RuntimeError('Verification reuse requires a completely compacted open gate')
     columns = ','.join(name for name, _ in _CONTRACTS['trading_commit_v4'].columns)
     rows = _rows(client, f'SELECT {columns} FROM arte.trading_commit_v4 '
@@ -86,7 +88,7 @@ caller must not turn a failed check into an apparently valid reuse scope.
             or rows[0]['run_id'] != source.run_id
             or str(rows[0]['batch_id']) != gate.compacted_batch_id
             or rows[0]['last_sequence'] != gate.compacted_through
-            or rows[0]['status'] != 'running'):
+            or rows[0]['status'] not in ('running', 'completed')):
         raise RuntimeError('Verification reuse frontier differs from immutable commit metadata')
     lease.assert_current()
     current, _ = dispatch._read_gate(source.run_id)
@@ -99,7 +101,7 @@ caller must not turn a failed check into an apparently valid reuse scope.
                 activity_identity=id(source.entry_activity_source),
                 entry_cost_identity=id(source.entry_spread_risk_source),
                 batch_id=gate.compacted_batch_id, through_sequence=gate.compacted_through,
-                commit_hash=gate.compacted_commit_hash)
+                commit_hash=gate.compacted_commit_hash, status=rows[0]['status'])
 
 
 def selected_policy(client, source):
@@ -177,6 +179,10 @@ contexts and cold readers execute the original verifier without truncation.
         if owner is not client or parent_source is not source or parent_policy != policy:
             return complete()
         return engine.verify(identity, complete)
+    if exclusive_writer_frontier_fence(client, source, allow_unavailable=True) is None:
+        # A legitimate in-flight journal writer still needs full verification of
+        # earlier committed batches; it simply cannot issue optional warm proof.
+        return complete()
     from .bounded_verification_operation import BoundedVerificationOperation
     with BoundedVerificationOperation(
             fence=lambda: exclusive_writer_frontier_fence(client, source),

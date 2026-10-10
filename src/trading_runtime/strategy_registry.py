@@ -1375,6 +1375,27 @@ def initialize_numbered_fixed_strategies() -> None:
                 certify_combined_price_risk_source, consecutive_price_risk_release,
                 historical_parent_proof=combined_parent_source_proof())))
         register_numbered_strategy(combined_price_risk)
+        from .strategy_one_hundred_sixteen_release import release_contract as reuse_release
+        from .strategy_one_hundred_sixteen_contract import strategy_one_hundred_sixteen_contract
+        from .strategy_one_hundred_sixteen_configuration import (
+            SOURCE_PREFIX as reuse_source_prefix,
+            derive_strategy_one_hundred_sixteen_configuration,
+            verify_strategy_one_hundred_sixteen_manifest,
+            historical_parent_source_proof as reuse_parent_source_proof)
+        from src.backend.backtest_original_risk_reuse_certification import certify_original_risk_reuse_source
+        reuse = reuse_release()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=reuse.executor_strategy_id,
+            revision=reuse.executor_revision,
+            evaluation_interval=reuse.evaluation_interval,
+            strategy_factory=_strategy_two_factory,
+            contract_factory=strategy_one_hundred_sixteen_contract,
+            manifest_authority=NativeManifestAuthority(115, reuse_source_prefix,
+                derive_strategy_one_hundred_sixteen_configuration,
+                verify_strategy_one_hundred_sixteen_manifest,
+                certify_original_risk_reuse_source, combined_price_risk_release,
+                historical_parent_proof=reuse_parent_source_proof())))
+        register_numbered_strategy(reuse)
         _NUMBERED_FIXED_REGISTERED = True
 
 

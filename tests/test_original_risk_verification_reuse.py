@@ -101,6 +101,20 @@ def test_commit_mutation_rejected(fenced):
         exclusive_writer_frontier_fence(client, source)
 
 
+@pytest.mark.parametrize('status,accepted', [('completed', True), ('failed', False)])
+def test_terminal_frontier_keeps_original_writer_and_exact_status(fenced, status, accepted):
+    from hashlib import sha256
+    from src.trading_runtime.journal_contract import canonical_json
+    client, source, row, gate = fenced
+    row['status'] = status
+    gate.compacted_commit_hash = sha256(canonical_json(row).encode()).hexdigest()
+    if accepted:
+        assert exclusive_writer_frontier_fence(client, source)['status'] == status
+    else:
+        with pytest.raises(RuntimeError, match='immutable commit metadata'):
+            exclusive_writer_frontier_fence(client, source)
+
+
 def test_lost_original_lease_rejected(fenced):
     client, source, _, _ = fenced
     assert client.backtest_v4_lease.release()
@@ -200,4 +214,13 @@ def test_public_native_hook_failed_verification_discards_scope(monkeypatch, fenc
     with pytest.raises(RuntimeError, match='complete verifier failed'):
         commit.load_verified_commit_v4(client, run_id=source.run_id,
                                       batch_id='root', first_price_source=source)
+    assert reuse._OPERATION.get() is None
+
+
+def test_public_native_hook_inflight_writer_uses_full_verifier(monkeypatch, fenced):
+    reuse, commit, client, source, calls = native_hook_fixture(monkeypatch, fenced)
+    fenced[3].inflight = ('current pending writer unit',)
+    commit.load_verified_commit_v4(client, run_id=source.run_id,
+                                  batch_id='root', first_price_source=source)
+    assert [batch for batch, _ in calls] == ['root', 'child', 'child']
     assert reuse._OPERATION.get() is None
