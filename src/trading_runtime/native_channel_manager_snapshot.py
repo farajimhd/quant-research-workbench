@@ -4,22 +4,12 @@ from collections import Counter
 from decimal import Decimal
 from hashlib import sha256
 
-from .arte_journal_schema import TableContract
 from .arte_journal_writer import typed_contract_row, verify_typed_contract_row
 from .arte_native_channel_pending_schema import PENDING, PENDING_SOURCE_ROW, PENDING_EXECUTION_ROW
 from .original_risk_pending_snapshot import selected_parent_contract
+from .native_channel_manager_snapshot_schema import parent_contract
 from .strategy_one_management_snapshot import OriginalRiskManagerSnapshotRows, restore_manager_snapshot
 from .journal_contract import canonical_json
-
-
-def parent_contract():
-    inherited = selected_parent_contract()
-    return TableContract('trading_strategy_one_manager_snapshot_v5', (
-        *inherited.columns[:-1],
-        ('native_channel_pending_count', 'UInt32'), ('native_channel_pending_hash', 'FixedString(64)'),
-        ('native_channel_source_count', 'UInt32'), ('native_channel_source_hash', 'FixedString(64)'),
-        ('native_channel_execution_count', 'UInt32'), ('native_channel_execution_hash', 'FixedString(64)'),
-        inherited.columns[-1]), inherited.partition, inherited.order)
 
 
 @dataclass(frozen=True, slots=True)
