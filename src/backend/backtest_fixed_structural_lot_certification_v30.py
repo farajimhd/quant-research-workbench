@@ -677,7 +677,7 @@ REVIEWED_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': 'c0f
  'src/backend/backtest_fixed_structural_lot_compatibility_v28.py': '8e2bdb6ace7928492c5f4259981d0f9f0a7d20b840d47efd30e0fba911c153c6',
  'src/backend/backtest_fixed_structural_lot_compatibility_v29.py': '0c8cd9e71281c2c897017c9d3ef5def2cfd920fd3647d2cfb52953d0916ee588',
  'src/backend/backtest_fixed_structural_lot_compatibility_v3.py': '32ff106e1dea4772c38e4ab5419ade6808718db47ef2bdda58bcd0f885da5f61',
- 'src/backend/backtest_fixed_structural_lot_compatibility_v30.py': 'aad1f1629d22e7103f45bdcd27a880ae7fa3370928abec9357a5a375c3466179',
+ 'src/backend/backtest_fixed_structural_lot_compatibility_v30.py': '48d5bbc4163e3b72f123a97641895c588a39a6d13cf2f3905787e4d31795dfb7',
  'src/backend/backtest_fixed_structural_lot_compatibility_v4.py': 'ad7260535b5d2608cdfc9d6bbcb63c9642c83af77df8d060b97e4f7b5338fc4c',
  'src/backend/backtest_fixed_structural_lot_compatibility_v5.py': 'c00662ceba4b3a42c558e9a49475f53183010d341b59fb80bbfafc6db668d580',
  'src/backend/backtest_fixed_structural_lot_compatibility_v6.py': '82aa36170d55647a600b6790a102f2e98440fccc1b53ac047942e33e7860a5c9',
@@ -768,7 +768,7 @@ REVIEWED_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': 'c0f
  'src/backend/backtest_fixed_structural_lot_source_v8.py': 'd6ce3b70dd757455fa9f2e0b4c448dc1dd28a4e6e413d36a9ef25823227ead3f',
  'src/backend/backtest_fixed_structural_lot_source_v9.py': '91395f26c261e636c34e19f7c1713f63ef1a747261ac8cde1b15db2d3412c4d4',
  'src/backend/backtest_fixed_v3_preflight.py': 'a2c8e76fd5518de9abce460427a2cf860f6db5872595336a34302f50c00b2452',
- 'src/backend/backtest_fixed_v4_certification.py': 'b6ea275c03c268a7ac1c947e069709e9eeb2cedd997b87b24859b2fd74b693f0',
+ 'src/backend/backtest_fixed_v4_certification.py': '9054becc64fb937b338fba777160eb9a98f2213ca0fa3ca4a60dd1a740f445a5',
  'src/backend/backtest_input_scope.py': '6c3f60809879eb7f3c8b710fac42944212c0111b9964dccb6062b544b78725b1',
  'src/backend/backtest_installed_complete_market_source.py': '561ddc94faaf3a97509f4da456b7df56223dd0986fd1d1019e4e8868ea9c6d2d',
  'src/backend/backtest_journal_clickhouse.py': 'b1262d6e432e13d6f44989cbe0a811aec54f7bb42d85947876fdbad1afbe1719',
@@ -1138,7 +1138,7 @@ REVIEWED_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': 'c0f
  'src/trading_runtime/strategy_profit_giveback_arm_reference.py': '734800764914973bdf70d4d1313c612946b87ef98bab03cd53451aee39f76cd6',
  'src/trading_runtime/strategy_profit_giveback_exit.py': 'c8466273babe33b6c54ed898d446a6b1b68297fd2e37e69b27270a4bc804b49e',
  'src/trading_runtime/strategy_profit_giveback_source.py': 'a6c7050993a8e97adcff37fb867fbb201a76b7a6f0ce7ec8a6df950fe578339a',
- 'src/trading_runtime/strategy_registry.py': '45fde19ea03516405f3d99e4b80df5cd4576b59461c25e19399241d01651d71c',
+ 'src/trading_runtime/strategy_registry.py': '07081bb695eee22e3248beb833121820fb2bed5fb77190bd87b365c4dd45d2d2',
  'src/trading_runtime/strategy_rising_momentum_entry.py': '26f5e82b33a5e7e4126fd703d9748ca3ee14b3696df4f6b9eddb79db96e05ea7',
  'src/trading_runtime/strategy_rising_momentum_witness.py': '8433d7be44361854221822708c23dbbc7899b106a16aa5d9f62d2e1825d6bf30',
  'src/trading_runtime/strategy_seventy_seven_contract.py': '3a231a7755411908c40dbef4614ae1b8e8d85f14e2176a3b959ab471c7a83c3d',
@@ -1165,7 +1165,7 @@ REVIEWED_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': 'c0f
  'src/trading_runtime/strategy_twenty_two_release.py': 'dfd5e4ccca3a285d278649a3374412e24638e29e62f57cf62f3db64c902d830f',
  'src/trading_runtime/strategy_zero_regime_risk_failure.py': '2cca428561093253b73728c7c52a41b9e91dcf622f28fdd7ca93bb66660e8cd1',
  'src/trading_runtime/typed_assignment_input.py': '6133c30d153905dfa1c94f264f3f740d0e53259c8f0e7687b915bce62becea5d'}
-APPROVED_METADATA_ANCHOR = '7a475df6e0f3a2e94cd7d879ac2061880dd1ec0a65aabb67d915c6f1e09f72a8'
+APPROVED_METADATA_ANCHOR = '201f015e97a6e46b401577fce1d475a4896e2d404455226f8880661c2fe869c8'
 APPROVED_SELF_AST = 'e795304fba98224e491cf01a50470130bb922b6aae8e9d86e14e7cac06652be8'
 def certify_fixed_structural_lot_source() -> str:
     """Issue no source authority from caller hashes or an unreviewed inventory."""

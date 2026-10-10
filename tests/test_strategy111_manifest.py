@@ -22,6 +22,21 @@ def test_all_typed_economic_fields_are_inherited():
             assert getattr(prior, field.name) == getattr(candidate, field.name), field.name
 
 
+def test_registered_factory_and_source_owner_are_exact():
+    from src.trading_runtime.strategy_registry import numbered_strategy, fixed_strategy_executor
+    from src.trading_runtime.declared_native_manifest import registered_manifest_authority
+    from src.backend.backtest_fixed_structural_lot_certification_v30 import certify_fixed_structural_lot_source
+    contract = strategy_one_hundred_eleven_contract()
+    release = numbered_strategy(contract.strategy_number)
+    assert release == contract.release
+    assert fixed_strategy_executor(release.executor_strategy_id, release.executor_revision).contract_factory() == contract
+    authority = registered_manifest_authority(release.number)
+    assert authority.parent_number == 42
+    assert authority.derive is derive_strategy_one_hundred_eleven_configuration
+    assert authority.verify_manifest is verify_prepared_strategy_one_hundred_eleven_configuration
+    assert authority.certify_source is certify_fixed_structural_lot_source
+
+
 def test_complete_tree_adds_only_declared_policy_and_identity(manifest):
     parent, approval, _ = manifest
     prior = derive_strategy_one_hundred_ten_configuration(parent, **approval)
