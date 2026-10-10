@@ -4044,6 +4044,13 @@ class _TerminalBacktestUnit:
 
 
 @dataclass(frozen=True, slots=True)
+class _NativeChannelExitPublicationUnit:
+    image: Any
+    verified_prior_prefix: Any
+    base: TypedJournalBatch
+
+
+@dataclass(frozen=True, slots=True)
 class _ManagerSnapshotUnit:
     session_date: date
     checkpoint_sequence: int
@@ -4224,7 +4231,7 @@ class ArteJournalWriter:
                   | V4ProtectionReconciliationBatch
                   | _DurabilityBarrier | _AdmissionUnit
                   | _PortfolioSyncUnit | _TerminalBacktestUnit
-                  | _ManagerSnapshotUnit | _BrokerMatchSnapshotUnit
+                  | _ManagerSnapshotUnit | _NativeChannelExitPublicationUnit | _BrokerMatchSnapshotUnit
                   | _OmsObservationSnapshotUnit
                   | _EvidenceSnapshotUnit
                   | _CampaignSnapshotUnit
@@ -5008,6 +5015,34 @@ class ArteJournalWriter:
             self._accepted_writes = True
         return receipt
 
+    def submit_native_channel_exit_publication(self,image,*,verified_prior_prefix) -> Future[str]:
+        """Queue a complete issued exit; source/readback I/O runs on the writer."""
+        from .native_channel_exit_publication import require_native_channel_exit_publication
+        from .arte_journal_commit_v4 import V4CommittedPrefix
+        if self._journal_profile!='backtest_v4':
+            raise ValueError('Native channel exit publication requires Backtest V4')
+        context,_=require_native_channel_exit_publication(image,client=self._client)
+        base=context.unit.base
+        if (base.run_id!=self._run_id or type(verified_prior_prefix) is not V4CommittedPrefix
+                or verified_prior_prefix.run_id!=self._run_id
+                or verified_prior_prefix.status!='running'
+                or not verified_prior_prefix.batch_ids
+                or verified_prior_prefix.last_batch_id!=verified_prior_prefix.batch_ids[-1]
+                or verified_prior_prefix.last_batch_id!=base.prior_batch_id
+                or verified_prior_prefix.last_sequence+1!=base.first_sequence):
+            raise ValueError('Native channel exit queue requires its exact preceding prefix')
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError('Native channel exit writer is closed or failed')
+            receipt: Future[str]=Future()
+            try:
+                self._queue.put_nowait((_NativeChannelExitPublicationUnit(
+                    image,verified_prior_prefix,base),receipt))
+            except Full as exc:
+                raise JournalQueueFull('Native channel exit queue is full; stop admission') from exc
+            self._accepted_writes=True
+        return receipt
+
     def submit_manager_snapshot(self, *, session_date: date,
                                 checkpoint_sequence: int,
                                 journal_batch_id: str,
@@ -5251,7 +5286,7 @@ class ArteJournalWriter:
         held: tuple[
             TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
             | _DurabilityBarrier | _AdmissionUnit | _PortfolioSyncUnit
-            | _TerminalBacktestUnit | _ManagerSnapshotUnit
+            | _TerminalBacktestUnit | _ManagerSnapshotUnit | _NativeChannelExitPublicationUnit
             | _BrokerMatchSnapshotUnit | _EvidenceSnapshotUnit
             | _OmsObservationSnapshotUnit
             | _CampaignSnapshotUnit
@@ -5317,9 +5352,17 @@ class ArteJournalWriter:
                                      _BrokerMatchSnapshotUnit, _EvidenceSnapshotUnit,
                                      _OmsObservationSnapshotUnit,
                                      _CampaignSnapshotUnit,
-                                     _RunningPortfolioSnapshotUnit, _ProfitPublicationUnit)))):
+                                     _RunningPortfolioSnapshotUnit, _ProfitPublicationUnit,
+                                     _NativeChannelExitPublicationUnit)))):
                     raise RuntimeError("Versioned journal cannot route legacy snapshot or admission units")
-                if type(group[0][0]) is FixedStructuralLotPublicationContext:
+                if type(group[0][0]) is _NativeChannelExitPublicationUnit:
+                    from .native_channel_exit_publication import publish_native_channel_exit_publication
+                    queued=group[0][0]
+                    if self._last_commit_id not in (queued.base.prior_batch_id,queued.base.batch_id):
+                        raise RuntimeError('Native channel exit has no preceding ordered V4 commit')
+                    committed_id=publish_native_channel_exit_publication(self._client,queued.image,
+                        verified_prior_prefix=queued.verified_prior_prefix)
+                elif type(group[0][0]) is FixedStructuralLotPublicationContext:
                     from .fixed_structural_lot_entry_v4 import publish_fixed_structural_lot_entry_v4
                     context=group[0][0]
                     committed_id=publish_fixed_structural_lot_entry_v4(self._client,context)

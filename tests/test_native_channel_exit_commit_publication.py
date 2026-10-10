@@ -37,7 +37,9 @@ def publication_transport(installed,monkeypatch,defect=None):
     previous['content_hash']=sha256(canonical_json({key:value for key,value in previous.items()
         if key not in {'content_hash','committed_at'}}).encode()).hexdigest()
     events=[]
-    class Dispatch:
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+    class Dispatch(TypedInsertDispatch):
+        def __init__(self): pass  # Controlled fence; production dispatch is covered separately.
         def assert_next_batch(self,**kwargs): events.append(('reserve',kwargs['batch_id']))
         def execute_typed_insert(self,client,**kwargs):
             assert client is writer
@@ -117,3 +119,73 @@ def test_new_exit_publication_reproves_authority_before_reserving(installed,monk
     with pytest.raises(ValueError):
         publish_native_channel_exit_publication(writer,image,verified_prior_prefix=prefix)
     assert events==[] and tables=={}
+
+
+@pytest.mark.parametrize('defect',[None,'ordering','lost_commit'])
+def test_writer_queue_returns_receipt_only_after_verified_commit(installed,monkeypatch,defect):
+    from src.trading_runtime import arte_journal_writer as module
+    writer,live,history,context,image,tables,events=publication_transport(installed,monkeypatch,
+        'lost_commit' if defect=='lost_commit' else None)
+    monkeypatch.setattr(module,'_v4_preflight',lambda _client:None)
+    monkeypatch.setattr(module,'_verify_run_identity',lambda _client,_run:
+        dict(mode='backtest',account_ids=(context.unit.base.intents[0]['account_id'],)))
+    journal=module.ArteJournalWriter(writer,run_id=image.run_id,
+        journal_profile='backtest_v4',coalesce_batches=False)
+    try:
+        journal._last_commit_id='foreign' if defect=='ordering' else context.unit.base.prior_batch_id
+        receipt=journal.submit_native_channel_exit_publication(image,verified_prior_prefix=history['prefix'])
+        if defect is None:
+            assert receipt.result(timeout=10)==context.batch_id
+            assert journal._last_commit_id==context.batch_id
+            assert journal.metrics()['committed_event_rows']==1
+            assert journal.metrics()['publish_by_unit']['_NativeChannelExitPublicationUnit']['units']==1
+            with pytest.raises(ValueError):
+                journal.submit_native_channel_exit_publication(replace(image),verified_prior_prefix=history['prefix'])
+            journal.close()
+        else:
+            with pytest.raises((RuntimeError,TimeoutError)): receipt.result(timeout=10)
+            assert journal._last_commit_id!=context.batch_id
+            assert journal.metrics()['failed_units']==1
+            if defect=='ordering': assert tables=={} and events==[]
+            with pytest.raises(RuntimeError): journal.close()
+    finally:
+        if journal._thread.is_alive():
+            try: journal.close()
+            except RuntimeError: pass
+    assert not journal._thread.is_alive()
+
+
+def test_exit_queue_is_bounded_and_publishes_off_submission_thread(installed,monkeypatch):
+    from threading import Event,get_ident
+    from src.trading_runtime import arte_journal_writer as module
+    from src.trading_runtime import native_channel_exit_publication as publication
+    writer,live,history,context,image,tables,events=publication_transport(installed,monkeypatch)
+    monkeypatch.setattr(module,'_v4_preflight',lambda _client:None)
+    monkeypatch.setattr(module,'_verify_run_identity',lambda _client,_run:
+        dict(mode='backtest',account_ids=(context.unit.base.intents[0]['account_id'],)))
+    actual=publication.publish_native_channel_exit_publication
+    entered,release=Event(),Event()
+    caller=get_ident()
+    def publish(*args,**kwargs):
+        assert get_ident()!=caller
+        entered.set()
+        assert release.wait(10)
+        return actual(*args,**kwargs)
+    monkeypatch.setattr(publication,'publish_native_channel_exit_publication',publish)
+    journal=module.ArteJournalWriter(writer,run_id=image.run_id,capacity=1,
+        journal_profile='backtest_v4',coalesce_batches=False)
+    try:
+        journal._last_commit_id=context.unit.base.prior_batch_id
+        first=journal.submit_native_channel_exit_publication(image,verified_prior_prefix=history['prefix'])
+        assert entered.wait(5)
+        second=journal.submit_native_channel_exit_publication(image,verified_prior_prefix=history['prefix'])
+        with pytest.raises(module.JournalQueueFull):
+            journal.submit_native_channel_exit_publication(image,verified_prior_prefix=history['prefix'])
+        assert not first.done() and not second.done() and tables=={} and events==[]
+        release.set()
+        assert first.result(timeout=10)==second.result(timeout=10)==context.batch_id
+        assert len([event for event in events if event==('insert','trading_commit_v4')])==1
+    finally:
+        release.set()
+        journal.close()
+    assert not journal._thread.is_alive()
