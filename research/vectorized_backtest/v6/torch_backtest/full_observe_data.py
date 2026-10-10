@@ -112,8 +112,8 @@ class FullTrainingView:
         replay_eta=remaining*per_unit if per_unit is not None else None
         cohort=active.get('sessions',[]);offset=active.get('candidate_offset')
         cohort_done=sum((current/day/f'batch-{offset:06d}'/'receipt.json').exists() for day in cohort) if offset is not None else 0
-        processes=[dict(label='Saved / audited batches',done=completed_batches,total=total_batches)]
-        if cohort:processes.append(dict(label='Resident cohort saved',done=cohort_done,total=len(cohort)))
+        processes=[dict(label='Strategy groups × sessions done',done=completed_batches,total=total_batches)]
+        if cohort:processes.append(dict(label='Current concurrent sessions done',done=cohort_done,total=len(cohort)))
         if restoring:processes.append(dict(label='Compiler contexts',done=int(restoring.group(1))-1,total=int(restoring.group(2))))
         return dict(status=status.get('status','running'),stage=active.get('stage','Training complete' if done==total else 'Preparing full-training generation'),
             config=dict(population=n,generations=total,training_sessions=30),completed_generations=done,
@@ -122,7 +122,9 @@ class FullTrainingView:
             process_progress=processes,replay_eta=replay_eta,
             session_eta=(sum(v['replay_and_audit_seconds'] for v in samples)/len(samples)) if samples else None,
             average_batch_seconds=per_unit,
-            messages=[dict(text='ETA estimates use measured preparation + concurrent replay/audit; saved receipts include resumed work.',timestamp='')],
+            messages=[dict(text=f'Each completed unit = up to {batch_size} strategies × one full session, including financial checks. {((n+batch_size-1)//batch_size)} strategy groups × 30 sessions.',timestamp=''),
+                dict(text=(f'Current strategies {offset+1}–{min(n,offset+batch_size)}; '+(f"{active.get("active",0)} sessions executing concurrently." if cohort else f"Preparing {active.get("day","session graphs")}.")) if offset is not None else active.get('stage','Preparing'),timestamp=''),
+                dict(text=(f"Last cohort: preparation {samples[-1]['setup_seconds']:.1f}s; replay + audit {samples[-1]['replay_and_audit_seconds']:.1f}s. ETA is estimated; live clock telemetry unavailable." if samples else 'Collecting measured cohort timings; live clock telemetry unavailable.'),timestamp='')],
             updated_epoch=updated,started_epoch=started,validation_status='SEALED',top_strategies=self.rows,
             evaluation_basis=f'Generation {done}: all30 training-session search ranking' if done else 'No completed all30 ranking yet',
             focus=', '.join(active.get('sessions',[])) or active.get('day',''),validation_opened=False)

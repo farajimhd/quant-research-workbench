@@ -116,7 +116,7 @@ def test_measured_eta_and_normal_width_ranking_columns(tmp_path):
         dict(active=0,setup_seconds=.1,replay_and_audit_seconds=.01,session_timings=[])]))
     status=FullTrainingView().read(tmp_path)
     assert status['replay_eta']==240 and status['session_eta']==56 and status['average_batch_seconds']==8
-    assert status['process_progress'][0]['label']=='Saved / audited batches'
+    assert status['process_progress'][0]['label']=='Strategy groups × sessions done'
     c=Console(width=132,height=38,color_system=None)
     with c.capture() as out:c.print(render(status,width=132,height=38))
     assert 'Ex-best' in out.get() and 'Tail day' in out.get() and 'Days +%' in out.get()
