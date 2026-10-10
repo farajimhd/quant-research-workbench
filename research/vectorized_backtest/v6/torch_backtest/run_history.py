@@ -23,6 +23,27 @@ def completed(folder,inputs,day):
     return dict(tickers=len(record['listing_ids']),resident_bytes=record['resident_bytes'],receipt_sha256=file_hash(folder/'complete.json'))
 
 
+def profile_dependency_released(folder):
+    """Accept a stopped profile only with bound stop evidence and no live owner."""
+    import psutil
+    folder=Path(folder)
+    terminal=folder/'exit.json'
+    if not terminal.exists():return False
+    record=json.loads(terminal.read_text())
+    active=json.loads((folder/'active.json').read_text())
+    pid=int(active['pid']);creation=float(active['creation_time'])
+    if psutil.pid_exists(pid):
+        process=psutil.Process(pid)
+        if abs(process.create_time()-creation)<0.01:
+            raise ValueError('Profile exit receipt conflicts with live owner')
+    if record.get('exit_code') not in (0,1):
+        stop=json.loads((folder/'user-stop.json').read_text())
+        if (stop.get('pid')!=pid or abs(float(stop['verified_creation_time'])-creation)>0.01
+                or stop.get('reason')!='User requested profiler stop; measurements partial'):
+            raise ValueError('Profile stop identity requires explicit review')
+    return True
+
+
 def run(inputs,output,session_workers=16,ticker_workers=8,after_profile=None):
     validate_workers(session_workers,ticker_workers);inputs=Path(inputs);days=training_days(inputs)
     output=require_runtime(output)
@@ -47,11 +68,7 @@ def run(inputs,output,session_workers=16,ticker_workers=8,after_profile=None):
         try:
             with Live(snapshot(),console=Console(),refresh_per_second=1) as live:
                 while after_profile is not None:
-                    terminal=Path(after_profile)/'exit.json'
-                    if terminal.exists():
-                        record=json.loads(terminal.read_text())
-                        if record.get('exit_code') not in (0,1):raise ValueError('Profile exit requires explicit review')
-                        break
+                    if profile_dependency_released(after_profile):break
                     panel=snapshot();panel.title='V6 history queued • waiting for wall profiler to exit to preserve isolated timings'
                     live.update(panel);time.sleep(1)
                 while queue or active:
