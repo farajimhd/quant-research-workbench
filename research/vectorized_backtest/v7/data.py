@@ -12,7 +12,7 @@ from .features import CATALOG,BASE,PRICE_COLUMNS,LIQUIDITY
 
 
 class SessionData:
-    def __init__(self,root,history,*,device='cpu',maximum_gib=4.,maximum_history_gib=16.):
+    def __init__(self,root,history,*,device='cpu',maximum_gib=4.,maximum_history_gib=16.,feature_cache=None):
         self.root=Path(root);self.device=torch.device(device)
         self.receipt=verify_sparse_receipt(self.root)
         self.arrays={n:np.load(self.root/(n+'.npy'),mmap_mode='r',allow_pickle=False) for n in
@@ -37,6 +37,10 @@ class SessionData:
         self.clocks=len(clocks)
         self.identity=dict(input_sha256=file_hash(self.root/'complete.json'),history_sha256=file_hash(Path(history)/'complete.json'))
         self.file_stats={str(p):(p.stat().st_size,p.stat().st_mtime_ns) for folder in (self.root,Path(history)) for p in folder.iterdir() if p.is_file()}
+        self.feature_cache=None
+        if feature_cache is not None:
+            from .feature_cache import FeatureCache
+            self.feature_cache=FeatureCache(feature_cache,self)
 
     def activate(self,device):
         for name,expected in self.file_stats.items():
@@ -48,6 +52,12 @@ class SessionData:
         self.device=torch.device('cpu');self.tensors=self.host_tensors
 
     def feature_block(self,begin,end,listings):
+        if self.feature_cache is not None:
+            values,valid=self.feature_cache.block(begin,end,listings)
+            return torch.from_numpy(values).to(self.device),torch.from_numpy(valid).to(self.device)
+        return self.prepare_feature_block(begin,end,listings)
+
+    def prepare_feature_block(self,begin,end,listings):
         """Ticker x elapsed-second x feature, quote snapshots as-of second close."""
         rows=self.bank['source_rows'][begin:end,listings].T
         known=rows>=0;safe=rows.clip(0)
@@ -85,4 +95,6 @@ class SessionData:
         values=np.array(self.bank['values'][:,unique],copy=True)
         return torch.from_numpy(values).to(self.device),torch.tensor(np.searchsorted(unique,columns),device=self.device)
 
-    def close(self):self.tensors={};self.host_tensors={}
+    def close(self):
+        self.tensors={};self.host_tensors={}
+        if self.feature_cache is not None:self.feature_cache.close()

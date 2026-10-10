@@ -51,6 +51,18 @@ on earlier decisions. `compile` fuses the small transition; `eager` supports CPU
 and CUDA. This does not claim simultaneous execution of all 30 sessions or a
 measured speedup. Cohort/batch envelopes fail closed instead of truncating work.
 
+Enriched features can be prepared once with `python -B -m
+research.vectorized_backtest.v7.feature_cache --inputs INPUTS --history HISTORY
+--output CACHE`. This training-only producer reuses certified compact inputs and
+histories. It writes losslessly compressed 2048-clock/four-listing tiles with
+packed validity, exact source/schema/implementation binding, per-tile hashes and
+restart checkpoints. `--first-session-only` measures preparation before all30.
+The default storage limit is 1200 GiB; insufficient disk headroom fails closed.
+Readers verify tiles before first use and keep at most 1 GiB of decoded tiles
+per session. Loading/decompression and device transfer still occur; feature
+gathers, quote transforms, relative histories and validity construction do not
+repeat for candidate batches. This is an implementation, not a speed claim.
+
 Every generation evaluates all 30 training sessions before selection. The fixed
 lower-tail dollar objective rewards total profit and the worst 20% session mean,
 and penalizes drawdown, stop-risk time, capital time, complexity and inactivity.
@@ -67,6 +79,7 @@ Set `PYTHONDONTWRITEBYTECODE=1`. Run from a committed, verified source deploymen
 python -B -m research.vectorized_backtest.v7.run_search `
   --inputs D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v6/compact/20261009-56905d599-all30 `
   --history D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v6/history/20261010-07ecd389f-all30-ladder60 `
+  --feature-cache D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v7/features/CHOOSE_VERIFIED_CACHE `
   --output D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v7/campaigns/CHOOSE_NEW_RUN `
   --population 128 --generations 1 --batch-size 128 --session-workers 8 `
   --device cuda --backend compile

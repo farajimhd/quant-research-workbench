@@ -115,6 +115,25 @@ def test_actual_materializer_and_v7_second_close_quote_freshness(tmp_path):
     assert result['terminal_valid'].item() and result['net_pnl'].item()==0
 
 
+def test_persisted_features_exact_slices_reuse_and_integrity(tmp_path):
+    from research.vectorized_backtest.v7.feature_cache import prepare,FeatureCache
+    root,history=fixture_files(tmp_path);data=SessionData(root,history);cache_root=tmp_path/'cache'
+    receipt=prepare(data,cache_root)
+    cache=FeatureCache(cache_root,data)
+    for begin,end in ((0,80),(1,40),(17,73)):
+        expected=data.feature_block(begin,end,[0]);actual=cache.block(begin,end,[0])
+        for left,right in zip(expected,actual):np.testing.assert_array_equal(left.numpy(),right)
+    assert cache.loads==1 and cache.hits==2
+    cached=SessionData(root,history,feature_cache=cache_root)
+    cached.prepare_feature_block=lambda *args:pytest.fail('Repeated feature preparation')
+    gates=PopulationPrograms([member()]).evaluate(cached,chunk=17)
+    assert (gates==1).all()
+    assert prepare(data,cache_root)==receipt
+    name=next(iter(receipt['files']));(cache_root/name).write_bytes(b'corrupt')
+    with pytest.raises(ValueError,match='changed'):cache.block(0,1,[0])
+    with pytest.raises(ValueError,match='integrity'):FeatureCache(cache_root,data).block(0,1,[0])
+
+
 def test_full30_search_and_exact_completed_resume(tmp_path,monkeypatch):
     from research.vectorized_backtest.v7 import run_search
     inputs=tmp_path/'search-inputs';history=tmp_path/'search-history';output=tmp_path/'search'

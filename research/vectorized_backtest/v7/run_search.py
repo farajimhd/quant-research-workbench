@@ -31,7 +31,7 @@ def source_hash():
     return h.hexdigest()
 
 def run(inputs,history,output,*,population_size,generations,batch_size=128,session_workers=8,
-        device='cuda',backend='compile',seed=2237,execution=Execution(),maximum_data_gib=4.,maximum_gate_gib=2.):
+        device='cuda',backend='compile',seed=2237,execution=Execution(),maximum_data_gib=4.,maximum_gate_gib=2.,feature_cache=None):
     if type(population_size) is not int or population_size<10 or generations<1 or not 1<=batch_size<=1024 or not 1<=session_workers<=30:
         raise ValueError('Explicit bounded search budget required')
     inputs=Path(inputs);history=Path(history);output=require_runtime(output);execution.validate()
@@ -39,6 +39,7 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
     contract=dict(version=VERSION,source_sha256=source_hash(),feature_version=FEATURE_VERSION,
         input_receipts={d:file_hash(inputs/d/'complete.json') for d in days},
         history_receipts={d:file_hash(history/d/'complete.json') for d in days},
+        feature_receipts={d:file_hash(Path(feature_cache)/d/'complete.json') for d in days} if feature_cache else None,
         population=population_size,generations=generations,batch_size=batch_size,session_workers=session_workers,
         device=device,backend=backend,seed=seed,execution=asdict(execution),maximum_data_gib=maximum_data_gib,maximum_gate_gib=maximum_gate_gib,
         objective=asdict(LowerTailDollarObjective()),timing='signals at second close; assumed fill at next observed close; terminal liquidation at last known mark')
@@ -89,7 +90,8 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
                         if reserve>free*.8:raise MemoryError('Proposed V7 cohort exceeds GPU memory budget')
                     load_start=perf_counter()
                     for day in cohort:
-                        if day not in host_cache:host_cache[day]=SessionData(inputs/day,history/day,device='cpu',maximum_gib=maximum_data_gib)
+                        if day not in host_cache:host_cache[day]=SessionData(inputs/day,history/day,device='cpu',maximum_gib=maximum_data_gib,
+                            feature_cache=Path(feature_cache)/day if feature_cache else None)
                         item=host_cache[day]
                         if hasattr(item,'activate'):item.activate(device)
                         data.append(item)
@@ -161,6 +163,7 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ('inputs','history','output'):parser.add_argument('--'+name,type=Path,required=True)
+    parser.add_argument('--feature-cache',type=Path,required=True,help='Complete source-bound offline feature tiles')
     parser.add_argument('--population',type=int,required=True);parser.add_argument('--generations',type=int,required=True)
     parser.add_argument('--batch-size',type=int,default=128);parser.add_argument('--session-workers',type=int,default=8)
     parser.add_argument('--device',default='cuda');parser.add_argument('--backend',choices=('eager','compile'),default='compile')
@@ -170,6 +173,6 @@ def main():
     if a.backend=='compile':configure_caches(require_runtime(a.output)/'cache',recompile_limit=128)
     return run(a.inputs,a.history,a.output,population_size=a.population,generations=a.generations,batch_size=a.batch_size,
         session_workers=a.session_workers,device=a.device,backend=a.backend,seed=a.seed,execution=Execution(cost_bps=a.cost_bps),
-        maximum_data_gib=a.maximum_data_gib,maximum_gate_gib=a.maximum_gate_gib)
+        maximum_data_gib=a.maximum_data_gib,maximum_gate_gib=a.maximum_gate_gib,feature_cache=a.feature_cache)
 
 if __name__=='__main__':raise SystemExit(main())
