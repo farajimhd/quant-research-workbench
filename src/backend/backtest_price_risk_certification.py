@@ -6,8 +6,8 @@ from pathlib import Path
 
 BASE_CERTIFIER = 'src/backend/backtest_fixed_structural_lot_certification_v31.py'
 BASE_AST = '046a7dd3cdfaa6c7bffaa9f93b045df1852ffdf04d8897d1a80d92aebc34b8f4'
-ADDITIONAL_SOURCE_AST = {'src/trading_runtime/price_confirmed_original_risk.py': '526c50b7300bf7a1e1c3007bca44e93104089c8e0a87af0228a646632c931aa4', 'src/backend/backtest_price_risk_compatibility.py': '6513ebfdf463f9ebd11f660d08d4f154988624641c1d3d3b83a568140e5a262f', 'src/trading_runtime/strategy_one_hundred_thirteen_release.py': '3d578163cf002a135112f63857278568fc4c1192c485d58c0c3e9b23a5fedcd5', 'src/trading_runtime/strategy_one_hundred_thirteen_contract.py': 'ef5142323961eeeea23d8694b42e0f5bd25f3e9fdc117915f561b6eaeb3067b3', 'src/trading_runtime/strategy_one_hundred_thirteen_configuration.py': 'a1e0f6263c94c80d8765c20c4e214821f35866bfc44676e065816c79793b5e19'}
-APPROVED_SELF_AST = 'f9cb24faeb22bd0852e4d617ca2ea2f72daa2db5bf622cb404152680a09e4436'
+ADDITIONAL_SOURCE_AST = {'src/trading_runtime/price_confirmed_original_risk.py': '526c50b7300bf7a1e1c3007bca44e93104089c8e0a87af0228a646632c931aa4', 'src/backend/backtest_price_risk_compatibility.py': '6513ebfdf463f9ebd11f660d08d4f154988624641c1d3d3b83a568140e5a262f', 'src/trading_runtime/strategy_one_hundred_thirteen_release.py': '3d578163cf002a135112f63857278568fc4c1192c485d58c0c3e9b23a5fedcd5', 'src/trading_runtime/strategy_one_hundred_thirteen_contract.py': 'ef5142323961eeeea23d8694b42e0f5bd25f3e9fdc117915f561b6eaeb3067b3', 'src/trading_runtime/strategy_one_hundred_thirteen_configuration.py': '18a438f93df8f6dc1c327e8cde7bcad328c61b60e43b7b0cfbe5680393f9b5a3', 'src/trading_runtime/historical_parent_source_proof.py': '6c136668b0eeeeb111d6358231775b14333dfcfd92e60867e7be34b605c6716d', 'src/backend/backtest_price_risk_native_compatibility.py': '4006285c7c4de84f6e0152c1a33b343e8a20a92291679eb9b5cb7fa451714276'}
+APPROVED_SELF_AST = 'a1212d495fcc7bcbc06e86d1f8e3f93539250efcee587c9113b103c544fd26c5'
 
 
 def _digest(source):
@@ -56,6 +56,8 @@ def certify_price_confirmed_original_risk_source():
         'src/trading_runtime/strategy_one_hundred_thirteen_release.py',
         'src/trading_runtime/strategy_one_hundred_thirteen_contract.py',
         'src/trading_runtime/strategy_one_hundred_thirteen_configuration.py',
+        'src/trading_runtime/historical_parent_source_proof.py',
+        'src/backend/backtest_price_risk_native_compatibility.py',
     )
     if type(ADDITIONAL_SOURCE_AST) is not dict or tuple(ADDITIONAL_SOURCE_AST) != expected_new:
         raise ValueError('Price-risk complete extension inventory differs')
@@ -82,6 +84,7 @@ def certify_price_confirmed_original_risk_source():
             or set(required) & set(ADDITIONAL_SOURCE_AST)):
         raise ValueError('Price-risk exact parent inventory differs')
     from .backtest_price_risk_compatibility import PARENT_AST_HASHES, restore_price_risk_parent_source
+    from .backtest_price_risk_native_compatibility import restore_native_price_risk_parent_source
     if not set(PARENT_AST_HASHES) <= set(required):
         raise ValueError('Price-risk restoration is outside parent inventory')
     for relative, expected in pins.items():
@@ -93,7 +96,8 @@ def certify_price_confirmed_original_risk_source():
         if not path.is_file() or path.is_symlink() or root not in path.resolve().parents:
             raise ValueError('Price-risk parent source path is missing or foreign: ' + relative)
         source = path.read_text(encoding='utf-8')
-        retained = restore_price_risk_parent_source(source, relative) if relative in PARENT_AST_HASHES else source
+        retained = restore_native_price_risk_parent_source(source, relative)
+        retained = restore_price_risk_parent_source(retained, relative) if relative in PARENT_AST_HASHES else retained
         if _digest(retained) != expected:
             raise ValueError('Price-risk retained parent source changed: ' + relative)
         sealed.append((relative, source))

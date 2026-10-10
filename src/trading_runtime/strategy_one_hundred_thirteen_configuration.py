@@ -15,6 +15,13 @@ CONTROL_CODE_FINGERPRINT = '661ce07086979effabea1f19cd014fe815b72e7177a967eeda50
 SOURCE_PREFIX = 'strategy-one-hundred-thirteen-from'
 
 
+def historical_parent_source_proof():
+    from .historical_parent_source_proof import HistoricalParentSourceProof
+    return HistoricalParentSourceProof(parent.release_contract().approved_digest,
+        CONTROL_CODE_COMMIT, CONTROL_CODE_FINGERPRINT,
+        '0caf1a9822b94cfd20e4dc8fd0b7feadae837efacdfce99c364a64286d8995a9')
+
+
 def manifest_policies():
     return {**declared_policies(),
         'entry_spread_risk_quote_source': deepcopy(parent.QUOTE_SOURCE_POLICY_PAYLOAD)}
@@ -65,6 +72,16 @@ def verify_prepared_strategy_one_hundred_thirteen_manifest(strategy):
     if manifest['manifest_hash'] != sha256(canonical_json(
             {k: v for k, v in manifest.items() if k != 'manifest_hash'}).encode()).hexdigest():
         raise ValueError('Strategy113 manifest seal differs')
+    return manifest
+
+
+def verify_strategy_one_hundred_thirteen_manifest(strategy):
+    manifest = verify_prepared_strategy_one_hundred_thirteen_manifest(strategy)
+    from .strategy_registry import numbered_strategy, fixed_strategy_executor
+    release = release_contract()
+    if numbered_strategy(release.number) != release:
+        raise ValueError('Strategy113 installed declaration differs')
+    fixed_strategy_executor(release.executor_strategy_id, release.executor_revision).verify()
     return manifest
 
 

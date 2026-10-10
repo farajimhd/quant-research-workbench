@@ -1315,6 +1315,24 @@ def initialize_numbered_fixed_strategies() -> None:
                 derive_strategy_one_hundred_twelve_configuration, verify_prepared_strategy_one_hundred_twelve_configuration,
                 certify_context_capacity_source, management_parent_release)))
         register_numbered_strategy(context_capacity)
+        from .strategy_one_hundred_thirteen_release import release_contract as price_risk_release
+        from .strategy_one_hundred_thirteen_contract import strategy_one_hundred_thirteen_contract
+        from .strategy_one_hundred_thirteen_configuration import (
+            SOURCE_PREFIX, derive_strategy_one_hundred_thirteen_configuration,
+            verify_strategy_one_hundred_thirteen_manifest, historical_parent_source_proof)
+        from .strategy_fifty_seven_release import release_contract as price_risk_parent_release
+        from src.backend.backtest_price_risk_certification import certify_price_confirmed_original_risk_source
+        price_risk = price_risk_release()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=price_risk.executor_strategy_id, revision=price_risk.executor_revision,
+            evaluation_interval=price_risk.evaluation_interval, strategy_factory=_strategy_two_factory,
+            contract_factory=strategy_one_hundred_thirteen_contract,
+            manifest_authority=NativeManifestAuthority(57, SOURCE_PREFIX,
+                derive_strategy_one_hundred_thirteen_configuration,
+                verify_strategy_one_hundred_thirteen_manifest,
+                certify_price_confirmed_original_risk_source, price_risk_parent_release,
+                historical_parent_proof=historical_parent_source_proof())))
+        register_numbered_strategy(price_risk)
         _NUMBERED_FIXED_REGISTERED = True
 
 

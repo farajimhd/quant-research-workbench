@@ -1,6 +1,7 @@
 """Code-owned immutable manifest metadata; catalog entries do not publish runs."""
 from dataclasses import dataclass
 from typing import Callable
+from .historical_parent_source_proof import HistoricalParentSourceProof
 
 
 @dataclass(frozen=True, slots=True)
@@ -11,6 +12,7 @@ class NativeManifestAuthority:
     verify_manifest: Callable
     certify_source: Callable
     parent_release_factory: Callable
+    historical_parent_proof: HistoricalParentSourceProof | None = None
 
     def verify(self):
         if (type(self.parent_number) is not int or self.parent_number < 1
@@ -23,6 +25,10 @@ class NativeManifestAuthority:
         parent.verify()
         if parent.number != self.parent_number:
             raise ValueError('Native manifest parent differs from exact release factory')
+        if self.historical_parent_proof is not None:
+            if type(self.historical_parent_proof) is not HistoricalParentSourceProof:
+                raise ValueError('Native manifest historical parent proof has a foreign type')
+            self.historical_parent_proof.verify(parent)
 
 
 def registered_manifest_authority(number):
