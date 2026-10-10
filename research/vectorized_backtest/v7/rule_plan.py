@@ -98,7 +98,7 @@ class RulePlan:
             torch.cuda.synchronize(self.device)
             # Reserve headroom before capture; evicted graphs have no queued work.
             evicted=False
-            while self.captures and self.capture_bytes > self.maximum_capture_bytes//2:
+            while self.captures and self.capture_bytes+estimate > self.maximum_capture_bytes:
                 _, (old, size) = self.captures.popitem(last=False)
                 del old
                 self.capture_bytes -= size
