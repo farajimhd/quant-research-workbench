@@ -87,7 +87,10 @@ def native_unit():
     from src.trading_runtime.arte_followthrough_failure_v4 import project_followthrough_failure,V4FollowThroughFailureBatch
     from src.trading_runtime.arte_original_risk_diagnostic_v4 import project_original_risk_diagnostic
     from src.trading_runtime.arte_journal_writer import _sealed_families
-    diag=diagnostic();w=diag.current
+    from src.trading_runtime.original_risk_checkpoint import OriginalRiskCheckpointReference
+    diag=replace(diagnostic(), checkpoint=OriginalRiskCheckpointReference(
+        str(UUID(int=11)), 1, 'a'*64, str(UUID(int=12)), 'b'*64))
+    w=diag.current
     financial=StrategyOneFinancialView('assignment-1','DU1','TEST',AssignmentStatus.WATCHING,
         StrategyPermissions(observe=True,enter=True),10.,False,False,False,1)
     source_id=str(UUID(int=77))
@@ -108,6 +111,19 @@ def native_unit():
     entry=dict(parent_record_id=source['record_id'],strategy_number=68,
         assignment_id='assignment-1',boundary_ms=w.first_held_boundary_ms-100)
     return V4FollowThroughFailureBatch(base,row,companion),diag,source,source_event,entry,intent
+
+
+def test_selected_exit_rejects_missing_checkpoint_reference():
+    from src.trading_runtime.strategy_one_stateful import StrategyOneFinancialView
+    from src.trading_runtime.strategy_engine import AssignmentStatus, StrategyPermissions
+    from src.trading_runtime.strategy_followthrough_exit import followthrough_exit_intent
+    diag = diagnostic()
+    financial = StrategyOneFinancialView('assignment-1', 'DU1', 'TEST', AssignmentStatus.WATCHING,
+        StrategyPermissions(observe=True, enter=True), 10., False, False, False, 1)
+    with pytest.raises(ValueError, match='actual native checkpoint reference'):
+        followthrough_exit_intent(diag.current, financial, session_date=date(2026, 1, 1),
+            source_entry_intent_id='00000000-0000-0000-0000-000000000077',
+            strategy_number=68, diagnostic=diag)
 
 
 class NativeProducerRead(ProducerRead):
