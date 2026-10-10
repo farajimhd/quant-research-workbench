@@ -3,9 +3,12 @@ from dataclasses import replace
 import pytest
 
 from src.trading_runtime.consecutive_price_confirmed_risk import (
-    ConsecutivePriceRiskPolicy, consecutive_price_risk_failure,
+    INPUT, RULE, POLICY_KEY, ConsecutivePriceRiskPolicy, consecutive_price_risk_failure,
+    parse_consecutive_price_risk_policy, validate_consecutive_price_risk_diagnostic,
 )
-from src.trading_runtime.confirmed_original_risk_failure import CompletedRiskBucket
+from src.trading_runtime.confirmed_original_risk_failure import (
+    CompletedRiskBucket, OriginalRiskDecisionDiagnostic, INHERITED_ORIGINAL_RISK_RULE,
+)
 from src.trading_runtime.price_confirmed_original_risk import PriceConfirmedOriginalRiskPolicy
 from src.trading_runtime.strategy_followthrough_failure import FollowThroughFailureInput
 
@@ -80,3 +83,67 @@ def test_supported_policy_shape_is_explicit_and_frozen():
     with pytest.raises(ValueError):
         replace(policy, consecutive_buckets=3)
     assert policy.payload()['price_policy']['reference'] == 'original_proposal_ask'
+
+
+def declared():
+    import json
+    from src.trading_runtime.journal_contract import canonical_json
+    from src.trading_runtime.strategy_fifty_seven_release import release_contract
+    _, _, _, policy = case()
+    parent = release_contract()
+    release = replace(parent, input_contracts=(*parent.input_contracts, INPUT),
+        rule_set_contracts=(*parent.rule_set_contracts, RULE), approved_digest='')
+    release = replace(release, approved_digest=release.digest())
+    return release, {POLICY_KEY: json.loads(canonical_json(policy.payload()))}
+
+
+def test_normalized_declaration_round_trip_and_unselected_contract():
+    release, policies = declared()
+    assert parse_consecutive_price_risk_policy(release, policies) == case()[3]
+    from src.trading_runtime.strategy_fifty_seven_release import release_contract
+    assert parse_consecutive_price_risk_policy(release_contract(), {}) is None
+    with pytest.raises(ValueError, match='incomplete'):
+        parse_consecutive_price_risk_policy(release, {})
+
+
+@pytest.mark.parametrize('field,value', [('priority', 'extension_first'),
+    ('missing', 'synthetic_confirmation'), ('consecutive_buckets', 3),
+    ('confirmation', 'current_close_only')])
+def test_changed_normalized_policy_is_rejected(field, value):
+    release, policies = declared()
+    policies[POLICY_KEY][field] = value
+    with pytest.raises(ValueError):
+        parse_consecutive_price_risk_policy(release, policies)
+
+
+def diagnostic():
+    value, prior, newest, policy = case()
+    selected = consecutive_price_risk_failure(value, prior=prior, newest=newest, policy=policy)
+    return OriginalRiskDecisionDiagnostic(selected.current, newest, prior, RULE), policy
+
+
+def test_diagnostic_retains_both_completed_sources():
+    selected, policy = diagnostic()
+    assert validate_consecutive_price_risk_diagnostic(selected, policy=policy) is selected
+
+
+@pytest.mark.parametrize('changes', [dict(prior=None), dict(semantic_rule='foreign'),
+    dict(semantic_rule=INHERITED_ORIGINAL_RISK_RULE)])
+def test_diagnostic_cannot_drop_prior_or_relabel_firing_rule(changes):
+    selected, policy = diagnostic()
+    with pytest.raises(ValueError):
+        validate_consecutive_price_risk_diagnostic(replace(selected, **changes), policy=policy)
+
+
+def test_inherited_firing_keeps_priority_over_the_new_rule():
+    from src.trading_runtime.strategy_zero_regime_risk_failure import zero_regime_risk_failure
+    value, prior, newest, policy = case()
+    value = replace(value, macd_line=-.2, macd_signal=-.1)
+    newest = replace(newest, macd_line=-.2, macd_signal=-.1)
+    inherited = zero_regime_risk_failure(value)
+    assert inherited is not None
+    with pytest.raises(ValueError, match='priority'):
+        validate_consecutive_price_risk_diagnostic(
+            OriginalRiskDecisionDiagnostic(inherited, newest, prior, RULE), policy=policy)
+    selected = OriginalRiskDecisionDiagnostic(inherited, newest, None, INHERITED_ORIGINAL_RISK_RULE)
+    assert validate_consecutive_price_risk_diagnostic(selected, policy=policy) is selected

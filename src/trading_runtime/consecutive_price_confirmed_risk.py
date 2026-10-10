@@ -7,7 +7,10 @@ from dataclasses import dataclass
 from fractions import Fraction
 from math import isfinite
 
-from .confirmed_original_risk_failure import CompletedRiskBucket
+from .confirmed_original_risk_failure import (
+    CompletedRiskBucket, OriginalRiskDecisionDiagnostic, INHERITED_ORIGINAL_RISK_RULE,
+)
+from .journal_contract import canonical_json
 from .price_confirmed_original_risk import (
     PriceConfirmedOriginalRiskPolicy, price_confirmed_original_risk_failure,
 )
@@ -56,6 +59,37 @@ class ConsecutivePriceRiskWitness:
     semantic_rule: str = RULE
 
 
+def parse_consecutive_price_risk_policy(release, policies):
+    """The rule, input contract and normalized policy must be selected together."""
+    selected = (RULE in release.rule_set_contracts, INPUT in release.input_contracts,
+                POLICY_KEY in policies)
+    if not any(selected):
+        return None
+    if not all(selected):
+        raise ValueError('Consecutive price-risk declaration is incomplete')
+    payload = policies[POLICY_KEY]
+    if type(payload) is not dict or type(payload.get('price_policy')) is not dict:
+        raise ValueError('Normalized consecutive price-risk policy required')
+    price = payload['price_policy']
+    def fraction(name):
+        value = price[name]
+        if value is None:
+            return None
+        if type(value) is not list or len(value) != 2:
+            raise ValueError('Normalized rational price-risk fraction required')
+        return tuple(value)
+    try:
+        result = ConsecutivePriceRiskPolicy(PriceConfirmedOriginalRiskPolicy(
+            fraction('premarket_fraction'), fraction('afterhours_fraction'),
+            price['eligibility_ms'], price['quote_max_age_us']),
+            payload['completed_bucket_ms'], payload['consecutive_buckets'])
+    except (KeyError, TypeError) as exc:
+        raise ValueError('Incomplete consecutive price-risk policy') from exc
+    if canonical_json(payload) != canonical_json(result.payload()):
+        raise ValueError('Consecutive price-risk semantics changed')
+    return result
+
+
 def consecutive_price_risk_failure(value, *, prior, newest, policy):
     """No future, partial, missing or cross-authority candle can confirm risk."""
     if type(policy) is not ConsecutivePriceRiskPolicy:
@@ -95,3 +129,40 @@ def consecutive_price_risk_failure(value, *, prior, newest, policy):
     if Fraction(prior.close_int, 10000) > threshold:
         return None
     return ConsecutivePriceRiskWitness(current, prior, newest)
+
+
+def validate_consecutive_price_risk_diagnostic(diagnostic, *, policy):
+    """Keep inherited priority and both exact producer witnesses for recovery."""
+    from .strategy_followthrough_failure import FollowThroughFailureInput
+    from .strategy_zero_regime_risk_failure import zero_regime_risk_failure
+    if (type(policy) is not ConsecutivePriceRiskPolicy
+            or type(diagnostic) is not OriginalRiskDecisionDiagnostic
+            or type(diagnostic.current) is not FollowThroughFailure
+            or type(diagnostic.newest) is not CompletedRiskBucket):
+        raise ValueError('Exact consecutive price-risk diagnostic required')
+    policy.__post_init__()
+    newest, witness = diagnostic.newest, diagnostic.current
+    newest.validate_source()
+    if ((newest.boundary_ms, newest.close_int, newest.price_valid,
+         newest.macd_line, newest.macd_signal)
+            != (witness.boundary_ms, witness.completed_close_int, True,
+                witness.macd_line, witness.macd_signal)):
+        raise ValueError('Diagnostic newest source differs from current witness')
+    value = FollowThroughFailureInput(witness.boundary_ms, witness.first_held_boundary_ms,
+        witness.reference_ask, witness.initial_stop, newest.boundary_ms, newest.close_int,
+        newest.price_valid, newest.macd_line, newest.macd_signal,
+        witness.bid, witness.ask, witness.quote_age_us, 1., False)
+    inherited = zero_regime_risk_failure(value)
+    if diagnostic.semantic_rule == INHERITED_ORIGINAL_RISK_RULE:
+        if diagnostic.prior is not None or inherited != witness:
+            raise ValueError('Inherited diagnostic must preserve its exact firing rule')
+    elif diagnostic.semantic_rule == RULE:
+        if inherited is not None:
+            raise ValueError('Consecutive diagnostic cannot supersede inherited priority')
+        actual = consecutive_price_risk_failure(value, prior=diagnostic.prior,
+            newest=newest, policy=policy)
+        if actual is None or actual.current != witness:
+            raise ValueError('Consecutive diagnostic lacks both exact completed witnesses')
+    else:
+        raise ValueError('Foreign consecutive price-risk semantic rule')
+    return diagnostic
