@@ -9,6 +9,7 @@ from tests.test_backtest_native_channel_exit import setup
 from src.trading_runtime.native_channel_management_policy import (
     RULE, POLICY_KEY, SOURCE_CONTRACT, NativeChannelManagementPolicy,
     parse_native_channel_management_policy, selected_snapshot_contracts,
+    selected_exit_contracts, selected_writer_contracts,
 )
 from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.arte_journal_writer import _CONTRACTS
@@ -29,6 +30,11 @@ def test_complete_policy_selects_uninstalled_schemas_and_legacy_selects_none(ins
     assert all(t.name not in _CONTRACTS for t in tables)
     assert all("storage_policy = 'live_market_ssd'" in t.ddl() for t in tables)
     assert selected_snapshot_contracts(None) == ()
+    assert selected_exit_contracts(None) == () and selected_writer_contracts(None) == ()
+    exits=selected_exit_contracts(policy)
+    assert len(exits)==3 and len(selected_writer_contracts(policy))==7
+    assert all(t.name not in _CONTRACTS for t in exits)
+    assert all("storage_policy = 'live_market_ssd'" in t.ddl() for t in exits)
     assert parse_native_channel_management_policy(SimpleNamespace(rule_set_contracts=(), input_contracts=()), {}) is None
 
 
@@ -149,15 +155,15 @@ def test_channel_dispatch_and_keeper_head_use_selected_versioned_root(installed)
     assert authority._read_gate('run-1')[0].registered == 0
 
 
-def channel_catalog(installed, *, grants=True, defect=None):
+def channel_catalog(installed, *, grants=True, defect=None, defect_table=None):
     from tests.test_original_risk_profile import Catalog
     from src.trading_runtime.native_channel_writer_profile import channel_runner_identity
     client = Catalog(waiting=True, binding_grant=True, defect=defect,
-                     defect_table='trading_strategy_one_manager_snapshot_v5')
+                     defect_table=defect_table or 'trading_strategy_one_manager_snapshot_v5')
     client.native_channel_management_policy = declared(installed)[0]
     client.user = channel_runner_identity(client.native_channel_management_policy,
                                          client.confirmed_original_risk_policy)[1]
-    tables = selected_snapshot_contracts(client.native_channel_management_policy)
+    tables = selected_writer_contracts(client.native_channel_management_policy)
     client.contracts.update({t.name: t for t in tables})
     if grants:
         client.writable.update(t.name for t in tables)
@@ -170,7 +176,7 @@ def test_channel_writer_preflight_checks_selected_storage_and_binds_policy(insta
     client = channel_catalog(installed)
     seal = writer._v4_preflight(client)
     assert seal.native_channel_management_policy == client.native_channel_management_policy
-    for table in selected_snapshot_contracts(client.native_channel_management_policy):
+    for table in selected_writer_contracts(client.native_channel_management_policy):
         assert any(table.name in sql and 'FROM system.parts' in sql for sql in client.statements)
     assert all(not sql.startswith(('INSERT', 'CREATE', 'GRANT')) for sql in client.statements)
 
@@ -184,6 +190,20 @@ def test_channel_writer_preflight_rejects_bad_storage_grants_or_legacy_principal
     with pytest.raises((RuntimeError, ValueError)):
         writer._v4_preflight(client)
     assert all(not sql.startswith(('INSERT', 'CREATE', 'GRANT')) for sql in client.statements)
+
+
+@pytest.mark.parametrize('table',['trading_native_channel_exit_v1',
+    'trading_native_channel_exit_source_v1','trading_native_channel_exit_execution_v1'])
+@pytest.mark.parametrize('defect',['missing','policy','parts','grants'])
+def test_exit_companion_preflight_rejects_incomplete_authority(installed,table,defect):
+    from src.trading_runtime import arte_journal_writer as writer
+    from src.trading_runtime.arte_typed_insert_dispatch import _manager_tables
+    client=channel_catalog(installed,defect=defect,defect_table=table)
+    if defect=='grants': client.writable.remove(table)
+    assert table not in _manager_tables(client.confirmed_original_risk_policy,
+        client.native_channel_management_policy)
+    with pytest.raises((RuntimeError,ValueError)): writer._v4_preflight(client)
+    assert all(not sql.startswith(('INSERT','CREATE','GRANT')) for sql in client.statements)
 
 
 def test_channel_runner_has_no_legacy_credential_fallback(installed, monkeypatch):
@@ -205,7 +225,7 @@ def test_channel_writer_retains_combined_entry_cost_storage_requirement(installe
     client.native_channel_management_policy = declared(installed)[0]
     client.user = channel_runner_identity(client.native_channel_management_policy,
                                          client.confirmed_original_risk_policy)[1]
-    tables = selected_snapshot_contracts(client.native_channel_management_policy)
+    tables = selected_writer_contracts(client.native_channel_management_policy)
     client.contracts.update({t.name: t for t in tables})
     client.writable.update(t.name for t in tables)
     client.required.update(t.name for t in tables)

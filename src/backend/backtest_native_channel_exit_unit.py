@@ -177,3 +177,48 @@ def reprove_native_channel_exit_unit(unit, *, management_policy, recorded_at,
     if unit.base != expected.base or unit.sealed_families() != expected.sealed_families():
         raise ValueError('Complete channel exit unit differs from independent recomputation')
     return expected
+
+
+def prepare_confirmed_native_channel_exit_unit(client, manager_keeper, broker_keeper,
+        receipt, *, run_id, management_policy, contexts, pending_record_id,
+        first_price_source, recorded_at, attempt_id, batch_id, parent_record_id,
+        decision_record_id):
+    """Prepare the next scalar journal unit from actual checkpoint ownership.
+
+    This cold worker operation verifies the complete pending inventory, both
+    selected roots, original committed fills and the held OMS position. The
+    exit quantity, original entry and checkpoint references are never supplied
+    by the publication caller. Writer fencing and OMS admission remain required.
+    """
+    from collections.abc import Mapping
+    from .backtest_native_channel_financial_checkpoint import confirm_native_channel_held_checkpoint
+    from .backtest_typed_publisher import TypedBacktestReceipt
+    if (type(receipt) is not TypedBacktestReceipt or not isinstance(contexts,Mapping)
+            or pending_record_id not in contexts):
+        raise ValueError('Channel unit requires its exact pending context and committed receipt')
+    if any(not isinstance(context,Mapping) for context in contexts.values()):
+        raise ValueError('Channel unit requires complete independent pending evidence')
+    contexts={key:dict(context) for key,context in contexts.items()}
+    held = confirm_native_channel_held_checkpoint(client,manager_keeper,broker_keeper,receipt,
+        run_id=run_id,policy=management_policy,contexts=contexts,first_price_source=first_price_source)
+    # The manager verifier consumes this same deterministic inventory order.
+    keys = sorted(contexts)
+    if len(held) != len(keys):
+        raise ValueError('Confirmed channel inventory differs from exact pending contexts')
+    confirmed = held[keys.index(pending_record_id)]
+    context = dict(contexts[pending_record_id])
+    if (context['run_id'] != run_id or context['batch_id'] != receipt.last_batch_id
+            or context['current_financial'] != confirmed.request.financial
+            or confirmed.checkpoint.source_manager_checkpoint_sequence != receipt.last_sequence):
+        raise ValueError('Channel publication crosses its confirmed pending frontier or held owner')
+    context.update(checkpoint=confirmed.checkpoint,batch_id=batch_id,
+        parent_record_id=parent_record_id,decision_record_id=decision_record_id)
+    envelope=dict(management_policy=management_policy,recorded_at=recorded_at,
+        attempt_id=attempt_id,prior_batch_id=receipt.last_batch_id,
+        sequence=receipt.last_sequence+1,source_cursor=receipt.source_cursor)
+    projection_context={key:value for key,value in context.items() if key not in
+        {'prepared','policy','quotes','session_date','group','executions',
+         'source_entry_intent_id','current_financial'}}
+    unit=project_native_channel_exit_unit(confirmed.request,context['group'],context['executions'],
+        **envelope,**projection_context)
+    return reprove_native_channel_exit_unit(unit,**envelope,**context)

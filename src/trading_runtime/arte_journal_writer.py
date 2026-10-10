@@ -2496,7 +2496,7 @@ def _v4_preflight(client: Any) -> _V4PreflightSeal:
         storage_preflight(client,tables=selected_tables)
         writable |= frozenset(table.name for table in selected_tables)
     if channel_policy is not None:
-        from .native_channel_management_policy import selected_snapshot_contracts as channel_contracts
+        from .native_channel_management_policy import selected_writer_contracts as channel_contracts
         selected_tables = channel_contracts(channel_policy)
         storage_preflight(client, tables=selected_tables)
         writable |= frozenset(table.name for table in selected_tables)

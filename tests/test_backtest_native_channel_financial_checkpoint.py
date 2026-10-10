@@ -21,7 +21,7 @@ from src.trading_runtime.strategy_one_broker_match_snapshot import BrokerMatchHe
 from src.trading_runtime.order_management import OrderManagementState
 
 
-def checkpoint_case(installed, monkeypatch, defect=None):
+def checkpoint_case(installed, monkeypatch, defect=None, *, return_scope=False):
     rows, policy, contexts = manager_case(installed)
     root = rows.snapshot
     args = next(iter(contexts.values()))
@@ -103,6 +103,10 @@ def checkpoint_case(installed, monkeypatch, defect=None):
     manager = Keeper(ManagerSnapshotHead(run,sequence,batch,root['content_hash'],0))
     keeper = Keeper(BrokerMatchHead(run,sequence,batch,broker.snapshot['content_hash'],0))
     client = SimpleNamespace(native_channel_management_policy=policy)
+    if return_scope:
+        return dict(client=client,manager_keeper=manager,broker_keeper=keeper,receipt=receipt,
+            run_id=run,management_policy=policy,contexts=contexts,
+            first_price_source='transport-test-only')
     return lambda: confirm_native_channel_held_checkpoint(client,manager,keeper,receipt,
         run_id=run,policy=policy,contexts=contexts,first_price_source='transport-test-only')
 

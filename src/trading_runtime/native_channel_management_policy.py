@@ -71,3 +71,19 @@ def selected_snapshot_contracts(policy):
     from .arte_native_channel_pending_schema import TABLES
     from .native_channel_manager_snapshot_schema import parent_contract
     return (*TABLES, parent_contract())
+
+
+def selected_exit_contracts(policy):
+    """Require normalized exit companions only for the declared capability."""
+    if policy is None:
+        return ()
+    if type(policy) is not NativeChannelManagementPolicy:
+        raise ValueError('Exact declared native channel management capability required')
+    policy.__post_init__()
+    from .arte_native_channel_exit_schema import TABLES
+    return TABLES
+
+
+def selected_writer_contracts(policy):
+    # Exit journals are not manager snapshots and never enter manager dispatch.
+    return (*selected_snapshot_contracts(policy),*selected_exit_contracts(policy))
