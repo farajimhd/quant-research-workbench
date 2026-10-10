@@ -1,9 +1,10 @@
 //@version=6
-indicator("Research: price jump screener / alerts v2.1", overlay = true, max_bars_back = 500)
+indicator("Research: price jump screener / alerts v2.2", overlay = true, max_bars_back = 500)
 
 direction = input.string("Upward", "Detect", options = ["Upward", "Downward", "Both"])
 lookback = input.int(5, "Jump lookback (chart bars)", minval = 1, maxval = 200)
 threshold = input.float(2.0, "Minimum jump (%)", minval = 0.01, step = 0.1)
+immediateAlerts = input.bool(true, "Alert immediately during live bar (otherwise wait for close)")
 rejectGaps = input.bool(true, "Reject windows containing missing bars / session gaps")
 recentBars = input.int(5, "Recent signal retention (bars, including signal bar)", minval = 1, maxval = 100)
 cooldownBars = input.int(0, "Minimum bars between same-direction alerts", minval = 0, maxval = 100)
@@ -19,7 +20,7 @@ float barSeconds = timeframe.in_seconds()
 if barstate.isfirst and (not timeframe.isintraday or na(barSeconds) or not chart.is_standard)
     runtime.error("Use a standard time-based intraday candle chart. For Pine Screener, choose 1m, 5m, 15m, 30m, 1h, 2h or 4h.")
 
-// Closed chart-bar returns, not an intrabar high/low excursion or an overnight gap detector.
+// On a live candle, close is the latest received price; the anchor is completed.
 float anchor = close[lookback]
 bool priceReady = not na(anchor) and anchor > 0 and close > 0
 bool contiguous = not na(time[lookback]) and time - time[lookback] <= lookback * barSeconds * 1000
@@ -63,6 +64,31 @@ int sinceDown = ta.barssince(fireDown)
 bool recentUp = not na(sinceUp) and sinceUp < recentBars
 bool recentDown = not na(sinceDown) and sinceDown < recentBars
 
+// Separate live-alert state from the reproducible completed-bar screener book.
+// varip prevents realtime rollback from erasing an already emitted alert.
+varip bool liveUpEmitted = false
+varip bool liveDownEmitted = false
+varip int liveUpBar = na
+varip int liveDownBar = na
+bool liveFireUp = false
+bool liveFireDown = false
+if immediateAlerts or barstate.isconfirmed
+    liveFireUp := upQualified and not liveUpEmitted and (na(liveUpBar) or bar_index - liveUpBar >= cooldownBars)
+    liveFireDown := downQualified and not liveDownEmitted and (na(liveDownBar) or bar_index - liveDownBar >= cooldownBars)
+    if liveFireUp
+        liveUpEmitted := true
+        liveUpBar := bar_index
+    if liveFireDown
+        liveDownEmitted := true
+        liveDownBar := bar_index
+// Require a completed nonqualifying bar to rearm, so threshold chatter within
+// one candle cannot produce repeated same-direction notifications.
+if barstate.isconfirmed
+    if not upQualified
+        liveUpEmitted := false
+    if not downQualified
+        liveDownEmitted := false
+
 // Keep all numeric screener columns on the latest completed candle even while
 // a live candle forms. The first ten plots are the screener's default columns.
 confirmedValue(float value) =>
@@ -78,12 +104,14 @@ plot(confirmedValue(fireDown ? 1.0 : 0.0), "New down signal", display = display.
 plot(confirmedValue(relativeVolume), "Relative volume", display = display.data_window)
 plot(confirmedValue(dollarVolume), "Bar dollar volume", display = display.data_window)
 plot(confirmedValue(ready ? 1.0 : 0.0), "Data ready", display = display.data_window)
+// Separate live message value: the first ten screener columns remain confirmed.
+plot(jumpPct, "Live jump %", display = display.data_window)
 
-alertcondition(fireUp, "Upward price jump", "Upward price jump on {{ticker}} ({{interval}}), close={{close}}, jump_pct={{plot(\"Jump %\")}}")
-alertcondition(fireDown, "Downward price jump", "Downward price jump on {{ticker}} ({{interval}}), close={{close}}, jump_pct={{plot(\"Jump %\")}}")
-alertcondition(fireUp or fireDown, "Any price jump", "Price jump on {{ticker}} ({{interval}}), close={{close}}, jump_pct={{plot(\"Jump %\")}}")
-if fireUp or fireDown
-    alert("Research price jump v2.1 | " + syminfo.tickerid + " | " + (fireUp ? "UP" : "DOWN") + " | timeframe=" + timeframe.period + " | close=" + str.tostring(close, format.mintick) + " | jump_pct=" + str.tostring(jumpPct, "#.##"), alert.freq_once_per_bar_close)
+alertcondition(liveFireUp, "Upward price jump", "Upward price jump on {{ticker}} ({{interval}}), close={{close}}, jump_pct={{plot(\"Live jump %\")}}")
+alertcondition(liveFireDown, "Downward price jump", "Downward price jump on {{ticker}} ({{interval}}), close={{close}}, jump_pct={{plot(\"Live jump %\")}}")
+alertcondition(liveFireUp or liveFireDown, "Any price jump", "Price jump on {{ticker}} ({{interval}}), close={{close}}, jump_pct={{plot(\"Live jump %\")}}")
+if liveFireUp or liveFireDown
+    alert("Research price jump v2.2 | " + syminfo.tickerid + " | " + (liveFireUp ? "UP" : "DOWN") + " | timeframe=" + timeframe.period + " | close=" + str.tostring(close, format.mintick) + " | jump_pct=" + str.tostring(jumpPct, "#.##"), alert.freq_all)
 
-plotshape(showMarkers and fireUp, title = "Up jump marker", style = shape.triangleup, location = location.belowbar, color = color.lime, size = size.small, text = "JUMP")
-plotshape(showMarkers and fireDown, title = "Down jump marker", style = shape.triangledown, location = location.abovebar, color = color.red, size = size.small, text = "DROP")
+plotshape(showMarkers and liveUpBar == bar_index, title = "Up jump marker", style = shape.triangleup, location = location.belowbar, color = color.lime, size = size.small, text = "JUMP")
+plotshape(showMarkers and liveDownBar == bar_index, title = "Down jump marker", style = shape.triangledown, location = location.abovebar, color = color.red, size = size.small, text = "DROP")
