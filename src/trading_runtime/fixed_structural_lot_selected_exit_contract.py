@@ -6,6 +6,7 @@ from .fixed_lot_management_cadence_policy import FixedLotManagementCadencePolicy
 from .initial_held_recovery_reuse_policy import InitialHeldRecoveryReusePolicy
 from .proposal_decision_inventory_reuse_policy import ProposalDecisionInventoryReusePolicy
 from .first_inventory_source_reuse_policy import FirstInventorySourceReusePolicy
+from .publication_source_reuse_policy import PublicationSourceReusePolicy
 from .fixed_structural_lot_complete_market_contract import FixedStructuralLotCompleteMarketStrategyContract
 from .selected_exit_publication_policy import (
     SelectedExitPublicationPolicy, declared_selected_exit_publication_policy,
@@ -22,6 +23,7 @@ class FixedStructuralLotSelectedExitStrategyContract(FixedStructuralLotCompleteM
 
     proposal_decision_inventory_reuse_policy: ProposalDecisionInventoryReusePolicy | None = None
     first_inventory_source_reuse_policy: FirstInventorySourceReusePolicy | None = None
+    publication_source_reuse_policy: PublicationSourceReusePolicy | None = None
 
     def __post_init__(self):
         FixedStructuralLotCompleteMarketStrategyContract.__post_init__(self)
@@ -37,5 +39,7 @@ class FixedStructuralLotSelectedExitStrategyContract(FixedStructuralLotCompleteM
         require_declared_proposal_decision_reuse(self.release,self.proposal_decision_inventory_reuse_policy)
         from .first_inventory_source_reuse_policy import require_declared_first_inventory_source_reuse
         require_declared_first_inventory_source_reuse(self.release,self.first_inventory_source_reuse_policy)
+        from .publication_source_reuse_policy import require_declared_publication_source_reuse
+        require_declared_publication_source_reuse(self.release,self.publication_source_reuse_policy)
         declared_selected_exit_publication_policy(
             self.release, self.selected_exit_publication_policy.payload())
