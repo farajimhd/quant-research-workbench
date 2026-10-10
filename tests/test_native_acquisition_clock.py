@@ -5,7 +5,10 @@ import pytest
 
 from src.trading_runtime.ibkr_schema import Execution
 from src.trading_runtime.order_management import OrderGroupSnapshot, OrderManagementState
-from src.trading_runtime.native_acquisition_clock import acquisition_clock_from_entry_executions
+from src.trading_runtime.native_acquisition_clock import (
+    acquisition_clock_from_entry_executions, acquisition_clock_payload,
+    restore_acquisition_clock, require_acquisition_clock_matches_executions,
+)
 
 
 FIRST = datetime(2026, 8, 4, 12, 59, 59, 999999, tzinfo=timezone.utc)
@@ -69,3 +72,42 @@ def test_reentry_uses_new_group_and_never_borrows_prior_acquisition():
     result=clock(g,(fill('old',5),current),source_entry_intent_id='reentry')
     assert result.first_execution_id=='new'
     assert result.acquisition_day_us==32_429_999_999
+
+
+def test_exact_microsecond_clock_survives_projection_and_source_recomputation():
+    executions=(fill('first',2),fill('second',3,FIRST+timedelta(seconds=5)))
+    original=clock(group(),executions)
+    payload=acquisition_clock_payload(original)
+    assert payload['first_execution_time']=='2026-08-04T12:59:59.999999+00:00'
+    restored=restore_acquisition_clock(payload)
+    assert restored==original
+    assert require_acquisition_clock_matches_executions(restored,group(),executions,
+        session_date=date(2026,8,4),as_of=NOW,source_entry_intent_id='intent',expected_conid=11)==original
+
+
+@pytest.mark.parametrize('defect',['bool','missing','extra','rounded','foreign_day','tuple_ids'])
+def test_projection_cannot_coerce_truncate_or_borrow_source_clock(defect):
+    payload=acquisition_clock_payload(clock(group(),(fill('first',5),)))
+    if defect=='bool':payload['acquisition_day_us']=True
+    if defect=='missing':del payload['source_entry_intent_id']
+    if defect=='extra':payload['trusted']=True
+    if defect=='rounded':payload['first_execution_time']='2026-08-04T12:59:59+00:00'
+    if defect=='foreign_day':payload['session_date']='2026-08-05'
+    if defect=='tuple_ids':payload['execution_ids']=tuple(payload['execution_ids'])
+    with pytest.raises(ValueError):restore_acquisition_clock(payload)
+
+
+def test_internally_consistent_forged_clock_fails_original_execution_reproof():
+    executions=(fill('first',5),)
+    original=clock(group(),executions)
+    forged=replace(original,acquisition_day_us=original.acquisition_day_us+1,
+                   first_execution_time=original.first_execution_time+timedelta(microseconds=1))
+    with pytest.raises(ValueError,match='differs from original'):
+        require_acquisition_clock_matches_executions(forged,group(),executions,
+            session_date=date(2026,8,4),as_of=NOW,source_entry_intent_id='intent',expected_conid=11)
+
+
+def test_source_integer_millisecond_clock_cannot_disagree_with_datetime():
+    execution=fill('first',5)
+    with pytest.raises(ValueError,match='millisecond identity'):
+        clock(group(),(replace(execution,trade_time_r=execution.trade_time_r-1),))
