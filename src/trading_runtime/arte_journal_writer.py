@@ -1771,6 +1771,7 @@ def _insert(
     dispatch_manager_snapshot_hash: str | None = None,
     dispatch_fixed_lot_manager_context: Any | None = None,
     dispatch_native_channel_manager_image: Any | None = None,
+    dispatch_native_channel_exit_image: Any | None = None,
     dispatch_broker_snapshot_hash: str | None = None,
     dispatch_evidence_snapshot_hash: str | None = None,
     dispatch_campaign_snapshot_hash: str | None = None,
@@ -1783,7 +1784,22 @@ def _insert(
                      if journal_profile == "backtest_v3" and name == "trading_commit_v1"
                      else name)
     channel_wire = None
-    if dispatch_native_channel_manager_image is not None:
+    if dispatch_native_channel_exit_image is not None:
+        if (journal_profile!='backtest_v4' or getattr(client,'typed_insert_strict',False) is not True
+                or dispatch_native_channel_manager_image is not None
+                or dispatch_fixed_lot_manager_context is not None
+                or any(value is not None for value in (dispatch_manager_snapshot_hash,
+                    dispatch_broker_snapshot_hash,dispatch_snapshot_account_id,
+                    dispatch_terminal_account_id,dispatch_policy_hash,
+                    dispatch_evidence_snapshot_hash,dispatch_campaign_snapshot_hash,
+                    dispatch_oms_observation_snapshot_hash,dispatch_sync_account_id,dispatch_sync_revision))
+                or dispatch_run_context):
+            raise ValueError('Channel exit INSERT requires its exclusive fenced scalar image')
+        from .native_channel_exit_publication import verify_native_channel_exit_insert
+        contract,channel_wire=verify_native_channel_exit_insert(dispatch_native_channel_exit_image,
+            client=client,table=contract_name,rows=rows,sequence=dispatch_sequence,
+            batch_id=dispatch_batch_id,token=token)
+    elif dispatch_native_channel_manager_image is not None:
         if (journal_profile != 'backtest_v4' or dispatch_fixed_lot_manager_context is not None
                 or getattr(client, 'typed_insert_strict', False) is not True):
             raise ValueError('Channel manager INSERT requires its exclusive fenced V4 image')
