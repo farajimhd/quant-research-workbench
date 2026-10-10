@@ -1396,6 +1396,27 @@ def initialize_numbered_fixed_strategies() -> None:
                 certify_original_risk_reuse_source, combined_price_risk_release,
                 historical_parent_proof=reuse_parent_source_proof())))
         register_numbered_strategy(reuse)
+        from .strategy_one_hundred_seventeen_release import release_contract as reuse_successor_release
+        from .strategy_one_hundred_seventeen_contract import strategy_one_hundred_seventeen_contract
+        from .strategy_one_hundred_seventeen_configuration import (
+            SOURCE_PREFIX as reuse_successor_source_prefix,
+            derive_strategy_one_hundred_seventeen_configuration,
+            verify_strategy_one_hundred_seventeen_manifest,
+            historical_parent_source_proof as reuse_successor_parent_source_proof)
+        from src.backend.backtest_original_risk_reuse_successor_certification import certify_original_risk_reuse_successor_source
+        reuse_successor = reuse_successor_release()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=reuse_successor.executor_strategy_id,
+            revision=reuse_successor.executor_revision,
+            evaluation_interval=reuse_successor.evaluation_interval,
+            strategy_factory=_strategy_two_factory,
+            contract_factory=strategy_one_hundred_seventeen_contract,
+            manifest_authority=NativeManifestAuthority(115, reuse_successor_source_prefix,
+                derive_strategy_one_hundred_seventeen_configuration,
+                verify_strategy_one_hundred_seventeen_manifest,
+                certify_original_risk_reuse_successor_source, combined_price_risk_release,
+                historical_parent_proof=reuse_successor_parent_source_proof())))
+        register_numbered_strategy(reuse_successor)
         _NUMBERED_FIXED_REGISTERED = True
 
 
