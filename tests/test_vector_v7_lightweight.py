@@ -134,6 +134,23 @@ def test_persisted_features_exact_slices_reuse_and_integrity(tmp_path):
     with pytest.raises(ValueError,match='integrity'):FeatureCache(cache_root,data).block(0,1,[0])
 
 
+@pytest.mark.parametrize('cost',[0.,10.])
+def test_numpy_reference_all_lifecycle_paths(cost):
+    from research.vectorized_backtest.v7.reference import replay_reference
+    rng=np.random.default_rng(223);prices=np.maximum(2.,10.+np.cumsum(rng.normal(0,.6,(200,4)),axis=0))
+    data=session([1.,1.]);data.clocks=len(prices);data.listing_ids=list(range(4))
+    data.tensors=dict(mark=torch.from_numpy(prices),observed=torch.from_numpy(rng.random(prices.shape)>.1),
+        membership=torch.from_numpy(rng.random(prices.shape)>.4),history_ids=torch.arange(len(prices))[:,None].expand(-1,4).to(torch.int32))
+    data.host_tensors=data.tensors
+    data.swing_bank=lambda members:(torch.full((len(prices),1),8.,dtype=torch.float64),torch.zeros(len(members),dtype=torch.int64))
+    members=[member(cooldown=1,add_minimum_profit=0.,reduce_minimum_profit=0.),member(cooldown=3,reduce_fraction=1.),
+        member(swing_left=1,swing_right=1,cooldown=1)]
+    gates=torch.from_numpy(rng.integers(0,32,(3,len(prices),4),dtype=np.uint8));execution=Execution(cost_bps=cost)
+    actual=replay_cohort([data],members,[gates],execution=execution)[0]
+    expected=replay_reference(data,members,gates.numpy(),execution)
+    for name,value in actual.items():np.testing.assert_allclose(value.numpy(),expected[name],rtol=1e-10,atol=1e-8)
+
+
 def test_full30_search_and_exact_completed_resume(tmp_path,monkeypatch):
     from research.vectorized_backtest.v7 import run_search
     inputs=tmp_path/'search-inputs';history=tmp_path/'search-history';output=tmp_path/'search'

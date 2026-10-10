@@ -62,6 +62,21 @@ Readers verify tiles before first use and keep at most 1 GiB of decoded tiles
 per session. Loading/decompression and device transfer still occur; feature
 gathers, quote transforms, relative histories and validity construction do not
 repeat for candidate batches. This is an implementation, not a speed claim.
+`prepare_features` exposes the same inputs/history/output arguments and a bounded
+`--workers 1..8` pool for all30 preparation, with drained failures and durable
+per-tile resume. Its default is four workers. `STOP` is honored after a durable
+tile; restarting requires removing that operator stop marker deliberately.
+
+`qualify_full --inputs INPUTS --history HISTORY --feature-cache CACHE --output
+QUALIFICATION --days TRAINING_DATES` compares complete clocks and identities to
+an independent NumPy ledger at zero and 10 basis points. Forced lifecycle gates
+exercise management alongside sampled feature programs. `profile` accepts those
+same roots plus `--qualification QUALIFICATION/qualification.json`; it requires
+same-code full-session qualification, measures fixed population/cohort options,
+then runs the fastest measured option across all30. It performs no evolutionary
+selection, mutation, validation read or campaign launch. Timings include verified
+loading, feature read/decode/assembly/transfer, signals, replay including compiler
+work, publication and complete wall time. Compiler diagnostics are saved separately.
 
 Every generation evaluates all 30 training sessions before selection. The fixed
 lower-tail dollar objective rewards total profit and the worst 20% session mean,
