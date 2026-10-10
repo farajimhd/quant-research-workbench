@@ -67,6 +67,9 @@ session/complete-position diagnostics are implemented.
 `profile_sparse` is workstation-CUDA profiling only, with explicit percentage
 target stratification unless a structural sidecar is supplied. Short profiles
 are timing evidence, not profitability or full-generation throughput evidence.
+Pointwise lifecycle instructions execute only their participating candidate
+lanes. Temporal instructions retain the existing per-window lane grouping and
+causal scans; an unpruned pointwise path remains available for exact comparison.
 `profile_compact_sessions` measures complete candidate-session throughput,
 preparation, replay/audit time and peak allocated/reserved GPU memory.
 Resident session timings separate broker compilation/first tick, capture

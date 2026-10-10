@@ -101,10 +101,11 @@ class TorchPrograms:
     Evaluate a contiguous listing chunk including at most 119 preceding rows.
     Masks propagate through NOT/OR: missing evidence is never true evidence.
     """
-    def __init__(self,programs,catalog,device='cpu',output_unit='bool',specialize_windows=True):
+    def __init__(self,programs,catalog,device='cpu',output_unit='bool',specialize_windows=True,specialize_pointwise=True):
         for p in programs:p.validate(catalog,output_unit=output_unit)
         self.programs=programs;self.device=torch.device(device);self.width=max(len(p.nodes) for p in programs)
         self.specialize_windows=specialize_windows
+        self.specialize_pointwise=specialize_pointwise
         self.rows=[]
         for i in range(self.width):
             nodes=[p.nodes[i] if i<len(p.nodes) else Node(Op.CONSTANT) for p in programs]
@@ -113,6 +114,7 @@ class TorchPrograms:
         self.outputs=torch.tensor([p.output for p in programs],device=device)
         self.batch_axis=torch.arange(len(programs),device=device)
         self.dispatch=[]
+        self.pointwise_dispatch={}
         for i,(nodes,fi,ai,bi) in enumerate(self.rows):
             active=[i<len(p.nodes) for p in programs]
             operations=[]
@@ -125,6 +127,10 @@ class TorchPrograms:
                          for k in sorted({n.window for n in nodes if n.op==op})] if op in (Op.LAG,Op.MEAN,Op.MINIMUM,Op.MAXIMUM,Op.DIFFERENCE) else []
                 constants=torch.tensor([n.value for n in nodes],dtype=torch.float32,device=device)[:,None] if op==Op.CONSTANT else None
                 operations.append((op,choose,windows,constants))
+                if specialize_pointwise and not windows:
+                    indices=torch.tensor([j for j,(n,live) in enumerate(zip(nodes,active)) if live and n.op==op],device=device)
+                    self.pointwise_dispatch[i,op]=(indices,fi.index_select(0,indices),ai.index_select(0,indices),bi.index_select(0,indices),
+                        constants.index_select(0,indices) if constants is not None else None)
             self.dispatch.append(operations)
 
     def __call__(self,features,valid):
@@ -139,14 +145,29 @@ class TorchPrograms:
         def lag(x,k):return F.pad(x[...,:max(0,c-k)],(k,0))[...,:c]
         for i,(nodes,fi,ai,bi) in enumerate(self.rows):
             out=features.new_zeros(shape);ok=torch.zeros(shape,dtype=torch.bool,device=features.device)
-            if i:
-                a=values[ai,self.batch_axis];d=values[bi,self.batch_axis]
-                av=masks[ai,self.batch_axis];dv=masks[bi,self.batch_axis]
+            if i and (not self.specialize_pointwise or any(windows for _,_,windows,_ in self.dispatch[i])):
+                all_a=values[ai,self.batch_axis];all_av=masks[ai,self.batch_axis]
+                if not self.specialize_pointwise:
+                    all_d=values[bi,self.batch_axis];all_dv=masks[bi,self.batch_axis]
             for op,choose,windows,constants in self.dispatch[i]:
                 choose=choose.reshape(broadcast)
-                if op==Op.FEATURE:v=features[...,fi].movedim(-1,0);m=valid[...,fi].movedim(-1,0)
+                compact=self.specialize_pointwise and not windows
+                if compact:
+                    indices,selected_fi,selected_ai,selected_bi,constants=self.pointwise_dispatch[i,op]
+                    operation_shape=(indices.numel(),*features.shape[:-1])
+                    operation_broadcast=(indices.numel(),)+(1,)*(features.ndim-1)
+                    if i and op not in (Op.FEATURE,Op.CONSTANT):
+                        a=values[selected_ai,indices];av=masks[selected_ai,indices]
+                        if op not in (Op.NOT,Op.ABS):
+                            d=values[selected_bi,indices];dv=masks[selected_bi,indices]
+                else:
+                    selected_fi=fi;operation_shape=shape;operation_broadcast=broadcast
+                    if i:
+                        a,av=all_a,all_av
+                        if not self.specialize_pointwise:d,dv=all_d,all_dv
+                if op==Op.FEATURE:v=features[...,selected_fi].movedim(-1,0);m=valid[...,selected_fi].movedim(-1,0)
                 elif op==Op.CONSTANT:
-                    v=constants.to(features.dtype).reshape(broadcast).expand(shape);m=torch.ones_like(ok)
+                    v=constants.to(features.dtype).reshape(operation_broadcast).expand(operation_shape);m=torch.ones(operation_shape,dtype=torch.bool,device=features.device)
                 elif op in (Op.LAG,Op.MEAN,Op.MINIMUM,Op.MAXIMUM,Op.DIFFERENCE):
                     v=torch.zeros_like(out);m=torch.zeros_like(ok)
                     for k,selected,indices in windows:
@@ -183,6 +204,10 @@ class TorchPrograms:
                     elif op==Op.ABS:v=a.abs()
                     elif op==Op.CROSS_ABOVE:v=(a>d)&(lag(a,1)<=lag(d,1));m=m&lag(av&dv,1)&(axis>=1)
                     elif op==Op.CROSS_BELOW:v=(a<d)&(lag(a,1)>=lag(d,1));m=m&lag(av&dv,1)&(axis>=1)
-                m=m&torch.isfinite(v);out=torch.where(choose,torch.where(m,v,0.),out);ok=torch.where(choose,m,ok)
+                m=m&torch.isfinite(v)
+                if compact:
+                    out.index_copy_(0,indices,torch.where(m,v,0.).to(features.dtype));ok.index_copy_(0,indices,m)
+                else:
+                    out=torch.where(choose,torch.where(m,v,0.),out);ok=torch.where(choose,m,ok)
             values[i].copy_(out);masks[i].copy_(ok)
         return values[self.outputs,self.batch_axis],masks[self.outputs,self.batch_axis]

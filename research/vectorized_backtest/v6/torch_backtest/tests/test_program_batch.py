@@ -14,6 +14,35 @@ def test_padding_constants_do_not_enter_instruction_dispatch():
     values,known=evaluator(features,valid)
     assert values.eq(1).all() and known.all()
 
+@pytest.mark.parametrize('device',['cpu','cuda'])
+@pytest.mark.parametrize('operation',[Op.ADD,Op.SUBTRACT,Op.MULTIPLY,Op.DIVIDE,Op.ABS,Op.GREATER,Op.GREATER_EQUAL,Op.LESS,Op.LESS_EQUAL,Op.CROSS_ABOVE,Op.CROSS_BELOW,Op.AND,Op.OR,Op.NOT])
+def test_pointwise_lane_groups_preserve_values_masks_and_temporal_operands(operation,device):
+    if device=='cuda' and not torch.cuda.is_available():pytest.skip('CUDA required')
+    features=torch.randn(3,137,len(CATALOG),generator=torch.Generator().manual_seed(41)).to(device)
+    valid=(torch.rand(features.shape,generator=torch.Generator().manual_seed(42))>.08).to(device)
+    unit=CATALOG[8].unit
+    nodes=[Node(Op.FEATURE,feature=8),Node(Op.CONSTANT,value=0.,unit=unit)]
+    if operation in (Op.AND,Op.OR,Op.NOT):
+        nodes.extend((Node(Op.GREATER,a=0,b=1),Node(Op.LESS_EQUAL,a=0,b=1)))
+        nodes.append(Node(operation,a=2,b=3));output_unit='bool'
+    else:
+        if operation==Op.MULTIPLY:nodes[1]=Node(Op.CONSTANT,value=.5,unit='ratio')
+        nodes.append(Node(operation,a=0,b=1))
+        output_unit='ratio' if operation==Op.DIVIDE else unit if operation in (Op.ADD,Op.SUBTRACT,Op.MULTIPLY,Op.ABS) else 'bool'
+    selected=Program(tuple(nodes),len(nodes)-1)
+    # A longer program forces padding and places a temporal operation after
+    # instructions containing different real pointwise operations.
+    if output_unit=='bool':
+        other=Program((Node(Op.FEATURE,feature=8),Node(Op.ABS,a=0),Node(Op.MEAN,a=1,window=3),Node(Op.GREATER,a=1,b=2)),3)
+    else:
+        other=Program((Node(Op.FEATURE,feature=8),Node(Op.ABS,a=0),Node(Op.MEAN,a=1,window=3),Node(Op.ABS,a=2)),3)
+        if output_unit=='ratio' and unit!='ratio':
+            other=Program(other.nodes+(Node(Op.DIVIDE,a=1,b=3),),4)
+    programs=[selected,other,selected,other]
+    actual,mask=TorchPrograms(programs,CATALOG,device,output_unit=output_unit,specialize_pointwise=True)(features,valid)
+    expected,known=TorchPrograms(programs,CATALOG,device,output_unit=output_unit,specialize_pointwise=False)(features,valid)
+    assert torch.equal(actual,expected) and torch.equal(mask,known)
+
 def test_one_candle_mean_is_exact_identity_and_invalid_outputs_are_zero():
     features=torch.rand(3,250,len(CATALOG),generator=torch.Generator().manual_seed(9))
     valid=torch.ones_like(features,dtype=torch.bool);valid[:,17,8]=False
