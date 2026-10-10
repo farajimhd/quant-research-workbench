@@ -288,7 +288,9 @@ class FixedStructuralLotPublicationContext:
 
     def verify_source(self):
         from src.backend.backtest_fixed_lot_initial_recovery_reuse import verify_context_source
-        return verify_context_source(self,self._verify_source_complete)
+        from src.backend.backtest_fixed_lot_publication_reuse import verified_publication_source
+        return verified_publication_source(self,
+            lambda: verify_context_source(self,self._verify_source_complete))
 
     def _verify_source_complete(self):
         if (type(self.unit) is not V4FixedStructuralLotEntryBatch or type(self.record) is not JournalRecord
@@ -381,6 +383,12 @@ def publish_fixed_structural_lot_entry_v4(client,context):
     """Production gate intentionally closed until an own release is installed."""
     if type(context) is not FixedStructuralLotPublicationContext:
         raise ValueError('Exact own lot publication context required')
+    from src.backend.backtest_fixed_lot_publication_reuse import publication_source_scope
+    with publication_source_scope(context):
+        return _publish_fixed_structural_lot_entry_v4_complete(client,context)
+
+
+def _publish_fixed_structural_lot_entry_v4_complete(client,context):
     context.verify_admission()
     from .fixed_structural_lot_profile import require_fixed_structural_lot_client_context
     require_fixed_structural_lot_client_context(client,context)
