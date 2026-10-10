@@ -1333,6 +1333,27 @@ def initialize_numbered_fixed_strategies() -> None:
                 certify_price_confirmed_original_risk_source, price_risk_parent_release,
                 historical_parent_proof=historical_parent_source_proof())))
         register_numbered_strategy(price_risk)
+        from .strategy_one_hundred_fourteen_release import release_contract as consecutive_price_risk_release
+        from .strategy_one_hundred_fourteen_contract import strategy_one_hundred_fourteen_contract
+        from .strategy_one_hundred_fourteen_configuration import (
+            SOURCE_PREFIX as consecutive_source_prefix,
+            derive_strategy_one_hundred_fourteen_configuration,
+            verify_strategy_one_hundred_fourteen_manifest,
+            historical_parent_source_proof as consecutive_parent_source_proof)
+        from src.backend.backtest_consecutive_price_risk_certification import certify_consecutive_price_risk_source
+        consecutive_price_risk = consecutive_price_risk_release()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=consecutive_price_risk.executor_strategy_id,
+            revision=consecutive_price_risk.executor_revision,
+            evaluation_interval=consecutive_price_risk.evaluation_interval,
+            strategy_factory=_strategy_two_factory,
+            contract_factory=strategy_one_hundred_fourteen_contract,
+            manifest_authority=NativeManifestAuthority(113, consecutive_source_prefix,
+                derive_strategy_one_hundred_fourteen_configuration,
+                verify_strategy_one_hundred_fourteen_manifest,
+                certify_consecutive_price_risk_source, price_risk_release,
+                historical_parent_proof=consecutive_parent_source_proof())))
+        register_numbered_strategy(consecutive_price_risk)
         _NUMBERED_FIXED_REGISTERED = True
 
 

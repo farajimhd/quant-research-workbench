@@ -80,9 +80,11 @@ def certify_numbered_fixed_v4_projection(strategy_number: int) -> str:
         if (not declared_automatic_ladder_release(strategy_number)
                 and declared_fixed_structural_lot_contract(strategy_number) is None):
             from src.trading_runtime.numbered_fixed_strategy import DeclaredFixedStrategyContract, numbered_fixed_strategy
+            from src.trading_runtime.consecutive_price_confirmed_risk import ConsecutivePriceRiskPolicy
             selected = numbered_fixed_strategy(strategy_number)
             if (type(selected) is not DeclaredFixedStrategyContract
-                    or selected.price_confirmed_original_risk_policy is None):
+                    or (selected.price_confirmed_original_risk_policy is None
+                        and type(selected._declared_confirmed_original_risk_policy) is not ConsecutivePriceRiskPolicy)):
                 raise ValueError('Native manifest lacks exact supported typed semantics')
         parent_proof = (authority.historical_parent_proof.verify(authority.parent_release_factory())
                         if authority.historical_parent_proof is not None
