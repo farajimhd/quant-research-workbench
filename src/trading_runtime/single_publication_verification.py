@@ -22,6 +22,8 @@ class SinglePublicationVerification:
         self._input = self._output = self._result = None
         self._has_result = False
         self._entered = False
+        self._verifying = False
+        self._failed = False
 
     def _code_image(self):
         return tuple((getattr(value, '__func__', value),
@@ -36,6 +38,8 @@ class SinglePublicationVerification:
     def _require(self):
         if not self._active or self._owner is not current_thread():
             raise ValueError('Publication verification scope is inactive or foreign')
+        if self._failed:
+            raise ValueError('Publication verification scope failed; no retry permitted')
         if self._codes != self._code_image():
             raise ValueError('Publication verification callback code changed')
         self._callbacks[3]()
@@ -69,13 +73,27 @@ class SinglePublicationVerification:
         self._require()
 
     def verify(self):
-        self._check_images()
-        if self._has_result:
-            return self._result
-        result = self._callbacks[0]()
-        self._check_images()
-        image = self._image(self._callbacks[2](result))
+        # A foreign observer must not poison the owner's publication scope.
         self._require()
-        self._result, self._output, self._has_result = result, image, True
-        self._check_images()
-        return result
+        if self._verifying:
+            self._failed = True
+            raise ValueError('Reentrant publication verification is forbidden')
+        self._verifying = True
+        try:
+            self._check_images()
+            if self._has_result:
+                return self._result
+            result = self._callbacks[0]()
+            self._check_images()
+            image = self._image(self._callbacks[2](result))
+            self._require()
+            self._result, self._output, self._has_result = result, image, True
+            self._check_images()
+            return result
+        except BaseException:
+            self._failed = True
+            self._result = self._output = None
+            self._has_result = False
+            raise
+        finally:
+            self._verifying = False

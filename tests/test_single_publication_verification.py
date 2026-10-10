@@ -120,3 +120,29 @@ def test_nested_scope_rejects_without_invalidating_outer_scope():
                 pass
         assert memo.verify() is result
     assert state['calls'] == 1
+
+
+def test_reentrant_original_cannot_replay_recursively():
+    calls = []
+    def original():
+        calls.append(1)
+        return memo.verify()
+    state, memo = fixture(original=original)
+    with pytest.raises(ValueError, match='Reentrant'):
+        with memo.scope():
+            memo.verify()
+    assert calls == [1] and memo._result is None
+
+
+def test_caught_original_failure_cannot_be_retried_in_scope():
+    calls = []
+    def original():
+        calls.append(1)
+        raise RuntimeError('Original failed')
+    state, memo = fixture(original=original)
+    with pytest.raises(ValueError, match='no retry'):
+        with memo.scope():
+            with pytest.raises(RuntimeError):
+                memo.verify()
+            memo.verify()
+    assert calls == [1] and memo._result is None
