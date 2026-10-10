@@ -115,6 +115,11 @@ def test_all_captures_precede_parallel_replay_and_receipts_resume(tmp_path,monke
     evaluate=ResidentSessionEvaluator(source,structures,batch_size=2,holding_capacity=2,maximum_fills=512,
         maximum_input_gib=.01,maximum_state_gib=.01,backend='cudagraph',graph_steps=7,capture_variants=variants)
     population=[member,deepcopy(member),deepcopy(member),deepcopy(member)];output=mkdir(tmp_path/'result')
+    priming=mkdir(tmp_path/'priming')
+    evaluate.prepare_pass(sessions,population,priming,workers=2,prime_only=True)
+    assert events==['capture','capture']
+    assert not list(priming.glob('*/receipt.json'))
+    assert json.loads((priming/'priming.json').read_text())['selection_allowed'] is False
     evaluate.prepare_pass(sessions,population,output,workers=2)
     assert events==['capture','capture','replay','replay','replay','replay']
     assert events.count('capture')==2

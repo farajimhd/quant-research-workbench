@@ -25,6 +25,9 @@ from .capture_seed import seed_population
 
 class ResidentSessionEvaluator(SparseSessionEvaluator):
     def __init__(self,*args,**kwargs):
+        self.compiler_specialization_budget=kwargs.pop('compiler_specialization_budget',128)
+        if type(self.compiler_specialization_budget) is not int or not 1<=self.compiler_specialization_budget<=16384:
+            raise ValueError('Bounded compiler specialization budget required')
         self.capture_seed_root=kwargs.pop('capture_seed_root',None)
         self._capture_seeds={}
         backend=kwargs.pop('backend','compiled_graph')
@@ -62,6 +65,7 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
         result['graph_steps']=self.graph_steps
         result['capture_variants']=self.capture_variants
         result['capture_initializer']='exact-capture-initializer-v1'
+        result['compiler_specialization_budget']=self.compiler_specialization_budget
         return result
 
     def _capture_cache(self,day):
@@ -108,7 +112,8 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
         audit_fills(folder/'fills.pt',record['metrics'])
         return record
 
-    def prepare_pass(self,training,population,output,*,workers=2):
+    def prepare_pass(self,training,population,output,*,workers=2,prime_only=False):
+        if type(prime_only) is not bool:raise ValueError('Explicit Boolean capture priming required')
         self.contract(training,workers)
         token=population_hash(population);space=StrategySpace();measurements=[]
         remaining=[]
@@ -207,6 +212,16 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
                         runner.broker_preparation_seconds=perf_counter()-broker_started
                         jobs.append((session,folder,runner,rule_seconds,torch.cuda.Stream(device=self.device)))
                     setup=perf_counter()-started_preparation
+                    if prime_only:
+                        torch.cuda.synchronize(self.device)
+                        measurements.append(dict(sessions=[s['day'] for s in sessions],candidate_offset=offset,candidates=len(members),
+                            setup_seconds=setup,priming_only=True,full_session=False,active=len(jobs)))
+                        write_json(output/'resident-measurements.json',measurements)
+                        del jobs
+                        if 'runner' in locals():del runner,gates
+                        del inputs
+                        gc.collect()
+                        continue
                     torch.cuda.synchronize(self.device);started=perf_counter()
                     write_json(output/'resident-status.json',dict(stage='Concurrent captured replay',sessions=[s['day'] for s in sessions],
                         candidate_offset=offset,population=len(population),active=len(jobs),validation_opened=False))
@@ -241,6 +256,10 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
                     del inputs
             finally:
                 shared.close()
+        if prime_only:
+            write_json(output/'priming.json',dict(priming_only=True,full_session=False,selection_allowed=False,
+                population_sha256=token,sessions=[s['day'] for s in remaining],validation_opened=False))
+            return measurements
         for session in remaining:
             day=session['day']
             # Scheduling is independent across accounts. Restore the original

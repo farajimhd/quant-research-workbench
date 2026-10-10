@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from .full_search import run_generations
 from .resident_evaluator import ResidentSessionEvaluator
-from .runtime import configure_caches,require_runtime
+from .runtime import configure_caches,require_runtime,specialization_budget
 from .stability import LowerTailDollarObjective
 
 
@@ -25,9 +25,11 @@ def main(argv=None):
     a=p.parse_args(argv)
     if not 1<=a.session_workers<=8:p.error('--session-workers must be 1..8')
     spec=json.loads(a.sessions.read_text())
-    root=require_runtime(a.output);configure_caches(root/'cache')
+    budget=specialization_budget(a.population,a.batch_size,a.generations,len(spec['training']))
+    root=require_runtime(a.output);configure_caches(root/'cache',recompile_limit=budget)
     evaluate=ResidentSessionEvaluator(a.inputs,a.structure,batch_size=a.batch_size,holding_capacity=a.holding_capacity,capture_seed_root=root/'capture-seeds',
-        maximum_fills=a.maximum_fills,maximum_input_gib=a.maximum_input_gib,maximum_state_gib=a.maximum_state_gib,capture_variants=a.capture_variants)
+        maximum_fills=a.maximum_fills,maximum_input_gib=a.maximum_input_gib,maximum_state_gib=a.maximum_state_gib,capture_variants=a.capture_variants,
+        compiler_specialization_budget=budget)
     try:
         return run_generations(spec,a.population,a.generations,evaluate,root,seed=a.seed,
             workers=a.session_workers,objective=LowerTailDollarObjective())

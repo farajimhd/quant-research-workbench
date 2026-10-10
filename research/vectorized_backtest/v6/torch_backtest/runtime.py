@@ -19,13 +19,30 @@ def require_runtime(path):
     return target
 
 
-def configure_caches(runtime=DEFAULT):
+def specialization_budget(population,batch_size,generations,sessions):
+    """Finite frame budget: one specialization per scheduled batch/session.
+
+    One extra generation envelope covers reconstruction/qualification priming.
+    Round to a power of two, with a fixed ceiling; never allow unlimited guards.
+    """
+    if any(type(v) is not int or v<1 for v in (population,batch_size,generations,sessions)):
+        raise ValueError('Positive explicit compiler budget dimensions required')
+    maximum=((population+batch_size-1)//batch_size)*(generations+1)*sessions
+    limit=max(128,1<<(maximum-1).bit_length())
+    if limit>16384:raise ValueError('Compiler specialization budget exceeds bounded capacity')
+    return limit
+
+
+def configure_caches(runtime=DEFAULT,*,recompile_limit=128):
+    if type(recompile_limit) is not int or not 1<=recompile_limit<=16384:
+        raise ValueError('Bounded explicit compiler specialization limit required')
     runtime = require_runtime(runtime)
     configure_compiler()
     import torch
     # Exact lot capacities and uniform-mode branches are deliberate, bounded
     # V5 variants. Exhaustion remains an error (fullgraph), never an eager fallback.
-    torch._dynamo.config.recompile_limit=128
+    torch._dynamo.config.recompile_limit=recompile_limit
+    torch._dynamo.config.accumulated_recompile_limit=max(256,recompile_limit)
     import tempfile
 
     scratch = require_runtime(runtime / "compiler-tmp")
