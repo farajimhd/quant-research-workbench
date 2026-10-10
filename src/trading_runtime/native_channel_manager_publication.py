@@ -31,7 +31,7 @@ def publication_contracts():
 
 
 def issue_native_channel_manager_publication(client, rows, *, policy, contexts,
-        journal_batch_id, first_price_source=None):
+        journal_batch_id, first_price_source=None, native_channel_contexts=()):
     """Reprove pending facts and original entries at the actual writer frontier."""
     from src.backend.backtest_native_channel_manager_recovery import reprove_native_channel_manager_snapshot
     from .strategy_one_management_snapshot import restore_manager_snapshot, attach_committed_momentum_sources
@@ -51,7 +51,8 @@ def issue_native_channel_manager_publication(client, rows, *, policy, contexts,
     reprove_native_channel_manager_snapshot(rows, policy, contexts)
     root, inherited = rows.snapshot, rows.inherited
     source = {} if first_price_source is None else {'first_price_source': first_price_source}
-    prefix = load_writer_v4_snapshot_prefix(client, root['run_id'], **source)
+    prefix = load_writer_v4_snapshot_prefix(client, root['run_id'],
+        native_channel_contexts=native_channel_contexts, **source)
     if (prefix is None or prefix.status != 'running' or prefix.last_sequence != root['checkpoint_sequence']
             or prefix.last_batch_id != journal_batch_id):
         raise ValueError('Publication lacks the exact running journal frontier')

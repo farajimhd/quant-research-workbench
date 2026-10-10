@@ -106,6 +106,26 @@ def test_native_history_restore_is_atomic_and_requires_committed_membership(inst
     assert tables=={} and events==[]
 
 
+def test_native_snapshot_writer_cold_verifies_complete_exit_history(installed,monkeypatch):
+    from src.trading_runtime import arte_journal_commit_v4 as commits
+    writer,_,_,context,_,tables,events=publication_transport(installed,monkeypatch)
+    observed=[]
+    result=object()
+    def cold_prefix(client,run_id,**kwargs):
+        observed.append((client,run_id,kwargs))
+        return result
+    monkeypatch.setattr(commits,'load_verified_v4_prefix',cold_prefix)
+    contexts=(context,)
+    assert commits.load_writer_v4_snapshot_prefix(writer,context.base.run_id,
+        first_price_source=context.first_price_source,native_channel_contexts=contexts) is result
+    assert observed==[(writer,context.base.run_id,dict(max_commits=100_000,
+        first_price_source=context.first_price_source,native_channel_contexts=contexts))]
+    with pytest.raises(ValueError):
+        commits.load_writer_v4_snapshot_prefix(writer,context.base.run_id,
+            first_price_source=object(),native_channel_contexts=contexts)
+    assert len(observed)==1 and tables=={} and events==[]
+
+
 @pytest.mark.parametrize('reader',['manager','broker'])
 def test_checkpoint_readers_forward_complete_native_history(installed,monkeypatch,reader):
     from src.trading_runtime import arte_journal_commit_v4 as commits

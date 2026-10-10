@@ -112,6 +112,7 @@ def _declared_writer_ladder_sources(client, run_id):
 def load_writer_v4_snapshot_prefix(client, run_id: str, *,
                                    max_commits: int = 100_000,
                                    first_price_source=None,
+                                   native_channel_contexts=(),
                                    ) -> V4CommittedPrefix | None:
     """Verify a writer-owned head without rehashing its older compacted batches.
 
@@ -124,6 +125,25 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
     from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
     from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
     from src.trading_runtime.arte_journal_writer import _CONTRACTS, _literal, _rows
+
+    channel_policy=getattr(client,'native_channel_management_policy',None)
+    if channel_policy is not None:
+        from .native_channel_writer_profile import validate_channel_writer_profile
+        from .native_channel_exit_journal_context import channel_contexts_by_batch
+        validate_channel_writer_profile(channel_policy,
+            risk_policy=getattr(client,'confirmed_original_risk_policy',None),
+            entry_spread_risk=getattr(client,'entry_spread_risk_profile',False),
+            automatic_ladder=getattr(client,'automatic_ladder_profile',False),
+            ladder_geometry_policy=getattr(client,'ladder_geometry_policy',None),
+            fixed_structural_lot_profile=getattr(client,'fixed_structural_lot_profile',None))
+        channel_contexts_by_batch(run_id,native_channel_contexts,max_commits=max_commits)
+        if any(context.policy!=channel_policy or context.first_price_source is not first_price_source
+               for context in native_channel_contexts):
+            raise ValueError('Native snapshot history differs from declared policy or price source')
+        return load_verified_v4_prefix(client,run_id,max_commits=max_commits,
+            first_price_source=first_price_source,native_channel_contexts=native_channel_contexts)
+    if native_channel_contexts:
+        raise ValueError('Unselected snapshot writer cannot borrow native channel history')
 
     if getattr(client,'fixed_structural_lot_profile',None) is not None:
         from .fixed_structural_lot_profile import require_fixed_structural_lot_profile
