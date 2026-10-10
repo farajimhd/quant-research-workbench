@@ -55,7 +55,7 @@ def main():
                 gates=PopulationPrograms(members,'cuda').evaluate(data)
                 torch.cuda.synchronize();program_seconds=perf_counter()-program_start
                 data.deactivate()
-                subset=SimpleNamespace(clocks=data.clocks,listing_ids=data.listing_ids[:4],feature_block=data.feature_block)
+                subset=SimpleNamespace(device=torch.device("cpu"),feature_cache=data.feature_cache,clocks=data.clocks,listing_ids=data.listing_ids[:4],feature_block=data.feature_block)
                 cpu_gates=PopulationPrograms(members,'cpu').evaluate(subset)
                 torch.testing.assert_close(cpu_gates,gates[:,:,:4].cpu(),rtol=0,atol=0)
                 data.activate('cuda')
