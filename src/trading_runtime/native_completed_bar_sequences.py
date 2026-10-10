@@ -73,6 +73,17 @@ def completed_bar_sequence_windows(features, bar_eligible, policy):
 def qualify_completed_sequences_after_acquisition(windows, decisions, mandatory_held,
         acquisition_day_us, *, sequence_policy, resolution_ms, decision_interval_ms,
         freshness_ms, max_decisions):
+    evidence = completed_sequence_decision_evidence(windows, decisions, mandatory_held,
+        acquisition_day_us, sequence_policy=sequence_policy, resolution_ms=resolution_ms,
+        decision_interval_ms=decision_interval_ms, freshness_ms=freshness_ms,
+        max_decisions=max_decisions)
+    result = evidence['qualified'].to_numpy()
+    return np.frombuffer(result.tobytes(), dtype=bool)
+
+
+def completed_sequence_decision_evidence(windows, decisions, mandatory_held,
+        acquisition_day_us, *, sequence_policy, resolution_ms, decision_interval_ms,
+        freshness_ms, max_decisions):
     """Backward-align pure evidence; intersect actual held ownership only.
 
     Caller still owns source certification, cash, quote-confirmed execution and
@@ -141,5 +152,9 @@ def qualify_completed_sequences_after_acquisition(windows, decisions, mandatory_
     predicate = (pl.col('_held') & pl.col('sequence_eligible') &
                  (pl.col('sequence_start_day_ms') * 1000 > pl.col('_acquired_us')) &
                  (pl.col('decision_day_ms') - pl.col('_completion_ms') <= freshness_ms)).fill_null(False)
-    result = aligned.with_columns(predicate.alias('_result')).sort('_input_row')['_result'].to_numpy()
-    return np.frombuffer(result.tobytes(), dtype=bool)
+    return (aligned.with_columns(predicate.alias('qualified')).sort('_input_row')
+        .select(*keys, 'decision_day_ms',
+            pl.col('_acquired_us').alias('acquisition_day_us'),
+            pl.col('_held').alias('held'),
+            pl.col('_completion_ms').alias('sequence_end_day_ms'),
+            'sequence_start_day_ms', 'qualified'))

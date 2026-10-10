@@ -121,3 +121,23 @@ def test_alignment_cannot_borrow_another_bars_attempt_or_accept_future_fill():
     with pytest.raises(ValueError, match='later than decision'):
         qualify_completed_sequences_after_acquisition(prepared, decisions, np.array([True]),
             np.array([120000001], dtype=np.int64), **kwargs)
+
+
+def test_decision_evidence_retains_exact_support_and_causal_fill_clock():
+    from src.trading_runtime.native_completed_bar_sequences import completed_sequence_decision_evidence
+    source = frame([0, 1, 2])
+    decisions = source.select('build_id','session_date','ticker','attempt_id',
+        'feature_attempt_id','policy_digest').with_columns(
+            pl.Series('decision_day_ms',[180000,60000,120000],dtype=pl.Int64))
+    kwargs=dict(sequence_policy=CompletedBarSequencePolicy(2,100),resolution_ms=60000,
+                decision_interval_ms=100,freshness_ms=100,max_decisions=100)
+    acquired=np.array([60000001,0,60000001],dtype=np.int64)
+    evidence=completed_sequence_decision_evidence(windows(source),decisions,
+        np.ones(3,dtype=bool),acquired,**kwargs)
+    assert evidence['qualified'].to_list()==[True,False,False]
+    assert evidence['sequence_end_day_ms'].to_list()==[180000,60000,120000]
+    assert evidence['sequence_start_day_ms'].to_list()==[120000,None,60000]
+    assert evidence['acquisition_day_us'].to_list()==acquired.tolist()
+    future=pl.concat([source,frame([3,4])])
+    assert completed_sequence_decision_evidence(windows(future),decisions,
+        np.ones(3,dtype=bool),acquired,**kwargs).equals(evidence)
