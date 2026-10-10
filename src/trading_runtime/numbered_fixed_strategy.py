@@ -659,6 +659,8 @@ def numbered_session_exit_reason(strategy_number: int) -> str:
     contract = numbered_fixed_strategy(strategy_number)
     if not contract.allows_session_exit:
         raise ValueError("Numbered strategy has no session-exit reason")
-    if strategy_number not in _SESSION_EXIT_REASONS and type(contract) is DeclaredFixedStrategyContract:
+    if strategy_number not in _SESSION_EXIT_REASONS and (
+            type(contract) is DeclaredFixedStrategyContract
+            or declared_automatic_ladder_release(strategy_number)):
         return f'strategy_{strategy_number}_session_exit'
     return _SESSION_EXIT_REASONS[strategy_number]
