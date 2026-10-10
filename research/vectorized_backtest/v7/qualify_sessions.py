@@ -12,7 +12,7 @@ from .terminal import CampaignProgress
 from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime,write_json,file_hash
 
 
-def qualify(campaign,output):
+def qualify(campaign,output,legacy_baseline=None):
     output=require_runtime(output);campaign=Path(campaign)
     if (campaign/'owner.lock').exists() or (campaign/'controller.lock').exists():raise ValueError('Campaign must be stopped before GPU qualification')
     saved=json.loads((campaign/'checkpoint.json').read_text());contract=saved['contract']
@@ -30,9 +30,18 @@ def qualify(campaign,output):
     env=dict(os.environ,PYTHONPATH=str(old),PYTHONDONTWRITEBYTECODE='1')
     # Safe-path prevents the sibling profile.py from shadowing stdlib profile
     # when Torch imports cProfile. PYTHONPATH explicitly selects the old code.
-    subprocess.run([sys.executable,'-B','-P',str(Path(__file__).with_name('cohort_baseline.py')),
-        '--campaign',str(campaign),'--output',str(output/'legacy')],cwd=old,env=env,check=True)
-    legacy=json.loads((output/'legacy'/'baseline.json').read_text())
+    if legacy_baseline is None:
+        subprocess.run([sys.executable,'-B','-P',str(Path(__file__).with_name('cohort_baseline.py')),
+            '--campaign',str(campaign),'--output',str(output/'legacy')],cwd=old,env=env,check=True)
+        legacy_baseline=output/'legacy'/'baseline.json'
+    else:
+        legacy_baseline=Path(legacy_baseline)
+        launch=json.loads((legacy_baseline.parent.parent/'active.json').read_text())
+        original_args=launch['arguments']
+        if Path(original_args[original_args.index('--campaign')+1]).resolve()!=campaign.resolve():raise ValueError('Baseline belongs to another campaign')
+        if (campaign/'checkpoint.json').stat().st_mtime>=launch['creation_time']:raise ValueError('Checkpoint changed after baseline launch')
+    legacy=json.loads(legacy_baseline.read_text())
+    if legacy['source_sha256']!=contract['source_sha256']:raise ValueError('Legacy baseline source changed')
     expected=legacy['metrics'];baseline=legacy['seconds'];load_seconds=legacy['load_seconds']
     config=dict(inputs=arg('inputs'),history=arg('history'),feature_cache=arg('feature-cache'),output=str(output/'independent'),
         device='cuda',backend=contract['backend'],batch_size=contract['batch_size'],execution=contract['execution'],
@@ -62,13 +71,15 @@ def qualify(campaign,output):
         execution=contract['execution'],full_session=True,validation_opened=False,exact_metrics=True,
         cohort_load_seconds=load_seconds,cohort_seconds=baseline,independent_seconds=concurrent,
         warm_speedup=baseline[-1]/concurrent[-1],records=records)
+    report['legacy_baseline_sha256']=file_hash(legacy_baseline)
     write_json(output/'qualification.json',report)
     return report
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--campaign',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
-    a=p.parse_args();print(json.dumps(qualify(a.campaign,a.output)))
+    p.add_argument('--legacy-baseline',type=Path)
+    a=p.parse_args();print(json.dumps(qualify(a.campaign,a.output,a.legacy_baseline)))
 
 
 if __name__=='__main__':main()

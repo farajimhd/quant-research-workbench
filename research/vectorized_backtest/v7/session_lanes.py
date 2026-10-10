@@ -86,6 +86,8 @@ class Worker:
                         timing=dict(day=day,offset=offset,candidates=len(members),load_seconds=load_seconds if offset==0 else 0.,
                             rule_seconds=rule_seconds,replay_seconds=perf_counter()-replay_clock,
                             rule_started_epoch=rule_start,replay_started_epoch=replay_start,finished_epoch=time(),pid=os.getpid())
+                        if plan.plan is not None:
+                            timing.update(capture_builds=plan.plan.builds,capture_hits=plan.plan.hits,capture_bytes=plan.plan.capture_bytes)
                         timings.append(timing)
                         publisher.write(root/f'batch-{offset:06d}.json',dict(day=day,offset=offset,candidates=len(members),
                             population_sha256=token,metrics=metrics,full_session=True,validation_opened=False))
@@ -138,7 +140,10 @@ class SessionLanes:
 
     def __enter__(self):
         c=dict(self.config)
-        c['capture_gib']=4./self.workers
+        # Preserve the measured RulePlan budget per execution path. Splitting
+        # one plan's cache between workers forces repeated graph recaptures.
+        # Admission below still bounds the combined resident allocation.
+        c['capture_gib']=4.
         c['lane_memory_bytes']=torch.cuda.mem_get_info(c['device'])[0]*.8/self.workers if torch.device(c['device']).type=='cuda' else 0
         self.pools=[ProcessPoolExecutor(max_workers=1,mp_context=self.context,
             initializer=initialize,initargs=(c,self.events,lane)) for lane in range(self.workers)]
