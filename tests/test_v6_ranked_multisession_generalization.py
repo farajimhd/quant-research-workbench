@@ -3,7 +3,7 @@ import pytest
 from research.rl_trading.v1.common import file_hash
 from research.rl_trading.v6.run_ranked_teacher_prepare import save_cache
 from research.rl_trading.v6.ranked_teacher_data import coverage_report
-from research.rl_trading.v6.run_ranked_multisession_generalization import bind_train_cache
+from research.rl_trading.v6.run_ranked_multisession_generalization import bind_train_cache, require_natural_train_gate
 from test_rl_trading_v6_teacher_forecast import fixture
 
 
@@ -22,6 +22,18 @@ def prepared(tmp_path):
 def test_actual_train_cache_binding_roundtrip(tmp_path):
     root,b,p=prepared(tmp_path);s,t=bind_train_cache(root,root/'source.json',b,p)
     assert s.role=='train' and s.listings==('A','B') and len(t)==12
+
+
+def test_natural_train_gate_rejects_failed_fit_and_nonexact_replay():
+    from copy import deepcopy
+    from test_v6_ranked_multisession_metrics import report
+    from research.rl_trading.v6.ranked_multisession_metrics import pool_gate_metrics
+    good=pool_gate_metrics([report(),report()])
+    bad=deepcopy(good);bad['action_class_f1']['enter_long']=.418
+    for metrics,exact in [(bad,True),(good,False)]:
+        with pytest.raises(ValueError,match='development targets remain unopened'):
+            require_natural_train_gate(metrics,exact)
+    require_natural_train_gate(good,True)
 
 
 @pytest.mark.parametrize('changed',['source','cache','population','dataset'])

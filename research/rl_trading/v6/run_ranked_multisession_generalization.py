@@ -22,6 +22,13 @@ from research.rl_trading.v6.run_ranked_multisession_underfit import selected_tar
 from research.rl_trading.v6.run_ranked_teacher_generalization import build_policy,evaluate_probabilities,exact_metrics
 from research.rl_trading.v6.run_laptop_teacher import flatten
 from research.rl_trading.v6.training import train_session
+from research.rl_trading.v6.run_ranked_teacher_underfit import passes
+
+
+def require_natural_train_gate(metrics, replay_exact):
+    """Finetuning must preserve learnability before opening development targets."""
+    if not replay_exact or not passes(metrics):
+        raise ValueError('Natural TRAIN full-head gate failed; development targets remain unopened')
 
 
 def bind_train_cache(root, source, binding, prior):
@@ -128,6 +135,20 @@ def main(argv=None):
         repeated,repeated_reports,_=evaluate(restored,sessions)
         if not exact_metrics(repeated,metrics) or not exact_metrics(repeated_reports,reports):raise ValueError('Six-session natural TRAIN replay changed')
         for item in probabilities:np.savez_compressed(args.output/('train-'+item['day']+'-probabilities.npz'),**item['values'])
+        natural_passed=passes(metrics)
+        write('natural-train-gate.json',dict(passed=natural_passed,reload_exact=True,metrics=metrics,
+            checkpoint_sha256=selected['checkpoint_sha256'],generalization_evaluated=False))
+        logger.log({'natural_train_gate/passed':natural_passed,'natural_train_gate/reload_exact':True},step=args.epochs+1)
+        if not natural_passed:
+            write('complete.json',dict(status='natural_train_gate_failed',underfit_gate_verified=True,
+                natural_train_gate_passed=False,train_reload_exact=True,train_metrics=metrics,
+                checkpoint_sha256=selected['checkpoint_sha256'],generalization_evaluated=False,
+                sealed_labels_read=False,development_labels_read=False,workstation_gpu_used=False,
+                production_teacher_certified=False,wandb_url=logger.url))
+            logger.summary['completion_status']='natural_train_gate_failed'
+            for name in ('manifest.json','complete.json','metrics.jsonl','selection.json','natural-train-gate.json'):
+                logger.save(str(args.output/name),base_path=str(args.output),policy='now')
+        require_natural_train_gate(metrics,True)
         del policy,optimizer,sessions,tiny;gc.collect();torch.cuda.empty_cache()
         from research.rl_trading.v6 import saved_label_audit as source,published_market_audit as market
         from research.rl_trading.v6.session_data import open_session
@@ -153,8 +174,9 @@ def main(argv=None):
         if file_hash(args.output/'selected.pt')!=selected['checkpoint_sha256']:raise ValueError('Frozen checkpoint changed')
         dev,prob,values=evaluate_probabilities(restored,development,targets,device)
         write('development.json',dict(metrics=dev,probabilities=prob));np.savez_compressed(args.output/'development-probabilities.npz',**values)
-        logger.log({**flatten(dev,'development'),**flatten(prob,'development_probability')},step=args.epochs+1)
+        logger.log({**flatten(dev,'development'),**flatten(prob,'development_probability')},step=args.epochs+2)
         write('complete.json',dict(status='completed',underfit_gate_verified=True,train_reload_exact=True,
+            natural_train_gate_passed=True,
             checkpoint_sha256=selected['checkpoint_sha256'],train_metrics=metrics,development_metrics=dev,
             development_probabilities=prob,generalization_evaluated=True,sealed_labels_read=False,
             workstation_gpu_used=False,production_teacher_certified=False,wandb_url=logger.url))
