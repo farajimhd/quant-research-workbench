@@ -78,6 +78,31 @@ def actual_successor(monkeypatch, *, tag, paired=False, cold_probe=False, fault_
         from src.backend import backtest_fixed_structural_lot_native_v20 as normal_native
         source_guard = root_native.verify_current_installed_source
         transport = ConfigurationSelectTransport()
+        # Reconstruct quote metadata from the current authority, rather than
+        # inheriting the earlier fixture's gate token through its quote lambda.
+        import test_fixed_structural_lot_checkpoint_reader_profile as fixture
+        from src.backend.backtest_fixed_structural_lot_source import _load_quotes
+        from types import SimpleNamespace
+
+        def quote_loader(old):
+            def load(market, authority, *, client):
+                prepared = SimpleNamespace(quotes=old.quotes,
+                    session_date=market.sessions[0], price_authority=authority)
+                class QuoteRows:
+                    def execute(self, query):
+                        return prepared_quote_select_rows(prepared, query)
+                return _load_quotes(market, authority, client=QuoteRows())
+            return load
+
+        selected_text = textwrap.dedent(inspect.getsource(fixture.selected))
+        selected_marker = 'getattr(previous, name))'
+        assert selected_text.count(selected_marker) == 1
+        selected_text = selected_text.replace(selected_marker,
+            "quote_loader(old) if name == '_load_quotes' else getattr(previous, name))")
+        selected_namespace = dict(vars(fixture), quote_loader=quote_loader)
+        exec(compile(selected_text, '<native109-current-quote-loader>', 'exec'),
+             selected_namespace)
+        monkeypatch.setattr(fixture, 'selected', selected_namespace['selected'])
         marker = "    namespace=dict(vars(prior));namespace['capture_output']=counts['output'].append"
         assert source.count(marker) == 1
         injection = """
