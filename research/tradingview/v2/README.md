@@ -1,14 +1,24 @@
-# Structural reaction levels v2 (v2.8 display)
+# Structural reaction levels v2 (v2.11 display)
 
 Copy the complete `structural_zones.pine` into TradingView's Pine Editor, replacing the old structural indicator. The independent v1 MACD/jump-alert scripts are unchanged. This is a chart-bar approximation, not the repo's causal v7 statistical builder.
 
+## Daily-bar levels (v2.11)
+
+Daily-bar levels are enabled by default and calculated independently in TradingView's `1D` context, even when the intraday chart has little loaded history. They use a separate 365-calendar-day rolling window, five left/five confirmation daily bars, and four displayed levels per side by default. Change these in the **Daily levels** input group. Available daily feed history still limits coverage.
+
+Daily main/boundary lines are **dashed, width 2**, with **DAILY** captions above the level. Intraday lines retain **solid, width 1** and DAY/HIST captions below the level: DAY means today's intraday reactions, not daily candles. Separate selection budgets preserve the intraday selection; overlapping daily/intraday prices retain both source drawings and captions. Caption spacing is applied independently within each source book.
+
+Daily detection uses the same ATR gate, bucketing, independent-reaction spacing, qualification, provisional toggle, percentile geometry, recency weighting, distance filter, and S/R colors as intraday detection. All daily candidates use historical qualification; there is no current-day reservation in the daily book. A five-bar confirmation setting means five subsequent daily bars must finish before the pivot becomes available. The request returns the previous completed daily book using an expression offset and `lookahead_on`, so forming daily candles cannot contribute; the daily book becomes available on the next daily interval and is drawn on the next completed chart bar. This follows [TradingView's confirmed higher-timeframe pattern](https://www.tradingview.com/pine-script-docs/concepts/other-timeframes-and-data/).
+
+Disable **Show daily-bar levels** to restore the intraday-only overlay. Turning off text still leaves dashed versus solid lines to identify the source.
+
 ## Margin text and explicit transparency (v2.10)
 
-Remove the previous structural indicator and add the updated script, identified as **Research: structural reaction levels v2.10**, to avoid retained old input settings or duplicate drawings.
+Remove the previous structural indicator and add the updated script, identified as **Research: structural reaction levels v2.11**, to avoid retained old input settings or duplicate drawings.
 
 The prior zero-offset right-aligned label ended at the latest visible candle and extended its text left across candles. Captions now **start** ten bar positions beyond the rightmost visible candle and extend right, below their main line. They use bar-index positioning, so overnight/session gaps do not distort the offset. `Text gap beyond rightmost visible candle (bars)` controls that gap and cannot be zero or negative. Pine cannot anchor custom captions to the axis in pixels; provide enough chart right margin to display the text. If clipped, increase the chart's right margin or reduce the positive gap. There is no table.
 
-`Line transparency (%): 0 solid, 100 invisible` defaults to **75% transparent** and is applied directly to every main/boundary line's color. Provisional lines add ten percentage points of transparency. `Text opacity (%)` remains independent. All lines remain solid, width 1; band transparency remains separate. Set line transparency to 100 as a diagnostic: structural main/boundary lines must disappear, while text, bands, and other indicators can remain.
+`Line transparency (%): 0 solid, 100 invisible` defaults to **75% transparent** and is applied directly to every main/boundary line's color. Provisional lines add ten percentage points of transparency. `Text opacity (%)` remains independent. Intraday lines remain solid, width 1; daily lines are dashed, width 2; band transparency remains separate. Set line transparency to 100 as a diagnostic: structural main/boundary lines must disappear, while text, bands, and other indicators can remain.
 
 ## Stable level selection
 
@@ -22,7 +32,7 @@ New completed candles, rolling expiry, input changes, or newly loaded history ca
 
 ## Reactions and geometry
 
-Detection uses the chart timeframe: ten confirmation bars means 50 seconds on 5s, ten minutes on 1m. Completed high/low pivots must pass the configured ATR move-away gate. Same-side reactions within a price bucket must be spaced by the configured seconds.
+Intraday detection uses the chart timeframe: ten confirmation bars means 50 seconds on 5s, ten minutes on 1m. Daily detection uses its separate daily-bar pivot lengths. Completed high/low pivots must pass the configured ATR move-away gate. Same-side reactions within a price bucket must be spaced by the configured seconds.
 
 Fixed buckets use `floor(log(1 + price / scale) / log(1 + percentage))`, where `scale = max(minimum_bucket_price, 2 * symbol_tick) / percentage`. This provides a tick/dollar floor plus percentage spacing. The default dollar floor is $0.01; adjust it for other instruments. It is a grouping scale, not a fabricated band width.
 
@@ -32,7 +42,7 @@ Each level has one main median-price line. Available bounds use the 10th/90th re
 
 ## Display
 
-All main and optional boundary lines are **solid, width 1**. Faint bands are enabled, optional boundary outlines disabled. Captions identify DAY/HIST, P for provisional, and price-relative S/R, then main price and available L/U bounds. Qualified colors are green above the level/band, red below, orange inside; provisional colors use reduced opacity. These colors are not the app's evidence-based role transitions.
+Intraday main and optional boundary lines are **solid, width 1**; daily lines are **dashed, width 2**. Faint bands are enabled, optional boundary outlines disabled. Captions identify DAY/HIST/DAILY, P for provisional, and price-relative S/R, then main price and available L/U bounds. Qualified colors are green above the level/band, red below, orange inside; provisional colors use reduced opacity. These colors are not the app's evidence-based role transitions.
 
 Selection reserves current-day slots (three per side by default), first prioritizing eligible current-day extremes, then reaction strength. Historical selection takes one level per book-price region before filling remaining slots. Historical qualification precedes recency-weighted reaction strength. The overall limit defaults to eight per side and accepts up to 30. Extrema are accepted reaction candidates, not raw session high/low. No particular price is guaranteed to qualify or win bounded display selection.
 
@@ -48,5 +58,6 @@ Source review and local design/static checks do not prove Pine compilation or re
 4. Single/identical-price/provisional candidates must have no fabricated bounds. Toggle fills/outlines/text independently.
 5. Check new-day reclassification, rolling expiry, short history, and the explicit retained-pivot capacity error. The default limit is 10,000 pivots (maximum 20,000); shorten history or adjust detection inputs if exhausted.
 6. Compare future hold/break behavior on untouched sessions before making predictive claims. Do not tune on evaluation sessions.
+7. Toggle daily levels: intraday prices and selection must remain unchanged. Check DAILY captions and dashed lines with text on/off. Compare daily pivot confirmation against completed `1D` candles, including a live day rollover and a reload at the same completed chart bar. Changing intraday timeframe must not change the underlying daily reactions at the same as-of time (shared chart-bar ATR text offsets may differ). Check independent daily rolling expiry and maximum display inputs with boundary lines enabled.
 
 References: [Pine arrays](https://www.tradingview.com/pine-script-docs/language/arrays/), [bar states](https://www.tradingview.com/pine-script-docs/concepts/bar-states/), [limits](https://www.tradingview.com/pine-script-docs/writing/limitations/).

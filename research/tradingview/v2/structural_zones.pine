@@ -1,5 +1,11 @@
 //@version=6
-indicator("Research: structural reaction levels v2.10", overlay = true, max_lines_count = 180, max_labels_count = 60, max_boxes_count = 60, max_bars_back = 1200)
+indicator("Research: structural reaction levels v2.11", overlay = true, max_lines_count = 360, max_labels_count = 120, max_boxes_count = 120, max_bars_back = 1200)
+
+showDaily = input.bool(true, "Show daily-bar levels", group = "Daily levels")
+dailyDays = input.int(365, "Daily rolling history (calendar days)", minval = 30, maxval = 3650, group = "Daily levels")
+dailyLeft = input.int(5, "Daily pivot left bars", minval = 1, maxval = 500, group = "Daily levels")
+dailyRight = input.int(5, "Daily pivot confirmation bars", minval = 1, maxval = 500, group = "Daily levels")
+dailyPerSide = input.int(4, "Daily zones above / below price", minval = 1, maxval = 30, group = "Daily levels")
 
 days = input.int(30, "Rolling history (calendar days)", minval = 1, maxval = 365)
 leftBars = input.int(10, "Pivot left bars", minval = 1, maxval = 500)
@@ -95,6 +101,30 @@ if barstate.isconfirmed and time >= loadCutoff
     if not na(pl)
         bool accepted = record(pl, 1)
 
+// This function runs in the daily context, including daily history unavailable
+// on short intraday charts. Return a copy of the previous completed daily book.
+dailyBook() =>
+    var dailySamples = array.new<Reaction>()
+    int cutoff = math.max(time - dailyDays * 86400000, last_bar_time - dailyDays * 86400000)
+    float dailyHigh = ta.pivothigh(high, dailyLeft, dailyRight)
+    float dailyLow = ta.pivotlow(low, dailyLeft, dailyRight)
+    float dailyATR = ta.atr(atrLength)
+    while array.size(dailySamples) > 0
+        if array.get(dailySamples, 0).pivotTime < cutoff
+            array.shift(dailySamples)
+        else
+            break
+    for side = -1 to 1 by 2
+        float price = side == 1 ? dailyLow : dailyHigh
+        float movement = side == 1 ? close - price : price - close
+        float strength = dailyATR[dailyRight] > 0 ? movement / dailyATR[dailyRight] : na
+        if not na(price) and price > 0 and time[dailyRight] >= cutoff and not na(strength) and strength >= minimumATR
+            if array.size(dailySamples) >= sampleLimit
+                runtime.error("Daily retained pivot limit reached. Shorten daily history or increase the explicit pivot limit.")
+            array.push(dailySamples, Reaction.new(price, time[dailyRight], time_close, time[dailyRight], side, strength))
+    snapshot = array.copy(dailySamples)
+    snapshot[1]
+
 // Rebuild only at the historical/live boundary and on completed live bars.
 // Selection depends only on source reactions and inputs, never the visible viewport.
 // The drawing is an as-of-now snapshot, even when extended over past candles.
@@ -105,145 +135,157 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
         label.delete(array.pop(drawnLabels))
     while array.size(drawnBands) > 0
         box.delete(array.pop(drawnBands))
-    zones = array.new<Zone>()
-    lookup = map.new<int, int>()
-    float bookHigh = na
-    float bookLow = na
-    if array.size(samples) > 0
-        for j = 0 to array.size(samples) - 1
-            Reaction r = array.get(samples, j)
-            bookHigh := na(bookHigh) ? r.price : math.max(bookHigh, r.price)
-            bookLow := na(bookLow) ? r.price : math.min(bookLow, r.price)
-            bool currentDay = r.day == referenceDay
-            // Keep today's reactions separate from the prior-days seed.
-            int key = int(math.floor(math.log(1 + r.price / bucketScale) / stepLog)) * 2 + (currentDay ? 1 : 0)
-            if not map.contains(lookup, key)
-                map.put(lookup, key, array.size(zones))
-                array.push(zones, Zone.new(prices = array.new<float>(), currentDay = currentDay))
-            Zone z = array.get(zones, map.get(lookup, key))
-            int previous = r.side == 1 ? z.lastSupport : z.lastResistance
-            if na(previous) or r.pivotTime - previous >= separation * 1000
-                array.push(z.prices, r.price)
-                if r.side == 1
-                    z.supports += 1
-                    z.lastSupport := r.pivotTime
-                else
-                    z.resistances += 1
-                    z.lastResistance := r.pivotTime
-                if na(z.lastDay) or r.day != z.lastDay
-                    z.distinctDays += 1
-                    z.lastDay := r.day
-                float ageDays = math.max(0, (referenceTime - r.availableTime) / 86400000.0)
-                z.score += math.min(r.strength, 5) * math.pow(0.5, ageDays / halfLife)
-    distances = array.new<float>()
-    priorities = array.new<float>()
-    int currentTop = -1
-    int currentBottom = -1
-    float currentTopPrice = na
-    float currentBottomPrice = na
-    if array.size(zones) > 0
-        for j = 0 to array.size(zones) - 1
-            Zone z = array.get(zones, j)
-            array.sort(z.prices)
-            float center = array.size(z.prices) > 0 ? array.median(z.prices) : na
-            float distance = math.abs(center / referencePrice - 1) * 100
-            bool enoughCount = array.size(z.prices) >= minimumCount
-            bool enoughDays = z.currentDay or z.distinctDays >= minimumDays
-            bool nearby = not limitDistance or distance <= maxDistance
-            bool qualified = enoughCount and enoughDays and nearby
-            // Qualified levels first; then nearby provisional candidates fill vacancies.
-            bool eligible = qualified or (showProvisional and nearby)
-            array.push(distances, qualified ? distance : eligible ? 1000000 + distance : 1e20)
-            // Today: strongest accepted reactions first, including explicitly provisional ones.
-            // Historical selection retains qualified-first evidence ranking and region coverage.
-            array.push(priorities, eligible ? z.currentDay ? 100 / (1 + z.score) : qualified ? 100 / (1 + z.score) : 1000000 + 100 / (1 + z.score) : 1e20)
-            if eligible and z.currentDay
-                if na(currentTopPrice) or center > currentTopPrice
-                    currentTop := j
-                    currentTopPrice := center
-                if na(currentBottomPrice) or center < currentBottomPrice
-                    currentBottom := j
-                    currentBottomPrice := center
-        ranked = array.sort_indices(priorities, order.ascending)
-        int above = 0
-        int below = 0
-        drawnCenters = array.new<float>()
-        captionPrices = array.new<float>()
-        float drawingGap = math.max(minimumBucket, syminfo.mintick * minimumDrawTicks)
-        float captionGap = drawingGap * 2
-        selected = array.new<bool>(array.size(zones), false)
-        historicalRegions = map.new<int, bool>()
-        int regionsPerSide = math.max(1, perSide - math.min(currentSlots, perSide))
-        for phase = 0 to 3
-            for k = 0 to array.size(ranked) - 1
-                int j = array.get(ranked, k)
+    // Request only when rebuilding the snapshot; avoid copying a daily
+    // collection onto every historical intraday bar. The offset is inside
+    // the daily expression, paired with lookahead_on (no forming-day evidence).
+    dailySamples = showDaily ? request.security(syminfo.tickerid, "1D", dailyBook(), lookahead = barmerge.lookahead_on) : array.new<Reaction>()
+    for source = 0 to (showDaily ? 1 : 0)
+        bool dailySource = source == 1
+        sourceSamples = dailySource ? dailySamples : samples
+        int sourceWindowMs = (dailySource ? dailyDays : days) * 86400000
+        int sourcePerSide = dailySource ? dailyPerSide : perSide
+        int sourceCurrentSlots = dailySource ? 0 : currentSlots
+        zones = array.new<Zone>()
+        lookup = map.new<int, int>()
+        float bookHigh = na
+        float bookLow = na
+        if not na(sourceSamples) and array.size(sourceSamples) > 0
+            for j = 0 to array.size(sourceSamples) - 1
+                Reaction r = array.get(sourceSamples, j)
+                if dailySource and r.pivotTime < referenceTime - sourceWindowMs
+                    continue
+                bookHigh := na(bookHigh) ? r.price : math.max(bookHigh, r.price)
+                bookLow := na(bookLow) ? r.price : math.min(bookLow, r.price)
+                bool currentDay = not dailySource and r.day == referenceDay
+                // Keep today's reactions separate from the prior-days seed.
+                int key = int(math.floor(math.log(1 + r.price / bucketScale) / stepLog)) * 2 + (currentDay ? 1 : 0)
+                if not map.contains(lookup, key)
+                    map.put(lookup, key, array.size(zones))
+                    array.push(zones, Zone.new(prices = array.new<float>(), currentDay = currentDay))
+                Zone z = array.get(zones, map.get(lookup, key))
+                int previous = r.side == 1 ? z.lastSupport : z.lastResistance
+                if na(previous) or r.pivotTime - previous >= separation * 1000
+                    array.push(z.prices, r.price)
+                    if r.side == 1
+                        z.supports += 1
+                        z.lastSupport := r.pivotTime
+                    else
+                        z.resistances += 1
+                        z.lastResistance := r.pivotTime
+                    if na(z.lastDay) or r.day != z.lastDay
+                        z.distinctDays += 1
+                        z.lastDay := r.day
+                    float ageDays = math.max(0, (referenceTime - r.availableTime) / 86400000.0)
+                    z.score += math.min(r.strength, 5) * math.pow(0.5, ageDays / halfLife)
+        distances = array.new<float>()
+        priorities = array.new<float>()
+        int currentTop = -1
+        int currentBottom = -1
+        float currentTopPrice = na
+        float currentBottomPrice = na
+        if array.size(zones) > 0
+            for j = 0 to array.size(zones) - 1
                 Zone z = array.get(zones, j)
-                bool reservedPass = phase == 1
-                bool extremePass = phase == 0
-                bool historicalPass = phase == 2
-                float candidateCenter = array.median(z.prices)
-                bool candidateAbove = candidateCenter >= referencePrice
-                float regionSpan = candidateAbove ? math.max(nz(bookHigh, referencePrice) - referencePrice, syminfo.mintick) : math.max(referencePrice - nz(bookLow, referencePrice), syminfo.mintick)
-                int region = math.min(regionsPerSide - 1, int(math.floor(math.abs(candidateCenter - referencePrice) / regionSpan * regionsPerSide)))
-                int regionKey = region * 2 + (candidateAbove ? 1 : 0)
-                bool historicalEligible = not z.currentDay and not map.contains(historicalRegions, regionKey)
-                bool alreadyDrawn = array.get(selected, j)
-                bool reservedEligible = z.currentDay and ((array.median(z.prices) >= referencePrice and above < math.min(currentSlots, perSide)) or (array.median(z.prices) < referencePrice and below < math.min(currentSlots, perSide)))
-                if not alreadyDrawn and (not extremePass or (currentSlots > 0 and (j == currentTop or j == currentBottom))) and (not reservedPass or reservedEligible) and (not historicalPass or historicalEligible) and array.get(distances, j) < 1e20
-                    float center = array.median(z.prices)
-                    bool overhead = center >= referencePrice
-                    bool distinctDrawing = true
-                    if array.size(drawnCenters) > 0
-                        for existing = 0 to array.size(drawnCenters) - 1
-                            if math.abs(center - array.get(drawnCenters, existing)) < drawingGap
-                                distinctDrawing := false
-                    if distinctDrawing and ((overhead and above < perSide) or (not overhead and below < perSide))
-                        if historicalPass
-                            map.put(historicalRegions, regionKey, true)
-                        array.push(drawnCenters, center)
-                        array.set(selected, j, true)
-                        bool provisional = array.get(distances, j) >= 1000000
-                        int uniquePrices = 1
-                        if array.size(z.prices) > 1
-                            for observation = 1 to array.size(z.prices) - 1
-                                if array.get(z.prices, observation) - array.get(z.prices, observation - 1) >= syminfo.mintick * 0.5
-                                    uniquePrices += 1
-                        // No padding or bucket edges are substituted for missing geometry.
-                        bool hasEstimate = not provisional and array.size(z.prices) >= 3 and uniquePrices >= 3
-                        float lo = hasEstimate ? array.percentile_linear_interpolation(z.prices, 10) : na
-                        float hi = hasEstimate ? array.percentile_linear_interpolation(z.prices, 90) : na
-                        bool hasLower = not na(lo) and lo < center
-                        bool hasUpper = not na(hi) and hi > center
-                        bool hasBand = hasLower and hasUpper
-                        color baseInk = referencePrice > (hasUpper ? hi : center) ? color.green : referencePrice < (hasLower ? lo : center) ? color.red : color.orange
-                        color ink = color.new(baseInk, provisional ? math.min(100, lineTransparency + 10) : lineTransparency)
-                        color textInk = color.new(baseInk, 100 - textOpacity)
-                        int start = z.currentDay ? math.max(math.min(chart.left_visible_bar_time, time), referenceDay) : math.min(chart.left_visible_bar_time, time)
-                        int finish = math.max(time + 1000, chart.right_visible_bar_time)
-                        array.push(drawnLines, line.new(start, center, finish, center, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 1, style = line.style_solid))
-                        if showBoundaryLines and hasLower
-                            array.push(drawnLines, line.new(start, lo, finish, lo, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 1, style = line.style_solid))
-                        if showBoundaryLines and hasUpper
-                            array.push(drawnLines, line.new(start, hi, finish, hi, xloc = xloc.bar_time, extend = extend.right, color = ink, width = 1, style = line.style_solid))
-                        if showBands and hasBand
-                            array.push(drawnBands, box.new(start, hi, finish, lo, xloc = xloc.bar_time, extend = extend.right, border_color = color.new(ink, 100), bgcolor = color.new(ink, bandTransparency)))
-                        bool captionFits = true
-                        if array.size(captionPrices) > 0
-                            for existing = 0 to array.size(captionPrices) - 1
-                                if math.abs(center - array.get(captionPrices, existing)) < captionGap
-                                    captionFits := false
-                        if showText and captionFits
-                            array.push(captionPrices, center)
-                            int textIndex = nz(rightVisibleIndex, bar_index) + textMarginBars
-                            float textPrice = center - math.max(syminfo.mintick * 2, nz(atr) * 0.08)
-                            string caption = (z.currentDay ? "DAY " : "HIST ") + (provisional ? "P " : "") + (center > referencePrice ? "R " : "S ") + str.tostring(center, format.mintick) + (hasLower ? " L:" + str.tostring(lo, format.mintick) : "") + (hasUpper ? " U:" + str.tostring(hi, format.mintick) : "")
-                            array.push(drawnLabels, label.new(textIndex, textPrice, caption, xloc = xloc.bar_index, style = label.style_label_upper_left, color = color.new(color.white, 100), textcolor = textInk, size = size.small, textalign = text.align_left))
-                        if overhead
-                            above += 1
-                        else
-                            below += 1
+                array.sort(z.prices)
+                float center = array.size(z.prices) > 0 ? array.median(z.prices) : na
+                float distance = math.abs(center / referencePrice - 1) * 100
+                bool enoughCount = array.size(z.prices) >= minimumCount
+                bool enoughDays = z.currentDay or z.distinctDays >= minimumDays
+                bool nearby = not limitDistance or distance <= maxDistance
+                bool qualified = enoughCount and enoughDays and nearby
+                // Qualified levels first; then nearby provisional candidates fill vacancies.
+                bool eligible = qualified or (showProvisional and nearby)
+                array.push(distances, qualified ? distance : eligible ? 1000000 + distance : 1e20)
+                // Today: strongest accepted reactions first, including explicitly provisional ones.
+                // Historical selection retains qualified-first evidence ranking and region coverage.
+                array.push(priorities, eligible ? z.currentDay ? 100 / (1 + z.score) : qualified ? 100 / (1 + z.score) : 1000000 + 100 / (1 + z.score) : 1e20)
+                if eligible and z.currentDay
+                    if na(currentTopPrice) or center > currentTopPrice
+                        currentTop := j
+                        currentTopPrice := center
+                    if na(currentBottomPrice) or center < currentBottomPrice
+                        currentBottom := j
+                        currentBottomPrice := center
+            ranked = array.sort_indices(priorities, order.ascending)
+            int above = 0
+            int below = 0
+            drawnCenters = array.new<float>()
+            captionPrices = array.new<float>()
+            float drawingGap = math.max(minimumBucket, syminfo.mintick * minimumDrawTicks)
+            float captionGap = drawingGap * 2
+            selected = array.new<bool>(array.size(zones), false)
+            historicalRegions = map.new<int, bool>()
+            int regionsPerSide = math.max(1, sourcePerSide - math.min(sourceCurrentSlots, sourcePerSide))
+            for phase = 0 to 3
+                for k = 0 to array.size(ranked) - 1
+                    int j = array.get(ranked, k)
+                    Zone z = array.get(zones, j)
+                    bool reservedPass = phase == 1
+                    bool extremePass = phase == 0
+                    bool historicalPass = phase == 2
+                    float candidateCenter = array.median(z.prices)
+                    bool candidateAbove = candidateCenter >= referencePrice
+                    float regionSpan = candidateAbove ? math.max(nz(bookHigh, referencePrice) - referencePrice, syminfo.mintick) : math.max(referencePrice - nz(bookLow, referencePrice), syminfo.mintick)
+                    int region = math.min(regionsPerSide - 1, int(math.floor(math.abs(candidateCenter - referencePrice) / regionSpan * regionsPerSide)))
+                    int regionKey = region * 2 + (candidateAbove ? 1 : 0)
+                    bool historicalEligible = not z.currentDay and not map.contains(historicalRegions, regionKey)
+                    bool alreadyDrawn = array.get(selected, j)
+                    bool reservedEligible = z.currentDay and ((array.median(z.prices) >= referencePrice and above < math.min(sourceCurrentSlots, sourcePerSide)) or (array.median(z.prices) < referencePrice and below < math.min(sourceCurrentSlots, sourcePerSide)))
+                    if not alreadyDrawn and (not extremePass or (sourceCurrentSlots > 0 and (j == currentTop or j == currentBottom))) and (not reservedPass or reservedEligible) and (not historicalPass or historicalEligible) and array.get(distances, j) < 1e20
+                        float center = array.median(z.prices)
+                        bool overhead = center >= referencePrice
+                        bool distinctDrawing = true
+                        if array.size(drawnCenters) > 0
+                            for existing = 0 to array.size(drawnCenters) - 1
+                                if math.abs(center - array.get(drawnCenters, existing)) < drawingGap
+                                    distinctDrawing := false
+                        if distinctDrawing and ((overhead and above < sourcePerSide) or (not overhead and below < sourcePerSide))
+                            if historicalPass
+                                map.put(historicalRegions, regionKey, true)
+                            array.push(drawnCenters, center)
+                            array.set(selected, j, true)
+                            bool provisional = array.get(distances, j) >= 1000000
+                            int uniquePrices = 1
+                            if array.size(z.prices) > 1
+                                for observation = 1 to array.size(z.prices) - 1
+                                    if array.get(z.prices, observation) - array.get(z.prices, observation - 1) >= syminfo.mintick * 0.5
+                                        uniquePrices += 1
+                            // No padding or bucket edges are substituted for missing geometry.
+                            bool hasEstimate = not provisional and array.size(z.prices) >= 3 and uniquePrices >= 3
+                            float lo = hasEstimate ? array.percentile_linear_interpolation(z.prices, 10) : na
+                            float hi = hasEstimate ? array.percentile_linear_interpolation(z.prices, 90) : na
+                            bool hasLower = not na(lo) and lo < center
+                            bool hasUpper = not na(hi) and hi > center
+                            bool hasBand = hasLower and hasUpper
+                            color baseInk = referencePrice > (hasUpper ? hi : center) ? color.green : referencePrice < (hasLower ? lo : center) ? color.red : color.orange
+                            color ink = color.new(baseInk, provisional ? math.min(100, lineTransparency + 10) : lineTransparency)
+                            color textInk = color.new(baseInk, 100 - textOpacity)
+                            int start = z.currentDay ? math.max(math.min(chart.left_visible_bar_time, time), referenceDay) : math.min(chart.left_visible_bar_time, time)
+                            int finish = math.max(time + 1000, chart.right_visible_bar_time)
+                            array.push(drawnLines, line.new(start, center, finish, center, xloc = xloc.bar_time, extend = extend.right, color = ink, width = dailySource ? 2 : 1, style = dailySource ? line.style_dashed : line.style_solid))
+                            if showBoundaryLines and hasLower
+                                array.push(drawnLines, line.new(start, lo, finish, lo, xloc = xloc.bar_time, extend = extend.right, color = ink, width = dailySource ? 2 : 1, style = dailySource ? line.style_dashed : line.style_solid))
+                            if showBoundaryLines and hasUpper
+                                array.push(drawnLines, line.new(start, hi, finish, hi, xloc = xloc.bar_time, extend = extend.right, color = ink, width = dailySource ? 2 : 1, style = dailySource ? line.style_dashed : line.style_solid))
+                            if showBands and hasBand
+                                array.push(drawnBands, box.new(start, hi, finish, lo, xloc = xloc.bar_time, extend = extend.right, border_color = color.new(ink, 100), bgcolor = color.new(ink, bandTransparency)))
+                            bool captionFits = true
+                            if array.size(captionPrices) > 0
+                                for existing = 0 to array.size(captionPrices) - 1
+                                    if math.abs(center - array.get(captionPrices, existing)) < captionGap
+                                        captionFits := false
+                            if showText and captionFits
+                                array.push(captionPrices, center)
+                                int textIndex = nz(rightVisibleIndex, bar_index) + textMarginBars
+                                float textPrice = center + (dailySource ? 1 : -1) * math.max(syminfo.mintick * 2, nz(atr) * 0.08)
+                                string caption = (dailySource ? "DAILY " : z.currentDay ? "DAY " : "HIST ") + (provisional ? "P " : "") + (center > referencePrice ? "R " : "S ") + str.tostring(center, format.mintick) + (hasLower ? " L:" + str.tostring(lo, format.mintick) : "") + (hasUpper ? " U:" + str.tostring(hi, format.mintick) : "")
+                                array.push(drawnLabels, label.new(textIndex, textPrice, caption, xloc = xloc.bar_index, style = dailySource ? label.style_label_lower_left : label.style_label_upper_left, color = color.new(color.white, 100), textcolor = textInk, size = size.small, textalign = text.align_left))
+                            if overhead
+                                above += 1
+                            else
+                                below += 1
 
-// Start text beyond the visible candles; left alignment keeps the glyphs out of candles.
+// Start text beyond visible candles; daily captions sit above, intraday below.
 // Pine has no pixel anchor to the price axis; the bars offset is user-adjustable.
 if barstate.islast and array.size(drawnLabels) > 0
     int textIndex = nz(rightVisibleIndex, bar_index) + textMarginBars
