@@ -1126,7 +1126,9 @@ class SqueezeRunner:
             torch.compile(
                 self.tick,
                 fullgraph=True,
-                options={"comprehensive_padding": False},
+                # Numerical reductions must not be selected by timing-dependent
+                # autotuning when an exact capture is rebuilt or reused.
+                options={"comprehensive_padding": False, "deterministic": True},
             )
             if self.backend in ("compile", "compiled_graph")
             else self.tick

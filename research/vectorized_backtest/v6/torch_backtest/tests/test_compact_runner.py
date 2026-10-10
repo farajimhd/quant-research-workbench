@@ -10,6 +10,23 @@ from research.vectorized_backtest.v6.torch_backtest.genome import NAMES
 from research.vectorized_backtest.v6.torch_backtest.runtime import file_hash
 
 
+def test_financial_compile_requires_deterministic_kernel_selection(monkeypatch):
+    """Capture rebuilding cannot choose arithmetic by timing benchmarks."""
+    from research.vectorized_backtest.v6.torch_backtest.search_runner import SearchRunner
+    from research.vectorized_backtest.v6.torch_backtest.fixtures import synthetic_tape
+    from research.vectorized_backtest.v6.torch_backtest.genome import StrategySpace
+    calls=[]
+    def compile_native(function, **kwargs):
+        calls.append(kwargs)
+        return function
+    monkeypatch.setattr(torch,'compile',compile_native)
+    space=StrategySpace()
+    runner=SearchRunner(synthetic_tape(),space,space.sample(np.random.default_rng(2236),1),backend='compile')
+    runner.compile()
+    assert calls[0]['fullgraph'] is True
+    assert calls[0]['options']=={'comprehensive_padding':False,'deterministic':True}
+
+
 def compare(*,cycling=False,population=1,compiled=False,structure=None,capacity=2,swing=False,cuda=False):
     tape,x,space,member,gates=fixture();x.offsets=np.array([0,60,120])
     x.arrays['top_indices']=x.arrays['top_indices'].astype(np.int32)

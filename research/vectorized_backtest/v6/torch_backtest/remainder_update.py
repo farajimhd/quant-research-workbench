@@ -84,7 +84,8 @@ def _dispatch(*args, **kwargs):
     # before that setup, even though the eventual CUDA process is configured.
     if _advance_cuda is None:
         _advance_cuda = torch.compile(
-            _advance, fullgraph=True, options={"comprehensive_padding": False}
+            _advance, fullgraph=True,
+            options={"comprehensive_padding": False, "deterministic": True}
         )
     return _advance_cuda(*args, **kwargs)
 
