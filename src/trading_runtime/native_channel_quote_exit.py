@@ -5,6 +5,9 @@ from math import isfinite
 import numpy as np
 import polars as pl
 
+from .native_channel_qualification import _require_policy_json
+from .journal_contract import canonical_json
+
 
 @dataclass(frozen=True, slots=True)
 class NativeChannelQuoteExitPolicy:
@@ -32,6 +35,20 @@ class NativeChannelQuoteExitPolicy:
             original_risk_fraction=self.original_risk_fraction, max_rows=self.max_rows,
             quote_clock='microseconds since source-day midnight',
             comparison='bid strictly below declared threshold', missing='no_new_exit')
+
+
+def parse_native_channel_quote_exit_policy(value):
+    """Require complete immutable semantics, without implicit execution defaults."""
+    _require_policy_json(value)
+    required={'rule','quote_max_age_us','threshold_mode','original_risk_fraction',
+              'max_rows','quote_clock','comparison','missing'}
+    if type(value) is not dict or set(value)!=required:
+        raise ValueError('Complete channel quote exit declaration required')
+    policy=NativeChannelQuoteExitPolicy(value['quote_max_age_us'],value['threshold_mode'],
+        value['original_risk_fraction'],value['max_rows'])
+    if canonical_json(value)!=canonical_json(policy.payload()):
+        raise ValueError('Channel quote clock, comparison or missing semantics differ')
+    return policy
 
 
 def qualify_native_channel_quote_exits(rows, *, policy):
