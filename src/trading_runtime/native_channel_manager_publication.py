@@ -100,3 +100,72 @@ def verify_native_channel_manager_insert(image, *, client, table, rows,
     if type(rows) is not tuple or canonical_json(list(rows)) != canonical_json(families[table]):
         raise ValueError('Manager INSERT differs from complete frozen family')
     return contracts[table], rows
+
+
+def publish_native_channel_manager_publication(client, session, image):
+    """Write children/root, verify all families, then CAS the selected head.
+
+    Lost INSERT responses leave pending dispatch operations. No head is
+    selected from orphan rows, partial families or an unacknowledged insert.
+    """
+    from .keeper_session import ManagedKeeperSession
+    from .arte_typed_insert_dispatch import TypedInsertDispatch
+    from .strategy_one_management_snapshot import ManagedManagerSnapshotHeadReader
+    from .arte_journal_writer import _insert, _literal
+    from src.backend.backtest_market_data import assert_select_only
+    families = require_native_channel_manager_publication(image, client=client)
+    dispatch = getattr(client, 'typed_insert_dispatch', None)
+    if (not isinstance(session, ManagedKeeperSession) or not session.writable
+            or getattr(client, 'typed_insert_strict', False) is not True
+            or not isinstance(dispatch, TypedInsertDispatch) or dispatch.keeper is not session.client):
+        raise RuntimeError('Channel manager publication lacks its fenced writer session')
+    reader = ManagedManagerSnapshotHeadReader(session)
+    previous = (None if session.client.exists(reader.path(image.run_id)) is None
+                else reader.read_head(run_id=image.run_id))
+    repeat = previous is not None and previous.checkpoint_sequence == image.sequence
+    if previous is not None and (previous.checkpoint_sequence > image.sequence
+            or (repeat and (previous.journal_batch_id != image.batch_id
+                            or previous.snapshot_hash != image.snapshot_hash))):
+        raise RuntimeError('Channel manager publication conflicts with the selected head')
+    operations = []
+    if not repeat:
+        for contract in publication_contracts():
+            rows = tuple(families[contract.name])
+            if not rows:
+                continue
+            token = f'manager-state:{image.run_id}:{image.sequence}:{image.snapshot_hash}:{contract.name}'
+            _insert(client, contract.name, rows, token, journal_profile='backtest_v4',
+                dispatch_sequence=image.sequence, dispatch_batch_id=image.batch_id,
+                dispatch_manager_snapshot_hash=image.snapshot_hash, dispatch_native_channel_manager_image=image)
+            operations.append((contract.name, token))
+    snapshot_id = families[parent_contract().name][0]['snapshot_id']
+    channel_names = {contract.name for contract in CHANNEL_TABLES}
+    for contract in publication_contracts():
+        expected = families[contract.name]
+        key = 'parent_record_id' if contract.name in channel_names else 'snapshot_id'
+        projection = ','.join(f'toString({name}) AS {name}' if 'Decimal(' in kind else name
+                              for name, kind in contract.columns)
+        sql = assert_select_only(f'SELECT {projection} FROM arte.{contract.name} '
+            f'WHERE run_id={_literal(image.run_id)} AND {key}=toUUID({_literal(snapshot_id)}) '
+            f'LIMIT {len(expected)+1} FORMAT JSONEachRow')
+        observed = [json.loads(line) for line in client.execute(sql).splitlines() if line.strip()]
+        canonical = [(_wire_row(contract.name, row) if contract.name in _CONTRACTS
+                      else verify_typed_contract_row(contract, row, stored_utc=True)) for row in observed]
+        if len(canonical) != len(expected) or sorted(map(canonical_json, canonical)) != sorted(map(canonical_json, expected)):
+            raise RuntimeError(f'Channel manager publication readback differs: {contract.name}')
+    if repeat:
+        if reader.read_head(run_id=image.run_id) != previous:
+            raise RuntimeError('Channel manager selected head changed during repeat verification')
+        return previous
+    for table, token in operations:
+        dispatch.seal_verified_operation(run_id=image.run_id, table=table, token=token,
+            batch_id=image.batch_id, batch_last_sequence=image.sequence, manager_snapshot=True)
+    dispatch.compact_verified_manager_snapshot(run_id=image.run_id, batch_id=image.batch_id,
+        last_sequence=image.sequence, snapshot_hash=image.snapshot_hash, operations=tuple(operations),
+        previous=previous, confirmed_original_risk_policy=client.confirmed_original_risk_policy,
+        native_channel_management_policy=client.native_channel_management_policy)
+    selected = reader.read_head(run_id=image.run_id)
+    if (selected.checkpoint_sequence != image.sequence or selected.journal_batch_id != image.batch_id
+            or selected.snapshot_hash != image.snapshot_hash):
+        raise RuntimeError('Channel manager selected head differs after publication')
+    return selected

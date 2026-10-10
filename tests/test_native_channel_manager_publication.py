@@ -1,5 +1,7 @@
 from dataclasses import replace
 from types import SimpleNamespace
+import json
+import re
 
 import pytest
 
@@ -90,3 +92,72 @@ def test_real_insert_encoder_accepts_only_complete_issued_families(installed, mo
     forged = ({**families[table][0], 'ask_int': families[table][0]['ask_int'] + 1},)
     with pytest.raises(ValueError): _insert(client, table, forged, 'foreign', **kwargs)
     assert len(calls) == before
+
+
+@pytest.mark.parametrize('defect', [None, 'missing', 'extra', 'lost_response'])
+def test_publication_real_keeper_dispatch_selects_only_full_readback(installed, monkeypatch, defect):
+    from tests.test_arte_typed_insert_dispatch import Keeper, Stat
+    from src.trading_runtime.keeper_session import ManagedKeeperSession
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch, _Gate, _gate_path, _context_receipt_path
+    from src.trading_runtime.strategy_one_management_snapshot import ManagedManagerSnapshotHeadReader
+    from src.trading_runtime.native_channel_manager_publication import publish_native_channel_manager_publication
+    client, rows, policy, contexts, batch, _, _, _ = issuance_case(installed, monkeypatch)
+    image = issue_native_channel_manager_publication(client, rows, policy=policy, contexts=contexts,
+        journal_batch_id=batch)
+    keeper = Keeper()
+    keeper.add_listener = lambda _listener: None
+    keeper.connected, keeper.client_id = True, (101, b'synthetic')
+    keeper.exists = lambda path: keeper.rows.get(path)
+    session = ManagedKeeperSession(keeper)
+    session._on_state('CONNECTED')
+    dispatch = TypedInsertDispatch(keeper)
+    dispatch.initialize_new_run(image.run_id)
+    keeper.create(_context_receipt_path(image.run_id), b'1\n' + b'a' * 64)
+    gate, version = dispatch._read_gate(image.run_id)
+    keeper.rows[_gate_path(image.run_id)] = (_Gate('open', 0, gate.epoch, 0,
+        image.sequence, batch, 'a' * 64, '00000000-0000-0000-0000-000000000000').wire(), Stat(version+1))
+    tables, writes = {}, []
+    frozen = require_native_channel_manager_publication(image, client=client)
+    contracts = {contract.name: contract for contract in publication_contracts()}
+
+    def execute(sql, *, query_id=None):
+        header = sql.split(b'\n', 1)[0].decode() if isinstance(sql, bytes) else sql.split('\n', 1)[0]
+        table = re.search(r'(?:INTO|FROM) arte\.([a-z0-9_]+)', header)[1]
+        if header.startswith('INSERT '):
+            if isinstance(sql, bytes):
+                from src.trading_runtime.arte_journal_rowbinary import encode_journal_rows
+                assert 'FORMAT RowBinary' in header
+                assert sql.split(b'\n', 1)[1] == encode_journal_rows(contracts[table].columns, tuple(frozen[table]))
+                # The in-memory transport stores the independently frozen
+                # expected rows; binary-format bits have their own codec tests.
+                inserted = frozen[table]
+            else:
+                assert 'FORMAT JSONEachRow' in sql
+                inserted = [json.loads(line) for line in sql.split('\n', 1)[1].splitlines()]
+            tables.setdefault(table, []).extend(inserted)
+            writes.append(table)
+            if defect == 'lost_response' and table.endswith('snapshot_v5'):
+                raise RuntimeError('Controlled lost root INSERT response')
+            return ''
+        assert header.startswith('SELECT ')
+        observed = tables.get(table, [])
+        if table == 'strategy_native_channel_pending_source_v1':
+            if defect == 'missing': observed = []
+            if defect == 'extra': observed = observed * 2
+        return '\n'.join(json.dumps(row) for row in observed)
+
+    client.execute = execute
+    client.typed_insert_strict, client.typed_insert_dispatch = True, dispatch
+    path = ManagedManagerSnapshotHeadReader.path(image.run_id)
+    if defect is None:
+        selected = publish_native_channel_manager_publication(client, session, image)
+        assert selected.snapshot_hash == image.snapshot_hash
+        assert writes[-1] == 'trading_strategy_one_manager_snapshot_v5'
+        assert dispatch._read_gate(image.run_id)[0].registered == 0
+        before = tuple(writes)
+        assert publish_native_channel_manager_publication(client, session, image) == selected
+        assert tuple(writes) == before
+    else:
+        with pytest.raises(RuntimeError): publish_native_channel_manager_publication(client, session, image)
+        assert path not in keeper.rows
+        assert dispatch._read_gate(image.run_id)[0].registered > 0
