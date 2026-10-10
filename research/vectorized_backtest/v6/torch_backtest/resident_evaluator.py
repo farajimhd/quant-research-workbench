@@ -25,12 +25,15 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
     def __init__(self,*args,**kwargs):
         backend=kwargs.pop('backend','compiled_graph')
         graph_steps=kwargs.pop('graph_steps',16)
+        capture_variants=kwargs.pop('capture_variants',1)
+        if type(capture_variants) is not int or not 1<=capture_variants<=2:raise ValueError('Resident capture variants must be 1..2')
         if type(graph_steps) is not int or not 1<=graph_steps<=64:raise ValueError('Resident capture steps must be 1..64')
         if backend not in ('cudagraph','compiled_graph'):raise ValueError('Resident evaluator requires captured execution')
         super().__init__(*args,backend='compile',**kwargs)
         if self.device.type!='cuda':raise ValueError('Resident capture requires CUDA')
         self.backend=backend
         self.graph_steps=graph_steps
+        self.capture_variants=capture_variants
         self._resident_inputs={};self._resident_runners={};self._resident_listing_ids={};self._cohort_identity=None
 
     def close(self):
@@ -52,7 +55,22 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
         result=super().contract(training,workers,memory_required_gib=required)
         result['capture_barrier']='all resident graphs prepared before concurrent replay'
         result['graph_steps']=self.graph_steps
+        result['capture_variants']=self.capture_variants
         return result
+
+    def _capture_cache(self,day):
+        return self._resident_runners.setdefault(day,{})
+
+    def _reserve_capture(self,cache,key):
+        """Evict only an exact, least-recently-used variant before replacement."""
+        if key not in cache and len(cache)>=self.capture_variants:
+            cache.pop(next(iter(cache)))
+            gc.collect()
+
+    @staticmethod
+    def _touch_capture(cache,key,runner):
+        cache.pop(key,None)
+        cache[key]=runner
 
     def __call__(self,session,population,destination):
         if not (destination/'receipt.json').exists():raise ValueError('Resident full pass must be prepared before selection')
@@ -102,10 +120,10 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
             arrays=sum((folder/(name+'.npy')).stat().st_size for name in
                 ('clocks','top_indices','market_keys','feature_keys','features','feature_valid'))
             residency+=arrays+certificate['market_rows']*(105+121)
-        working=(len(training)*self.maximum_state_gib+workers*2.5+4)*1024**3
+        working=(len(training)*self.maximum_state_gib*getattr(self,'capture_variants',1)+workers*2.5+4)*1024**3
         if self._cohort_identity is None and residency+working>free*.75:
             raise MemoryError('Resident cohort inputs plus replay/rule envelopes exceed GPU headroom')
-        resident_inputs=self._resident_inputs;runners=self._resident_runners;load_started=perf_counter();loads=0
+        resident_inputs=self._resident_inputs;load_started=perf_counter();loads=0
         for session in remaining:
             day=session['day']
             if day in resident_inputs:continue
@@ -124,6 +142,7 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
             candidate_batches=(len(population)+self.batch_size-1)//self.batch_size,validation_opened=False))
         for offset in range(0,len(population),self.batch_size):
             members=population[offset:offset+self.batch_size]
+            execution_key=CompactProgramRunner.specialization_key(members,space)
             shared=SharedRuleBatch(members,self.device)
             try:
                 for cursor in range(0,len(remaining),workers):
@@ -142,21 +161,21 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
                         write_json(output/'resident-status.json',dict(stage='Evaluate causal lifecycle rules',day=day,candidate_offset=offset,population=len(population),validation_opened=False))
                         gates,rule_seconds=inputs[day].compile(members,listing_ids=union,backend='cudagraph',prepared=shared)
                         broker_started=perf_counter()
-                        runner=runners.get(day)
-                        reused=(runner is not None and runner.b==len(members)
-                            and runner.graph_steps==min(self.graph_steps,len(inputs[day].arrays['clocks']))
-                            and runner.execution_key==CompactProgramRunner.specialization_key(members,space))
+                        cache=self._capture_cache(day)
+                        capture_key=(len(members),min(self.graph_steps,len(inputs[day].arrays['clocks'])),execution_key)
+                        runner=cache.get(capture_key)
+                        reused=runner is not None
                         if reused:
                             runner.set_sparse_population(members,gates)
                         else:
                             write_json(output/'resident-status.json',dict(stage='Build and capture financial broker',day=day,candidate_offset=offset,population=len(population),validation_opened=False))
-                            # Drop incompatible captures before allocating replacement state.
-                            runners.pop(day,None);runner=None;gc.collect()
+                            # Evict the least-recent variant only when the bound is full.
+                            self._reserve_capture(cache,capture_key);runner=None;gc.collect()
                             runner=CompactProgramRunner(inputs[day],space,members,gates,structure=self.structures/day,
                                 holding_capacity=self.holding_capacity,backend=self.backend,maximum_fills=self.maximum_fills,
                                 maximum_state_gib=self.maximum_state_gib,graph_steps=self.graph_steps)
                             torch.cuda.synchronize(self.device);runner.compile()
-                            runners[day]=runner
+                        self._touch_capture(cache,capture_key,runner)
                         # No worker runs until this entire serial preparation loop finishes.
                         runner.preparation_reused=reused
                         runner.broker_preparation_seconds=perf_counter()-broker_started
@@ -189,7 +208,7 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
                     measurements.append(dict(sessions=[s['day'] for s in sessions],candidate_offset=offset,candidates=len(members),
                         setup_seconds=setup,replay_and_audit_seconds=perf_counter()-started,active=len(jobs),session_timings=timings))
                     write_json(output/'resident-measurements.json',measurements)
-                    # Release graphs, rule gates and account state before the next batch.
+                    # Release transient job references; bounded captures remain resident.
                     del jobs,futures
                     if 'runner' in locals():del runner,gates
                     gc.collect()

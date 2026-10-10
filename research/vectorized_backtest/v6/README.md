@@ -61,6 +61,11 @@ of the broker capture identity: rounding 31-row histories to 32 changed compiled
 financial arithmetic despite identical fills, and was removed. Compatible
 captures are reused; different exact allocations require a new capture.
 Declared concurrent memory envelopes are checked before launching evaluation.
+`--capture-variants 2` retains two exact broker specializations per session with
+least-recently-used eviction. Both allocations are reserved in the cohort memory
+envelope. This avoids rebuilding alternating history shapes without padding or
+changing financial arithmetic; exact full-session repeat qualification remains
+required. The default retains one variant for compatibility.
 Terminal 50-row pages and
 session/complete-position diagnostics are implemented.
 

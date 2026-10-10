@@ -83,6 +83,7 @@ def main(argv=None):
     p.add_argument('--seed',type=int,default=2236)
     p.add_argument('--population-reference',type=Path,help='Frozen population.json from a completed training-only profile; uses the first --population candidates without resampling')
     p.add_argument('--maximum-input-gib',type=float,default=4.);p.add_argument('--maximum-state-gib',type=float,default=4.)
+    p.add_argument('--capture-variants',type=int,choices=(1,2),default=1,help='Exact broker captures retained per session; included in the memory envelope')
     a=p.parse_args(argv)
     worker_counts=[a.workers] if a.worker_counts is None else [int(v) for v in a.worker_counts.split(',')]
     if not worker_counts or len(set(worker_counts))!=len(worker_counts) or not 1<=a.resident_repeats<=3 or not 2<=a.session_count<=30 or any(not 1<=w<=a.session_count for w in worker_counts) or a.population<1 or not 1<=a.graph_steps<=64:
@@ -96,7 +97,7 @@ def main(argv=None):
         sessions=[json.loads((a.inputs/day/'complete.json').read_text())['identity']['session'] for day in days]
         members,population_source=frozen_profile_population(a.population_reference,a.population) if a.population_reference else (sample(np.random.default_rng(a.seed),StrategySpace(),a.population),None)
         evaluator_type=SparseSessionEvaluator if a.backend=='compile' else ResidentSessionEvaluator
-        capture_options={} if a.backend=='compile' else dict(graph_steps=a.graph_steps)
+        capture_options={} if a.backend=='compile' else dict(graph_steps=a.graph_steps,capture_variants=a.capture_variants)
         evaluate=evaluator_type(a.inputs,a.structure,batch_size=a.batch_size,backend=a.backend,
             maximum_input_gib=a.maximum_input_gib,maximum_state_gib=a.maximum_state_gib,
             maximum_fills=a.maximum_fills,holding_capacity=a.holding_capacity,**capture_options)

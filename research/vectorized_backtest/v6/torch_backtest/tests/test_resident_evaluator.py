@@ -16,6 +16,25 @@ def test_listing_union_preserves_order_and_excludes_unfilled_slots():
     assert ResidentSessionEvaluator._listing_union(np.full((3,10),-1))==[]
 
 
+def test_capture_variants_retain_exact_shapes_and_evict_least_recent():
+    evaluate=ResidentSessionEvaluator.__new__(ResidentSessionEvaluator)
+    evaluate.capture_variants=2;evaluate._resident_runners={}
+    cache=evaluate._capture_cache('day')
+    left,right,replacement=object(),object(),object()
+    evaluate._reserve_capture(cache,('history',31));evaluate._touch_capture(cache,('history',31),left)
+    evaluate._reserve_capture(cache,('history',32));evaluate._touch_capture(cache,('history',32),right)
+    assert cache[('history',31)] is left and cache[('history',32)] is right
+    evaluate._touch_capture(cache,('history',31),left)
+    evaluate._reserve_capture(cache,('history',33));evaluate._touch_capture(cache,('history',33),replacement)
+    assert cache=={('history',31):left,('history',33):replacement}
+
+
+@pytest.mark.parametrize('variants',[0,3,True])
+def test_capture_variant_bounds_before_loading(variants):
+    with pytest.raises(ValueError,match='capture variants'):
+        ResidentSessionEvaluator('unused','unused',capture_variants=variants)
+
+
 @pytest.mark.parametrize('steps',[0,65,True])
 def test_capture_block_bounds_before_loading(steps):
     with pytest.raises(ValueError,match='capture steps'):
@@ -44,7 +63,8 @@ def test_partial_resume_budgets_next_complete_generation(tmp_path,monkeypatch):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='Resident execution requires CUDA')
-def test_all_captures_precede_parallel_replay_and_receipts_resume(tmp_path,monkeypatch):
+@pytest.mark.parametrize('variants',[1,2])
+def test_all_captures_precede_parallel_replay_and_receipts_resume(tmp_path,monkeypatch,variants):
     configure_caches(DEFAULT/'tests'/'resident-cuda')
     source=tmp_path/'inputs';structures=tmp_path/'structures';sessions=[];prepared={}
     for day in ('synthetic-a','synthetic-b'):
@@ -82,7 +102,7 @@ def test_all_captures_precede_parallel_replay_and_receipts_resume(tmp_path,monke
     monkeypatch.setattr(resident_evaluator.CompactProgramRunner,'compile',capture)
     monkeypatch.setattr(resident_evaluator.CompactProgramRunner,'run',replay)
     evaluate=ResidentSessionEvaluator(source,structures,batch_size=2,holding_capacity=2,maximum_fills=512,
-        maximum_input_gib=.01,maximum_state_gib=.01,backend='cudagraph',graph_steps=7)
+        maximum_input_gib=.01,maximum_state_gib=.01,backend='cudagraph',graph_steps=7,capture_variants=variants)
     population=[member,deepcopy(member),deepcopy(member),deepcopy(member)];output=mkdir(tmp_path/'result')
     evaluate.prepare_pass(sessions,population,output,workers=2)
     assert events==['capture','capture','replay','replay','replay','replay']
