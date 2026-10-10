@@ -183,7 +183,20 @@ def prepare_confirmed_native_channel_exit_unit(client, manager_keeper, broker_ke
         receipt, *, run_id, management_policy, contexts, pending_record_id,
         first_price_source, recorded_at, attempt_id, batch_id, parent_record_id,
         decision_record_id):
-    """Prepare the next scalar journal unit from actual checkpoint ownership.
+    """Return the complete unit, preserving the existing publication contract."""
+    unit,_=prepare_confirmed_native_channel_exit_request(client,manager_keeper,broker_keeper,receipt,
+        run_id=run_id,management_policy=management_policy,contexts=contexts,
+        pending_record_id=pending_record_id,first_price_source=first_price_source,
+        recorded_at=recorded_at,attempt_id=attempt_id,batch_id=batch_id,
+        parent_record_id=parent_record_id,decision_record_id=decision_record_id)
+    return unit
+
+
+def prepare_confirmed_native_channel_exit_request(client, manager_keeper, broker_keeper,
+        receipt, *, run_id, management_policy, contexts, pending_record_id,
+        first_price_source, recorded_at, attempt_id, batch_id, parent_record_id,
+        decision_record_id):
+    """Return the reproved journal unit and its independently confirmed request.
 
     This cold worker operation verifies the complete pending inventory, both
     selected roots, original committed fills and the held OMS position. The
@@ -221,7 +234,11 @@ def prepare_confirmed_native_channel_exit_unit(client, manager_keeper, broker_ke
          'source_entry_intent_id','current_financial'}}
     unit=project_native_channel_exit_unit(confirmed.request,context['group'],context['executions'],
         **envelope,**projection_context)
-    return reprove_native_channel_exit_unit(unit,**envelope,**context)
+    reproved=reprove_native_channel_exit_unit(unit,**envelope,**context)
+    # Runtime admission needs the same independently confirmed request used in
+    # this complete transport. Never recover executable source facts from rows.
+    # This tuple alone grants neither journal durability nor order permission.
+    return reproved,confirmed.request
 
 
 def reprove_historical_native_channel_exit_unit(client, prefix, unit, *, management_policy,

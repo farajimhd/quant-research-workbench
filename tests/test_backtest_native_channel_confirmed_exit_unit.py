@@ -7,6 +7,9 @@ import pytest
 from tests.test_backtest_native_channel_qualification import installed, unit  # noqa: F401
 from tests.test_backtest_native_channel_financial_checkpoint import checkpoint_case
 from src.backend.backtest_native_channel_exit_unit import prepare_confirmed_native_channel_exit_unit
+from src.backend.backtest_native_channel_exit_unit import (
+    prepare_confirmed_native_channel_exit_request,native_channel_exit_intent,
+)
 from src.trading_runtime.numbered_fixed_strategy import session_policy_payload
 
 
@@ -36,6 +39,19 @@ def test_preparation_derives_complete_next_unit_from_confirmed_native_hold(insta
     assert packet.decision['source_manager_checkpoint_sequence']==scope['receipt'].last_sequence
     assert packet.decision['batch_id']==scope['batch_id']
     assert len(packet.sources)>0 and len(packet.executions)>0
+
+
+def test_runtime_request_and_transport_share_actual_confirmed_hold(installed,monkeypatch):
+    scope=confirmed_unit_case(installed,monkeypatch)
+    packet,request=prepare_confirmed_native_channel_exit_request(**scope)
+    assert packet==prepare_confirmed_native_channel_exit_unit(**scope)
+    assert request.financial.position_quantity==5
+    assert request.financial==scope['contexts'][scope['pending_record_id']]['current_financial']
+    intent=native_channel_exit_intent(request,strategy_number=1,
+        management_policy=scope['management_policy'])
+    assert intent.intent_id==packet.base.intents[0]['intent_id']
+    assert intent.quantity==request.financial.position_quantity
+    assert intent.metadata=={}
 
 
 @pytest.mark.parametrize('defect',['quantity','pending_exit','source_conid','original_entry',
