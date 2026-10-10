@@ -58,6 +58,16 @@ def test_unreviewed_callback_code_guard_change_is_not_erased():
     assert ast_hash(changed) != parent_pins()[relative]
 
 
+def test_exact_restore_is_recognized_by_real_strategy13_module_guard():
+    from src.backend import backtest_fixed_v4_certification as certification
+    relative = 'backend/historical_runtime_versions.py'
+    source = (ROOT / 'src' / relative).read_text(encoding='utf-8')
+    expected = certification._RISING_MOMENTUM_REVIEWED_AST[relative]['__module__']
+    assert certification._reviewed_fixed_lot_ast_recipe(source, relative, '__module__', expected)
+    changed = source.replace("getattr(certificate_fn, '__code__', None) is not implementation_code", 'False', 1)
+    assert not certification._reviewed_fixed_lot_ast_recipe(changed, relative, '__module__', expected)
+
+
 @pytest.mark.parametrize('field', ['REVIEWED_EDITS', 'APPROVED_METADATA_ANCHOR', 'APPROVED_SELF_AST'])
 def test_mutated_loaded_compatibility_metadata_is_rejected(monkeypatch, field):
     monkeypatch.setattr(compatibility, field, {} if field == 'REVIEWED_EDITS' else '0' * 64)

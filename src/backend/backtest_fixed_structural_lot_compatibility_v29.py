@@ -3,7 +3,7 @@ import ast
 from hashlib import sha256
 import json
 from pathlib import Path
-REVIEWED_EDITS = {'backend/backtest_fixed_v4_certification.py': {'current_ast': 'ebc205dacf19bcf018473d636d931967aa753a4ebf4d3573958ecc62da9a2876',
+REVIEWED_EDITS = {'backend/backtest_fixed_v4_certification.py': {'current_ast': 'b6ea275c03c268a7ac1c947e069709e9eeb2cedd997b87b24859b2fd74b693f0',
                                                 'parent_ast': 'c6666dd1e8901454271db97ac3b430ddcc4fd7ee9c3e548d90f15055522d629b',
                                                 'edits': [('def _reviewed_fixed_lot_ast_recipe(source: str, '
                                                            'relative: str, name: str, expected: str) -> '
@@ -11,6 +11,7 @@ REVIEWED_EDITS = {'backend/backtest_fixed_v4_certification.py': {'current_ast': 
                                                            '    """Apply only exact reviewed AST edits; '
                                                            'complete retained legacy pin remains '
                                                            'required."""\n'
+                                                           '    supplied_source = source\n'
                                                            '    from '
                                                            '.backtest_fixed_structural_lot_compatibility_v29 '
                                                            'import restore_reviewed_parent_source as '
@@ -21,12 +22,14 @@ REVIEWED_EDITS = {'backend/backtest_fixed_v4_certification.py': {'current_ast': 
                                                            'bool:\n'
                                                            '    """Apply only exact reviewed AST edits; '
                                                            'complete retained legacy pin remains '
-                                                           'required."""\n'),
+                                                           'required."""\n'
+                                                           '    supplied_source = source\n'),
                                                           ('def _reviewed_fixed_lot_core_projection(source: '
                                                            'str, relative: str, name: str, expected: str) -> '
                                                            'bool:\n'
                                                            '    """Retain core source pins under the same '
                                                            'bounded, independently reviewed projection."""\n'
+                                                           '    supplied_source = source\n'
                                                            '    from '
                                                            '.backtest_fixed_structural_lot_compatibility_v29 '
                                                            'import restore_reviewed_parent_source as '
@@ -36,8 +39,8 @@ REVIEWED_EDITS = {'backend/backtest_fixed_v4_certification.py': {'current_ast': 
                                                            'str, relative: str, name: str, expected: str) -> '
                                                            'bool:\n'
                                                            '    """Retain core source pins under the same '
-                                                           'bounded, independently reviewed '
-                                                           'projection."""\n')]},
+                                                           'bounded, independently reviewed projection."""\n'
+                                                           '    supplied_source = source\n')]},
  'backend/backtest_v4_saved_review.py': {'current_ast': 'e100150ef2e6c60d49b6dc6e058a10bae9ecc425676fe5e5c7fe5cd701132be6',
                                          'parent_ast': '0383859e6f9cae8f269687f9e5f4e9775d6586e5ec63d482c70646b5adf68e3d',
                                          'edits': [('        from '
@@ -164,7 +167,7 @@ REVIEWED_EDITS = {'backend/backtest_fixed_v4_certification.py': {'current_ast': 
                                                      'certify_saved_native_source,management_parent_release)))\n'
                                                      '        register_numbered_strategy(saved_native)\n',
                                                      '')]}}
-APPROVED_METADATA_ANCHOR = '4389d6ac443d855fde8b54d5a36cfa5d41f107b3c22da56f41380808a1a6659e'
+APPROVED_METADATA_ANCHOR = 'd6bda9ef6bd2835f355383948a197f404ceed4b2456dc87f591aaee6232bbcd7'
 APPROVED_SELF_AST = 'cf6bc331c9bbcdbab705d2daf52d0197d1721990900605d31f7c4af46f2f7587'
 
 def restore_reviewed_parent_source(source, relative):
