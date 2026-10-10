@@ -24,6 +24,9 @@ class ResidentFeatures:
         )
         for name in ('mark', 'bid', 'ask', 'quote_us'):
             arrays[name] = np.asarray(data.market[name], dtype=np.float64)
+        # CUDA may replace scalar division by reciprocal multiplication.
+        # At epoch-scale timestamps this changes quote age by a float64 ULP.
+        arrays['quote_seconds']=arrays['quote_us']/1e6
         # Preserve the existing NumPy log1p rounding once per source row.
         for name in ('volume', 'notional', 'trade_count'):
             arrays['log_' + name] = np.log1p(data.market[name]).astype(np.float32)
@@ -92,7 +95,7 @@ class ResidentFeatures:
                 m = torch.isfinite(v) & known[..., None] & (price > 0)[..., None]
             else:
                 bid, ask, quote = (a[n][safe] for n in ('bid', 'ask', 'quote_us'))
-                age = clock-quote/1e6
+                age = clock-a['quote_seconds'][safe]
                 quote_valid = known & (quote > 0) & (age >= 0) & (age <= 1) & (bid > 0) & (ask >= bid)
                 current = known & (a['market_clock'][safe] == clock)
                 all_values = (bid/price-1, ask/price-1, (ask-bid)/price, age,

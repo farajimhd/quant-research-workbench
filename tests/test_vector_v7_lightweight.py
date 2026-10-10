@@ -176,6 +176,9 @@ def test_cuda_resident_rules_and_captured_replay_match_cpu(tmp_path):
     from research.vectorized_backtest.v6.torch_backtest.runtime import configure_caches
     configure_caches(tmp_path/'compile-cache')
     root,history=fixture_files(tmp_path);data=SessionData(root,history)
+    data.arrays['clocks']=data.arrays['clocks']+1_800_000_000
+    data.arrays['market_keys']=data.arrays['market_keys']+1_800_000_000
+    data.market['quote_us']=(data.arrays['clocks']-.249531)*1e6
     members=sample(np.random.default_rng(2237),10)
     expected_features=data.prepare_feature_block(0,80,[0])
     oracle=PopulationPrograms(members).evaluate(data,chunk=17,listing_batch=1)

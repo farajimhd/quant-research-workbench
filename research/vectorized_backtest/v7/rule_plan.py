@@ -161,13 +161,9 @@ class RulePlan:
                         extent = 119
                         warm = max(0,begin-extent)
                         values, known = resident.block(warm,end,listings,group['columns'])
-                        # Pad to a single shape per group, including the first
-                        # and last chunks. Missing prefix validity stays false.
-                        from torch.nn.functional import pad
-                        left = extent-(begin-warm); right = chunk-(end-begin)
-                        values = pad(values,(0,0,left,right,0,listing_batch-len(listings)))
-                        known = pad(known,(0,0,left,right,0,listing_batch-len(listings)),value=False)
-                        signal = self.execute(group_id,values,known)[:,:len(listings),extent:extent+end-begin]
+                        # Keep actual time lengths at the session boundaries:
+                        # padding can alter parallel cumulative-sum rounding.
+                        signal = self.execute(group_id,values,known)[:,:,begin-warm:]
                         eligible = np.arange(begin,end)[:,None] >= first[listings][None]
                         if bit == 0: eligible &= membership[begin:end,listings] & next_observed[begin:end,listings]
                         elif bit != 4: eligible &= next_observed[begin:end,listings]
