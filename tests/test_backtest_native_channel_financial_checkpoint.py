@@ -21,7 +21,7 @@ from src.trading_runtime.strategy_one_broker_match_snapshot import BrokerMatchHe
 from src.trading_runtime.order_management import OrderManagementState
 
 
-def checkpoint_case(installed, monkeypatch, defect=None, *, return_scope=False):
+def checkpoint_case(installed, monkeypatch, defect=None, *, return_scope=False, return_history=False):
     rows, policy, contexts = manager_case(installed)
     root = rows.snapshot
     args = next(iter(contexts.values()))
@@ -103,6 +103,18 @@ def checkpoint_case(installed, monkeypatch, defect=None, *, return_scope=False):
     manager = Keeper(ManagerSnapshotHead(run,sequence,batch,root['content_hash'],0))
     keeper = Keeper(BrokerMatchHead(run,sequence,batch,broker.snapshot['content_hash'],0))
     client = SimpleNamespace(native_channel_management_policy=policy)
+    if return_history:
+        from src.backend.backtest_native_channel_exit_projection import NativeChannelExitCheckpointReference
+        monkeypatch.setattr('src.trading_runtime.native_channel_manager_reader.load_unattested_native_channel_manager_rows',
+            lambda *_a,**_k:rows)
+        monkeypatch.setattr('src.trading_runtime.strategy_one_management_snapshot.attach_committed_momentum_sources',
+            lambda *_a,**_k:state)
+        monkeypatch.setattr('src.trading_runtime.strategy_one_broker_match_snapshot.load_unattested_broker_match_snapshot',
+            lambda *_a,**_k:broker)
+        return dict(client=client,prefix=prefix,reference=NativeChannelExitCheckpointReference(
+            root['snapshot_id'],sequence,root['content_hash'],broker.snapshot['snapshot_id'],
+            broker.snapshot['content_hash']),policy=policy,contexts=contexts,
+            first_price_source='transport-test-only')
     if return_scope:
         return dict(client=client,manager_keeper=manager,broker_keeper=keeper,receipt=receipt,
             run_id=run,management_policy=policy,contexts=contexts,

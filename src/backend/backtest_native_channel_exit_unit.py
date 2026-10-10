@@ -222,3 +222,44 @@ def prepare_confirmed_native_channel_exit_unit(client, manager_keeper, broker_ke
     unit=project_native_channel_exit_unit(confirmed.request,context['group'],context['executions'],
         **envelope,**projection_context)
     return reprove_native_channel_exit_unit(unit,**envelope,**context)
+
+
+def reprove_historical_native_channel_exit_unit(client, prefix, unit, *, management_policy,
+        contexts, first_price_source, recorded_at, attempt_id, batch_id,
+        parent_record_id, decision_record_id):
+    """Bind complete saved transport to historical native source and holdings.
+
+    The journal owner must supply the independently verified preceding prefix
+    and saved envelope. This checks evidence, not current head or order rights.
+    """
+    from .backtest_native_channel_financial_checkpoint import load_historical_native_channel_held_checkpoint
+    from .backtest_native_channel_exit_projection import NativeChannelExitCheckpointReference
+    if type(unit) is not NativeChannelExitUnit:
+        raise ValueError('Exact complete historical channel exit unit required')
+    unit.__post_init__()
+    header=unit.decision
+    reference=NativeChannelExitCheckpointReference(**{key:header[key] for key in (
+        'source_manager_snapshot_id','source_manager_checkpoint_sequence','source_manager_snapshot_hash',
+        'source_broker_snapshot_id','source_broker_snapshot_hash')})
+    from collections.abc import Mapping
+    if not isinstance(contexts,Mapping) or any(not isinstance(c,Mapping) for c in contexts.values()):
+        raise ValueError('Historical unit requires complete independent pending contexts')
+    contexts={key:dict(context) for key,context in contexts.items()}
+    held=load_historical_native_channel_held_checkpoint(client,prefix,reference,
+        policy=management_policy,contexts=contexts,first_price_source=first_price_source)
+    if len(held)!=len(contexts):
+        raise ValueError('Historical channel inventory differs from complete pending contexts')
+    matches=[(key,item) for key,item in zip(sorted(contexts),held,strict=True)
+        if (item.request.acquisition.account_id,item.request.acquisition.assignment_id,
+            item.request.acquisition.ticker,item.request.acquisition.source_entry_intent_id,
+            item.request.acquisition.source_group_id)==(header['account_id'],header['assignment_id'],
+            header['ticker'],header['source_entry_intent_id'],header['source_group_id'])]
+    if len(matches)!=1:
+        raise ValueError('Historical channel exit lacks exactly one confirmed native acquisition')
+    key,confirmed=matches[0]
+    context=contexts[key]
+    context.update(checkpoint=confirmed.checkpoint,batch_id=batch_id,
+        parent_record_id=parent_record_id,decision_record_id=decision_record_id)
+    return reprove_native_channel_exit_unit(unit,management_policy=management_policy,
+        recorded_at=recorded_at,attempt_id=attempt_id,prior_batch_id=prefix.last_batch_id,
+        sequence=prefix.last_sequence+1,source_cursor=prefix.source_cursor,**context)

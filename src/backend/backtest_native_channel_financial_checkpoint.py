@@ -31,16 +31,11 @@ def confirm_native_channel_held_checkpoint(client, manager_keeper, broker_keeper
     """
     from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix, load_verified_v4_prefix
     from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
-    from src.trading_runtime.arte_journal_writer import load_typed_run_context
-    from src.trading_runtime.arte_oms_projection import load_recovered_strategy_one_oms_lineage
     from src.trading_runtime.native_channel_manager_reader import load_attested_native_channel_manager_snapshot
     from src.trading_runtime.strategy_one_management_snapshot import ManagerSnapshotHead
     from src.trading_runtime.strategy_one_broker_match_snapshot import (
         BrokerMatchHead, load_attested_broker_match_snapshot,
     )
-    from src.trading_runtime.native_held_oms_checkpoint import verify_native_held_oms_position
-    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
-    from src.trading_runtime.strategy_one_contract import STRATEGY_ID
 
     if (type(receipt) is not TypedBacktestReceipt or type(receipt.last_sequence) is not int
             or receipt.last_sequence <= 0 or type(run_id) is not str or not run_id
@@ -79,6 +74,79 @@ def confirm_native_channel_held_checkpoint(client, manager_keeper, broker_keeper
             or cursor.get('boundary_ms') != state.boundary_ms
             or cursor.get('session_date') != root['session_date']):
         raise ValueError('Channel held confirmation crosses native roots or decision cursor')
+    result = _verify_native_channel_checkpoint_holdings(client, prefix, rows, state, requests,
+        broker, policy=policy, contexts=contexts, first_price_source=first_price_source)
+    if (manager_keeper.read_head(run_id=run_id), broker_keeper.read_head(run_id=run_id)) != heads:
+        raise ValueError('Channel held checkpoint heads changed before reference selection')
+    if load_verified_v4_prefix(client, run_id, first_price_source=first_price_source) != prefix:
+        raise ValueError('Channel committed frontier changed before reference selection')
+    return tuple(result)
+
+
+def load_historical_native_channel_held_checkpoint(client, prefix, reference, *,
+        policy, contexts, first_price_source):
+    """Reprove a saved exit checkpoint against its exact committed predecessor.
+
+    This verifies historical roots and source/OMS evidence, without claiming
+    that an old root is the current Keeper head. The caller must independently
+    verify the preceding journal prefix and the exit's sealed batch membership.
+    It grants no current trading, INSERT or recovery-drain permission.
+    """
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
+    from src.trading_runtime.native_channel_manager_reader import load_unattested_native_channel_manager_rows
+    from src.trading_runtime.strategy_one_management_snapshot import (
+        restore_manager_snapshot, attach_committed_momentum_sources,
+    )
+    from src.trading_runtime.strategy_one_broker_match_snapshot import (
+        load_unattested_broker_match_snapshot, verify_broker_match_snapshot,
+    )
+    from .backtest_native_channel_manager_recovery import reprove_native_channel_manager_snapshot
+    if (type(prefix) is not V4CommittedPrefix or prefix.status != 'running'
+            or not prefix.batch_ids or prefix.last_batch_id != prefix.batch_ids[-1]
+            or type(reference) is not NativeChannelExitCheckpointReference
+            or type(policy) is not NativeChannelManagementPolicy
+            or policy != getattr(client,'native_channel_management_policy',None)
+            or prefix.last_sequence != reference.source_manager_checkpoint_sequence):
+        raise ValueError('Historical channel confirmation requires exact declared predecessor and reference')
+    reference.__post_init__()
+    policy.__post_init__()
+    run_id, sequence = prefix.run_id, prefix.last_sequence
+    rows=load_unattested_native_channel_manager_rows(client,run_id=run_id,
+        checkpoint_sequence=sequence,policy=policy)
+    state=attach_committed_momentum_sources(client,prefix,restore_manager_snapshot(rows.inherited),
+        first_price_source=first_price_source)
+    requests=reprove_native_channel_manager_snapshot(rows,policy,contexts)
+    broker=verify_broker_match_snapshot(load_unattested_broker_match_snapshot(client,
+        run_id=run_id,checkpoint_sequence=sequence))
+    root, broker_root = rows.snapshot, broker.snapshot
+    cursor=load_latest_backtest_cursor(client,prefix)
+    if (root['snapshot_id'] != reference.source_manager_snapshot_id
+            or root['content_hash'] != reference.source_manager_snapshot_hash
+            or broker_root['snapshot_id'] != reference.source_broker_snapshot_id
+            or broker_root['content_hash'] != reference.source_broker_snapshot_hash
+            or root['run_id'] != run_id or broker_root['run_id'] != run_id
+            or root['checkpoint_sequence'] != sequence or broker_root['checkpoint_sequence'] != sequence
+            or root['boundary_ms'] != state.boundary_ms or broker_root['boundary_ms'] != state.boundary_ms
+            or root['session_date'] != broker_root['session_date']
+            or not isinstance(cursor,dict) or cursor.get('run_id') != run_id
+            or cursor.get('event_sequence') != sequence or cursor.get('batch_id') != prefix.last_batch_id
+            or cursor.get('boundary_ms') != state.boundary_ms
+            or cursor.get('session_date') != root['session_date']):
+        raise ValueError('Historical channel roots differ from exact saved reference or committed cursor')
+    return _verify_native_channel_checkpoint_holdings(client,prefix,rows,state,requests,broker,
+        policy=policy,contexts=contexts,first_price_source=first_price_source)
+
+
+def _verify_native_channel_checkpoint_holdings(client, prefix, rows, state, requests,
+        broker, *, policy, contexts, first_price_source):
+    """Shared historical and current native ownership checks; no order authority."""
+    from src.trading_runtime.arte_journal_writer import load_typed_run_context
+    from src.trading_runtime.arte_oms_projection import load_recovered_strategy_one_oms_lineage
+    from src.trading_runtime.native_held_oms_checkpoint import verify_native_held_oms_position
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    from src.trading_runtime.strategy_one_contract import STRATEGY_ID
+    run_id, sequence, root = prefix.run_id, prefix.last_sequence, rows.snapshot
     context = load_typed_run_context(client, run_id)
     accounts, number = context.get('account_ids'), context.get('strategy_revision')
     if (context.get('run_id') != run_id or context.get('mode') != 'backtest'
@@ -141,10 +209,6 @@ def confirm_native_channel_held_checkpoint(client, manager_keeper, broker_keeper
         executions = tuple(executions)
         for request, original, group, conid in acquisitions:
             _verify_committed_channel_acquisition(request, original, group, executions, as_of, conid)
-    if (manager_keeper.read_head(run_id=run_id), broker_keeper.read_head(run_id=run_id)) != heads:
-        raise ValueError('Channel held checkpoint heads changed before reference selection')
-    if load_verified_v4_prefix(client, run_id, first_price_source=first_price_source) != prefix:
-        raise ValueError('Channel committed frontier changed before reference selection')
     return tuple(result)
 
 
