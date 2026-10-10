@@ -19,7 +19,7 @@ from .genome import Individual,sample,mutate
 from .data import SessionData
 from .evaluator import PopulationPrograms,Execution,replay_cohort
 
-VERSION='v7-fixed-dollar-assumed-fill-search-v1'
+VERSION='v7-state-conditional-assumed-fill-search-v2'
 
 def digest(value):return sha256(json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
 
@@ -127,7 +127,7 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
             shared_batches.clear()
             ordered=[json.loads((root/d/'receipt.json').read_text())['metrics'] for d in days]
             matrix=lambda name:torch.tensor([v[name] for v in ordered],dtype=torch.bool if name=='terminal_valid' else torch.float64)
-            complexity=torch.tensor([sum(p.validate(CATALOG)['active_nodes'] for p in v.rules.values()) for v in population],dtype=torch.float64)
+            complexity=torch.tensor([sum(p.validate(CATALOG)['active_nodes'] for p in (*v.rules.values(),*(v.open_rules or {}).values()))+len(v.minimum_age) for v in population],dtype=torch.float64)
             ranking=score(*(matrix(k) for k in ('net_pnl','drawdown','stop_risk_dollar_seconds','capital_dollar_seconds','filled_batches','terminal_valid')),
                 complexity,config=LowerTailDollarObjective(),inactivity=matrix('inactivity_fraction').mean(0))
             eligible=[i for i,v in enumerate(ranking['feasible'].tolist()) if v]

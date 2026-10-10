@@ -113,3 +113,28 @@ The same immutable command resumes completed generations; changed contracts are
 rejected. `STOP` is honored after a durable generation checkpoint. There is no
 sealed-validation read or evaluation path. Full V7 optimization is not started
 as part of implementation.
+
+### State-conditional strategy execution
+
+Each candidate has flat `rules` and separate `open_rules`, both restricted to
+causal market catalog inputs. Both branches are evaluated in parallel before
+replay and packed into a signed int16 signal tensor (low byte flat, high byte
+open), doubling gate storage. Replay selects using the actual pre-execution
+quantity independently per session/candidate/ticker. The compiled selection
+kernel applies optional per-stage `minimum_age` conditions at the decision
+close. Age counts elapsed seconds since entry execution; additions and partial
+reductions do not reset it. A newly opened position cannot run its open branch
+in the same execution step.
+
+Fill price, basis, quantity magnitude, realized/unrealized profit and account
+metrics are not program inputs. Flat/open and age are the only permitted
+position conditions. Fees remain charged on every purchase and sale and the
+objective uses net P&L. Existing stop/target and management safety policies
+remain execution mechanics. Legacy individuals without open_rules use their
+market rules in both branches; uint8 diagnostic gates retain legacy semantics.
+Search contract v2 rejects old campaign resume. Existing market feature tiles
+remain reusable. Age predicates are opt-in rather than inventing a new search
+range; configured age predicates are preserved by mutation.
+
+Profiling sizes must come from the intended optimization configuration. The
+previous arbitrary pilot results do not qualify optimization wall time.

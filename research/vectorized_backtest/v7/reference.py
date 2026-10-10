@@ -5,6 +5,7 @@ def replay_reference(data,members,gates,execution):
     b=len(members);u=len(data.listing_ids);shape=(b,u)
     q=np.zeros(shape);basis=np.zeros(shape);stop=np.zeros(shape);target=np.zeros(shape)
     water=np.zeros(shape);adds=np.zeros(shape);last=np.zeros(shape);realized=np.zeros(shape);episode=np.zeros(shape)
+    opened=np.zeros(shape)
     peak=np.zeros(b);dd=np.zeros(b);capital=np.zeros(b);risk=np.zeros(b);entries=np.zeros(b)
     add_count=np.zeros(b);reductions=np.zeros(b);inactive=np.zeros(b);worst=np.full(b,np.inf);closed_count=np.zeros(b)
     policy=lambda name:np.array([getattr(m.policy,name) for m in members])[:,None]
@@ -15,6 +16,11 @@ def replay_reference(data,members,gates,execution):
     for clock in range(1,data.clocks):
         current=price[clock][None];previous=price[clock-1][None];signal=gates[:,clock-1,:]
         held=q>1e-12;tradable=observed[clock][None]&np.isfinite(current)&(current>0)
+        if gates.dtype==np.int16:signal=np.where(held,signal>>8,signal)&255
+        age=np.maximum(clock-1-opened,0)
+        for bit,stage in enumerate(("entry","exit","add","reduce","trail")):
+            limit=np.array([m.minimum_age.get(stage,0) for m in members])[:,None]
+            signal=signal&np.where((age>=limit)|~held,255,255^(1<<bit))
         profit=previous/np.maximum(basis,1e-12)-1
         ratchet=held&((signal&16)!=0)&np.isfinite(previous)
         water=np.where(ratchet,np.maximum(water,previous),water)
@@ -37,6 +43,7 @@ def replay_reference(data,members,gates,execution):
         bought=dollars/np.maximum(px,1e-12);q=remaining+bought;old_basis=basis
         updated_basis=basis+(bought/np.maximum(q,1e-12))*(px-basis)
         basis=np.where(entry,px,np.where(add,updated_basis,np.where(q>0,basis,0.)))
+        opened=np.where(entry,clock,opened)
         episode=np.where(entry,realized,episode);realized-=dollars*cost
         stop=np.where(entry,initial,stop)
         target=np.where(entry,px*(1+policy('target_fraction')),np.where(target_hit&reduce,target+old_basis*policy('target_fraction'),target))

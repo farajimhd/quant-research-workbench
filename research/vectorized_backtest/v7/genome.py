@@ -1,5 +1,5 @@
 """Typed V7 lifecycle programs and position-only policy genes."""
-from dataclasses import dataclass,asdict,replace
+from dataclasses import dataclass,asdict,replace,field
 import math
 from research.vectorized_backtest.v6.torch_backtest.program import Node,Program,Op,WINDOWS
 from research.vectorized_backtest.v6.torch_backtest.history_bank import SWING_WINDOWS
@@ -34,13 +34,19 @@ class Policy:
 class Individual:
     rules:dict
     policy:Policy
+    open_rules:dict|None=None
+    minimum_age:dict=field(default_factory=dict)
     def validate(self):
         if set(self.rules)!=set(STAGES):raise ValueError('All position lifecycle rules required')
         for rule in self.rules.values():rule.validate(CATALOG)
+        if self.open_rules is not None:
+            if set(self.open_rules)!=set(STAGES):raise ValueError("Complete open-state rules required")
+            for rule in self.open_rules.values():rule.validate(CATALOG)
+        if any(k not in STAGES or type(v) is not int or v<0 for k,v in self.minimum_age.items()):raise ValueError("Invalid position age condition")
         self.policy.validate();return self
-    def payload(self):return dict(rules={s:self.rules[s].payload() for s in STAGES},policy=asdict(self.policy))
+    def payload(self):return dict(rules={s:self.rules[s].payload() for s in STAGES},policy=asdict(self.policy),open_rules={s:self.open_rules[s].payload() for s in STAGES} if self.open_rules is not None else None,minimum_age=self.minimum_age)
     @classmethod
-    def restore(cls,value):return cls({s:Program.from_payload(value['rules'][s]) for s in STAGES},Policy(**value['policy'])).validate()
+    def restore(cls,value):return cls({s:Program.from_payload(value['rules'][s]) for s in STAGES},Policy(**value['policy']),{s:Program.from_payload(value['open_rules'][s]) for s in STAGES} if value.get('open_rules') is not None else None,value.get('minimum_age',{})).validate()
 
 def condition(rng):
     # Every feature is eligible. Price channels compare with another price;
@@ -75,11 +81,12 @@ def sample(rng,count):
             rule=condition(rng)
             for _ in range(int(rng.integers(0,3))):rule=combine(rule,condition(rng),int(rng.choice([Op.AND,Op.OR])))
             rules[stage]=rule
-        result.append(Individual(rules,policy).validate())
+        result.append(Individual(rules,policy,{s:condition(rng) for s in STAGES}).validate())
     return result
 
 def mutate(rng,parent):
-    rules=dict(parent.rules);stage=STAGES[int(rng.integers(len(STAGES)))];rule=rules[stage]
+    open_branch=parent.open_rules is not None and bool(rng.integers(2))
+    rules=dict(parent.open_rules if open_branch else parent.rules);stage=STAGES[int(rng.integers(len(STAGES)))];rule=rules[stage]
     action=int(rng.integers(4))
     if action==0 and len(rule.nodes)<24:
         rules[stage]=combine(rule,condition(rng),int(rng.choice([Op.AND,Op.OR])))
@@ -91,9 +98,10 @@ def mutate(rng,parent):
             rules[stage]=Program(tuple(nodes),rule.output)
         else:rules[stage]=condition(rng)
     else:rules[stage]=condition(rng)
+    ages=dict(parent.minimum_age)
     name=rng.choice(('stop_fraction','target_fraction','reduce_fraction','trail_fraction','add_minimum_profit','reduce_minimum_profit'))
     value=float(min(1,max(.001,getattr(parent.policy,name)+rng.normal(0,.01))))
-    return Individual(rules,replace(parent.policy,**{name:value})).validate()
+    return Individual(parent.rules if open_branch else rules,replace(parent.policy,**{name:value}),rules if open_branch else parent.open_rules,ages).validate()
 
 
 def combine(left,right,operator):

@@ -87,12 +87,13 @@ class PopulationPrograms:
     def __init__(self,members,device='cpu'):
         for member in members:member.validate()
         self.members=members;self.device=torch.device(device)
+        self.open_programs={s:TorchPrograms([m.open_rules[s] if m.open_rules is not None else m.rules[s] for m in members],CATALOG,self.device) for s in STAGES}
         self.programs={s:TorchPrograms([m.rules[s] for m in members],CATALOG,self.device) for s in STAGES}
     def evaluate(self,data,chunk=2048,listing_batch=4,workspace_gib=2.,maximum_gate_gib=2.):
         b=len(self.members);u=len(data.listing_ids)
-        if b*data.clocks*u>maximum_gate_gib*1024**3:raise MemoryError('V7 rule gates exceed declared budget')
-        gates=torch.zeros((b,data.clocks,u),dtype=torch.uint8,device=self.device)
-        width=max(v.width for v in self.programs.values())
+        if 2*b*data.clocks*u>maximum_gate_gib*1024**3:raise MemoryError('V7 rule gates exceed declared budget')
+        gates=torch.zeros((b,data.clocks,u),dtype=torch.int16,device=self.device)
+        width=max(v.width for v in (*self.programs.values(),*self.open_programs.values()))
         estimate=(chunk+119)*(len(CATALOG)*5+b*(width*20+64))*listing_batch
         if estimate>workspace_gib*1024**3:raise MemoryError('V7 rule workspace exceeds declared budget')
         for first in range(0,u,listing_batch):
@@ -100,10 +101,18 @@ class PopulationPrograms:
             for begin in range(0,data.clocks,chunk):
                 warm=max(0,begin-119);end=min(data.clocks,begin+chunk)
                 inputs,known=data.feature_block(warm,end,listings)
-                for bit,stage in enumerate(STAGES):
-                    signal,mask=self.programs[stage](inputs,known)
-                    gates[:,begin:end,first:first+len(listings)]|=((signal[:,:,begin-warm:]!=0)&mask[:,:,begin-warm:]).transpose(1,2).to(torch.uint8)*(1<<bit)
+                for branch,programs in enumerate((self.programs,self.open_programs)):
+                    for bit,stage in enumerate(STAGES):
+                        signal,mask=programs[stage](inputs,known)
+                        gates[:,begin:end,first:first+len(listings)]|=((signal[:,:,begin-warm:]!=0)&mask[:,:,begin-warm:]).transpose(1,2).to(torch.int16)*(1<<(bit+8*branch))
         return gates
+
+
+def state_signals(signals,held,age,limits,stateful:bool):
+    if stateful:signals=torch.where(held,signals>>8,signals)&255
+    allowed=(age.clamp_min(0)[...,None]>=limits)|~held[...,None]
+    mask=allowed[...,0].to(torch.int32)+2*allowed[...,1].to(torch.int32)+4*allowed[...,2].to(torch.int32)+8*allowed[...,3].to(torch.int32)+16*allowed[...,4].to(torch.int32)
+    return signals&mask
 
 
 def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',progress=None):
@@ -124,7 +133,7 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
     # Pack the cohort once. The chronological loop has no per-session host
     # dispatch, tensor construction, or policy repacking.
     from torch.nn.functional import pad
-    required=t*s*b*u+sum(v.numel()*v.element_size() for v,c in swing_banks)
+    required=t*s*b*u*gates[0].element_size()+sum(v.numel()*v.element_size() for v,c in swing_banks)
     required+=t*s*u*40+s*b*u*9*8
     if device.type=='cuda':
         free,_=torch.cuda.mem_get_info(device)
@@ -139,18 +148,27 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
         ids.append(pad(item.tensors['history_ids'].to(torch.int64)+offset,(0,u-len(item.listing_ids),0,t-item.clocks),value=offset))
         offset+=len(bank)
     all_ids=torch.stack(ids,1);del swing_banks
+    opened=torch.zeros((s,b,u),device=device,dtype=torch.float64)
+    age_limits=torch.tensor([[m.minimum_age.get(stage,0) for stage in STAGES] for m in members],device=device,dtype=torch.float64)[None,:,None,:]
+    stateful=all(g.dtype==torch.int16 for g in gates)
+    if any((g.dtype==torch.int16)!=stateful for g in gates):raise ValueError("Mixed signal contracts")
     clocks=torch.arange(t,device=device,dtype=torch.float64)
     lengths=torch.tensor([v.clocks for v in data],device=device)
+    select_signals=torch.compile(state_signals,fullgraph=True,dynamic=False) if backend=='compile' else state_signals
     transition=torch.compile(step,fullgraph=True,dynamic=False) if backend=='compile' else step
     # All strategy/market computations are parallel on these axes; the time
     # loop preserves entry-dependent position semantics.
     for clock in range(1,t):
         price=prices[clock];previous=prices[clock-1];observed=observed_all[clock];membership=membership_all[clock-1]
-        signals=all_signals[clock-1];swing=values[all_ids[clock,:,None,:],columns[None,:,None]]
+        signals=all_signals[clock-1]
+        held=position[...,0]>1e-12
+        signals=select_signals(signals,held,clocks[clock-1]-opened,age_limits,stateful)
+        swing=values[all_ids[clock,:,None,:],columns[None,:,None]]
         terminal=(clock==lengths-1)[:,None,None]
         old_position,old_aggregate=position,aggregate
         position,aggregate=transition(position,aggregate,price,previous,observed,membership,signals,swing,policy,
             clocks[clock],terminal,execution.entry_dollars,execution.add_dollars,execution.cost_bps/10000.)
+        opened=torch.where(~held&(position[...,0]>1e-12),clocks[clock],opened)
         active=clock<lengths
         position=torch.where(active[:,None,None,None],position,old_position)
         aggregate=torch.where(active[:,None,None],aggregate,old_aggregate)

@@ -66,7 +66,7 @@ def main():
                 forced|=(clock%13==5).to(torch.uint8)*8
                 forced|=(clock%17==8).to(torch.uint8)*16
                 forced|=(clock%101==100).to(torch.uint8)*2
-                gates[:6]=forced
+                gates[:6]=forced.to(torch.int16)|(forced.to(torch.int16)<<8)
                 host_gates=gates.cpu().numpy();data.deactivate()
                 for cost in (0.,10.):
                     execution=Execution(cost_bps=cost);ref_start=perf_counter()

@@ -134,7 +134,7 @@ def test_actual_materializer_and_v7_second_close_quote_freshness(tmp_path):
     # Chunked evaluation must equal whole-session evaluation, including temporal context.
     individual=member();shared=PopulationPrograms([individual])
     gates=shared.evaluate(data,chunk=17,listing_batch=1)
-    assert gates.shape==(1,80,1) and (gates==1).all()
+    assert gates.shape==(1,80,1) and ((gates&255)==1).all() and ((gates>>8)==1).all()
     expected=shared.evaluate(data,chunk=80,listing_batch=1)
     torch.testing.assert_close(gates,expected,rtol=0,atol=0)
     result=replay_cohort([data],[individual],[gates])[0]
@@ -153,7 +153,7 @@ def test_persisted_features_exact_slices_reuse_and_integrity(tmp_path):
     cached=SessionData(root,history,feature_cache=cache_root)
     cached.prepare_feature_block=lambda *args:pytest.fail('Repeated feature preparation')
     gates=PopulationPrograms([member()]).evaluate(cached,chunk=17)
-    assert (gates==1).all()
+    assert ((gates&255)==1).all() and ((gates>>8)==1).all()
     assert prepare(data,cache_root)==receipt
     name=next(iter(receipt['files']));(cache_root/name).write_bytes(b'corrupt')
     with pytest.raises(ValueError,match='changed'):cache.block(0,1,[0])
@@ -202,3 +202,66 @@ def test_full30_search_and_exact_completed_resume(tmp_path,monkeypatch):
     monkeypatch.setattr(run_search,'SessionData',unexpected)
     assert run_search.run(inputs,history,output,population_size=10,generations=2,batch_size=5,session_workers=8,device='cpu',backend='eager')==0
     assert (output/'checkpoint.json').read_bytes()==saved
+
+
+def test_open_branch_and_age_use_pre_execution_state_and_net_fees():
+    base=member(target_fraction=.9)
+    always=Program((Node(Op.CONSTANT,value=1,unit='bool'),),0)
+    open_rules=dict(base.rules);open_rules['exit']=always
+    strategy=Individual(base.rules,base.policy,open_rules,{'exit':2}).validate()
+    restored=Individual.restore(strategy.payload())
+    assert restored.payload()==strategy.payload()
+    data=session([10.,10.,11.,12.,13.,14.])
+    # Flat branch requests entry; open branch requests exit. Age is measured
+    # at the decision close, not the following execution close.
+    signals=torch.full((1,6,1),1|(2<<8),dtype=torch.int16)
+    result=replay_cohort([data],[strategy],[signals],execution=Execution(cost_bps=10))[0]
+    # Entry clock1, age2 decision clock3 -> exit clock4 at13.
+    assert result['net_pnl'].item()==pytest.approx(300-1-1.3)
+    assert result['filled_batches'].item()==1
+    assert result['terminal_valid'].item()
+
+
+def test_state_signal_selection_scripted_and_accounting_fields_rejected():
+    from research.vectorized_backtest.v7.evaluator import state_signals
+    signals=torch.tensor([[[1|(2<<8),1|(4<<8)]]],dtype=torch.int32)
+    held=torch.tensor([[[False,True]]]);age=torch.tensor([[[0.,3.]]])
+    limits=torch.zeros((1,1,1,5));limits[...,2]=4
+    expected=state_signals(signals,held,age,limits,True)
+    assert expected.tolist()==[[[1,0]]]
+    torch.testing.assert_close(torch.jit.script(state_signals)(signals,held,age,limits,True),expected)
+    with pytest.raises(ValueError):
+        Individual(member().rules,Policy(),minimum_age={'unrealized_pnl':1}).validate()
+
+
+def test_stateful_program_pipeline_matches_independent_ledger(tmp_path):
+    from research.vectorized_backtest.v7.reference import replay_reference
+    root,history=fixture_files(tmp_path);data=SessionData(root,history)
+    base=member(target_fraction=.9)
+    always=Program((Node(Op.CONSTANT,value=1,unit='bool'),),0)
+    opened=dict(base.rules);opened['exit']=always
+    strategy=Individual(base.rules,base.policy,opened,{'exit':2}).validate()
+    gates=PopulationPrograms([strategy]).evaluate(data,chunk=17,listing_batch=1)
+    cost=Execution(cost_bps=10)
+    expected=replay_reference(data,[strategy],gates.numpy(),cost)
+    actual=replay_cohort([data],[strategy],[gates],execution=cost)[0]
+    for name in expected:np.testing.assert_allclose(actual[name].numpy(),expected[name],rtol=1e-9,atol=1e-7)
+    data.close()
+
+
+def test_stateful_compiled_graph_cohorts_match_eager(monkeypatch):
+    original=torch.compile
+    # Exercise fullgraph Dynamo capture on CPU; workstation Inductor/CUDA
+    # acceptance remains a separate real-data qualification.
+    monkeypatch.setattr(torch,'compile',lambda fn,**kw:original(fn,backend='eager',**kw))
+    base=member(cooldown=1,add_minimum_profit=0.,target_fraction=.9)
+    strategy=Individual(base.rules,base.policy,base.rules,{'exit':2}).validate()
+    data=[session([10.,10.,11.,12.,13.,14.]),session([5.,5.,6.,7.,8.])]
+    gates=[torch.full((1,d.clocks,1),1|(6<<8),dtype=torch.int16) for d in data]
+    expected=replay_cohort(data,[strategy],gates,execution=Execution(cost_bps=10))
+    actual=replay_cohort(data,[strategy],gates,execution=Execution(cost_bps=10),backend='compile')
+    for left,right in zip(actual,expected):
+        for name in right:torch.testing.assert_close(left[name],right[name],rtol=0,atol=0)
+    # Adds clock2/3 must not reset the entry clock1 age: exit clock4.
+    assert actual[0]['add_count'].item()==2
+    assert actual[0]['closed_positions'].item()==1
