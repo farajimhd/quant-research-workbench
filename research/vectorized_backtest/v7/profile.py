@@ -29,6 +29,7 @@ def measure(inputs,history,cache,root,days,members,concurrency):
             for item in data:
                 original=item.feature_block
                 def tracked(begin,end,listings,original=original):
+                    torch.cuda.synchronize()
                     start=perf_counter();result=original(begin,end,listings);torch.cuda.synchronize();io_seconds[0]+=perf_counter()-start;return result
                 item.feature_block=tracked
                 gates.append(programs.evaluate(item,maximum_gate_gib=4.))

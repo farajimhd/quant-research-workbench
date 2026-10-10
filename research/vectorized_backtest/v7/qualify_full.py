@@ -7,6 +7,7 @@ from pathlib import Path
 from time import perf_counter
 import numpy as np
 import torch
+from types import SimpleNamespace
 from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime,write_json,configure_caches,file_hash
 from research.vectorized_backtest.v6.torch_backtest.materialize import owned_run
 from research.vectorized_backtest.v6.torch_backtest.run_structure import training_days
@@ -52,6 +53,11 @@ def main():
                 data.activate('cuda');program_start=perf_counter()
                 gates=PopulationPrograms(members,'cuda').evaluate(data)
                 torch.cuda.synchronize();program_seconds=perf_counter()-program_start
+                data.deactivate()
+                subset=SimpleNamespace(clocks=data.clocks,listing_ids=data.listing_ids[:4],feature_block=data.feature_block)
+                cpu_gates=PopulationPrograms(members,'cpu').evaluate(subset)
+                torch.testing.assert_close(cpu_gates,gates[:,:,:4].cpu(),rtol=0,atol=0)
+                data.activate('cuda')
                 # Exercise all management bits on complete real price/observation
                 # and membership grids, without bypassing admission or fill masks.
                 clock=torch.arange(data.clocks,device='cuda')[:,None]
@@ -68,6 +74,8 @@ def main():
                     data.activate('cuda');replay_start=perf_counter()
                     actual=replay_cohort([data],members,[gates],execution=execution,backend='compile')[0]
                     errors=check(expected,actual);gpu_seconds=perf_counter()-replay_start;data.deactivate()
+                    if not bool(actual['terminal_valid'].all()) or float(actual['add_count'].sum())<=0 or float(actual['reduce_count'].sum())<=0:
+                        raise ValueError('Full-session lifecycle evidence is missing')
                     records.append(dict(day=day,clocks=data.clocks,listings=len(data.listing_ids),cost_bps=cost,
                         identity=data.identity,feature_receipt_sha256=file_hash(a.feature_cache/day/'complete.json'),
                         load_seconds=load_seconds,program_seconds=program_seconds,reference_seconds=ref_seconds,replay_seconds=gpu_seconds,

@@ -70,8 +70,11 @@ tile; restarting requires removing that operator stop marker deliberately.
 `qualify_full --inputs INPUTS --history HISTORY --feature-cache CACHE --output
 QUALIFICATION --days TRAINING_DATES` compares complete clocks and identities to
 an independent NumPy ledger at zero and 10 basis points. Forced lifecycle gates
-exercise management alongside sampled feature programs. `profile` accepts those
-same roots plus `--qualification QUALIFICATION/qualification.json`; it requires
+exercise management alongside sampled feature programs.
+Full-session feature gates also compare CPU/CUDA on four identities with exact
+equality before lifecycle gates are injected. Financial comparison covers all
+session identities and requires terminal closure plus add/reduction evidence.
+`profile` accepts the same roots plus `--qualification QUALIFICATION/qualification.json`; it requires
 same-code full-session qualification, measures fixed population/cohort options,
 then runs the fastest measured option across all30. It performs no evolutionary
 selection, mutation, validation read or campaign launch. Timings include verified
