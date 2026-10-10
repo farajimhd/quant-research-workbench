@@ -527,6 +527,17 @@ def load_unattested_manager_snapshot_rows(
     if len(seals) != 1:
         raise RuntimeError("Strategy 1 manager lacks exactly one selected seal")
     seal = seals[0]
+    return _load_manager_snapshot_children(read, client, seal, run_id=run_id,
+        checkpoint_sequence=checkpoint_sequence, selected_policy=selected_policy)
+
+
+def _load_manager_snapshot_children(read, client, seal, *, run_id,
+                                     checkpoint_sequence, selected_policy):
+    """Read inherited children under an already selected versioned root.
+
+    This remains unattested data: the caller must verify its root and journal
+    authority before treating the returned state as a checkpoint.
+    """
     if (seal.get("run_id") != run_id
             or seal.get("checkpoint_sequence") != checkpoint_sequence
             or seal.get("snapshot_id") is None):
