@@ -88,6 +88,15 @@ def test_cost_basis_is_exact_on_entry_and_unchanged_without_purchase():
         assert torch.equal(position[...,1],before)
 
 
+@pytest.mark.parametrize('entry,add',[(1000.,200.),(1000.01,200.02)])
+def test_purchase_fees_and_fractional_notionals_use_float64(entry,add):
+    data=session([5.,5.,5.,5.]);gates=torch.tensor([1,4,0,0],dtype=torch.uint8)[None,:,None]
+    result=replay_cohort([data],[member(cooldown=1,add_minimum_profit=0.)],[gates],
+        execution=Execution(entry_dollars=entry,add_dollars=add,cost_bps=10.))[0]
+    assert result['add_count'].item()==1
+    assert result['net_pnl'].item()==pytest.approx(-2*(entry+add)*.001,rel=0,abs=1e-12)
+
+
 def test_v7_programs_include_history_and_quote_features():
     rng=np.random.default_rng(23);rows=sample(rng,100)
     used={n.feature for v in rows for p in v.rules.values() for n in p.nodes if n.op==Op.FEATURE}

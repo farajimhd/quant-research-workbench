@@ -52,7 +52,8 @@ def step(position,aggregate,price,previous,observed,membership,signals,swing,pol
     swing_mode=policy[...,8]>0
     initial=torch.where(swing_mode,swing,initial)
     entry_now&=torch.isfinite(initial)&(initial>0)&(initial<execution_price)
-    dollars=torch.where(entry_now,entry_dollars,torch.where(add_now,add_dollars,0.))
+    # Scalar-only where() defaults to float32, including dollar fee arithmetic.
+    dollars=entry_now.to(q.dtype)*entry_dollars+add_now.to(q.dtype)*add_dollars
     bought=dollars/execution_price.clamp_min(1e-12)
     quantity=remaining+bought
     # Sales and elapsed clocks never change the surviving shares' cost basis.
