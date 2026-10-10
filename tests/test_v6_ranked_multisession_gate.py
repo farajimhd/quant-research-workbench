@@ -37,6 +37,15 @@ def test_gate_requires_same_epoch_head_evidence(tmp_path):
     with pytest.raises(ValueError,match='same-checkpoint'):admit_multisession(tmp_path,tmp_path)
 
 
+def test_natural_population_cannot_impersonate_balanced_gate(tmp_path):
+    write=fixture(tmp_path)
+    plan=json.loads((tmp_path/'manifest.json').read_text())
+    plan['version']='rl-v6-ranked-six-session-natural-underfit-v1'
+    plan.pop('hash');plan['hash']=digest(plan);write('manifest.json',plan)
+    with pytest.raises(ValueError,match='same-checkpoint'):
+        admit_multisession(tmp_path,tmp_path)
+
+
 @pytest.mark.parametrize('name',['last.pt','normalization.json','producer.py'])
 def test_modified_checkpoint_normalization_or_producer_denies_admission(tmp_path,name):
     fixture(tmp_path)

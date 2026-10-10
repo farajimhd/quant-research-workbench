@@ -88,6 +88,7 @@ def main(argv=None):
     parser.add_argument('--history-microbatch', type=int, default=16)
     parser.add_argument('--gpu-duty-cycle', type=float, default=.75)
     parser.add_argument('--cpu-saved-tensors', action='store_true')
+    parser.add_argument('--natural-train', action='store_true', help='TRAIN-only full target population; separate from the balanced admission contract')
     parser.add_argument('--continue-from', type=Path, help='Preserved run; new output and pre-training replay required')
     parser.add_argument('--continue-epoch', type=int)
     args = parser.parse_args(argv)
@@ -97,6 +98,8 @@ def main(argv=None):
     paths = [args.underfit, args.selection, args.initial_cache, args.initial_source, args.additional_cache, args.output]
     if (args.continue_from is None) != (args.continue_epoch is None):
         raise ValueError('Continuation run and epoch must be supplied together')
+    if args.natural_train and args.continue_from is not None:
+        raise ValueError('Natural TRAIN baseline requires fresh weights, not balanced-run continuation')
     if args.continue_from is not None:
         paths.append(args.continue_from)
     if not runtime.is_dir() or any(not p.resolve().is_relative_to(runtime) for p in paths) or args.output.exists() or not 1 <= args.epochs <= 400 or not torch.cuda.is_available():
@@ -114,7 +117,7 @@ def main(argv=None):
     roots = [(args.initial_cache, args.initial_source)] + [(p, p/'source.json') for p in sorted(args.additional_cache.glob('2026-*'))]
     if len(roots) != 6:
         raise ValueError('Exactly six certified TRAIN sessions required')
-    sessions = []; bindings = []
+    sessions = []; bindings = []; balanced_witness = []
     for root, source in roots:
         proof = json.loads(source.read_text())
         if proof.get('hash') != digest({k:v for k,v in proof.items() if k != 'hash'}):
@@ -124,6 +127,9 @@ def main(argv=None):
         s, all_targets, _ = load_prepared(root, proof)
         day = s.day.isoformat(); cache_sha = file_hash(root/'prepared-train.pt')
         targets = selected_targets(selection, day, cache_sha, all_targets)
+        balanced_witness.append((s,targets))
+        if args.natural_train:
+            targets=all_targets
         sessions.append((s, targets))
         bindings.append(dict(day=day, cache=str(root.resolve()), cache_sha256=cache_sha,
             source_sha256=file_hash(source), input_listings=list(s.listings), targets=len(targets),
@@ -131,17 +137,18 @@ def main(argv=None):
             context_split_receipt_sha256=s.context_split_receipt_sha256))
     if sorted(b['day'] for b in bindings) != sorted(selection['day_counts']) or len({b['day'] for b in bindings}) != 6:
         raise ValueError('TRAIN day coverage changed')
-    verify_coverage(selection, sessions)
+    verify_coverage(selection, balanced_witness)
     args.output.mkdir(); started = time.perf_counter()
     def write(name, value): (args.output/name).write_text(json.dumps(value, indent=2), encoding='utf-8')
     normalization = json.loads((args.underfit/'normalization.json').read_text())
     ranking = MarketAttentionConfig(**prior['ranking'])
-    plan = dict(version='rl-v6-ranked-six-session-underfit-v1', source_commit=subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip(),
+    plan = dict(version='rl-v6-ranked-six-session-natural-underfit-v1' if args.natural_train else 'rl-v6-ranked-six-session-underfit-v1', source_commit=subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip(),
         arguments={k:str(v.resolve()) if isinstance(v,Path) else v for k,v in vars(args).items()},
         dataset_sha256=prior['dataset_sha256'], market_dataset_sha256=prior['market_dataset_sha256'],
         tickers=prior['arguments']['tickers'], feature_contract=prior['feature_contract'],
         forecast_contract=prior['forecast_contract'],
         sessions=bindings, selection_sha256=file_hash(args.selection), normalization_sha256=prior['normalization_sha256'],
+        target_population='all_certified_cached_TRAIN_targets' if args.natural_train else 'balanced_128',
         normalization_origin='frozen_verified_single_TRAIN_contract_no_refitting', initialization='fresh_weights',
         epochs=args.epochs, width=args.width, activation_checkpointing=args.activation_checkpointing,
         cpu_saved_tensors=args.cpu_saved_tensors,
