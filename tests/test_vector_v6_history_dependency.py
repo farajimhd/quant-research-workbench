@@ -33,3 +33,12 @@ def test_live_owner_rejected(tmp_path,monkeypatch):
         def create_time(self):return 100.0
     monkeypatch.setattr('psutil.Process',lambda pid:Owner())
     with pytest.raises(ValueError,match='live owner'):profile_dependency_released(tmp_path)
+
+
+def test_existing_market_source_row():
+    import polars as pl
+    from research.vectorized_backtest.v6.torch_backtest.materialize_history import physical_source_rows
+    frame=pl.DataFrame({'source_row':[0,1],'listing':[5,9]})
+    assert physical_source_rows(frame).equals(frame)
+    with pytest.raises(ValueError,match='physical row order'):
+        physical_source_rows(frame.with_columns(pl.col('source_row')+1))

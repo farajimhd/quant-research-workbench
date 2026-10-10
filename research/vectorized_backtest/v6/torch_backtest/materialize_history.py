@@ -36,6 +36,14 @@ def ticker_job(payload):
     write_json(folder/'complete.json',record);return record
 
 
+def physical_source_rows(frame):
+    if 'source_row' in frame.columns:
+        if not np.array_equal(frame['source_row'].to_numpy(),np.arange(len(frame))):
+            raise ValueError('Certified market source_row does not match physical row order')
+        return frame
+    return frame.with_row_index('source_row')
+
+
 def prepare(inputs,output,workers=8):
     inputs=Path(inputs);output=require_runtime(output);start=perf_counter()
     with owned_run(output,version=VERSION):
@@ -44,7 +52,7 @@ def prepare(inputs,output,workers=8):
         if not len(clocks) or np.any(np.diff(clocks)!=1):raise ValueError('Require contiguous elapsed-second clocks')
         top=np.load(inputs/'top_indices.npy',allow_pickle=False)
         union=np.unique(top);union=union[union>=0]
-        frame=pl.read_parquet(inputs/'market.parquet').with_row_index('source_row').filter(pl.col('listing').is_in(union))
+        frame=physical_source_rows(pl.read_parquet(inputs/'market.parquet')).filter(pl.col('listing').is_in(union))
         pending={};records={};cursor=0
         groups=frame.partition_by('listing',as_dict=True,maintain_order=True)
         def submit(pool):
