@@ -31,3 +31,24 @@ def release_contract():
     result = NumberedStrategyRelease(**values, approved_digest=draft.digest())
     result.verify()
     return result
+
+
+def derive_strategy_one_hundred_twelve_configuration(parent, **approval):
+    from .fixed_structural_lot_release_v31 import derive_fixed_structural_lot_release
+    from .strategy_one_hundred_eleven_release import derive_strategy_one_hundred_eleven_configuration
+    from .strategy_one_hundred_twelve_contract import strategy_one_hundred_twelve_contract
+    return derive_fixed_structural_lot_release(parent,
+        inherited_derive=derive_strategy_one_hundred_eleven_configuration,
+        inherited_release=prior_release(), release=release_contract(),
+        initial_held_recovery_reuse_policy=strategy_one_hundred_twelve_contract().initial_held_recovery_reuse_policy,
+        **approval)
+
+
+def verify_prepared_strategy_one_hundred_twelve_configuration(parent, payload):
+    from .fixed_structural_lot_release_v31 import verify_prepared_fixed_structural_lot_release
+    from .strategy_one_hundred_eleven_release import derive_strategy_one_hundred_eleven_configuration
+    from .strategy_one_hundred_twelve_contract import strategy_one_hundred_twelve_contract
+    return verify_prepared_fixed_structural_lot_release(parent, payload,
+        inherited_derive=derive_strategy_one_hundred_eleven_configuration,
+        inherited_release=prior_release(), release=release_contract(),
+        initial_held_recovery_reuse_policy=strategy_one_hundred_twelve_contract().initial_held_recovery_reuse_policy)
