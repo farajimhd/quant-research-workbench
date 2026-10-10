@@ -100,6 +100,11 @@ def verify_fixed_structural_lot_configuration(strategy):
     if first_source is not None:expected.add(FIRST_SOURCE_PARAMETER)
     if first_source!=getattr(contract,'first_inventory_source_reuse_policy',None):
         raise ValueError('First-inventory source reuse differs from exact registered factory')
+    from src.trading_runtime.publication_source_reuse_policy import PARAMETER as PUBLICATION_PARAMETER, parse_declared_publication_source_reuse
+    publication=parse_declared_publication_source_reuse(contract.release,params.get(PUBLICATION_PARAMETER) if type(params) is dict else None)
+    if publication is not None:expected.add(PUBLICATION_PARAMETER)
+    if publication!=getattr(contract,'publication_source_reuse_policy',None):
+        raise ValueError('Publication source reuse differs from exact registered factory')
     if type(params) is not dict or set(params) != expected:
         raise ValueError('Fixed-lot parameter companions differ')
     if reuse_selected and parse_packet_validation_reuse_policy(params['packet_validation_reuse_policy']) != contract.validation_reuse_policy:
