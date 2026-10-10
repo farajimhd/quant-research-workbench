@@ -85,3 +85,18 @@ def seal_native_channel_manager_rows(inherited, pending, sources, executions, *,
             canonical_json([row['content_hash'] for row in rows]).encode()).hexdigest()
     return NativeChannelManagerSnapshotRows(typed_contract_row(parent_contract(), values), inherited,
         pending, sources, executions)
+
+
+def verify_native_channel_manager_rows(rows, policy):
+    """Verify the complete v5 root; source and checkpoint attestation remain separate."""
+    from .native_channel_management_policy import NativeChannelManagementPolicy
+    if type(rows) is not NativeChannelManagerSnapshotRows or type(policy) is not NativeChannelManagementPolicy:
+        raise ValueError('Exact native channel snapshot and declared bounds required')
+    policy.__post_init__()
+    root = verify_typed_contract_row(parent_contract(), rows.snapshot)
+    expected = seal_native_channel_manager_rows(rows.inherited, rows.pending, rows.sources,
+        rows.executions, max_pending_requests=policy.max_pending_requests,
+        max_rows_per_family=policy.max_rows_per_family)
+    if root != expected.snapshot:
+        raise ValueError('Native channel root differs from complete inherited and pending children')
+    return expected
