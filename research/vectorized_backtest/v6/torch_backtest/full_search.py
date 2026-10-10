@@ -13,7 +13,7 @@ from .materialize import owned_run
 from .training_pass import full_training_pass,population_hash
 from .evolution import sample
 from .genome import StrategySpace
-from .staged import migrate
+from .staged import migrate,selection_rank
 from .run_search import state,restore,fingerprint,clean
 from .stability import LowerTailDollarObjective
 
@@ -64,16 +64,19 @@ def run_generations(spec,population_size,generations,evaluator,output,*,seed=223
                 record=json.loads((root/'complete.json').read_text());verify_completed_pass(root,record)
                 if record['population_sha256']!=population_hash(population) or record['objective']!=asdict(objective):raise ValueError('Completed generation resume contract changed')
                 ranking={k:torch.as_tensor(record['ranking'][k],dtype=torch.bool if k=='feasible' else torch.float64) for k in ('score','feasible')}
+                ordered=[json.loads((root/day/'receipt.json').read_text())['metrics'] for day in record['training_days']]
             else:
                 if hasattr(evaluator,'prepare_pass'):
                     evaluator.prepare_pass(spec['training'],population,root,workers=workers)
-                ranking,_=full_training_pass(spec['training'],[s['day'] for s in spec['validation']],population,evaluator,root,workers=workers,objective=objective)
+                ranking,ordered=full_training_pass(spec['training'],[s['day'] for s in spec['validation']],population,evaluator,root,workers=workers,objective=objective)
             eligible=[i for i,v in enumerate(ranking['feasible'].tolist()) if v]
             scores=ranking['score'].tolist();rank=sorted(eligible,key=lambda i:(-scores[i],i))
             if not rank:raise ValueError('No financially feasible parent; preserve completed evaluation and stop')
             write_json(root/'winner.json',dict(candidate=rank[0],individual=state(population[rank[0]]),score=scores[rank[0]],validation_opened=False))
             # Parent selection and RNG changes happen only beyond the all30 barrier.
-            if generation<generations:population=migrate(rng,population,rank,population_size,space,None)
+            if generation<generations:
+                parents=selection_rank(rng,rank,ranking,ordered,objective)
+                population=migrate(rng,population,parents,population_size,space,None)
             write_json(checkpoint,dict(contract=contract,completed_generations=generation,population=[state(v) for v in population],
                 population_sha256=population_hash(population),rng_state=deepcopy(rng.bit_generator.state),last_generation_sha256=file_hash(root/'complete.json')))
             write_json(output/'status.json',dict(status='complete' if generation==generations else 'running',completed_generations=generation,total_generations=generations,validation_opened=False))

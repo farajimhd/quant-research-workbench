@@ -36,3 +36,20 @@ def test_full_thirty_session_barrier_and_bounded_independent_evaluators(tmp_path
 def test_partial_panel_rejected_before_evaluation(tmp_path):
     with pytest.raises(ValueError,match='thirty'):
         full_training_pass([{'day':'a'}],[],[object()],lambda *a:None,tmp_path)
+
+
+def test_complexity_penalizes_only_reachable_nodes(tmp_path,monkeypatch):
+    from research.vectorized_backtest.v6.torch_backtest import runtime
+    from research.vectorized_backtest.v6.torch_backtest.program import Node,Program,Op
+    monkeypatch.setattr(runtime,'require_runtime',lambda p:p.mkdir(parents=True,exist_ok=True))
+    program=Program((Node(Op.CONSTANT,value=1.,unit='bool'),Node(Op.CONSTANT,value=0.,unit='bool')),0)
+    class Candidate:
+        def programs(self):return {'entry':program}
+        def payload(self):return {'entry':program.payload()}
+    population=[Candidate()]
+    def evaluate(session,members,path):
+        metrics={k:[0.] for k in ('drawdown','stop_risk_dollar_seconds','capital_dollar_seconds','filled_batches','inactivity_fraction')}
+        metrics.update(net_pnl=[0.],terminal_valid=[True])
+        return dict(day=session['day'],population_sha256=population_hash(members),candidate_indices=[0],full_session=True,validation_opened=False,metrics=metrics)
+    ranked,_=full_training_pass([dict(day=str(i)) for i in range(30)],[],population,evaluate,tmp_path)
+    assert ranked['components']['complexity_penalty'].item()==pytest.approx(.001/32*30*10000)

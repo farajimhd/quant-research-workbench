@@ -12,6 +12,7 @@ from hashlib import sha256
 import torch
 from .runtime import write_json,file_hash
 from .stability import score,LowerTailDollarObjective
+from .feature_bank import CATALOG
 
 
 def population_hash(population):
@@ -54,7 +55,7 @@ def full_training_pass(training,validation_days,population,evaluate,output,*,wor
     if population_hash(population)!=token:raise ValueError('Population changed during the full-training barrier')
     ordered=[results[day] for day in days]
     matrix=lambda name:torch.stack([torch.as_tensor(r[name],dtype=torch.bool if name=='terminal_valid' else torch.float64) for r in ordered])
-    complexity=torch.tensor([sum(len(p.nodes) for p in v.programs().values()) for v in population],dtype=torch.float64)
+    complexity=torch.tensor([sum(p.validate(CATALOG)['active_nodes'] for p in v.programs().values()) for v in population],dtype=torch.float64)
     if any('inactivity_fraction' not in r for r in ordered):raise ValueError('Elapsed inactivity must be supplied by each evaluator')
     inactivity=matrix('inactivity_fraction').mean(0)
     ranked=score(*(matrix(k) for k in metric_names),complexity,config=objective,inactivity=inactivity)
