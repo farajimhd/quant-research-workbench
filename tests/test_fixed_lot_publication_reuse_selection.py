@@ -65,3 +65,40 @@ def test_cross_identity_or_release_payload_rejects(monkeypatch, field, value):
     source.installed_payload['strategy'][field] = value
     with pytest.raises(ValueError):
         selected_publication_source_reuse_policy(source)
+
+
+def test_in_place_payload_change_during_factory_validation_rejects(monkeypatch):
+    source, factory, policy = setup(monkeypatch)
+    def mutate(self):
+        source.installed_payload['strategy']['parameters'][PARAMETER]['max_image_bytes'] = 8192
+    monkeypatch.setattr(FixedStructuralLotSelectedExitStrategyContract, '__post_init__', mutate)
+    with pytest.raises(ValueError, match='payload changed'):
+        selected_publication_source_reuse_policy(source)
+
+
+def test_unscoped_verification_uses_original_loader():
+    from src.backend.backtest_fixed_lot_publication_reuse import verified_publication_source
+    result = object()
+    assert verified_publication_source(object(), lambda: result) is result
+
+
+def test_foreign_context_suspends_publication_scope(monkeypatch):
+    from src.backend import backtest_fixed_lot_publication_reuse as reuse
+    from src.backend import backtest_fixed_lot_initial_recovery_reuse as cold
+    context = object()
+    token = reuse._PUBLICATION.set((context, object()))
+    calls = []
+    def loader():
+        assert reuse._PUBLICATION.get() is None
+        calls.append('original')
+        return 'cold'
+    def cold_loader(callback):
+        calls.append('cold_scope')
+        return callback()
+    monkeypatch.setattr(cold, '_cold_loader', cold_loader)
+    try:
+        assert reuse.verified_publication_source(object(), loader) == 'cold'
+        assert reuse._PUBLICATION.get()[0] is context
+    finally:
+        reuse._PUBLICATION.reset(token)
+    assert calls == ['cold_scope', 'original']
