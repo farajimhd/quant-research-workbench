@@ -2245,15 +2245,26 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         fixed_lot_recovery_context=fixed_lot_recovery_context)
 
 
-def _existing_detail_identities_v4(client, batch, families):
+def _existing_detail_identities_v4(client, batch, families, *, native_channel_publication=None):
     """Read all pre-insert family identities in one bounded SELECT on ClickHouse."""
     from research.mlops.clickhouse import ClickHouseHttpClient
     from src.trading_runtime.arte_journal_writer import _CONTRACTS, _literal, _rows
 
+    selected_names=set(_CONTRACTS)
+    if native_channel_publication is not None:
+        from .native_channel_exit_publication import (
+            require_native_channel_exit_publication,verify_native_channel_exit_publication_graph,
+        )
+        context,_=require_native_channel_exit_publication(native_channel_publication,client=client)
+        verify_native_channel_exit_publication_graph(native_channel_publication,client=client,
+            batch=batch,base_families=tuple((name,rows) for name,rows
+                in context.unit.sealed_families() if name in _CONTRACTS),families=families)
+        from .native_channel_management_policy import selected_exit_contracts
+        selected_names.update(contract.name for contract in selected_exit_contracts(context.policy))
     present = [(name, rows) for name, rows in families if rows]
     if not present:
         return {}
-    if any(name not in _CONTRACTS or not 1 <= len(rows) <= 65_536
+    if any(name not in selected_names or not 1 <= len(rows) <= 65_536
            for name, rows in present):
         raise ValueError("V4 detail existence scope is unbounded or untyped")
     filters = (f"WHERE run_id={_literal(batch.run_id)} "

@@ -153,3 +153,29 @@ def test_shared_detail_writer_uses_owner_and_prevalidates_all_pending(installed,
     else:
         with pytest.raises(ValueError): _insert_detail_families_v4(writer,batch,pending,**kwargs)
         assert calls==[]
+
+
+@pytest.mark.parametrize('defect',[None,'missing','duplicate','envelope','unissued'])
+def test_shared_preinsert_inventory_requires_complete_issued_graph(installed,monkeypatch,defect):
+    from src.trading_runtime.arte_journal_commit_v4 import _existing_detail_identities_v4
+    writer,scope,context=publication_case(installed,monkeypatch)
+    image=issue(writer,scope,context)
+    families=list(context.unit.sealed_families())
+    batch=context.unit.base
+    calls=[]
+    monkeypatch.setattr('src.trading_runtime.arte_journal_writer._rows',
+        lambda client,query: calls.append((client,query)) or [])
+    if defect=='missing': families=[(name,rows) for name,rows in families if name!=TABLES[0].name]
+    elif defect=='duplicate': families.append(families[0])
+    elif defect=='envelope': batch=replace(batch,batch_id='11111111-1111-4111-8111-111111111111')
+    elif defect=='unissued': image=replace(image)
+    if defect is None:
+        result=_existing_detail_identities_v4(writer,batch,tuple(families),native_channel_publication=image)
+        assert len(result)==5 and all(value==[] for value in result.values())
+        assert len(calls)==5 and all(client is writer for client,_ in calls)
+        assert all(f"batch_id=toUUID('{batch.batch_id}')" in query for _,query in calls)
+        assert all(table.name not in _CONTRACTS for table in TABLES)
+    else:
+        with pytest.raises(ValueError):
+            _existing_detail_identities_v4(writer,batch,tuple(families),native_channel_publication=image)
+        assert calls==[]
