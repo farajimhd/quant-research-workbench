@@ -58,8 +58,8 @@ def load_installed_configuration(client, *, number, parent):
     release = numbered_strategy(number)
     own = certify_numbered_configuration(client, number)
     policy = verify_installed_configuration(parent, own, release, numbered_strategy(parent.strategy_number))
-    from .backtest_fixed_v4_certification import certify_numbered_fixed_v4_projection
-    proof = certify_numbered_fixed_v4_projection(number)
+    from .backtest_native_complete_projection_reuse import load_complete_installed_projection
+    proof = load_complete_installed_projection(own)
     if type(proof) is not str or len(proof) != 64 or any(c not in '0123456789abcdef' for c in proof):
         raise ValueError('Actual complete installed source proof required')
     verify_current_installed_source(own)

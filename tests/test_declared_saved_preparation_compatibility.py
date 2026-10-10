@@ -31,6 +31,8 @@ def test_all_protected_parent_files_match_exact_immutable_ast():
         'backend/backtest_fixed_v4_certification.py',
         'backend/backtest_v4_saved_review.py',
         'backend/historical_runtime_versions.py',
+        'backend/backtest_fixed_structural_lot_native_v20.py',
+        'trading_runtime/strategy_registry.py',
     }
     print('protected_parent_files_verified=' + str(len(pins)))
 

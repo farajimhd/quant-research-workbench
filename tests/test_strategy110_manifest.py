@@ -25,13 +25,46 @@ def test_every_typed_economic_and_execution_field_is_inherited():
     assert candidate.release.approved_digest != prior.release.approved_digest
 
 
-def test_unapproved_complete_source_seal_remains_closed():
-    from src.backend.backtest_fixed_structural_lot_certification_v29 import (
-        REQUIRED_SOURCE_FILES, certify_fixed_structural_lot_source,
-    )
-    assert 'src/trading_runtime/numbered_session_exit.py' in REQUIRED_SOURCE_FILES
+def test_unapproved_complete_source_seal_remains_closed(tmp_path):
+    import ast
+    import importlib.util
+    from pathlib import Path
+    from src.backend import backtest_fixed_structural_lot_certification_v29 as sealed
+    assert 'src/trading_runtime/numbered_session_exit.py' in sealed.REQUIRED_SOURCE_FILES
+    assert 'src/backend/backtest_native_complete_projection_reuse.py' in sealed.REQUIRED_SOURCE_FILES
+    tree = ast.parse(Path(sealed.__file__).read_text(encoding='utf-8'))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            if node.targets[0].id == 'REVIEWED_SOURCE_AST':
+                node.value = ast.Dict(keys=[], values=[])
+            elif node.targets[0].id in {'APPROVED_METADATA_ANCHOR', 'APPROVED_SELF_AST'}:
+                node.value = ast.Constant('')
+    unapproved = tmp_path / 'src/backend/backtest_fixed_structural_lot_certification_v29.py'
+    unapproved.parent.mkdir(parents=True)
+    unapproved.write_text(ast.unparse(tree) + '\n', encoding='utf-8')
+    spec = importlib.util.spec_from_file_location('unapproved_source_seal_test', unapproved)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
     with pytest.raises(ValueError, match='unapproved; admission remains closed'):
-        certify_fixed_structural_lot_source()
+        module.certify_fixed_structural_lot_source()
+
+
+def test_catalog_installs_exact_factory_and_source_owner_without_publication():
+    from src.trading_runtime.strategy_registry import numbered_strategy, fixed_strategy_executor
+    from src.trading_runtime.declared_native_manifest import registered_manifest_authority
+    release = strategy_one_hundred_ten_contract().release
+    assert numbered_strategy(release.number) == release
+    registration = fixed_strategy_executor(release.executor_strategy_id, release.executor_revision)
+    assert registration.contract_factory() == strategy_one_hundred_ten_contract()
+    authority = registered_manifest_authority(release.number)
+    assert authority.parent_number == 42
+    assert authority.derive is derive_strategy_one_hundred_ten_configuration
+    assert authority.verify_manifest is verify_prepared_strategy_one_hundred_ten_configuration
+    from src.backend import backtest_fixed_structural_lot_certification_v29 as sealed
+    assert authority.certify_source is sealed.certify_fixed_structural_lot_source
+    assert tuple(sealed.REVIEWED_SOURCE_AST) == sealed.REQUIRED_SOURCE_FILES
+    assert len(sealed.REQUIRED_SOURCE_FILES) == 573
+    assert len(sealed.APPROVED_METADATA_ANCHOR) == len(sealed.APPROVED_SELF_AST) == 64
 
 
 def test_complete_inherited_tree_differs_only_in_declared_identity(manifest):

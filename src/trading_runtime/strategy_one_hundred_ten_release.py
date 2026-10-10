@@ -6,7 +6,9 @@ BEHAVIOR = (
     'Preserve every Strategy109 activation, admission, entry, reentry, allocation, '
     'cash, exposure, cost, structural target, stop and exit rule. Saved fixed-lot '
     'source reconstruction selects the same management-native preparation '
-    'capability as execution. Complete fenced definitions, market and V7 pins, '
+    'capability as execution. Reuse of complete preflight projection retains '
+    'fresh complete installed-source checks and callback code identity; a cold '
+    'complete proof remains mandatory. Complete fenced definitions, market and V7 pins, '
     'source, journal, quantity and OCA checks remain mandatory. Candidate-feature '
     'preparation helpers grant no entry or ranking authority. This source-only '
     'successor makes no profitability or full-session performance claim. Backtest only.')
