@@ -39,11 +39,13 @@ def seal_batch(runner,result,session,population_token,offset,folder,rule_seconds
         input_receipt_sha256=file_hash(runner.inputs.root/'complete.json'),
         structural_receipt_sha256=runner.tape.provenance['structural_receipt_sha256'],
         broker='compact',holding_capacity=runner.n)
+    if getattr(runner.inputs,'history_binding',None) is not None:
+        record['history_receipt_sha256']=runner.inputs.history_binding['receipt_sha256']
     write_json(folder/'receipt.json',record)
     return record
 
 
-def seal_session(session,population_token,population_size,destination,parts,batches,inputs,structures,holding_capacity):
+def seal_session(session,population_token,population_size,destination,parts,batches,inputs,structures,holding_capacity,history_root=None):
     keys=set(parts[0])
     if any(set(part)!=keys for part in parts):raise ValueError('Candidate batch metric schema changed')
     merged={k:sum((part[k] for part in parts),[]) for k in keys}
@@ -51,6 +53,7 @@ def seal_session(session,population_token,population_size,destination,parts,batc
         validation_opened=False,broker='compact',holding_capacity=holding_capacity,metrics=merged,batch_receipts=batches,
         input_receipt_sha256=file_hash(inputs/session['day']/'complete.json'),
         structural_receipt_sha256=file_hash(structures/session['day']/'complete.json'),financial_audit_passed=True)
+    if history_root is not None:record['history_receipt_sha256']=file_hash(history_root/session['day']/'complete.json')
     write_json(destination/'receipt.json',record)
     return record
 
@@ -81,6 +84,8 @@ class SparseSessionEvaluator:
         day=session['day'];destination=require_runtime(destination)
         if (destination/'receipt.json').exists():
             record=json.loads((destination/'receipt.json').read_text())
+            if getattr(self,'history_root',None) is not None and record.get('history_receipt_sha256')!=file_hash(self.history_root/day/'complete.json'):
+                raise ValueError('Completed session persisted history changed')
             if (record.get('population_sha256')!=population_hash(population) or record.get('day')!=day
                 or record.get('input_receipt_sha256')!=file_hash(self.inputs/day/'complete.json')
                 or record.get('structural_receipt_sha256')!=file_hash(self.structures/day/'complete.json')

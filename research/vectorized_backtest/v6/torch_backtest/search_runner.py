@@ -32,11 +32,11 @@ class SearchRunner(SqueezeRunner):
         settings = replace(
             decoded[0].settings,
             adaptive_window=32,
-            swing_left_seconds=5,
-            swing_right_seconds=5,
-            retest_lookback_seconds=12,
-            momentum_lookback_seconds=12,
-            attention_lookback_seconds=12,
+            swing_left_seconds=60,
+            swing_right_seconds=60,
+            retest_lookback_seconds=60,
+            momentum_lookback_seconds=60,
+            attention_lookback_seconds=60,
         )
         if getattr(self,'specialize',False):
             adaptive,left,right,momentum,attention=self.execution_key[2]

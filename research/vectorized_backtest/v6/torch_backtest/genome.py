@@ -14,6 +14,7 @@ import numpy as np
 from .grid import Candidate, Settings
 from .rules import ATOMS, CLAUSES, HISTORY, Compare, Temporal, validate_clause
 from .timing import TIMING_CONTRACT, timing_fingerprint
+from .history_bank import SWING_WINDOWS
 
 VERSION = "semantic-squeeze-search-v3-5-risk-time"
 MUTATION_CONTRACT = dict(
@@ -48,15 +49,15 @@ POLICY_FIELDS = (
     ("maximum_entry_drift_fraction", 0.0001, 0.05, False),
     ("retest_tolerance_fraction", 0.0001, 0.05, False),
     ("retest_timeout_seconds", 1, 120, True),
-    ("swing_left_seconds", 1, 5, True),
-    ("swing_right_seconds", 1, 5, True),
+    ("swing_left_seconds", 1, 60, True),
+    ("swing_right_seconds", 1, 60, True),
     ("replacement_margin", 0, 1, False),
     ("replacement_confirm_seconds", 1, 30, True),
     ("replacement_cooldown_seconds", 0, 300, True),
     ("terminal_exit_lead_seconds", 1, 60, True),
-    ("retest_lookback_seconds", 1, 12, True),
-    ("momentum_lookback_seconds", 1, 12, True),
-    ("attention_lookback_seconds", 1, 12, True),
+    ("retest_lookback_seconds", 1, 60, True),
+    ("momentum_lookback_seconds", 1, 60, True),
+    ("attention_lookback_seconds", 1, 60, True),
     ("momentum_scale", 0.001, 0.20, False),
     ("strength_scale", 0.001, 0.20, False),
     ("attention_cap", 1, 10, False),
@@ -159,7 +160,7 @@ class StrategySpace:
             connector_classes={0: "AND", 1: "OR"},
             history_capacity=HISTORY,
             history_allocation=dict(
-                atomic=12, adaptive=32, swing=11, retest=12, momentum=12, attention=12
+                atomic=12, adaptive=32, swing=121, retest=60, momentum=60, attention=60
             ),
             candidate_layout=[
                 "entry_id",
@@ -185,6 +186,7 @@ class StrategySpace:
                 if f.name not in searched
             },
             masked_history_fields=HISTORY_FIELDS,
+            swing_window_ladder=list(SWING_WINDOWS),
         )
 
     def validate(self, values):
@@ -211,6 +213,8 @@ class StrategySpace:
             for j, (_, lo, hi, integer) in enumerate(POLICY_FIELDS, self.policy_start):
                 if not lo <= row[j] <= hi or (integer and row[j] != int(row[j])):
                     raise ValueError("Policy value outside declared range")
+                if NAMES[j-self.policy_start] in ('swing_left_seconds','swing_right_seconds') and row[j] not in SWING_WINDOWS:
+                    raise ValueError('Swing window must belong to the persisted ladder')
             if (
                 row[self.policy_start + NAMES.index("trail_stop_fraction")]
                 > row[self.policy_start + NAMES.index("trail_up_fraction")]
@@ -256,6 +260,8 @@ class StrategySpace:
                 row[j] = np.clip(row[j], lo, hi)
                 if integer:
                     row[j] = np.rint(row[j])
+                if NAMES[j-self.policy_start] in ('swing_left_seconds','swing_right_seconds'):
+                    row[j]=min(SWING_WINDOWS,key=lambda value:abs(value-row[j]))
             stop = self.policy_start + NAMES.index("trail_stop_fraction")
             up = self.policy_start + NAMES.index("trail_up_fraction")
             row[stop] = min(row[stop], row[up])
@@ -330,7 +336,9 @@ class StrategySpace:
         for j, choices in enumerate(CLASSES):
             rows[:, j] = rng.choice(choices, count)
         for j, (name, lo, hi, _) in enumerate(POLICY_FIELDS, self.policy_start):
-            if name in ("minimum_dollar_volume", "minimum_trade_count"):
+            if name in ('swing_left_seconds','swing_right_seconds'):
+                rows[:,j]=rng.choice(SWING_WINDOWS,count)
+            elif name in ("minimum_dollar_volume", "minimum_trade_count"):
                 # A fixed random density across the SAME bounds. Uniform
                 # million-dollar thresholds almost always exclude premarket.
                 rows[:, j] = np.expm1(rng.uniform(np.log1p(lo), np.log1p(hi), count))

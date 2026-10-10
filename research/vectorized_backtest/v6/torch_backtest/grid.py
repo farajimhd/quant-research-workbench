@@ -203,14 +203,14 @@ class Settings:
         ):
             raise ValueError("Durations/history must be positive")
         if not all(
-            1 <= getattr(self, name) <= 12
+            1 <= getattr(self, name) <= 60
             for name in (
                 "retest_lookback_seconds",
                 "momentum_lookback_seconds",
                 "attention_lookback_seconds",
             )
         ):
-            raise ValueError("Completed history lookbacks require 1..12 seconds")
+            raise ValueError("Completed history lookbacks require 1..60 seconds")
         if (
             min(
                 self.momentum_scale,

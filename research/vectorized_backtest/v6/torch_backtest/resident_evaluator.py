@@ -26,6 +26,8 @@ from .run_search import restore
 
 class ResidentSessionEvaluator(SparseSessionEvaluator):
     def __init__(self,*args,**kwargs):
+        self.history_root=kwargs.pop('history_root',None)
+        self.maximum_history_gib=kwargs.pop('maximum_history_gib',16.)
         self.compiler_specialization_budget=kwargs.pop('compiler_specialization_budget',128)
         if type(self.compiler_specialization_budget) is not int or not 1<=self.compiler_specialization_budget<=16384:
             raise ValueError('Bounded compiler specialization budget required')
@@ -67,6 +69,10 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
         result['capture_variants']=self.capture_variants
         result['capture_initializer']='exact-capture-initializer-v1'
         result['compiler_specialization_budget']=self.compiler_specialization_budget
+        if self.history_root is not None:
+            result['history']={s['day']:file_hash(self.history_root/s['day']/'complete.json') for s in training}
+            result['maximum_history_gib']=self.maximum_history_gib
+            result['history_residency']='bounded session cohorts; all-session selection barrier'
         return result
 
     def _capture_cache(self,day):
@@ -143,6 +149,7 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
             validation_opened=False,financial_audit_passed=True,broker='compact',holding_capacity=self.holding_capacity,
             input_receipt_sha256=file_hash(self.inputs/session['day']/'complete.json'),
             structural_receipt_sha256=file_hash(self.structures/session['day']/'complete.json'))
+        if getattr(self,'history_root',None) is not None:expected['history_receipt_sha256']=file_hash(self.history_root/session['day']/'complete.json')
         if any(record.get(k)!=v for k,v in expected.items()):raise ValueError('Resident batch resume contract changed')
         if file_hash(folder/'fills.pt')!=record['ledger_sha256']:raise ValueError('Resident batch ledger changed')
         audit_fills(folder/'fills.pt',record['metrics'])
@@ -150,6 +157,15 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
 
     def prepare_pass(self,training,population,output,*,workers=2,prime_only=False):
         if type(prime_only) is not bool:raise ValueError('Explicit Boolean capture priming required')
+        if getattr(self,'history_root',None) is not None and len(training)>workers:
+            measurements=[]
+            for begin in range(0,len(training),workers):
+                self.close()
+                cohort=training[begin:begin+workers]
+                measurements.extend(self.prepare_pass(cohort,population,output,workers=len(cohort),prime_only=prime_only))
+            self.close()
+            write_json(output/'resident-measurements.json',measurements)
+            return measurements
         self.contract(training,workers)
         token=population_hash(population);space=StrategySpace();measurements=[]
         remaining=[]
@@ -161,6 +177,8 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
         if not remaining:
             write_json(output/'resident-measurements.json',[]);return []
         identity=tuple((s['day'],file_hash(self.inputs/s['day']/'complete.json'),file_hash(self.structures/s['day']/'complete.json')) for s in training)
+        if getattr(self,'history_root',None) is not None:
+            identity=tuple((*item,file_hash(self.history_root/item[0]/'complete.json')) for item in identity)
         if self._cohort_identity is not None:self._verify_cohort_identity(identity)
         # Inputs are immutable across candidate batches. Reserve a separate
         # bounded cohort envelope before retaining them on device.
@@ -169,6 +187,9 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
         # Budget the complete training cohort even when durable receipts let
         # this pass skip sessions. The next generation may load every session.
         for session in training:
+            if getattr(self,'history_root',None) is not None:
+                history=json.loads((self.history_root/session['day']/'complete.json').read_text())
+                residency+=history['resident_bytes']
             folder=self.inputs/session['day'];certificate=json.loads((folder/'complete.json').read_text())
             if 'market_rows' not in certificate:
                 residency+=self.maximum_input_gib*1024**3
@@ -197,6 +218,9 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
             if item.receipt['identity']['session']!=session or len(item.arrays['clocks'])!=int(end-begin):
                 raise ValueError('Resident full-session contract changed')
             resident_inputs[day]=item
+            if self.history_root is not None:
+                from .persisted_history import bind_history
+                bind_history(item,self.history_root/day,self.maximum_history_gib)
             # Membership is immutable across population batches/generations.
             # Native unique avoids repeated Python iteration over every clock.
             self._resident_listing_ids[day]=self._listing_union(item.arrays['top_indices'])
@@ -305,6 +329,6 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
             # Scheduling is independent across accounts. Restore the original
             # candidate order before aggregation and parent selection.
             ordered=sorted(zip(batches[day],parts[day]),key=lambda pair:pair[0]['directory'])
-            seal_session(session,token,len(population),output/day,[v for _,v in ordered],[b for b,_ in ordered],self.inputs,self.structures,self.holding_capacity)
+            seal_session(session,token,len(population),output/day,[v for _,v in ordered],[b for b,_ in ordered],self.inputs,self.structures,self.holding_capacity,history_root=getattr(self,'history_root',None))
         write_json(output/'resident-measurements.json',measurements)
         return measurements

@@ -15,6 +15,8 @@ def main(argv=None):
     p.add_argument('--sessions',type=Path,required=True)
     p.add_argument('--inputs',type=Path,required=True);p.add_argument('--structure',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--history',type=Path,help='Verified offline causal broker-history root; omitted preserves the original V6 path')
+    p.add_argument('--maximum-history-gib',type=float,default=16.)
     # No population/generation defaults: the measured run budget is an explicit choice.
     p.add_argument('--population',type=int,required=True);p.add_argument('--generations',type=int,required=True)
     p.add_argument('--batch-size',type=int,required=True);p.add_argument('--session-workers',type=int,required=True)
@@ -28,6 +30,7 @@ def main(argv=None):
     budget=specialization_budget(a.population,a.batch_size,a.generations,len(spec['training']))
     root=require_runtime(a.output);configure_caches(root/'cache',recompile_limit=budget)
     evaluate=ResidentSessionEvaluator(a.inputs,a.structure,batch_size=a.batch_size,holding_capacity=a.holding_capacity,capture_seed_root=root/'capture-seeds',
+        history_root=a.history,maximum_history_gib=a.maximum_history_gib,
         maximum_fills=a.maximum_fills,maximum_input_gib=a.maximum_input_gib,maximum_state_gib=a.maximum_state_gib,capture_variants=a.capture_variants,
         compiler_specialization_budget=budget)
     try:

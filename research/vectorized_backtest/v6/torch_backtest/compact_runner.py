@@ -14,6 +14,7 @@ class CompactProgramRunner(SparseProgramRunner):
         if type(holding_capacity) is not int or holding_capacity<top_n:raise ValueError('Capacity must cover top-N')
         self.candidate_market=True
         super().__init__(inputs,space,individuals,gates,broker_capacity=holding_capacity,**kwargs)
+        self.persisted_history=getattr(inputs,'history_binding',None)
         self.registry=HoldingRegistry(self.b,holding_capacity,top_n,device=inputs.device)
         self.registry_ids=self.registry.ids;self.registry_overflow=self.registry.overflow
         self._state_names.extend(('registry_ids','registry_overflow'))
@@ -21,16 +22,20 @@ class CompactProgramRunner(SparseProgramRunner):
         self.source_used=torch.zeros((self.b,len(inputs.offsets)-1),dtype=torch.int64,device=inputs.device)
         left_max,right_max=self.execution_key[2][1:3]
         self.swing_right_capacity=right_max
-        pairs=torch.cartesian_prod(torch.arange(1,left_max+1,device=inputs.device),torch.arange(1,right_max+1,device=inputs.device))
+        pairs=torch.cartesian_prod(torch.arange(1,left_max+1,device=inputs.device),torch.arange(1,right_max+1,device=inputs.device)) if self.persisted_history is None else torch.empty((0,2),dtype=torch.int64,device=inputs.device)
         self.swing_pair_right=pairs[:,1];self.swing_pair_length=pairs.sum(-1)+1
         self.source_swing=torch.full((len(pairs),len(self.union_ids)),float('nan'),dtype=torch.float64,device=inputs.device)
         self._state_names.extend(('source_used','source_swing'))
         self.source_rings={}
-        for name in ('price_ring','close_ring','low_ring','movement_ring','attention_ring'):
+        for name in (() if self.persisted_history is not None else ('price_ring','close_ring','low_ring','movement_ring','attention_ring')):
             value=torch.full((len(getattr(self,name)),len(self.union_ids)),float('nan'),dtype=torch.float64,device=inputs.device)
             setattr(self,'source_'+name,value);self.source_rings[name]=value;self._state_names.append('source_'+name)
         self.source_previous_close=torch.full((len(self.union_ids),),float('nan'),dtype=torch.float64,device=inputs.device)
         self._state_names.append('source_previous_close')
+        if getattr(self,'persisted_history',None) is not None:
+            from .history_bank import SWING_WINDOWS
+            self.swing_window_index=torch.full((61,),-1,dtype=torch.int64,device=inputs.device)
+            self.swing_window_index[torch.tensor(SWING_WINDOWS,device=inputs.device)]=torch.arange(len(SWING_WINDOWS),device=inputs.device)
         self.archived={}
         for name in self._entry_accounting():
             if name=='pending_entry_shares':continue
@@ -38,7 +43,7 @@ class CompactProgramRunner(SparseProgramRunner):
             setattr(self,'archived_'+name,value);self.archived[name]=value;self._state_names.append('archived_'+name)
         self.ticker_states=[name for name in self._state_names if getattr(self,name).shape[:2]==(self.b,self.n)
             and not name.startswith(('registry_','source_','archived_'))
-            and name not in (*self.source_rings,'rule_history','current_atoms')]
+            and name not in ('price_ring','close_ring','low_ring','movement_ring','attention_ring','rule_history','current_atoms')]
         self.tape.provenance.update(version='v6-compact-held-broker-v1',holding_capacity=holding_capacity)
         self.reset()
 
@@ -88,7 +93,8 @@ class CompactProgramRunner(SparseProgramRunner):
             state=getattr(self,name);mask=changed.reshape(changed.shape+(1,)*(state.ndim-2))
             state.copy_(torch.where(mask,float('nan') if name=='swing_low' else 0,state))
         self.used.copy_(self.source_used.gather(1,self.registry.ids.clamp_min(0)).bool()&(self.registry.ids>=0))
-        self.source_market=self.inputs.lookup(self.listing_ids,clock)
+        source_rows=None if self.persisted_history is None else self.persisted_history['source_rows'].index_select(0,self.index.reshape(1)).squeeze(0)
+        self.source_market=self.inputs.lookup(self.listing_ids,clock,source_rows=source_rows)
         self.source_indices=torch.searchsorted(self.listing_ids,self.registry.ids.clamp_min(0)).clamp_max(len(self.union_ids)-1)
         # All retained identities belong to this session's ranked union.
         # Reuse its already-resolved causal source rows instead of repeating
@@ -144,29 +150,46 @@ class CompactProgramRunner(SparseProgramRunner):
         return torch.where(selected,values,0).sum(1)/window.squeeze(1)
 
     def _recent_high(self):
+        if getattr(self,'persisted_history',None) is not None:return self._history_value(0,'retest_lookback_seconds')
         return self._source_reduce(self.source_price_ring,'retest_lookback_seconds','maximum')
 
     def _attention_mean(self):
+        if getattr(self,'persisted_history',None) is not None:return self._history_value(120,'attention_lookback_seconds')
         return self._source_reduce(self.source_attention_ring,'attention_lookback_seconds')
 
     def _average_move(self):
+        if getattr(self,'persisted_history',None) is not None:return self._history_value(179,'adaptive_window')
         return self._source_reduce(self.source_movement_ring,'adaptive_window')
 
     def _momentum_close(self):
+        if getattr(self,'persisted_history',None) is not None:return self._history_value(60,'momentum_lookback_seconds')
         indices=self._value('momentum_lookback_seconds',2).to(torch.int64)-1
         return self.source_rings['close_ring'][indices,self.source_indices]
 
     def _swing_level(self):
+        if getattr(self,'persisted_history',None) is not None:
+            left=self.swing_window_index[self._value('swing_left_seconds',2).to(torch.int64)]
+            right=self.swing_window_index[self._value('swing_right_seconds',2).to(torch.int64)]
+            return self._history_value_columns(211+left*11+right)
         pair=(self._value('swing_left_seconds',2).to(torch.int64)-1)*self.swing_right_capacity+self._value('swing_right_seconds',2).to(torch.int64)-1
         return self.source_swing[pair,self.source_indices]
 
+    def _history_value_columns(self,columns):
+        ids=self.persisted_history['ids'].index_select(0,self.index.reshape(1)).squeeze(0).to(torch.int64)
+        return self.persisted_history['values'][ids[self.source_indices],columns]
+
+    def _history_value(self,offset,name):
+        return self._history_value_columns(offset+self._value(name,2).to(torch.int64)-1)
+
     def _advance_movement(self,close,observed):
+        if getattr(self,'persisted_history',None) is not None:return
         market=self.source_market;close=market['mark'];observed=market['observed']
         movement=torch.where(observed&torch.isfinite(self.source_previous_close),
             (close-self.source_previous_close).abs(),float('nan'))
         ring=self.source_rings['movement_ring'];ring.copy_(torch.cat((movement[None],ring[:-1]),0))
 
     def _advance_source_history(self,close,low,high,observed,notional,above,quote):
+        if getattr(self,'persisted_history',None) is not None:return
         market=self.source_market;observed=market['observed'];close=market['mark']
         for name,field in (('price_ring','high'),('close_ring','mark'),('low_ring','low'),('attention_ring','notional')):
             if name=='close_ring' and self.execution_key[3][0]:continue
