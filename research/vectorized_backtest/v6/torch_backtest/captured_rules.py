@@ -17,7 +17,10 @@ class SharedRuleBatch:
         self.members=tuple(members);self.device=torch.device(device)
         if self.device.type=='cuda' and self.device.index is None:
             self.device=torch.device('cuda',torch.cuda.current_device())
-        self.programs={stage:TorchPrograms([m.programs()[stage] for m in members],CATALOG,self.device) for stage in STAGES}
+        # programs() composes every lifecycle DAG. Compose once per member,
+        # rather than rebuilding all six DAGs for each stage's tensor pack.
+        composed=[m.programs() for m in self.members]
+        self.programs={stage:TorchPrograms([p[stage] for p in composed],CATALOG,self.device) for stage in STAGES}
         self.captures=OrderedDict();self.maximum_bytes=int(maximum_gib*1024**3)
         self.maximum_shapes=maximum_shapes;self.bytes=0;self.hits=0;self.builds=0
 

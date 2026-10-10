@@ -5,6 +5,22 @@ from research.vectorized_backtest.v6.torch_backtest.feature_bank import CATALOG
 from research.vectorized_backtest.v6.torch_backtest.evolution import sample
 from research.vectorized_backtest.v6.torch_backtest.tests.test_sparse_runner import fixture
 
+def test_shared_rule_batch_composes_each_member_once():
+    from research.vectorized_backtest.v6.torch_backtest.captured_rules import SharedRuleBatch
+    from research.vectorized_backtest.v6.torch_backtest.evolution import STAGES
+    _,_,space,_,_=fixture()
+    members=sample(np.random.default_rng(2236),space,4)
+    class Counted:
+        def __init__(self,member):self.member=member;self.calls=0
+        def programs(self):
+            self.calls+=1
+            return self.member.programs()
+    counted=[Counted(m) for m in members]
+    shared=SharedRuleBatch(counted,'cpu')
+    assert [m.calls for m in counted]==[1]*len(members)
+    for stage in STAGES:
+        assert shared.programs[stage].programs==[m.programs()[stage] for m in members]
+
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA rule capture qualification')
 def test_captured_gates_exact_native_with_padding_history_and_missing_features():
