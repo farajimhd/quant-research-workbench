@@ -1859,6 +1859,8 @@ _FIXED_LOT_LEGACY_AST_RECIPES = {('backend/backtest_typed_publisher.py', '_drain
 
 def _reviewed_fixed_lot_ast_recipe(source: str, relative: str, name: str, expected: str) -> bool:
     """Apply only exact reviewed AST edits; complete retained legacy pin remains required."""
+    from .backtest_fixed_structural_lot_compatibility_v29 import restore_reviewed_parent_source as restore_v29
+    source = restore_v29(source, relative)
     supplied_source = source
     from .backtest_fixed_structural_lot_compatibility_v28 import restore_reviewed_parent_source as restore_v28
     source = restore_v28(source, relative)
@@ -2015,6 +2017,8 @@ _DRAWDOWN_CORE_LEGACY_SELF_AST = "fb07a0cb88e0e19b384ddd6a86bf19baed495378708dd7
 
 def _reviewed_fixed_lot_core_projection(source: str, relative: str, name: str, expected: str) -> bool:
     """Retain core source pins under the same bounded, independently reviewed projection."""
+    from .backtest_fixed_structural_lot_compatibility_v29 import restore_reviewed_parent_source as restore_v29
+    source = restore_v29(source, relative)
     supplied_source = source
     relative = relative.removeprefix("src/")
     from .backtest_fixed_structural_lot_compatibility_v28 import restore_reviewed_parent_source as restore_v28
