@@ -35,19 +35,29 @@ def project_native_channel_exit(request, group, executions, *, original_entry,
     verify source coverage/content, original entry and both checkpoint roots,
     then seal all three families together before admitting an exit.
     """
+    if type(checkpoint) is not NativeChannelExitCheckpointReference:
+        raise ValueError('Exact channel checkpoint references required')
+    checkpoint.__post_init__()
+    values, sources, fills = _project_native_channel_exit_facts(request, group, executions,
+        original_entry=original_entry, source_entry_intent_id=source_entry_intent_id,
+        current_financial=current_financial, **lineage_context)
+    return typed_contract_row(DECISION, {**values, **asdict(checkpoint)}), sources, fills
+
+
+def _project_native_channel_exit_facts(request, group, executions, *, original_entry,
+        source_entry_intent_id, current_financial, **lineage_context):
+    """Shared pre-checkpoint facts; never insert fabricated root references."""
     if (type(request) is not NativeChannelExitRequest
             or type(request.policy) is not NativeChannelExitPolicy
             or type(request.source_plan) is not NativeChannelSourcePlan
             or type(original_entry) is not StrategyOneEntryProposal
             or type(current_financial) is not StrategyOneFinancialView
-            or type(checkpoint) is not NativeChannelExitCheckpointReference
             or current_financial != request.financial
             or current_financial.pending_exit
             or type(current_financial.position_quantity) not in (int, float)
             or not isfinite(current_financial.position_quantity)
             or current_financial.position_quantity <= 0):
-        raise ValueError('Exact current held owner, original entry and checkpoint references required')
-    checkpoint.__post_init__()
+        raise ValueError('Exact current held owner and original entry required')
     owner = (request.acquisition.account_id, request.acquisition.assignment_id, request.acquisition.ticker)
     if (owner != (original_entry.account_id, original_entry.assignment_id, original_entry.ticker)
             or source_entry_intent_id != request.acquisition.source_entry_intent_id
@@ -102,5 +112,5 @@ def project_native_channel_exit(request, group, executions, *, original_entry,
         reference_close_int=decision.get('reference_close_int'), quote_day_us=decision['quote_day_us'],
         quote_age_us=age, bid_int=decision['bid_int'], ask_int=decision['ask_int'],
         original_ask=ask, initial_stop=stop, position_quantity=current_financial.position_quantity,
-        source_row_count=len(sources), execution_row_count=len(fills), **asdict(checkpoint))
-    return typed_contract_row(DECISION, values), sources, fills
+        source_row_count=len(sources), execution_row_count=len(fills))
+    return values, sources, fills
