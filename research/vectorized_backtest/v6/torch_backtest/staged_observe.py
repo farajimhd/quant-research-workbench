@@ -1,5 +1,6 @@
 """Read-only fixed-screen observer. Never touches campaign ownership or CUDA."""
 import argparse,json,time,os
+os.environ['PYTHONDONTWRITEBYTECODE']='1'
 from pathlib import Path
 from rich.console import Console
 from rich.live import Live
@@ -9,14 +10,19 @@ from .ranking_diagnostics import diagnostics
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True);p.add_argument('--once',action='store_true')
-    p.add_argument('--view',choices=('financial','objective','positions','performance'),default='financial');args=p.parse_args(argv)
+    p.add_argument('--view',choices=('financial','objective','positions','performance'),default='financial')
+    p.add_argument('--full-training',action='store_true',help='Read run_full_search all30 generation receipts')
+    args=p.parse_args(argv)
+    if args.full_training:
+        from .full_observe_data import FullTrainingView
+        full_view=FullTrainingView()
     console=Console(no_color=bool(os.environ.get('NO_COLOR')));last={};rank=1;page=0;rank_page=0
     pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='receipt-diagnostics')
     future=None;requested_key=None;cache={};diagnostic_error=None
     def read():
         nonlocal last,future,requested_key,diagnostic_error
-        try:last=json.loads((args.output/'status.json').read_text())
-        except (OSError,json.JSONDecodeError):last={**last,'error':'Snapshot unavailable; retaining last good values'}
+        try:last=full_view.read(args.output) if args.full_training else json.loads((args.output/'status.json').read_text())
+        except (OSError,ValueError,KeyError):last={**last,'error':'Snapshot unavailable or receipt verification failed; retaining last good values'}
         display=dict(last)
         generation=last.get('completed_generations',0)
         if generation and last.get('evaluation_basis','').endswith('search ranking'):
@@ -30,7 +36,7 @@ def main(argv=None):
                 except (OSError,ValueError,KeyError,RuntimeError) as error:diagnostic_error=f'Receipt diagnostics unavailable: {type(error).__name__}'
                 future=None
             if candidates and key not in cache and future is None and requested_key!=key:
-                requested_key=key;future=pool.submit(diagnostics,args.output,generation,candidates)
+                requested_key=key;future=pool.submit(diagnostics,args.output,generation,candidates,full_training=args.full_training)
             derived=cache.get(key,{})
             display['top_strategies']=[{**row,'metrics':{**row.get('metrics',{}),**derived.get(row['candidate'],{})}} for row in leaders]
             if diagnostic_error:display['error']=diagnostic_error

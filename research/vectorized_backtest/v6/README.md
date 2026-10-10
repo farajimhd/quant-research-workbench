@@ -97,3 +97,14 @@ exact reference/repeat comparisons and the measured population/generation report
 Full optimization requires the user's final parameter decision.
 Full-search session concurrency is bounded to 1..8 and validated before any
 generation preparation; the all30 selection barrier and RNG resume are retained.
+Observe this full-search launcher using:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -m research.vectorized_backtest.v6.torch_backtest.staged_observe --full-training --output RUN
+```
+
+The observer binds rankings to completed all30 generation seals,
+shows active-generation preparation separately, and derives complete-position
+tail diagnostics from verified fill receipts on a bounded background worker.
+It does not acquire replay ownership or change fitness, checkpoints or RNG.
