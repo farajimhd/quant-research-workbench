@@ -18,7 +18,7 @@ from src.backend.backtest_v4_broker_quote_restore import (
     CompletedBrokerQuote, load_completed_broker_quotes,
 )
 from src.backend.backtest_v4_broker_state_restore import reconstruct_broker_match_state
-from src.backend.backtest_v4_execution_restore import load_v4_broker_executions
+from src.backend.backtest_v4_execution_restore import load_v4_broker_executions, execution_order_bindings_from_oms
 from src.backend.backtest_strategy_one_evidence import StrategyOneEvidenceState
 from src.backend.backtest_v4_running_portfolio import (
     load_v4_running_portfolio_images,
@@ -285,23 +285,7 @@ def load_v4_running_broker_image(client: Any,
     and no resume admission is granted by this read-only projection.
     """
     state = reconstruct_v4_broker_state(evidence)
-    requests_by_coid = {}
-    coid_by_broker_id = {}
-    for lineage in evidence.oms:
-        for request in lineage.orders:
-            if request.cOID in requests_by_coid:
-                raise RuntimeError("V4 broker image repeats OMS client order")
-            requests_by_coid[request.cOID] = request
-        for binding in lineage.state.broker_bindings:
-            index = binding["request_index"]
-            if index is None:
-                continue
-            if type(index) is not int or not 0 <= index < len(lineage.orders):
-                raise RuntimeError("V4 broker image has invalid OMS binding")
-            broker_id = binding["broker_order_id"]
-            if broker_id in coid_by_broker_id:
-                raise RuntimeError("V4 broker image repeats broker order")
-            coid_by_broker_id[broker_id] = lineage.orders[index].cOID
+    requests_by_coid, coid_by_broker_id = execution_order_bindings_from_oms(evidence.oms)
     state["executions"] = load_v4_broker_executions(
         client, evidence.prefix, requests_by_coid=requests_by_coid,
         coid_by_broker_id=coid_by_broker_id,

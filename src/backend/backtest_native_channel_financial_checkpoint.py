@@ -1,12 +1,14 @@
-"""Cold channel held-position confirmation; neither fills nor order admission.
+"""Cold channel held-position and acquisition confirmation; no order admission.
 
 Source/fill recomputation, native checkpoint attestation and OMS ownership are
-separate checks. This result covers held quantity and checkpoint references;
-the native publisher must still verify execution provenance before admission.
+separate checks. This result covers held quantity, committed acquisition and
+checkpoint references; native publication and OMS admission remain separate.
 """
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from decimal import Decimal
 
-from .backtest_market_data import SESSION_OPEN_OFFSET_MS
+from .backtest_market_data import SESSION_OPEN_OFFSET_MS, market_day_boundary
 from .backtest_native_channel_exit_projection import NativeChannelExitCheckpointReference
 from .backtest_typed_publisher import TypedBacktestReceipt
 from src.trading_runtime.native_channel_management_policy import NativeChannelManagementPolicy
@@ -95,7 +97,7 @@ def confirm_native_channel_held_checkpoint(client, manager_keeper, broker_keeper
         raise ValueError('Channel held confirmation has ambiguous original entry ownership')
     reference = NativeChannelExitCheckpointReference(root['snapshot_id'], sequence,
         root['content_hash'], broker.snapshot['snapshot_id'], broker.snapshot['content_hash'])
-    result, seen = [], set()
+    result, seen, acquisitions = [], set(), []
     headers = sorted(rows.pending, key=lambda row: row['record_id'])
     for header, request in zip(headers, requests, strict=True):
         financial, clock = request.financial, request.acquisition
@@ -120,9 +122,52 @@ def confirm_native_channel_held_checkpoint(client, manager_keeper, broker_keeper
                          and item.source_intent.account_id == financial.account_id)
         if len(original) != 1 or original[0].state.group['group_id'] != clock.source_group_id:
             raise ValueError('Channel acquisition group differs from committed original OMS entry')
+        acquisitions.append((request, original[0], evidence['group'], conid))
         result.append(NativeChannelHeldCheckpoint(request, reference, conid, quantity))
+    if acquisitions:
+        from .backtest_v4_execution_restore import execution_order_bindings_from_oms, load_v4_broker_executions
+        from src.trading_runtime.ibkr_schema import Execution
+        requests_by_coid, coid_by_broker_id = execution_order_bindings_from_oms(lineage)
+        payloads = load_v4_broker_executions(client, prefix, requests_by_coid=requests_by_coid,
+            coid_by_broker_id=coid_by_broker_id, next_execution_id=broker.snapshot['next_execution_id'])
+        as_of = market_day_boundary(root['session_date'], state.boundary_ms)
+        executions = []
+        for payload in payloads:
+            values = dict(payload)
+            values['trade_time'] = datetime.fromisoformat(values['trade_time'])
+            if values['trade_time'].tzinfo is None or values['trade_time'].astimezone(timezone.utc) > as_of:
+                raise ValueError('Channel committed execution exceeds its checkpoint clock')
+            executions.append(Execution(**values))
+        executions = tuple(executions)
+        for request, original, group, conid in acquisitions:
+            _verify_committed_channel_acquisition(request, original, group, executions, as_of, conid)
     if (manager_keeper.read_head(run_id=run_id), broker_keeper.read_head(run_id=run_id)) != heads:
         raise ValueError('Channel held checkpoint heads changed before reference selection')
     if load_verified_v4_prefix(client, run_id, first_price_source=first_price_source) != prefix:
         raise ValueError('Channel committed frontier changed before reference selection')
     return tuple(result)
+
+
+def _verify_committed_channel_acquisition(request, original, group, executions, as_of, conid):
+    """Reject supplied OMS/fill clocks that differ from committed native facts."""
+    from src.trading_runtime.arte_journal_reader import _journal_instant
+    from src.trading_runtime.order_management import OrderGroupSnapshot
+    from src.trading_runtime.native_acquisition_clock import require_acquisition_clock_matches_executions
+    native = original.state.group
+    bindings = original.state.broker_bindings
+    if (type(group) is not OrderGroupSnapshot or group.group_id != native['group_id']
+            or group.intent_id != original.source_intent.intent.intent_id
+            or group.account_id != native['account_id']
+            or group.assignment_id != original.admission_reservation['assignment_id']
+            or group.ticker != original.source_intent.intent.ticker
+            or group.action != original.source_intent.intent.action
+            or group.state.value != native['state']
+            or group.submitted_at != _journal_instant(native['submitted_at'])
+            or group.updated_at != _journal_instant(native['updated_at'])
+            or Decimal(str(group.filled_quantity)) != Decimal(str(native['filled_quantity']))
+            or Decimal(str(group.remaining_quantity)) != Decimal(str(native['remaining_quantity']))
+            or set(group.broker_order_ids) != {b['broker_order_id'] for b in bindings}):
+        raise ValueError('Channel supplied acquisition group differs from committed OMS state')
+    require_acquisition_clock_matches_executions(request.acquisition, group, executions,
+        session_date=request.acquisition.session_date, as_of=as_of,
+        source_entry_intent_id=request.acquisition.source_entry_intent_id, expected_conid=conid)

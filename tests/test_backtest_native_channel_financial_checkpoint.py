@@ -1,5 +1,6 @@
 """Real pending recomputation and OMS ownership; checkpoint transport is mocked."""
-from dataclasses import replace
+from dataclasses import asdict, replace
+from datetime import timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -37,7 +38,7 @@ def checkpoint_case(installed, monkeypatch, defect=None):
         account_ids=(financial.account_id,), cash={financial.account_id:10000},
         realized_pnl={financial.account_id:0}, positions={financial.account_id:[dict(
             conid=native_conid, ticker=financial.ticker, quantity=financial.position_quantity,
-            avg_cost=1.0, realized_pnl=0)]}, orders=(), next_order_id=1, next_execution_id=1,
+            avg_cost=1.0, realized_pnl=0)]}, orders=(), next_order_id=1, next_execution_id=2,
         performance_extrema=dict(complete=False,as_of=None,unrealized=0,market_value=0,
             peak_unrealized=0,worst_unrealized=0,equity_peak=0,maximum_drawdown=0))
     if defect == 'quantity': native['positions'][financial.account_id][0]['quantity'] += 1
@@ -47,12 +48,21 @@ def checkpoint_case(installed, monkeypatch, defect=None):
         args['as_of'], 'enter_long', financial.position_quantity, 1.0)
     source = RecoveredIntent(1, financial.account_id, 'entry-record', batch, intent)
     order = OrderRequest(acctId=financial.account_id,conid=native_conid,ticker=financial.ticker,
-        orderType='LMT',side='BUY',quantity=financial.position_quantity,price=1.0)
+        orderType='LMT',side='BUY',quantity=financial.position_quantity,price=1.0,cOID='entry-client')
     group = dict(run_id=run,batch_id=batch,group_id=request.acquisition.source_group_id,
         account_id=financial.account_id,strategy_id=STRATEGY_ID,strategy_revision=1,
         strategy_intent_id=intent.intent_id,state=OrderManagementState.WORKING.value)
+    native_group = args['group']
+    group['state'] = native_group.state.value
+    group.update(submitted_at=native_group.submitted_at.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f'),
+        updated_at=native_group.updated_at.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f'),
+        filled_quantity=str(native_group.filled_quantity),remaining_quantity=str(native_group.remaining_quantity))
+    bindings = tuple(dict(broker_order_id=identity,request_index=0) for identity in native_group.broker_order_ids)
+    if defect == 'oms_fill_quantity': group['filled_quantity'] = str(native_group.filled_quantity+1)
+    if defect == 'oms_state': group['state'] = next(s.value for s in OrderManagementState if s != native_group.state)
+    if defect == 'binding': bindings += (dict(broker_order_id='foreign-order',request_index=0),)
     if defect == 'group': group['group_id'] = 'foreign'
-    recovered = RecoveredOmsGroupState(2, source.record_id, group, (order,), (0,), ('entry',), (), (), ())
+    recovered = RecoveredOmsGroupState(2, source.record_id, group, (order,), (0,), ('entry',), bindings, (), ())
     lineage = (RecoveredStrategyOneOmsLineage(recovered,source,(order,),sequence,
         replace(intent,metadata={'assignment_id':financial.assignment_id}),
         {'assignment_id':financial.assignment_id}),)
@@ -78,6 +88,12 @@ def checkpoint_case(installed, monkeypatch, defect=None):
     monkeypatch.setattr('src.trading_runtime.native_channel_manager_reader.load_attested_native_channel_manager_snapshot',lambda *_a,**_k:(rows,state,requests))
     monkeypatch.setattr('src.trading_runtime.strategy_one_broker_match_snapshot.load_attested_broker_match_snapshot',lambda *_a,**_k:broker)
     monkeypatch.setattr('src.trading_runtime.arte_oms_projection.load_recovered_strategy_one_oms_lineage',lambda *_a,**_k:lineage)
+    execution = args['executions'][0]
+    if defect == 'execution_changed': execution = replace(execution,trade_time=execution.trade_time+timedelta(milliseconds=1),trade_time_r=execution.trade_time_r+1)
+    if defect == 'execution_future': execution = replace(execution,trade_time=args['as_of']+timedelta(seconds=1))
+    payload = asdict(execution)
+    payload['trade_time'] = execution.trade_time.isoformat()
+    monkeypatch.setattr('src.backend.backtest_v4_execution_restore.load_v4_broker_executions',lambda *_a,**_k:[] if defect=='execution_missing' else [payload])
     monkeypatch.setattr('src.trading_runtime.numbered_fixed_strategy.numbered_fixed_strategy',lambda n:SimpleNamespace(native_channel_management_policy=policy if n==1 else None))
     class Keeper:
         def __init__(self,head): self.head,self.reads=head,0
@@ -97,6 +113,6 @@ def test_pending_channel_binds_actual_held_quantity_and_both_checkpoint_roots(in
     assert result[0].conid>0 and result[0].checkpoint.source_manager_checkpoint_sequence==12
 
 
-@pytest.mark.parametrize('defect',['quantity','pending_exit','group','context','cursor','prefix','head_changed','frontier_changed','source_conid','original_entry'])
+@pytest.mark.parametrize('defect',['quantity','pending_exit','group','context','cursor','prefix','head_changed','frontier_changed','source_conid','original_entry','execution_changed','execution_future','execution_missing','oms_fill_quantity','oms_state','binding'])
 def test_channel_held_confirmation_rejects_foreign_or_changed_native_financial_authority(installed,monkeypatch,defect):
     with pytest.raises(ValueError): checkpoint_case(installed,monkeypatch,defect)()

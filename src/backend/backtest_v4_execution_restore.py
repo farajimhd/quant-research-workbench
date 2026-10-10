@@ -15,6 +15,31 @@ from src.trading_runtime.arte_journal_writer import (
 from src.trading_runtime.ibkr_schema import OrderRequest
 
 
+def execution_order_bindings_from_oms(lineages):
+    """Build complete order maps from independently recovered OMS lineage.
+
+    Shared by broker recovery and channel acquisition verification. This only
+    joins identities; the committed execution loader verifies fills and fees.
+    """
+    requests_by_coid, coid_by_broker_id = {}, {}
+    for lineage in lineages:
+        for request in lineage.orders:
+            if request.cOID in requests_by_coid:
+                raise RuntimeError('V4 broker image repeats OMS client order')
+            requests_by_coid[request.cOID] = request
+        for binding in lineage.state.broker_bindings:
+            index = binding['request_index']
+            if index is None:
+                continue
+            if type(index) is not int or not 0 <= index < len(lineage.orders):
+                raise RuntimeError('V4 broker image has invalid OMS binding')
+            broker_id = binding['broker_order_id']
+            if broker_id in coid_by_broker_id:
+                raise RuntimeError('V4 broker image repeats broker order')
+            coid_by_broker_id[broker_id] = lineage.orders[index].cOID
+    return requests_by_coid, coid_by_broker_id
+
+
 def _pages(loader: Any, client: Any, prefix: V4CommittedPrefix,
            *, maximum: int) -> tuple[dict, ...]:
     rows: list[dict] = []
