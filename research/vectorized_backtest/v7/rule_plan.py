@@ -193,7 +193,13 @@ class RulePlan:
                     values, known = resident.block(warm,end,gpu_listings,group['columns'])
                     # Keep actual time lengths at the session boundaries:
                     # padding can alter parallel cumulative-sum rounding.
-                    signal = self.execute(group_id,values,known)[:,:,begin-warm:]
+                    # Independent listing lanes may be padded safely. Reusing
+                    # that shape avoids a private pool for every session tail.
+                    if len(listings)<listing_batch:
+                        from torch.nn.functional import pad
+                        padding=(0,0,0,0,0,listing_batch-len(listings))
+                        values=pad(values,padding);known=pad(known,padding,value=False)
+                    signal = self.execute(group_id,values,known)[:,:len(listings),begin-warm:]
                     ti = torch.arange(begin,end,device=self.device)
                     ui = gpu_listings
                     eligible=ti[:,None]>=gpu_first[ui][None]

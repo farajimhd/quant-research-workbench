@@ -228,7 +228,7 @@ def test_cuda_resident_rules_and_captured_replay_match_cpu(tmp_path):
     actual_features=data.resident_features.block(0,80,[0],list(range(len(CATALOG))))
     for a,b in zip(actual_features,expected_features):torch.testing.assert_close(a.cpu(),b,rtol=0,atol=0)
     programs=PopulationPrograms(members,'cuda')
-    actual=programs.evaluate(data,chunk=17,listing_batch=1)
+    actual=programs.evaluate(data,chunk=17,listing_batch=4)
     torch.testing.assert_close(actual.cpu(),mask_reference(oracle,data.host_tensors),rtol=0,atol=0)
     programs.close()
     # Independent sessions, forced entries/adds/exits, age gates and partial
