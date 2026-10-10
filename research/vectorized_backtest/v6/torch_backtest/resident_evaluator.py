@@ -72,6 +72,11 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
     def _capture_cache(self,day):
         return self._resident_runners.setdefault(day,{})
 
+    def _verify_cohort_identity(self,identity):
+        if self._cohort_identity is None:self._cohort_identity=identity
+        elif not set(identity).issubset(set(self._cohort_identity)):
+            raise ValueError('Retained cohort input/structural identity changed')
+
     def _reserve_capture(self,cache,key):
         """Evict only an exact, least-recently-used variant before replacement."""
         if key not in cache and len(cache)>=self.capture_variants:
@@ -156,8 +161,7 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
         if not remaining:
             write_json(output/'resident-measurements.json',[]);return []
         identity=tuple((s['day'],file_hash(self.inputs/s['day']/'complete.json'),file_hash(self.structures/s['day']/'complete.json')) for s in training)
-        if self._cohort_identity is not None and identity!=self._cohort_identity:
-            raise ValueError('Retained cohort input/structural identity changed')
+        if self._cohort_identity is not None:self._verify_cohort_identity(identity)
         # Inputs are immutable across candidate batches. Reserve a separate
         # bounded cohort envelope before retaining them on device.
         free,_=torch.cuda.mem_get_info(self.device)
@@ -181,7 +185,12 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
         resident_inputs=self._resident_inputs;load_started=perf_counter();loads=0
         for session in remaining:
             day=session['day']
-            if day in resident_inputs:continue
+            if day in resident_inputs:
+                item=resident_inputs[day]
+                begin,end=[datetime.fromisoformat(session[k]).timestamp() for k in ('start','end')]
+                if item.receipt['identity']['session']!=session or len(item.arrays['clocks'])!=int(end-begin):
+                    raise ValueError('Retained full-session contract changed')
+                continue
             write_json(output/'resident-status.json',dict(stage='Loading immutable cohort inputs once',day=day,loaded=len(resident_inputs),total=len(remaining),validation_opened=False))
             item=SparseInputs(self.inputs/day,device=self.device,maximum_gib=self.maximum_input_gib)
             begin,end=[datetime.fromisoformat(session[k]).timestamp() for k in ('start','end')]
@@ -192,7 +201,7 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
             # Native unique avoids repeated Python iteration over every clock.
             self._resident_listing_ids[day]=self._listing_union(item.arrays['top_indices'])
             loads+=1
-        self._cohort_identity=identity
+        self._verify_cohort_identity(identity)
         write_json(output/'input-residency.json',dict(load_seconds=perf_counter()-load_started,session_loads=loads,resident_sessions=len(resident_inputs),
             candidate_batches=(len(population)+self.batch_size-1)//self.batch_size,validation_opened=False))
         for offset in self._batch_order(population,space):

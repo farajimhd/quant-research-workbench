@@ -16,6 +16,19 @@ def test_listing_union_preserves_order_and_excludes_unfilled_slots():
     assert ResidentSessionEvaluator._listing_union(np.full((3,10),-1))==[]
 
 
+def test_retained_cohort_allows_only_hash_identical_subsets():
+    evaluate=ResidentSessionEvaluator.__new__(ResidentSessionEvaluator)
+    evaluate._cohort_identity=None
+    original=(('a','input-a','structure-a'),('b','input-b','structure-b'))
+    evaluate._verify_cohort_identity(original)
+    evaluate._verify_cohort_identity(original[:1])
+    assert evaluate._cohort_identity==original
+    with pytest.raises(ValueError,match='identity changed'):
+        evaluate._verify_cohort_identity((('a','changed','structure-a'),))
+    with pytest.raises(ValueError,match='identity changed'):
+        evaluate._verify_cohort_identity((('c','input-c','structure-c'),))
+
+
 def test_batch_order_groups_exact_shapes_without_changing_member_blocks(monkeypatch):
     evaluate=ResidentSessionEvaluator.__new__(ResidentSessionEvaluator)
     evaluate.batch_size=2;evaluate.graph_steps=16;evaluate._resident_runners={}
