@@ -28,7 +28,9 @@ def qualify(campaign,output):
     torch.set_num_threads(1)
     old=Path(active['code'])
     env=dict(os.environ,PYTHONPATH=str(old),PYTHONDONTWRITEBYTECODE='1')
-    subprocess.run([sys.executable,'-B',str(Path(__file__).with_name('cohort_baseline.py')),
+    # Safe-path prevents the sibling profile.py from shadowing stdlib profile
+    # when Torch imports cProfile. PYTHONPATH explicitly selects the old code.
+    subprocess.run([sys.executable,'-B','-P',str(Path(__file__).with_name('cohort_baseline.py')),
         '--campaign',str(campaign),'--output',str(output/'legacy')],cwd=old,env=env,check=True)
     legacy=json.loads((output/'legacy'/'baseline.json').read_text())
     expected=legacy['metrics'];baseline=legacy['seconds'];load_seconds=legacy['load_seconds']
