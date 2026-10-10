@@ -95,3 +95,14 @@ def test_fixed_terminal_updates_only_changed_cells_and_restores_cursor():
         assert stream.getvalue()=='\x1b[1;11H1'
     assert '\x1b[2J' not in stream.getvalue() and '\x1b[2K' not in stream.getvalue()
     assert stream.getvalue().endswith('\x1b[?7h\x1b[?25h\x1b[?1049l')
+
+
+def test_field_labels_keep_columns_when_values_become_available(tmp_path):
+    ui=CampaignProgress(tmp_path,contract(),console=Console(file=io.StringIO()),clock=lambda:100.)
+    before=ui.snapshot();after={**before,'stage':'Replay positions','replay_eta':1234.,'generation_eta':5678.,
+                              'campaign_eta':98765.,'average_batch_seconds':12.}
+    old=render(before)['timing'].renderable.plain.splitlines()
+    new=render(after)['timing'].renderable.plain.splitlines()
+    for index,label in ((0,'replay ETA'),(0,'generation ETA'),(1,'avg batch')):
+        assert old[index].index(label)==new[index].index(label)
+    assert render(before)['header'].renderable.plain.index('updated')==render(after)['header'].renderable.plain.index('updated')

@@ -19,8 +19,8 @@ def render(status, *, width=110, height=38, now=None, view='financial'):
     layout=v6_render(status,width=width,height=height-extra if height>=30 else height,now=now,view=view)
     config=status.get('config',{});state=status.get('status','starting')
     end=status.get('finished_epoch',now);age=max(0,end-status.get('updated_epoch',end))
-    layout['header'].update(Text(f"V7 {state.upper()} | {status.get('stage','Preparing')} | updated {age:.0f}s ago\n"
-        f"Population {config.get('population','—')} | {status.get('focus','')} | validation SEALED",
+    layout['header'].update(Text(f"V7 {state.upper():<11} | {status.get('stage','Preparing'):<38.38} | updated {age:>4.0f}s ago\n"
+        f"Population {str(config.get('population','—')):>6} | {status.get('focus',''):<23.23} | validation SEALED",
         style='red' if state=='failed' else 'yellow' if age>30 else 'cyan'))
     bars=Progress(TextColumn('{task.description}',table_column=Column(width=20,no_wrap=True)),
         BarColumn(bar_width=None),TaskProgressColumn(table_column=Column(width=4)),
@@ -39,10 +39,10 @@ def render(status, *, width=110, height=38, now=None, view='financial'):
                           (f'{day} backtest',lane.get('completed_seconds',0),lane.get('total_seconds',0))])
     for label,done,total in tasks:
         if total or lanes:
-            units=f'{done:,.0f}/{total:,.0f}' if total else 'waiting'
+            units=f'{done:6,.0f}/{total:6,.0f}' if total else 'waiting'.ljust(13)
             if lanes and label.endswith('backtest'):
                 lane=lanes[label[:-len(' backtest')]]
-                units+=f" ETA {duration(lane.get('replay_eta'))}"
+                units+=f" ETA {duration(lane.get('replay_eta')):>9}"
             bars.add_task(label,total=total or None,completed=done,units=units)
     layout['progress'].size=max(5,len(tasks))
     layout['progress'].update(bars)
@@ -58,8 +58,8 @@ def render(status, *, width=110, height=38, now=None, view='financial'):
     if not status.get('top_strategies'):leaders_panel.title='Rankings | awaiting completed generation'
     grid=layout['metrics'].renderable.renderable
     grid.box=None;grid.show_edge=False
-    layout['timing'].update(Text(f"Elapsed {duration(end-status.get('started_epoch',end))} | replay ETA {duration(status.get('replay_eta'))} | generation ETA {duration(status.get('generation_eta'))}\n"
-        f"Campaign ETA {duration(status.get('campaign_eta'))} | avg batch {duration(status.get('average_batch_seconds'))} | estimated"))
+    layout['timing'].update(Text(f"Elapsed {duration(end-status.get('started_epoch',end)):>9} | replay ETA {duration(status.get('replay_eta')):>9} | generation ETA {duration(status.get('generation_eta')):>9}\n"
+        f"Campaign ETA {duration(status.get('campaign_eta')):>9} | avg batch {duration(status.get('average_batch_seconds')):>9} | estimated"))
     # Keep the same V6 regions and controls within compact terminal bounds.
     if height<30:
         layout['leaders'].size=6;layout['metrics'].size=max(1,height-19-max(0,len(tasks)-5))
