@@ -61,8 +61,11 @@ def prepare(inputs,output,workers=8):
             part=groups.get((listing,))
             if part is None:raise ValueError('Ranked ticker has no certified market rows')
             part=part.sort('clock')
-            fields={k:part[k].fill_null(False if k=='observed' else 0. if k=='notional' else float('nan')).to_numpy()
-                    for k in ('clock','mark','high','low','observed','notional','source_row')}
+            if part['clock'].null_count() or part['source_row'].null_count():
+                raise ValueError('Null market row identity')
+            fields={k:part[k].to_numpy() for k in ('clock','source_row')}
+            fields.update({k:part[k].fill_null(False if k=='observed' else 0. if k=='notional' else float('nan')).to_numpy()
+                    for k in ('mark','high','low','observed','notional')})
             future=pool.submit(ticker_job,(listing,clocks,fields,output/'tickers'/str(listing)))
             pending[future]=listing
         def publish(stage):
