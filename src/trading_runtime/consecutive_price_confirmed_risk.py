@@ -131,7 +131,7 @@ def consecutive_price_risk_failure(value, *, prior, newest, policy):
     return ConsecutivePriceRiskWitness(current, prior, newest)
 
 
-def validate_consecutive_price_risk_diagnostic(diagnostic, *, policy):
+def validate_consecutive_price_risk_diagnostic(diagnostic, *, policy, inherited_early_policy=None):
     """Keep inherited priority and both exact producer witnesses for recovery."""
     from .strategy_followthrough_failure import FollowThroughFailureInput
     from .strategy_zero_regime_risk_failure import zero_regime_risk_failure
@@ -153,16 +153,22 @@ def validate_consecutive_price_risk_diagnostic(diagnostic, *, policy):
         newest.price_valid, newest.macd_line, newest.macd_signal,
         witness.bid, witness.ask, witness.quote_age_us, 1., False)
     inherited = zero_regime_risk_failure(value)
+    from .early_original_risk_failure import early_original_risk_failure
+    early = (early_original_risk_failure(value, policy=inherited_early_policy)
+             if inherited_early_policy is not None else None)
     if diagnostic.semantic_rule == INHERITED_ORIGINAL_RISK_RULE:
         if diagnostic.prior is not None or inherited != witness:
             raise ValueError('Inherited diagnostic must preserve its exact firing rule')
     elif diagnostic.semantic_rule == RULE:
-        if inherited is not None:
+        if inherited is not None or early is not None:
             raise ValueError('Consecutive diagnostic cannot supersede inherited priority')
         actual = consecutive_price_risk_failure(value, prior=diagnostic.prior,
             newest=newest, policy=policy)
         if actual is None or actual.current != witness:
             raise ValueError('Consecutive diagnostic lacks both exact completed witnesses')
+    elif inherited_early_policy is not None and diagnostic.semantic_rule == inherited_early_policy.policy_id:
+        if inherited is not None or diagnostic.prior is not None or early != witness:
+            raise ValueError('Inherited early-risk diagnostic differs from exact selected rule')
     else:
         raise ValueError('Foreign consecutive price-risk semantic rule')
     return diagnostic

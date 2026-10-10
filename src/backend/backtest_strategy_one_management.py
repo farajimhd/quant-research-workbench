@@ -188,11 +188,13 @@ class StrategyOneManagementRunner:
         self._completed_risk_lookup = lookup
 
     async def _submit_followthrough_with_diagnostic(self,financial,witness,source_entry_id,
-                                                   *,confirmed=None):
+                                                   *,confirmed=None,semantic_rule=None):
         policy=getattr(self.contract, 'confirmed_original_risk_policy', None)
         if policy is None:
-            if confirmed is not None:raise ValueError('Undeclared confirmed witness')
+            if confirmed is not None or semantic_rule is not None:raise ValueError('Undeclared confirmed witness')
             return await self.runtime.submit_followthrough_failure(financial,witness,source_entry_id)
+        if confirmed is not None and semantic_rule is not None:
+            raise ValueError('Confirmed witness already owns its firing rule')
         if self._completed_risk_lookup is None:
             raise RuntimeError('Declared failure diagnostics lack certified completed source')
         from src.trading_runtime.confirmed_original_risk_failure import (
@@ -202,9 +204,10 @@ class StrategyOneManagementRunner:
         if newest is None:raise RuntimeError('Selected failure lacks exact newest producer bucket')
         diagnostic=OriginalRiskDecisionDiagnostic(witness,newest,
             confirmed.prior if confirmed is not None else None,
-            confirmed.semantic_rule if confirmed is not None else INHERITED_ORIGINAL_RISK_RULE)
+            confirmed.semantic_rule if confirmed is not None else (semantic_rule or INHERITED_ORIGINAL_RISK_RULE))
         validate_decision_diagnostic(diagnostic,policy=policy,
-            premarket_policy=getattr(self.contract,'premarket_confirmed_original_risk_policy',None))
+            premarket_policy=getattr(self.contract,'premarket_confirmed_original_risk_policy',None),
+            inherited_early_policy=getattr(self.contract,'early_original_risk_policy',None))
         from src.trading_runtime.original_risk_checkpoint import OriginalRiskCheckpointRequest
         request=OriginalRiskCheckpointRequest(diagnostic,financial,source_entry_id)
         key=financial.account_id,financial.assignment_id,financial.ticker
@@ -741,7 +744,12 @@ class StrategyOneManagementRunner:
             witness = early_original_risk_failure(completed, policy=early_policy)
             if witness is not None:
                 entry = self.runtime._strategy_one_entry_intent(source)
-                await self.runtime.submit_followthrough_failure(financial, witness, entry.intent_id)
+                from src.trading_runtime.consecutive_price_confirmed_risk import ConsecutivePriceRiskPolicy
+                if type(getattr(self.contract, 'confirmed_original_risk_policy', None)) is ConsecutivePriceRiskPolicy:
+                    await self._submit_followthrough_with_diagnostic(financial, witness,
+                        entry.intent_id, semantic_rule=early_policy.policy_id)
+                else:
+                    await self.runtime.submit_followthrough_failure(financial, witness, entry.intent_id)
                 self._profit_arm_financials.pop(key, None)
                 return
         profit_policy = getattr(self.contract, 'armed_profit_floor_policy', None)

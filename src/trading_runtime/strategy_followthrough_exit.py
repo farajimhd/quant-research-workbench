@@ -35,7 +35,8 @@ def validate_witness(witness, *, strategy_number=9, diagnostic=None):
         if diagnostic is None or diagnostic.current != witness:
             raise ValueError('Declared consecutive failure requires its selected firing diagnostic')
         validate_decision_diagnostic(diagnostic, policy=selected,
-            premarket_policy=getattr(numbered_fixed_strategy(strategy_number),'premarket_confirmed_original_risk_policy',None))
+            premarket_policy=getattr(numbered_fixed_strategy(strategy_number),'premarket_confirmed_original_risk_policy',None),
+            inherited_early_policy=getattr(numbered_fixed_strategy(strategy_number),'early_original_risk_policy',None))
         return
     if diagnostic is not None:
         raise ValueError('Undeclared failure cannot carry a selected firing diagnostic')

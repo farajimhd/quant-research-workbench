@@ -38,12 +38,18 @@ def diagnostic_premarket_policy(strategy_number):
     return getattr(numbered_fixed_strategy(strategy_number),'premarket_confirmed_original_risk_policy',None)
 
 
+def diagnostic_early_policy(strategy_number):
+    from .numbered_fixed_strategy import numbered_fixed_strategy
+    return getattr(numbered_fixed_strategy(strategy_number), 'early_original_risk_policy', None)
+
+
 def project_original_risk_diagnostic(diagnostic, failure):
     policy = diagnostic_policy(failure['strategy_number'])
     if policy is None:
         raise ValueError('Diagnostic companion requires explicit declared capability')
     validate_decision_diagnostic(diagnostic,policy=policy,
-        premarket_policy=diagnostic_premarket_policy(failure['strategy_number']))
+        premarket_policy=diagnostic_premarket_policy(failure['strategy_number']),
+        inherited_early_policy=diagnostic_early_policy(failure['strategy_number']))
     from .original_risk_checkpoint import OriginalRiskCheckpointReference
     if type(diagnostic.checkpoint) is not OriginalRiskCheckpointReference:
         raise ValueError('Diagnostic projection requires its actual native checkpoint reference')
@@ -100,7 +106,8 @@ def restore_original_risk_diagnostic(row,witness):
     policy=diagnostic_policy(row['strategy_number'])
     if policy is None:raise ValueError('Foreign undeclared original-risk companion')
     validate_decision_diagnostic(result,policy=policy,
-        premarket_policy=diagnostic_premarket_policy(row['strategy_number']))
+        premarket_policy=diagnostic_premarket_policy(row['strategy_number']),
+        inherited_early_policy=diagnostic_early_policy(row['strategy_number']))
     return result
 
 

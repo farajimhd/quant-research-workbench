@@ -147,3 +147,45 @@ def test_inherited_firing_keeps_priority_over_the_new_rule():
             OriginalRiskDecisionDiagnostic(inherited, newest, prior, RULE), policy=policy)
     selected = OriginalRiskDecisionDiagnostic(inherited, newest, None, INHERITED_ORIGINAL_RISK_RULE)
     assert validate_consecutive_price_risk_diagnostic(selected, policy=policy) is selected
+
+
+def test_inherited_ah_weak_positive_macd_keeps_exact_semantic_authority():
+    from src.trading_runtime.strategy_fifty_release import EARLY_FAILURE_POLICY
+    from src.trading_runtime.early_original_risk_failure import early_original_risk_failure
+    from src.trading_runtime.confirmed_original_risk_failure import validate_decision_diagnostic
+    value, prior, newest, policy = case()
+    value = replace(value, boundary_ms=43215000, first_held_boundary_ms=43200100,
+        completed_five_second_boundary_ms=43215000, completed_five_second_close_int=68900,
+        bid=6.89, ask=6.90, macd_line=.1, macd_signal=.12)
+    newest = replace(newest, boundary_ms=value.boundary_ms, close_int=68900,
+        macd_line=.1, macd_signal=.12)
+    inherited = early_original_risk_failure(value, policy=EARLY_FAILURE_POLICY)
+    assert inherited is not None and inherited.macd_line > 0
+    assert inherited.macd_line < inherited.macd_signal
+    selected = OriginalRiskDecisionDiagnostic(inherited, newest, None, EARLY_FAILURE_POLICY.policy_id)
+    assert validate_decision_diagnostic(selected, policy=policy,
+        inherited_early_policy=EARLY_FAILURE_POLICY) is selected
+    with pytest.raises(ValueError, match='Foreign'):
+        validate_decision_diagnostic(selected, policy=policy)
+    with pytest.raises(ValueError):
+        validate_decision_diagnostic(replace(selected, prior=prior), policy=policy,
+            inherited_early_policy=EARLY_FAILURE_POLICY)
+
+
+def test_extension_cannot_supersede_an_eligible_declared_early_rule():
+    from src.trading_runtime.strategy_fifty_release import EARLY_FAILURE_POLICY
+    from src.trading_runtime.early_original_risk_failure import early_original_risk_failure
+    value, prior, newest, policy = case()
+    policy = replace(policy, price_policy=replace(policy.price_policy, afterhours_fraction=(1, 4)))
+    value = replace(value, boundary_ms=43215000, first_held_boundary_ms=43200100,
+        completed_five_second_boundary_ms=43215000, completed_five_second_close_int=68900,
+        bid=6.89, ask=6.90, macd_line=.1, macd_signal=.12)
+    newest = replace(newest, boundary_ms=value.boundary_ms, close_int=68900,
+        macd_line=.1, macd_signal=.12)
+    prior = replace(newest, boundary_ms=value.boundary_ms-5000)
+    witness = early_original_risk_failure(value, policy=EARLY_FAILURE_POLICY)
+    assert consecutive_price_risk_failure(value, prior=prior, newest=newest, policy=policy) is not None
+    with pytest.raises(ValueError, match='priority'):
+        validate_consecutive_price_risk_diagnostic(
+            OriginalRiskDecisionDiagnostic(witness, newest, prior, RULE), policy=policy,
+            inherited_early_policy=EARLY_FAILURE_POLICY)

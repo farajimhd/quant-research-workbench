@@ -93,14 +93,15 @@ class OriginalRiskDecisionDiagnostic:
     checkpoint: object = None
 
 
-def validate_decision_diagnostic(diagnostic, *, policy, premarket_policy=None):
+def validate_decision_diagnostic(diagnostic, *, policy, premarket_policy=None, inherited_early_policy=None):
     from .consecutive_price_confirmed_risk import (
         ConsecutivePriceRiskPolicy, validate_consecutive_price_risk_diagnostic,
     )
     if type(policy) is ConsecutivePriceRiskPolicy:
         if premarket_policy is not None:
             raise ValueError('Consecutive price-risk does not replace the inherited PM stage')
-        return validate_consecutive_price_risk_diagnostic(diagnostic, policy=policy)
+        return validate_consecutive_price_risk_diagnostic(diagnostic, policy=policy,
+            inherited_early_policy=inherited_early_policy)
     if (type(diagnostic) is not OriginalRiskDecisionDiagnostic
             or type(diagnostic.current) is not FollowThroughFailure
             or type(diagnostic.newest) is not CompletedRiskBucket

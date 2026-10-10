@@ -75,7 +75,8 @@ def project_pending_requests(requests, common, state):
         contract=numbered_fixed_strategy(source.strategy_number)
         policy=contract.confirmed_original_risk_policy
         validate_decision_diagnostic(diagnostic,policy=policy,
-            premarket_policy=getattr(contract,"premarket_confirmed_original_risk_policy",None))
+            premarket_policy=getattr(contract,"premarket_confirmed_original_risk_policy",None),
+            inherited_early_policy=getattr(contract,'early_original_risk_policy',None))
         newest=diagnostic.newest;prior=diagnostic.prior
         key=financial.account_id,financial.assignment_id,financial.ticker
         if (key in seen or newest.ticker!=financial.ticker
