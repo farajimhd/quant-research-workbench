@@ -100,10 +100,29 @@ class FullTrainingView:
                 retained[receipt]=identity;completed_batches+=1
             self.batch_receipts=retained
             if completed_batches>total_batches:raise ValueError('Active batch coverage exceeds training contract')
+        samples=[]
+        for generation in range(max(1,done),min(done+1,total)+1):
+            timing_path=output/f'generation-{generation:04d}'/'resident-measurements.json'
+            if timing_path.exists():
+                samples.extend(v for v in json.loads(timing_path.read_text()) if v.get('active',0)>0 and v.get('session_timings'))
+        seconds=sum(v['setup_seconds']+v['replay_and_audit_seconds'] for v in samples)
+        units=sum(v['active'] for v in samples)
+        per_unit=seconds/units if units else None
+        remaining=total_batches-completed_batches
+        replay_eta=remaining*per_unit if per_unit is not None else None
+        cohort=active.get('sessions',[]);offset=active.get('candidate_offset')
+        cohort_done=sum((current/day/f'batch-{offset:06d}'/'receipt.json').exists() for day in cohort) if offset is not None else 0
+        processes=[dict(label='Saved / audited batches',done=completed_batches,total=total_batches)]
+        if cohort:processes.append(dict(label='Resident cohort saved',done=cohort_done,total=len(cohort)))
+        if restoring:processes.append(dict(label='Compiler contexts',done=int(restoring.group(1))-1,total=int(restoring.group(2))))
         return dict(status=status.get('status','running'),stage=active.get('stage','Training complete' if done==total else 'Preparing full-training generation'),
             config=dict(population=n,generations=total,training_sessions=30),completed_generations=done,
             completed_sessions=sum(1 for p in current.glob('*/receipt.json')) if done<total else 30,
             completed_batches=completed_batches,total_batches=total_batches,
+            process_progress=processes,replay_eta=replay_eta,
+            session_eta=(sum(v['replay_and_audit_seconds'] for v in samples)/len(samples)) if samples else None,
+            average_batch_seconds=per_unit,
+            messages=[dict(text='ETA estimates use measured preparation + concurrent replay/audit; saved receipts include resumed work.',timestamp='')],
             updated_epoch=updated,started_epoch=started,validation_status='SEALED',top_strategies=self.rows,
             evaluation_basis=f'Generation {done}: all30 training-session search ranking' if done else 'No completed all30 ranking yet',
             focus=', '.join(active.get('sessions',[])) or active.get('day',''),validation_opened=False)

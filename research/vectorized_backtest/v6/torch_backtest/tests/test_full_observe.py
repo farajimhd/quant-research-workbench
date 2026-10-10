@@ -109,6 +109,19 @@ def test_resumed_progress_counts_durable_batches_without_measurements(tmp_path):
     with pytest.raises(ValueError,match='batch progress'):view.read(tmp_path)
 
 
+def test_measured_eta_and_normal_width_ranking_columns(tmp_path):
+    fixture(tmp_path)
+    p=tmp_path/'generation-0002/resident-measurements.json'
+    p.write_text(json.dumps([dict(active=8,setup_seconds=8,replay_and_audit_seconds=56,session_timings=[{}]*8),
+        dict(active=0,setup_seconds=.1,replay_and_audit_seconds=.01,session_timings=[])]))
+    status=FullTrainingView().read(tmp_path)
+    assert status['replay_eta']==240 and status['session_eta']==56 and status['average_batch_seconds']==8
+    assert status['process_progress'][0]['label']=='Saved / audited batches'
+    c=Console(width=132,height=38,color_system=None)
+    with c.capture() as out:c.print(render(status,width=132,height=38))
+    assert 'Ex-best' in out.get() and 'Tail day' in out.get() and 'Days +%' in out.get()
+
+
 def test_full_training_position_tail_uses_complete_episodes_and_indices(tmp_path):
     import torch
     from research.vectorized_backtest.v6.torch_backtest.ranking_diagnostics import diagnostics

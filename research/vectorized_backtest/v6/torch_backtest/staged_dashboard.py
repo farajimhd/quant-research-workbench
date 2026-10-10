@@ -49,7 +49,7 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     config=status.get('config',{});cursor=status.get('progress') or {}
     age=max(0,now-status.get('updated_epoch',now))
     queued=status.get('queued_campaign') or {}
-    progress_height=7 if queued else 5
+    progress_height=max(7 if queued else 5,2+len(status.get('process_progress',[])))
     page_size=ranking_page_size(height)
     visible_size=ranking_viewport_size(height)
     leader_height=visible_size+4
@@ -64,6 +64,8 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     if queued:
         bars.add_task('Campaign generations (queued)',total=queued['generations'],completed=0)
         bars.add_task('Generation 1 sessions (queued)',total=queued['sessions'],completed=0)
+    for task in status.get('process_progress',[]):
+        bars.add_task(task['label'],total=task['total'],completed=task['done'])
     for label,done,total in [('Qualification passes' if status.get('mode')=='profile' else 'Generations',
                                max(0,status.get('execution_pass',1)-1) if status.get('mode')=='profile' else status.get('completed_generations',0),
                                status.get('execution_passes',0) if status.get('mode')=='profile' else config.get('generations',0)),
@@ -71,7 +73,7 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
                               ('Candidate batches',status.get('completed_batches',0),status.get('total_batches',0)),
                               ('Backtest timestamps',cursor.get('completed_seconds',0),cursor.get('total_seconds',0)),
                               ('Rule listings',status.get('completed_tickers',0),status.get('total_tickers',0))]:
-        if total:bars.add_task(label,total=total,completed=done)
+        if total and not (status.get('process_progress') and label=='Candidate batches'):bars.add_task(label,total=total,completed=done)
     layout['progress'].update(bars)
     leaders=ranked_rows(status);selected=status.get('_rank',1)
     rank_pages=max(1,(len(leaders)+page_size-1)//page_size)
@@ -80,10 +82,12 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     for label in ('Rank','Score','Net P&L $','Win %','Positions'):
         table.add_column(label,justify='right',no_wrap=True)
     if width>=110:
+        table.add_column('Ex-best $',justify='right',no_wrap=True)
+        table.add_column('Tail day $',justify='right',no_wrap=True)
+        table.add_column('Days +%',justify='right',no_wrap=True)
         table.add_column('Drawdown $',justify='right',no_wrap=True)
-        table.add_column('Profit factor',justify='right',no_wrap=True)
     if width>=160:
-        for label in ('Ex-best $','Best day $','Profitable days %','Worst day $','Position tail $'):
+        for label in ('Best day $','Worst day $','Position tail $','PF'):
             table.add_column(label,justify='right',no_wrap=True)
     page_rows=leaders[rank_page*page_size:(rank_page+1)*page_size]
     selected_index=next((i for i,row in enumerate(page_rows) if row['rank']==selected),0)
@@ -92,10 +96,9 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
         metrics=leader.get('metrics',{});rank=leader['rank']
         values=[f'{rank}'+(' *' if rank==selected else ''),number(leader.get('score'),',.2f') if leader.get('valid',True) else 'INVALID',number(metrics.get('total_pnl')),
                 number(None if metrics.get('position_win_rate') is None else metrics['position_win_rate']*100),number(metrics.get('positions'),',.0f')]
-        if width>=110:values.extend([number(metrics.get('worst_drawdown')),number(metrics.get('profit_factor'))])
-        if width>=160:values.extend([number(metrics.get('other_days_pnl')),number(metrics.get('best_day_pnl')),
-            number(None if metrics.get('profitable_day_fraction') is None else 100*metrics['profitable_day_fraction']),
-            number(metrics.get('worst_pnl')),number(metrics.get('position_tail_mean_pnl'))])
+        if width>=110:values.extend([number(metrics.get('other_days_pnl')),number(metrics.get('session_tail_mean_pnl')),
+            number(None if metrics.get('profitable_day_fraction') is None else 100*metrics['profitable_day_fraction']),number(metrics.get('worst_drawdown'))])
+        if width>=160:values.extend([number(metrics.get('best_day_pnl')),number(metrics.get('worst_pnl')),number(metrics.get('position_tail_mean_pnl')),number(metrics.get('profit_factor'))])
         table.add_row(*values,style='bold cyan' if rank==selected else '')
     if not leaders:table.add_row('--','Pending completed ranking',*(['--']*(len(table.columns)-2)))
     basis=status.get('evaluation_basis','No completed ranking yet')
