@@ -22,7 +22,7 @@ make that strategy/session infeasible. These assumptions need execution-aware
 validation before interpreting profit as tradable performance.
 
 Rules can use all original 149 feature channels, the 332 persisted market-history
-channels, relative-price versions, and seven quote/activity channels. The latest
+channels, relative-price versions, and eleven quote/price/activity channels. The latest
 causal bid/ask/spread snapshot is sampled at each second close, with quote age;
 quotes older than one second are invalid. These are **snapshots**, not fabricated
 bid/ask OHLC bars. Quote/activity inputs are strategy features only. None enter

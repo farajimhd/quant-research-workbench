@@ -16,7 +16,9 @@ RELATIVE=tuple(Feature(f'{f.name}.relative_to_close','ratio',-.5,.5) for f in HI
 LIQUIDITY=(Feature('market.bid_relative','ratio',-.1,.1),Feature('market.ask_relative','ratio',-.1,.1),
            Feature('market.spread_fraction','ratio',0.,.1),Feature('market.quote_age_seconds','duration',0.,3600.),
            Feature('market.log_execution_volume','log_shares',0.,30.),Feature('market.log_execution_notional','log_dollars',0.,30.),
-           Feature('market.log_execution_trade_count','log_count',0.,20.))
+           Feature('market.log_execution_trade_count','log_count',0.,20.),
+           Feature('market.bid','price',0.,1000.),Feature('market.ask','price',0.,1000.),
+           Feature('market.spread','price',0.,100.),Feature('market.close','price',0.,1000.))
 CATALOG=(*BASE,*HISTORY,*RELATIVE,*LIQUIDITY)
 VERSION='v7-original-plus-causal-history-relative-v1'
 PRICE_COLUMNS=tuple(i for i,f in enumerate(HISTORY) if f.unit=='price')

@@ -64,12 +64,15 @@ class SessionData:
         quote_valid=known&(quote>0)&(age>=0)&(age<=1)&(bid>0)&(ask>=bid)
         current=known&(self.arrays['market_keys'][safe]%KEY_STRIDE==clock)
         liquidity=np.stack((bid/price-1,ask/price-1,(ask-bid)/price,age,
-            *(np.log1p(np.where(current,self.market[n][safe],0.)) for n in ('volume','notional','trade_count'))),-1)
+            *(np.log1p(np.where(current,self.market[n][safe],0.)) for n in ('volume','notional','trade_count')),
+            bid,ask,ask-bid,price),-1)
         values=np.concatenate((base,history,relative,liquidity),-1).astype(np.float32)
         valid=np.concatenate((base_valid,np.isfinite(history)&known[...,None],
             np.isfinite(relative)&known[...,None]&(price>0)[...,None],np.isfinite(liquidity)&known[...,None]),-1)
         valid[...,-len(LIQUIDITY):-len(LIQUIDITY)+3]&=quote_valid[...,None]
         valid[...,-len(LIQUIDITY)+3]&=(quote>0)&(age>=0)
+        valid[...,-4:-1]&=quote_valid[...,None]
+        valid[...,-1]&=price>0
         values[~valid]=0.
         return torch.from_numpy(values).to(self.device),torch.from_numpy(valid).to(self.device)
 
