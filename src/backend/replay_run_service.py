@@ -2766,6 +2766,9 @@ class ReplayRunController:
                 source=owner.operation.source if owner is not None else None
                 if selected(source):
                     reader=CheckpointReader(reader,owner)
+                from src.backend.backtest_original_risk_owned_reader import bind_original_risk_checkpoint_reader
+                reader=bind_original_risk_checkpoint_reader(reader,manager=manager,
+                    publisher=publisher,run_id=self.run_id)
                 return confirm_original_risk_checkpoint_sources(reader,
                     manager_head_reader(self._fixed_keeper_session,source),
                     ManagedBrokerMatchHeadReader(self._fixed_keeper_session), requests, receipt,

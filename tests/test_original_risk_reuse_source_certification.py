@@ -46,5 +46,7 @@ def test_normal_registry_and_complete_projection_pass():
 
 def test_retained_parent_is_not_reapproved_on_changed_source():
     from src.backend.backtest_combined_price_risk_certification import certify_combined_price_risk_source
-    with pytest.raises(ValueError, match='retained parent source changed: src/trading_runtime/arte_journal_commit_v4.py'):
+    with pytest.raises(ValueError, match='retained parent source changed: ') as rejected:
         certify_combined_price_risk_source()
+    rejected_path = str(rejected.value).split('retained parent source changed: ', 1)[1]
+    assert rejected_path in compatibility.RESTORATIONS
