@@ -90,3 +90,5 @@ Local fixture and partial-cohort checks do not certify full-training throughput:
 optimized deployment still requires completed 30-session financial audits,
 exact reference/repeat comparisons and the measured population/generation report.
 Full optimization requires the user's final parameter decision.
+Full-search session concurrency is bounded to 1..8 and validated before any
+generation preparation; the all30 selection barrier and RNG resume are retained.

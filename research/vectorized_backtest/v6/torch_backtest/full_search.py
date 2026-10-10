@@ -34,6 +34,7 @@ def verify_completed_pass(root,record):
 
 def run_generations(spec,population_size,generations,evaluator,output,*,seed=2236,workers=2,objective=LowerTailDollarObjective()):
     if type(population_size) is not int or population_size<10 or type(generations) is not int or generations<1:raise ValueError('Explicit valid full-search budget required')
+    if type(workers) is not int or not 1<=workers<=8:raise ValueError('Full-training session workers must be 1..8')
     output=require_runtime(output);space=StrategySpace()
     contract=dict(version='v6-all-training-search-v1',source_sha256=code_hash(),spec=fingerprint(spec),population=population_size,
         generations=generations,seed=seed,workers=workers,objective=asdict(objective),

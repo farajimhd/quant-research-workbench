@@ -22,6 +22,7 @@ def main(argv=None):
     p.add_argument('--maximum-input-gib',type=float,default=4.);p.add_argument('--maximum-state-gib',type=float,default=4.)
     p.add_argument('--seed',type=int,default=2236)
     a=p.parse_args(argv)
+    if not 1<=a.session_workers<=8:p.error('--session-workers must be 1..8')
     spec=json.loads(a.sessions.read_text())
     root=require_runtime(a.output);configure_caches(root/'cache')
     evaluate=ResidentSessionEvaluator(a.inputs,a.structure,batch_size=a.batch_size,holding_capacity=a.holding_capacity,

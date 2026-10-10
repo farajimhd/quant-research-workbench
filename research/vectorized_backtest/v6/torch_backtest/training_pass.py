@@ -21,7 +21,7 @@ def population_hash(population):
 def full_training_pass(training,validation_days,population,evaluate,output,*,workers=2,objective=LowerTailDollarObjective()):
     days=[s['day'] for s in training]
     if len(days)!=30 or len(set(days))!=30 or set(days)&set(validation_days):raise ValueError('Exactly thirty disjoint training sessions required')
-    if type(workers) is not int or not 1<=workers<=4 or not population:raise ValueError('Invalid bounded evaluator concurrency/population')
+    if type(workers) is not int or not 1<=workers<=8 or not population:raise ValueError('Invalid bounded evaluator concurrency/population')
     objective.validate();token=population_hash(population);n=len(population)
     results={};receipts={};cursor=0;pending={}
     metric_names=('net_pnl','drawdown','stop_risk_dollar_seconds','capital_dollar_seconds','filled_batches','terminal_valid')
