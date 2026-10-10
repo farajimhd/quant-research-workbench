@@ -9,6 +9,7 @@ from datetime import datetime
 from time import perf_counter
 import json
 import gc
+import numpy as np
 import torch
 from .sparse_evaluator import SparseSessionEvaluator,seal_batch,seal_session
 from .sparse_replay import SparseInputs
@@ -27,13 +28,18 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
         super().__init__(*args,backend='compile',**kwargs)
         if self.device.type!='cuda':raise ValueError('Resident capture requires CUDA')
         self.backend=backend
-        self._resident_inputs={};self._resident_runners={};self._cohort_identity=None
+        self._resident_inputs={};self._resident_runners={};self._resident_listing_ids={};self._cohort_identity=None
 
     def close(self):
         """Release this evaluator's retained generation buffers explicitly."""
         torch.cuda.synchronize(self.device)
-        self._resident_runners.clear();self._resident_inputs.clear();self._cohort_identity=None
+        self._resident_runners.clear();self._resident_inputs.clear();self._resident_listing_ids.clear();self._cohort_identity=None
         gc.collect()
+
+    @staticmethod
+    def _listing_union(top_indices):
+        listing_ids=np.unique(top_indices)
+        return listing_ids[listing_ids>=0].tolist()
 
     def contract(self,training,workers):
         if type(workers) is not int or not 1<=workers<=30:raise ValueError('Resident concurrency must be within the training-session count')
@@ -105,6 +111,9 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
             if item.receipt['identity']['session']!=session or len(item.arrays['clocks'])!=int(end-begin):
                 raise ValueError('Resident full-session contract changed')
             resident_inputs[day]=item
+            # Membership is immutable across population batches/generations.
+            # Native unique avoids repeated Python iteration over every clock.
+            self._resident_listing_ids[day]=self._listing_union(item.arrays['top_indices'])
             loads+=1
         self._cohort_identity=identity
         write_json(output/'input-residency.json',dict(load_seconds=perf_counter()-load_started,session_loads=loads,resident_sessions=len(resident_inputs),
@@ -125,7 +134,7 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
                         if record is not None:
                             parts[day].append(record['metrics']);batches[day].append(dict(directory=folder.name,sha256=file_hash(folder/'receipt.json')))
                             continue
-                        union=sorted(set(int(v) for v in inputs[day].arrays['top_indices'].ravel() if v>=0))
+                        union=self._resident_listing_ids[day]
                         write_json(output/'resident-status.json',dict(stage='Evaluate causal lifecycle rules',day=day,candidate_offset=offset,population=len(population),validation_opened=False))
                         gates,rule_seconds=inputs[day].compile(members,listing_ids=union,backend='cudagraph',prepared=shared)
                         broker_started=perf_counter()

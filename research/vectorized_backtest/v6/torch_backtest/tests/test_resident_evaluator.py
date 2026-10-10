@@ -10,6 +10,12 @@ from research.vectorized_backtest.v6.torch_backtest.tests.test_sparse_runner imp
 from research.vectorized_backtest.v6.torch_backtest.runtime import file_hash,DEFAULT,configure_caches
 
 
+def test_listing_union_preserves_order_and_excludes_unfilled_slots():
+    top=np.array([[9,-1,2,9],[-1,0,2,5]],dtype=np.int64)
+    assert ResidentSessionEvaluator._listing_union(top)==[0,2,5,9]
+    assert ResidentSessionEvaluator._listing_union(np.full((3,10),-1))==[]
+
+
 def test_partial_resume_budgets_next_complete_generation(tmp_path,monkeypatch):
     class BudgetOnly(ResidentSessionEvaluator):
         def contract(self,*args):return {}
@@ -55,6 +61,11 @@ def test_all_captures_precede_parallel_replay_and_receipts_resume(tmp_path,monke
     def load(root,**kwargs):
         loads.append(root.name);return prepared[root.name]
     monkeypatch.setattr(resident_evaluator,'SparseInputs',load)
+    memberships=[];original_union=ResidentSessionEvaluator._listing_union
+    def union(values):
+        memberships.append(values.shape)
+        return original_union(values)
+    monkeypatch.setattr(ResidentSessionEvaluator,'_listing_union',staticmethod(union))
     def mkdir(path):path.mkdir(parents=True,exist_ok=True);return path
     monkeypatch.setattr(runtime,'require_runtime',mkdir);monkeypatch.setattr(resident_evaluator,'require_runtime',mkdir)
     events=[];original_compile=resident_evaluator.CompactProgramRunner.compile;original_run=resident_evaluator.CompactProgramRunner.run
@@ -69,16 +80,19 @@ def test_all_captures_precede_parallel_replay_and_receipts_resume(tmp_path,monke
     assert events==['capture','capture','replay','replay','replay','replay']
     assert events.count('capture')==2
     assert len(loads)==2
+    assert len(memberships)==2
+    assert evaluate._resident_listing_ids=={'synthetic-a':[0,1],'synthetic-b':[0,1]}
     next_output=mkdir(tmp_path/'next-generation')
     evaluate.prepare_pass(sessions,population,next_output,workers=2)
     assert len(loads)==2
+    assert len(memberships)==2
     assert events.count('capture')==2
     for session in sessions:
         before=evaluate(session,population,output/session['day'])
         after=evaluate(session,population,next_output/session['day'])
         assert before['metrics']==after['metrics']
     evaluate.close()
-    assert not evaluate._resident_inputs and not evaluate._resident_runners
+    assert not evaluate._resident_inputs and not evaluate._resident_runners and not evaluate._resident_listing_ids
     records=[evaluate(session,population,output/session['day']) for session in sessions]
     assert records[0]['metrics']==records[1]['metrics'] and records[0]['metrics']['fill_count'][0]>0
     evaluate.prepare_pass(sessions,population,output,workers=2)
