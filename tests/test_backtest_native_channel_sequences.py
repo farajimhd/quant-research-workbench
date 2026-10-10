@@ -10,6 +10,7 @@ from tests.test_backtest_native_channel_qualification import installed, unit  # 
 from src.backend.backtest_native_channel_sequences import (
     NativeChannelSequencePolicy, qualify_installed_native_channel_sequences,
     parse_native_channel_sequence_policy,
+    prepare_installed_native_channel_sequence,
 )
 from src.market_engine.native_causal_channel_contract import issue_source_plan
 from src.trading_runtime.native_completed_bar_sequences import CompletedBarSequencePolicy
@@ -37,6 +38,24 @@ def test_installed_sequence_preserves_order_and_held_mask(installed):
     assert output.tolist() == [False, False, False, True]
     assert not output.flags.writeable
     assert len(installed[0].writes) == 2
+
+
+def test_prepared_sequence_reuses_certified_source_without_transport_reads(installed):
+    client, authority, packet, decisions, _ = installed
+    policy = NativeChannelSequencePolicy(packet.request.policy,
+        CompletedBarSequencePolicy(1, 1000), 60000, 'close_return', 'ge', 0.0, 1000, 'none')
+    prepared = prepare_installed_native_channel_sequence(client, packet.request,
+        packet.feature_attempt_id, policy=policy,
+        producer_source_hash=issue_source_plan(packet).producer_source_hash, authority=authority)
+    reads = len(client.sql)
+    writes = len(client.writes)
+    acquired = np.zeros(decisions.height, dtype=np.int64)
+    assert prepared.qualify(decisions, np.ones(decisions.height, dtype=bool), acquired).tolist()==[True,False,False,True]
+    assert prepared.qualify(decisions, np.zeros(decisions.height, dtype=bool), acquired).tolist()==[False]*4
+    assert len(client.sql)==reads and len(client.writes)==writes
+    with pytest.raises(ValueError, match='later than decision'):
+        prepared.qualify(decisions, np.ones(decisions.height,dtype=bool), np.full(4,999999999,dtype=np.int64))
+    assert len(client.sql)==reads
 
 
 def test_completion_must_be_strictly_after_actual_acquisition(installed):

@@ -160,11 +160,73 @@ def qualify_installed_native_channel_sequences(client, request, feature_attempt_
         raise ValueError('Held acquisition is missing or later than decision')
     packet = load_declared_native_channels(client, request, feature_attempt_id,
         producer_source_hash=producer_source_hash, authority=authority)
+    prepared = _prepare_loaded_sequence(packet, policy)
+    return prepared.qualify(decisions, held, acquired)
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedNativeChannelSequence:
+    """Source-certified columnar preparation; not ownership or order authority."""
+    packet: object
+    policy: NativeChannelSequencePolicy
+    features: pl.DataFrame
+    windows: pl.DataFrame
+    scope: pl.DataFrame
+
+    def qualify(self, decisions, mandatory_held, acquisition_day_us):
+        policy = self.policy
+        request = self.packet.request
+        schema = dict.fromkeys(DECISION_IDENTITY, pl.String)
+        schema['decision_day_ms'] = pl.Int64
+        if (type(decisions) is not pl.DataFrame or decisions.height > policy.max_decisions
+                or any(decisions.schema.get(k) != v for k, v in schema.items())):
+            raise ValueError('Bounded exact sequence decision schema required')
+        left = decisions.select(list(schema))
+        clock = pl.col('decision_day_ms')
+        if (any(left[c].null_count() for c in left.columns) or left.n_unique() != left.height
+                or left.filter((clock < 0) | (clock > request.through_day_boundary_ms)
+                    | (clock % policy.inputs.decision_interval_ms != 0)).height):
+            raise ValueError('Sequence decision identity or declared clock differs')
+        if (type(mandatory_held) is not np.ndarray or mandatory_held.dtype != np.dtype(bool)
+                or mandatory_held.shape != (left.height,)
+                or type(acquisition_day_us) is not np.ndarray
+                or acquisition_day_us.dtype != np.dtype(np.int64)
+                or acquisition_day_us.shape != (left.height,)):
+            raise ValueError('Exact held and actual acquisition arrays required')
+        held = np.frombuffer(mandatory_held.tobytes(), dtype=bool)
+        acquired = np.frombuffer(acquisition_day_us.tobytes(), dtype=np.int64)
+        if np.any(held & ((acquired < 0) | (acquired > left['decision_day_ms'].to_numpy()*1000))):
+            raise ValueError('Held acquisition is missing or later than decision')
+        if left.join(self.scope, on=list(DECISION_IDENTITY), how='anti').height:
+            raise ValueError('Decision identity is outside installed native coverage')
+        left = left.with_columns(pl.lit(self.packet.feature_attempt_id).alias('feature_attempt_id'),
+                                pl.lit(policy.inputs.digest).alias('policy_digest'))
+        result = qualify_completed_sequences_after_acquisition(self.windows, left, held, acquired,
+            sequence_policy=policy.sequence, resolution_ms=policy.resolution_ms,
+            decision_interval_ms=policy.inputs.decision_interval_ms,
+            freshness_ms=dict(policy.inputs.freshness_by_resolution)[policy.resolution_ms],
+            max_decisions=policy.max_decisions)
+        if policy.reference_mode == 'below-first-post-acquisition-close':
+            result = result & _reference_confirmation(self.features, left, acquired)
+        return np.frombuffer(result.tobytes(), dtype=bool)
+
+
+def prepare_installed_native_channel_sequence(client, request, feature_attempt_id, *,
+        policy, producer_source_hash, authority):
+    """Certify and compile once; subsequent decisions perform no source reads."""
+    if type(request) is not NativeChannelRequest or type(policy) is not NativeChannelSequencePolicy:
+        raise ValueError('Typed installed sequence inputs required')
+    request.__post_init__()
+    policy.__post_init__()
+    if request.policy != policy.inputs:
+        raise ValueError('Sequence input policy differs from installed request')
+    packet = load_declared_native_channels(client, request, feature_attempt_id,
+        producer_source_hash=producer_source_hash, authority=authority)
+    return _prepare_loaded_sequence(packet, policy)
+
+
+def _prepare_loaded_sequence(packet, policy):
     scope = pl.from_arrow(packet.coverage).select(*DECISION_IDENTITY).unique()
-    if left.join(scope, on=list(DECISION_IDENTITY), how='anti').height:
-        raise ValueError('Decision identity is outside installed native coverage')
-    left = left.with_columns(pl.lit(packet.feature_attempt_id).alias('feature_attempt_id'),
-                            pl.lit(policy.inputs.digest).alias('policy_digest'))
     features = pl.from_arrow(packet.rows).filter(pl.col('resolution_ms') == policy.resolution_ms)
     value = pl.col(policy.channel)
     compare = {'lt': value < policy.threshold, 'le': value <= policy.threshold,
@@ -172,11 +234,4 @@ def qualify_installed_native_channel_sequences(client, request, feature_attempt_
     eligible = features.select((value.is_not_null() & value.is_finite() & compare)
                               .fill_null(False).alias('eligible'))['eligible'].to_numpy()
     windows = completed_bar_sequence_windows(features, eligible, policy.sequence)
-    result = qualify_completed_sequences_after_acquisition(windows, left, held, acquired,
-        sequence_policy=policy.sequence, resolution_ms=policy.resolution_ms,
-        decision_interval_ms=policy.inputs.decision_interval_ms,
-        freshness_ms=dict(policy.inputs.freshness_by_resolution)[policy.resolution_ms],
-        max_decisions=policy.max_decisions)
-    if policy.reference_mode == 'below-first-post-acquisition-close':
-        result = result & _reference_confirmation(features, left, acquired)
-    return np.frombuffer(result.tobytes(), dtype=bool)
+    return PreparedNativeChannelSequence(packet, policy, features, windows, scope)
