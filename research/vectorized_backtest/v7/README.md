@@ -47,6 +47,11 @@ the CUDA path no longer repeatedly decodes or transfers those expanded tiles.
 Host preparation runs in the background loader and pinned banks transfer on a
 separate CUDA stream. Cohort guards include compact banks, both signal copies,
 swing storage and rule captures.
+Swing-stop storage includes only history rows at eligible entry clocks, with
+one invalid sentinel for all other clocks. All 121 certified swing combinations
+are prepared once by the background loader and reused by candidate batches.
+The existing memory bound remains enforced; the full historical row universe
+is never projected merely to supply stops for possible entries.
 
 Entry uses the flat rule; exit/add/reduce/trail use the open rule. Unreachable
 branch genes do not consume execution or complexity scoring, and mutation selects
@@ -57,7 +62,7 @@ No rule work is needed before an identity's first top-ten admission.
 
 CUDA rule graphs are reused by candidate group and padded input shape, with a
 bounded capture cache. Signals occupy one byte per candidate/second/identity.
-Position updates vectorize over **session × strategy × ticker**. The compiled
+Position updates vectorize over **session Ã— strategy Ã— ticker**. The compiled
 CUDA path captures blocks of 32 chronological steps, advancing its clock on the
 GPU; the eager path remains an independent execution comparison. There is no
 new holding limit. This implementation still has a dense identity ledger and

@@ -142,11 +142,12 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
     aggregate=torch.zeros((s,b,10),dtype=torch.float64,device=device);aggregate[...,8]=float('inf')
     policy=torch.tensor([[m.policy.stop_fraction,m.policy.target_fraction,m.policy.reduce_fraction,m.policy.trail_fraction,
         m.policy.add_minimum_profit,m.policy.reduce_minimum_profit,m.policy.maximum_adds,m.policy.cooldown,m.policy.swing_left] for m in members],dtype=torch.float64,device=device)[None,:,None,:]
-    swing_banks=[v.swing_bank(members) for v in data]
+    from .swing_projection import entry_swings
+    swing_banks=[entry_swings(v,members) for v in data]
     # Pack the cohort once. The chronological loop has no per-session host
     # dispatch, tensor construction, or policy repacking.
     from torch.nn.functional import pad
-    required=t*s*b*u*gates[0].element_size()+sum(v.numel()*v.element_size() for v,c in swing_banks)
+    required=t*s*b*u*gates[0].element_size()+sum(v.numel()*v.element_size() for v,c,h in swing_banks)
     required+=t*s*u*40+s*b*u*9*8
     if device.type=='cuda':
         free,_=torch.cuda.mem_get_info(device)
@@ -155,10 +156,10 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
     observed_all=torch.stack([pad(v.tensors['observed'],(0,u-len(v.listing_ids),0,t-v.clocks),value=False) for v in data],1)[:,:,None]
     membership_all=torch.stack([pad(v.tensors['membership'],(0,u-len(v.listing_ids),0,t-v.clocks),value=False) for v in data],1)[:,:,None]
     all_signals=torch.stack([pad(g,(0,u-len(v.listing_ids),0,t-v.clocks)) for v,g in zip(data,gates)],1).permute(2,1,0,3)
-    values=torch.cat([bank for bank,columns in swing_banks],0);columns=swing_banks[0][1]
+    values=torch.cat([bank for bank,columns,history_ids in swing_banks],0);columns=swing_banks[0][1]
     ids=[];offset=0
-    for item,(bank,_) in zip(data,swing_banks):
-        ids.append(pad(item.tensors['history_ids'].to(torch.int64)+offset,(0,u-len(item.listing_ids),0,t-item.clocks),value=offset))
+    for item,(bank,_,history_ids) in zip(data,swing_banks):
+        ids.append(pad(history_ids.to(torch.int64)+offset,(0,u-len(item.listing_ids),0,t-item.clocks),value=offset))
         offset+=len(bank)
     all_ids=torch.stack(ids,1);del swing_banks
     opened=torch.zeros((s,b,u),device=device,dtype=torch.float64)

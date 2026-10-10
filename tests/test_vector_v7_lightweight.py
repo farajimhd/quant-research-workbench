@@ -169,6 +169,26 @@ def test_resident_features_and_reachable_plan_match_dense_oracle(tmp_path):
     plan.close();data.close()
 
 
+def test_entry_swing_projection_preserves_eligible_stops_under_bound(tmp_path):
+    from research.vectorized_backtest.v7.swing_projection import entry_swings
+    root,history=fixture_files(tmp_path);data=SessionData(root,history)
+    data.host_tensors['membership'][::3]=False
+    data.host_tensors['observed'][::5]=False
+    members=[member(swing_left=1,swing_right=1),member(swing_left=60,swing_right=60)]
+    full,columns=data.swing_bank(members)
+    projected,chosen,ids=entry_swings(data,members)
+    eligible=torch.zeros_like(data.tensors['membership'])
+    eligible[1:]=data.tensors['membership'][:-1]&data.tensors['observed'][1:]
+    eligible[-1]=False
+    expected=full[data.tensors['history_ids'].to(torch.int64)[eligible][:,None],columns[None]]
+    actual=projected[ids.to(torch.int64)[eligible][:,None],chosen[None]]
+    torch.testing.assert_close(actual,expected,rtol=0,atol=0,equal_nan=True)
+    assert (ids[~eligible]==0).all() and torch.isnan(projected[0]).all()
+    assert len(projected)<=int(eligible.sum())+1
+    with pytest.raises(MemoryError,match='entry swing projection'):entry_swings(data,members,maximum_gib=1e-12)
+    data.close()
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA capture requires a GPU')
 def test_cuda_resident_rules_and_captured_replay_match_cpu(tmp_path):
     from research.vectorized_backtest.v7.io_pipeline import prepare_host,activate_nonblocking

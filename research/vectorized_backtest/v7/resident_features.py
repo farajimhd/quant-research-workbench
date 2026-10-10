@@ -30,6 +30,8 @@ class ResidentFeatures:
         # Preserve the existing NumPy log1p rounding once per source row.
         for name in ('volume', 'notional', 'trade_count'):
             arrays['log_' + name] = np.log1p(data.market[name]).astype(np.float32)
+        from .swing_projection import prepare_entry_swings
+        arrays.update(prepare_entry_swings(data))
         self.host = {k: torch.from_numpy(np.array(v, copy=True)) for k, v in arrays.items()}
         self.bytes = sum(v.numel() * v.element_size() for v in self.host.values())
         self.tensors = self.host
