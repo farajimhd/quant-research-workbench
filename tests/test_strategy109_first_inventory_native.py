@@ -83,11 +83,12 @@ def actual_successor(monkeypatch, *, tag, paired=False, cold_probe=False, fault_
         import test_fixed_structural_lot_checkpoint_reader_profile as fixture
         from src.backend.backtest_fixed_structural_lot_source import _load_quotes
         from types import SimpleNamespace
+        from datetime import date
 
         def quote_loader(old):
             def load(market, authority, *, client):
                 prepared = SimpleNamespace(quotes=old.quotes,
-                    session_date=market.sessions[0], price_authority=authority)
+                    session_date=date.fromisoformat(market.sessions[0]), price_authority=authority)
                 class QuoteRows:
                     def execute(self, query):
                         return prepared_quote_select_rows(prepared, query)
