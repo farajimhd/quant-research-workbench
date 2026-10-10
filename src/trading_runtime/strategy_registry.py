@@ -1354,6 +1354,27 @@ def initialize_numbered_fixed_strategies() -> None:
                 certify_consecutive_price_risk_source, price_risk_release,
                 historical_parent_proof=consecutive_parent_source_proof())))
         register_numbered_strategy(consecutive_price_risk)
+        from .strategy_one_hundred_fifteen_release import release_contract as combined_price_risk_release
+        from .strategy_one_hundred_fifteen_contract import strategy_one_hundred_fifteen_contract
+        from .strategy_one_hundred_fifteen_configuration import (
+            SOURCE_PREFIX as combined_source_prefix,
+            derive_strategy_one_hundred_fifteen_configuration,
+            verify_strategy_one_hundred_fifteen_manifest,
+            historical_parent_source_proof as combined_parent_source_proof)
+        from src.backend.backtest_combined_price_risk_certification import certify_combined_price_risk_source
+        combined_price_risk = combined_price_risk_release()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=combined_price_risk.executor_strategy_id,
+            revision=combined_price_risk.executor_revision,
+            evaluation_interval=combined_price_risk.evaluation_interval,
+            strategy_factory=_strategy_two_factory,
+            contract_factory=strategy_one_hundred_fifteen_contract,
+            manifest_authority=NativeManifestAuthority(114, combined_source_prefix,
+                derive_strategy_one_hundred_fifteen_configuration,
+                verify_strategy_one_hundred_fifteen_manifest,
+                certify_combined_price_risk_source, consecutive_price_risk_release,
+                historical_parent_proof=combined_parent_source_proof())))
+        register_numbered_strategy(combined_price_risk)
         _NUMBERED_FIXED_REGISTERED = True
 
 
