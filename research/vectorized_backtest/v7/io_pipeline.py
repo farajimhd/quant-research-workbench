@@ -64,7 +64,11 @@ def feature_tiles(data,requests):
 
 def prepare_host(data,pin=False):
     if hasattr(data,'activate'):data.activate('cpu')
-    if pin:data.host_tensors={k:v.pin_memory() for k,v in data.host_tensors.items()}
+    if pin:
+        from .resident_features import ResidentFeatures
+        if not hasattr(data,'resident_features'):data.resident_features=ResidentFeatures(data)
+        data.resident_features.pin()
+        data.host_tensors={k:v if v.is_pinned() else v.pin_memory() for k,v in data.host_tensors.items()}
     return data
 
 def activate_nonblocking(data,device):
@@ -75,7 +79,10 @@ def activate_nonblocking(data,device):
     stream=torch.cuda.Stream(device=device)
     with torch.cuda.stream(stream):
         data.tensors={k:v.to(device,non_blocking=True) for k,v in data.host_tensors.items()}
+        if hasattr(data,'resident_features'):data.resident_features.activate(device)
         event=torch.cuda.Event();event.record(stream)
     torch.cuda.current_stream(device).wait_event(event)
     for tensor in data.tensors.values():tensor.record_stream(torch.cuda.current_stream(device))
+    if hasattr(data,'resident_features'):
+        for tensor in data.resident_features.tensors.values():tensor.record_stream(torch.cuda.current_stream(device))
     data.device=device

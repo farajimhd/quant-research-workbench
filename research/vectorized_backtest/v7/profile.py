@@ -35,7 +35,7 @@ def _measure(inputs,history,cache,root,days,members,concurrency,publisher):
             torch.cuda.synchronize();load_seconds=perf_counter()-loading
             rules=perf_counter()
             for item in data:
-                gate_gib=2*len(members)*item.clocks*len(item.listing_ids)/1024**3
+                gate_gib=len(members)*item.clocks*len(item.listing_ids)/1024**3
                 gates.append(programs.evaluate(item,maximum_gate_gib=gate_gib))
             torch.cuda.synchronize();rule_seconds=perf_counter()-rules
             replay=perf_counter()
@@ -53,9 +53,11 @@ def _measure(inputs,history,cache,root,days,members,concurrency,publisher):
                 peak_gpu_allocated_bytes=torch.cuda.max_memory_allocated(),peak_gpu_reserved_bytes=torch.cuda.max_memory_reserved()))
             write_json(root/'timings.json',rows);print(json.dumps(rows[-1]),flush=True)
         finally:
-            for item in data:item.close()
+            for item in data:
+                if hasattr(item,'resident_features'):del item.resident_features
+                item.close()
             del data,gates;gc.collect();torch.cuda.empty_cache()
-    publisher.close()
+    programs.close();publisher.close()
     record=dict(population=len(members),session_workers=concurrency,training_days=days,full_training_pass=len(days)==30,
         wall_seconds=perf_counter()-started,program_pack_seconds=pack_seconds,timings=rows,
         session_receipts={d:file_hash(root/(d+'.json')) for d in days},population_sha256=digest([m.payload() for m in members]),
@@ -90,7 +92,7 @@ def main():
         from .run_search import run
         full_root=root/f'all30-{b}x{c}';full_start=perf_counter()
         largest=max(sizes.values());clocks=max(json.loads((a.feature_cache/d/'complete.json').read_text())['identity']['clocks'] for d in days)
-        gate_gib=2*b*clocks*largest/1024**3
+        gate_gib=b*clocks*largest/1024**3
         run(a.inputs,a.history,full_root,population_size=b,generations=1,batch_size=b,session_workers=c,
             feature_cache=a.feature_cache,maximum_gate_gib=gate_gib)
         full=dict(population=b,session_workers=c,full_training_pass=True,wall_seconds=perf_counter()-full_start,

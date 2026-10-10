@@ -134,11 +134,71 @@ def test_actual_materializer_and_v7_second_close_quote_freshness(tmp_path):
     # Chunked evaluation must equal whole-session evaluation, including temporal context.
     individual=member();shared=PopulationPrograms([individual])
     gates=shared.evaluate(data,chunk=17,listing_batch=1)
-    assert gates.shape==(1,80,1) and ((gates&255)==1).all() and ((gates>>8)==1).all()
+    assert gates.shape==(1,80,1) and (gates==1).all()
     expected=shared.evaluate(data,chunk=80,listing_batch=1)
     torch.testing.assert_close(gates,expected,rtol=0,atol=0)
     result=replay_cohort([data],[individual],[gates])[0]
     assert result['terminal_valid'].item() and result['net_pnl'].item()==0
+
+
+def test_resident_features_and_reachable_plan_match_dense_oracle(tmp_path):
+    from research.vectorized_backtest.v7.resident_features import ResidentFeatures
+    from research.vectorized_backtest.v7.rule_plan import RulePlan,mask_reference
+    root,history=fixture_files(tmp_path);data=SessionData(root,history)
+    resident=ResidentFeatures(data)
+    columns=list(reversed(range(len(CATALOG))))
+    for begin,end in ((0,5),(17,50),(70,80)):
+        expected=data.prepare_feature_block(begin,end,[0])
+        actual=resident.block(begin,end,[0],columns)
+        for a,b in zip(actual,expected):torch.testing.assert_close(a,b[...,columns],rtol=0,atol=0)
+    members=sample(np.random.default_rng(2237),16)
+    # Delayed admission and holes exercise sparse actions, while trail rules
+    # remain meaningful between observations and after leaving the top ten.
+    data.host_tensors['membership'][:20]=False
+    data.host_tensors['membership'][35:]=False
+    data.host_tensors['observed'][::3]=False
+    oracle=PopulationPrograms(members).evaluate(data,chunk=17,listing_batch=1)
+    expected=mask_reference(oracle,data.host_tensors)
+    plan=RulePlan(members,'cpu')
+    actual=plan.evaluate(data,members,17,1,1.)
+    torch.testing.assert_close(actual,expected,rtol=0,atol=0)
+    for cost in (0.,10.):
+        left=replay_cohort([data],members,[oracle],execution=Execution(cost_bps=cost))[0]
+        right=replay_cohort([data],members,[actual],execution=Execution(cost_bps=cost))[0]
+        for name in left:torch.testing.assert_close(left[name],right[name],rtol=0,atol=0)
+    plan.close();data.close()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA capture requires a GPU')
+def test_cuda_resident_rules_and_captured_replay_match_cpu(tmp_path):
+    from research.vectorized_backtest.v7.io_pipeline import prepare_host,activate_nonblocking
+    from research.vectorized_backtest.v7.rule_plan import mask_reference
+    from research.vectorized_backtest.v6.torch_backtest.runtime import configure_caches
+    configure_caches(tmp_path/'compile-cache')
+    root,history=fixture_files(tmp_path);data=SessionData(root,history)
+    members=sample(np.random.default_rng(2237),10)
+    expected_features=data.prepare_feature_block(0,80,[0])
+    oracle=PopulationPrograms(members).evaluate(data,chunk=17,listing_batch=1)
+    prepare_host(data,pin=True);activate_nonblocking(data,'cuda')
+    actual_features=data.resident_features.block(0,80,[0],list(range(len(CATALOG))))
+    for a,b in zip(actual_features,expected_features):torch.testing.assert_close(a.cpu(),b,rtol=0,atol=0)
+    programs=PopulationPrograms(members,'cuda')
+    actual=programs.evaluate(data,chunk=17,listing_batch=1)
+    torch.testing.assert_close(actual.cpu(),mask_reference(oracle,data.host_tensors),rtol=0,atol=0)
+    programs.close()
+    # Independent sessions, forced entries/adds/exits, age gates and partial
+    # final graph blocks exercise the actual compiled stateful execution path.
+    data=[session([10.+(i%11)*.05 for i in range(n)]) for n in (67,80)]
+    members=[replace(member(cooldown=1,add_minimum_profit=0.),minimum_age={'exit':5,'add':2})]
+    gates=[torch.full((1,d.clocks,1),1|(6<<8),dtype=torch.int16) for d in data]
+    expected=replay_cohort(data,members,gates,execution=Execution(cost_bps=10))
+    for item in data:
+        item.device=torch.device('cuda');item.tensors={k:v.cuda() for k,v in item.tensors.items()}
+        n=item.clocks
+        item.swing_bank=lambda members,n=n:(torch.full((n,1),float('nan'),device='cuda',dtype=torch.float64),torch.zeros(len(members),dtype=torch.int64,device='cuda'))
+    actual=replay_cohort(data,members,[g.cuda() for g in gates],execution=Execution(cost_bps=10),backend='compile')
+    for left,right in zip(expected,actual):
+        for name in left:torch.testing.assert_close(left[name],right[name].cpu(),rtol=1e-9,atol=1e-7)
 
 
 def test_persisted_features_exact_slices_reuse_and_integrity(tmp_path):
@@ -153,7 +213,7 @@ def test_persisted_features_exact_slices_reuse_and_integrity(tmp_path):
     cached=SessionData(root,history,feature_cache=cache_root)
     cached.prepare_feature_block=lambda *args:pytest.fail('Repeated feature preparation')
     gates=PopulationPrograms([member()]).evaluate(cached,chunk=17)
-    assert ((gates&255)==1).all() and ((gates>>8)==1).all()
+    assert (gates==1).all()
     assert prepare(data,cache_root)==receipt
     name=next(iter(receipt['files']));(cache_root/name).write_bytes(b'corrupt')
     with pytest.raises(ValueError,match='changed'):cache.block(0,1,[0])

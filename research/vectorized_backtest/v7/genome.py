@@ -7,6 +7,10 @@ from .features import CATALOG
 
 STAGES=('entry','exit','add','reduce','trail')
 
+def effective_rules(member):
+    """Entry is reachable only while flat; management only while holding."""
+    return {s:member.rules[s] if s=='entry' or member.open_rules is None else member.open_rules[s] for s in STAGES}
+
 @dataclass(frozen=True)
 class Policy:
     stop_fraction:float=.03
@@ -81,12 +85,19 @@ def sample(rng,count):
             rule=condition(rng)
             for _ in range(int(rng.integers(0,3))):rule=combine(rule,condition(rng),int(rng.choice([Op.AND,Op.OR])))
             rules[stage]=rule
-        result.append(Individual(rules,policy,{s:condition(rng) for s in STAGES}).validate())
+        open_rules={s:condition(rng) for s in STAGES}
+        # Retain RNG consumption and the reachable seed population, while
+        # removing genes that cannot affect any position transition.
+        never=Program((Node(Op.CONSTANT,value=0.,unit='bool'),),0)
+        rules={s:rules[s] if s=='entry' else never for s in STAGES}
+        open_rules['entry']=never
+        result.append(Individual(rules,policy,open_rules).validate())
     return result
 
 def mutate(rng,parent):
-    open_branch=parent.open_rules is not None and bool(rng.integers(2))
-    rules=dict(parent.open_rules if open_branch else parent.rules);stage=STAGES[int(rng.integers(len(STAGES)))];rule=rules[stage]
+    stage=STAGES[int(rng.integers(len(STAGES)))]
+    open_branch=parent.open_rules is not None and stage!='entry'
+    rules=dict(parent.open_rules if open_branch else parent.rules);rule=rules[stage]
     action=int(rng.integers(4))
     if action==0 and len(rule.nodes)<24:
         rules[stage]=combine(rule,condition(rng),int(rng.choice([Op.AND,Op.OR])))

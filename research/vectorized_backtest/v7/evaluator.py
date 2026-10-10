@@ -5,7 +5,7 @@ import torch
 from research.vectorized_backtest.v6.torch_backtest.program import TorchPrograms
 from research.vectorized_backtest.v6.torch_backtest.history_bank import SWING_WINDOWS
 from .features import CATALOG,BASE
-from .genome import STAGES
+from .genome import STAGES,effective_rules
 
 @dataclass(frozen=True)
 class Execution:
@@ -87,13 +87,19 @@ class PopulationPrograms:
     def __init__(self,members,device='cpu'):
         for member in members:member.validate()
         self.members=members;self.device=torch.device(device)
-        self.open_programs={s:TorchPrograms([m.open_rules[s] if m.open_rules is not None else m.rules[s] for m in members],CATALOG,self.device) for s in STAGES}
-        self.programs={s:TorchPrograms([m.rules[s] for m in members],CATALOG,self.device) for s in STAGES}
+        from .rule_plan import prune
+        self.programs={s:TorchPrograms([prune(effective_rules(m)[s]) for m in members],CATALOG,self.device) for s in STAGES}
+        self.plan=None
     def evaluate(self,data,chunk=2048,listing_batch=4,workspace_gib=None,maximum_gate_gib=2.):
+        if self.device.type=='cuda':
+            from .rule_plan import RulePlan
+            if self.plan is None:self.plan=RulePlan(self.members,self.device)
+            self.plan.workspace_gib=workspace_gib
+            return self.plan.evaluate(data,self.members,chunk,listing_batch,maximum_gate_gib)
         b=len(self.members);u=len(data.listing_ids)
-        if 2*b*data.clocks*u>maximum_gate_gib*1024**3:raise MemoryError('V7 rule gates exceed declared budget')
-        gates=torch.zeros((b,data.clocks,u),dtype=torch.int16,device=self.device)
-        width=max(v.width for v in (*self.programs.values(),*self.open_programs.values()))
+        if b*data.clocks*u>maximum_gate_gib*1024**3:raise MemoryError('V7 rule gates exceed declared budget')
+        gates=torch.zeros((b,data.clocks,u),dtype=torch.uint8,device=self.device)
+        width=max(v.width for v in self.programs.values())
         estimate=(chunk+119)*(len(CATALOG)*5+b*(width*20+64))*listing_batch
         if workspace_gib is None:
             workspace_gib=torch.cuda.mem_get_info(self.device)[0]*.8/1024**3 if self.device.type=='cuda' else 2.
@@ -103,11 +109,13 @@ class PopulationPrograms:
                   for first in range(0,u,listing_batch) for begin in range(0,data.clocks,chunk))
         for (begin,end,listings),(inputs,known) in feature_tiles(data,requests):
             first=listings[0];warm=max(0,begin-119)
-            for branch,programs in enumerate((self.programs,self.open_programs)):
-                for bit,stage in enumerate(STAGES):
-                    signal,mask=programs[stage](inputs,known)
-                    gates[:,begin:end,first:first+len(listings)]|=((signal[:,:,begin-warm:]!=0)&mask[:,:,begin-warm:]).transpose(1,2).to(torch.int16)*(1<<(bit+8*branch))
+            for bit,stage in enumerate(STAGES):
+                signal,mask=self.programs[stage](inputs,known)
+                gates[:,begin:end,first:first+len(listings)]|=((signal[:,:,begin-warm:]!=0)&mask[:,:,begin-warm:]).transpose(1,2).to(torch.uint8)*(1<<bit)
         return gates
+
+    def close(self):
+        if self.plan is not None:self.plan.close()
 
 
 def state_signals(signals,held,age,limits,stateful:bool):
@@ -160,21 +168,27 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
     transition=torch.compile(step,fullgraph=True,dynamic=False) if backend=='compile' else step
     # All strategy/market computations are parallel on these axes; the time
     # loop preserves entry-dependent position semantics.
-    for clock in range(1,t):
-        price=prices[clock];previous=prices[clock-1];observed=observed_all[clock];membership=membership_all[clock-1]
-        signals=all_signals[clock-1]
-        held=position[...,0]>1e-12
-        signals=select_signals(signals,held,clocks[clock-1]-opened,age_limits,stateful)
-        swing=values[all_ids[clock,:,None,:],columns[None,:,None]]
-        terminal=(clock==lengths-1)[:,None,None]
-        old_position,old_aggregate=position,aggregate
-        position,aggregate=transition(position,aggregate,price,previous,observed,membership,signals,swing,policy,
-            clocks[clock],terminal,execution.entry_dollars,execution.add_dollars,execution.cost_bps/10000.)
-        opened=torch.where(~held&(position[...,0]>1e-12),clocks[clock],opened)
-        active=clock<lengths
-        position=torch.where(active[:,None,None,None],position,old_position)
-        aggregate=torch.where(active[:,None,None],aggregate,old_aggregate)
-        if progress is not None and (clock%256==0 or clock==t-1):progress(clock,t-1)
+    if backend=='compile' and device.type=='cuda':
+        from .replay_graph import replay
+        replay(position,aggregate,opened,policy,prices,observed_all,membership_all,
+            all_signals,values,all_ids,columns,age_limits,lengths,stateful,execution,
+            step,state_signals,progress)
+    else:
+        for clock in range(1,t):
+            price=prices[clock];previous=prices[clock-1];observed=observed_all[clock];membership=membership_all[clock-1]
+            signals=all_signals[clock-1]
+            held=position[...,0]>1e-12
+            signals=select_signals(signals,held,clocks[clock-1]-opened,age_limits,stateful)
+            swing=values[all_ids[clock,:,None,:],columns[None,:,None]]
+            terminal=(clock==lengths-1)[:,None,None]
+            old_position,old_aggregate=position,aggregate
+            position,aggregate=transition(position,aggregate,price,previous,observed,membership,signals,swing,policy,
+                clocks[clock],terminal,execution.entry_dollars,execution.add_dollars,execution.cost_bps/10000.)
+            opened=torch.where(~held&(position[...,0]>1e-12),clocks[clock],opened)
+            active=clock<lengths
+            position=torch.where(active[:,None,None,None],position,old_position)
+            aggregate=torch.where(active[:,None,None],aggregate,old_aggregate)
+            if progress is not None and (clock%256==0 or clock==t-1):progress(clock,t-1)
     if device.type=='cuda':torch.cuda.synchronize(device)
     result=[]
     for i,item in enumerate(data):

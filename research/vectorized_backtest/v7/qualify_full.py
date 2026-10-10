@@ -51,12 +51,21 @@ def main():
                     end=min(begin+16,data.clocks);listings=[0,len(data.listing_ids)-1]
                     left=data.feature_block(begin,end,listings);right=data.prepare_feature_block(begin,end,listings)
                     for x,y in zip(left,right):torch.testing.assert_close(x,y,rtol=0,atol=0)
-                data.activate('cuda');program_start=perf_counter()
-                gates=PopulationPrograms(members,'cuda').evaluate(data)
+                from .io_pipeline import prepare_host,activate_nonblocking
+                from .rule_plan import mask_reference
+                prepare_host(data,pin=True);activate_nonblocking(data,'cuda')
+                for begin in (0,2040,data.clocks-8):
+                    end=min(begin+16,data.clocks);listings=[0,len(data.listing_ids)-1]
+                    expected=data.prepare_feature_block(begin,end,listings)
+                    actual=data.resident_features.block(begin,end,listings,list(range(expected[0].shape[-1])))
+                    for x,y in zip(expected,actual):torch.testing.assert_close(x,y,rtol=0,atol=0)
+                program_start=perf_counter();programs=PopulationPrograms(members,'cuda')
+                gates=programs.evaluate(data);programs.close()
                 torch.cuda.synchronize();program_seconds=perf_counter()-program_start
                 data.deactivate()
                 subset=SimpleNamespace(device=torch.device("cpu"),feature_cache=data.feature_cache,clocks=data.clocks,listing_ids=data.listing_ids[:4],feature_block=data.feature_block)
                 cpu_gates=PopulationPrograms(members,'cpu').evaluate(subset)
+                cpu_gates=mask_reference(cpu_gates,{k:v[:,:4] for k,v in data.host_tensors.items()})
                 torch.testing.assert_close(cpu_gates,gates[:,:,:4].cpu(),rtol=0,atol=0)
                 data.activate('cuda')
                 # Exercise all management bits on complete real price/observation
@@ -67,7 +76,7 @@ def main():
                 forced|=(clock%13==5).to(torch.uint8)*8
                 forced|=(clock%17==8).to(torch.uint8)*16
                 forced|=(clock%101==100).to(torch.uint8)*2
-                gates[:6]=forced.to(torch.int16)|(forced.to(torch.int16)<<8)
+                gates[:6]=forced
                 host_gates=gates.cpu().numpy();data.deactivate()
                 for cost in (0.,10.):
                     execution=Execution(cost_bps=cost);ref_start=perf_counter()
@@ -83,7 +92,9 @@ def main():
                         maximum_absolute_errors=errors,metrics={k:v.cpu().tolist() for k,v in actual.items()}))
                     write_json(root/'progress.json',dict(completed=len(records),records=records,validation_opened=False))
                     print(json.dumps(dict(day=day,cost_bps=cost,status='passed',reference_seconds=ref_seconds,replay_seconds=gpu_seconds)),flush=True)
-            finally:data.close();torch.cuda.empty_cache()
+            finally:
+                if hasattr(data,'resident_features'):del data.resident_features
+                data.close();torch.cuda.empty_cache()
         write_json(root/'qualification.json',dict(status='passed',source_sha256=source_hash(),full_session=True,
             full_training_pass=False,validation_opened=False,optimization_started=False,wall_seconds=perf_counter()-started,records=records,
             members=[m.payload() for m in members]))

@@ -39,20 +39,29 @@ after leaving the top10. There is no ticker-specific hand tuning.
 
 ## Execution and memory
 
-The original compact and history receipts are verified. Full history stays
-memory-mapped on CPU; feature blocks stream to the GPU. Only prices, observation
-masks, rank membership, history row IDs, population gates, and requested swing
-columns are resident. Quotes never become a broker liquidity-bar tensor.
-Each candidate batch's program tensors are packed once and shared across all
-sessions. Host inputs are retained across generations; changed source file
-metadata fails closed. GPU inputs are loaded in bounded cohorts.
+The original compact and history receipts are verified and reused. CUDA keeps
+compact source-feature and float32 history banks, elapsed-second row maps and
+market snapshots resident within each bounded cohort. It gathers only channels
+used by reachable rules. Expanded feature tiles remain the CPU reference/cache;
+the CUDA path no longer repeatedly decodes or transfers those expanded tiles.
+Host preparation runs in the background loader and pinned banks transfer on a
+separate CUDA stream. Cohort guards include compact banks, both signal copies,
+swing storage and rule captures.
 
-Feature programs evaluate ticker/time blocks in parallel. Position updates
-vectorize over **session Ã— strategy Ã— ticker** in one cohort engine. The time
-axis is chronological because entry prices, adds, stops and partial exits depend
-on earlier decisions. `compile` fuses the small transition; `eager` supports CPU
-and CUDA. This does not claim simultaneous execution of all 30 sessions or a
-measured speedup. Cohort/batch envelopes fail closed instead of truncating work.
+Entry uses the flat rule; exit/add/reduce/trail use the open rule. Unreachable
+branch genes do not consume execution or complexity scoring, and mutation selects
+only reachable genes. Rules with no temporal dependencies evaluate only eligible
+execution observations. Temporal rules retain the original elapsed-second context;
+trail rules also evaluate unobserved seconds because they can ratchet held stops.
+No rule work is needed before an identity's first top-ten admission.
+
+CUDA rule graphs are reused by candidate group and padded input shape, with a
+bounded capture cache. Signals occupy one byte per candidate/second/identity.
+Position updates vectorize over **session × strategy × ticker**. The compiled
+CUDA path captures blocks of 32 chronological steps, advancing its clock on the
+GPU; the eager path remains an independent execution comparison. There is no
+new holding limit. This implementation still has a dense identity ledger and
+does not claim a measured speedup until real-session checks pass.
 
 Enriched features can be prepared once with `python -B -m
 research.vectorized_backtest.v7.feature_cache --inputs INPUTS --history HISTORY
@@ -62,9 +71,8 @@ packed validity, exact source/schema/implementation binding, per-tile hashes and
 restart checkpoints. `--first-session-only` measures preparation before all30.
 The default storage limit is 1200 GiB; insufficient disk headroom fails closed.
 Readers verify tiles before first use and keep at most 1 GiB of decoded tiles
-per session. Loading/decompression and device transfer still occur; feature
-gathers, quote transforms, relative histories and validity construction do not
-repeat for candidate batches. This is an implementation, not a speed claim.
+per session on the CPU reference path. Existing caches remain reusable without
+rebuilding causal inputs or histories.
 `prepare_features` exposes the same inputs/history/output arguments and a bounded
 `--workers 1..8` pool for all30 preparation, with drained failures and durable
 per-tile resume. Its default is four workers. `STOP` is honored after a durable
@@ -117,14 +125,13 @@ as part of implementation.
 ### State-conditional strategy execution
 
 Each candidate has flat `rules` and separate `open_rules`, both restricted to
-causal market catalog inputs. Both branches are evaluated in parallel before
-replay and packed into a signed int16 signal tensor (low byte flat, high byte
-open), doubling gate storage. Replay selects using the actual pre-execution
-quantity independently per session/candidate/ticker. The compiled selection
-kernel applies optional per-stage `minimum_age` conditions at the decision
-close. Age counts elapsed seconds since entry execution; additions and partial
-reductions do not reset it. A newly opened position cannot run its open branch
-in the same execution step.
+causal market catalog inputs. Only flat entry and open management rules can
+change a transition, so they are evaluated independently and packed into uint8
+signals. Replay's actual held state selects the applicable actions and applies
+optional per-stage `minimum_age` conditions at the decision close. Age counts
+elapsed seconds since entry execution; additions and partial reductions do not
+reset it. A newly opened position cannot run its open branch in the same step.
+The legacy int16 two-branch signal contract remains supported for comparisons.
 
 Fill price, basis, quantity magnitude, realized/unrealized profit and account
 metrics are not program inputs. Flat/open and age are the only permitted
@@ -132,7 +139,7 @@ position conditions. Fees remain charged on every purchase and sale and the
 objective uses net P&L. Existing stop/target and management safety policies
 remain execution mechanics. Legacy individuals without open_rules use their
 market rules in both branches; uint8 diagnostic gates retain legacy semantics.
-Search contract v2 rejects old campaign resume. Existing market feature tiles
+Search contract v3 rejects old campaign resume. Existing market feature tiles
 remain reusable. Age predicates are opt-in rather than inventing a new search
 range; configured age predicates are preserved by mutation.
 
@@ -142,7 +149,7 @@ previous arbitrary pilot results do not qualify optimization wall time.
 ### Overlapped I/O
 
 A bounded background loader prepares the next session cohort while the current
-one computes. Feature tiles are read/decoded by one worker per active cache,
+one computes. On the CPU reference path, feature tiles are read/decoded by one worker per active cache,
 with two-tile lookahead; mutable cache integrity/LRU state has a single owner.
 Pinned host tensors transfer on a separate CUDA stream, using nonblocking
 copies and event dependencies. Status, timing and session receipts use a bounded

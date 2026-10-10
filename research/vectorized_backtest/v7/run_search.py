@@ -17,11 +17,11 @@ from research.vectorized_backtest.v6.torch_backtest.materialize import owned_run
 from research.vectorized_backtest.v6.torch_backtest.run_structure import training_days
 from research.vectorized_backtest.v6.torch_backtest.stability import LowerTailDollarObjective,score
 from .features import CATALOG,VERSION as FEATURE_VERSION
-from .genome import Individual,sample,mutate
+from .genome import Individual,sample,mutate,effective_rules
 from .data import SessionData
 from .evaluator import PopulationPrograms,Execution,replay_cohort
 
-VERSION='v7-state-conditional-assumed-fill-search-v2'
+VERSION='v7-state-conditional-assumed-fill-search-v3'
 
 def digest(value):return sha256(json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
 
@@ -95,7 +95,12 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
                         reserve=len(cohort)*(maximum_data_gib+maximum_gate_gib+2.)*1024**3
                         if reserve>free*.8:raise MemoryError('Proposed V7 cohort exceeds GPU memory budget')
                     load_start=perf_counter()
-                    for day,item in loaded.result():
+                    ready=loaded.result()
+                    if torch.device(device).type=='cuda':
+                        reserve=sum(item.bytes+item.resident_features.bytes for _,item in ready)
+                        reserve+=len(ready)*(2*maximum_gate_gib+2.)*1024**3+4*1024**3
+                        if reserve>torch.cuda.mem_get_info()[0]*.8:raise MemoryError('Resident V7 features, signals and captures exceed GPU budget')
+                    for day,item in ready:
                         host_cache[day]=item
                         activate_nonblocking(item,device)
                         data.append(item)
@@ -120,6 +125,7 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
                             rule_seconds=rule_seconds,replay_seconds=perf_counter()-replay_start))
                         for day,result in zip(cohort,metrics):parts[day].append({k:v.detach().cpu().tolist() for k,v in result.items()})
                         publisher.write(root/'timings.json',timings);del gates,metrics
+                        if len(shared_batches)>1:shared.close()
                         panel.advance(batch_task)
                     for day,item in zip(cohort,data):
                         merged={k:sum((p[k] for p in parts[day]),[]) for k in parts[day][0]}
@@ -127,14 +133,16 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
                             population_sha256=token,full_session=True,validation_opened=False,execution=asdict(execution)))
                 finally:
                     for item in data:
+                        if hasattr(item,'resident_features'):item.resident_features.deactivate()
                         if hasattr(item,'deactivate'):item.deactivate()
                     del data;gc.collect()
                     if torch.device(device).type=='cuda':torch.cuda.empty_cache()
             publisher.flush()
+            for shared in shared_batches.values():shared.close()
             shared_batches.clear()
             ordered=[json.loads((root/d/'receipt.json').read_text())['metrics'] for d in days]
             matrix=lambda name:torch.tensor([v[name] for v in ordered],dtype=torch.bool if name=='terminal_valid' else torch.float64)
-            complexity=torch.tensor([sum(p.validate(CATALOG)['active_nodes'] for p in (*v.rules.values(),*(v.open_rules or {}).values()))+len(v.minimum_age) for v in population],dtype=torch.float64)
+            complexity=torch.tensor([sum(p.validate(CATALOG)['active_nodes'] for p in effective_rules(v).values())+len(v.minimum_age) for v in population],dtype=torch.float64)
             ranking=score(*(matrix(k) for k in ('net_pnl','drawdown','stop_risk_dollar_seconds','capital_dollar_seconds','filled_batches','terminal_valid')),
                 complexity,config=LowerTailDollarObjective(),inactivity=matrix('inactivity_fraction').mean(0))
             eligible=[i for i,v in enumerate(ranking['feasible'].tolist()) if v]
