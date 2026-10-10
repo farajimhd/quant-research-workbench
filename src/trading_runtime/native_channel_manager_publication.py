@@ -87,3 +87,16 @@ def require_native_channel_manager_publication(image, *, client):
             or binding[2:] != (image.run_id, image.sequence, image.batch_id, image.snapshot_hash, image.rows_json)):
         raise ValueError('Manager publication is unissued, changed or belongs to another client')
     return json.loads(image.rows_json)
+
+
+def verify_native_channel_manager_insert(image, *, client, table, rows,
+        sequence, batch_id, snapshot_hash):
+    """Bind one complete family to its issued immutable publication image."""
+    families = require_native_channel_manager_publication(image, client=client)
+    contracts = {contract.name: contract for contract in publication_contracts()}
+    if (table not in families or (sequence, batch_id, snapshot_hash) !=
+            (image.sequence, image.batch_id, image.snapshot_hash)):
+        raise ValueError('Manager INSERT differs from issued family or journal frontier')
+    if type(rows) is not tuple or canonical_json(list(rows)) != canonical_json(families[table]):
+        raise ValueError('Manager INSERT differs from complete frozen family')
+    return contracts[table], rows

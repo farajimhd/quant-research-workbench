@@ -1770,6 +1770,7 @@ def _insert(
     dispatch_snapshot_account_id: str | None = None,
     dispatch_manager_snapshot_hash: str | None = None,
     dispatch_fixed_lot_manager_context: Any | None = None,
+    dispatch_native_channel_manager_image: Any | None = None,
     dispatch_broker_snapshot_hash: str | None = None,
     dispatch_evidence_snapshot_hash: str | None = None,
     dispatch_campaign_snapshot_hash: str | None = None,
@@ -1781,7 +1782,19 @@ def _insert(
     contract_name = (_profile_table(name, journal_profile)
                      if journal_profile == "backtest_v3" and name == "trading_commit_v1"
                      else name)
-    if contract_name not in _CONTRACTS:
+    channel_wire = None
+    if dispatch_native_channel_manager_image is not None:
+        if (journal_profile != 'backtest_v4' or dispatch_fixed_lot_manager_context is not None
+                or getattr(client, 'typed_insert_strict', False) is not True):
+            raise ValueError('Channel manager INSERT requires its exclusive fenced V4 image')
+        from .native_channel_manager_publication import verify_native_channel_manager_insert
+        contract, channel_wire = verify_native_channel_manager_insert(
+            dispatch_native_channel_manager_image, client=client, table=contract_name,
+            rows=rows, sequence=dispatch_sequence, batch_id=dispatch_batch_id,
+            snapshot_hash=dispatch_manager_snapshot_hash)
+    elif contract_name in _CONTRACTS:
+        contract = _CONTRACTS[contract_name]
+    else:
         raise ValueError("Journal writer cannot insert outside typed journal tables")
     if contract_name in RUNNING_FINANCIAL_TABLE_NAMES:
         raise RuntimeError('Running financial links require their fenced checkpoint publisher')
@@ -1789,13 +1802,13 @@ def _insert(
         raise ValueError('Declared native companions require the explicit Backtest V4 profile')
     if not rows:
         return None
-    columns = tuple(column for column, _ in _CONTRACTS[contract_name].columns)
-    wire_rows = tuple(_wire_row(contract_name, row) for row in rows)
+    columns = tuple(column for column, _ in contract.columns)
+    wire_rows = channel_wire if channel_wire is not None else tuple(_wire_row(contract_name, row) for row in rows)
     # On pre-26.7 servers precise_float_parsing does not govern JSON input.
     # Binary Float64 transport preserves canonical hash bits and the same
     # acknowledged asynchronous INSERT and Keeper request identity contract.
     binary = (journal_profile == "backtest_v4" and any(
-        "Float64" in kind for _, kind in _CONTRACTS[contract_name].columns))
+        "Float64" in kind for _, kind in contract.columns))
     header = (
         f"INSERT INTO arte.{_profile_table(name, journal_profile)} ({','.join(columns)}) "
         f"SETTINGS async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
@@ -1805,7 +1818,7 @@ def _insert(
     if binary:
         from src.trading_runtime.arte_journal_rowbinary import encode_journal_rows
         sql = ((header + "RowBinary\n").encode('utf-8') + encode_journal_rows(
-            tuple(_CONTRACTS[contract_name].columns), wire_rows))
+            tuple(contract.columns), wire_rows))
     else:
         body = "\n".join(canonical_json(row) for row in wire_rows)
         sql = header + "JSONEachRow\n" + body
@@ -1895,7 +1908,8 @@ def _insert(
             verify_manager_insert(dispatch_fixed_lot_manager_context,client=client,
                 table=name,rows=rows,run_id=rows[0].get('run_id'),sequence=dispatch_sequence,
                 batch_id=dispatch_batch_id,snapshot_hash=dispatch_manager_snapshot_hash)
-        if dispatch_fixed_lot_manager_context is None and dispatch_manager_snapshot_hash is not None and (
+        if (dispatch_fixed_lot_manager_context is None and dispatch_native_channel_manager_image is None
+                and dispatch_manager_snapshot_hash is not None and (
                 name not in {table.name for table in (
                     *PROTECTION_SNAPSHOT_TABLES, *MANAGER_SNAPSHOT_TABLES,
                     *(selected_snapshot_contracts() if getattr(client,'confirmed_original_risk_policy',None)
@@ -1903,7 +1917,7 @@ def _insert(
                 )}
                 or any(row.get("checkpoint_sequence") != dispatch_sequence
                        or row.get("snapshot_id") != rows[0].get("snapshot_id")
-                       for row in rows)):
+                       for row in rows))):
             raise ValueError("Manager snapshot dispatch identity differs from typed rows")
         if dispatch_broker_snapshot_hash is not None and (
                 name not in {table.name for table in BROKER_MATCH_SNAPSHOT_TABLES}
