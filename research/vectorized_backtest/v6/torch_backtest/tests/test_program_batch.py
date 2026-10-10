@@ -11,6 +11,27 @@ def test_one_candle_mean_is_exact_identity_and_invalid_outputs_are_zero():
     assert not values.any() and not known[:,:,17].any()
 
 
+def test_mixed_instruction_lengths_preserve_earlier_outputs_and_missing_history():
+    features=torch.zeros(2,8,len(CATALOG))
+    features[:,:,8]=torch.tensor([[0.,2.,8.,4.,10.,6.,12.,8.],[12.,8.,6.,10.,4.,8.,2.,0.]])
+    valid=torch.ones_like(features,dtype=torch.bool);valid[0,3,8]=False
+    short=Program((Node(Op.FEATURE,feature=8),
+        Node(Op.CONSTANT,value=5.,unit=CATALOG[8].unit),Node(Op.GREATER,a=0,b=1)),2)
+    long=Program((Node(Op.FEATURE,feature=8),Node(Op.ABS,a=0),
+        Node(Op.MEAN,a=1,window=3),Node(Op.GREATER,a=1,b=2),Node(Op.NOT,a=3)),3)
+    evaluator=TorchPrograms([short,long],CATALOG)
+    for scale in (1.,-1.):
+        data=features*scale;actual,known=evaluator(data,valid)
+        expected=torch.zeros_like(actual);mask=torch.zeros_like(known)
+        mask[0]=valid[:,:,8];expected[0]=((data[:,:,8]>5)&mask[0]).to(expected.dtype)
+        for listing in range(2):
+            for clock in range(2,8):
+                mask[1,listing,clock]=valid[listing,clock-2:clock+1,8].all()
+                mean=data[listing,clock-2:clock+1,8].abs().mean()
+                expected[1,listing,clock]=(data[listing,clock,8].abs()>mean)&mask[1,listing,clock]
+        assert torch.equal(actual,expected) and torch.equal(known,mask)
+
+
 @pytest.mark.parametrize('operation', [Op.LAG, Op.DIFFERENCE, Op.MEAN, Op.MINIMUM, Op.MAXIMUM])
 def test_listing_batch_matches_independent_temporal_evaluation(operation):
     generator = torch.Generator().manual_seed(20261005)

@@ -126,15 +126,19 @@ class TorchPrograms:
 
     def __call__(self,features,valid):
         if features.ndim not in (2,3) or valid.shape!=features.shape:raise ValueError('Expected [candles,features] or [listings,candles,features] and validity')
-        b=len(self.programs);c=features.shape[-2];values=[];masks=[]
+        b=len(self.programs);c=features.shape[-2]
         shape=(b,*features.shape[:-1]);broadcast=(b,)+(1,)*(features.ndim-1)
+        # Every operand refers to an earlier instruction. Keep those results
+        # once instead of stacking the complete prefix at each instruction.
+        values=features.new_empty((self.width,*shape))
+        masks=torch.empty((self.width,*shape),dtype=torch.bool,device=features.device)
         axis=torch.arange(c,device=features.device)[None]
         def lag(x,k):return F.pad(x[...,:max(0,c-k)],(k,0))[...,:c]
         for i,(nodes,fi,ai,bi) in enumerate(self.rows):
             out=features.new_zeros(shape);ok=torch.zeros(shape,dtype=torch.bool,device=features.device)
             if i:
-                stack=torch.stack(values);mask=torch.stack(masks)
-                a=stack[ai,self.batch_axis];d=stack[bi,self.batch_axis];av=mask[ai,self.batch_axis];dv=mask[bi,self.batch_axis]
+                a=values[ai,self.batch_axis];d=values[bi,self.batch_axis]
+                av=masks[ai,self.batch_axis];dv=masks[bi,self.batch_axis]
             for op,choose,windows,constants in self.dispatch[i]:
                 choose=choose.reshape(broadcast)
                 if op==Op.FEATURE:v=features[...,fi].movedim(-1,0);m=valid[...,fi].movedim(-1,0)
@@ -177,5 +181,5 @@ class TorchPrograms:
                     elif op==Op.CROSS_ABOVE:v=(a>d)&(lag(a,1)<=lag(d,1));m=m&lag(av&dv,1)&(axis>=1)
                     elif op==Op.CROSS_BELOW:v=(a<d)&(lag(a,1)>=lag(d,1));m=m&lag(av&dv,1)&(axis>=1)
                 m=m&torch.isfinite(v);out=torch.where(choose,torch.where(m,v,0.),out);ok=torch.where(choose,m,ok)
-            values.append(out);masks.append(ok)
-        return torch.stack(values)[self.outputs,self.batch_axis],torch.stack(masks)[self.outputs,self.batch_axis]
+            values[i].copy_(out);masks[i].copy_(ok)
+        return values[self.outputs,self.batch_axis],masks[self.outputs,self.batch_axis]
