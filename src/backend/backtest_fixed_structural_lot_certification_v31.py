@@ -684,7 +684,7 @@ REVIEWED_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': 'c0f
  'src/backend/backtest_fixed_structural_lot_compatibility_v29.py': '0c8cd9e71281c2c897017c9d3ef5def2cfd920fd3647d2cfb52953d0916ee588',
  'src/backend/backtest_fixed_structural_lot_compatibility_v3.py': '32ff106e1dea4772c38e4ab5419ade6808718db47ef2bdda58bcd0f885da5f61',
  'src/backend/backtest_fixed_structural_lot_compatibility_v30.py': '48d5bbc4163e3b72f123a97641895c588a39a6d13cf2f3905787e4d31795dfb7',
- 'src/backend/backtest_fixed_structural_lot_compatibility_v31.py': '1bd57ff2582e83c835a4aac50da6cf96f61f7e8c58f27558f4d5f4365ae7bf03',
+ 'src/backend/backtest_fixed_structural_lot_compatibility_v31.py': 'ac7f022d8f0102e816af0258e0f82d66b41a30f1caa5733c19f5bf031d2974ae',
  'src/backend/backtest_fixed_structural_lot_compatibility_v4.py': 'ad7260535b5d2608cdfc9d6bbcb63c9642c83af77df8d060b97e4f7b5338fc4c',
  'src/backend/backtest_fixed_structural_lot_compatibility_v5.py': 'c00662ceba4b3a42c558e9a49475f53183010d341b59fb80bbfafc6db668d580',
  'src/backend/backtest_fixed_structural_lot_compatibility_v6.py': '82aa36170d55647a600b6790a102f2e98440fccc1b53ac047942e33e7860a5c9',
@@ -1175,7 +1175,7 @@ REVIEWED_SOURCE_AST = {'pipelines/strategy_one/configuration_publisher.py': 'c0f
  'src/trading_runtime/strategy_twenty_two_release.py': 'dfd5e4ccca3a285d278649a3374412e24638e29e62f57cf62f3db64c902d830f',
  'src/trading_runtime/strategy_zero_regime_risk_failure.py': '2cca428561093253b73728c7c52a41b9e91dcf622f28fdd7ca93bb66660e8cd1',
  'src/trading_runtime/typed_assignment_input.py': '6133c30d153905dfa1c94f264f3f740d0e53259c8f0e7687b915bce62becea5d'}
-APPROVED_METADATA_ANCHOR = '5701716904ba90279e6d248cbef49d1d9f12db2e367f6842ac06ebdffe98491d'
+APPROVED_METADATA_ANCHOR = 'a23264d8640b9e0fdf3fd45a4dec4a75c75545a326d243c23ef806a12602b610'
 APPROVED_SELF_AST = 'b99c2b2dbc3b39ff8effd6aa8878ca2899ff4cf301d30e0c4abd1a96c63acb01'
 
 def certify_fixed_structural_lot_source() -> str:

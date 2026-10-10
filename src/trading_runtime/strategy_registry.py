@@ -1492,4 +1492,3 @@ BATCHED_DETAIL_SELECT_RULE = 'immutable-journal-batched-detail-select-envelope@1
 SELECTED_CHECKPOINT_PRODUCT_RULE = 'immutable-selected-checkpoint-products@1'
 
 OPERATION_CHECKPOINT_READER_RULE = 'immutable-operation-bound-checkpoint-reader@1'
-

@@ -81,18 +81,7 @@ REVIEWED_EDITS = {'trading_runtime/strategy_registry.py': {'current_ast': '6c532
                                                      '        register_numbered_strategy(publication_reuse)\n'
                                                      '        _NUMBERED_FIXED_REGISTERED = True\n'
                                                      '\n'
-                                                     '\n'),
-                                                    ('SELECTED_CHECKPOINT_PRODUCT_RULE = '
-                                                     "'immutable-selected-checkpoint-products@1'\n"
-                                                     '\n'
-                                                     'OPERATION_CHECKPOINT_READER_RULE = '
-                                                     "'immutable-operation-bound-checkpoint-reader@1'\n"
-                                                     '\n',
-                                                     'SELECTED_CHECKPOINT_PRODUCT_RULE = '
-                                                     "'immutable-selected-checkpoint-products@1'\n"
-                                                     '\n'
-                                                     'OPERATION_CHECKPOINT_READER_RULE = '
-                                                     "'immutable-operation-bound-checkpoint-reader@1'\n"))},
+                                                     '\n'))},
  'backend/backtest_fixed_v4_certification.py': {'current_ast': '7913e74fae450e4b937acebf6eea9bb5455de6f72e24dcc22946c67d12636e77',
                                                 'parent_ast': '9054becc64fb937b338fba777160eb9a98f2213ca0fa3ca4a60dd1a740f445a5',
                                                 'edits': (('def _reviewed_fixed_lot_ast_recipe(source: str, '
@@ -166,24 +155,8 @@ REVIEWED_EDITS = {'trading_runtime/strategy_registry.py': {'current_ast': '6c532
                                                            '    from '
                                                            '.backtest_fixed_structural_lot_compatibility_v29 '
                                                            'import restore_reviewed_parent_source as '
-                                                           'restore_v29\n'),
-                                                          ('                raise ValueError("Numbered '
-                                                           'session-exit reviewed authority changed: " + '
-                                                           'relative + ":" + name)\n'
-                                                           '        observed.append((relative, '
-                                                           'sha256(source.encode()).hexdigest()))\n'
-                                                           '    return sha256(json.dumps(observed, '
-                                                           'separators=(",", ":")).encode()).hexdigest()\n'
-                                                           '\n',
-                                                           '                raise ValueError("Numbered '
-                                                           'session-exit reviewed authority changed: " + '
-                                                           'relative + ":" + name)\n'
-                                                           '        observed.append((relative, '
-                                                           'sha256(source.encode()).hexdigest()))\n'
-                                                           '    return sha256(json.dumps(observed, '
-                                                           'separators=(",", '
-                                                           '":")).encode()).hexdigest()\n'))}}
-APPROVED_METADATA_ANCHOR = 'bf6ec69fd06070b025b0f71c7dac9127b30f25abf41d99ee858fae85337f5235'
+                                                           'restore_v29\n'))}}
+APPROVED_METADATA_ANCHOR = '333d5c14aa5f8562ed9a663bfbea53e1c475f7273f6deccac44a3f1985cc12d6'
 APPROVED_SELF_AST = 'bb5a66c857668375f096e517981409bcb2397bb2c510119cf9fffdf53dccf1b0'
 
 def restore_reviewed_parent_source(source, relative):

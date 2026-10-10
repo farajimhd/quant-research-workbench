@@ -2221,4 +2221,3 @@ def certify_numbered_session_exit_reason_source(*, source_overrides=None) -> str
                 raise ValueError("Numbered session-exit reviewed authority changed: " + relative + ":" + name)
         observed.append((relative, sha256(source.encode()).hexdigest()))
     return sha256(json.dumps(observed, separators=(",", ":")).encode()).hexdigest()
-
