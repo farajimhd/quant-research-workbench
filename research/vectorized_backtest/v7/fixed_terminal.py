@@ -21,6 +21,14 @@ def changed_spans(previous,current):
 class FixedTerminal:
     def __init__(self,console):self.console=console;self.previous=[];self.size=None
 
+    def write(self,value):
+        # Unbuffered Windows console streams can accept only a bounded native
+        # write. TextIOWrapper does not reliably retry a partial raw write.
+        # Keep even a maximized full frame below that limit per write.
+        for offset in range(0,len(value),4096):
+            self.console.file.write(value[offset:offset+4096])
+        self.console.file.flush()
+
     def dimensions(self):
         # Windows can retain a wider scrollback buffer than the visible viewport.
         # Rich/shutil may report that buffer; absolute cursor output needs the window.
@@ -87,7 +95,7 @@ class FixedTerminal:
         if self.dimensions()!=(width,height):
             self.previous=[];self.size=None;return
         if output:
-            self.console.file.write(''.join(output));self.console.file.flush()
+            self.write(''.join(output))
         had_size=self.size is not None
         self.previous=lines;self.size=(width,height)
         # Console hosts may reflow the old screen asynchronously after resize.

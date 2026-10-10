@@ -161,3 +161,14 @@ def test_real_ranking_at_maximized_size_has_color_and_supported_columns(tmp_path
         plain='\n'.join(''.join(cell[0] for cell in line) for line in screen.previous)
         assert 'Campaign ETA' in plain and 'Messages' in plain
         if height==90:assert 'Not recorded in V7' in plain
+
+
+def test_large_console_frame_uses_bounded_native_writes():
+    from research.vectorized_backtest.v7.fixed_terminal import FixedTerminal
+    class BoundedConsole(io.StringIO):
+        def write(self,value):
+            assert len(value)<=4096
+            return super().write(value)
+    stream=BoundedConsole();console=Console(file=stream,width=320,height=90,force_terminal=True,legacy_windows=False)
+    screen=FixedTerminal(console);screen.update('first row')
+    assert '\x1b[90;1H' in stream.getvalue()
