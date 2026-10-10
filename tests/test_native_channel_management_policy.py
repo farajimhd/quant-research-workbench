@@ -147,3 +147,68 @@ def test_channel_dispatch_and_keeper_head_use_selected_versioned_root(installed)
     assert authority.keeper.get(ManagedManagerSnapshotHeadReader.path('run-1'))[0] == (
         f'1\nrun-1\n1\n{BATCH_ID}\n{MANAGER_HASH}'.encode())
     assert authority._read_gate('run-1')[0].registered == 0
+
+
+def channel_catalog(installed, *, grants=True, defect=None):
+    from tests.test_original_risk_profile import Catalog
+    from src.trading_runtime.native_channel_writer_profile import channel_runner_identity
+    client = Catalog(waiting=True, binding_grant=True, defect=defect,
+                     defect_table='trading_strategy_one_manager_snapshot_v5')
+    client.native_channel_management_policy = declared(installed)[0]
+    client.user = channel_runner_identity(client.native_channel_management_policy,
+                                         client.confirmed_original_risk_policy)[1]
+    tables = selected_snapshot_contracts(client.native_channel_management_policy)
+    client.contracts.update({t.name: t for t in tables})
+    if grants:
+        client.writable.update(t.name for t in tables)
+        client.required.update(t.name for t in tables)
+    return client
+
+
+def test_channel_writer_preflight_checks_selected_storage_and_binds_policy(installed):
+    from src.trading_runtime import arte_journal_writer as writer
+    client = channel_catalog(installed)
+    seal = writer._v4_preflight(client)
+    assert seal.native_channel_management_policy == client.native_channel_management_policy
+    for table in selected_snapshot_contracts(client.native_channel_management_policy):
+        assert any(table.name in sql and 'FROM system.parts' in sql for sql in client.statements)
+    assert all(not sql.startswith(('INSERT', 'CREATE', 'GRANT')) for sql in client.statements)
+
+
+@pytest.mark.parametrize('defect', ['missing', 'policy', 'parts', 'grants', 'principal'])
+def test_channel_writer_preflight_rejects_bad_storage_grants_or_legacy_principal(installed, defect):
+    from src.trading_runtime import arte_journal_writer as writer
+    client = channel_catalog(installed, grants=defect != 'grants',
+                             defect=defect if defect in ('missing', 'policy', 'parts') else None)
+    if defect == 'principal': client.user = 'backtest_v4_original_risk_runner'
+    with pytest.raises((RuntimeError, ValueError)):
+        writer._v4_preflight(client)
+    assert all(not sql.startswith(('INSERT', 'CREATE', 'GRANT')) for sql in client.statements)
+
+
+def test_channel_runner_has_no_legacy_credential_fallback(installed, monkeypatch):
+    from src.trading_runtime import arte_journal_writer as writer
+    from tests.test_original_risk_profile import WAIT
+    monkeypatch.delenv('BACKTEST_V4_NATIVE_CHANNEL_RUNNER_CREDENTIAL_FILE', raising=False)
+    with pytest.raises(ValueError, match='private credential FILE'):
+        writer._v4_runner_credentials(confirmed_original_risk_policy=WAIT,
+                                     native_channel_management_policy=declared(installed)[0])
+    with pytest.raises(ValueError, match='original-risk policies'):
+        writer._v4_runner_credentials(native_channel_management_policy=declared(installed)[0])
+
+
+def test_channel_writer_retains_combined_entry_cost_storage_requirement(installed):
+    from tests.test_original_risk_entry_cost_profile import CombinedCatalog
+    from src.trading_runtime import arte_journal_writer as writer
+    from src.trading_runtime.native_channel_writer_profile import channel_runner_identity
+    client = CombinedCatalog()
+    client.native_channel_management_policy = declared(installed)[0]
+    client.user = channel_runner_identity(client.native_channel_management_policy,
+                                         client.confirmed_original_risk_policy)[1]
+    tables = selected_snapshot_contracts(client.native_channel_management_policy)
+    client.contracts.update({t.name: t for t in tables})
+    client.writable.update(t.name for t in tables)
+    client.required.update(t.name for t in tables)
+    seal = writer._v4_preflight(client)
+    assert seal.entry_spread_risk_profile is True
+    assert seal.confirmed_original_risk_policy == client.confirmed_original_risk_policy

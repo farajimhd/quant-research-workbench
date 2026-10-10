@@ -311,7 +311,8 @@ def journal_client_from_env() -> Any:
 
 def backtest_v4_journal_client_from_env(*, keeper_session=None,
                                         lease=None, automatic_ladder=False, entry_spread_risk=False,
-                                        ladder_geometry_policy=None, confirmed_original_risk_policy=None, fixed_structural_lot_profile=None) -> Any:
+                                        ladder_geometry_policy=None, confirmed_original_risk_policy=None, fixed_structural_lot_profile=None,
+                                        native_channel_management_policy=None) -> Any:
     """Open V4 with a caller-owned writable Keeper session and strict dispatch.
 
     The caller must keep that session alive until the writer has drained and
@@ -326,6 +327,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
     url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder, entry_spread_risk=entry_spread_risk,
         **({'ladder_geometry_policy':ladder_geometry_policy} if ladder_geometry_policy is not None else {}),
         **({'confirmed_original_risk_policy':confirmed_original_risk_policy} if confirmed_original_risk_policy is not None else {}),
+        **({'native_channel_management_policy':native_channel_management_policy} if native_channel_management_policy is not None else {}),
         **({'fixed_structural_lot_profile':fixed_structural_lot_profile} if fixed_structural_lot_profile is not None else {}))
     if user in {os.environ.get(key, "").strip() for key in (
         "BACKTEST_CLICKHOUSE_USER", "REAL_LIVE_CLICKHOUSE_READ_USER",
@@ -382,6 +384,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
     client.ladder_geometry_policy = ladder_geometry_policy
     client.entry_spread_risk_profile = entry_spread_risk
     client.confirmed_original_risk_policy = confirmed_original_risk_policy
+    client.native_channel_management_policy = native_channel_management_policy
     client.fixed_structural_lot_profile = fixed_structural_lot_profile
     def new_detail_lane() -> ClickHouseHttpClient:
         lane = _V4RunnerClient(
@@ -396,6 +399,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
         lane.entry_spread_risk_profile = entry_spread_risk
         lane.ladder_geometry_policy = ladder_geometry_policy
         lane.confirmed_original_risk_policy = confirmed_original_risk_policy
+        lane.native_channel_management_policy = native_channel_management_policy
         lane.fixed_structural_lot_profile = fixed_structural_lot_profile
         return lane
     client.v4_insert_lane_factory = new_detail_lane
@@ -405,7 +409,8 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
 
 
 def _v4_runner_credentials(*, automatic_ladder=False, entry_spread_risk=False,
-                          ladder_geometry_policy=None, confirmed_original_risk_policy=None, fixed_structural_lot_profile=None) -> tuple[str, str, str]:
+                          ladder_geometry_policy=None, confirmed_original_risk_policy=None, fixed_structural_lot_profile=None,
+                          native_channel_management_policy=None) -> tuple[str, str, str]:
     from src.trading_runtime.clickhouse_transport import workstation_ipv4_transport
 
     if type(automatic_ladder) is not bool or type(entry_spread_risk) is not bool or (automatic_ladder and entry_spread_risk):
@@ -413,6 +418,11 @@ def _v4_runner_credentials(*, automatic_ladder=False, entry_spread_risk=False,
     _validate_ladder_geometry_profile(automatic_ladder, ladder_geometry_policy)
     from .original_risk_diagnostic_profile import validate_original_risk_profile
     validate_original_risk_profile(automatic_ladder,entry_spread_risk,confirmed_original_risk_policy)
+    from .native_channel_writer_profile import validate_channel_writer_profile, channel_runner_identity
+    validate_channel_writer_profile(native_channel_management_policy,
+        automatic_ladder=automatic_ladder, entry_spread_risk=entry_spread_risk,
+        risk_policy=confirmed_original_risk_policy, ladder_geometry_policy=ladder_geometry_policy,
+        fixed_structural_lot_profile=fixed_structural_lot_profile)
     waiting = ladder_geometry_policy is not None
     stem = ('BACKTEST_V4_WAITING_LADDER_RUNNER' if waiting else
             'BACKTEST_V4_LADDER_RUNNER' if automatic_ladder else 'BACKTEST_V4_RUNNER')
@@ -430,6 +440,10 @@ def _v4_runner_credentials(*, automatic_ladder=False, entry_spread_risk=False,
         stem,principal='BACKTEST_V4_FIXED_STRUCTURAL_LOT_RUNNER','backtest_v4_fixed_structural_lot_runner'
         if not os.environ.get(stem+'_CREDENTIAL_FILE','').strip():
             raise ValueError('Selected fixed-lot runner requires its private credential FILE')
+    if native_channel_management_policy is not None:
+        stem, principal = channel_runner_identity(native_channel_management_policy, confirmed_original_risk_policy)
+        if not os.environ.get(stem+'_CREDENTIAL_FILE','').strip():
+            raise ValueError('Selected channel runner requires its private credential FILE')
     url, user, password = _dedicated_clickhouse_credentials(
         stem + '_CLICKHOUSE_', stem + '_CREDENTIAL_FILE')
     url = workstation_ipv4_transport(url)
@@ -465,7 +479,8 @@ def _dedicated_clickhouse_credentials(prefix: str, path_key: str) -> tuple[str, 
 
 
 def backtest_v4_operator_client_from_env(*, automatic_ladder=False, entry_spread_risk=False,
-                                         ladder_geometry_policy=None, confirmed_original_risk_policy=None, fixed_structural_lot_profile=None) -> Any:
+                                         ladder_geometry_policy=None, confirmed_original_risk_policy=None, fixed_structural_lot_profile=None,
+                                         native_channel_management_policy=None) -> Any:
     """SELECT-only catalog/grant audit before any Keeper claim or run write."""
     from research.mlops.clickhouse import ClickHouseHttpClient
 
@@ -473,6 +488,7 @@ def backtest_v4_operator_client_from_env(*, automatic_ladder=False, entry_spread
     url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder, entry_spread_risk=entry_spread_risk,
         **({'ladder_geometry_policy':ladder_geometry_policy} if ladder_geometry_policy is not None else {}),
         **({'confirmed_original_risk_policy':confirmed_original_risk_policy} if confirmed_original_risk_policy is not None else {}),
+        **({'native_channel_management_policy':native_channel_management_policy} if native_channel_management_policy is not None else {}),
         **({'fixed_structural_lot_profile':fixed_structural_lot_profile} if fixed_structural_lot_profile is not None else {}))
     client = ClickHouseHttpClient(
         url, user, password, timeout_seconds=60, persistent=True,
@@ -483,6 +499,7 @@ def backtest_v4_operator_client_from_env(*, automatic_ladder=False, entry_spread
     client.ladder_geometry_policy = ladder_geometry_policy
     client.entry_spread_risk_profile = entry_spread_risk
     client.confirmed_original_risk_policy = confirmed_original_risk_policy
+    client.native_channel_management_policy = native_channel_management_policy
     client.fixed_structural_lot_profile = fixed_structural_lot_profile
     return client
 
@@ -2407,7 +2424,7 @@ _V4_PREFLIGHT_SECRET = object()
 class _V4PreflightSeal:
     """One-use proof that this exact client passed the full V4 audit."""
 
-    __slots__ = ("client", "secret", "used", "ladder_geometry_policy", "automatic_ladder_profile", "entry_spread_risk_profile", "confirmed_original_risk_policy", "fixed_structural_lot_profile")
+    __slots__ = ("client", "secret", "used", "ladder_geometry_policy", "automatic_ladder_profile", "entry_spread_risk_profile", "confirmed_original_risk_policy", "fixed_structural_lot_profile", "native_channel_management_policy")
 
     def __init__(self, client: Any, secret: object) -> None:
         self.client, self.secret, self.used = client, secret, False
@@ -2415,6 +2432,7 @@ class _V4PreflightSeal:
         self.automatic_ladder_profile = getattr(client, 'automatic_ladder_profile', False)
         self.entry_spread_risk_profile = getattr(client, 'entry_spread_risk_profile', False)
         self.confirmed_original_risk_policy = getattr(client,'confirmed_original_risk_policy',None)
+        self.native_channel_management_policy = getattr(client,'native_channel_management_policy',None)
         self.fixed_structural_lot_profile = getattr(client,'fixed_structural_lot_profile',None)
 
 
@@ -2442,6 +2460,13 @@ def _v4_preflight(client: Any) -> _V4PreflightSeal:
     risk_policy=getattr(client,'confirmed_original_risk_policy',None)
     validate_original_risk_profile(getattr(client,'automatic_ladder_profile',False),
         getattr(client,'entry_spread_risk_profile',False),risk_policy)
+    channel_policy = getattr(client, 'native_channel_management_policy', None)
+    from .native_channel_writer_profile import validate_channel_writer_profile, channel_runner_identity
+    validate_channel_writer_profile(channel_policy,
+        automatic_ladder=getattr(client,'automatic_ladder_profile',False),
+        entry_spread_risk=getattr(client,'entry_spread_risk_profile',False), risk_policy=risk_policy,
+        ladder_geometry_policy=geometry_policy,
+        fixed_structural_lot_profile=getattr(client,'fixed_structural_lot_profile',None))
     # A storage_preflight scans active parts as well as schema. Audit the
     # union once: repeating that catalog scan for each family can dominate
     # Backtest startup on a workstation with large market-part catalogs.
@@ -2449,10 +2474,17 @@ def _v4_preflight(client: Any) -> _V4PreflightSeal:
     writable = v4_journal_write_tables()
     if risk_policy is not None:
         from .original_risk_diagnostic_profile import original_risk_runner_identity
-        if client.execute('SELECT currentUser()').strip()!=original_risk_runner_identity(risk_policy)[1]:
+        expected_risk_principal = (channel_runner_identity(channel_policy, risk_policy)[1]
+            if channel_policy is not None else original_risk_runner_identity(risk_policy)[1])
+        if client.execute('SELECT currentUser()').strip()!=expected_risk_principal:
             raise RuntimeError('Original-risk profile requires its dedicated principal')
         selected_tables=(ORIGINAL_RISK_DIAGNOSTIC,*selected_snapshot_contracts())
         storage_preflight(client,tables=selected_tables)
+        writable |= frozenset(table.name for table in selected_tables)
+    if channel_policy is not None:
+        from .native_channel_management_policy import selected_snapshot_contracts as channel_contracts
+        selected_tables = channel_contracts(channel_policy)
+        storage_preflight(client, tables=selected_tables)
         writable |= frozenset(table.name for table in selected_tables)
     if getattr(client, 'automatic_ladder_profile', False):
         from src.trading_runtime.arte_squeeze_ladder_schema import TABLES as ladder_tables
@@ -2467,7 +2499,8 @@ def _v4_preflight(client: Any) -> _V4PreflightSeal:
             storage_preflight(client, tables=(LADDER_BINDING,))
             writable |= frozenset({LADDER_BINDING.name})
     if getattr(client, 'entry_spread_risk_profile', False):
-        expected_entry_cost_principal = (original_risk_runner_identity(risk_policy)[1]
+        expected_entry_cost_principal = (channel_runner_identity(channel_policy, risk_policy)[1]
+            if channel_policy is not None else original_risk_runner_identity(risk_policy)[1]
             if risk_policy is not None else 'backtest_v4_entry_cost_runner')
         if getattr(client, 'automatic_ladder_profile', False) or client.execute('SELECT currentUser()').strip() != expected_entry_cost_principal:
             raise RuntimeError('Entry cost profile requires its dedicated principal')
@@ -4090,6 +4123,7 @@ class ArteJournalWriter:
                       or v4_preflight_seal.automatic_ladder_profile != getattr(client, 'automatic_ladder_profile', False)
                       or v4_preflight_seal.entry_spread_risk_profile != getattr(client, 'entry_spread_risk_profile', False)
                       or v4_preflight_seal.confirmed_original_risk_policy != getattr(client,'confirmed_original_risk_policy',None)
+                      or v4_preflight_seal.native_channel_management_policy != getattr(client,'native_channel_management_policy',None)
                       or v4_preflight_seal.fixed_structural_lot_profile is not getattr(client,'fixed_structural_lot_profile',None)
                       or v4_preflight_seal.used):
                     raise RuntimeError("V4 writer lacks a fresh same-client preflight")

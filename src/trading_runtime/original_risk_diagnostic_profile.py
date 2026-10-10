@@ -36,6 +36,11 @@ def original_risk_runner_options(contract):
             raise ValueError('Combined capability requires declared entry-cost semantics')
         options['entry_spread_risk'] = True
     validate_original_risk_profile(False, combined, policy)
+    channel = getattr(contract, 'native_channel_management_policy', None)
+    if channel is not None:
+        from .native_channel_writer_profile import validate_channel_writer_profile
+        validate_channel_writer_profile(channel, entry_spread_risk=combined, risk_policy=policy)
+        options['native_channel_management_policy'] = channel
     return options
 
 
