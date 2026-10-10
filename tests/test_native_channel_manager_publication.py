@@ -157,6 +157,24 @@ def test_publication_real_keeper_dispatch_selects_only_full_readback(installed, 
         before = tuple(writes)
         assert publish_native_channel_manager_publication(client, session, image) == selected
         assert tuple(writes) == before
+        from src.trading_runtime import arte_journal_writer as writer
+        monkeypatch.setattr(writer, '_v4_preflight', lambda _client: None)
+        monkeypatch.setattr(writer, '_verify_run_identity', lambda _client, _run:
+                            dict(mode='backtest', account_ids=(rows.pending[0]['account_id'],)))
+        client.manager_keeper_session = session
+        journal = writer.ArteJournalWriter(client, run_id=image.run_id,
+                                          journal_profile='backtest_v4', coalesce_batches=False)
+        try:
+            journal._last_commit_id = batch  # Synthetic fixture's verified predecessor.
+            assert journal.submit_native_channel_manager_publication(image).result(timeout=5) == batch
+            assert journal.metrics()['publish_by_unit']['_ManagerSnapshotUnit']['units'] == 1
+            assert tuple(writes) == before
+            with pytest.raises(ValueError, match='complete issued'):
+                journal.submit_manager_snapshot(session_date=None, checkpoint_sequence=image.sequence,
+                    journal_batch_id=batch, state=None)
+            with pytest.raises(ValueError): journal.submit_native_channel_manager_publication(replace(image))
+        finally:
+            journal.close()
     else:
         with pytest.raises(RuntimeError): publish_native_channel_manager_publication(client, session, image)
         assert path not in keeper.rows

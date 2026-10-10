@@ -4035,6 +4035,7 @@ class _ManagerSnapshotUnit:
     state: Any
     first_price_source: Any | None = None
     fixed_lot_context: Any | None = None
+    native_channel_image: Any | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -4969,11 +4970,35 @@ class ArteJournalWriter:
                 raise JournalQueueFull('Selected manager checkpoint queue is full') from exc
             return receipt
 
+    def submit_native_channel_manager_publication(self, image) -> Future[str]:
+        """Queue an independently issued immutable image without transport I/O."""
+        from .native_channel_manager_publication import require_native_channel_manager_publication
+        if self._journal_profile != 'backtest_v4':
+            raise ValueError('Native channel manager publication requires Backtest V4')
+        families = require_native_channel_manager_publication(image, client=self._client)
+        if image.run_id != self._run_id:
+            raise ValueError('Native channel manager queue cannot mix runs')
+        from .native_channel_manager_snapshot_schema import parent_contract
+        session_date = date.fromisoformat(families[parent_contract().name][0]['session_date'])
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError('Native channel manager writer is closed or failed')
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((_ManagerSnapshotUnit(session_date, image.sequence,
+                    image.batch_id, None, native_channel_image=image), receipt))
+            except Full as exc:
+                raise JournalQueueFull('Native channel manager snapshot queue is full') from exc
+            self._accepted_writes = True
+        return receipt
+
     def submit_manager_snapshot(self, *, session_date: date,
                                 checkpoint_sequence: int,
                                 journal_batch_id: str,
                                 state: Any, first_price_source=None) -> Future[str]:
         """Queue an immutable Strategy 1 capture; project and persist off-path."""
+        if getattr(self._client, 'native_channel_management_policy', None) is not None:
+            raise ValueError('Declared channel manager requires its complete issued publication image')
         from src.backend.backtest_strategy_one_management import (
             StrategyOneManagementRunner, StrategyOneManagementState,
         )
@@ -5525,7 +5550,13 @@ class ArteJournalWriter:
                             "Manager snapshot has no preceding ordered V4 commit")
                     price_context = ({} if unit.first_price_source is None else
                                      {'first_price_source': unit.first_price_source})
-                    if unit.fixed_lot_context is not None:
+                    if unit.native_channel_image is not None:
+                        if unit.fixed_lot_context is not None:
+                            raise RuntimeError('Manager queue cannot mix channel and fixed-lot authorities')
+                        from .native_channel_manager_publication import publish_native_channel_manager_publication
+                        publish_native_channel_manager_publication(self._client,
+                            self._client.manager_keeper_session, unit.native_channel_image)
+                    elif unit.fixed_lot_context is not None:
                         from .fixed_structural_lot_manager_snapshot import publish_manager_publication
                         publish_manager_publication(self._client,self._client.manager_keeper_session,
                             unit.fixed_lot_context)
