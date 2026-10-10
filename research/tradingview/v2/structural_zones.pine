@@ -1,5 +1,5 @@
 //@version=6
-indicator("Research: structural reaction levels v2.11", overlay = true, max_lines_count = 360, max_labels_count = 120, max_boxes_count = 120, max_bars_back = 1200)
+indicator("Research: structural reaction levels v2.12", overlay = true, max_lines_count = 360, max_labels_count = 120, max_boxes_count = 120, max_bars_back = 1200)
 
 showDaily = input.bool(true, "Show daily-bar levels", group = "Daily levels")
 dailyDays = input.int(365, "Daily rolling history (calendar days)", minval = 30, maxval = 3650, group = "Daily levels")
@@ -24,14 +24,56 @@ perSide = input.int(8, "Zones above / below price", minval = 1, maxval = 30)
 currentSlots = input.int(3, "Reserve current-day zones per side", minval = 0, maxval = 30)
 showProvisional = input.bool(true, "Show provisional candidates (P, reduced opacity)")
 maxDistance = input.float(3, "Maximum distance from price (%)", minval = 0.1)
-showBands = input.bool(true, "Show estimated bands when available")
-showBoundaryLines = input.bool(false, "Outline available lower / upper boundaries")
-showText = input.bool(true, "Show text below main level")
-textMarginBars = input.int(10, "Text gap beyond rightmost visible candle (bars)", minval = 1, maxval = 200)
-lineTransparency = input.int(75, "Line transparency (%): 0 solid, 100 invisible", minval = 0, maxval = 100)
-textOpacity = input.int(90, "Text opacity (%)", minval = 0, maxval = 100)
-bandTransparency = input.int(95, "Band transparency", minval = 80, maxval = 100)
+showBands = input.bool(true, "Show estimated bands when available", group = "Shared display")
+showBoundaryLines = input.bool(false, "Outline available lower / upper boundaries", group = "Shared display")
+showText = input.bool(true, "Show level captions", group = "Shared display")
+textMarginBars = input.int(10, "Text gap beyond rightmost visible candle (bars)", minval = 1, maxval = 200, group = "Shared display")
+lineTransparency = input.int(75, "Line transparency (%): 0 solid, 100 invisible", minval = 0, maxval = 100, group = "Intraday style")
+textOpacity = input.int(90, "Text opacity (%)", minval = 0, maxval = 100, group = "Intraday style")
+bandTransparency = input.int(95, "Band transparency (%)", minval = 0, maxval = 100, group = "Intraday style")
 sampleLimit = input.int(10000, "Maximum retained pivots (error if exhausted)", minval = 100, maxval = 20000)
+
+showIntraday = input.bool(true, "Show intraday levels", group = "Intraday style")
+intradaySupportColor = input.color(color.green, "Support color (price above level)", group = "Intraday style")
+intradayResistanceColor = input.color(color.red, "Resistance color (price below level)", group = "Intraday style")
+intradayInsideColor = input.color(color.orange, "Inside-band color", group = "Intraday style")
+intradayLineStyle = input.string("Solid", "Main line pattern", options = ["Solid", "Dashed", "Dotted"], group = "Intraday style")
+intradayLineWidth = input.int(1, "Main line width", minval = 1, maxval = 5, group = "Intraday style")
+intradayBoundaryStyle = input.string("Match main", "Boundary line pattern", options = ["Match main", "Solid", "Dashed", "Dotted"], group = "Intraday style")
+intradayBoundaryWidth = input.int(1, "Boundary line width", minval = 1, maxval = 5, group = "Intraday style")
+intradayTextSize = input.string("Small", "Caption size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = "Intraday style")
+intradayTextPosition = input.string("Below", "Caption position", options = ["Above", "Below"], group = "Intraday style")
+intradayTextFollowsLevel = input.bool(true, "Caption follows level color", group = "Intraday style")
+intradayTextColor = input.color(color.white, "Custom caption color", group = "Intraday style")
+
+dailySupportColor = input.color(color.green, "Support color (price above level)", group = "Daily style")
+dailyResistanceColor = input.color(color.red, "Resistance color (price below level)", group = "Daily style")
+dailyInsideColor = input.color(color.orange, "Inside-band color", group = "Daily style")
+dailyLineStyle = input.string("Dashed", "Main line pattern", options = ["Solid", "Dashed", "Dotted"], group = "Daily style")
+dailyLineWidth = input.int(2, "Main line width", minval = 1, maxval = 5, group = "Daily style")
+dailyBoundaryStyle = input.string("Match main", "Boundary line pattern", options = ["Match main", "Solid", "Dashed", "Dotted"], group = "Daily style")
+dailyBoundaryWidth = input.int(2, "Boundary line width", minval = 1, maxval = 5, group = "Daily style")
+dailyLineTransparency = input.int(75, "Line transparency (%): 0 solid, 100 invisible", minval = 0, maxval = 100, group = "Daily style")
+dailyBandTransparency = input.int(95, "Band transparency (%)", minval = 0, maxval = 100, group = "Daily style")
+dailyTextSize = input.string("Small", "Caption size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = "Daily style")
+dailyTextPosition = input.string("Above", "Caption position", options = ["Above", "Below"], group = "Daily style")
+dailyTextOpacity = input.int(90, "Text opacity (%)", minval = 0, maxval = 100, group = "Daily style")
+dailyTextFollowsLevel = input.bool(true, "Caption follows level color", group = "Daily style")
+dailyTextColor = input.color(color.white, "Custom caption color", group = "Daily style")
+
+linePattern(string choice) =>
+    switch choice
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+        => line.style_solid
+
+captionSize(string choice) =>
+    switch choice
+        "Tiny" => size.tiny
+        "Normal" => size.normal
+        "Large" => size.large
+        "Huge" => size.huge
+        => size.small
 
 type Reaction
     float price
@@ -141,6 +183,21 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
     dailySamples = showDaily ? request.security(syminfo.tickerid, "1D", dailyBook(), lookahead = barmerge.lookahead_on) : array.new<Reaction>()
     for source = 0 to (showDaily ? 1 : 0)
         bool dailySource = source == 1
+        if not dailySource and not showIntraday
+            continue
+        string mainPatternChoice = dailySource ? dailyLineStyle : intradayLineStyle
+        string boundaryPatternChoice = dailySource ? dailyBoundaryStyle : intradayBoundaryStyle
+        string mainPattern = linePattern(mainPatternChoice)
+        string boundaryPattern = linePattern(boundaryPatternChoice == "Match main" ? mainPatternChoice : boundaryPatternChoice)
+        int mainWidth = dailySource ? dailyLineWidth : intradayLineWidth
+        int boundaryWidth = dailySource ? dailyBoundaryWidth : intradayBoundaryWidth
+        int sourceLineTransparency = dailySource ? dailyLineTransparency : lineTransparency
+        int sourceBandTransparency = dailySource ? dailyBandTransparency : bandTransparency
+        int sourceTextOpacity = dailySource ? dailyTextOpacity : textOpacity
+        bool textAbove = (dailySource ? dailyTextPosition : intradayTextPosition) == "Above"
+        string sourceTextSize = captionSize(dailySource ? dailyTextSize : intradayTextSize)
+        bool textFollowsLevel = dailySource ? dailyTextFollowsLevel : intradayTextFollowsLevel
+        color customTextColor = dailySource ? dailyTextColor : intradayTextColor
         sourceSamples = dailySource ? dailySamples : samples
         int sourceWindowMs = (dailySource ? dailyDays : days) * 86400000
         int sourcePerSide = dailySource ? dailyPerSide : perSide
@@ -257,18 +314,21 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
                             bool hasLower = not na(lo) and lo < center
                             bool hasUpper = not na(hi) and hi > center
                             bool hasBand = hasLower and hasUpper
-                            color baseInk = referencePrice > (hasUpper ? hi : center) ? color.green : referencePrice < (hasLower ? lo : center) ? color.red : color.orange
-                            color ink = color.new(baseInk, provisional ? math.min(100, lineTransparency + 10) : lineTransparency)
-                            color textInk = color.new(baseInk, 100 - textOpacity)
+                            color supportInk = dailySource ? dailySupportColor : intradaySupportColor
+                            color resistanceInk = dailySource ? dailyResistanceColor : intradayResistanceColor
+                            color insideInk = dailySource ? dailyInsideColor : intradayInsideColor
+                            color baseInk = referencePrice > (hasUpper ? hi : center) ? supportInk : referencePrice < (hasLower ? lo : center) ? resistanceInk : insideInk
+                            color ink = color.new(baseInk, provisional ? math.min(100, sourceLineTransparency + 10) : sourceLineTransparency)
+                            color textInk = color.new(textFollowsLevel ? baseInk : customTextColor, 100 - sourceTextOpacity)
                             int start = z.currentDay ? math.max(math.min(chart.left_visible_bar_time, time), referenceDay) : math.min(chart.left_visible_bar_time, time)
                             int finish = math.max(time + 1000, chart.right_visible_bar_time)
-                            array.push(drawnLines, line.new(start, center, finish, center, xloc = xloc.bar_time, extend = extend.right, color = ink, width = dailySource ? 2 : 1, style = dailySource ? line.style_dashed : line.style_solid))
+                            array.push(drawnLines, line.new(start, center, finish, center, xloc = xloc.bar_time, extend = extend.right, color = ink, width = mainWidth, style = mainPattern))
                             if showBoundaryLines and hasLower
-                                array.push(drawnLines, line.new(start, lo, finish, lo, xloc = xloc.bar_time, extend = extend.right, color = ink, width = dailySource ? 2 : 1, style = dailySource ? line.style_dashed : line.style_solid))
+                                array.push(drawnLines, line.new(start, lo, finish, lo, xloc = xloc.bar_time, extend = extend.right, color = ink, width = boundaryWidth, style = boundaryPattern))
                             if showBoundaryLines and hasUpper
-                                array.push(drawnLines, line.new(start, hi, finish, hi, xloc = xloc.bar_time, extend = extend.right, color = ink, width = dailySource ? 2 : 1, style = dailySource ? line.style_dashed : line.style_solid))
+                                array.push(drawnLines, line.new(start, hi, finish, hi, xloc = xloc.bar_time, extend = extend.right, color = ink, width = boundaryWidth, style = boundaryPattern))
                             if showBands and hasBand
-                                array.push(drawnBands, box.new(start, hi, finish, lo, xloc = xloc.bar_time, extend = extend.right, border_color = color.new(ink, 100), bgcolor = color.new(ink, bandTransparency)))
+                                array.push(drawnBands, box.new(start, hi, finish, lo, xloc = xloc.bar_time, extend = extend.right, border_color = color.new(ink, 100), bgcolor = color.new(ink, sourceBandTransparency)))
                             bool captionFits = true
                             if array.size(captionPrices) > 0
                                 for existing = 0 to array.size(captionPrices) - 1
@@ -277,15 +337,15 @@ if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
                             if showText and captionFits
                                 array.push(captionPrices, center)
                                 int textIndex = nz(rightVisibleIndex, bar_index) + textMarginBars
-                                float textPrice = center + (dailySource ? 1 : -1) * math.max(syminfo.mintick * 2, nz(atr) * 0.08)
+                                float textPrice = center + (textAbove ? 1 : -1) * math.max(syminfo.mintick * 2, nz(atr) * 0.08)
                                 string caption = (dailySource ? "DAILY " : z.currentDay ? "DAY " : "HIST ") + (provisional ? "P " : "") + (center > referencePrice ? "R " : "S ") + str.tostring(center, format.mintick) + (hasLower ? " L:" + str.tostring(lo, format.mintick) : "") + (hasUpper ? " U:" + str.tostring(hi, format.mintick) : "")
-                                array.push(drawnLabels, label.new(textIndex, textPrice, caption, xloc = xloc.bar_index, style = dailySource ? label.style_label_lower_left : label.style_label_upper_left, color = color.new(color.white, 100), textcolor = textInk, size = size.small, textalign = text.align_left))
+                                array.push(drawnLabels, label.new(textIndex, textPrice, caption, xloc = xloc.bar_index, style = textAbove ? label.style_label_lower_left : label.style_label_upper_left, color = color.new(color.white, 100), textcolor = textInk, size = sourceTextSize, textalign = text.align_left))
                             if overhead
                                 above += 1
                             else
                                 below += 1
 
-// Start text beyond visible candles; daily captions sit above, intraday below.
+// Start text beyond visible candles; caption side is configurable by source.
 // Pine has no pixel anchor to the price axis; the bars offset is user-adjustable.
 if barstate.islast and array.size(drawnLabels) > 0
     int textIndex = nz(rightVisibleIndex, bar_index) + textMarginBars
