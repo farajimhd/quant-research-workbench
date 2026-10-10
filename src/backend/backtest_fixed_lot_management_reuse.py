@@ -651,7 +651,8 @@ def _owner_read_context(owner, loader):
     # decision's prefix-bound cache or recursively reuse its authority.
     suspended = _ACTIVE.set(None)
     try:
-        result = loader()
+        from .backtest_fixed_lot_initial_recovery_reuse import owner_reader
+        result = owner_reader(owner, loader)
         if _context_frontier(owner) != frontier:
             raise ValueError('Management reader frontier changed during original authority')
         proof.require()
@@ -715,6 +716,8 @@ def roster_read(client, prefix, entry_request, arguments, loader):
 def management_read_scope(method):
     """Owner-internal proposal token; commands discard it before post-submit reads."""
     import inspect
+    from contextlib import nullcontext
+    from .backtest_fixed_lot_initial_recovery_reuse import proposal_scope
     async_method = inspect.iscoroutinefunction(method)
 
     def enter(owner, args):
@@ -755,7 +758,8 @@ def management_read_scope(method):
             token = None
             try:
                 proof, token = enter(owner,args)
-                result = await method(owner,*args,**kwargs)
+                with proposal_scope(owner,proof) if method.__name__=='propose' else nullcontext():
+                    result = await method(owner,*args,**kwargs)
                 finish(owner,args,proof,result)
                 return result
             except BaseException:
@@ -770,7 +774,8 @@ def management_read_scope(method):
         token = None
         try:
             proof, token = enter(owner,args)
-            result = method(owner,*args,**kwargs)
+            with proposal_scope(owner,proof) if method.__name__=='propose' else nullcontext():
+                result = method(owner,*args,**kwargs)
             finish(owner,args,proof,result)
             return result
         except BaseException:

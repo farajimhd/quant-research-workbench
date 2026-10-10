@@ -230,6 +230,9 @@ class NativeFixedStructuralLotManagement:
             for v in group.broker_bindings
             if v['role']=='protective_stop' and v['terminal']==0)
 
+    from .backtest_fixed_lot_initial_recovery_reuse import initial_open_scope
+
+    @initial_open_scope
     def open(self,entry_request,*,group_id,boundary_ms=None):
         prefix,contexts=self._prefix()
         args=self._arguments(entry_request,prefix,contexts)

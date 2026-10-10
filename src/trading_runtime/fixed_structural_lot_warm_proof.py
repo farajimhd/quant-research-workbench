@@ -155,6 +155,12 @@ class _ImmutableReads:
 
 
 def load_oms_groups(client, prefix, **kwargs):
+    from src.backend.backtest_fixed_lot_initial_recovery_reuse import inventory_read
+    return inventory_read(client, prefix, kwargs,
+        lambda: _load_oms_groups_complete(client, prefix, **kwargs))
+
+
+def _load_oms_groups_complete(client, prefix, **kwargs):
     from .arte_oms_projection import _load_latest_committed_oms_groups
     profile = getattr(client, 'fixed_structural_lot_profile', None)
     if (profile is None or not selected(profile.operation.source)

@@ -85,6 +85,16 @@ def verify_fixed_structural_lot_configuration(strategy):
     if cadence is not None: expected.add(CADENCE_PARAMETER)
     if cadence != getattr(contract,'management_cadence_policy',None):
         raise ValueError('Management cadence differs from exact registered factory')
+    from src.trading_runtime.initial_held_recovery_reuse_policy import PARAMETER as INITIAL_PARAMETER, parse_declared_initial_held_reuse
+    initial=parse_declared_initial_held_reuse(contract.release,params.get(INITIAL_PARAMETER) if type(params) is dict else None)
+    if initial is not None: expected.add(INITIAL_PARAMETER)
+    if initial != getattr(contract,'initial_held_recovery_reuse_policy',None):
+        raise ValueError('Initial-held reuse differs from exact registered factory')
+    from src.trading_runtime.proposal_decision_inventory_reuse_policy import PARAMETER as PROPOSAL_PARAMETER,parse_declared_proposal_decision_reuse
+    proposal=parse_declared_proposal_decision_reuse(contract.release,params.get(PROPOSAL_PARAMETER) if type(params) is dict else None)
+    if proposal is not None:expected.add(PROPOSAL_PARAMETER)
+    if proposal!=getattr(contract,'proposal_decision_inventory_reuse_policy',None):
+        raise ValueError('Proposal inventory reuse differs from exact registered factory')
     if type(params) is not dict or set(params) != expected:
         raise ValueError('Fixed-lot parameter companions differ')
     if reuse_selected and parse_packet_validation_reuse_policy(params['packet_validation_reuse_policy']) != contract.validation_reuse_policy:

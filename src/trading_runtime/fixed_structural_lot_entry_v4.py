@@ -287,6 +287,10 @@ class FixedStructuralLotPublicationContext:
         return self.unit.base
 
     def verify_source(self):
+        from src.backend.backtest_fixed_lot_initial_recovery_reuse import verify_context_source
+        return verify_context_source(self,self._verify_source_complete)
+
+    def _verify_source_complete(self):
         if (type(self.unit) is not V4FixedStructuralLotEntryBatch or type(self.record) is not JournalRecord
                 or type(self.source) is not PreparedFixedStructuralLotSource):
             raise ValueError('Exact selected publication source context required')

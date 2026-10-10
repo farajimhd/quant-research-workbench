@@ -1250,6 +1250,19 @@ def initialize_numbered_fixed_strategies() -> None:
                 derive_strategy_one_hundred_seven_configuration,verify_prepared_strategy_one_hundred_seven_configuration,
                 certify_cadence_source,management_parent_release)))
         register_numbered_strategy(cadence)
+        from .strategy_one_hundred_eight_release import (release_contract as initial_reuse_release,
+            derive_strategy_one_hundred_eight_configuration,verify_prepared_strategy_one_hundred_eight_configuration)
+        from .strategy_one_hundred_eight_contract import strategy_one_hundred_eight_contract
+        from src.backend.backtest_fixed_structural_lot_certification_v27 import certify_fixed_structural_lot_source as certify_initial_reuse_source
+        initial_reuse=initial_reuse_release()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=initial_reuse.executor_strategy_id,revision=initial_reuse.executor_revision,
+            evaluation_interval=initial_reuse.evaluation_interval,strategy_factory=_strategy_two_factory,
+            contract_factory=strategy_one_hundred_eight_contract,
+            manifest_authority=NativeManifestAuthority(42,'fixed-structural-lots-from',
+                derive_strategy_one_hundred_eight_configuration,verify_prepared_strategy_one_hundred_eight_configuration,
+                certify_initial_reuse_source,management_parent_release)))
+        register_numbered_strategy(initial_reuse)
         _NUMBERED_FIXED_REGISTERED = True
 
 

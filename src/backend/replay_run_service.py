@@ -10088,7 +10088,7 @@ class ReplayRunService:
         """
         from datetime import timedelta
         from src.backend.backtest_strategy_one_configuration import (
-            selected_strategy_one_revision,
+            selected_numbered_revision,
         )
         from src.backend.backtest_v3_clients import v3_client
         from src.trading_runtime.arte_backtest_definition import (
@@ -10136,7 +10136,7 @@ class ReplayRunService:
         with closing(v3_client("read")) as market:
             if market.execute("SELECT getSetting('readonly')").strip() != "1":
                 raise RuntimeError("Typed Backtest definition requires a read-only market principal")
-            revision = selected_strategy_one_revision(
+            revision = selected_numbered_revision(
                 revision_id=parent["configuration_revision_id"], client=market)
         preflight = backtest_preflight(
             anchor_date=session + timedelta(days=1), session_count=1,
