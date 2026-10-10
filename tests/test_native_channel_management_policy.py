@@ -54,6 +54,15 @@ def test_changed_execution_semantics_or_truncating_bounds_are_rejected(installed
     with pytest.raises(ValueError): parse_native_channel_management_policy(release, payload)
 
 
+def test_family_bound_covers_support_for_entire_declared_pending_inventory(installed):
+    exit_policy = setup(installed)[1]
+    sequence = replace(exit_policy.sequence, sequence=replace(exit_policy.sequence.sequence, minimum_bars=2))
+    exit_policy = replace(exit_policy, sequence=sequence)
+    with pytest.raises(ValueError, match='truncate declared support'):
+        NativeChannelManagementPolicy(exit_policy, 16, 16)
+    assert NativeChannelManagementPolicy(exit_policy, 16, 32).max_rows_per_family == 32
+
+
 def test_actual_declared_adapter_preserves_parent_and_requires_complete_new_capability(installed):
     from src.trading_runtime.strategy_registry import initialize_numbered_fixed_strategies
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy

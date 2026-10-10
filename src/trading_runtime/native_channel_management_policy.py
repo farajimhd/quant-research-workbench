@@ -26,7 +26,7 @@ class NativeChannelManagementPolicy:
         self.exit_policy.__post_init__()
         required = self.exit_policy.sequence.sequence.minimum_bars + (
             self.exit_policy.sequence.reference_mode != 'none')
-        if self.max_rows_per_family < max(required, self.max_pending_requests):
+        if self.max_rows_per_family < self.max_pending_requests * required:
             raise ValueError('Pending family bound cannot truncate declared support or inventory')
 
     def payload(self):
