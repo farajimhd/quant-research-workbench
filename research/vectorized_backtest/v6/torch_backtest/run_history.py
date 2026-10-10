@@ -88,6 +88,7 @@ def run(inputs,output,session_workers=16,ticker_workers=8,after_profile=None):
                         if code:failed[day]=f'worker exit {code}; inspect worker.err'
                         else:done[day]=completed(output/day,inputs,day)
                     live.update(snapshot());time.sleep(1)
+                    if failed and not active:break
         finally:
             for child,handles in active.values():
                 if os.name=='nt':subprocess.run(['taskkill','/PID',str(child.pid),'/T','/F'],capture_output=True,check=False)
