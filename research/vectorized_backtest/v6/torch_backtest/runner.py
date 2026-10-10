@@ -1116,6 +1116,7 @@ class SqueezeRunner:
     def compile(self):
         """Compile once; fixed parameter/state pointers permit in-place reuse."""
         started = perf_counter()
+        self.compile_phase_seconds = {}
         self.step = (
             # Torch2.12's automatic layout padding can underallocate a later
             # native scatter view at wide/prime ticker counts (833 witness).
@@ -1136,6 +1137,8 @@ class SqueezeRunner:
                 self.step()
             if self.tape.device.type == "cuda":
                 torch.cuda.synchronize(self.tape.device)
+        self.compile_phase_seconds['compile_and_first_tick'] = perf_counter() - started
+        phase_started = perf_counter()
         if self.backend in ("cudagraph", "compiled_graph"):
             stream = torch.cuda.Stream(device=self.tape.device)
             stream.wait_stream(torch.cuda.current_stream(self.tape.device))
@@ -1145,6 +1148,8 @@ class SqueezeRunner:
                     self.step()
             torch.cuda.current_stream(self.tape.device).wait_stream(stream)
             torch.cuda.synchronize(self.tape.device)
+            self.compile_phase_seconds['capture_warmup'] = perf_counter() - phase_started
+            phase_started = perf_counter()
             count = min(self.graph_steps, len(self.tape.clocks))
             self.graph_steps = count
             self.reset()
@@ -1159,7 +1164,10 @@ class SqueezeRunner:
                 with torch.inference_mode(), torch.cuda.graph(self.remainder_graph):
                     for _ in range(remainder):
                         self.step()
+        self.compile_phase_seconds['capture_blocks'] = perf_counter() - phase_started
+        phase_started = perf_counter()
         self.reset()
+        self.compile_phase_seconds['final_reset_enqueue'] = perf_counter() - phase_started
         self.setup_seconds = perf_counter() - started
         return self
 

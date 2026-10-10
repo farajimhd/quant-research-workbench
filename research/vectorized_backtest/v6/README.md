@@ -68,8 +68,11 @@ session/complete-position diagnostics are implemented.
 target stratification unless a structural sidecar is supplied. Short profiles
 are timing evidence, not profitability or full-generation throughput evidence.
 `profile_compact_sessions` measures complete candidate-session throughput,
-preparation, replay/audit time and peak allocated/reserved GPU memory. External
-reference comparison checks candidate metrics and exact fills independently of
+preparation, replay/audit time and peak allocated/reserved GPU memory.
+Resident session timings separate broker compilation/first tick, capture
+warm-up, captured blocks and final reset enqueue; reused captures report no
+new compilation phases. These host timings use existing synchronization points.
+External reference comparison checks candidate metrics and exact fills independently of
 batch partitioning. `--resident-repeats 2` distinguishes initial preparation
 from a second full pass retaining input and broker buffers. `--graph-steps`
 controls captured broker block length (1..64, default 16). The block

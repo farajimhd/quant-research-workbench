@@ -176,6 +176,7 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
                         return session['day'],folder,record,dict(day=session['day'],replay_and_position_report_seconds=replay_seconds,
                             seal_and_financial_audit_seconds=perf_counter()-audit_started,rule_seconds=rule_seconds,
                             captured_preparation_seconds=0. if runner.preparation_reused else runner.setup_seconds,
+                            captured_compile_phase_seconds={} if runner.preparation_reused else dict(runner.compile_phase_seconds),
                             captured_preparation_reused=runner.preparation_reused,
                             broker_preparation_seconds=runner.broker_preparation_seconds,clocks=len(runner.tape.clocks))
                     timings=[]
