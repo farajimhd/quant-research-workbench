@@ -24,7 +24,7 @@ def ranking_page_size(height):
 
 
 def ranking_viewport_size(height):
-    return max(1,min(50,height-24))
+    return max(1,min(50,height-26))
 
 
 def navigate(status,key,*,rank=1,rank_page=0,detail_page=0,height=38):
@@ -102,7 +102,7 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
     layout['leaders'].update(Panel(table,title=f'Ranked {len(leaders)} | page {rank_page+1}/{rank_pages} | 50 rows | view {viewport+1}–{min(viewport+visible_size,len(page_rows))}',subtitle=basis,padding=0))
     leader=next((v for v in leaders if v['rank']==selected),{});metrics=leader.get('metrics',{})
     active=status.get('active_session') or {}
-    grid=Table(expand=True,padding=(0,1));grid.add_column('Metric');grid.add_column('Value',justify='right')
+    grid=Table(expand=True,padding=(0,1),show_header=height>=30);grid.add_column('Metric');grid.add_column('Value',justify='right')
     if view=='objective':
         components=metrics.get('objective_components',{})
         rows=[(key.replace('_',' ').title(),number(value if key.endswith('reward') or key=='total_profit' else -value,'.6f')) for key,value in components.items()]
@@ -150,7 +150,9 @@ def render(status,*,width=110,height=38,now=None,view='financial'):
               ('Financial errors / overflows',f"{active.get('financial_error_candidates','--')} / {active.get('overflow_candidates','--')}")]
         if not active:rows.insert(1,('Backtest metrics','Not available until replay begins'))
     elif not metrics and view!='performance':rows.insert(0,('Ranking','Pending completed panel; live batch values provisional'))
-    page=status.get('_page',0);available=max(1,height-(9+progress_height+leader_height+(5 if height>=30 else 3)))
+    page=status.get('_page',0)
+    metrics_height=height-(5+progress_height+leader_height+(5 if height>=30 else 3))
+    available=max(1,metrics_height-(6 if height>=30 else 4))
     pages=max(1,(len(rows)+available-1)//available);page%=pages
     for label,value in rows[page*available:(page+1)*available]:grid.add_row(label,value)
     layout['metrics'].update(Panel(grid,title=f'{"Live batch" if not metrics else "Rank "+str(selected)} | {view} | page {page+1}/{pages}',padding=0))

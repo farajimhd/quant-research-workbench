@@ -45,6 +45,10 @@ def test_completed_all30_rankings_remain_independent_of_active_generation(tmp_pa
         with c.capture() as out:c.print(render(status,width=width,height=height))
         lines=out.get().splitlines();assert len(lines)==height and max(map(len,lines))<=width
         assert 'Q close' in lines[-1]
+        with c.capture() as out:c.print(render(status,width=width,height=height,view='positions'))
+        assert 'Positions / fills' in out.get()
+        with c.capture() as out:c.print(render({**status,'_page':1 if height>=30 else 0},width=width,height=height))
+        assert 'P&L excluding best day' in out.get()
 
 
 def test_changed_generation_seal_rejected_even_after_cache(tmp_path):
