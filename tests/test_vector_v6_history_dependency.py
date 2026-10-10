@@ -14,6 +14,8 @@ def test_verified_user_stop_releases_dependency(tmp_path,monkeypatch):
     monkeypatch.setattr('psutil.pid_exists',lambda pid:False)
     assert not profile_dependency_released(tmp_path)
     receipts(tmp_path)
+    stop=tmp_path/'user-stop.json'
+    stop.write_text(stop.read_text(),encoding='utf-8-sig')
     assert profile_dependency_released(tmp_path)
 
 

@@ -37,7 +37,7 @@ def profile_dependency_released(folder):
         if abs(process.create_time()-creation)<0.01:
             raise ValueError('Profile exit receipt conflicts with live owner')
     if record.get('exit_code') not in (0,1):
-        stop=json.loads((folder/'user-stop.json').read_text())
+        stop=json.loads((folder/'user-stop.json').read_text(encoding='utf-8-sig'))
         if (stop.get('pid')!=pid or abs(float(stop['verified_creation_time'])-creation)>0.01
                 or stop.get('reason')!='User requested profiler stop; measurements partial'):
             raise ValueError('Profile stop identity requires explicit review')
