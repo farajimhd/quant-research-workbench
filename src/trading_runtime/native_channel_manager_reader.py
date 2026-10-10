@@ -69,7 +69,8 @@ def load_unattested_native_channel_manager_rows(client, *, run_id, checkpoint_se
 
 
 def load_attested_native_channel_manager_snapshot(client, keeper, *, run_id,
-        checkpoint_sequence, policy, contexts, first_price_source=None):
+        checkpoint_sequence, policy, contexts, first_price_source=None,
+        native_channel_contexts=()):
     """Attest the journal and stable Keeper head, then reprove all pending facts.
 
     Returns the image, inherited state and requests. Broker checkpoint and
@@ -79,6 +80,7 @@ def load_attested_native_channel_manager_snapshot(client, keeper, *, run_id,
     from src.backend.backtest_native_channel_manager_recovery import reprove_native_channel_manager_snapshot
     return _load_attested_manager_image(client, keeper, run_id=run_id,
         checkpoint_sequence=checkpoint_sequence, first_price_source=first_price_source,
+        native_channel_contexts=native_channel_contexts,
         load_rows=lambda client, **scope: load_unattested_native_channel_manager_rows(
             client, policy=policy, **scope),
         restore_rows=lambda rows: restore_manager_snapshot(rows.inherited),

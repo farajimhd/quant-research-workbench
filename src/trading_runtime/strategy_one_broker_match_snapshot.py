@@ -591,7 +591,7 @@ def load_unattested_broker_match_snapshot(
 def load_attested_broker_match_snapshot(
     client: Any, keeper: BrokerMatchHeadReader, *,
     run_id: str, checkpoint_sequence: int,
-    first_price_source=None, fixed_lot_resume=None,
+    first_price_source=None, fixed_lot_resume=None, native_channel_contexts=(),
 ) -> BrokerMatchSnapshotRows:
     """Require exact Keeper, V4, and market-cursor agreement on cold read.
 
@@ -607,14 +607,21 @@ def load_attested_broker_match_snapshot(
             or not callable(getattr(client, "execute", None))
             or not callable(getattr(keeper, "read_head", None))):
         raise ValueError("Broker match cold read lacks exact authorities")
+    from .native_channel_exit_journal_context import channel_contexts_by_batch
+    channel_contexts_by_batch(run_id, native_channel_contexts, max_commits=100_000)
     if fixed_lot_resume is not None:
+        if native_channel_contexts:
+            raise ValueError('Fixed-lot resume cannot borrow native channel history')
         from src.backend.backtest_fixed_structural_lot_resume import require_fixed_structural_lot_resume
         binding = require_fixed_structural_lot_resume(fixed_lot_resume, run_id)
         if first_price_source is not None and first_price_source is not binding.source.price_authority:
             raise ValueError('Selected resume received conflicting first-price authority')
         prefix = binding.prefix(client, run_id)
     else:
-        prefix = load_verified_v4_prefix(client, run_id, **({} if first_price_source is None else {'first_price_source': first_price_source}))
+        prefix_kwargs = {} if first_price_source is None else {'first_price_source': first_price_source}
+        if native_channel_contexts:
+            prefix_kwargs['native_channel_contexts'] = native_channel_contexts
+        prefix = load_verified_v4_prefix(client, run_id, **prefix_kwargs)
     if (prefix is None or prefix.status != "running"
             or prefix.last_sequence != checkpoint_sequence
             or not prefix.batch_ids

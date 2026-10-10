@@ -185,21 +185,21 @@ def reprove_native_channel_exit_unit(unit, *, management_policy, recorded_at,
 def prepare_confirmed_native_channel_exit_unit(client, manager_keeper, broker_keeper,
         receipt, *, run_id, management_policy, contexts, pending_record_id,
         first_price_source, recorded_at, attempt_id, batch_id, parent_record_id,
-        decision_record_id,correlation_id='',causation_id=''):
+        decision_record_id,correlation_id='',causation_id='',native_channel_contexts=()):
     """Return the complete unit, preserving the existing publication contract."""
     unit,_=prepare_confirmed_native_channel_exit_request(client,manager_keeper,broker_keeper,receipt,
         run_id=run_id,management_policy=management_policy,contexts=contexts,
         pending_record_id=pending_record_id,first_price_source=first_price_source,
         recorded_at=recorded_at,attempt_id=attempt_id,batch_id=batch_id,
         parent_record_id=parent_record_id,decision_record_id=decision_record_id,
-        correlation_id=correlation_id,causation_id=causation_id)
+        correlation_id=correlation_id,causation_id=causation_id,native_channel_contexts=native_channel_contexts)
     return unit
 
 
 def prepare_confirmed_native_channel_exit_request(client, manager_keeper, broker_keeper,
         receipt, *, run_id, management_policy, contexts, pending_record_id,
         first_price_source, recorded_at, attempt_id, batch_id, parent_record_id,
-        decision_record_id,correlation_id='',causation_id=''):
+        decision_record_id,correlation_id='',causation_id='',native_channel_contexts=()):
     """Return the reproved journal unit and its independently confirmed request.
 
     This cold worker operation verifies the complete pending inventory, both
@@ -217,7 +217,8 @@ def prepare_confirmed_native_channel_exit_request(client, manager_keeper, broker
         raise ValueError('Channel unit requires complete independent pending evidence')
     contexts={key:dict(context) for key,context in contexts.items()}
     held = confirm_native_channel_held_checkpoint(client,manager_keeper,broker_keeper,receipt,
-        run_id=run_id,policy=management_policy,contexts=contexts,first_price_source=first_price_source)
+        run_id=run_id,policy=management_policy,contexts=contexts,first_price_source=first_price_source,
+        native_channel_contexts=native_channel_contexts)
     # The manager verifier consumes this same deterministic inventory order.
     keys = sorted(contexts)
     if len(held) != len(keys):

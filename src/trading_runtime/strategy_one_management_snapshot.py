@@ -590,7 +590,8 @@ def load_attested_manager_snapshot(client: Any, keeper: ManagerSnapshotHeadReade
 
 
 def _load_attested_manager_image(client, keeper, *, run_id, checkpoint_sequence,
-        first_price_source, load_rows, restore_rows, verify_pending=None):
+        first_price_source, load_rows, restore_rows, verify_pending=None,
+        native_channel_contexts=()):
     """Shared journal/cursor/head checks for declared versioned manager images."""
     from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
     from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
@@ -600,8 +601,12 @@ def _load_attested_manager_image(client, keeper, *, run_id, checkpoint_sequence,
             or not callable(getattr(client, "execute", None))
             or not callable(getattr(keeper, "read_head", None))):
         raise ValueError("Strategy 1 manager cold read lacks exact authorities")
-    prefix = (load_verified_v4_prefix(client, run_id) if first_price_source is None else
-              load_verified_v4_prefix(client, run_id, first_price_source=first_price_source))
+    from .native_channel_exit_journal_context import channel_contexts_by_batch
+    channel_contexts_by_batch(run_id, native_channel_contexts, max_commits=100_000)
+    prefix_kwargs = {} if first_price_source is None else {'first_price_source': first_price_source}
+    if native_channel_contexts:
+        prefix_kwargs['native_channel_contexts'] = native_channel_contexts
+    prefix = load_verified_v4_prefix(client, run_id, **prefix_kwargs)
     if (prefix is None or prefix.status != "running"
             or prefix.last_sequence != checkpoint_sequence
             or not prefix.batch_ids

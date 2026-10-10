@@ -36,7 +36,7 @@ def _wire_families(unit,policy):
 
 
 def issue_native_channel_exit_publication(writer_client,read_client,manager_keeper,broker_keeper,
-        receipt,context,*,pending_record_id):
+        receipt,context,*,pending_record_id,native_channel_contexts=()):
     """Rebuild from current native heads before issuing an owner-bound image.
 
     This does not reserve a journal batch, INSERT, publish a commit or submit
@@ -58,7 +58,8 @@ def issue_native_channel_exit_publication(writer_client,read_client,manager_keep
         pending_record_id=pending_record_id,first_price_source=context.first_price_source,
         recorded_at=context.recorded_at,attempt_id=context.attempt_id,batch_id=context.batch_id,
         parent_record_id=context.parent_record_id,decision_record_id=context.decision_record_id,
-        correlation_id=context.correlation_id,causation_id=context.causation_id)
+        correlation_id=context.correlation_id,causation_id=context.causation_id,
+        native_channel_contexts=native_channel_contexts)
     if (fresh.base!=context.unit.base
             or fresh.sealed_families()!=context.unit.sealed_families()):
         raise ValueError('Channel exit publication differs from independently confirmed native unit')
@@ -66,7 +67,7 @@ def issue_native_channel_exit_publication(writer_client,read_client,manager_keep
         canonical_json(_wire_families(fresh,context.policy)))
     _ISSUED[image]=(writer_client,read_client,context,manager_keeper,broker_keeper,receipt,
         pending_record_id,image.run_id,image.batch_id,image.sequence,image.rows_json,
-        _writer_profile(writer_client))
+        _writer_profile(writer_client),native_channel_contexts)
     return image
 
 
@@ -110,7 +111,8 @@ def refresh_native_channel_exit_publication(image,*,client):
         pending_record_id=binding[6],first_price_source=context.first_price_source,
         recorded_at=context.recorded_at,attempt_id=context.attempt_id,batch_id=context.batch_id,
         parent_record_id=context.parent_record_id,decision_record_id=context.decision_record_id,
-        correlation_id=context.correlation_id,causation_id=context.causation_id)
+        correlation_id=context.correlation_id,causation_id=context.causation_id,
+        native_channel_contexts=binding[12])
     if canonical_json(_wire_families(fresh,context.policy))!=image.rows_json:
         raise ValueError('Channel exit publication no longer matches current native authority')
     return context

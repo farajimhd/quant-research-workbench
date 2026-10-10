@@ -203,6 +203,7 @@ class BacktestTypedJournalPublisher:
         self.fixed_market_parent_plan = fixed_market_parent_plan
         self.fixed_market_execution_plan = fixed_market_execution_plan
         self._first_price_source = None
+        self._native_channel_exit_source = None
         self._fixed_lot_source = None
         self._fixed_lot_projection_authority = None
         self._committed_fixed_lot_units = {}
@@ -374,6 +375,22 @@ class BacktestTypedJournalPublisher:
             raise ValueError('Publisher cannot bind undeclared entry cost source')
         self._first_price_source = source
 
+    def bind_native_channel_exit_source(self,source) -> None:
+        """Bind selected native readers after the original first-price source."""
+        from .backtest_native_channel_publisher_source import NativeChannelExitPublisherSource
+        from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+        if (type(source) is not NativeChannelExitPublisherSource
+                or self.writer.journal_profile!='backtest_v4' or source.run_id!=self.journal.run_id
+                or source.first_price_source is not self._first_price_source
+                or self._native_channel_exit_source is not None or self._fixed_lot_source is not None
+                or self._task is not None or not isinstance(self.expected_config,dict)
+                or self.expected_config.get('strategy_id')!='early-squeeze-strategy'
+                or numbered_fixed_strategy(self.expected_config.get('strategy_revision')).native_channel_management_policy!=source.policy
+                or getattr(self.writer._client,'native_channel_management_policy',None)!=source.policy):
+            raise ValueError('Native channel publisher lacks its exact unbound declared source')
+        source.__post_init__()
+        self._native_channel_exit_source=source
+
     def bind_fixed_structural_lot_source(self, source) -> None:
         """Bind one issued operation source before any own prefix is projected."""
         from .backtest_fixed_structural_lot_source import require_native_fixed_structural_lot_source
@@ -512,8 +529,9 @@ class BacktestTypedJournalPublisher:
                                    and len(batches) != 1)):
                     raise RuntimeError("Typed Backtest projector changed the bounded prefix")
                 for unit in batches:
+                    from src.trading_runtime.native_channel_exit_journal_context import NativeChannelExitJournalContext
                     batch = unit.base if isinstance(
-                        unit, (V3SqueezeBatch, V4CompoundBatch, V4AutomaticLadderBatch, V4FixedStructuralLotEntryBatch,
+                        unit, (NativeChannelExitJournalContext,V3SqueezeBatch, V4CompoundBatch, V4AutomaticLadderBatch, V4FixedStructuralLotEntryBatch,
                                V4StrategyOneEntryBatch, V4FollowThroughFailureBatch, V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch, V4LiquidityFadeFailureBatch,
                                V4OmsTacticBatch,
                                V4PortfolioAllocationBatch, V4ReservationReasonBatch,
@@ -533,7 +551,14 @@ class BacktestTypedJournalPublisher:
                         if len(records)!=1:
                             raise ValueError('Own lot source lost its exact original record')
                         context=FixedStructuralLotPublicationContext(unit,records[0],self._fixed_lot_source)
-                    receipt = (self.writer.submit_fixed_structural_lot_entry_v4(context)
+                    if type(unit) is NativeChannelExitJournalContext:
+                        if self._native_channel_exit_source is None:
+                            raise ValueError('Native channel exit has no bound publisher source')
+                        image,prior_prefix=await asyncio.to_thread(self._native_channel_exit_source.prepare,
+                            unit,TypedBacktestReceipt(self._sequence,self._batch_id,self._source_cursor),self.writer._client)
+                        receipt=self.writer.submit_native_channel_exit_publication(image,verified_prior_prefix=prior_prefix)
+                    else:
+                        receipt = (self.writer.submit_fixed_structural_lot_entry_v4(context)
                                if type(unit) is V4FixedStructuralLotEntryBatch
                                else self.writer.submit_automatic_ladder_v4(unit)
                                if isinstance(unit, V4AutomaticLadderBatch)
@@ -585,7 +610,18 @@ class BacktestTypedJournalPublisher:
                             unit, V4CompoundBatch) else (unit,)):
                         source_batch = (source_unit if isinstance(source_unit,
                             TypedJournalBatch) else source_unit.base)
-                        if type(source_unit) is V4FixedStructuralLotEntryBatch:
+                        if type(source_unit) is NativeChannelExitJournalContext:
+                            parent_id=source_unit.base.events[0]['record_id']
+                            sidecar=self.journal.native_channel_exit_for_record(parent_id)
+                            if sidecar is None:
+                                raise RuntimeError('Committed channel exit lost its complete pending source')
+                            from .backtest_native_channel_exit_unit import native_channel_exit_intent
+                            intent=native_channel_exit_intent(sidecar[0],strategy_number=sidecar[3],
+                                management_policy=source_unit.policy)
+                            self._committed_strategy_intents[intent.intent_id]=(
+                                _committed_intent_source(batch,parent_id),intent)
+                            self._native_channel_exit_source.remember(source_unit)
+                        elif type(source_unit) is V4FixedStructuralLotEntryBatch:
                             request=context.verify_source()
                             self._committed_fixed_lot_units[request.intent.intent_id]=source_unit
                             self._committed_strategy_intents[request.intent.intent_id]=(

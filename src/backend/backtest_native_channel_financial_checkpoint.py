@@ -23,7 +23,7 @@ class NativeChannelHeldCheckpoint:
 
 
 def confirm_native_channel_held_checkpoint(client, manager_keeper, broker_keeper,
-        receipt, *, run_id, policy, contexts, first_price_source):
+        receipt, *, run_id, policy, contexts, first_price_source,native_channel_contexts=()):
     """Join complete pending evidence to attested roots and committed OMS groups.
 
     Run on the cold/worker path. Do not call from the market decision loop or
@@ -43,8 +43,11 @@ def confirm_native_channel_held_checkpoint(client, manager_keeper, broker_keeper
             or getattr(client, 'native_channel_management_policy', None) != policy):
         raise ValueError('Channel held confirmation requires exact declared receipt and client')
     policy.__post_init__()
+    from src.trading_runtime.native_channel_exit_journal_context import channel_contexts_by_batch
+    channel_contexts_by_batch(run_id,native_channel_contexts,max_commits=100_000)
+    history_kwargs=({'native_channel_contexts':native_channel_contexts} if native_channel_contexts else {})
     sequence = receipt.last_sequence
-    prefix = load_verified_v4_prefix(client, run_id, first_price_source=first_price_source)
+    prefix = load_verified_v4_prefix(client, run_id, first_price_source=first_price_source,**history_kwargs)
     if (type(prefix) is not V4CommittedPrefix or prefix.status != 'running'
             or prefix.run_id != run_id or prefix.last_sequence != sequence
             or not prefix.batch_ids or prefix.last_batch_id != prefix.batch_ids[-1]
@@ -57,9 +60,9 @@ def confirm_native_channel_held_checkpoint(client, manager_keeper, broker_keeper
         raise ValueError('Channel held confirmation differs from selected checkpoint heads')
     rows, state, requests = load_attested_native_channel_manager_snapshot(client, manager_keeper,
         run_id=run_id, checkpoint_sequence=sequence, policy=policy, contexts=contexts,
-        first_price_source=first_price_source)
+        first_price_source=first_price_source, **history_kwargs)
     broker = load_attested_broker_match_snapshot(client, broker_keeper, run_id=run_id,
-        checkpoint_sequence=sequence, first_price_source=first_price_source)
+        checkpoint_sequence=sequence, first_price_source=first_price_source, **history_kwargs)
     root = rows.snapshot
     cursor = load_latest_backtest_cursor(client, prefix)
     if (root['content_hash'] != heads[0].snapshot_hash
@@ -78,7 +81,7 @@ def confirm_native_channel_held_checkpoint(client, manager_keeper, broker_keeper
         broker, policy=policy, contexts=contexts, first_price_source=first_price_source)
     if (manager_keeper.read_head(run_id=run_id), broker_keeper.read_head(run_id=run_id)) != heads:
         raise ValueError('Channel held checkpoint heads changed before reference selection')
-    if load_verified_v4_prefix(client, run_id, first_price_source=first_price_source) != prefix:
+    if load_verified_v4_prefix(client, run_id, first_price_source=first_price_source,**history_kwargs) != prefix:
         raise ValueError('Channel committed frontier changed before reference selection')
     return tuple(result)
 

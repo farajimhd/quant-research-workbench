@@ -18,6 +18,9 @@ from src.trading_runtime.journal_contract import canonical_json
 
 
 def publication_transport(installed,monkeypatch,defect=None):
+    # Import the legacy consumer before replacing the fixture's strategy lookup:
+    # its module-level alias must not retain this native-only test declaration.
+    from src.trading_runtime import strategy_one_intent  # noqa: F401
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
     from src.trading_runtime.strategy_registry import initialize_numbered_fixed_strategies
     initialize_numbered_fixed_strategies()
