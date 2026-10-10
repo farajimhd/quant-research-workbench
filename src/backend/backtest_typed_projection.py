@@ -202,6 +202,15 @@ def project_pending_backtest_v4_prefix(
                                if kind == ('strategy', 'strategy_intent') else None)
         liquidity_source = (journal.liquidity_fade_exit_for_record(record.record_id)
                             if kind == ('strategy', 'strategy_intent') else None)
+        native_channel_source=(journal.native_channel_exit_for_record(record.record_id)
+            if kind==('strategy','strategy_intent') else None)
+        if native_channel_source is not None and any(source is not None for source in
+                (profit_source,confirmation_source,liquidity_source)):
+            raise RuntimeError('Channel intent cannot mix exit source authorities')
+        if (kind==('strategy','strategy_intent')
+                and str(record.payload.get('reason','')).endswith('_native_completed_channel_exit')
+                and native_channel_source is None):
+            raise RuntimeError('Channel intent lacks its complete pending source context')
         if kind == ("checkpoint", "market_boundary"):
             cursor = record.entity_id
         from src.trading_runtime.numbered_fixed_strategy import is_numbered_fixed_strategy
@@ -730,6 +739,16 @@ def project_pending_backtest_v4_prefix(
                 strategy_number=record.payload['strategy_revision'], **observation_source)
             unit = V4LiquidityFadeFailureBatch(batch, failure)
             sources[intent.intent_id] = (batch, intent)
+        if native_channel_source is not None:
+            from .backtest_native_channel_journal_projection import project_native_channel_journal_exit
+            unit=project_native_channel_journal_exit(record,native_channel_source,
+                attempt_id=attempt,batch_id=batch_id,prior_batch_id=previous,
+                source_cursor=cursor,run_month=run_month,first_price_source=first_price_source,
+                expected_config=expected_config)
+            from .backtest_native_channel_exit_unit import native_channel_exit_intent
+            intent=native_channel_exit_intent(native_channel_source[0],strategy_number=native_channel_source[3],
+                management_policy=native_channel_source[1].policy)
+            sources[intent.intent_id]=(unit.base,intent)
         base = unit.base if not isinstance(unit, TypedJournalBatch) else unit
         if (base.first_sequence != sequence or base.last_sequence != sequence
                 or len(base.events) != 1 or base.batch_id != batch_id

@@ -34,6 +34,12 @@ class NativeChannelExitJournalContext:
     batch_id: str
     parent_record_id: str
     decision_record_id: str
+    correlation_id: str = ''
+    causation_id: str = ''
+
+    @property
+    def base(self):
+        return self.unit.base
 
     def __post_init__(self):
         from src.backend.backtest_native_channel_exit_unit import NativeChannelExitUnit
@@ -44,6 +50,10 @@ class NativeChannelExitJournalContext:
             raise ValueError('Exact complete channel unit, policy and independent contexts required')
         self.unit.__post_init__()
         self.policy.__post_init__()
+        event=self.unit.base.events[0]
+        if (type(self.correlation_id) is not str or type(self.causation_id) is not str
+                or (event['correlation_id'],event['causation_id'])!=(self.correlation_id,self.causation_id)):
+            raise ValueError('Channel context differs from its explicit journal causal lineage')
         object.__setattr__(self,'contexts',MappingProxyType({key:MappingProxyType(dict(value))
             for key,value in self.contexts.items()}))
 
@@ -63,7 +73,8 @@ class NativeChannelExitJournalContext:
         return reprove_historical_native_channel_exit_unit(client,prefix,self.unit,
             management_policy=self.policy,contexts=self.contexts,first_price_source=first_price_source,
             recorded_at=self.recorded_at,attempt_id=self.attempt_id,batch_id=self.batch_id,
-            parent_record_id=self.parent_record_id,decision_record_id=self.decision_record_id)
+            parent_record_id=self.parent_record_id,decision_record_id=self.decision_record_id,
+            correlation_id=self.correlation_id,causation_id=self.causation_id)
 
 
 def selected_cold_channel_contracts(client,run_id,batch_id,family_rows,context,*,

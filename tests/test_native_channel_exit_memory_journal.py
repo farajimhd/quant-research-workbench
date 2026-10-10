@@ -13,8 +13,24 @@ from src.trading_runtime.native_channel_exit_journal_context import NativeChanne
 from src.trading_runtime.strategy_one_contract import STRATEGY_ID
 
 
-def journal_case(installed,monkeypatch):
+def journal_case(installed,monkeypatch,*,certified_source=False):
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    from src.trading_runtime.strategy_registry import initialize_numbered_fixed_strategies
+    initialize_numbered_fixed_strategies()
     scope=confirmed_unit_case(installed,monkeypatch)
+    from src.trading_runtime import numbered_fixed_strategy as module
+    fixture_contract=module.numbered_fixed_strategy(1)
+    monkeypatch.setattr(module,'numbered_fixed_strategy',
+        lambda number:fixture_contract if number==1 else numbered_fixed_strategy(number))
+    if certified_source:
+        from tests.test_backtest_strategy_first_price_source import authority,Bars
+        from src.backend.backtest_strategy_first_price_source import load_first_price_source
+        from src.backend.backtest_strategy_certified_price_break import (
+            CertifiedPriceReadbackAuthority,compile_certified_price_break_plan,
+        )
+        market,parent=authority()
+        scope['first_price_source']=CertifiedPriceReadbackAuthority(scope['run_id'],
+            compile_certified_price_break_plan(load_first_price_source(market,parent,client=Bars())))
     packet,request=prepare_confirmed_native_channel_exit_request(**scope)
     context=NativeChannelExitJournalContext(packet,scope['management_policy'],scope['contexts'],
         scope['first_price_source'],**{key:scope[key] for key in (

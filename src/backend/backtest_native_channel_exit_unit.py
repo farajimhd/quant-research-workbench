@@ -134,7 +134,7 @@ class NativeChannelExitUnit:
 
 def project_native_channel_exit_unit(request, group, executions, *, management_policy,
         original_entry, checkpoint, recorded_at, attempt_id, prior_batch_id, sequence,
-        source_cursor, **lineage_context):
+        source_cursor, correlation_id='', causation_id='', **lineage_context):
     """Link the exact factory intent to every normalized causal source/fill row."""
     from src.trading_runtime.arte_intent_projection import strategy_intent_batch
     if (type(management_policy) is not NativeChannelManagementPolicy
@@ -146,7 +146,8 @@ def project_native_channel_exit_unit(request, group, executions, *, management_p
         run_month=request.acquisition.session_date.replace(day=1),account_id=request.financial.account_id,
         attempt_id=attempt_id,batch_id=lineage_context['batch_id'],prior_batch_id=prior_batch_id,
         sequence=sequence,source_cursor=source_cursor,run_status='running',recorded_at=recorded_at,
-        record_id=lineage_context['parent_record_id'])
+        record_id=lineage_context['parent_record_id'],correlation_id=correlation_id,
+        causation_id=causation_id)
     decision, sources, fills = project_native_channel_exit(request,group,executions,
         original_entry=original_entry,source_entry_intent_id=request.acquisition.source_entry_intent_id,
         current_financial=request.financial,checkpoint=checkpoint,**lineage_context)
@@ -154,7 +155,8 @@ def project_native_channel_exit_unit(request, group, executions, *, management_p
 
 
 def reprove_native_channel_exit_unit(unit, *, management_policy, recorded_at,
-        attempt_id, prior_batch_id, sequence, source_cursor, **recovery_context):
+        attempt_id, prior_batch_id, sequence, source_cursor, correlation_id='',
+        causation_id='', **recovery_context):
     """Recompute the complete unit from independently supplied causal evidence.
 
     The caller owns the certified source, actual fills, held financial state,
@@ -173,7 +175,8 @@ def reprove_native_channel_exit_unit(unit, *, management_policy, recorded_at,
     expected = project_native_channel_exit_unit(request,recovery_context['group'],
         recovery_context['executions'],management_policy=management_policy,
         recorded_at=recorded_at,attempt_id=attempt_id,prior_batch_id=prior_batch_id,
-        sequence=sequence,source_cursor=source_cursor,**projection_context)
+        sequence=sequence,source_cursor=source_cursor,correlation_id=correlation_id,
+        causation_id=causation_id,**projection_context)
     if unit.base != expected.base or unit.sealed_families() != expected.sealed_families():
         raise ValueError('Complete channel exit unit differs from independent recomputation')
     return expected
@@ -182,20 +185,21 @@ def reprove_native_channel_exit_unit(unit, *, management_policy, recorded_at,
 def prepare_confirmed_native_channel_exit_unit(client, manager_keeper, broker_keeper,
         receipt, *, run_id, management_policy, contexts, pending_record_id,
         first_price_source, recorded_at, attempt_id, batch_id, parent_record_id,
-        decision_record_id):
+        decision_record_id,correlation_id='',causation_id=''):
     """Return the complete unit, preserving the existing publication contract."""
     unit,_=prepare_confirmed_native_channel_exit_request(client,manager_keeper,broker_keeper,receipt,
         run_id=run_id,management_policy=management_policy,contexts=contexts,
         pending_record_id=pending_record_id,first_price_source=first_price_source,
         recorded_at=recorded_at,attempt_id=attempt_id,batch_id=batch_id,
-        parent_record_id=parent_record_id,decision_record_id=decision_record_id)
+        parent_record_id=parent_record_id,decision_record_id=decision_record_id,
+        correlation_id=correlation_id,causation_id=causation_id)
     return unit
 
 
 def prepare_confirmed_native_channel_exit_request(client, manager_keeper, broker_keeper,
         receipt, *, run_id, management_policy, contexts, pending_record_id,
         first_price_source, recorded_at, attempt_id, batch_id, parent_record_id,
-        decision_record_id):
+        decision_record_id,correlation_id='',causation_id=''):
     """Return the reproved journal unit and its independently confirmed request.
 
     This cold worker operation verifies the complete pending inventory, both
@@ -228,7 +232,8 @@ def prepare_confirmed_native_channel_exit_request(client, manager_keeper, broker
         parent_record_id=parent_record_id,decision_record_id=decision_record_id)
     envelope=dict(management_policy=management_policy,recorded_at=recorded_at,
         attempt_id=attempt_id,prior_batch_id=receipt.last_batch_id,
-        sequence=receipt.last_sequence+1,source_cursor=receipt.source_cursor)
+        sequence=receipt.last_sequence+1,source_cursor=receipt.source_cursor,
+        correlation_id=correlation_id,causation_id=causation_id)
     projection_context={key:value for key,value in context.items() if key not in
         {'prepared','policy','quotes','session_date','group','executions',
          'source_entry_intent_id','current_financial'}}
@@ -243,7 +248,7 @@ def prepare_confirmed_native_channel_exit_request(client, manager_keeper, broker
 
 def reprove_historical_native_channel_exit_unit(client, prefix, unit, *, management_policy,
         contexts, first_price_source, recorded_at, attempt_id, batch_id,
-        parent_record_id, decision_record_id):
+        parent_record_id, decision_record_id,correlation_id='',causation_id=''):
     """Bind complete saved transport to historical native source and holdings.
 
     The journal owner must supply the independently verified preceding prefix
@@ -279,4 +284,5 @@ def reprove_historical_native_channel_exit_unit(client, prefix, unit, *, managem
         parent_record_id=parent_record_id,decision_record_id=decision_record_id)
     return reprove_native_channel_exit_unit(unit,management_policy=management_policy,
         recorded_at=recorded_at,attempt_id=attempt_id,prior_batch_id=prefix.last_batch_id,
-        sequence=prefix.last_sequence+1,source_cursor=prefix.source_cursor,**context)
+        sequence=prefix.last_sequence+1,source_cursor=prefix.source_cursor,
+        correlation_id=correlation_id,causation_id=causation_id,**context)

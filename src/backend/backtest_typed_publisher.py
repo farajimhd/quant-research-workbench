@@ -52,7 +52,8 @@ def _coalesce_v4_units(units: tuple, *, max_events: int = 512) -> tuple:
     boundary without weakening live order admission.
     """
     def isolated(unit):
-        return (type(unit) in (V4AutomaticLadderBatch,V4FixedStructuralLotEntryBatch)
+        from src.trading_runtime.native_channel_exit_journal_context import NativeChannelExitJournalContext
+        return (type(unit) in (V4AutomaticLadderBatch,V4FixedStructuralLotEntryBatch,NativeChannelExitJournalContext)
             or (isinstance(unit,V4ProtectionReconciliationBatch) and unit.recovery_context is not None))
     if any(isolated(unit) for unit in units):
         # Its financial authority is the exact immediately preceding prefix.
