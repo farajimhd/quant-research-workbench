@@ -3,51 +3,8 @@ import ast
 from hashlib import sha256
 import json
 from pathlib import Path
-REVIEWED_EDITS = {'backend/backtest_fixed_v4_certification.py': {'current_ast': 'ebc205dacf19bcf018473d636d931967aa753a4ebf4d3573958ecc62da9a2876',
-                                                'parent_ast': 'c6666dd1e8901454271db97ac3b430ddcc4fd7ee9c3e548d90f15055522d629b',
-                                                'edits': [('def _reviewed_fixed_lot_ast_recipe(source: str, '
-                                                           'relative: str, name: str, expected: str) -> '
-                                                           'bool:\n'
-                                                           '    """Apply only exact reviewed AST edits; '
-                                                           'complete retained legacy pin remains '
-                                                           'required."""\n'
-                                                           '    from '
-                                                           '.backtest_fixed_structural_lot_compatibility_v29 '
-                                                           'import restore_reviewed_parent_source as '
-                                                           'restore_v29\n'
-                                                           '    source = restore_v29(source, relative)\n',
-                                                           'def _reviewed_fixed_lot_ast_recipe(source: str, '
-                                                           'relative: str, name: str, expected: str) -> '
-                                                           'bool:\n'
-                                                           '    """Apply only exact reviewed AST edits; '
-                                                           'complete retained legacy pin remains '
-                                                           'required."""\n'),
-                                                          ('def _reviewed_fixed_lot_core_projection(source: '
-                                                           'str, relative: str, name: str, expected: str) -> '
-                                                           'bool:\n'
-                                                           '    """Retain core source pins under the same '
-                                                           'bounded, independently reviewed projection."""\n'
-                                                           '    from '
-                                                           '.backtest_fixed_structural_lot_compatibility_v29 '
-                                                           'import restore_reviewed_parent_source as '
-                                                           'restore_v29\n'
-                                                           '    source = restore_v29(source, relative)\n',
-                                                           'def _reviewed_fixed_lot_core_projection(source: '
-                                                           'str, relative: str, name: str, expected: str) -> '
-                                                           'bool:\n'
-                                                           '    """Retain core source pins under the same '
-                                                           'bounded, independently reviewed '
-                                                           'projection."""\n')]},
- 'backend/backtest_v4_saved_review.py': {'current_ast': 'e100150ef2e6c60d49b6dc6e058a10bae9ecc425676fe5e5c7fe5cd701132be6',
-                                         'parent_ast': '0383859e6f9cae8f269687f9e5f4e9775d6586e5ec63d482c70646b5adf68e3d',
-                                         'edits': [('        from '
-                                                    '.backtest_declared_fixed_lot_saved_preparation import '
-                                                    'prepare_declared_saved_fixed_lot_session as '
-                                                    'prepare_fixed_structural_lot_session\n',
-                                                    '        from '
-                                                    '.backtest_fixed_structural_lot_execution_v13 import '
-                                                    'prepare_fixed_structural_lot_session\n')]}}
-APPROVED_METADATA_ANCHOR = '71b2fabcbb608505ece6d3b5a19b5791f71409769d78ea089f8482ae80ffdf38'
+REVIEWED_EDITS = {'backend/backtest_fixed_v4_certification.py': {'current_ast': 'ebc205dacf19bcf018473d636d931967aa753a4ebf4d3573958ecc62da9a2876', 'parent_ast': 'c6666dd1e8901454271db97ac3b430ddcc4fd7ee9c3e548d90f15055522d629b', 'edits': [('def _reviewed_fixed_lot_ast_recipe(source: str, relative: str, name: str, expected: str) -> bool:\n    """Apply only exact reviewed AST edits; complete retained legacy pin remains required."""\n    from .backtest_fixed_structural_lot_compatibility_v29 import restore_reviewed_parent_source as restore_v29\n    source = restore_v29(source, relative)\n', 'def _reviewed_fixed_lot_ast_recipe(source: str, relative: str, name: str, expected: str) -> bool:\n    """Apply only exact reviewed AST edits; complete retained legacy pin remains required."""\n'), ('def _reviewed_fixed_lot_core_projection(source: str, relative: str, name: str, expected: str) -> bool:\n    """Retain core source pins under the same bounded, independently reviewed projection."""\n    from .backtest_fixed_structural_lot_compatibility_v29 import restore_reviewed_parent_source as restore_v29\n    source = restore_v29(source, relative)\n', 'def _reviewed_fixed_lot_core_projection(source: str, relative: str, name: str, expected: str) -> bool:\n    """Retain core source pins under the same bounded, independently reviewed projection."""\n')]}, 'backend/backtest_v4_saved_review.py': {'current_ast': 'e100150ef2e6c60d49b6dc6e058a10bae9ecc425676fe5e5c7fe5cd701132be6', 'parent_ast': '0383859e6f9cae8f269687f9e5f4e9775d6586e5ec63d482c70646b5adf68e3d', 'edits': [('        from .backtest_declared_fixed_lot_saved_preparation import prepare_declared_saved_fixed_lot_session as prepare_fixed_structural_lot_session\n', '        from .backtest_fixed_structural_lot_execution_v13 import prepare_fixed_structural_lot_session\n')]}, 'backend/historical_runtime_versions.py': {'current_ast': 'df2248b1a36f60fd88898a4de5f541243c62c4635e595ed5f2bf69318db32438', 'parent_ast': '96941bdcb6b84439c3ba3f0d1fc0deb9cde238746088d1b284284aa0969857ec', 'edits': [('@lru_cache(maxsize=2)\ndef _numbered_projection_for_code(certificate_fn: Any, implementation_code: Any,\n                                 source_fingerprint: str, strategy_number: int) -> str:\n    """Retain only a result issued by this exact callback implementation."""\n    if source_fingerprint != LOADED_BACKEND_FINGERPRINT:\n        raise RuntimeError("Backend source changed after startup")\n    if getattr(certificate_fn, \'__code__\', None) is not implementation_code:\n        raise RuntimeError("Numbered projection callback code changed")\n    result = certificate_fn(strategy_number)\n    if getattr(certificate_fn, \'__code__\', None) is not implementation_code:\n        raise RuntimeError("Numbered projection callback code changed during proof")\n    return result\n\n\ndef _loaded_numbered_projection(certificate_fn: Any, source_fingerprint: str,\n                               strategy_number: int) -> str:\n    """A changed callback body cannot inherit its previous cached proof.\n\n    This guards callback identity only. Callers still own complete dependency,\n    source approval, release and configuration checks.\n    """\n    implementation_code = getattr(certificate_fn, \'__code__\', None)\n    if implementation_code is None:\n        raise ValueError("Numbered projection requires a Python source callback")\n    if source_fingerprint != LOADED_BACKEND_FINGERPRINT:\n        raise RuntimeError("Backend source changed after startup")\n    result = _numbered_projection_for_code(certificate_fn, implementation_code,\n                                         source_fingerprint, strategy_number)\n    if (getattr(certificate_fn, \'__code__\', None) is not implementation_code\n            or source_fingerprint != LOADED_BACKEND_FINGERPRINT):\n        raise RuntimeError("Numbered projection implementation changed during lookup")\n    return result\n\n\n', '@lru_cache(maxsize=2)\ndef _loaded_numbered_projection(certificate_fn: Any, source_fingerprint: str,\n                               strategy_number: int) -> str:\n    """A different numbered capability requires its own source-bound proof."""\n    if source_fingerprint != LOADED_BACKEND_FINGERPRINT:\n        raise RuntimeError("Backend source changed after startup")\n    return certificate_fn(strategy_number)\n\n\n')]}}
+APPROVED_METADATA_ANCHOR = '5319ef89d0a3dadcfaca84e1ef10a3a61553e3ee06c36b96c670ee86ad086628'
 APPROVED_SELF_AST = 'cf6bc331c9bbcdbab705d2daf52d0197d1721990900605d31f7c4af46f2f7587'
 
 def restore_reviewed_parent_source(source, relative):

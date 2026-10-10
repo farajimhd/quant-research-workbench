@@ -30,6 +30,7 @@ def test_all_protected_parent_files_match_exact_immutable_ast():
     assert set(compatibility.REVIEWED_EDITS) == {
         'backend/backtest_fixed_v4_certification.py',
         'backend/backtest_v4_saved_review.py',
+        'backend/historical_runtime_versions.py',
     }
     print('protected_parent_files_verified=' + str(len(pins)))
 
@@ -43,6 +44,16 @@ def test_unreviewed_guard_change_is_not_erased():
     restored = compatibility.restore_reviewed_parent_source(changed, relative)
     assert restored == changed
     assert ast_hash(restored) != parent_pins()[relative]
+
+
+def test_unreviewed_callback_code_guard_change_is_not_erased():
+    relative = 'src/backend/historical_runtime_versions.py'
+    source = (ROOT / relative).read_text(encoding='utf-8')
+    guard = "getattr(certificate_fn, '__code__', None) is not implementation_code"
+    assert source.count(guard) == 3
+    changed = source.replace(guard, 'False', 1)
+    assert compatibility.restore_reviewed_parent_source(changed, relative) == changed
+    assert ast_hash(changed) != parent_pins()[relative]
 
 
 @pytest.mark.parametrize('field', ['REVIEWED_EDITS', 'APPROVED_METADATA_ANCHOR', 'APPROVED_SELF_AST'])

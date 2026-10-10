@@ -55,12 +55,37 @@ def _loaded_strategy_one_projection(certificate_fn: Any, source_fingerprint: str
 
 
 @lru_cache(maxsize=2)
-def _loaded_numbered_projection(certificate_fn: Any, source_fingerprint: str,
-                               strategy_number: int) -> str:
-    """A different numbered capability requires its own source-bound proof."""
+def _numbered_projection_for_code(certificate_fn: Any, implementation_code: Any,
+                                 source_fingerprint: str, strategy_number: int) -> str:
+    """Retain only a result issued by this exact callback implementation."""
     if source_fingerprint != LOADED_BACKEND_FINGERPRINT:
         raise RuntimeError("Backend source changed after startup")
-    return certificate_fn(strategy_number)
+    if getattr(certificate_fn, '__code__', None) is not implementation_code:
+        raise RuntimeError("Numbered projection callback code changed")
+    result = certificate_fn(strategy_number)
+    if getattr(certificate_fn, '__code__', None) is not implementation_code:
+        raise RuntimeError("Numbered projection callback code changed during proof")
+    return result
+
+
+def _loaded_numbered_projection(certificate_fn: Any, source_fingerprint: str,
+                               strategy_number: int) -> str:
+    """A changed callback body cannot inherit its previous cached proof.
+
+    This guards callback identity only. Callers still own complete dependency,
+    source approval, release and configuration checks.
+    """
+    implementation_code = getattr(certificate_fn, '__code__', None)
+    if implementation_code is None:
+        raise ValueError("Numbered projection requires a Python source callback")
+    if source_fingerprint != LOADED_BACKEND_FINGERPRINT:
+        raise RuntimeError("Backend source changed after startup")
+    result = _numbered_projection_for_code(certificate_fn, implementation_code,
+                                         source_fingerprint, strategy_number)
+    if (getattr(certificate_fn, '__code__', None) is not implementation_code
+            or source_fingerprint != LOADED_BACKEND_FINGERPRINT):
+        raise RuntimeError("Numbered projection implementation changed during lookup")
+    return result
 
 
 def expected_structure_checkpoint_set() -> str:
