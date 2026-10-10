@@ -72,6 +72,19 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
         cache.pop(key,None)
         cache[key]=runner
 
+    def _batch_order(self,population,space):
+        """Group fixed member blocks by exact shape; never regroup candidates."""
+        groups={}
+        for offset in range(0,len(population),self.batch_size):
+            members=population[offset:offset+self.batch_size]
+            key=(len(members),self.graph_steps,CompactProgramRunner.specialization_key(members,space))
+            groups.setdefault(key,[]).append(offset)
+        def priority(item):
+            key,offsets=item
+            warm=sum(key in cache for cache in self._resident_runners.values())
+            return (-warm,-len(offsets),offsets[0])
+        return [offset for _,offsets in sorted(groups.items(),key=priority) for offset in offsets]
+
     def __call__(self,session,population,destination):
         if not (destination/'receipt.json').exists():raise ValueError('Resident full pass must be prepared before selection')
         return super().__call__(session,population,destination)
@@ -140,7 +153,7 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
         self._cohort_identity=identity
         write_json(output/'input-residency.json',dict(load_seconds=perf_counter()-load_started,session_loads=loads,resident_sessions=len(resident_inputs),
             candidate_batches=(len(population)+self.batch_size-1)//self.batch_size,validation_opened=False))
-        for offset in range(0,len(population),self.batch_size):
+        for offset in self._batch_order(population,space):
             members=population[offset:offset+self.batch_size]
             execution_key=CompactProgramRunner.specialization_key(members,space)
             shared=SharedRuleBatch(members,self.device)
@@ -217,6 +230,9 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
                 shared.close()
         for session in remaining:
             day=session['day']
-            seal_session(session,token,len(population),output/day,parts[day],batches[day],self.inputs,self.structures,self.holding_capacity)
+            # Scheduling is independent across accounts. Restore the original
+            # candidate order before aggregation and parent selection.
+            ordered=sorted(zip(batches[day],parts[day]),key=lambda pair:pair[0]['directory'])
+            seal_session(session,token,len(population),output/day,[v for _,v in ordered],[b for b,_ in ordered],self.inputs,self.structures,self.holding_capacity)
         write_json(output/'resident-measurements.json',measurements)
         return measurements

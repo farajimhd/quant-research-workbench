@@ -18,6 +18,7 @@ import torch
 from .grid import MAX_POSITIONS, Settings
 from .ledger_write import ledger_append,masked_ledger_append
 from .remainder_update import remainder_update
+from .compiler_family import isolated_tick
 
 
 def proportional_fill(wanted, capacity):
@@ -1124,7 +1125,12 @@ class SqueezeRunner:
             # Keep this graph's intermediates contiguous; arithmetic and
             # account tensor shapes are unchanged for every ledger mode.
             torch.compile(
-                self.tick,
+                isolated_tick(self.tick, (
+                    type(self).__module__, type(self).__qualname__,
+                    getattr(self, 'execution_key', None),
+                    tuple(self.cash.shape), tuple(self.quantity.shape),
+                    str(self.tape.device), self.graph_steps,
+                )),
                 fullgraph=True,
                 # Numerical reductions must not be selected by timing-dependent
                 # autotuning when an exact capture is rebuilt or reused.

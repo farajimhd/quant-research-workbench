@@ -16,6 +16,17 @@ def test_listing_union_preserves_order_and_excludes_unfilled_slots():
     assert ResidentSessionEvaluator._listing_union(np.full((3,10),-1))==[]
 
 
+def test_batch_order_groups_exact_shapes_without_changing_member_blocks(monkeypatch):
+    evaluate=ResidentSessionEvaluator.__new__(ResidentSessionEvaluator)
+    evaluate.batch_size=2;evaluate.graph_steps=16;evaluate._resident_runners={}
+    monkeypatch.setattr(resident_evaluator.CompactProgramRunner,'specialization_key',lambda members,space:members[0])
+    population=['a','a','b','b','c','c','a','a','d','d','a','a']
+    assert evaluate._batch_order(population,None)==[0,6,10,2,4,8]
+    evaluate._resident_runners={'day':{(2,16,'c'):object()}}
+    assert evaluate._batch_order(population,None)==[4,0,6,10,2,8]
+    assert sorted(evaluate._batch_order(population,None))==list(range(0,len(population),2))
+
+
 def test_capture_variants_retain_exact_shapes_and_evict_least_recent():
     evaluate=ResidentSessionEvaluator.__new__(ResidentSessionEvaluator)
     evaluate.capture_variants=2;evaluate._resident_runners={}
