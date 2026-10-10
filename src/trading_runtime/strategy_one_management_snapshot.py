@@ -584,6 +584,14 @@ def load_attested_manager_snapshot(client: Any, keeper: ManagerSnapshotHeadReade
                                    first_price_source=None,
                                    ) -> StrategyOneManagementState:
     """Read only a Keeper-selected snapshot at the exact cold V4 cursor."""
+    return _load_attested_manager_image(client, keeper, run_id=run_id,
+        checkpoint_sequence=checkpoint_sequence, first_price_source=first_price_source,
+        load_rows=load_unattested_manager_snapshot_rows, restore_rows=restore_manager_snapshot)
+
+
+def _load_attested_manager_image(client, keeper, *, run_id, checkpoint_sequence,
+        first_price_source, load_rows, restore_rows, verify_pending=None):
+    """Shared journal/cursor/head checks for declared versioned manager images."""
     from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
     from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
 
@@ -616,18 +624,19 @@ def load_attested_manager_snapshot(client: Any, keeper: ManagerSnapshotHeadReade
             or cursor.get("event_sequence") != checkpoint_sequence
             or cursor.get("batch_id") != prefix.last_batch_id):
         raise RuntimeError("Strategy 1 manager lacks a committed market cursor")
-    rows = load_unattested_manager_snapshot_rows(
+    rows = load_rows(
         client, run_id=run_id, checkpoint_sequence=checkpoint_sequence)
     if (rows.snapshot["content_hash"] != first.snapshot_hash
             or rows.snapshot["boundary_ms"] != cursor.get("boundary_ms")
             or rows.snapshot["session_date"] != cursor.get("session_date")):
         raise RuntimeError("Strategy 1 manager seal differs from selected cursor")
-    state = (attach_committed_momentum_sources(client, prefix, restore_manager_snapshot(rows))
+    state = (attach_committed_momentum_sources(client, prefix, restore_rows(rows))
              if first_price_source is None else attach_committed_momentum_sources(client, prefix,
-                 restore_manager_snapshot(rows), first_price_source=first_price_source))
+                 restore_rows(rows), first_price_source=first_price_source))
+    pending = verify_pending(rows) if verify_pending is not None else None
     if keeper.read_head(run_id=run_id) != first:
         raise RuntimeError("Strategy 1 manager Keeper head changed during cold read")
-    return state
+    return state if verify_pending is None else (rows, state, pending)
 
 
 def attach_committed_momentum_sources(client: Any, prefix, state: StrategyOneManagementState,

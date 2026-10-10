@@ -1,4 +1,6 @@
 import re
+from types import SimpleNamespace
+from dataclasses import replace
 
 import pytest
 
@@ -64,3 +66,42 @@ def test_cold_reader_rejects_ambiguous_or_incomplete_images(installed, defect):
     with pytest.raises(ValueError):
         load_unattested_native_channel_manager_rows(Reader(rows, policy, defect),
             run_id=rows.snapshot['run_id'], checkpoint_sequence=rows.snapshot['checkpoint_sequence'], policy=policy)
+
+
+@pytest.mark.parametrize('defect', [None, 'prefix', 'cursor', 'hash', 'head_changed', 'evidence'])
+def test_attested_reader_checks_journal_cursor_head_and_pending_evidence(installed, monkeypatch, defect):
+    from src.trading_runtime import arte_journal_commit_v4, arte_journal_projection
+    from src.trading_runtime.native_channel_manager_reader import load_attested_native_channel_manager_snapshot
+    rows, policy, contexts = manager_case(installed)
+    root = rows.snapshot
+    batch = rows.pending[0]['batch_id']
+    prefix = SimpleNamespace(status='running', last_sequence=root['checkpoint_sequence'],
+        last_batch_id=batch, batch_ids=(batch,))
+    cursor = dict(run_id=root['run_id'], event_sequence=root['checkpoint_sequence'],
+        batch_id=batch, boundary_ms=root['boundary_ms'], session_date=root['session_date'])
+    head = manager.ManagerSnapshotHead(root['run_id'], root['checkpoint_sequence'], batch,
+                                       root['content_hash'], 0)
+    if defect == 'prefix': prefix.status = 'completed'
+    if defect == 'cursor': cursor['boundary_ms'] += 100
+    if defect == 'hash': head = replace(head, snapshot_hash='0' * 64)
+    if defect == 'evidence': contexts = {}
+    monkeypatch.setattr(arte_journal_commit_v4, 'load_verified_v4_prefix', lambda *_a, **_k: prefix)
+    monkeypatch.setattr(arte_journal_projection, 'load_latest_backtest_cursor', lambda *_a: cursor)
+    # Journal source attachment is a separate tested authority; this fixture
+    # exercises head fencing plus the real normalized reader and recomputation.
+    monkeypatch.setattr(manager, 'attach_committed_momentum_sources', lambda _c, _p, state: state)
+
+    class Keeper:
+        reads = 0
+        def read_head(self, **_scope):
+            self.reads += 1
+            return replace(head, keeper_version=1) if defect == 'head_changed' and self.reads > 1 else head
+
+    call = lambda: load_attested_native_channel_manager_snapshot(Reader(rows, policy), Keeper(),
+        run_id=root['run_id'], checkpoint_sequence=root['checkpoint_sequence'], policy=policy, contexts=contexts)
+    if defect is not None:
+        with pytest.raises((RuntimeError, ValueError)): call()
+    else:
+        loaded, state, requests = call()
+        assert loaded.snapshot == root and state.boundary_ms == root['boundary_ms']
+        assert len(requests) == 1

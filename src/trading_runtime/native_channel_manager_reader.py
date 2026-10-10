@@ -66,3 +66,20 @@ def load_unattested_native_channel_manager_rows(client, *, run_id, checkpoint_se
             restored.append(canonical)
         children.append(tuple(restored))
     return verify_native_channel_manager_rows(NativeChannelManagerSnapshotRows(root, inherited, *children), policy)
+
+
+def load_attested_native_channel_manager_snapshot(client, keeper, *, run_id,
+        checkpoint_sequence, policy, contexts, first_price_source=None):
+    """Attest the journal and stable Keeper head, then reprove all pending facts.
+
+    Returns the image, inherited state and requests. Broker checkpoint and
+    declared strategy/OMS admission still remain separate requirements.
+    """
+    from .strategy_one_management_snapshot import _load_attested_manager_image, restore_manager_snapshot
+    from src.backend.backtest_native_channel_manager_recovery import reprove_native_channel_manager_snapshot
+    return _load_attested_manager_image(client, keeper, run_id=run_id,
+        checkpoint_sequence=checkpoint_sequence, first_price_source=first_price_source,
+        load_rows=lambda client, **scope: load_unattested_native_channel_manager_rows(
+            client, policy=policy, **scope),
+        restore_rows=lambda rows: restore_manager_snapshot(rows.inherited),
+        verify_pending=lambda rows: reprove_native_channel_manager_snapshot(rows, policy, contexts))
