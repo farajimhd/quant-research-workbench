@@ -16,6 +16,12 @@ def test_listing_union_preserves_order_and_excludes_unfilled_slots():
     assert ResidentSessionEvaluator._listing_union(np.full((3,10),-1))==[]
 
 
+@pytest.mark.parametrize('steps',[0,65,True])
+def test_capture_block_bounds_before_loading(steps):
+    with pytest.raises(ValueError,match='capture steps'):
+        ResidentSessionEvaluator('unused','unused',graph_steps=steps)
+
+
 def test_partial_resume_budgets_next_complete_generation(tmp_path,monkeypatch):
     class BudgetOnly(ResidentSessionEvaluator):
         def contract(self,*args):return {}
@@ -69,12 +75,14 @@ def test_all_captures_precede_parallel_replay_and_receipts_resume(tmp_path,monke
     def mkdir(path):path.mkdir(parents=True,exist_ok=True);return path
     monkeypatch.setattr(runtime,'require_runtime',mkdir);monkeypatch.setattr(resident_evaluator,'require_runtime',mkdir)
     events=[];original_compile=resident_evaluator.CompactProgramRunner.compile;original_run=resident_evaluator.CompactProgramRunner.run
-    def capture(runner):events.append('capture');return original_compile(runner)
+    def capture(runner):
+        assert runner.graph_steps==7
+        events.append('capture');return original_compile(runner)
     def replay(runner,**kwargs):events.append('replay');return original_run(runner,**kwargs)
     monkeypatch.setattr(resident_evaluator.CompactProgramRunner,'compile',capture)
     monkeypatch.setattr(resident_evaluator.CompactProgramRunner,'run',replay)
     evaluate=ResidentSessionEvaluator(source,structures,batch_size=2,holding_capacity=2,maximum_fills=512,
-        maximum_input_gib=.01,maximum_state_gib=.01,backend='cudagraph')
+        maximum_input_gib=.01,maximum_state_gib=.01,backend='cudagraph',graph_steps=7)
     population=[member,deepcopy(member),deepcopy(member),deepcopy(member)];output=mkdir(tmp_path/'result')
     evaluate.prepare_pass(sessions,population,output,workers=2)
     assert events==['capture','capture','replay','replay','replay','replay']

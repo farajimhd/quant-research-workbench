@@ -53,11 +53,12 @@ def main(argv=None):
     p.add_argument('--resident-repeats',type=int,default=1,help='Repeat the full pass with retained broker buffers; exact comparison against first pass')
     p.add_argument('--holding-capacity',type=int,default=40);p.add_argument('--maximum-fills',type=int,default=16384)
     p.add_argument('--backend',choices=['compile','cudagraph','compiled_graph'],default='compiled_graph')
+    p.add_argument('--graph-steps',type=int,default=16,help='Ticks per captured broker block, 1..64; default preserves existing allocation')
     p.add_argument('--seed',type=int,default=2236)
     p.add_argument('--maximum-input-gib',type=float,default=4.);p.add_argument('--maximum-state-gib',type=float,default=4.)
     a=p.parse_args(argv)
     worker_counts=[a.workers] if a.worker_counts is None else [int(v) for v in a.worker_counts.split(',')]
-    if not worker_counts or len(set(worker_counts))!=len(worker_counts) or not 1<=a.resident_repeats<=3 or not 2<=a.session_count<=30 or any(not 1<=w<=a.session_count for w in worker_counts) or a.population<1:
+    if not worker_counts or len(set(worker_counts))!=len(worker_counts) or not 1<=a.resident_repeats<=3 or not 2<=a.session_count<=30 or any(not 1<=w<=a.session_count for w in worker_counts) or a.population<1 or not 1<=a.graph_steps<=64:
         raise ValueError('Invalid bounded profiling dimensions')
     root=require_runtime(a.output)
     if (root/'identity.json').exists():raise ValueError('Use a new immutable profile identity')
@@ -68,9 +69,10 @@ def main(argv=None):
         sessions=[json.loads((a.inputs/day/'complete.json').read_text())['identity']['session'] for day in days]
         members=sample(np.random.default_rng(a.seed),StrategySpace(),a.population)
         evaluator_type=SparseSessionEvaluator if a.backend=='compile' else ResidentSessionEvaluator
+        capture_options={} if a.backend=='compile' else dict(graph_steps=a.graph_steps)
         evaluate=evaluator_type(a.inputs,a.structure,batch_size=a.batch_size,backend=a.backend,
             maximum_input_gib=a.maximum_input_gib,maximum_state_gib=a.maximum_state_gib,
-            maximum_fills=a.maximum_fills,holding_capacity=a.holding_capacity)
+            maximum_fills=a.maximum_fills,holding_capacity=a.holding_capacity,**capture_options)
         contract=evaluate.contract(sessions,a.workers)
         write_json(root/'identity.json',dict(code_sha256=code_hash(),arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items()},contract=contract,
             population_sha256=population_hash(members),validation_opened=False,optimization_started=False))

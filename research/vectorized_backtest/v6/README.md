@@ -71,8 +71,12 @@ are timing evidence, not profitability or full-generation throughput evidence.
 preparation, replay/audit time and peak allocated/reserved GPU memory. External
 reference comparison checks candidate metrics and exact fills independently of
 batch partitioning. `--resident-repeats 2` distinguishes initial preparation
-from a second full pass retaining input and broker buffers. Local fixture and
-partial-cohort checks do not certify full-training throughput: the current
+from a second full pass retaining input and broker buffers. `--graph-steps`
+controls captured broker block length (1..64, default 16). The block
+length is recorded in the profile identity and resident contract; changing it
+requires new capture rather than reuse of an incompatible graph. Performance
+choices require measured full-session timing and exact financial/fill parity.
+Local fixture and partial-cohort checks do not certify full-training throughput: the current
 optimized deployment still requires completed 30-session financial audits,
 exact reference/repeat comparisons and the measured population/generation report.
 Full optimization requires the user's final parameter decision.

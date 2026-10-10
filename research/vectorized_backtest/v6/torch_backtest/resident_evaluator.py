@@ -24,10 +24,13 @@ from .captured_rules import SharedRuleBatch
 class ResidentSessionEvaluator(SparseSessionEvaluator):
     def __init__(self,*args,**kwargs):
         backend=kwargs.pop('backend','compiled_graph')
+        graph_steps=kwargs.pop('graph_steps',16)
+        if type(graph_steps) is not int or not 1<=graph_steps<=64:raise ValueError('Resident capture steps must be 1..64')
         if backend not in ('cudagraph','compiled_graph'):raise ValueError('Resident evaluator requires captured execution')
         super().__init__(*args,backend='compile',**kwargs)
         if self.device.type!='cuda':raise ValueError('Resident capture requires CUDA')
         self.backend=backend
+        self.graph_steps=graph_steps
         self._resident_inputs={};self._resident_runners={};self._resident_listing_ids={};self._cohort_identity=None
 
     def close(self):
@@ -48,6 +51,7 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
         required=self.maximum_state_gib+10. if self._resident_inputs else None
         result=super().contract(training,workers,memory_required_gib=required)
         result['capture_barrier']='all resident graphs prepared before concurrent replay'
+        result['graph_steps']=self.graph_steps
         return result
 
     def __call__(self,session,population,destination):
@@ -139,7 +143,9 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
                         gates,rule_seconds=inputs[day].compile(members,listing_ids=union,backend='cudagraph',prepared=shared)
                         broker_started=perf_counter()
                         runner=runners.get(day)
-                        reused=runner is not None and runner.b==len(members) and runner.execution_key==CompactProgramRunner.specialization_key(members,space)
+                        reused=(runner is not None and runner.b==len(members)
+                            and runner.graph_steps==min(self.graph_steps,len(inputs[day].arrays['clocks']))
+                            and runner.execution_key==CompactProgramRunner.specialization_key(members,space))
                         if reused:
                             runner.set_sparse_population(members,gates)
                         else:
@@ -148,7 +154,7 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
                             runners.pop(day,None);runner=None;gc.collect()
                             runner=CompactProgramRunner(inputs[day],space,members,gates,structure=self.structures/day,
                                 holding_capacity=self.holding_capacity,backend=self.backend,maximum_fills=self.maximum_fills,
-                                maximum_state_gib=self.maximum_state_gib)
+                                maximum_state_gib=self.maximum_state_gib,graph_steps=self.graph_steps)
                             torch.cuda.synchronize(self.device);runner.compile()
                             runners[day]=runner
                         # No worker runs until this entire serial preparation loop finishes.
