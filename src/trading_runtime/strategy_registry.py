@@ -216,7 +216,7 @@ def installed_numbered_fixed_strategy_numbers() -> tuple[int, ...]:
 
 
 def numbered_strategy(number: int) -> NumberedStrategyRelease:
-    if number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 65, 66, 68, 69, 70, 71, 72, 73, 74, 77, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 92, 93, 94, 95, 97, 98, 99, 101, 109, 110, 111):
+    if number in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 65, 66, 68, 69, 70, 71, 72, 73, 74, 77, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 92, 93, 94, 95, 97, 98, 99, 101, 109, 110, 111, 112):
         initialize_numbered_fixed_strategies()
     with _LOCK:
         release = _NUMBERED_RELEASES.get(number)
@@ -1302,6 +1302,19 @@ def initialize_numbered_fixed_strategies() -> None:
                 derive_strategy_one_hundred_eleven_configuration,verify_prepared_strategy_one_hundred_eleven_configuration,
                 certify_publication_reuse_source,management_parent_release)))
         register_numbered_strategy(publication_reuse)
+        from .strategy_one_hundred_twelve_release import (release_contract as context_capacity_release,
+            derive_strategy_one_hundred_twelve_configuration, verify_prepared_strategy_one_hundred_twelve_configuration)
+        from .strategy_one_hundred_twelve_contract import strategy_one_hundred_twelve_contract
+        from src.backend.backtest_fixed_structural_lot_certification_v31 import certify_fixed_structural_lot_source as certify_context_capacity_source
+        context_capacity = context_capacity_release()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=context_capacity.executor_strategy_id, revision=context_capacity.executor_revision,
+            evaluation_interval=context_capacity.evaluation_interval, strategy_factory=_strategy_two_factory,
+            contract_factory=strategy_one_hundred_twelve_contract,
+            manifest_authority=NativeManifestAuthority(42, 'fixed-structural-lots-from',
+                derive_strategy_one_hundred_twelve_configuration, verify_prepared_strategy_one_hundred_twelve_configuration,
+                certify_context_capacity_source, management_parent_release)))
+        register_numbered_strategy(context_capacity)
         _NUMBERED_FIXED_REGISTERED = True
 
 
@@ -1479,3 +1492,4 @@ BATCHED_DETAIL_SELECT_RULE = 'immutable-journal-batched-detail-select-envelope@1
 SELECTED_CHECKPOINT_PRODUCT_RULE = 'immutable-selected-checkpoint-products@1'
 
 OPERATION_CHECKPOINT_READER_RULE = 'immutable-operation-bound-checkpoint-reader@1'
+
