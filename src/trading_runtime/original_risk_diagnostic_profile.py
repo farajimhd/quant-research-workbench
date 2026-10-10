@@ -12,9 +12,31 @@ def require_original_risk_diagnostic_policy(policy):
 
 def validate_original_risk_profile(automatic_ladder,entry_spread_risk,policy):
     if policy is None:return
-    if automatic_ladder is not False or entry_spread_risk is not False:
+    combined = getattr(policy, 'entry_cost_capability', False)
+    if automatic_ladder is not False or entry_spread_risk is not combined:
         raise ValueError('Original-risk diagnostic profile needs its exclusive exact typed policy')
     require_original_risk_diagnostic_policy(policy)
+
+
+def original_risk_runner_identity(policy):
+    """An exact declaration selects one principal; grants never select behavior."""
+    require_original_risk_diagnostic_policy(policy)
+    if getattr(policy, 'entry_cost_capability', False):
+        return ('BACKTEST_V4_ORIGINAL_RISK_ENTRY_COST_RUNNER',
+                'backtest_v4_original_risk_entry_cost_runner')
+    return ('BACKTEST_V4_ORIGINAL_RISK_RUNNER', 'backtest_v4_original_risk_runner')
+
+
+def original_risk_runner_options(contract):
+    policy = contract.confirmed_original_risk_policy
+    options = {'confirmed_original_risk_policy': policy}
+    combined = getattr(policy, 'entry_cost_capability', False)
+    if combined:
+        if contract.entry_spread_risk_policy is None:
+            raise ValueError('Combined capability requires declared entry-cost semantics')
+        options['entry_spread_risk'] = True
+    validate_original_risk_profile(False, combined, policy)
+    return options
 
 
 def declared_fixed_runner_options(configuration):
@@ -31,8 +53,7 @@ def declared_fixed_runner_options(configuration):
         from src.backend.backtest_strategy_one_configuration import is_numbered_fixed_configuration
         if not is_numbered_fixed_configuration(configuration):
             raise ValueError('Diagnostic runner profile requires exact prepared configuration')
-        validate_original_risk_profile(False,False,policy)
-        return {'confirmed_original_risk_policy':policy}
+        return original_risk_runner_options(contract)
     return {'entry_spread_risk':True} if contract.entry_spread_risk_policy is not None else {}
 
 
@@ -69,5 +90,5 @@ def declared_contract_runner_options(contract, *, owner=None, publisher=None, ru
             raise ValueError('Checkpoint reader profile differs from exact owner/source/run')
         return {'fixed_structural_lot_profile': profile}
     if actual.confirmed_original_risk_policy is not None:
-        return {'confirmed_original_risk_policy':actual.confirmed_original_risk_policy}
+        return original_risk_runner_options(actual)
     return {'entry_spread_risk':True} if actual.entry_spread_risk_policy is not None else {}

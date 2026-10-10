@@ -19,6 +19,7 @@ from .strategy_followthrough_failure import FollowThroughFailure
 RULE = 'consecutive-price-confirmed-original-risk-exit@1'
 INPUT = 'declared-consecutive-price-confirmed-original-risk-source@1'
 POLICY_KEY = 'consecutive_price_confirmed_original_risk_policy'
+ENTRY_COST_CAPABILITY_RULE = 'original-risk-and-entry-cost-journal-capability@1'
 SOURCE_FIELDS = (
     'source_build_id', 'source_market_plan_token', 'source_bars_attempt_id',
     'source_indicators_attempt_id', 'session_date', 'ticker',
@@ -31,24 +32,29 @@ class ConsecutivePriceRiskPolicy:
     price_policy: PriceConfirmedOriginalRiskPolicy
     completed_bucket_ms: int = 5000
     consecutive_buckets: int = 2
+    entry_cost_capability: bool = False
 
     def __post_init__(self):
         if (type(self.price_policy) is not PriceConfirmedOriginalRiskPolicy
                 or type(self.completed_bucket_ms) is not int
                 or type(self.consecutive_buckets) is not int
+                or type(self.entry_cost_capability) is not bool
                 or (self.completed_bucket_ms, self.consecutive_buckets) != (5000, 2)):
             raise ValueError('Exact certified completed-pair policy required')
         self.price_policy.__post_init__()
 
     def payload(self):
         self.__post_init__()
-        return dict(rule=RULE, price_policy=self.price_policy.payload(),
+        result = dict(rule=RULE, price_policy=self.price_policy.payload(),
             completed_bucket_ms=self.completed_bucket_ms,
             consecutive_buckets=self.consecutive_buckets,
             confirmation='both_completed_closes_and_current_fresh_bid',
             source='same_certified_session_build_bars_indicators_liquidity_attempts',
             held_fence='both_candles_wholly_after_first_held',
             priority='inherited_exits_first', missing='no_extension')
+        if self.entry_cost_capability:
+            result['entry_cost_capability'] = ENTRY_COST_CAPABILITY_RULE
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +70,8 @@ def parse_consecutive_price_risk_policy(release, policies):
     selected = (RULE in release.rule_set_contracts, INPUT in release.input_contracts,
                 POLICY_KEY in policies)
     if not any(selected):
+        if ENTRY_COST_CAPABILITY_RULE in release.rule_set_contracts:
+            raise ValueError('Combined capability requires consecutive price-risk declaration')
         return None
     if not all(selected):
         raise ValueError('Consecutive price-risk declaration is incomplete')
@@ -82,11 +90,14 @@ def parse_consecutive_price_risk_policy(release, policies):
         result = ConsecutivePriceRiskPolicy(PriceConfirmedOriginalRiskPolicy(
             fraction('premarket_fraction'), fraction('afterhours_fraction'),
             price['eligibility_ms'], price['quote_max_age_us']),
-            payload['completed_bucket_ms'], payload['consecutive_buckets'])
+            payload['completed_bucket_ms'], payload['consecutive_buckets'],
+            payload.get('entry_cost_capability') == ENTRY_COST_CAPABILITY_RULE)
     except (KeyError, TypeError) as exc:
         raise ValueError('Incomplete consecutive price-risk policy') from exc
     if canonical_json(payload) != canonical_json(result.payload()):
         raise ValueError('Consecutive price-risk semantics changed')
+    if release.rule_set_contracts.count(ENTRY_COST_CAPABILITY_RULE) != int(result.entry_cost_capability):
+        raise ValueError('Combined entry-cost capability declaration differs')
     return result
 
 

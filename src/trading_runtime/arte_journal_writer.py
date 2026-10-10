@@ -393,6 +393,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
         lane.typed_insert_strict = True
         lane.backtest_v4_lease = lease
         lane.automatic_ladder_profile = automatic_ladder
+        lane.entry_spread_risk_profile = entry_spread_risk
         lane.ladder_geometry_policy = ladder_geometry_policy
         lane.confirmed_original_risk_policy = confirmed_original_risk_policy
         lane.fixed_structural_lot_profile = fixed_structural_lot_profile
@@ -420,7 +421,8 @@ def _v4_runner_credentials(*, automatic_ladder=False, entry_spread_risk=False,
     if entry_spread_risk:
         stem, principal = 'BACKTEST_V4_ENTRY_COST_RUNNER', 'backtest_v4_entry_cost_runner'
     if confirmed_original_risk_policy is not None:
-        stem,principal='BACKTEST_V4_ORIGINAL_RISK_RUNNER','backtest_v4_original_risk_runner'
+        from .original_risk_diagnostic_profile import original_risk_runner_identity
+        stem, principal = original_risk_runner_identity(confirmed_original_risk_policy)
     if fixed_structural_lot_profile is not None:
         _validate_fixed_structural_lot_profile(fixed_structural_lot_profile,
             automatic_ladder=automatic_ladder, entry_spread_risk=entry_spread_risk,
@@ -2353,12 +2355,13 @@ _V4_PREFLIGHT_SECRET = object()
 class _V4PreflightSeal:
     """One-use proof that this exact client passed the full V4 audit."""
 
-    __slots__ = ("client", "secret", "used", "ladder_geometry_policy", "automatic_ladder_profile", "confirmed_original_risk_policy", "fixed_structural_lot_profile")
+    __slots__ = ("client", "secret", "used", "ladder_geometry_policy", "automatic_ladder_profile", "entry_spread_risk_profile", "confirmed_original_risk_policy", "fixed_structural_lot_profile")
 
     def __init__(self, client: Any, secret: object) -> None:
         self.client, self.secret, self.used = client, secret, False
         self.ladder_geometry_policy = getattr(client, 'ladder_geometry_policy', None)
         self.automatic_ladder_profile = getattr(client, 'automatic_ladder_profile', False)
+        self.entry_spread_risk_profile = getattr(client, 'entry_spread_risk_profile', False)
         self.confirmed_original_risk_policy = getattr(client,'confirmed_original_risk_policy',None)
         self.fixed_structural_lot_profile = getattr(client,'fixed_structural_lot_profile',None)
 
@@ -2393,7 +2396,8 @@ def _v4_preflight(client: Any) -> _V4PreflightSeal:
     storage_preflight(client, tables=v4_storage_contracts())
     writable = v4_journal_write_tables()
     if risk_policy is not None:
-        if client.execute('SELECT currentUser()').strip()!='backtest_v4_original_risk_runner':
+        from .original_risk_diagnostic_profile import original_risk_runner_identity
+        if client.execute('SELECT currentUser()').strip()!=original_risk_runner_identity(risk_policy)[1]:
             raise RuntimeError('Original-risk profile requires its dedicated principal')
         selected_tables=(ORIGINAL_RISK_DIAGNOSTIC,*selected_snapshot_contracts())
         storage_preflight(client,tables=selected_tables)
@@ -2411,7 +2415,9 @@ def _v4_preflight(client: Any) -> _V4PreflightSeal:
             storage_preflight(client, tables=(LADDER_BINDING,))
             writable |= frozenset({LADDER_BINDING.name})
     if getattr(client, 'entry_spread_risk_profile', False):
-        if getattr(client, 'automatic_ladder_profile', False) or client.execute('SELECT currentUser()').strip() != 'backtest_v4_entry_cost_runner':
+        expected_entry_cost_principal = (original_risk_runner_identity(risk_policy)[1]
+            if risk_policy is not None else 'backtest_v4_entry_cost_runner')
+        if getattr(client, 'automatic_ladder_profile', False) or client.execute('SELECT currentUser()').strip() != expected_entry_cost_principal:
             raise RuntimeError('Entry cost profile requires its dedicated principal')
         storage_preflight(client, tables=(ENTRY_SPREAD_RISK,))
         writable |= frozenset({ENTRY_SPREAD_RISK.name})
@@ -4030,6 +4036,7 @@ class ArteJournalWriter:
                       or v4_preflight_seal.secret is not _V4_PREFLIGHT_SECRET
                       or v4_preflight_seal.ladder_geometry_policy != getattr(client, 'ladder_geometry_policy', None)
                       or v4_preflight_seal.automatic_ladder_profile != getattr(client, 'automatic_ladder_profile', False)
+                      or v4_preflight_seal.entry_spread_risk_profile != getattr(client, 'entry_spread_risk_profile', False)
                       or v4_preflight_seal.confirmed_original_risk_policy != getattr(client,'confirmed_original_risk_policy',None)
                       or v4_preflight_seal.fixed_structural_lot_profile is not getattr(client,'fixed_structural_lot_profile',None)
                       or v4_preflight_seal.used):

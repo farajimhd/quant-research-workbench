@@ -967,7 +967,8 @@ def _v4_cold_reader_preflight(client: Any) -> None:
     validate_original_risk_profile(getattr(client,'automatic_ladder_profile',False),
         getattr(client,'entry_spread_risk_profile',False),risk_policy)
     if risk_policy is not None:
-        expected_principal='backtest_v4_original_risk_runner'
+        from src.trading_runtime.original_risk_diagnostic_profile import original_risk_runner_identity
+        expected_principal=original_risk_runner_identity(risk_policy)[1]
     lot_profile=getattr(client,'fixed_structural_lot_profile',None)
     if lot_profile is not None:
         from src.trading_runtime.arte_journal_writer import _validate_fixed_structural_lot_profile
