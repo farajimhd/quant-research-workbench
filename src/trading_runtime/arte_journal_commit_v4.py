@@ -2396,10 +2396,36 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
                              first_price_source=None, automatic_ladder_sources=(),
                              automatic_ladder_read_client=None,
                              declared_native_context=None, fixed_lot_context=None,
-                             fixed_lot_recovery_context=None) -> str:
+                             fixed_lot_recovery_context=None,
+                             native_channel_publication=None) -> str:
     """Publish one sealed normalized family graph under a Keeper fence."""
     from .native_channel_exit_journal_context import reject_unadmitted_channel_publication
-    reject_unadmitted_channel_publication(families)
+    native_channel_context=None
+    native_channel_reader=None
+    if native_channel_publication is None:
+        reject_unadmitted_channel_publication(families)
+    else:
+        from .native_channel_exit_publication import (
+            verify_native_channel_exit_publication_graph,native_channel_exit_publication_reader,
+            refresh_native_channel_exit_publication,
+        )
+        native_channel_context=verify_native_channel_exit_publication_graph(
+            native_channel_publication,client=client,batch=batch,
+            base_families=base_families,families=families)
+        native_channel_reader=native_channel_exit_publication_reader(native_channel_publication,client=client)
+        if (getattr(client,'live_v4_lease',None) is not None
+                or first_price_source is not native_channel_context.first_price_source
+                or first_price_authorities or automatic_ladder_sources or automatic_ladder_read_client
+                or declared_native_context is not None or fixed_lot_context is not None
+                or fixed_lot_recovery_context is not None
+                or type(verified_prior_prefix) is not V4CommittedPrefix
+                or verified_prior_prefix.run_id!=batch.run_id
+                or verified_prior_prefix.status!='running'
+                or not verified_prior_prefix.batch_ids
+                or verified_prior_prefix.last_batch_id!=verified_prior_prefix.batch_ids[-1]
+                or verified_prior_prefix.last_batch_id!=batch.prior_batch_id
+                or verified_prior_prefix.last_sequence+1!=batch.first_sequence):
+            raise ValueError('Channel publication requires its exact Backtest predecessor and source')
     if fixed_lot_recovery_context is not None:
         from src.backend.backtest_fixed_structural_lot_management import require_recovery_client
         require_recovery_client(client,fixed_lot_recovery_context)
@@ -2506,12 +2532,13 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
         f"{filters}LIMIT 2 FORMAT JSONEachRow")
     if existing_commits:
         existing, _ = load_verified_commit_v4(
-            automatic_ladder_read_client or client, run_id=batch.run_id, batch_id=batch.batch_id,
+            native_channel_reader or automatic_ladder_read_client or client, run_id=batch.run_id, batch_id=batch.batch_id,
             first_price_authorities=first_price_authorities,
             verified_prior_prefix=verified_prior_prefix, first_price_source=first_price_source,
             automatic_ladder_sources=automatic_ladder_sources,
             declared_native_context=declared_native_context, fixed_lot_context=fixed_lot_context,
-            fixed_lot_recovery_context=fixed_lot_recovery_context)
+            fixed_lot_recovery_context=fixed_lot_recovery_context,
+            **({'native_channel_context':native_channel_context} if native_channel_context is not None else {}))
         if existing["content_hash"] != commit["content_hash"]:
             raise RuntimeError("V4 batch conflicts with a committed cursor")
         dispatch.assert_next_batch(
@@ -2523,6 +2550,13 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
             dispatch, batch, families, family_rows, existing)
         return batch.batch_id
 
+    if native_channel_context is not None:
+        refresh_native_channel_exit_publication(native_channel_publication,client=client)
+        native_channel_context.verify(native_channel_reader,verified_prior_prefix,
+            dict(run_id=batch.run_id,run_month=batch.run_month.isoformat(),attempt_id=batch.attempt_id,
+                batch_id=batch.batch_id,prior_batch_id=batch.prior_batch_id,
+                first_sequence=batch.first_sequence,last_sequence=batch.last_sequence,
+                source_cursor=batch.source_cursor,status=batch.status),first_price_source=first_price_source)
     _verify_prior_commit_v4(client, batch)
 
     # Relationships to earlier records must be checked against a committed
@@ -2544,7 +2578,9 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
         last_sequence=batch.last_sequence)
     mark_stage("prechecks")
 
-    existing_identities = _existing_detail_identities_v4(client, batch, families)
+    channel_insert_kwargs=({'native_channel_publication':native_channel_publication}
+        if native_channel_publication is not None else {})
+    existing_identities = _existing_detail_identities_v4(client, batch, families,**channel_insert_kwargs)
     mark_stage("detail_inventory")
     pending = []
     for name, rows in families:
@@ -2556,10 +2592,10 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
             raise RuntimeError("V4 typed detail conflicts with a prior attempt")
         if not identities:
             pending.append((name, rows))
-    _insert_detail_families_v4(client, batch, pending, journal_profile=profile)
+    _insert_detail_families_v4(client, batch, pending, journal_profile=profile,**channel_insert_kwargs)
     mark_stage("detail_insert")
     actual_details = _load_verified_details_v4(
-        client, run_id=batch.run_id, batch_id=batch.batch_id,
+        native_channel_reader or client, run_id=batch.run_id, batch_id=batch.batch_id,
         family_rows=family_rows, max_rows_per_family=65_536,
         batched_readback=bool(getattr(client, "v4_batched_detail_readback", False)),
         prior_batch_id=batch.prior_batch_id,
@@ -2569,7 +2605,10 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
         automatic_ladder_read_client=automatic_ladder_read_client,
         declared_native_context=declared_native_context, fixed_lot_context=fixed_lot_context,
         fixed_lot_recovery_context=fixed_lot_recovery_context,
+        **({'native_channel_context':native_channel_context} if native_channel_context is not None else {}),
         automatic_ladder_batch_metadata={
+            **({'run_id':batch.run_id,'batch_id':batch.batch_id,'prior_batch_id':batch.prior_batch_id}
+               if native_channel_context is not None else {}),
             'run_month':batch.run_month.isoformat(), 'attempt_id':batch.attempt_id,
             'first_sequence':batch.first_sequence, 'last_sequence':batch.last_sequence,
             'source_cursor':batch.source_cursor, 'status':batch.status})

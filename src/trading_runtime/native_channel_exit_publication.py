@@ -147,3 +147,21 @@ def verify_native_channel_exit_publication_graph(image,*,client,batch,base_famil
             or canonical_json(normalize(families))!=image.rows_json):
         raise ValueError('Channel exit publication differs from its complete issued graph')
     return context
+
+
+def native_channel_exit_publication_reader(image,*,client):
+    """Return the independently bound reader, never a caller-supplied substitute."""
+    require_native_channel_exit_publication(image,client=client)
+    return _ISSUED[image][1]
+
+
+def publish_native_channel_exit_publication(client,image,*,verified_prior_prefix):
+    """Use the shared detail-first, commit-last protocol for an issued exit."""
+    from .arte_journal_commit_v4 import _publish_sealed_batch_v4
+    from .arte_journal_writer import _CONTRACTS
+    context,_=require_native_channel_exit_publication(image,client=client)
+    families=context.unit.sealed_families()
+    return _publish_sealed_batch_v4(client,context.unit.base,
+        tuple((name,rows) for name,rows in families if name in _CONTRACTS),families,
+        verified_prior_prefix=verified_prior_prefix,first_price_source=context.first_price_source,
+        native_channel_publication=image)
