@@ -70,6 +70,14 @@ def test_bound_rejects_complete_population_instead_of_truncating(source):
         declared_candidate_feature_decisions(source, max_rows=True)
 
 
+def test_parent_key_mutation_cannot_reuse_unchanged_child_token(source):
+    parent_keys = source.parent.momentum.keys
+    object.__setattr__(source.parent.momentum, 'keys', tuple(
+        (ticker, boundary + 100) for ticker, boundary in parent_keys))
+    with pytest.raises(ValueError, match='omits original structural candidates'):
+        declared_candidate_feature_decisions(source, max_rows=1000)
+
+
 def read_for(source, authority):
     resolution = source.parent.market.required_resolutions_ms[0]
     rows = declared_candidate_feature_decisions(source, max_rows=1000)

@@ -51,6 +51,9 @@ def declared_candidate_feature_decisions(source, *, max_rows):
         raise ValueError('Explicit positive candidate feature row bound required')
     source.__post_init__()
     parent = source.parent
+    # The child seal includes the parent token, not a fresh parent key walk.
+    # Revalidate the parent before using its complete candidate identities.
+    parent.__post_init__()
     keys = parent.momentum.keys
     if len(keys) > max_rows:
         raise ValueError('Complete candidate feature population exceeds declared bound')
