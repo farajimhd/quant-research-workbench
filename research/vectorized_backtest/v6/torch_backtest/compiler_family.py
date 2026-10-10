@@ -1,30 +1,24 @@
-"""Bounded code identities for exact financial replay specializations.
+"""Bounded compiler specialization lifetime for exact financial replay.
 
 Dynamo counts recompilations per Python code object. Independent exact replay
 families must not exhaust one shared method's budget across a long search.
-Only code metadata changes here; instructions, constants and closures do not.
+Keep original code identity: changing metadata can change generated reductions.
+Captured CUDA graphs retain their kernels independently of Dynamo's guards.
 """
 from collections import OrderedDict
-from hashlib import sha256
-from types import FunctionType, MethodType
+import torch
 
-_FAMILIES = OrderedDict()
-_MAX_FAMILIES = 256
+_ACTIVE_FAMILIES = OrderedDict()
+_MAX_METHODS = 16
 
 
 def isolated_tick(method, family):
-    original = method.__func__
-    key = (original, family)
-    function = _FAMILIES.pop(key, None)
-    if function is None:
-        suffix = sha256(repr(family).encode()).hexdigest()[:24]
-        name = original.__name__ + '_family_' + suffix
-        code = original.__code__.replace(co_name=name, co_qualname=name)
-        function = FunctionType(code, original.__globals__, name,
-                                original.__defaults__, original.__closure__)
-        function.__kwdefaults__ = original.__kwdefaults__
-        function.__module__ = original.__module__
-    _FAMILIES[key] = function
-    while len(_FAMILIES) > _MAX_FAMILIES:
-        _FAMILIES.popitem(last=False)
-    return MethodType(function, method.__self__)
+    """Call only at the serial capture barrier, before compiling a new runner."""
+    code = method.__func__.__code__
+    previous = _ACTIVE_FAMILIES.pop(code, None)
+    if previous != family:
+        torch._dynamo.reset_code(code)
+    _ACTIVE_FAMILIES[code] = family
+    while len(_ACTIVE_FAMILIES) > _MAX_METHODS:
+        _ACTIVE_FAMILIES.popitem(last=False)
+    return method
