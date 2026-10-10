@@ -4,6 +4,8 @@ This does not enable reuse or admit orders. The native verifier must separately
 bind the declared policy and source before issuing an operation engine.
 """
 from dataclasses import dataclass
+from dataclasses import asdict
+from contextvars import ContextVar
 from hashlib import sha256
 from uuid import UUID
 
@@ -11,6 +13,7 @@ from .journal_contract import canonical_json
 
 RULE = 'bounded-original-risk-verification-reuse@1'
 POLICY_KEY = 'original_risk_verification_reuse_policy'
+_OPERATION = ContextVar('original_risk_verified_batch_operation', default=None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,3 +124,65 @@ def selected_policy(client, source):
     validate_original_risk_profile(getattr(client, 'automatic_ladder_profile', False),
         getattr(client, 'entry_spread_risk_profile', False), actual)
     return policy
+
+
+def _request_identity(options, source):
+    from .arte_journal_commit_v4 import V4CommittedPrefix
+    known = {'client', 'run_id', 'batch_id', 'max_rows_per_family', 'first_price_source',
+             'entry_activity_source', 'first_price_authorities', 'verified_prior_prefix',
+             'automatic_ladder_sources', 'declared_native_context', 'fixed_lot_context',
+             'fixed_lot_recovery_context', '_fixed_lot_cold_walk',
+             '_cold_recovery_context_sink', 'fixed_lot_read_scope'}
+    if set(options) != known:
+        # A future verifier option is never silently excluded from proof identity.
+        return None
+    unsupported = ('declared_native_context', 'fixed_lot_context',
+        'fixed_lot_recovery_context', '_fixed_lot_cold_walk',
+        '_cold_recovery_context_sink', 'fixed_lot_read_scope')
+    if (any(options.get(key) is not None for key in unsupported)
+            or options.get('automatic_ladder_sources', ()) != ()
+            or options.get('first_price_authorities', ()) != ()
+            or options.get('entry_activity_source') is not None):
+        return None
+    prior = options.get('verified_prior_prefix')
+    if prior is not None and type(prior) is not V4CommittedPrefix:
+        return None
+    return dict(run_id=options['run_id'], batch_id=options['batch_id'],
+                max_rows_per_family=options['max_rows_per_family'],
+                verified_prior_prefix=asdict(prior) if prior is not None else None,
+                price_identity=id(source), activity_identity=id(source.entry_activity_source),
+                entry_cost_identity=id(source.entry_spread_risk_source),
+                unsupported_contexts='none', first_price_authorities=(),
+                automatic_ladder_sources=(), entry_activity_source=None)
+
+
+def verify_batch(client, options, complete):
+    """Reuse only exact successful requests within one original writer call.
+
+No global response cache survives the root verifier invocation. Unsupported
+contexts and cold readers execute the original verifier without truncation.
+"""
+    source = options.get('first_price_source')
+    policy = selected_policy(client, source)
+    if policy is None or getattr(client, 'backtest_v4_lease', None) is None:
+        return complete()
+    if options['run_id'] != source.run_id:
+        raise ValueError('Verification reuse request crosses its certified source run')
+    identity = _request_identity(options, source)
+    if identity is None:
+        return complete()
+    active = _OPERATION.get()
+    if active is not None:
+        owner, parent_source, parent_policy, engine = active
+        if owner is not client or parent_source is not source or parent_policy != policy:
+            return complete()
+        return engine.verify(identity, complete)
+    from .bounded_verification_operation import BoundedVerificationOperation
+    with BoundedVerificationOperation(
+            fence=lambda: exclusive_writer_frontier_fence(client, source),
+            max_requests=policy.max_requests, max_bytes=policy.max_bytes) as engine:
+        token = _OPERATION.set((client, source, policy, engine))
+        try:
+            return engine.verify(identity, complete)
+        finally:
+            _OPERATION.reset(token)

@@ -80,6 +80,15 @@ def test_retained_content_mutation_fails_closed():
         assert scope._closed
 
 
+def test_unencodable_retained_mutation_closes_scope():
+    with operation() as scope:
+        scope.verify({}, lambda: {'value': 1})
+        next(iter(scope._retained.values()))[0]['value'] = object()
+        with pytest.raises(ValueError, match='exact scalar'):
+            scope.verify({}, lambda: {'value': 3})
+        assert scope._closed and scope._retained == {}
+
+
 @pytest.mark.parametrize('bounds', [{'requests': 1}, {'bytes': 1}])
 def test_budget_overflow_runs_complete_loader_without_truncation(bounds):
     calls = []

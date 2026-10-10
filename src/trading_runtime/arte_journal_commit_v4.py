@@ -585,6 +585,26 @@ def load_verified_commit_v4(
     _fixed_lot_cold_walk=None,_cold_recovery_context_sink=None,
     fixed_lot_read_scope=None,
 ) -> tuple[dict, tuple[dict, ...]]:
+    """Full cold verification, with explicitly declared exclusive-writer reuse."""
+    options = locals()
+    from .original_risk_verification_reuse import verify_batch
+    return verify_batch(client, options, lambda: _load_verified_commit_v4_complete(**options))
+
+
+def _load_verified_commit_v4_complete(
+    client, *, run_id: str, batch_id: str,
+    max_rows_per_family: int = 65_536,
+    first_price_source=None,
+    entry_activity_source=None,
+    first_price_authorities: tuple = (),
+    verified_prior_prefix: V4CommittedPrefix | None = None,
+    automatic_ladder_sources=(),
+    declared_native_context=None,
+    fixed_lot_context=None,
+    fixed_lot_recovery_context=None,
+    _fixed_lot_cold_walk=None,_cold_recovery_context_sink=None,
+    fixed_lot_read_scope=None,
+) -> tuple[dict, tuple[dict, ...]]:
     """SELECT one fenced batch and verify every normalized detail row."""
     from src.trading_runtime.arte_journal_writer import (
         _CONTRACTS, _literal, _rows,

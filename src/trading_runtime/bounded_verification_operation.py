@@ -74,7 +74,11 @@ mutable recovered broker/OMS objects are deliberately unsupported.
         retained = self._retained.get(key)
         if retained is not None:
             value, digest = retained
-            encoded = _encode(value)
+            try:
+                encoded = _encode(value)
+            except BaseException:
+                self.close()
+                raise
             if sha256(encoded.encode()).hexdigest() != digest:
                 self.close()
                 raise RuntimeError('Retained verification content changed')

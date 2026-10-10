@@ -144,3 +144,60 @@ def test_actual_declared_adapter_exposes_limits_without_changing_risk_rules():
 def test_actual_declared_adapter_rejects_partial_selection(rule, companion):
     with pytest.raises(ValueError, match='one declared rule'):
         declared_contract(rule=rule, companion=companion)
+
+
+def native_hook_fixture(monkeypatch, fenced, *, requests=96, bytes_=1048576):
+    from src.trading_runtime import original_risk_verification_reuse as reuse
+    from src.trading_runtime import arte_journal_commit_v4 as commit
+    client, source, _, _ = fenced
+    monkeypatch.setattr(reuse, 'selected_policy', lambda client, source:
+                        OriginalRiskVerificationReusePolicy(requests, bytes_))
+    calls = []
+    def complete(**options):
+        batch = options['batch_id']
+        calls.append((batch, options['max_rows_per_family']))
+        if batch == 'root':
+            children = [commit.load_verified_commit_v4(client, run_id=source.run_id,
+                batch_id='child', first_price_source=source) for _ in range(2)]
+            return {'children': children}, ()
+        return {'batch_id': batch}, ()
+    monkeypatch.setattr(commit, '_load_verified_commit_v4_complete', complete)
+    return reuse, commit, client, source, calls
+
+
+def test_public_native_hook_reuses_only_within_one_original_writer_call(monkeypatch, fenced):
+    reuse, commit, client, source, calls = native_hook_fixture(monkeypatch, fenced)
+    for _ in range(2):
+        result = commit.load_verified_commit_v4(client, run_id=source.run_id,
+                                               batch_id='root', first_price_source=source)
+        assert result == ({'children': [({'batch_id': 'child'}, ()), ({'batch_id': 'child'}, ())]}, ())
+        assert reuse._OPERATION.get() is None
+    assert [batch for batch, _ in calls] == ['root', 'child', 'root', 'child']
+
+
+def test_public_native_hook_cold_reader_retains_complete_checks(monkeypatch, fenced):
+    reuse, commit, client, source, calls = native_hook_fixture(monkeypatch, fenced)
+    client.backtest_v4_lease = None
+    commit.load_verified_commit_v4(client, run_id=source.run_id,
+                                  batch_id='root', first_price_source=source)
+    assert [batch for batch, _ in calls] == ['root', 'child', 'child']
+    assert reuse._OPERATION.get() is None
+
+
+def test_public_native_hook_budget_overflow_never_skips_child_verifier(monkeypatch, fenced):
+    reuse, commit, client, source, calls = native_hook_fixture(monkeypatch, fenced, bytes_=1)
+    commit.load_verified_commit_v4(client, run_id=source.run_id,
+                                  batch_id='root', first_price_source=source)
+    assert [batch for batch, _ in calls] == ['root', 'child', 'child']
+    assert reuse._OPERATION.get() is None
+
+
+def test_public_native_hook_failed_verification_discards_scope(monkeypatch, fenced):
+    reuse, commit, client, source, _ = native_hook_fixture(monkeypatch, fenced)
+    def failed(**options):
+        raise RuntimeError('complete verifier failed')
+    monkeypatch.setattr(commit, '_load_verified_commit_v4_complete', failed)
+    with pytest.raises(RuntimeError, match='complete verifier failed'):
+        commit.load_verified_commit_v4(client, run_id=source.run_id,
+                                      batch_id='root', first_price_source=source)
+    assert reuse._OPERATION.get() is None
