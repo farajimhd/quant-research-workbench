@@ -2,6 +2,10 @@ from dataclasses import replace
 from datetime import date, datetime, timezone, timedelta
 
 import pytest
+import asyncio
+from types import SimpleNamespace
+from src.backend.backtest_strategy_one_financial import read_current_native_acquisition_clock
+from src.trading_runtime.strategy_engine import StrategyAssignment, AssignmentStatus, StrategyPermissions
 
 from src.trading_runtime.ibkr_schema import Execution
 from src.trading_runtime.order_management import OrderGroupSnapshot, OrderManagementState
@@ -111,3 +115,23 @@ def test_source_integer_millisecond_clock_cannot_disagree_with_datetime():
     execution=fill('first',5)
     with pytest.raises(ValueError,match='millisecond identity'):
         clock(group(),(replace(execution,trade_time_r=execution.trade_time_r-1),))
+
+
+@pytest.mark.parametrize('defect', [None, 'flat', 'foreign', 'prior_intent', 'missing_fill'])
+def test_native_financial_acquisition_binds_actual_broker_and_oms(defect):
+    assignment=StrategyAssignment('assignment','early-squeeze-strategy',1,'account','TEST',11,
+        AssignmentStatus.WATCHING,StrategyPermissions(enter=True),{})
+    async def trades():
+        return [] if defect=='missing_fill' else [fill('first',5)]
+    broker=SimpleNamespace(position_quantity=lambda *args: 0.0 if defect=='flat' else 5.0,
+                           trades=trades)
+    selected=replace(group(),account_id='foreign') if defect=='foreign' else group()
+    owner=SimpleNamespace(snapshots_for_assignment=lambda *args: (selected,))
+    request=read_current_native_acquisition_clock(assignment,broker,owner,
+        session_date=date(2026,8,4),as_of=NOW,
+        source_entry_intent_id='prior' if defect=='prior_intent' else 'intent')
+    if defect in ('foreign','prior_intent','missing_fill'):
+        with pytest.raises(ValueError): asyncio.run(request)
+    else:
+        result=asyncio.run(request)
+        assert result is None if defect=='flat' else result==clock(group(),(fill('first',5),))

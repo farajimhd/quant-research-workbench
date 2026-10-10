@@ -6,6 +6,9 @@ boundary has reconciled. It does not infer positions from bars or journal rows.
 from __future__ import annotations
 
 from typing import Any, Sequence
+from math import isfinite
+
+from src.trading_runtime.native_acquisition_clock import acquisition_clock_from_entry_executions
 
 from src.trading_runtime.order_management import (
     OrderManagementState, TERMINAL_MANAGEMENT_STATES,
@@ -112,3 +115,35 @@ async def read_strategy_one_financial_views(
             sum(row.filled_quantity > 0 for row in entries), 0,
             current_purchase_groups))
     return tuple(result)
+
+
+async def read_current_native_acquisition_clock(assignment, broker, order_manager, *,
+        session_date, as_of, source_entry_intent_id):
+    """Opt-in fill evidence bound to the current native broker/OMS position.
+
+    Call only after boundary reconciliation, without an intervening mutation.
+    The declared rule supplies its original entry intent. This does not issue
+    orders or replace checkpoint ownership verification during cold recovery.
+    """
+    if (type(assignment) is not StrategyAssignment
+            or not callable(getattr(broker, 'position_quantity', None))
+            or not callable(getattr(broker, 'trades', None))
+            or not callable(getattr(order_manager, 'snapshots_for_assignment', None))):
+        raise TypeError('Native acquisition requires exact broker and indexed OMS APIs')
+    quantity = broker.position_quantity(assignment.account_id, assignment.conid, assignment.ticker)
+    if type(quantity) not in (int, float) or not isfinite(quantity) or quantity < 0:
+        raise ValueError('Native acquisition requires finite long broker ownership')
+    if quantity == 0:
+        return None
+    groups = tuple(order_manager.snapshots_for_assignment(assignment.account_id, assignment.assignment_id))
+    if (any((g.account_id, g.assignment_id, g.ticker) !=
+            (assignment.account_id, assignment.assignment_id, assignment.ticker) for g in groups)
+            or len({g.group_id for g in groups}) != len(groups)):
+        raise ValueError('Native acquisition OMS ownership or group identities differ')
+    entries = tuple(g for g in groups if g.action == 'enter_long' and g.filled_quantity > 0)
+    if not entries or entries[-1].intent_id != source_entry_intent_id:
+        raise ValueError('Current held entry differs from original source intent')
+    executions = tuple(await broker.trades())
+    return acquisition_clock_from_entry_executions(entries[-1], executions,
+        session_date=session_date, as_of=as_of,
+        source_entry_intent_id=source_entry_intent_id, expected_conid=assignment.conid)
