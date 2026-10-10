@@ -88,12 +88,16 @@ caller must not turn a failed check into an apparently valid reuse scope.
             or rows[0]['run_id'] != source.run_id
             or str(rows[0]['batch_id']) != gate.compacted_batch_id
             or rows[0]['last_sequence'] != gate.compacted_through
-            or rows[0]['status'] not in ('running', 'completed')):
+            or rows[0]['status'] not in ('running', 'completed', 'failed', 'stopped')):
         raise RuntimeError('Verification reuse frontier differs from immutable commit metadata')
     lease.assert_current()
     current, _ = dispatch._read_gate(source.run_id)
     if current != gate:
         raise RuntimeError('Verification reuse gate changed while attesting its frontier')
+    if rows[0]['status'] in ('failed', 'stopped'):
+        if allow_unavailable is True:
+            return None
+        raise RuntimeError('Verification reuse frontier differs from immutable commit metadata')
     return dict(run_id=source.run_id, lease_identity=id(lease), epoch=lease.epoch,
                 dispatch_identity=id(dispatch), client_identity=id(client),
                 price_identity=id(source), plan_token=source.plan.token,

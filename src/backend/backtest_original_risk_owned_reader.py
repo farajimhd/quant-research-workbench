@@ -42,10 +42,10 @@ class _OwnedCheckpointReader:
         return _binding(self)[4].typed_insert_strict
 
     def execute(self, sql, *args, **kwargs):
-        if (type(sql) is not str or args or kwargs
-                or not sql.lstrip().upper().startswith('SELECT ')):
+        if type(sql) is not str or args or kwargs:
             raise ValueError('Owned checkpoint reader accepts exact SELECT text only')
-        return _binding(self)[0].execute(sql)
+        from scripts.clickhouse.report_strategy_one_trades import report_select_query
+        return _binding(self)[0].execute(report_select_query(sql))
 
 
 def bind_original_risk_checkpoint_reader(reader, *, manager, publisher, run_id):

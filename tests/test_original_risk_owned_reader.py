@@ -49,8 +49,28 @@ def test_issued_reader_borrows_only_original_owner_fence_and_routes_select(owner
     assert proxy.typed_insert_dispatch is publisher.writer._client.typed_insert_dispatch
     assert proxy.execute('SELECT 1') == 'scalar response'
     assert calls == ["SELECT getSetting('readonly')", 'SELECT 1']
-    with pytest.raises(ValueError, match='exact SELECT'):
+    with pytest.raises(ValueError, match='SELECT-only'):
         proxy.execute('INSERT INTO arte.any VALUES (1)')
+
+
+def test_native_batched_parenthesized_detail_query_uses_shared_select_admission(owners):
+    proxy = issue(owners)
+    query = "(SELECT 'family-a' AS family_name, '[]' AS payload) UNION ALL (SELECT 'family-b' AS family_name, '[]' AS payload) FORMAT JSONEachRow"
+    assert proxy.execute(query) == 'scalar response'
+    assert owners[4][-1] == "SELECT * FROM (" + query.removesuffix(' FORMAT JSONEachRow') + ") FORMAT JSONEachRow"
+
+
+@pytest.mark.parametrize('query', [
+    '(SELECT 1) UNION ALL (SELECT 2)',
+    '(SELECT 1) UNION ALL (INSERT INTO arte.any VALUES (1)) FORMAT JSONEachRow',
+    'SELECT 1; DROP TABLE arte.any',
+])
+def test_checkpoint_query_normalization_cannot_admit_mutation_or_unformatted_union(owners, query):
+    proxy = issue(owners)
+    before = len(owners[4])
+    with pytest.raises(ValueError):
+        proxy.execute(query)
+    assert len(owners[4]) == before
 
 
 @pytest.mark.parametrize('changed', ['contract', 'publisher', 'client', 'source', 'configuration'])

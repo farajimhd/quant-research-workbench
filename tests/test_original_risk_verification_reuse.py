@@ -122,6 +122,19 @@ def test_lost_original_lease_rejected(fenced):
         exclusive_writer_frontier_fence(client, source)
 
 
+@pytest.mark.parametrize('status', ['failed', 'stopped'])
+def test_exact_unsuccessful_terminal_declines_optional_reuse(fenced, status):
+    from hashlib import sha256
+    from src.trading_runtime.journal_contract import canonical_json
+    client, source, row, gate = fenced
+    row['status'] = status
+    gate.compacted_commit_hash = sha256(canonical_json(row).encode()).hexdigest()
+    assert exclusive_writer_frontier_fence(client, source, allow_unavailable=True) is None
+    row['last_sequence'] += 1
+    with pytest.raises(RuntimeError, match='immutable commit metadata'):
+        exclusive_writer_frontier_fence(client, source, allow_unavailable=True)
+
+
 def test_foreign_dispatch_keeper_rejected(fenced):
     client, source, _, _ = fenced
     client.typed_insert_dispatch.keeper = object()
@@ -220,6 +233,20 @@ def test_public_native_hook_failed_verification_discards_scope(monkeypatch, fenc
 def test_public_native_hook_inflight_writer_uses_full_verifier(monkeypatch, fenced):
     reuse, commit, client, source, calls = native_hook_fixture(monkeypatch, fenced)
     fenced[3].inflight = ('current pending writer unit',)
+    commit.load_verified_commit_v4(client, run_id=source.run_id,
+                                  batch_id='root', first_price_source=source)
+    assert [batch for batch, _ in calls] == ['root', 'child', 'child']
+    assert reuse._OPERATION.get() is None
+
+
+@pytest.mark.parametrize('status', ['failed', 'stopped'])
+def test_public_native_hook_unsuccessful_terminal_runs_complete_verifier(monkeypatch, fenced, status):
+    from hashlib import sha256
+    from src.trading_runtime.journal_contract import canonical_json
+    reuse, commit, client, source, calls = native_hook_fixture(monkeypatch, fenced)
+    row, gate = fenced[2:]
+    row['status'] = status
+    gate.compacted_commit_hash = sha256(canonical_json(row).encode()).hexdigest()
     commit.load_verified_commit_v4(client, run_id=source.run_id,
                                   batch_id='root', first_price_source=source)
     assert [batch for batch, _ in calls] == ['root', 'child', 'child']
