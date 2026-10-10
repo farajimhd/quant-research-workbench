@@ -82,6 +82,30 @@ def test_native_source_context_history_is_bounded_and_selected(installed,monkeyp
     assert tables=={} and events==[]
 
 
+def test_native_history_restore_is_atomic_and_requires_committed_membership(installed,monkeypatch):
+    from src.trading_runtime import arte_journal_commit_v4 as commits
+    from src.backend.backtest_typed_publisher import TypedBacktestReceipt
+    _,live,history,context,_,tables,events=publication_transport(installed,monkeypatch)
+    source=NativeChannelExitPublisherSource(context.base.run_id,live['client'],
+        live['manager_keeper'],live['broker_keeper'],context.policy,context.first_price_source)
+    receipt=TypedBacktestReceipt(context.base.last_sequence,context.base.batch_id,context.base.source_cursor)
+    prefix=replace(history['prefix'],last_sequence=receipt.last_sequence,
+        last_batch_id=receipt.last_batch_id,source_cursor=receipt.source_cursor)
+    observed=[]
+    def cold_prefix(client,run_id,**kwargs):
+        observed.append(kwargs)
+        return prefix
+    monkeypatch.setattr(commits,'load_verified_v4_prefix',cold_prefix)
+    with pytest.raises(ValueError): source.restore_committed_contexts((context,),receipt)
+    assert source.contexts==()
+    prefix=replace(prefix,batch_ids=(*prefix.batch_ids,context.base.batch_id))
+    assert source.restore_committed_contexts((context,),receipt) is prefix
+    assert source.contexts==(context,)
+    assert all(item['native_channel_contexts']==(context,) for item in observed)
+    with pytest.raises(ValueError): source.restore_committed_contexts((context,),receipt)
+    assert tables=={} and events==[]
+
+
 @pytest.mark.parametrize('reader',['manager','broker'])
 def test_checkpoint_readers_forward_complete_native_history(installed,monkeypatch,reader):
     from src.trading_runtime import arte_journal_commit_v4 as commits

@@ -74,3 +74,30 @@ class NativeChannelExitPublisherSource:
         if previous is not None and previous is not context:
             raise ValueError('Native channel publisher committed context identity changed')
         self._contexts[context.batch_id]=context
+
+    def restore_committed_contexts(self,contexts,receipt):
+        """Cold-reprove supplied restart evidence before retaining any context.
+
+        The caller must reconstruct complete immutable source inputs. Saved
+        context metadata alone grants no recovery or order permission.
+        """
+        from .backtest_typed_publisher import TypedBacktestReceipt
+        from src.trading_runtime.native_channel_exit_journal_context import channel_contexts_by_batch
+        from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix,V4CommittedPrefix
+        if self._contexts or type(receipt) is not TypedBacktestReceipt:
+            raise ValueError('Native history recovery requires an empty source and exact receipt')
+        indexed=channel_contexts_by_batch(self.run_id,contexts,max_commits=self.max_commits)
+        for context in contexts:
+            self._require_context(context)
+        prefix=load_verified_v4_prefix(self.client,self.run_id,max_commits=self.max_commits,
+            first_price_source=self.first_price_source,native_channel_contexts=contexts)
+        if (type(prefix) is not V4CommittedPrefix or prefix.status!='running'
+                or prefix.run_id!=self.run_id
+                or (prefix.last_sequence,prefix.last_batch_id,prefix.source_cursor)
+                    !=(receipt.last_sequence,receipt.last_batch_id,receipt.source_cursor)
+                or any(batch_id not in prefix.batch_ids for batch_id in indexed)
+                or any(context.base.last_sequence>receipt.last_sequence for context in contexts)):
+            raise ValueError('Native recovered history differs from the complete committed frontier')
+        # Publish the in-memory inventory only after every cold check succeeds.
+        self._contexts.update(indexed)
+        return prefix
