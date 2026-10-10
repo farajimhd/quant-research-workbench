@@ -56,3 +56,42 @@ def test_failure_receipt_and_plain_output(tmp_path):
     assert status['status']=='failed' and status['campaign_eta'] is None
     assert '\x1b' not in stream.getvalue()
     assert not ui.thread.is_alive()
+
+
+def test_independent_session_paths_keep_separate_units_and_eta(tmp_path):
+    now=[100.];ui=CampaignProgress(tmp_path,contract(),console=Console(file=io.StringIO()),clock=lambda:now[0])
+    ui.begin_generation(1);days=['2026-07-30','2026-07-31'];ui.begin_sessions(days)
+    ui.session_progress(dict(day=days[0],stage='Replay positions',candidate_offset=0,
+        rule_tiles=100,total_rule_tiles=100,completed_seconds=50,total_seconds=200,replay_started=100.))
+    ui.session_progress(dict(day=days[1],stage='Evaluate rules',rule_tiles=30,total_rule_tiles=120))
+    now[0]=110.;status=ui.snapshot()
+    assert status['session_paths'][days[0]]['replay_eta']==30.
+    assert status['session_paths'][days[1]]['completed_seconds']==0
+    for width,height in ((110,38),(80,24)):
+        stream=io.StringIO();console=Console(file=stream,width=width,height=height,color_system=None)
+        console.print(render(status,width=width,height=height))
+        text=stream.getvalue()
+        for day in days:
+            assert day+' rules' in text
+            assert day+' backtest' in text
+        for label in ('Generations','Generation sessions','Candidate batches','Campaign ETA','Messages'):
+            assert label in text,text
+        assert len(text.splitlines())<=height
+    ui.session_progress(dict(day=days[0],stage='Evaluate rules',candidate_offset=512,completed_seconds=0,rule_tiles=0))
+    ui.session_progress(dict(day=days[0],candidate_offset=0,completed_seconds=200))
+    assert ui.snapshot()['session_paths'][days[0]]['completed_seconds']==0
+
+
+def test_fixed_terminal_updates_only_changed_cells_and_restores_cursor():
+    from research.vectorized_backtest.v7.fixed_terminal import FixedTerminal,changed_spans
+    assert list(changed_spans(['Progress 10/20'],['Progress 11/20']))==[(1,11,'1')]
+    stream=io.StringIO();console=Console(file=stream,width=30,height=2,force_terminal=True)
+    with FixedTerminal(console) as screen:
+        screen.update('Progress 10/20')
+        stream.seek(0);stream.truncate()
+        screen.update('Progress 11/20')
+        assert stream.getvalue()=='\x1b[1;11H1'
+        screen.update('Progress 11/20')
+        assert stream.getvalue()=='\x1b[1;11H1'
+    assert '\x1b[2J' not in stream.getvalue() and '\x1b[2K' not in stream.getvalue()
+    assert stream.getvalue().endswith('\x1b[?7h\x1b[?25h\x1b[?1049l')

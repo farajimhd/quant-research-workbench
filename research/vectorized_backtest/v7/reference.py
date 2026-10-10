@@ -8,6 +8,7 @@ def replay_reference(data,members,gates,execution):
     opened=np.zeros(shape)
     peak=np.zeros(b);dd=np.zeros(b);capital=np.zeros(b);risk=np.zeros(b);entries=np.zeros(b)
     add_count=np.zeros(b);reductions=np.zeros(b);inactive=np.zeros(b);worst=np.full(b,np.inf);closed_count=np.zeros(b)
+    winning_count=np.zeros(b)
     policy=lambda name:np.array([getattr(m.policy,name) for m in members])[:,None]
     cost=execution.cost_bps/10000.
     price=data.host_tensors['mark'].numpy();observed=data.host_tensors['observed'].numpy();membership=data.host_tensors['membership'].numpy()
@@ -35,6 +36,7 @@ def replay_reference(data,members,gates,execution):
         realized-=np.where(sell>0,np.maximum(sell*execution.fee_per_share,execution.minimum_order_fee),0.)
         remaining=np.maximum(q-sell,0.);closed=held&(remaining<=1e-12)
         worst=np.minimum(worst,np.where(closed,realized-episode,np.inf).min(axis=1));closed_count+=closed.sum(axis=1)
+        winning_count+=(closed&((realized-episode)>0)).sum(axis=1)
         add=held&~exit_now&~reduce&tradable&manageable&((signal&4)!=0)&(profit>=policy('add_minimum_profit'))&(adds<policy('maximum_adds'))
         entry=~held&(not terminal)&tradable&membership[clock-1][None]&((signal&1)!=0)
         initial=px*(1-policy('stop_fraction'))
@@ -57,4 +59,5 @@ def replay_reference(data,members,gates,execution):
     pnl=realized.sum(axis=1)
     return dict(net_pnl=pnl,drawdown=dd,capital_dollar_seconds=capital,stop_risk_dollar_seconds=risk,filled_batches=entries,
         terminal_valid=(q<=1e-12).all(axis=1)&np.isfinite(pnl),inactivity_fraction=inactive/max(1,data.clocks-1),
-        add_count=add_count,reduce_count=reductions,worst_position_pnl=np.where(np.isfinite(worst),worst,0.),closed_positions=closed_count)
+        add_count=add_count,reduce_count=reductions,worst_position_pnl=np.where(np.isfinite(worst),worst,0.),closed_positions=closed_count,
+        winning_positions=winning_count)

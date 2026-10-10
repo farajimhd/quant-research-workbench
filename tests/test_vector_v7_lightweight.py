@@ -444,3 +444,49 @@ def test_commissions_on_add_and_reduction_match_independent_ledger(tmp_path):
     result=replay_cohort([data],members,[gates],execution=fees)[0]
     for name,value in expected.items():np.testing.assert_allclose(result[name].numpy(),value,rtol=1e-9,atol=1e-7)
     data.close()
+
+
+def test_spawned_session_paths_match_cohort_receipts_and_resume(tmp_path,monkeypatch):
+    import shutil
+    from research.vectorized_backtest.v7 import run_search
+    days=['2026-07-30','2026-07-31'];inputs=tmp_path/'compact';history=tmp_path/'histories'
+    inputs.mkdir();history.mkdir();fixture=tmp_path/'fixture';fixture.mkdir()
+    source,bank=fixture_files(fixture)
+    for day in days:
+        shutil.copytree(source,inputs/day);shutil.copytree(bank,history/day)
+    monkeypatch.setattr(run_search,'training_days',lambda root:days)
+    args=dict(population_size=10,generations=1,batch_size=5,session_workers=2,device='cpu',backend='eager',
+              execution=Execution(fee_per_share=.005,minimum_order_fee=1.))
+    sequential=tmp_path/'cohort';parallel=tmp_path/'independent'
+    assert run_search.run(inputs,history,sequential,**args)==0
+    assert run_search.run(inputs,history,parallel,session_execution='independent',**args)==0
+    for day in days:
+        left=json.loads((sequential/'generation-0001'/day/'receipt.json').read_text())
+        right=json.loads((parallel/'generation-0001'/day/'receipt.json').read_text())
+        assert left==right
+    timing=json.loads((parallel/'generation-0001'/'timings.json').read_text())
+    assert len({row['pid'] for row in timing})==2
+    assert run_search.run(inputs,history,parallel,session_execution='independent',**args)==0
+    from research.vectorized_backtest.v7.handoff import successor
+    (sequential/'exit.json').write_text(json.dumps(dict(exit_code=130)))
+    saved=json.loads((sequential/'checkpoint.json').read_text())
+    qualification=tmp_path/'qualification.json'
+    qualification.write_text(json.dumps(dict(status='passed',exact_metrics=True,full_session=True,validation_opened=False,
+        source_sha256=run_search.source_hash(),old_source_sha256=saved['contract']['source_sha256'],
+        checkpoint_sha256=file_hash(sequential/'checkpoint.json'),population_sha256=saved['population_sha256'],
+        batch_size=5,session_workers=2,execution=saved['contract']['execution'],candidates=10)))
+    target=tmp_path/'successor';migrated=successor(sequential,target,qualification)
+    assert migrated['population']==saved['population'] and migrated['rng_state']==saved['rng_state']
+    assert migrated['completed_generations']==1
+    assert run_search.run(inputs,history,target,session_execution='independent',**args)==0
+    (sequential/'generation-0001'/days[0]/'receipt.json').write_text('{}')
+    with pytest.raises(ValueError,match='Session seal mismatch'):successor(sequential,tmp_path/'rejected',qualification)
+
+
+@pytest.mark.parametrize('end,fee,wins',[(11.,1.,1.),(10.001,1.,0.),(10.,0.,0.)])
+def test_position_wins_use_complete_net_profit(end,fee,wins):
+    data=session([10.,10.,end]);strategy=member(target_fraction=.9)
+    gates=torch.ones((1,3,1),dtype=torch.uint8)
+    result=replay_cohort([data],[strategy],[gates],execution=Execution(minimum_order_fee=fee))[0]
+    assert result['winning_positions'].item()==wins
+    assert result['closed_positions'].item()==1

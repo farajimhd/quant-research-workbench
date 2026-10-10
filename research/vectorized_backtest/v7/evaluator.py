@@ -26,7 +26,8 @@ def step(position,aggregate,price,previous,observed,membership,signals,swing,pol
     Position fields: quantity, average cost, stop, next target, high water,
     adds, last management clock, realized P&L, episode start P&L.
     Aggregate: peak equity, drawdown, capital seconds, risk seconds,
-    entries, adds, reductions, inactive seconds, worst complete episode, episodes.
+    entries, adds, reductions, inactive seconds, worst complete episode, episodes,
+    profitable complete episodes after all costs.
     """
     q,avg,stop,target,water,adds,last,realized,episode=position.unbind(-1)
     held=q>1e-12;tradable=observed&torch.isfinite(price)&(price>0)
@@ -79,11 +80,15 @@ def step(position,aggregate,price,previous,observed,membership,signals,swing,pol
     dd=torch.maximum(aggregate[...,1],peak-equity)
     capital=(quantity*execution_price).sum(-1)
     risk=(quantity*(execution_price-stop).clamp_min(0)).sum(-1)
-    aggregate=torch.stack((peak,dd,aggregate[...,2]+capital,aggregate[...,3]+risk,
+    fields=(peak,dd,aggregate[...,2]+capital,aggregate[...,3]+risk,
         aggregate[...,4]+entry_now.sum(-1),aggregate[...,5]+add_now.sum(-1),aggregate[...,6]+reduce_now.sum(-1),
         aggregate[...,7]+(~(quantity>0).any(-1)).to(equity.dtype),torch.minimum(aggregate[...,8],episode_worst),
-        aggregate[...,9]+closed.sum(-1)),-1)
-    return position,aggregate
+        aggregate[...,9]+closed.sum(-1))
+    updated=torch.stack(fields,-1)
+    if aggregate.shape[-1]>10:
+        wins=aggregate[...,10]+(closed&(complete_profit>0)).sum(-1)
+        updated=torch.cat((updated,wins.unsqueeze(-1)),-1)
+    return position,updated
 
 
 class PopulationPrograms:
@@ -143,7 +148,7 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
     device=data[0].device;b=len(members);s=len(data);u=max(len(v.listing_ids) for v in data);t=max(v.clocks for v in data)
     if any(v.device!=device for v in data):raise ValueError('Cohort devices differ')
     position=torch.zeros((s,b,u,9),dtype=torch.float64,device=device)
-    aggregate=torch.zeros((s,b,10),dtype=torch.float64,device=device);aggregate[...,8]=float('inf')
+    aggregate=torch.zeros((s,b,11),dtype=torch.float64,device=device);aggregate[...,8]=float('inf')
     policy=torch.tensor([[m.policy.stop_fraction,m.policy.target_fraction,m.policy.reduce_fraction,m.policy.trail_fraction,
         m.policy.add_minimum_profit,m.policy.reduce_minimum_profit,m.policy.maximum_adds,m.policy.cooldown,m.policy.swing_left] for m in members],dtype=torch.float64,device=device)[None,:,None,:]
     from .swing_projection import entry_swings
@@ -204,5 +209,6 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
         result.append(dict(net_pnl=realized,drawdown=aggregate[i,:,1],capital_dollar_seconds=aggregate[i,:,2],
             stop_risk_dollar_seconds=aggregate[i,:,3],filled_batches=aggregate[i,:,4],terminal_valid=(q<=1e-12).all(-1)&torch.isfinite(realized),
             inactivity_fraction=aggregate[i,:,7]/max(1,item.clocks-1),add_count=aggregate[i,:,5],reduce_count=aggregate[i,:,6],
-            worst_position_pnl=torch.where(torch.isfinite(aggregate[i,:,8]),aggregate[i,:,8],0.),closed_positions=aggregate[i,:,9]))
+            worst_position_pnl=torch.where(torch.isfinite(aggregate[i,:,8]),aggregate[i,:,8],0.),closed_positions=aggregate[i,:,9],
+            winning_positions=aggregate[i,:,10]))
     return result

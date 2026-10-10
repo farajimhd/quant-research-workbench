@@ -4,7 +4,7 @@ os.environ['PYTHONDONTWRITEBYTECODE']='1'
 import argparse,json,time
 from pathlib import Path
 from rich.console import Console
-from rich.live import Live
+from .fixed_terminal import FixedTerminal
 from .terminal import render
 from research.vectorized_backtest.v6.torch_backtest.staged_dashboard import navigate
 
@@ -24,7 +24,7 @@ def main(argv=None):
         except (OSError,ValueError):last={**last,'error':'Snapshot unavailable; retaining last good values'}
         return render({**last,'_rank':rank,'_page':page,'_rank_page':rank_page},width=console.width,height=console.height,view=args.view)
     if args.once or not console.is_terminal:console.print(read());return 0
-    with Live(read(),console=console,screen=True,refresh_per_second=1) as live:
+    with FixedTerminal(console) as live:
         try:
             while True:
                 if os.name=='nt':

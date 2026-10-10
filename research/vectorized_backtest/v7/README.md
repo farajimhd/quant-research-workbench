@@ -193,3 +193,31 @@ are additional to optional `--cost-bps`; both enter net P&L, drawdown and
 complete-position results. V7 treats each assumed fill as a completed order,
 without importing V6's partial-fill/pending-order machinery. Legacy defaults
 remain zero for explicit historical qualification comparisons.
+
+### Independent session execution
+
+`--session-execution independent --session-workers 2` runs two persistent
+processes, each owning its rule graphs and chronological backtest. One session
+may enter replay while the other is still evaluating rules. Candidate batches
+remain 512; a 1,024-candidate population has two batches in each session.
+Workers reuse pageable prepared sessions across generations, prefetch their
+next assigned session, and use bounded pinned upload staging. CUDA contexts
+are isolated because graph capture and static buffers cannot safely be shared
+between unsynchronized threads. The GPU is shared; concurrency is measured,
+not assumed to yield a speedup. Graph capture memory is bounded across workers.
+
+Each active session has separately dated rule and backtest bars. The terminal
+uses a fixed canvas and writes only changed character spans at each refresh;
+it does not clear/repaint the screen. Resize and initial display redraw the
+canvas. Redirected output remains plain text. Position win rate is the number
+of profitable completed position episodes divided by all completed episodes,
+after all commissions and costs; zero closed positions displays unavailable.
+The other columns describe P&L excluding the best day, profitable days as a
+percentage, and average P&L over the worst six of 30 training days.
+
+`qualify_sessions` compares the actual stopped checkpoint population against
+the original immutable deployment on two full training sessions, with cold
+and warm timing. `handoff.successor` requires that qualification and a sealed
+generation-boundary stop, copies and hash-verifies completed generations,
+preserves population/RNG, and records the explicit source/execution change.
+It never edits the old checkpoint or opens validation.
