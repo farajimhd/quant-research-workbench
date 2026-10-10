@@ -7,6 +7,10 @@ each year.
 
 ## 2026
 
+### [2026-10-10 - V6 materialization and V7 lightweight optimization handoff](docs/codex/chat-summaries/2026/CHAT-20261008-UNKNOWN-v6-v7-optimization-handoff.md)
+
+TASK-0223. Supersedes V5 continuation: V5 and slow V6 optimization/profile stopped; monitors paused. All30 causal compact/level inputs and 332-channel persisted histories completed. V6 retains detailed financial replay; separate V7 assumes $1,000 entries/$200 adds, five lifecycle programs, causal quote snapshots and minimal position accounting. Commits 56b9706c8/aec2121b8 pushed; 43 focused tests and bounded workstation CPU/CUDA parity passed. Full-session qualification, enriched-feature persistence, full-wall profiling and final V7 parameters remain open. No full V7 optimization or sealed validation. Partial early tool evidence; exact runtime authorities and old V6 resume-order defect documented.
+
 ### [2026-10-08 - V5 dollar objective and running campaign handoff](docs/codex/chat-summaries/2026/CHAT-20261006-UNKNOWN-v5-dollar-objective-campaign.md)
 
 TASK-0223. Supersedes stale V3-active history. V5 source3804a264d implements total-profit dollar costs, hourly elapsed inactivity, seeded retention of half the inactive candidates and full-population wrap pagination. Original74e025fe3 stopped after generation6; replacement20261008-3804a264d-staged32-dollar runs from generation1. Profiling was inherited after85 execution modules matched;33 laptop/32 workstation checks and4096-candidate scoring reconciliation passed. Thirty-training/six-sealed split and32-generation staged schedule remain. Final audit/freeze, once-only validation and delivery are unfinished. Worker/observer continue; old-chat heartbeat paused for new-chat ownership. Early source context partial; current runtime and handoff verified.
