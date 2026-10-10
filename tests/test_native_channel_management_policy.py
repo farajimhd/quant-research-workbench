@@ -85,3 +85,65 @@ def test_actual_declared_adapter_preserves_parent_and_requires_complete_new_capa
     with pytest.raises(ValueError):
         type(parent)(release.number, release.executor_strategy_id, release.evaluation_interval,
             release, parent.policy_json)
+
+
+def test_dispatch_selection_requires_typed_channel_and_original_risk_authority(installed):
+    from src.trading_runtime.arte_typed_insert_dispatch import _manager_tables, _manager_root_invalid
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    from src.trading_runtime.strategy_registry import initialize_numbered_fixed_strategies
+    initialize_numbered_fixed_strategies()
+    risk = numbered_fixed_strategy(115).confirmed_original_risk_policy
+    channel = declared(installed)[0]
+    channel_tables = {t.name for t in selected_snapshot_contracts(channel)}
+    assert not channel_tables & _manager_tables(risk)
+    assert channel_tables <= _manager_tables(risk, channel)
+    with pytest.raises(ValueError): _manager_tables(None, channel)
+    with pytest.raises(ValueError): _manager_tables(risk, channel.payload())
+    root = 'trading_strategy_one_manager_snapshot_v5'
+    assert not _manager_root_invalid({root}, risk, channel)
+    assert _manager_root_invalid({root}, risk)
+    for legacy in ('v2', 'v3', 'v4'):
+        old = 'trading_strategy_one_manager_snapshot_' + legacy
+        assert _manager_root_invalid({root, old}, risk, channel)
+        assert _manager_root_invalid({old}, risk, channel)
+
+
+def test_channel_dispatch_and_keeper_head_use_selected_versioned_root(installed):
+    from tests.test_arte_typed_insert_dispatch import (
+        Keeper, Client, compact_running_prefix, BATCH_ID, MANAGER_HASH,
+    )
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+    from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
+    from src.trading_runtime.strategy_registry import initialize_numbered_fixed_strategies
+    from src.trading_runtime.strategy_one_management_snapshot import ManagedManagerSnapshotHeadReader
+    initialize_numbered_fixed_strategies()
+    risk = numbered_fixed_strategy(115).confirmed_original_risk_policy
+    channel = declared(installed)[0]
+    authority = TypedInsertDispatch(Keeper())
+    authority.initialize_new_run('run-1')
+    compact_running_prefix(authority)
+    client = Client(authority)
+    client.confirmed_original_risk_policy = risk
+    client.native_channel_management_policy = channel
+    operations = []
+    for table in ('trading_strategy_one_protection_snapshot_v1',
+                  *(t.name for t in selected_snapshot_contracts(channel))):
+        token = f'manager-state:run-1:1:{MANAGER_HASH}:{table}'
+        sql = (f'INSERT INTO arte.{table} (run_id) SETTINGS '
+               'async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,'
+               f"insert_deduplication_token='{token}' FORMAT JSONEachRow\n{{}}")
+        authority.execute_typed_insert(client, run_id='run-1', table=table, token=token,
+            sql=sql, batch_id=BATCH_ID, batch_last_sequence=1, manager_snapshot_hash=MANAGER_HASH)
+        authority.seal_verified_operation(run_id='run-1', table=table, token=token,
+            batch_id=BATCH_ID, batch_last_sequence=1, manager_snapshot=True)
+        operations.append((table, token))
+    with pytest.raises(ValueError):
+        authority.compact_verified_manager_snapshot(run_id='run-1', batch_id=BATCH_ID,
+            last_sequence=1, snapshot_hash=MANAGER_HASH, operations=tuple(operations),
+            previous=None, confirmed_original_risk_policy=risk)
+    authority.compact_verified_manager_snapshot(run_id='run-1', batch_id=BATCH_ID,
+        last_sequence=1, snapshot_hash=MANAGER_HASH, operations=tuple(operations),
+        previous=None, confirmed_original_risk_policy=risk, native_channel_management_policy=channel)
+    assert authority.keeper.get(ManagedManagerSnapshotHeadReader.path('run-1'))[0] == (
+        f'1\nrun-1\n1\n{BATCH_ID}\n{MANAGER_HASH}'.encode())
+    assert authority._read_gate('run-1')[0].registered == 0

@@ -50,13 +50,36 @@ _MANAGER_TABLES = frozenset({
 })
 
 
-def _manager_tables(confirmed_original_risk_policy=None):
+def _manager_tables(confirmed_original_risk_policy=None, native_channel_management_policy=None):
     if confirmed_original_risk_policy is None:
+        if native_channel_management_policy is not None:
+            raise ValueError('Channel manager dispatch requires original-risk authority')
         return _MANAGER_TABLES
     from .original_risk_diagnostic_profile import require_original_risk_diagnostic_policy
     from .original_risk_pending_snapshot import selected_snapshot_contracts
     require_original_risk_diagnostic_policy(confirmed_original_risk_policy)
-    return _MANAGER_TABLES | frozenset(t.name for t in selected_snapshot_contracts())
+    tables = _MANAGER_TABLES | frozenset(t.name for t in selected_snapshot_contracts())
+    if native_channel_management_policy is not None:
+        from .native_channel_management_policy import selected_snapshot_contracts as channel_contracts
+        tables |= frozenset(t.name for t in channel_contracts(native_channel_management_policy))
+    return tables
+
+
+def _manager_root_invalid(operation_tables, confirmed_original_risk_policy=None,
+                          native_channel_management_policy=None):
+    allowed = _manager_tables(confirmed_original_risk_policy, native_channel_management_policy)
+    roots = {'trading_strategy_one_manager_snapshot_v2', 'trading_strategy_one_manager_snapshot_v3',
+             'trading_strategy_one_manager_snapshot_v4', 'trading_strategy_one_manager_snapshot_v5'}
+    if not operation_tables <= allowed:
+        return True
+    selected = operation_tables & roots
+    if native_channel_management_policy is not None:
+        return selected != {'trading_strategy_one_manager_snapshot_v5'}
+    if confirmed_original_risk_policy is not None:
+        return selected != {'trading_strategy_one_manager_snapshot_v4'}
+    return (len(selected) != 1 or
+            ('trading_strategy_one_manager_first_held_v1' in operation_tables
+             and selected != {'trading_strategy_one_manager_snapshot_v3'}))
 _BROKER_MATCH_TABLES = frozenset({
     "trading_strategy_one_broker_match_snapshot_v5",
     "trading_strategy_one_broker_match_account_v5",
@@ -634,7 +657,8 @@ class TypedInsertDispatch:
                         fixed_lot_manager_context.batch_id,selected[PARENT.name][0]['content_hash'])):
                     raise ValueError('Selected manager dispatch differs from issued cursor')
             tables = (frozenset(selected) if fixed_lot_manager_context is not None
-                      else _manager_tables(getattr(client,'confirmed_original_risk_policy',None))
+                      else _manager_tables(getattr(client,'confirmed_original_risk_policy',None),
+                                           getattr(client,'native_channel_management_policy',None))
                       if manager_snapshot_hash is not None
                       else _BROKER_MATCH_TABLES if broker_snapshot_hash is not None
                       else _EVIDENCE_TABLES if evidence_snapshot_hash is not None
@@ -1053,6 +1077,7 @@ class TypedInsertDispatch:
         self, *, run_id: str, batch_id: str, last_sequence: int,
         snapshot_hash: str, operations: tuple[tuple[str, str], ...],
         previous: Any | None, confirmed_original_risk_policy=None,
+        native_channel_management_policy=None,
     ) -> None:
         """Select read-back-verified scalar rows at one compacted V4 cursor.
 
@@ -1064,15 +1089,8 @@ class TypedInsertDispatch:
         )
         _identity(run_id, "run")
         operation_tables={table for table,_ in operations}
-        legacy_roots={'trading_strategy_one_manager_snapshot_v2','trading_strategy_one_manager_snapshot_v3'}
-        if confirmed_original_risk_policy is None:
-            root_invalid=(len(operation_tables & legacy_roots)!=1
-                or ('trading_strategy_one_manager_first_held_v1' in operation_tables
-                    and 'trading_strategy_one_manager_snapshot_v3' not in operation_tables))
-        else:
-            _manager_tables(confirmed_original_risk_policy)
-            root_invalid=('trading_strategy_one_manager_snapshot_v4' not in operation_tables
-                          or bool(operation_tables & legacy_roots))
+        root_invalid = _manager_root_invalid(operation_tables, confirmed_original_risk_policy,
+                                            native_channel_management_policy)
         if (type(last_sequence) is not int or last_sequence < 1
                 or re.fullmatch(r"[0-9a-f]{64}", snapshot_hash) is None
                 or not operations or len(set(operations)) != len(operations)
@@ -1122,7 +1140,8 @@ class TypedInsertDispatch:
                 raise KeeperUnavailable("Manager snapshot previous head changed")
             paths = []
             for table, token in operations:
-                if (table not in _manager_tables(confirmed_original_risk_policy)
+                if (table not in _manager_tables(confirmed_original_risk_policy,
+                                                 native_channel_management_policy)
                         or token != _manager_token(
                             run_id, last_sequence, snapshot_hash, table)):
                     raise KeeperUnavailable("Manager snapshot operation identity differs")
