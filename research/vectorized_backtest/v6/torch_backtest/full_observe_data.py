@@ -9,6 +9,7 @@ class FullTrainingView:
     def __init__(self):
         self.checkpoint_key=None;self.checkpoint=None;self.ranking_key=None;self.rows=[]
         self.session_stats={}
+        self.batch_receipts={}
 
     def read(self,output):
         output=Path(output);path=output/'checkpoint.json';stat=path.stat()
@@ -80,14 +81,29 @@ class FullTrainingView:
                 updated=max(updated,child.stat().st_mtime)
         launch=output/'active.json'
         started=json.loads(launch.read_text())['creation_time'] if launch.exists() else output.stat().st_ctime
-        measurements=current/'resident-measurements.json'
-        batches=json.loads(measurements.read_text()) if measurements.exists() and done<total else []
-        completed_batches=sum(len(v['session_timings']) for v in batches)
         batch_size=contract.get('evaluator',{}).get('batch_size',n)
+        total_batches=30*((n+batch_size-1)//batch_size)
+        completed_batches=total_batches if done==total else 0
+        if done<total:
+            retained={}
+            for receipt in current.glob('*/batch-*/receipt.json'):
+                s=receipt.stat();identity=(s.st_mtime_ns,s.st_size)
+                if self.batch_receipts.get(receipt)!=identity:
+                    batch=json.loads(receipt.read_text());indices=batch['candidate_indices']
+                    offset=int(receipt.parent.name.removeprefix('batch-'))
+                    if (batch.get('population_sha256')!=saved['population_sha256'] or
+                        batch.get('day')!=receipt.parent.parent.name or offset%batch_size or not 0<=offset<n or
+                        indices!=list(range(offset,min(n,offset+batch_size))) or
+                        not batch.get('financial_audit_passed') or not batch.get('full_session') or
+                        batch.get('validation_opened',True)):
+                        raise ValueError('Invalid active batch progress receipt')
+                retained[receipt]=identity;completed_batches+=1
+            self.batch_receipts=retained
+            if completed_batches>total_batches:raise ValueError('Active batch coverage exceeds training contract')
         return dict(status=status.get('status','running'),stage=active.get('stage','Training complete' if done==total else 'Preparing full-training generation'),
             config=dict(population=n,generations=total,training_sessions=30),completed_generations=done,
             completed_sessions=sum(1 for p in current.glob('*/receipt.json')) if done<total else 30,
-            completed_batches=completed_batches,total_batches=30*((n+batch_size-1)//batch_size),
+            completed_batches=completed_batches,total_batches=total_batches,
             updated_epoch=updated,started_epoch=started,validation_status='SEALED',top_strategies=self.rows,
             evaluation_basis=f'Generation {done}: all30 training-session search ranking' if done else 'No completed all30 ranking yet',
             focus=', '.join(active.get('sessions',[])) or active.get('day',''),validation_opened=False)

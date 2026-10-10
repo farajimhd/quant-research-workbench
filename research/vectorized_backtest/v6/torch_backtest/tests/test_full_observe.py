@@ -96,6 +96,19 @@ def test_restoration_reports_current_family_progress_and_stable_launch_time(tmp_
     with pytest.raises(ValueError,match='opened validation'):view.read(tmp_path)
 
 
+def test_resumed_progress_counts_durable_batches_without_measurements(tmp_path):
+    fixture(tmp_path,n=55)
+    cp=tmp_path/'checkpoint.json';saved=json.loads(cp.read_text());saved['population_sha256']='active-population';cp.write_text(json.dumps(saved))
+    folder=tmp_path/'generation-0002/day-00/batch-000000';folder.mkdir(parents=True)
+    receipt=folder/'receipt.json'
+    batch=dict(day='day-00',population_sha256='active-population',candidate_indices=list(range(55)),financial_audit_passed=True,full_session=True,validation_opened=False)
+    receipt.write_text(json.dumps(batch));view=FullTrainingView()
+    assert view.read(tmp_path)['completed_batches']==1
+    assert view.read(tmp_path)['completed_batches']==1
+    batch['population_sha256']='wrong';receipt.write_text(json.dumps(batch))
+    with pytest.raises(ValueError,match='batch progress'):view.read(tmp_path)
+
+
 def test_full_training_position_tail_uses_complete_episodes_and_indices(tmp_path):
     import torch
     from research.vectorized_backtest.v6.torch_backtest.ranking_diagnostics import diagnostics
