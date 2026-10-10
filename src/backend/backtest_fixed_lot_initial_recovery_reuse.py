@@ -94,8 +94,11 @@ def _codes():
     funcs += [fields,is_dataclass,replace,getsizeof,policy.InitialHeldRecoveryReusePolicy.__post_init__,
         policy.InitialHeldRecoveryReusePolicy.payload,policy.require_declared_initial_held_reuse,
         policy.parse_declared_initial_held_reuse]
+    from .backtest_fixed_lot_first_inventory_source_reuse import code_snapshot
+    first_codes,first_bindings=code_snapshot()
+    funcs += [fn for fn,_ in first_codes]
     return (tuple((fn,getattr(fn,'__code__',None)) for fn in funcs),
-        (MappingProxyType,Decimal,Enum,date,datetime,OrderedDict,_OPERATION,_READ,_ISSUED,policy.InitialHeldRecoveryReusePolicy))
+        (MappingProxyType,Decimal,Enum,date,datetime,OrderedDict,_OPERATION,_READ,_ISSUED,policy.InitialHeldRecoveryReusePolicy,first_bindings))
 
 class _Initial:
     def __init__(self,proof,policy):
@@ -179,7 +182,9 @@ def inventory_read(client,prefix,kwargs,loader):
         operation.cache.move_to_end(key);result=_copy(value)
         if _image(result)!=content:raise ValueError('Initial-held inventory copy differs')
         operation.require();return result
-    result=_cold_loader(loader);operation.require();content=_image(result);value=_copy(result)
+    from .backtest_fixed_lot_first_inventory_source_reuse import load_first_inventory
+    result,_=load_first_inventory(operation,loader,inventory_key=key)
+    operation.require();content=_image(result);value=_copy(result)
     if _image(result)!=content or _image(value)!=content:raise ValueError('Initial-held inventory changed during transfer')
     size=_size(value)+_size(content)+_size(key)
     if _nodes(value)<=operation.policy.max_inventory_rows and size<=operation.policy.max_inventory_bytes:
