@@ -131,50 +131,67 @@ class RulePlan:
         # Before first admission no candidate can hold this identity. Group
         # similar first-admission times while preserving original listing IDs.
         order = np.argsort(first, kind='stable')
-        started = perf_counter(); completed = 0
+        # Stage every sparse query index in one pinned transfer, rather than
+        # synchronizing on thousands of tiny host->device index copies.
+        geometry=[];coordinates=[];cursor=0
         for offset in range(0,u,listing_batch):
-            listings = order[offset:offset+listing_batch].tolist()
-            first_clock = int(first[listings].min())
+            listings=order[offset:offset+listing_batch].tolist()
+            first_clock=int(first[listings].min())
+            if first_clock>=t:continue
             for begin in range(first_clock//chunk*chunk,t,chunk):
-                if first_clock >= t: break
-                end = min(t,begin+chunk)
-                for group_id, group in enumerate(self.groups):
-                    bit = group['bit']; candidates = group['candidates']
-                    if group['sparse']:
-                        eligible = next_observed[begin:end,listings].copy()
-                        eligible &= np.arange(begin,end)[:,None] >= first[listings][None]
-                        if bit == 0: eligible &= membership[begin:end,listings]
-                        row, column = np.nonzero(eligible)
-                        if not len(row): continue
-                        # Fixed power-of-two query shapes amortize graph capture.
-                        count = len(row); size = 1 << (count-1).bit_length()
-                        clock = np.pad(row+begin,(0,size-count),mode='edge')
-                        ticker = np.pad(np.asarray(listings)[column],(0,size-count),mode='edge')
-                        values, known = resident.points(clock,ticker,group['columns'])
-                        signal = self.execute(group_id,values,known)[:,0,:count]
-                        ti = torch.as_tensor(row+begin,device=self.device)
-                        ui = torch.as_tensor(np.asarray(listings)[column],device=self.device)
-                        gates[candidates[:,None],ti[None],ui[None]] |= signal.to(torch.uint8)*(1<<bit)
-                    else:
-                        # Keep the reference chunk's prefix, including its
-                        # float32 cumulative-sum rounding for moving means.
-                        extent = 119
-                        warm = max(0,begin-extent)
-                        values, known = resident.block(warm,end,listings,group['columns'])
-                        # Keep actual time lengths at the session boundaries:
-                        # padding can alter parallel cumulative-sum rounding.
-                        signal = self.execute(group_id,values,known)[:,:,begin-warm:]
-                        eligible = np.arange(begin,end)[:,None] >= first[listings][None]
-                        if bit == 0: eligible &= membership[begin:end,listings] & next_observed[begin:end,listings]
-                        elif bit != 4: eligible &= next_observed[begin:end,listings]
-                        signal = signal & torch.as_tensor(eligible.T,device=self.device)[None]
-                        ti = torch.arange(begin,end,device=self.device)
-                        ui = torch.as_tensor(listings,device=self.device)
-                        gates[candidates[:,None,None],ti[None,None,:],ui[None,:,None]] |= signal.to(torch.uint8)*(1<<bit)
-                completed += 1
-                if progress and completed % 16 == 0:
-                    progress(dict(stage='rule evaluation',tiles=completed,listing_groups_completed=offset//listing_batch,
-                                  wall_seconds=perf_counter()-started,capture_builds=self.builds,capture_hits=self.hits))
+                end=min(t,begin+chunk);queries={}
+                eligible=next_observed[begin:end,listings] & (np.arange(begin,end)[:,None]>=first[listings][None])
+                for entry in (False,True):
+                    row,column=np.nonzero(eligible & membership[begin:end,listings] if entry else eligible)
+                    count=len(row)
+                    if not count:queries[entry]=None;continue
+                    size=1<<(count-1).bit_length()
+                    pair=np.stack((row+begin,np.asarray(listings)[column]))
+                    coordinates.append(np.pad(pair,((0,0),(0,size-count)),mode='edge'))
+                    queries[entry]=(cursor,cursor+size,count);cursor+=size
+                geometry.append((offset,listings,begin,end,queries))
+        def transfer(array):
+            host=torch.from_numpy(np.array(array,copy=True))
+            if self.device.type=='cuda':host=host.pin_memory()
+            return host.to(self.device,non_blocking=True)
+        query_indices=transfer(np.concatenate(coordinates,axis=1) if coordinates else np.empty((2,0),dtype=np.int64))
+        gpu_order=transfer(order);gpu_first=transfer(first)
+        gpu_membership=data.tensors['membership']
+        gpu_following=transfer(next_observed)
+        started = perf_counter(); completed = 0
+        for offset,listings,begin,end,queries in geometry:
+            gpu_listings=gpu_order[offset:offset+len(listings)]
+            for group_id, group in enumerate(self.groups):
+                bit = group['bit']; candidates = group['candidates']
+                if group['sparse']:
+                    query=queries[bit==0]
+                    if query is None:continue
+                    start,stop,count=query
+                    clock,ticker=query_indices[:,start:stop].unbind(0)
+                    values, known = resident.points(clock,ticker,group['columns'])
+                    signal = self.execute(group_id,values,known)[:,0,:count]
+                    ti,ui=clock[:count],ticker[:count]
+                    gates[candidates[:,None],ti[None],ui[None]] |= signal.to(torch.uint8)*(1<<bit)
+                else:
+                    # Keep the reference chunk's prefix, including its
+                    # float32 cumulative-sum rounding for moving means.
+                    extent = 119
+                    warm = max(0,begin-extent)
+                    values, known = resident.block(warm,end,gpu_listings,group['columns'])
+                    # Keep actual time lengths at the session boundaries:
+                    # padding can alter parallel cumulative-sum rounding.
+                    signal = self.execute(group_id,values,known)[:,:,begin-warm:]
+                    ti = torch.arange(begin,end,device=self.device)
+                    ui = gpu_listings
+                    eligible=ti[:,None]>=gpu_first[ui][None]
+                    if bit==0:eligible &= gpu_membership[begin:end,ui] & gpu_following[begin:end,ui]
+                    elif bit!=4:eligible &= gpu_following[begin:end,ui]
+                    signal = signal & eligible.T[None]
+                    gates[candidates[:,None,None],ti[None,None,:],ui[None,:,None]] |= signal.to(torch.uint8)*(1<<bit)
+            completed += 1
+            if progress and completed % 16 == 0:
+                progress(dict(stage='rule evaluation',tiles=completed,listing_groups_completed=offset//listing_batch,
+                              wall_seconds=perf_counter()-started,capture_builds=self.builds,capture_hits=self.hits))
         return gates
 
     def close(self):

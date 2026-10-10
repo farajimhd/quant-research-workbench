@@ -90,7 +90,10 @@ class PopulationPrograms:
         from .rule_plan import prune
         self.programs={s:TorchPrograms([prune(effective_rules(m)[s]) for m in members],CATALOG,self.device) for s in STAGES}
         self.plan=None
-    def evaluate(self,data,chunk=2048,listing_batch=4,workspace_gib=None,maximum_gate_gib=2.):
+    def evaluate(self,data,chunk=2048,listing_batch=None,workspace_gib=None,maximum_gate_gib=2.):
+        if listing_batch is None:
+            # A disk tile's four listings are not a GPU compute constraint.
+            listing_batch=min(32,max(4,4096//len(self.members))) if self.device.type=='cuda' else 4
         if self.device.type=='cuda':
             from .rule_plan import RulePlan
             if self.plan is None:self.plan=RulePlan(self.members,self.device)

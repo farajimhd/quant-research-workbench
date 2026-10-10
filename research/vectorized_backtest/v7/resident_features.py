@@ -34,6 +34,7 @@ class ResidentFeatures:
         self.bytes = sum(v.numel() * v.element_size() for v in self.host.values())
         self.tensors = self.host
         self.device = torch.device('cpu')
+        self.column_plans = {}
 
     def pin(self):
         self.host = {k: v if v.is_pinned() else v.pin_memory() for k, v in self.host.items()}
@@ -41,10 +42,12 @@ class ResidentFeatures:
     def activate(self, device):
         self.device = torch.device(device)
         self.tensors = {k: v.to(device, non_blocking=True) for k, v in self.host.items()}
+        self.column_plans.clear()
 
     def deactivate(self):
         self.device = torch.device('cpu')
         self.tensors = self.host
+        self.column_plans.clear()
 
     def block(self, begin, end, listings, columns):
         """Return [listing, elapsed second, requested feature], including masks."""
@@ -71,26 +74,31 @@ class ResidentFeatures:
         price = a['mark'][safe]
         groups = []
         masks = []
-        order = []
-        for family in range(4):
-            selected = [(i, c) for i, c in enumerate(columns)
-                        if (0 if c < len(BASE) else 1 if c < len(BASE)+len(HISTORY)
-                            else 2 if c < len(CATALOG)-11 else 3) == family]
-            if not selected:
-                continue
-            order.extend(i for i, _ in selected)
-            indices = torch.tensor([c for _, c in selected], device=self.device)
+        key=tuple(columns)
+        if key not in self.column_plans:
+            plans=[];order=[]
+            for family in range(4):
+                selected=[(i,c) for i,c in enumerate(columns)
+                          if (0 if c<len(BASE) else 1 if c<len(BASE)+len(HISTORY)
+                              else 2 if c<len(CATALOG)-11 else 3)==family]
+                if not selected:continue
+                order.extend(i for i,_ in selected)
+                indices=[c if family==0 else c-len(BASE) if family==1
+                         else PRICE_COLUMNS[c-len(BASE)-len(HISTORY)] if family==2
+                         else c for _,c in selected]
+                plans.append((family,selected,torch.tensor(indices,device=self.device)))
+            self.column_plans[key]=(plans,torch.tensor(np.argsort(order),device=self.device))
+        plans,inverse=self.column_plans[key]
+        for family,selected,indices in plans:
             if family == 0:
                 v = a['base'][feature_row.clamp_min(0)[..., None], indices]
                 m = a['base_valid'][feature_row.clamp_min(0)[..., None], indices]
                 m = m & known[..., None] & (feature_row >= 0)[..., None]
             elif family == 1:
-                v = a['history'][ids[..., None], indices-len(BASE)]
+                v = a['history'][ids[..., None], indices]
                 m = torch.isfinite(v) & known[..., None]
             elif family == 2:
-                source_columns = torch.tensor([PRICE_COLUMNS[c-len(BASE)-len(HISTORY)]
-                                               for _, c in selected], device=self.device)
-                h = a['history'][ids[..., None], source_columns]
+                h = a['history'][ids[..., None], indices]
                 v = (h.to(torch.float64)/price[..., None]-1).to(torch.float32)
                 m = torch.isfinite(v) & known[..., None] & (price > 0)[..., None]
             else:
@@ -115,6 +123,5 @@ class ResidentFeatures:
                 v, m = torch.stack(values, -1), torch.stack(valid, -1)
             groups.append(v); masks.append(m)
         values, valid = torch.cat(groups, -1), torch.cat(masks, -1)
-        inverse = torch.tensor(np.argsort(order), device=self.device)
         values, valid = values.index_select(-1, inverse), valid.index_select(-1, inverse)
         return torch.where(valid, values, 0.), valid
