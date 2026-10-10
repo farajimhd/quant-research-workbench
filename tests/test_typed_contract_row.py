@@ -3,7 +3,7 @@ from decimal import Decimal
 import pytest
 
 from src.trading_runtime.arte_journal_schema import TableContract
-from src.trading_runtime.arte_journal_writer import typed_contract_row,typed_row,_canonical_typed_content,_CONTRACTS
+from src.trading_runtime.arte_journal_writer import typed_contract_row,typed_row,verify_typed_contract_row,_canonical_typed_content,_CONTRACTS
 
 
 SCHEMA=TableContract('uninstalled_projection_test_v1',(
@@ -36,3 +36,25 @@ def test_explicit_projection_uses_lossless_canonical_hash_without_family_admissi
 def test_explicit_projection_cannot_truncate_timestamps_money_or_supply_hash(field,value):
     row=values();row[field]=value
     with pytest.raises(ValueError):typed_contract_row(SCHEMA,row)
+
+
+def test_explicit_recovery_preserves_money_and_microseconds_without_admission():
+    before=dict(_CONTRACTS)
+    row=typed_contract_row(SCHEMA,values())
+    canonical=verify_typed_contract_row(SCHEMA,row)
+    assert canonical['amount']=='1.250000000000000000'
+    assert canonical['event_time']=='2026-08-04 12:59:59.999999'
+    assert verify_typed_contract_row(SCHEMA,canonical,stored_utc=True)==canonical
+    assert _CONTRACTS==before and SCHEMA.name not in _CONTRACTS
+    with pytest.raises(ValueError):verify_typed_contract_row(SCHEMA,canonical)
+
+
+@pytest.mark.parametrize('defect',['content','hash','extra','missing','transport'])
+def test_explicit_recovery_rejects_changed_content_or_transport(defect):
+    row=typed_contract_row(SCHEMA,values());options={}
+    if defect=='content':row['clock']+=1
+    if defect=='hash':row['content_hash']='F'*64
+    if defect=='extra':row['unknown']=1
+    if defect=='missing':row.pop('amount')
+    if defect=='transport':options['stored_utc']=1
+    with pytest.raises(ValueError):verify_typed_contract_row(SCHEMA,row,**options)

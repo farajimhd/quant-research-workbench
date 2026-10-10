@@ -1485,6 +1485,25 @@ def typed_contract_row(contract, values: Mapping[str, Any]) -> dict[str, Any]:
     return row
 
 
+def verify_typed_contract_row(contract, row: Mapping[str, Any], *, stored_utc=False) -> dict[str, Any]:
+    """Verify explicit-schema content, without granting family admission.
+
+    UTC database wire timestamps require explicit selection; native in-memory
+    projections retain the ordinary timezone-aware input contract.
+    """
+    from .arte_journal_schema import TableContract
+    if type(contract) is not TableContract or type(stored_utc) is not bool or not isinstance(row, Mapping):
+        raise ValueError('Exact normalized schema, row and timestamp transport required')
+    content = dict(row)
+    digest = content.pop('content_hash', None)
+    if type(digest) is not str or not re.fullmatch(r'[0-9a-f]{64}', digest):
+        raise ValueError('Exact normalized row hash required')
+    canonical = _canonical_typed_content(contract.name, content, stored_utc=stored_utc, _contract=contract)
+    if sha256(canonical_json(canonical).encode('utf-8')).hexdigest() != digest:
+        raise ValueError('Normalized row content hash differs')
+    return {**canonical, 'content_hash': digest}
+
+
 def _literal(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
