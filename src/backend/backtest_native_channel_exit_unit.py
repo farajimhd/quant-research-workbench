@@ -151,3 +151,29 @@ def project_native_channel_exit_unit(request, group, executions, *, management_p
         original_entry=original_entry,source_entry_intent_id=request.acquisition.source_entry_intent_id,
         current_financial=request.financial,checkpoint=checkpoint,**lineage_context)
     return NativeChannelExitUnit(base,decision,sources,fills)
+
+
+def reprove_native_channel_exit_unit(unit, *, management_policy, recorded_at,
+        attempt_id, prior_batch_id, sequence, source_cursor, **recovery_context):
+    """Recompute the complete unit from independently supplied causal evidence.
+
+    The caller owns the certified source, actual fills, held financial state,
+    checkpoint roots and journal envelope. No value in the proposed base batch
+    supplies those authorities. This grants neither INSERT nor OMS permission.
+    """
+    from .backtest_native_channel_exit_recovery import reprove_native_channel_exit_rows
+    if type(unit) is not NativeChannelExitUnit:
+        raise ValueError('Exact complete channel exit unit required')
+    unit.__post_init__()
+    request = reprove_native_channel_exit_rows(unit.decision,unit.sources,unit.executions,
+        **recovery_context)
+    projection_context = {key:value for key,value in recovery_context.items() if key not in
+        {'prepared','policy','quotes','session_date','stored_utc','group','executions',
+         'source_entry_intent_id','current_financial'}}
+    expected = project_native_channel_exit_unit(request,recovery_context['group'],
+        recovery_context['executions'],management_policy=management_policy,
+        recorded_at=recorded_at,attempt_id=attempt_id,prior_batch_id=prior_batch_id,
+        sequence=sequence,source_cursor=source_cursor,**projection_context)
+    if unit.base != expected.base or unit.sealed_families() != expected.sealed_families():
+        raise ValueError('Complete channel exit unit differs from independent recomputation')
+    return expected

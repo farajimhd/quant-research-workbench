@@ -9,7 +9,9 @@ import pytest
 from tests.test_backtest_native_channel_qualification import installed, unit  # noqa: F401
 from tests.test_backtest_native_channel_exit_recovery import recovery_case
 from src.backend.backtest_native_channel_exit_recovery import reprove_native_channel_exit_rows
-from src.backend.backtest_native_channel_exit_unit import project_native_channel_exit_unit, native_channel_exit_intent
+from src.backend.backtest_native_channel_exit_unit import (
+    project_native_channel_exit_unit, native_channel_exit_intent, reprove_native_channel_exit_unit,
+)
 from src.trading_runtime.native_channel_management_policy import NativeChannelManagementPolicy
 from src.trading_runtime.numbered_fixed_strategy import session_policy_payload
 from src.trading_runtime.arte_journal_commit_v4 import prepare_commit_v4
@@ -85,3 +87,28 @@ def test_publication_cannot_override_complete_family_bound(installed,monkeypatch
     if defect=='bound': args['max_rows_per_family'] += 1
     else: args['management_policy']=None
     with pytest.raises(ValueError): project_native_channel_exit_unit(request,group,fills,**args)
+
+
+@pytest.mark.parametrize('defect',[None,'metadata','execution_policy','cursor','sequence','quote'])
+def test_complete_unit_reproof_uses_independent_source_and_journal_envelope(installed,monkeypatch,defect):
+    request,group,fills,args,_=unit_case(installed,monkeypatch)
+    packet=project_native_channel_exit_unit(request,group,fills,**args)
+    _,recovery=recovery_case(installed)
+    envelope={key:args[key] for key in ('management_policy','recorded_at','attempt_id',
+        'prior_batch_id','sequence','source_cursor')}
+    if defect in ('metadata','execution_policy'):
+        intent=dict(packet.base.intents[0])
+        if defect=='metadata': intent['metadata_json']='{"unapproved":true}'
+        else: intent['execution_policy_name']='adaptive_normal'
+        packet=replace(packet,base=replace(packet.base,intents=(intent,)))
+    elif defect=='cursor': envelope['source_cursor']='foreign-cursor'
+    elif defect=='sequence': envelope['sequence']+=1
+    elif defect=='quote':
+        import polars as pl
+        recovery['quotes']=recovery['quotes'].with_columns((pl.col('bid_int')+1).alias('bid_int'))
+    if defect is None:
+        verified=reprove_native_channel_exit_unit(packet,**envelope,**recovery)
+        assert verified.base==packet.base
+        assert verified.sealed_families()==packet.sealed_families()
+    else:
+        with pytest.raises(ValueError): reprove_native_channel_exit_unit(packet,**envelope,**recovery)
