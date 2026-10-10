@@ -1,11 +1,12 @@
 //@version=6
-indicator("Research: price jump screener / alerts v2.2", overlay = true, max_bars_back = 500)
+indicator("Research: price jump screener / alerts v2.3", overlay = true, max_bars_back = 500)
 
 direction = input.string("Upward", "Detect", options = ["Upward", "Downward", "Both"])
-lookback = input.int(5, "Jump lookback (chart bars)", minval = 1, maxval = 200)
+referenceMode = input.string("Previous close or bar open", "Jump reference", options = ["Previous close or bar open", "Previous close", "Bar open"])
+maximumGapSeconds = input.int(120, "Maximum missing time before previous close becomes stale (seconds)", minval = 0, maxval = 86400)
+rearmPct = input.float(0.5, "Settled candle: maximum range / displacement (%)", minval = 0.01, step = 0.1)
 threshold = input.float(2.0, "Minimum jump (%)", minval = 0.01, step = 0.1)
 immediateAlerts = input.bool(true, "Alert immediately during live bar (otherwise wait for close)")
-rejectGaps = input.bool(true, "Reject windows containing missing bars / session gaps")
 recentBars = input.int(5, "Recent signal retention (bars, including signal bar)", minval = 1, maxval = 100)
 cooldownBars = input.int(0, "Minimum bars between same-direction alerts", minval = 0, maxval = 100)
 requireVolume = input.bool(false, "Require relative volume", group = "Optional gates")
@@ -20,25 +21,39 @@ float barSeconds = timeframe.in_seconds()
 if barstate.isfirst and (not timeframe.isintraday or na(barSeconds) or not chart.is_standard)
     runtime.error("Use a standard time-based intraday candle chart. For Pine Screener, choose 1m, 5m, 15m, 30m, 1h, 2h or 4h.")
 
-// On a live candle, close is the latest received price; the anchor is completed.
-float anchor = close[lookback]
-bool priceReady = not na(anchor) and anchor > 0 and close > 0
-bool contiguous = not na(time[lookback]) and time - time[lookback] <= lookback * barSeconds * 1000
-bool windowReady = priceReady and (not rejectGaps or contiguous)
-float jumpPct = windowReady ? (close / anchor - 1) * 100 : na
+// A fresh candle displacement, never a rolling return against older low bars.
+// Missing time is measured from the preceding candle's END to this candle's start.
+int exchangeDay = time("1D")
+bool previousFresh = not na(close[1]) and close[1] > 0 and not na(time_close[1]) and time >= time_close[1] and time - time_close[1] <= maximumGapSeconds * 1000 and exchangeDay == exchangeDay[1]
+bool usePrevious = referenceMode != "Bar open" and previousFresh
+bool useOpen = referenceMode != "Previous close" and not na(open) and open > 0
+float upAnchor = usePrevious and useOpen ? math.min(close[1], open) : usePrevious ? close[1] : useOpen ? open : na
+float downAnchor = usePrevious and useOpen ? math.max(close[1], open) : usePrevious ? close[1] : useOpen ? open : na
+bool priceReady = not na(upAnchor) and not na(downAnchor) and close > 0
+float upMove = priceReady ? (close / upAnchor - 1) * 100 : na
+float downMove = priceReady ? (close / downAnchor - 1) * 100 : na
+float upTouch = priceReady ? (high / upAnchor - 1) * 100 : na
+float downTouch = priceReady ? (low / downAnchor - 1) * 100 : na
+float jumpPct = priceReady ? (math.abs(upMove) >= math.abs(downMove) ? upMove : downMove) : na
+// Rearming depends on fresh price geometry, not a volume/session gate going false.
+bool settled = priceReady and low > 0 and (high / low - 1) * 100 <= rearmPct and math.abs(upMove) <= rearmPct and math.abs(downMove) <= rearmPct
+if barstate.isfirst and rearmPct >= threshold
+    runtime.error("Settled-candle threshold must be smaller than the jump threshold.")
 // The forming/current bar never contributes to its own volume baseline.
 float volumeBaseline = ta.sma(volume, volumeLength)[1]
 float relativeVolume = not na(volume) and not na(volumeBaseline) and volumeBaseline > 0 ? volume / volumeBaseline : na
 float dollarVolume = not na(volume) ? volume * close : na
 bool volumeReady = (not requireVolume or not na(relativeVolume)) and (minimumDollarVolume <= 0 or not na(dollarVolume))
-bool ready = windowReady and volumeReady
+bool ready = priceReady and volumeReady
 bool insideSession = not restrictSession or not na(time(timeframe.period, signalSession, "America/New_York"))
 bool gates = ready and insideSession and (not requireVolume or relativeVolume >= volumeMultiple) and (minimumDollarVolume <= 0 or dollarVolume >= minimumDollarVolume)
-bool upQualified = direction != "Downward" and gates and jumpPct >= threshold
-bool downQualified = direction != "Upward" and gates and jumpPct <= -threshold
+bool upQualified = direction != "Downward" and gates and (immediateAlerts ? upTouch : upMove) >= threshold
+bool liveUpQualified = direction != "Downward" and gates and upMove >= threshold
+bool downQualified = direction != "Upward" and gates and (immediateAlerts ? downTouch : downMove) <= -threshold
+bool liveDownQualified = direction != "Upward" and gates and downMove <= -threshold
 
-// One alert per qualifying episode. A cooldown-delayed episode may emit later
-// if it remains qualified; a completed nonqualifying bar rearms that direction.
+// Confirmed candle-touch events for screening, with settled-candle rearming.
+// Historical OHLC can show a touch, but cannot reconstruct its tick timing.
 var bool upEmitted = false
 var bool downEmitted = false
 var int lastUpBar = na
@@ -46,9 +61,8 @@ var int lastDownBar = na
 bool fireUp = false
 bool fireDown = false
 if barstate.isconfirmed
-    if not upQualified
+    if settled
         upEmitted := false
-    if not downQualified
         downEmitted := false
     fireUp := upQualified and not upEmitted and (na(lastUpBar) or bar_index - lastUpBar >= cooldownBars)
     fireDown := downQualified and not downEmitted and (na(lastDownBar) or bar_index - lastDownBar >= cooldownBars)
@@ -73,21 +87,19 @@ varip int liveDownBar = na
 bool liveFireUp = false
 bool liveFireDown = false
 if immediateAlerts or barstate.isconfirmed
-    liveFireUp := upQualified and not liveUpEmitted and (na(liveUpBar) or bar_index - liveUpBar >= cooldownBars)
-    liveFireDown := downQualified and not liveDownEmitted and (na(liveDownBar) or bar_index - liveDownBar >= cooldownBars)
+    liveFireUp := (barstate.isrealtime ? liveUpQualified : upQualified) and not liveUpEmitted and (na(liveUpBar) or bar_index - liveUpBar >= cooldownBars)
+    liveFireDown := (barstate.isrealtime ? liveDownQualified : downQualified) and not liveDownEmitted and (na(liveDownBar) or bar_index - liveDownBar >= cooldownBars)
     if liveFireUp
         liveUpEmitted := true
         liveUpBar := bar_index
     if liveFireDown
         liveDownEmitted := true
         liveDownBar := bar_index
-// Require a completed nonqualifying bar to rearm, so threshold chatter within
-// one candle cannot produce repeated same-direction notifications.
-if barstate.isconfirmed
-    if not upQualified
-        liveUpEmitted := false
-    if not downQualified
-        liveDownEmitted := false
+// A completed settled candle rearms both directions. Rejected volume/session
+// gates and missing reference data do not reset the burst latch.
+if barstate.isconfirmed and settled
+    liveUpEmitted := false
+    liveDownEmitted := false
 
 // Keep all numeric screener columns on the latest completed candle even while
 // a live candle forms. The first ten plots are the screener's default columns.
@@ -105,13 +117,14 @@ plot(confirmedValue(relativeVolume), "Relative volume", display = display.data_w
 plot(confirmedValue(dollarVolume), "Bar dollar volume", display = display.data_window)
 plot(confirmedValue(ready ? 1.0 : 0.0), "Data ready", display = display.data_window)
 // Separate live message value: the first ten screener columns remain confirmed.
-plot(jumpPct, "Live jump %", display = display.data_window)
+float liveMessagePct = liveFireUp ? upMove : liveFireDown ? downMove : jumpPct
+plot(liveMessagePct, "Live jump %", display = display.data_window)
 
 alertcondition(liveFireUp, "Upward price jump", "Upward price jump on {{ticker}} ({{interval}}), close={{close}}, jump_pct={{plot(\"Live jump %\")}}")
 alertcondition(liveFireDown, "Downward price jump", "Downward price jump on {{ticker}} ({{interval}}), close={{close}}, jump_pct={{plot(\"Live jump %\")}}")
 alertcondition(liveFireUp or liveFireDown, "Any price jump", "Price jump on {{ticker}} ({{interval}}), close={{close}}, jump_pct={{plot(\"Live jump %\")}}")
 if liveFireUp or liveFireDown
-    alert("Research price jump v2.2 | " + syminfo.tickerid + " | " + (liveFireUp ? "UP" : "DOWN") + " | timeframe=" + timeframe.period + " | close=" + str.tostring(close, format.mintick) + " | jump_pct=" + str.tostring(jumpPct, "#.##"), alert.freq_all)
+    alert("Research price jump v2.3 | " + syminfo.tickerid + " | " + (liveFireUp ? "UP" : "DOWN") + " | timeframe=" + timeframe.period + " | close=" + str.tostring(close, format.mintick) + " | jump_pct=" + str.tostring(liveMessagePct, "#.##"), alert.freq_all)
 
 plotshape(showMarkers and liveUpBar == bar_index, title = "Up jump marker", style = shape.triangleup, location = location.belowbar, color = color.lime, size = size.small, text = "JUMP")
 plotshape(showMarkers and liveDownBar == bar_index, title = "Down jump marker", style = shape.triangledown, location = location.abovebar, color = color.red, size = size.small, text = "DROP")
