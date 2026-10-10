@@ -190,6 +190,28 @@ def test_entry_swing_projection_preserves_eligible_stops_under_bound(tmp_path):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA capture requires a GPU')
+def test_rule_capture_budget_counts_private_workspace_and_releases_evictions():
+    import gc
+    from research.vectorized_backtest.v7.rule_plan import RulePlan
+    plan=RulePlan(sample(np.random.default_rng(2237),128),'cuda',maximum_capture_gib=.08)
+    group_id=next(i for i,g in enumerate(plan.groups) if g['bit']==0 and not g['sparse'])
+    pools=[]
+    for length in (1800,1900,2000):
+        shape=(4,length,len(plan.groups[group_id]['columns']))
+        values=torch.zeros(shape,device='cuda');valid=torch.ones_like(values,dtype=torch.bool)
+        plan.execute(group_id,values,valid)
+        capture=plan.captures[(group_id,shape)][0]
+        pool=capture.graph.pool();pools.append(pool)
+        reserved=sum(s['total_size'] for s in torch.cuda.memory_snapshot() if s.get('segment_pool_id')==pool)
+        assert reserved>capture.values.numel()*5
+        assert capture.memory_bytes>=reserved and plan.capture_bytes<=plan.maximum_capture_bytes
+        del capture,values,valid
+    assert len(plan.captures)<len(pools)
+    plan.close();gc.collect();torch.cuda.empty_cache()
+    assert not any(s.get('segment_pool_id') in pools for s in torch.cuda.memory_snapshot())
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA capture requires a GPU')
 def test_cuda_resident_rules_and_captured_replay_match_cpu(tmp_path):
     from research.vectorized_backtest.v7.io_pipeline import prepare_host,activate_nonblocking
     from research.vectorized_backtest.v7.rule_plan import mask_reference

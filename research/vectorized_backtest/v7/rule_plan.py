@@ -39,6 +39,12 @@ class CapturedGroup:
             self.graph = torch.cuda.CUDAGraph()
             with torch.cuda.graph(self.graph, stream=stream): self.output = self.evaluate()
         torch.cuda.current_stream(device).wait_stream(stream)
+        # Captured intermediates can be inactive yet keep an entire private
+        # allocator pool reserved. memory_allocated() alone misses that cost.
+        pool=self.graph.pool()
+        self.memory_bytes=sum(segment['total_size'] for segment in torch.cuda.memory_snapshot()
+                              if segment.get('segment_pool_id')==pool)
+        self.memory_bytes+=self.values.numel()*self.values.element_size()+self.valid.numel()*self.valid.element_size()
 
     def evaluate(self):
         value, known = self.program(self.values, self.valid)
@@ -91,19 +97,26 @@ class RulePlan:
         if key not in self.captures:
             torch.cuda.synchronize(self.device)
             # Reserve headroom before capture; evicted graphs have no queued work.
+            evicted=False
             while self.captures and self.capture_bytes > self.maximum_capture_bytes//2:
                 _, (old, size) = self.captures.popitem(last=False)
                 del old
                 self.capture_bytes -= size
-            before = torch.cuda.memory_allocated(self.device)
+                evicted=True
+            if evicted:torch.cuda.empty_cache()
             capture = CapturedGroup(group['program'], values.shape, self.device)
             torch.cuda.synchronize(self.device)
-            size = max(0, torch.cuda.memory_allocated(self.device)-before)
-            if size > self.maximum_capture_bytes: raise MemoryError('Rule capture exceeds declared memory budget')
+            size = capture.memory_bytes
+            if size > self.maximum_capture_bytes:
+                del capture;torch.cuda.empty_cache()
+                raise MemoryError('Rule capture exceeds declared memory budget')
+            evicted=False
             while self.captures and self.capture_bytes+size > self.maximum_capture_bytes:
                 _, (old, old_size) = self.captures.popitem(last=False)
                 del old
                 self.capture_bytes -= old_size
+                evicted=True
+            if evicted:torch.cuda.empty_cache()
             self.captures[key] = (capture, size)
             self.capture_bytes += size
             self.builds += 1

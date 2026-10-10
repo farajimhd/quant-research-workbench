@@ -136,7 +136,11 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
                         if hasattr(item,'resident_features'):item.resident_features.deactivate()
                         if hasattr(item,'deactivate'):item.deactivate()
                     del data;gc.collect()
-                    if torch.device(device).type=='cuda':torch.cuda.empty_cache()
+                    if torch.device(device).type=='cuda':
+                        torch.cuda.empty_cache()
+                        publisher.write(root/(cohort[0]+'-memory.json'),dict(
+                            gpu_allocated_bytes=torch.cuda.memory_allocated(),gpu_reserved_bytes=torch.cuda.memory_reserved(),
+                            rule_capture_bytes=sum(v.plan.capture_bytes for v in shared_batches.values() if v.plan is not None)))
             publisher.flush()
             for shared in shared_batches.values():shared.close()
             shared_batches.clear()
