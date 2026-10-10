@@ -3,7 +3,7 @@ import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
 import argparse,json,gc,math
 from concurrent.futures import ThreadPoolExecutor
-from .io_pipeline import Publisher,prepare_host,activate_nonblocking
+from .io_pipeline import Publisher,prepare_host,TransferStaging
 from dataclasses import asdict
 from hashlib import sha256
 from pathlib import Path
@@ -46,7 +46,7 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
         device=device,backend=backend,seed=seed,execution=asdict(execution),maximum_data_gib=maximum_data_gib,maximum_gate_gib=maximum_gate_gib,
         objective=asdict(LowerTailDollarObjective()),timing='signals at second close; assumed fill at next observed close; terminal liquidation at last known mark')
     checkpoint=output/'checkpoint.json';rng=np.random.default_rng(seed);completed=0
-    with Publisher() as publisher,ThreadPoolExecutor(max_workers=1,thread_name_prefix="v7-session") as loader,owned_run(output,version=VERSION),Progress(TextColumn('{task.description}'),BarColumn(),TextColumn('{task.completed}/{task.total}'),TimeElapsedColumn(),TimeRemainingColumn()) as panel:
+    with Publisher() as publisher,TransferStaging() as staging,ThreadPoolExecutor(max_workers=1,thread_name_prefix="v7-session") as loader,owned_run(output,version=VERSION),Progress(TextColumn('{task.description}'),BarColumn(),TextColumn('{task.completed}/{task.total}'),TimeElapsedColumn(),TimeRemainingColumn()) as panel:
         generation_task=panel.add_task('Generations sealed',total=generations)
         batch_task=panel.add_task('Session cohorts × strategy batches',total=math.ceil(len(days)/session_workers)*math.ceil(population_size/batch_size))
         clock_task=panel.add_task('Current cohort replay clocks',total=1)
@@ -85,7 +85,7 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
             # thread invokes Python transitions for every session.
             def load_cohort(cohort):
                 return [(day,prepare_host(host_cache[day] if day in host_cache else SessionData(inputs/day,history/day,device='cpu',maximum_gib=maximum_data_gib,
-                    feature_cache=Path(feature_cache)/day if feature_cache else None),pin=torch.device(device).type=='cuda')) for day in cohort]
+                    feature_cache=Path(feature_cache)/day if feature_cache else None),resident=torch.device(device).type=='cuda')) for day in cohort]
             loaded=loader.submit(load_cohort,days[:session_workers]) if not already_complete else None
             for first in ([] if already_complete else range(0,len(days),session_workers)):
                 cohort=days[first:first+session_workers];data=[]
@@ -102,10 +102,10 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
                         if reserve>torch.cuda.mem_get_info()[0]*.8:raise MemoryError('Resident V7 features, signals and captures exceed GPU budget')
                     for day,item in ready:
                         host_cache[day]=item
-                        activate_nonblocking(item,device)
                         data.append(item)
                     next_cohort=days[first+session_workers:first+2*session_workers]
                     loaded=loader.submit(load_cohort,next_cohort) if next_cohort else None
+                    staging.activate(ready,device)
                     load_seconds=perf_counter()-load_start
                     for offset in range(0,len(population),batch_size):
                         members=population[offset:offset+batch_size];shared=shared_batches[offset]
@@ -140,6 +140,8 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
                         torch.cuda.empty_cache()
                         publisher.write(root/(cohort[0]+'-memory.json'),dict(
                             gpu_allocated_bytes=torch.cuda.memory_allocated(),gpu_reserved_bytes=torch.cuda.memory_reserved(),
+                            gpu_free_bytes=torch.cuda.mem_get_info()[0],
+                            pinned_staging_bytes=sum(s['buffer'].numel() for s in staging.slots if s.get('buffer') is not None),
                             rule_capture_bytes=sum(v.plan.capture_bytes for v in shared_batches.values() if v.plan is not None)))
             publisher.flush()
             for shared in shared_batches.values():shared.close()

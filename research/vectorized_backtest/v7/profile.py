@@ -3,7 +3,7 @@ import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
 import argparse,gc,json
 from concurrent.futures import ThreadPoolExecutor
-from .io_pipeline import Publisher,prepare_host,activate_nonblocking
+from .io_pipeline import Publisher,prepare_host,TransferStaging
 from dataclasses import asdict
 from pathlib import Path
 from time import perf_counter
@@ -18,10 +18,10 @@ from .evaluator import PopulationPrograms,replay_cohort,Execution
 from .run_search import source_hash,digest
 
 def measure(inputs,history,cache,root,days,members,concurrency):
-    with Publisher() as publisher:
-        return _measure(inputs,history,cache,root,days,members,concurrency,publisher)
+    with Publisher() as publisher,TransferStaging() as staging:
+        return _measure(inputs,history,cache,root,days,members,concurrency,publisher,staging)
 
-def _measure(inputs,history,cache,root,days,members,concurrency,publisher):
+def _measure(inputs,history,cache,root,days,members,concurrency,publisher,staging):
     root=require_runtime(root);started=perf_counter();rows=[];execution=Execution()
     torch.cuda.reset_peak_memory_stats();packing=perf_counter();programs=PopulationPrograms(members,'cuda');torch.cuda.synchronize()
     pack_seconds=perf_counter()-packing
@@ -30,8 +30,8 @@ def _measure(inputs,history,cache,root,days,members,concurrency,publisher):
         cohort=days[first:first+concurrency];data=[];gates=[];loading=perf_counter()
         try:
             with ThreadPoolExecutor(max_workers=len(cohort),thread_name_prefix='v7-profile-load') as pool:
-                data=list(pool.map(lambda day:prepare_host(SessionData(inputs/day,history/day,feature_cache=cache/day,device='cpu'),pin=True),cohort))
-            for item in data:activate_nonblocking(item,'cuda')
+                data=list(pool.map(lambda day:prepare_host(SessionData(inputs/day,history/day,feature_cache=cache/day,device='cpu'),resident=True),cohort))
+            staging.activate(list(zip(cohort,data)),'cuda')
             torch.cuda.synchronize();load_seconds=perf_counter()-loading
             rules=perf_counter()
             for item in data:

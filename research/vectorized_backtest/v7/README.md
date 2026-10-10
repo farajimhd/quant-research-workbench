@@ -156,6 +156,9 @@ previous arbitrary pilot results do not qualify optimization wall time.
 A bounded background loader prepares the next session cohort while the current
 one computes. On the CPU reference path, feature tiles are read/decoded by one worker per active cache,
 with two-tile lookahead; mutable cache integrity/LRU state has a single owner.
+Prepared sessions remain cached in pageable RAM. Two reusable pinned arenas
+stage uploads in a background worker; pinned residency does not grow with the
+number of training days. Slot reuse waits for its previous transfer event.
 Pinned host tensors transfer on a separate CUDA stream, using nonblocking
 copies and event dependencies. Status, timing and session receipts use a bounded
 background publisher. Missing-data dependencies and full queues still cause

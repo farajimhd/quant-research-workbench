@@ -389,6 +389,30 @@ def test_prefetch_reads_next_tile_while_consumer_works_and_drains():
     finally:release.set();stream.close()
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='Pinned upload requires CUDA')
+def test_upload_staging_reuses_two_arenas_without_pinning_cached_sessions():
+    from research.vectorized_backtest.v7.io_pipeline import TransferStaging
+    ready=[]
+    for index in range(7):
+        thin={'value':torch.full((101,),index,dtype=torch.float64),'flag':torch.arange(13)%2==0}
+        host={'value':torch.full((87,),index+.5),'ids':torch.arange(31,dtype=torch.int64)}
+        bank=SimpleNamespace(host=host,tensors=host,column_plans={})
+        ready.append((str(index),SimpleNamespace(host_tensors=thin,resident_features=bank)))
+    with TransferStaging() as staging:
+        for repeat in range(2):
+            staging.activate(ready,'cuda')
+            torch.cuda.synchronize()
+            pointers=[s['buffer'].data_ptr() for s in staging.slots]
+            for _,data in ready:
+                for source,uploaded in ((data.host_tensors,data.tensors),(data.resident_features.host,data.resident_features.tensors)):
+                    for key,value in source.items():
+                        assert not value.is_pinned()
+                        torch.testing.assert_close(uploaded[key].cpu(),value,rtol=0,atol=0)
+            if repeat==0:first=pointers
+            else:assert pointers==first
+        assert sum(s['buffer'].numel() for s in staging.slots)==4096
+
+
 def test_background_publication_flushes_and_propagates_errors(tmp_path,monkeypatch):
     from research.vectorized_backtest.v7 import io_pipeline
     with io_pipeline.Publisher(capacity=1) as publisher:
