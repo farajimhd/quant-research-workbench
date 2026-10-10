@@ -383,7 +383,7 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
                     'target_policy', 'entry_price_policy', 'followthrough_policy')
         if any(type(payload.get(key)) is not dict for key in required):
             raise ValueError('Declared fixed capability payload is incomplete')
-        optional = {'half_risk_liquidity_policy', 'entry_spread_risk_policy', 'early_original_risk_failure_policy',
+        optional = {'half_risk_liquidity_policy', 'entry_spread_risk_policy', 'early_original_risk_failure_policy', 'price_confirmed_original_risk_policy',
                     'all_held_original_risk_policy', 'confirmed_original_risk_policy', 'premarket_confirmed_original_risk_policy', 'entry_scope_policy', 'recent_bos_policy',
                     'momentum_policy', 'strong_ten_second_momentum_policy',
                     'initial_strong_momentum_policy', 'first_setup_growth_policy',
@@ -412,6 +412,11 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
         self.all_held_original_risk_policy
         self.confirmed_original_risk_policy
         self.premarket_confirmed_original_risk_policy
+        price_policy = self.price_confirmed_original_risk_policy
+        if price_policy is not None and (not self.allows_followthrough_failure_exit
+                or self.confirmed_original_risk_policy is not None
+                or self.premarket_confirmed_original_risk_policy is not None):
+            raise ValueError('Price risk extension requires ordinary completed failure authority')
         from .strategy_half_risk_liquidity_fade import half_risk_liquidity_policy_payload, POLICY_ID
         has_half_rule = self._has(POLICY_ID)
         has_half_payload = 'half_risk_liquidity_policy' in payload
@@ -471,6 +476,12 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
         import json
         from .declared_early_original_risk_policy import parse_declared_early_original_risk_policy
         return parse_declared_early_original_risk_policy(self.release, json.loads(self.policy_json))
+
+    @property
+    def price_confirmed_original_risk_policy(self):
+        import json
+        from .price_confirmed_original_risk import parse_price_confirmed_original_risk_policy
+        return parse_price_confirmed_original_risk_policy(self.release, json.loads(self.policy_json))
 
     @property
     def _declared_all_held_original_risk_policy(self):

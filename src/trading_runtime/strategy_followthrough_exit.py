@@ -54,6 +54,12 @@ def validate_witness(witness, *, strategy_number=9, diagnostic=None):
     else:
         actual = rule(value)
     if actual != witness:
+        price_policy = getattr(numbered_fixed_strategy(strategy_number),
+                               'price_confirmed_original_risk_policy', None)
+        if price_policy is not None:
+            from .price_confirmed_original_risk import price_confirmed_original_risk_failure
+            actual = price_confirmed_original_risk_failure(value, policy=price_policy)
+    if actual != witness:
         raise ValueError("Follow-through witness does not satisfy its pinned rule")
 
 
