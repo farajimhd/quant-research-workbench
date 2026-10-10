@@ -383,7 +383,7 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
                     'target_policy', 'entry_price_policy', 'followthrough_policy')
         if any(type(payload.get(key)) is not dict for key in required):
             raise ValueError('Declared fixed capability payload is incomplete')
-        optional = {'half_risk_liquidity_policy', 'entry_spread_risk_policy', 'early_original_risk_failure_policy', 'price_confirmed_original_risk_policy',
+        optional = {'half_risk_liquidity_policy', 'entry_spread_risk_policy', 'early_original_risk_failure_policy', 'price_confirmed_original_risk_policy', 'consecutive_price_confirmed_original_risk_policy',
                     'all_held_original_risk_policy', 'confirmed_original_risk_policy', 'premarket_confirmed_original_risk_policy', 'entry_scope_policy', 'recent_bos_policy',
                     'momentum_policy', 'strong_ten_second_momentum_policy',
                     'initial_strong_momentum_policy', 'first_setup_growth_policy',
@@ -508,9 +508,16 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
         from .confirmed_original_risk_failure import (
             ConfirmedOriginalRiskPolicy, CONFIRMED_ORIGINAL_RISK_RULE, CONFIRMED_ORIGINAL_RISK_INPUT)
         payload = json.loads(self.policy_json)
+        from .consecutive_price_confirmed_risk import parse_consecutive_price_risk_policy
+        consecutive = parse_consecutive_price_risk_policy(self.release, payload)
         selected = self._has(CONFIRMED_ORIGINAL_RISK_RULE)
         supplied = 'confirmed_original_risk_policy' in payload
         source_count = self.release.input_contracts.count(CONFIRMED_ORIGINAL_RISK_INPUT)
+        if consecutive is not None:
+            if (selected or supplied or source_count or not self.allows_followthrough_failure_exit
+                    or 'premarket_confirmed_original_risk_policy' in payload):
+                raise ValueError('Consecutive price-risk requires exclusive declared diagnostic authority')
+            return consecutive
         if not selected and not supplied and not source_count:
             return None
         policy = ConfirmedOriginalRiskPolicy()

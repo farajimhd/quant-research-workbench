@@ -2,12 +2,19 @@
 from .confirmed_original_risk_failure import ConfirmedOriginalRiskPolicy
 
 
-def validate_original_risk_profile(automatic_ladder,entry_spread_risk,policy):
-    if policy is None:return
-    if (automatic_ladder is not False or entry_spread_risk is not False
-            or type(policy) is not ConfirmedOriginalRiskPolicy):
+def require_original_risk_diagnostic_policy(policy):
+    from .consecutive_price_confirmed_risk import ConsecutivePriceRiskPolicy
+    if type(policy) not in (ConfirmedOriginalRiskPolicy, ConsecutivePriceRiskPolicy):
         raise ValueError('Original-risk diagnostic profile needs its exclusive exact typed policy')
     policy.__post_init__()
+    return policy
+
+
+def validate_original_risk_profile(automatic_ladder,entry_spread_risk,policy):
+    if policy is None:return
+    if automatic_ladder is not False or entry_spread_risk is not False:
+        raise ValueError('Original-risk diagnostic profile needs its exclusive exact typed policy')
+    require_original_risk_diagnostic_policy(policy)
 
 
 def declared_fixed_runner_options(configuration):

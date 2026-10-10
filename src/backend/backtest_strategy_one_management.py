@@ -83,12 +83,13 @@ def inherited_management_state_type(state, financial) -> bool:
             or type(entries[0].strategy_number) is not int):
         return False
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
-    from src.trading_runtime.confirmed_original_risk_failure import ConfirmedOriginalRiskPolicy
+    from src.trading_runtime.original_risk_diagnostic_profile import require_original_risk_diagnostic_policy
     try:
         policy = numbered_fixed_strategy(entries[0].strategy_number).confirmed_original_risk_policy
+        require_original_risk_diagnostic_policy(policy)
     except ValueError:
         return False
-    return type(policy) is ConfirmedOriginalRiskPolicy
+    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +182,7 @@ class StrategyOneManagementRunner:
                 or type(lookup) is not CompiledCompletedRiskLookup
                 or type(market_plan) is not CertifiedMarketDayPlan
                 or lookup.plan != market_plan
+                or lookup.policy != self.contract.confirmed_original_risk_policy
                 or lookup.session_date != self.runtime.config.anchor_date):
             raise ValueError('Confirmed failure manager needs exact declared prepared source')
         self._completed_risk_lookup = lookup
@@ -772,8 +774,12 @@ class StrategyOneManagementRunner:
             pair=self._completed_risk_lookup.pair_at(financial.ticker,boundary_ms)
             if pair is not None:
                 from src.trading_runtime.confirmed_original_risk_failure import confirmed_original_risk_failure
-                confirmation=confirmed_original_risk_failure(completed,prior=pair[0],newest=pair[1],
-                                                            policy=confirmed_policy)
+                from src.trading_runtime.consecutive_price_confirmed_risk import (
+                    ConsecutivePriceRiskPolicy, consecutive_price_risk_failure)
+                reducer = (consecutive_price_risk_failure
+                    if type(confirmed_policy) is ConsecutivePriceRiskPolicy
+                    else confirmed_original_risk_failure)
+                confirmation=reducer(completed,prior=pair[0],newest=pair[1],policy=confirmed_policy)
                 if confirmation is not None:
                     entry=self.runtime._strategy_one_entry_intent(source)
                     await self._submit_followthrough_with_diagnostic(financial,confirmation.current,

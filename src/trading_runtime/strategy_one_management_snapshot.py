@@ -516,10 +516,9 @@ def load_unattested_manager_snapshot_rows(
              f"AND checkpoint_sequence={checkpoint_sequence}")
     selected_policy=getattr(client,'confirmed_original_risk_policy',None)
     if selected_policy is not None:
-        from .confirmed_original_risk_failure import ConfirmedOriginalRiskPolicy
+        from .original_risk_diagnostic_profile import require_original_risk_diagnostic_policy
         from .original_risk_pending_snapshot import selected_parent_contract
-        if type(selected_policy) is not ConfirmedOriginalRiskPolicy:
-            raise ValueError('Selected manager reader requires typed declared original-risk policy')
+        require_original_risk_diagnostic_policy(selected_policy)
         seals=read(selected_parent_contract(),scope,2)
         if read(PARENT,scope,1) or read(PARENT_V3,scope,1):
             raise RuntimeError('Selected manager cursor contains a foreign legacy seal')

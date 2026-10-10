@@ -443,7 +443,8 @@ async def run_certified_strategy_one_session(
                 risk_lookup = await asyncio.to_thread(load_completed_risk_lookup,reader,
                     plan=risk_market,session_date=runtime.config.anchor_date,
                     tickers=tuple(sorted({fact.ticker for fact in surviving_facts})),
-                    through_boundary_ms=through_boundary_ms)
+                    through_boundary_ms=through_boundary_ms,
+                    policy=manager.contract.confirmed_original_risk_policy)
                 manager.bind_completed_risk_lookup(risk_lookup,risk_market)
             if resume_manager_state is not None and selected_session is None:
                 if (runtime.config.strategy_revision in (20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 46, 47, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61) or declared_fixed_rule(runtime.config.strategy_revision, 'strategy-twenty-premarket-first-completed-one-second-price-break-v1')):

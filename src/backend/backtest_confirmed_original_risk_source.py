@@ -39,7 +39,11 @@ def compile_completed_risk_pairs(frame):
 
 class CompiledCompletedRiskLookup:
     """O(1) exact-boundary survivor lookup; future rows are never exposed."""
-    def __init__(self, frame, *, plan, session_date, max_rows=2_000_000):
+    def __init__(self, frame, *, plan, session_date, max_rows=2_000_000, policy=None):
+        from src.trading_runtime.confirmed_original_risk_failure import ConfirmedOriginalRiskPolicy
+        from src.trading_runtime.original_risk_diagnostic_profile import require_original_risk_diagnostic_policy
+        selected = ConfirmedOriginalRiskPolicy() if policy is None else policy
+        require_original_risk_diagnostic_policy(selected)
         if (type(plan) is not CertifiedMarketDayPlan or type(session_date) is not date
                 or plan.sessions != (session_date.isoformat(),)
                 or type(max_rows) is not int or not 1 <= max_rows <= 20_000_000
@@ -70,19 +74,21 @@ class CompiledCompletedRiskLookup:
         if frame.select(SOURCE_KEYS).unique().join(expected, on=SOURCE_KEYS, how='anti').height:
             raise ValueError('Completed risk observations cross the certified source plan')
         compiled = compile_completed_risk_pairs(frame)
-        # Only complete finite adverse-momentum survivors become scalar objects.
+        # The declared rule selects momentum filtering; reject no source rows.
         candidates = compiled.filter(pl.col('pair_complete') & pl.col('price_valid')
             & pl.col('prior_price_valid') & pl.col('close_int').is_not_null()
             & pl.col('prior_close_int').is_not_null()
             & (pl.col('close_int') > 0) & (pl.col('prior_close_int') > 0)
             & pl.all_horizontal(*(pl.col(k).is_finite() for k in
-                ('macd_line','macd_signal','prior_macd_line','prior_macd_signal')))
-            & (pl.col('macd_line') < pl.col('macd_signal'))
-            & (pl.col('prior_macd_line') < pl.col('prior_macd_signal')))
+                ('macd_line','macd_signal','prior_macd_line','prior_macd_signal'))))
+        if type(selected) is ConfirmedOriginalRiskPolicy:
+            candidates = candidates.filter((pl.col('macd_line') < pl.col('macd_signal'))
+                & (pl.col('prior_macd_line') < pl.col('prior_macd_signal')))
         self._columns = MappingProxyType(self._partition(frame.sort(['ticker','boundary_ms'])))
         self._pairs = MappingProxyType(self._partition(candidates.sort(['ticker','boundary_ms'])))
         self.plan = plan
         self.session_date = session_date
+        self.policy = selected
 
     def pair_at(self, ticker, boundary_ms):
         if type(ticker) is not str or type(boundary_ms) is not int or not 0 < boundary_ms <= 57_600_000:
@@ -115,8 +121,11 @@ class CompiledCompletedRiskLookup:
 
 
 def load_completed_risk_lookup(client, *, plan, session_date, tickers,
-                               through_boundary_ms=57_600_000, max_rows=2_000_000):
+                               through_boundary_ms=57_600_000, max_rows=2_000_000, policy=None):
     """One bounded Arrow SELECT, including preceding rows needed after restart."""
+    if policy is not None:
+        from src.trading_runtime.original_risk_diagnostic_profile import require_original_risk_diagnostic_policy
+        require_original_risk_diagnostic_policy(policy)
     if (type(plan) is not CertifiedMarketDayPlan or type(session_date) is not date
             or plan.sessions != (session_date.isoformat(),) or 5000 not in plan.required_resolutions_ms
             or type(tickers) is not tuple or len(set(tickers)) != len(tickers)
@@ -138,7 +147,7 @@ def load_completed_risk_lookup(client, *, plan, session_date, tickers,
     schema = {**{k:pl.String for k in SOURCE_KEYS}, 'boundary_ms':pl.UInt64,
               'close_int':pl.UInt64,'price_valid':pl.Boolean,'macd_line':pl.Float64,'macd_signal':pl.Float64}
     if not tickers:
-        return CompiledCompletedRiskLookup(pl.DataFrame(schema=schema),plan=plan,session_date=session_date,max_rows=max_rows)
+        return CompiledCompletedRiskLookup(pl.DataFrame(schema=schema),plan=plan,session_date=session_date,max_rows=max_rows,policy=policy)
     indicator_pin = 'CASE ' + ' '.join(f'WHEN b.ticker={_literal(u.ticker)} THEN {_literal(u.attempt_id)}'
                                       for u in indicator_units) + " ELSE '' END"
     liquidity_pin = 'CASE ' + ' '.join(f'WHEN b.ticker={_literal(u.ticker)} THEN {_literal(u.attempt_id)}'
@@ -174,4 +183,4 @@ def load_completed_risk_lookup(client, *, plan, session_date, tickers,
     frame=pl.concat(frames) if frames else pl.DataFrame(schema=schema)
     if frame.height and frame.filter(pl.col('boundary_ms') > through_boundary_ms).height:
         raise ValueError('Completed risk source crossed its requested as-of boundary')
-    return CompiledCompletedRiskLookup(frame,plan=plan,session_date=session_date,max_rows=max_rows)
+    return CompiledCompletedRiskLookup(frame,plan=plan,session_date=session_date,max_rows=max_rows,policy=policy)

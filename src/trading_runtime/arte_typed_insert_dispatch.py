@@ -53,10 +53,9 @@ _MANAGER_TABLES = frozenset({
 def _manager_tables(confirmed_original_risk_policy=None):
     if confirmed_original_risk_policy is None:
         return _MANAGER_TABLES
-    from .confirmed_original_risk_failure import ConfirmedOriginalRiskPolicy
+    from .original_risk_diagnostic_profile import require_original_risk_diagnostic_policy
     from .original_risk_pending_snapshot import selected_snapshot_contracts
-    if type(confirmed_original_risk_policy) is not ConfirmedOriginalRiskPolicy:
-        raise ValueError('Manager dispatch requires exact declared original-risk capability')
+    require_original_risk_diagnostic_policy(confirmed_original_risk_policy)
     return _MANAGER_TABLES | frozenset(t.name for t in selected_snapshot_contracts())
 _BROKER_MATCH_TABLES = frozenset({
     "trading_strategy_one_broker_match_snapshot_v5",
