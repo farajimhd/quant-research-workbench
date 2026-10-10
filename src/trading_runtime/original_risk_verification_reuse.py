@@ -136,13 +136,13 @@ def _request_identity(options, source):
     from .arte_journal_commit_v4 import V4CommittedPrefix
     known = {'client', 'run_id', 'batch_id', 'max_rows_per_family', 'first_price_source',
              'entry_activity_source', 'first_price_authorities', 'verified_prior_prefix',
-             'automatic_ladder_sources', 'declared_native_context', 'fixed_lot_context',
+             'automatic_ladder_sources', 'declared_native_context', 'native_channel_context', 'fixed_lot_context',
              'fixed_lot_recovery_context', '_fixed_lot_cold_walk',
              '_cold_recovery_context_sink', 'fixed_lot_read_scope'}
     if set(options) != known:
         # A future verifier option is never silently excluded from proof identity.
         return None
-    unsupported = ('declared_native_context', 'fixed_lot_context',
+    unsupported = ('declared_native_context', 'native_channel_context', 'fixed_lot_context',
         'fixed_lot_recovery_context', '_fixed_lot_cold_walk',
         '_cold_recovery_context_sink', 'fixed_lot_read_scope')
     if (any(options.get(key) is not None for key in unsupported)

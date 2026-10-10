@@ -290,7 +290,7 @@ def load_writer_v4_snapshot_prefix(client, run_id: str, *,
 def load_verified_v4_prefix(client, run_id: str, *,
                             max_commits: int = 100_000,
                             first_price_source=None, automatic_ladder_sources=(),
-                            declared_native_contexts=(), fixed_lot_contexts=(),
+                            declared_native_contexts=(), native_channel_contexts=(), fixed_lot_contexts=(),
                             fixed_lot_recovery_contexts=(),_fixed_lot_cold_source=None,
                             _cold_recovery_context_sink=None) -> V4CommittedPrefix | None:
     """Recompute every detail seal and require one complete contiguous chain.
@@ -306,6 +306,8 @@ def load_verified_v4_prefix(client, run_id: str, *,
     from .arte_declared_native_publication import declared_contexts_by_batch
     declared_context_index = declared_contexts_by_batch(
         run_id, declared_native_contexts, max_commits=max_commits)
+    from .native_channel_exit_journal_context import channel_contexts_by_batch
+    channel_context_index=channel_contexts_by_batch(run_id,native_channel_contexts,max_commits=max_commits)
     fixed_lot_context_index = {}
     recovery_context_index={}
     if fixed_lot_recovery_contexts:
@@ -325,7 +327,7 @@ def load_verified_v4_prefix(client, run_id: str, *,
     if len(commits) > max_commits:
         raise RuntimeError("V4 recovery commit count exceeds its memory bound")
     if not commits:
-        if declared_context_index or fixed_lot_context_index or recovery_context_index:
+        if declared_context_index or channel_context_index or fixed_lot_context_index or recovery_context_index:
             raise ValueError('Declared recovery contexts lack committed batches')
         return None
     cold_walk=None
@@ -371,6 +373,8 @@ def load_verified_v4_prefix(client, run_id: str, *,
             automatic_ladder_sources=automatic_ladder_sources,
             **({'declared_native_context': declared_context_index[batch_id]}
                if batch_id in declared_context_index else {}),
+            **({'native_channel_context':channel_context_index[batch_id]}
+               if batch_id in channel_context_index else {}),
             **({'fixed_lot_context': fixed_lot_context_index[batch_id]}
                if batch_id in fixed_lot_context_index else {}),
             **({'fixed_lot_recovery_context': recovery_context_index[batch_id]}
@@ -385,6 +389,8 @@ def load_verified_v4_prefix(client, run_id: str, *,
         seen_ids.add(batch_id)
     if set(declared_context_index) - seen_ids:
         raise ValueError('Declared recovery contexts name uncommitted batches')
+    if set(channel_context_index)-seen_ids:
+        raise ValueError('Channel journal contexts name uncommitted batches')
     if set(recovery_context_index)-seen_ids:
         raise ValueError('Selected recovery contexts name uncommitted batches')
     if set(fixed_lot_context_index) - seen_ids:
@@ -580,6 +586,7 @@ def load_verified_commit_v4(
     verified_prior_prefix: V4CommittedPrefix | None = None,
     automatic_ladder_sources=(),
     declared_native_context=None,
+    native_channel_context=None,
     fixed_lot_context=None,
     fixed_lot_recovery_context=None,
     _fixed_lot_cold_walk=None,_cold_recovery_context_sink=None,
@@ -600,6 +607,7 @@ def _load_verified_commit_v4_complete(
     verified_prior_prefix: V4CommittedPrefix | None = None,
     automatic_ladder_sources=(),
     declared_native_context=None,
+    native_channel_context=None,
     fixed_lot_context=None,
     fixed_lot_recovery_context=None,
     _fixed_lot_cold_walk=None,_cold_recovery_context_sink=None,
@@ -661,6 +669,7 @@ def _load_verified_commit_v4_complete(
         verified_prior_prefix=verified_prior_prefix,
         automatic_ladder_sources=automatic_ladder_sources, automatic_ladder_batch_metadata=dict(commit),
         declared_native_context=declared_native_context, fixed_lot_context=fixed_lot_context,
+        native_channel_context=native_channel_context,
         fixed_lot_recovery_context=fixed_lot_recovery_context,
         fixed_lot_read_scope=fixed_lot_read_scope,
         _fixed_lot_cold_walk=_fixed_lot_cold_walk,_cold_recovery_context_sink=_cold_recovery_context_sink)
@@ -690,6 +699,7 @@ def _load_verified_details_v4(
     verified_prior_prefix: V4CommittedPrefix | None = None,
     automatic_ladder_sources=(), automatic_ladder_read_client=None, automatic_ladder_batch_metadata=None,
     declared_native_context=None,
+    native_channel_context=None,
     fixed_lot_context=None,
     fixed_lot_recovery_context=None,
     _fixed_lot_cold_walk=None,_cold_recovery_context_sink=None,
@@ -699,6 +709,10 @@ def _load_verified_details_v4(
         _CONTRACTS, _canonical_typed_content, _literal, _rows,
     )
 
+    from .native_channel_exit_journal_context import selected_cold_channel_contracts
+    channel_contracts=selected_cold_channel_contracts(client,run_id,batch_id,family_rows,
+        native_channel_context,prefix=verified_prior_prefix,
+        metadata=automatic_ladder_batch_metadata,first_price_source=first_price_source)
     from .arte_declared_native_publication import verify_declared_cold_inventory
     verify_declared_cold_inventory(run_id, batch_id, family_rows, declared_native_context)
     filters = (f"WHERE run_id={_literal(run_id)} "
@@ -708,7 +722,7 @@ def _load_verified_details_v4(
     family_specs = []
     for family in family_rows:
         name = str(family["family_name"])
-        contract = _CONTRACTS.get(name)
+        contract = _CONTRACTS.get(name) or channel_contracts.get(name)
         if (contract is None or name in {"trading_commit_v4",
                                           "trading_commit_family_v4"}
                 or not {"record_id", "content_hash", "run_id", "batch_id"}
@@ -724,6 +738,7 @@ def _load_verified_details_v4(
         _batched_detail_rows_v4(client, tuple(spec for spec in family_specs
             if spec[0] not in (MOMENTUM.name, INITIAL_MOMENTUM.name)), filters,
             fixed_lot_context=fixed_lot_context, fixed_lot_recovery_context=fixed_lot_recovery_context,
+            **({'selected_channel_contracts':channel_contracts} if channel_contracts else {}),
             **({"fixed_lot_read_scope":fixed_lot_read_scope} if fixed_lot_read_scope is not None else {}))
         if batched_readback else None
     )
@@ -735,8 +750,12 @@ def _load_verified_details_v4(
                 f"SELECT {columns()} FROM arte.{name} "
                 f"{filters}LIMIT {row_count + 1} FORMAT JSONEachRow")]
         else:
+            contract=channel_contracts.get(name)
+            projection=','.join(f'toString({column}) AS {column}'
+                if contract is not None and 'Decimal(' in dict(contract.columns)[column] else column
+                for column in column_names)
             rows = (row_sets[name] if row_sets is not None else _rows(
-                client, f"SELECT {','.join(column_names)} FROM arte.{name} "
+                client, f"SELECT {projection} FROM arte.{name} "
                 f"{filters}LIMIT {row_count + 1} FORMAT JSONEachRow"))
         if len(rows) != row_count:
             raise RuntimeError("V4 detail readback has missing or excess rows")
@@ -745,14 +764,15 @@ def _load_verified_details_v4(
             content = {key: value for key, value in row.items()
                        if key != "content_hash"}
             digest = sha256(canonical_json(_canonical_typed_content(
-                name, content, stored_utc=True)).encode()).hexdigest()
+                name, content, stored_utc=True,
+                **({'_contract':channel_contracts[name]} if name in channel_contracts else {}))).encode()).hexdigest()
             if (row["run_id"] != run_id
                     or str(UUID(str(row["batch_id"]))) != batch_id
                     or row["content_hash"] != digest):
                 raise RuntimeError("V4 typed detail differs from its row hash")
             identities.append((str(UUID(str(row["record_id"]))), digest))
         details[name] = identities
-        if name in {"trading_event_v1", "trading_strategy_intent_v1",
+        if name in channel_contracts or name in {"trading_event_v1", "trading_strategy_intent_v1",
                     ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name, ORIGINAL_RISK_DIAGNOSTIC.name, PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name, LIQUIDITY_FADE_FAILURE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name, ENTRY_ACTIVITY.name, ENTRY_SPREAD_RISK.name,
                     ACKNOWLEDGEMENT.name,
                     ACKNOWLEDGEMENT_V5.name, CANCEL.name,
@@ -773,6 +793,8 @@ def _load_verified_details_v4(
                     "trading_fixed_structural_lot_entry_lot_v1",
                     "trading_fixed_structural_lot_configuration_node_v1"}:
             related_rows[name] = rows
+    from .native_channel_exit_journal_context import verify_cold_channel_graph
+    verify_cold_channel_graph(details,related_rows,native_channel_context)
     if (fixed_lot_context is not None
             or any(name.startswith('trading_fixed_structural_lot_') for name in related_rows)
             or any(row.get('entity_type') == 'fixed_structural_lot_entry_intent'
@@ -1155,7 +1177,7 @@ def _load_verified_details_v4(
 
 def _batched_detail_rows_v4(client, family_specs, filters, *,
                             fixed_lot_context=None, fixed_lot_recovery_context=None,
-                            fixed_lot_read_scope=None):
+                            fixed_lot_read_scope=None, selected_channel_contracts=None):
     """Read complete typed rows in bounded UNIONs; JSON is transport only.
 
     The stored rows remain normalized. Each row is reconstructed using its
@@ -1233,9 +1255,14 @@ def _batched_detail_rows_v4(client, family_specs, filters, *,
     for start in range(0, len(family_specs), 8):
         group = family_specs[start:start + 8]
         allowed = {name: columns for name, columns, _ in group}
+        def selected_columns(name,columns):
+            contract=(selected_channel_contracts or {}).get(name)
+            kinds={} if contract is None else dict(contract.columns)
+            return ','.join(f'toString({column})' if 'Decimal(' in kinds.get(column,'') else column
+                for column in columns)
         selects = [
             f"(SELECT {_literal(name)} AS family_name, "
-            f"toJSONString(tuple({','.join(columns)})) AS payload "
+            f"toJSONString(tuple({selected_columns(name,columns)})) AS payload "
             f"FROM arte.{name} {filters}LIMIT {row_count + 1})"
             for name, columns, row_count in group
         ]
@@ -2335,6 +2362,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
                              declared_native_context=None, fixed_lot_context=None,
                              fixed_lot_recovery_context=None) -> str:
     """Publish one sealed normalized family graph under a Keeper fence."""
+    from .native_channel_exit_journal_context import reject_unadmitted_channel_publication
+    reject_unadmitted_channel_publication(families)
     if fixed_lot_recovery_context is not None:
         from src.backend.backtest_fixed_structural_lot_management import require_recovery_client
         require_recovery_client(client,fixed_lot_recovery_context)
