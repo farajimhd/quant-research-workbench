@@ -108,7 +108,6 @@ def test_sparse_population_reuse_changes_parameters_and_gates_exactly():
     reused=CompactProgramRunner(inputs,space,[member],gates.clone(),holding_capacity=2,maximum_fills=512)
     reused.run()
     changed=deepcopy(member)
-    changed.policy[space.policy_start+NAMES.index('adaptive_window')]=32
     changed.policy[space.policy_start+NAMES.index('target_step_fraction')]=.01
     changed_gates=gates.clone();changed_gates[:,:10]=0
     pointer=reused.sparse_gates.data_ptr()
@@ -119,6 +118,17 @@ def test_sparse_population_reuse_changes_parameters_and_gates_exactly():
     for name,value in before.items():
         if isinstance(value,torch.Tensor):torch.testing.assert_close(value,after[name],rtol=0,atol=0,equal_nan=True,msg=name)
     count=int(fresh.fill_count[0]);torch.testing.assert_close(fresh.ledger[0,:count],reused.ledger[0,:count],rtol=0,atol=0)
+
+
+def test_sparse_population_reuse_rejects_different_exact_history_allocation():
+    _,inputs,space,member,gates=fixture()
+    member.policy[space.policy_start+NAMES.index('adaptive_window')]=31
+    runner=CompactProgramRunner(inputs,space,[member],gates.clone(),holding_capacity=2,maximum_fills=512)
+    assert len(runner.source_movement_ring)==31
+    changed=deepcopy(member)
+    changed.policy[space.policy_start+NAMES.index('adaptive_window')]=32
+    with pytest.raises(ValueError,match='specialization'):
+        runner.set_sparse_population([changed],gates.clone())
 
 
 def test_shared_source_rows_exact_for_repeated_held_and_empty_slots():
