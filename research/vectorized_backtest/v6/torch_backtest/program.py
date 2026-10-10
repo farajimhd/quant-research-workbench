@@ -113,10 +113,13 @@ class TorchPrograms:
         self.outputs=torch.tensor([p.output for p in programs],device=device)
         self.batch_axis=torch.arange(len(programs),device=device)
         self.dispatch=[]
-        for nodes,fi,ai,bi in self.rows:
+        for i,(nodes,fi,ai,bi) in enumerate(self.rows):
+            active=[i<len(p.nodes) for p in programs]
             operations=[]
-            for op in sorted({Op(n.op) for n in nodes}):
-                choose=torch.tensor([n.op==op for n in nodes],device=device)[:,None]
+            # Padding is never referenced by a validated program or selected
+            # as its output. Do not dispatch dummy constant-only instructions.
+            for op in sorted({Op(n.op) for n,live in zip(nodes,active) if live}):
+                choose=torch.tensor([live and n.op==op for n,live in zip(nodes,active)],device=device)[:,None]
                 windows=[(k,torch.tensor([n.op==op and n.window==k for n in nodes],device=device)[:,None],
                            torch.tensor([j for j,n in enumerate(nodes) if n.op==op and n.window==k],device=device))
                          for k in sorted({n.window for n in nodes if n.op==op})] if op in (Op.LAG,Op.MEAN,Op.MINIMUM,Op.MAXIMUM,Op.DIFFERENCE) else []

@@ -3,6 +3,17 @@ import torch
 from research.vectorized_backtest.v6.torch_backtest.feature_bank import CATALOG
 from research.vectorized_backtest.v6.torch_backtest.program import Node, Program, Op, TorchPrograms
 
+def test_padding_constants_do_not_enter_instruction_dispatch():
+    short=Program((Node(Op.CONSTANT,value=1.,unit='bool'),),0)
+    long=Program((Node(Op.CONSTANT,value=1.,unit='bool'),Node(Op.NOT,a=0),Node(Op.NOT,a=1)),2)
+    evaluator=TorchPrograms([short,long],CATALOG)
+    # Only the real NOT belongs to later instructions; the short program's
+    # padded constants cannot be operands or outputs.
+    assert len(evaluator.dispatch[1])==len(evaluator.dispatch[2])==1
+    features=torch.zeros(2,5,len(CATALOG));valid=torch.ones_like(features,dtype=torch.bool)
+    values,known=evaluator(features,valid)
+    assert values.eq(1).all() and known.all()
+
 def test_one_candle_mean_is_exact_identity_and_invalid_outputs_are_zero():
     features=torch.rand(3,250,len(CATALOG),generator=torch.Generator().manual_seed(9))
     valid=torch.ones_like(features,dtype=torch.bool);valid[:,17,8]=False
