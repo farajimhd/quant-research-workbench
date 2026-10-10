@@ -26,7 +26,7 @@ def main(argv=None):
     if not 1<=a.session_workers<=8:p.error('--session-workers must be 1..8')
     spec=json.loads(a.sessions.read_text())
     root=require_runtime(a.output);configure_caches(root/'cache')
-    evaluate=ResidentSessionEvaluator(a.inputs,a.structure,batch_size=a.batch_size,holding_capacity=a.holding_capacity,
+    evaluate=ResidentSessionEvaluator(a.inputs,a.structure,batch_size=a.batch_size,holding_capacity=a.holding_capacity,capture_seed_root=root/'capture-seeds',
         maximum_fills=a.maximum_fills,maximum_input_gib=a.maximum_input_gib,maximum_state_gib=a.maximum_state_gib,capture_variants=a.capture_variants)
     try:
         return run_generations(spec,a.population,a.generations,evaluate,root,seed=a.seed,

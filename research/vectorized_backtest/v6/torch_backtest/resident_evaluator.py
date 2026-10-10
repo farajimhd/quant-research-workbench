@@ -9,6 +9,7 @@ from datetime import datetime
 from time import perf_counter
 import json
 import gc
+from copy import deepcopy
 import numpy as np
 import torch
 from .sparse_evaluator import SparseSessionEvaluator,seal_batch,seal_session
@@ -19,10 +20,13 @@ from .training_pass import population_hash
 from .runtime import require_runtime,write_json,file_hash
 from .financial_audit import audit_fills
 from .captured_rules import SharedRuleBatch
+from .capture_seed import seed_population
 
 
 class ResidentSessionEvaluator(SparseSessionEvaluator):
     def __init__(self,*args,**kwargs):
+        self.capture_seed_root=kwargs.pop('capture_seed_root',None)
+        self._capture_seeds={}
         backend=kwargs.pop('backend','compiled_graph')
         graph_steps=kwargs.pop('graph_steps',16)
         capture_variants=kwargs.pop('capture_variants',1)
@@ -40,6 +44,7 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
         """Release this evaluator's retained generation buffers explicitly."""
         torch.cuda.synchronize(self.device)
         self._resident_runners.clear();self._resident_inputs.clear();self._resident_listing_ids.clear();self._cohort_identity=None
+        self._capture_seeds.clear()
         gc.collect()
 
     @staticmethod
@@ -56,6 +61,7 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
         result['capture_barrier']='all resident graphs prepared before concurrent replay'
         result['graph_steps']=self.graph_steps
         result['capture_variants']=self.capture_variants
+        result['capture_initializer']='exact-capture-initializer-v1'
         return result
 
     def _capture_cache(self,day):
@@ -184,10 +190,17 @@ class ResidentSessionEvaluator(SparseSessionEvaluator):
                             write_json(output/'resident-status.json',dict(stage='Build and capture financial broker',day=day,candidate_offset=offset,population=len(population),validation_opened=False))
                             # Evict the least-recent variant only when the bound is full.
                             self._reserve_capture(cache,capture_key);runner=None;gc.collect()
-                            runner=CompactProgramRunner(inputs[day],space,members,gates,structure=self.structures/day,
+                            if capture_key not in self._capture_seeds:
+                                self._capture_seeds[capture_key]=(seed_population(self.capture_seed_root,capture_key,members)
+                                    if self.capture_seed_root is not None else deepcopy(members))
+                            initializer=self._capture_seeds[capture_key]
+                            if CompactProgramRunner.specialization_key(initializer,space)!=execution_key:
+                                raise ValueError('Capture initializer execution shape changed')
+                            runner=CompactProgramRunner(inputs[day],space,initializer,gates,structure=self.structures/day,
                                 holding_capacity=self.holding_capacity,backend=self.backend,maximum_fills=self.maximum_fills,
                                 maximum_state_gib=self.maximum_state_gib,graph_steps=self.graph_steps)
                             torch.cuda.synchronize(self.device);runner.compile()
+                            runner.set_sparse_population(members,gates)
                         self._touch_capture(cache,capture_key,runner)
                         # No worker runs until this entire serial preparation loop finishes.
                         runner.preparation_reused=reused
