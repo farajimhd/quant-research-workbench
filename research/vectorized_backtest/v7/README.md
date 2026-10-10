@@ -7,6 +7,9 @@ population, or immutable deployment is migrated or resumed by V7.
 Each entry buys $1,000 of fractional shares; each add buys $200. There is no
 cash, buying-power, liquidity-capacity, spread, retry, or pending-order simulation.
 Adds are bounded by an optimized count of 0–5 and a management cooldown.
+Cost basis stays unchanged through elapsed clocks and partial sales. Entries
+set basis to the fill price; adds use an incremental weighted basis update.
+This avoids repeated arithmetic drift changing exact zero-profit eligibility.
 Entry/exit/add/reduce/trail programs, percentage stops and profit-taking,
 partial reductions, and certified swing stops remain position-aware.
 Portfolio replacement is absent because this evaluator has no capital ceiling.

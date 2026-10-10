@@ -71,6 +71,23 @@ def test_scripted_position_kernel_matches_eager():
     for a,b in zip(actual,expected):torch.testing.assert_close(a,b,rtol=0,atol=0)
 
 
+def test_cost_basis_is_exact_on_entry_and_unchanged_without_purchase():
+    position=torch.zeros((1,1,1,9),dtype=torch.float64);aggregate=torch.zeros((1,1,10),dtype=torch.float64);aggregate[...,8]=float('inf')
+    price=torch.full((1,1,1),3.75,dtype=torch.float64);yes=torch.ones_like(price,dtype=torch.bool);no=torch.zeros_like(yes)
+    policy=torch.tensor([.03,.9,.25,.03,0.,0.,2.,1.,0.],dtype=torch.float64)[None,None,None]
+    args=(price,price,yes,yes,torch.ones((1,1,1),dtype=torch.uint8),price,policy,torch.tensor(1.),no,1000.,200.,0.)
+    position,aggregate=step(position,aggregate,*args)
+    assert position[...,1].item()==3.75
+    # Deliberately awkward quantity used to make repeated q*avg/q rounding
+    # observable. No trade and a partial sale must preserve basis bit for bit.
+    position[...,0]=240.;position[...,1]=3.750000000000001
+    for signal in (0,8):
+        before=position[...,1].clone();previous=price+1
+        position,aggregate=step(position,aggregate,price,previous,yes,yes,torch.full((1,1,1),signal,dtype=torch.uint8),
+            price,policy,torch.tensor(10.),no,1000.,200.,0.)
+        assert torch.equal(position[...,1],before)
+
+
 def test_v7_programs_include_history_and_quote_features():
     rng=np.random.default_rng(23);rows=sample(rng,100)
     used={n.feature for v in rows for p in v.rules.values() for n in p.nodes if n.op==Op.FEATURE}

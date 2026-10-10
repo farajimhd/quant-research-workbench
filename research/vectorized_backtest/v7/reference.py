@@ -35,7 +35,8 @@ def replay_reference(data,members,gates,execution):
         entry&=np.isfinite(initial)&(initial>0)&(initial<px)
         dollars=np.where(entry,execution.entry_dollars,np.where(add,execution.add_dollars,0.))
         bought=dollars/np.maximum(px,1e-12);q=remaining+bought;old_basis=basis
-        basis=(remaining*basis+bought*px)/np.maximum(q,1e-12)
+        updated_basis=basis+(bought/np.maximum(q,1e-12))*(px-basis)
+        basis=np.where(entry,px,np.where(add,updated_basis,np.where(q>0,basis,0.)))
         episode=np.where(entry,realized,episode);realized-=dollars*cost
         stop=np.where(entry,initial,stop)
         target=np.where(entry,px*(1+policy('target_fraction')),np.where(target_hit&reduce,target+old_basis*policy('target_fraction'),target))

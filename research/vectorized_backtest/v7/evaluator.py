@@ -55,7 +55,12 @@ def step(position,aggregate,price,previous,observed,membership,signals,swing,pol
     dollars=torch.where(entry_now,entry_dollars,torch.where(add_now,add_dollars,0.))
     bought=dollars/execution_price.clamp_min(1e-12)
     quantity=remaining+bought
-    new_avg=(remaining*avg+bought*execution_price)/quantity.clamp_min(1e-12)
+    # Sales and elapsed clocks never change the surviving shares' cost basis.
+    # Repeated multiply/divide was drifting at exact zero-profit gates under
+    # compilation. Entry basis is its actual fill; only additions reweight it.
+    added_avg=avg+(bought/quantity.clamp_min(1e-12))*(execution_price-avg)
+    new_avg=torch.where(entry_now,execution_price,torch.where(add_now,added_avg,
+        torch.where(quantity>0,avg,torch.zeros_like(avg))))
     episode=torch.where(entry_now,realized,episode)
     realized=realized-dollars*cost
     stop=torch.where(entry_now,initial,stop)
