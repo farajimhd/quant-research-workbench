@@ -6,7 +6,7 @@ publication thread writes the terminal snapshot. No validation dates enter here.
 """
 import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
-import gc
+import gc,json
 import multiprocessing as mp
 import queue
 import threading
@@ -48,7 +48,7 @@ class Worker:
                 resident=torch.device(c['device']).type=='cuda')
         return self.host[day]
 
-    def run(self,day,next_day,payload,generation,token):
+    def run(self,day,next_day,payload,generation,token,replay_width):
         c=self.config;started=perf_counter();self.emit(day,stage='Load session',candidate_offset=0)
         item=self.pending.result() if self.pending is not None else self.loader.submit(self.load,day).result()
         self.pending=self.loader.submit(self.load,next_day) if next_day else None
@@ -78,14 +78,14 @@ class Worker:
                         if device.type=='cuda':torch.cuda.synchronize(device)
                         rule_seconds=perf_counter()-batch_start;replay_start=time();replay_clock=perf_counter()
                         self.emit(day,stage='Replay positions',candidate_offset=offset,replay_started=replay_start)
-                        result=replay_cohort([item],members,[gates],execution=execution,backend=c['backend'],
+                        result=replay_cohort([item],members,[gates],execution=execution,backend=c['backend'],listing_width=replay_width,
                             progress=lambda done,total:self.emit(day,stage='Replay positions',candidate_offset=offset,
                                 completed_seconds=done,total_seconds=total,replay_started=replay_start))[0]
                         metrics={k:v.detach().cpu().tolist() for k,v in result.items()}
                         parts.append(metrics)
                         timing=dict(day=day,offset=offset,candidates=len(members),load_seconds=load_seconds if offset==0 else 0.,
                             rule_seconds=rule_seconds,replay_seconds=perf_counter()-replay_clock,
-                            rule_started_epoch=rule_start,replay_started_epoch=replay_start,finished_epoch=time(),pid=os.getpid())
+                            rule_started_epoch=rule_start,replay_started_epoch=replay_start,finished_epoch=time(),pid=os.getpid(),replay_listing_width=replay_width)
                         if plan.plan is not None:
                             timing.update(capture_builds=plan.plan.builds,capture_hits=plan.plan.hits,capture_bytes=plan.plan.capture_bytes)
                         timings.append(timing)
@@ -128,7 +128,7 @@ class SessionLanes:
     def __init__(self,config,workers,panel):
         self.config=config;self.workers=workers;self.panel=panel
         self.context=mp.get_context('spawn');self.events=self.context.Queue(maxsize=256)
-        self.pools=[];self.stop=threading.Event();self.error=None
+        self.pools=[];self.stop=threading.Event();self.error=None;self.widths={}
 
     def pump(self):
         try:
@@ -152,12 +152,15 @@ class SessionLanes:
 
     def generation(self,days,population,generation,token):
         payload=[v.payload() for v in population];timings=[]
+        if not self.widths:
+            def width(day):return day,len(json.loads((Path(self.config['history'])/day/'complete.json').read_text())['listing_ids'])
+            with ThreadPoolExecutor(max_workers=self.workers) as reader:self.widths=dict(reader.map(width,days))
         for first in range(0,len(days),self.workers):
             cohort=days[first:first+self.workers];started=perf_counter()
             self.panel.begin_sessions(cohort)
             futures=[self.pools[lane].submit(evaluate,day,
                 days[first+self.workers+lane] if first+self.workers+lane<len(days) else None,
-                payload,generation,token) for lane,day in enumerate(cohort)]
+                payload,generation,token,max(self.widths[d] for d in cohort)) for lane,day in enumerate(cohort)]
             results=[future.result() for future in futures]
             if self.error is not None:raise RuntimeError('Session progress consumer failed') from self.error
             for result in results:

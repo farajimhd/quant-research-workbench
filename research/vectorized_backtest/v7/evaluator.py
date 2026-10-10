@@ -137,7 +137,7 @@ def state_signals(signals,held,age,limits,stateful:bool):
     return signals&mask
 
 
-def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',progress=None):
+def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',progress=None,listing_width=None):
     """One batched position engine across independent sessions and strategies.
 
     No bid/ask, spread, volume-capacity, cash, or pending-order tensors enter
@@ -146,6 +146,9 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
     execution.validate()
     if not data or len(data)!=len(gates) or backend not in ('eager','compile'):raise ValueError('Invalid replay cohort')
     device=data[0].device;b=len(members);s=len(data);u=max(len(v.listing_ids) for v in data);t=max(v.clocks for v in data)
+    if listing_width is not None:
+        if listing_width<u:raise ValueError('Replay listing width truncates a session')
+        u=listing_width
     if any(v.device!=device for v in data):raise ValueError('Cohort devices differ')
     position=torch.zeros((s,b,u,9),dtype=torch.float64,device=device)
     aggregate=torch.zeros((s,b,11),dtype=torch.float64,device=device);aggregate[...,8]=float('inf')
