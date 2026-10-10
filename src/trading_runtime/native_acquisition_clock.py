@@ -83,11 +83,15 @@ def acquisition_clock_from_entry_executions(group, executions, *,
     zone = ZoneInfo('America/New_York')
     if as_of.astimezone(zone).date() != session_date:
         raise ValueError('Decision clock differs from source session')
+    if (any(type(at) is not datetime or at.tzinfo is None or at.utcoffset() is None
+            for at in (group.submitted_at, group.updated_at))
+            or not group.submitted_at <= group.updated_at <= as_of):
+        raise ValueError('OMS entry group has a future or malformed causal clock')
     for e in fills:
         if (type(e.execution_id) is not str or not e.execution_id
                 or e.symbol != group.ticker or type(e.conid) is not int or e.conid != expected_conid
                 or type(e.trade_time) is not datetime or e.trade_time.tzinfo is None
-                or e.trade_time.utcoffset() is None or e.trade_time > as_of
+                or e.trade_time.utcoffset() is None or not group.submitted_at <= e.trade_time <= as_of
                 or e.trade_time.astimezone(zone).date() != session_date
                 or type(e.size) not in (int, float) or not isfinite(e.size) or e.size <= 0):
             raise ValueError('Entry execution is foreign, future or malformed')
