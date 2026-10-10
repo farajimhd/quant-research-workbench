@@ -83,7 +83,7 @@ def test_policy_requires_explicit_comparison_and_finite_threshold(installed):
 
 
 def test_reference_is_visible_only_after_completion_and_future_append_is_invariant():
-    from src.backend.backtest_native_channel_sequences import _reference_confirmation
+    from src.backend.backtest_native_channel_sequences import _reference_confirmation, _reference_evidence
     keys = dict(build_id='b', session_date='2026-08-04', ticker='TEST', attempt_id='a',
         feature_attempt_id='f', policy_digest='p')
     features = pl.DataFrame({**{k: [v] * 3 for k, v in keys.items()},
@@ -96,6 +96,10 @@ def test_reference_is_visible_only_after_completion_and_future_append_is_invaria
     # Equal-time completion at 60s cannot become the reference. 120s is
     # the first post-fill reference, unseen by the earlier decisions.
     assert _reference_confirmation(features, decisions, acquired).tolist() == [True, False, False, False]
+    evidence = _reference_evidence(features, decisions, acquired)
+    assert evidence['reference_completion_day_ms'].to_list()==[120000,None,None,120000]
+    assert evidence['reference_close_int'].to_list()==[110,None,None,110]
+    assert evidence['latest_completion_day_ms'].to_list()==[180000,60000,60000,120000]
     future = features.tail(1).with_columns(pl.lit(240000, dtype=pl.Int64).alias('available_day_boundary_ms'),
                                          pl.lit(1, dtype=pl.UInt64).alias('close_int'))
     assert np.array_equal(_reference_confirmation(features, decisions, acquired),

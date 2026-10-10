@@ -12,7 +12,7 @@ from src.market_engine.native_causal_channel_contract import (
 )
 from src.trading_runtime.native_completed_bar_sequences import (
     CompletedBarSequencePolicy, completed_bar_sequence_windows,
-    qualify_completed_sequences_after_acquisition,
+    completed_sequence_decision_evidence,
 )
 from src.trading_runtime.native_channel_qualification import _require_policy_json
 from src.trading_runtime.journal_contract import canonical_json
@@ -93,6 +93,10 @@ def parse_native_channel_sequence_policy(value):
 
 
 def _reference_confirmation(features, decisions, acquired):
+    return _reference_evidence(features, decisions, acquired)['reference_confirmed'].to_numpy()
+
+
+def _reference_evidence(features, decisions, acquired):
     """Columnar first available post-fill close, visible only on completion.
 
     Inputs are already source/schema validated by the installed adapter. The
@@ -118,7 +122,16 @@ def _reference_confirmation(features, decisions, acquired):
     predicate = ((pl.col('_first_completion') <= pl.col('decision_day_ms')) &
         pl.col('candle_available') & (pl.col('_latest_close') > 0) &
         (pl.col('_latest_close') < pl.col('_first_close'))).fill_null(False)
-    return left.with_columns(predicate.alias('_reference')).sort('_input_row')['_reference'].to_numpy()
+    return (left.with_columns(predicate.alias('reference_confirmed')).sort('_input_row')
+        .select(pl.col('_first_completion').alias('reference_completion_day_ms'),
+                pl.col('_first_close').alias('reference_close_int'),
+                pl.col('_latest_completion').alias('latest_completion_day_ms'),
+                pl.col('_latest_close').alias('latest_close_int'), 'reference_confirmed')
+        .with_columns(
+            pl.when(pl.col('reference_completion_day_ms') <= decisions['decision_day_ms'])
+            .then(pl.col('reference_close_int')).otherwise(None).alias('reference_close_int'),
+            pl.when(pl.col('reference_completion_day_ms') <= decisions['decision_day_ms'])
+            .then(pl.col('reference_completion_day_ms')).otherwise(None).alias('reference_completion_day_ms')))
 
 
 def qualify_installed_native_channel_sequences(client, request, feature_attempt_id,
@@ -174,6 +187,11 @@ class PreparedNativeChannelSequence:
     scope: pl.DataFrame
 
     def qualify(self, decisions, mandatory_held, acquisition_day_us):
+        result = self.decision_evidence(decisions, mandatory_held, acquisition_day_us)['qualified'].to_numpy()
+        return np.frombuffer(result.tobytes(), dtype=bool)
+
+    def decision_evidence(self, decisions, mandatory_held, acquisition_day_us):
+        """Retain causal support for normalized persistence; never authorizes orders."""
         policy = self.policy
         request = self.packet.request
         schema = dict.fromkeys(DECISION_IDENTITY, pl.String)
@@ -201,14 +219,16 @@ class PreparedNativeChannelSequence:
             raise ValueError('Decision identity is outside installed native coverage')
         left = left.with_columns(pl.lit(self.packet.feature_attempt_id).alias('feature_attempt_id'),
                                 pl.lit(policy.inputs.digest).alias('policy_digest'))
-        result = qualify_completed_sequences_after_acquisition(self.windows, left, held, acquired,
+        evidence = completed_sequence_decision_evidence(self.windows, left, held, acquired,
             sequence_policy=policy.sequence, resolution_ms=policy.resolution_ms,
             decision_interval_ms=policy.inputs.decision_interval_ms,
             freshness_ms=dict(policy.inputs.freshness_by_resolution)[policy.resolution_ms],
             max_decisions=policy.max_decisions)
         if policy.reference_mode == 'below-first-post-acquisition-close':
-            result = result & _reference_confirmation(self.features, left, acquired)
-        return np.frombuffer(result.tobytes(), dtype=bool)
+            reference = _reference_evidence(self.features, left, acquired)
+            evidence = evidence.hstack(reference).with_columns(
+                (pl.col('qualified') & pl.col('reference_confirmed')).alias('qualified'))
+        return evidence
 
 
 def prepare_installed_native_channel_sequence(client, request, feature_attempt_id, *,
