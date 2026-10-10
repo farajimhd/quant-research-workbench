@@ -172,6 +172,7 @@ class RulePlan:
         gpu_membership=data.tensors['membership']
         gpu_following=transfer(next_observed)
         started = perf_counter(); completed = 0
+        if progress:progress(dict(tiles=0,total_tiles=len(geometry)))
         for offset,listings,begin,end,queries in geometry:
             gpu_listings=gpu_order[offset:offset+len(listings)]
             for group_id, group in enumerate(self.groups):
@@ -208,8 +209,8 @@ class RulePlan:
                     signal = signal & eligible.T[None]
                     gates[candidates[:,None,None],ti[None,None,:],ui[None,:,None]] |= signal.to(torch.uint8)*(1<<bit)
             completed += 1
-            if progress and completed % 16 == 0:
-                progress(dict(stage='rule evaluation',tiles=completed,listing_groups_completed=offset//listing_batch,
+            if progress and (completed % 16 == 0 or completed==len(geometry)):
+                progress(dict(stage='rule evaluation',tiles=completed,total_tiles=len(geometry),listing_groups_completed=offset//listing_batch,
                               wall_seconds=perf_counter()-started,capture_builds=self.builds,capture_hits=self.hits))
         return gates
 

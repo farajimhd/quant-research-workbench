@@ -32,6 +32,7 @@ def replay_reference(data,members,gates,execution):
         sell=np.where(exit_now,q,np.where(reduce,q*policy('reduce_fraction'),0.))
         px=np.where(np.isfinite(current),current,0.)
         realized+=sell*(px-basis)-sell*px*cost
+        realized-=np.where(sell>0,np.maximum(sell*execution.fee_per_share,execution.minimum_order_fee),0.)
         remaining=np.maximum(q-sell,0.);closed=held&(remaining<=1e-12)
         worst=np.minimum(worst,np.where(closed,realized-episode,np.inf).min(axis=1));closed_count+=closed.sum(axis=1)
         add=held&~exit_now&~reduce&tradable&manageable&((signal&4)!=0)&(profit>=policy('add_minimum_profit'))&(adds<policy('maximum_adds'))
@@ -45,6 +46,7 @@ def replay_reference(data,members,gates,execution):
         basis=np.where(entry,px,np.where(add,updated_basis,np.where(q>0,basis,0.)))
         opened=np.where(entry,clock,opened)
         episode=np.where(entry,realized,episode);realized-=dollars*cost
+        realized-=np.where(bought>0,np.maximum(bought*execution.fee_per_share,execution.minimum_order_fee),0.)
         stop=np.where(entry,initial,stop)
         target=np.where(entry,px*(1+policy('target_fraction')),np.where(target_hit&reduce,target+old_basis*policy('target_fraction'),target))
         water=np.where(entry,px,water);adds=np.where(entry,0.,adds+add)

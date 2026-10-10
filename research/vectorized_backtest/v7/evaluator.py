@@ -12,13 +12,15 @@ class Execution:
     entry_dollars:float=1000.
     add_dollars:float=200.
     cost_bps:float=0.
+    fee_per_share:float=0.
+    minimum_order_fee:float=0.
     def validate(self):
-        if any(not math.isfinite(v) or v<0 for v in (self.entry_dollars,self.add_dollars,self.cost_bps)) or min(self.entry_dollars,self.add_dollars)<=0:
+        if any(not math.isfinite(v) or v<0 for v in (self.entry_dollars,self.add_dollars,self.cost_bps,self.fee_per_share,self.minimum_order_fee)) or min(self.entry_dollars,self.add_dollars)<=0:
             raise ValueError('Invalid assumed-fill sizing/cost')
         return self
 
 
-def step(position,aggregate,price,previous,observed,membership,signals,swing,policy,clock:torch.Tensor,terminal,entry_dollars:float,add_dollars:float,cost:float):
+def step(position,aggregate,price,previous,observed,membership,signals,swing,policy,clock:torch.Tensor,terminal,entry_dollars:float,add_dollars:float,cost:float,fee_per_share:float=0.,minimum_order_fee:float=0.):
     """[session,strategy,ticker] lanes; all signals predate the execution price.
 
     Position fields: quantity, average cost, stop, next target, high water,
@@ -42,6 +44,7 @@ def step(position,aggregate,price,previous,observed,membership,signals,swing,pol
     sell=torch.where(exit_now,q,torch.where(reduce_now,q*policy[...,2],torch.zeros_like(q)))
     execution_price=torch.where(torch.isfinite(price),price,torch.zeros_like(price))
     realized=realized+sell*(execution_price-avg)-sell*execution_price*cost
+    realized-=torch.where(sell>0,(sell*fee_per_share).clamp_min(minimum_order_fee),torch.zeros_like(sell))
     remaining=(q-sell).clamp_min(0)
     closed=held&(remaining<=1e-12)
     complete_profit=realized-episode
@@ -64,6 +67,7 @@ def step(position,aggregate,price,previous,observed,membership,signals,swing,pol
         torch.where(quantity>0,avg,torch.zeros_like(avg))))
     episode=torch.where(entry_now,realized,episode)
     realized=realized-dollars*cost
+    realized-=torch.where(bought>0,(bought*fee_per_share).clamp_min(minimum_order_fee),torch.zeros_like(bought))
     stop=torch.where(entry_now,initial,stop)
     target=torch.where(entry_now,execution_price*(1+policy[...,1]),torch.where(target_hit&reduce_now,target+avg*policy[...,1],target))
     water=torch.where(entry_now,execution_price,water)
@@ -90,7 +94,7 @@ class PopulationPrograms:
         from .rule_plan import prune
         self.programs={s:TorchPrograms([prune(effective_rules(m)[s]) for m in members],CATALOG,self.device) for s in STAGES}
         self.plan=None
-    def evaluate(self,data,chunk=2048,listing_batch=None,workspace_gib=None,maximum_gate_gib=2.):
+    def evaluate(self,data,chunk=2048,listing_batch=None,workspace_gib=None,maximum_gate_gib=2.,progress=None):
         if listing_batch is None:
             # A disk tile's four listings are not a GPU compute constraint.
             listing_batch=min(32,max(4,4096//len(self.members))) if self.device.type=='cuda' else 4
@@ -98,7 +102,7 @@ class PopulationPrograms:
             from .rule_plan import RulePlan
             if self.plan is None:self.plan=RulePlan(self.members,self.device)
             self.plan.workspace_gib=workspace_gib
-            return self.plan.evaluate(data,self.members,chunk,listing_batch,maximum_gate_gib)
+            return self.plan.evaluate(data,self.members,chunk,listing_batch,maximum_gate_gib,progress=progress)
         b=len(self.members);u=len(data.listing_ids)
         if b*data.clocks*u>maximum_gate_gib*1024**3:raise MemoryError('V7 rule gates exceed declared budget')
         gates=torch.zeros((b,data.clocks,u),dtype=torch.uint8,device=self.device)
@@ -187,7 +191,7 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
             terminal=(clock==lengths-1)[:,None,None]
             old_position,old_aggregate=position,aggregate
             position,aggregate=transition(position,aggregate,price,previous,observed,membership,signals,swing,policy,
-                clocks[clock],terminal,execution.entry_dollars,execution.add_dollars,execution.cost_bps/10000.)
+                clocks[clock],terminal,execution.entry_dollars,execution.add_dollars,execution.cost_bps/10000.,execution.fee_per_share,execution.minimum_order_fee)
             opened=torch.where(~held&(position[...,0]>1e-12),clocks[clock],opened)
             active=clock<lengths
             position=torch.where(active[:,None,None,None],position,old_position)

@@ -422,3 +422,25 @@ def test_background_publication_flushes_and_propagates_errors(tmp_path,monkeypat
     monkeypatch.setattr(io_pipeline,'write_json',fail)
     with pytest.raises(OSError,match='disk failure'):
         with io_pipeline.Publisher() as publisher:publisher.write(tmp_path/'c.json',{})
+
+
+@pytest.mark.parametrize('price,expected',[(10.,98.),(1.,90.)])
+def test_v6_commission_formula_charged_on_entry_and_terminal_sale(price,expected):
+    data=session([price,price,price*1.1]);strategy=member(target_fraction=.9)
+    gates=torch.ones((1,3,1),dtype=torch.uint8)
+    result=replay_cohort([data],[strategy],[gates],execution=Execution(fee_per_share=.005,minimum_order_fee=1.))[0]
+    assert result['net_pnl'].item()==pytest.approx(expected)
+    assert result['worst_position_pnl'].item()==pytest.approx(expected)
+    assert result['terminal_valid'].item()
+
+
+def test_commissions_on_add_and_reduction_match_independent_ledger(tmp_path):
+    from research.vectorized_backtest.v7.reference import replay_reference
+    root,history=fixture_files(tmp_path);data=SessionData(root,history)
+    members=[member(cooldown=1,add_minimum_profit=0.,reduce_minimum_profit=0.,target_fraction=.01)]
+    gates=torch.full((1,data.clocks,len(data.listing_ids)),1|4|8,dtype=torch.uint8)
+    fees=Execution(cost_bps=10.,fee_per_share=.005,minimum_order_fee=1.)
+    expected=replay_reference(data,members,gates.numpy(),fees)
+    result=replay_cohort([data],members,[gates],execution=fees)[0]
+    for name,value in expected.items():np.testing.assert_allclose(result[name].numpy(),value,rtol=1e-9,atol=1e-7)
+    data.close()

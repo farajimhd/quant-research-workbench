@@ -29,6 +29,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('inputs','history','feature-cache','output'):p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--days',nargs='+',required=True)
+    p.add_argument('--fee-per-share',type=float,default=0.);p.add_argument('--minimum-order-fee',type=float,default=0.)
     a=p.parse_args();days=training_days(a.inputs)
     if any(day not in days for day in a.days):raise ValueError('Only certified training days are permitted')
     root=require_runtime(a.output);configure_caches(root/'cache');torch.set_num_threads(1)
@@ -79,14 +80,14 @@ def main():
                 gates[:6]=forced
                 host_gates=gates.cpu().numpy();data.deactivate()
                 for cost in (0.,10.):
-                    execution=Execution(cost_bps=cost);ref_start=perf_counter()
+                    execution=Execution(cost_bps=cost,fee_per_share=a.fee_per_share,minimum_order_fee=a.minimum_order_fee);ref_start=perf_counter()
                     expected=replay_reference(data,members,host_gates,execution);ref_seconds=perf_counter()-ref_start
                     data.activate('cuda');replay_start=perf_counter()
                     actual=replay_cohort([data],members,[gates],execution=execution,backend='compile')[0]
                     errors=check(expected,actual);gpu_seconds=perf_counter()-replay_start;data.deactivate()
                     if not bool(actual['terminal_valid'].all()) or float(actual['add_count'].sum())<=0 or float(actual['reduce_count'].sum())<=0:
                         raise ValueError('Full-session lifecycle evidence is missing')
-                    records.append(dict(day=day,clocks=data.clocks,listings=len(data.listing_ids),cost_bps=cost,
+                    records.append(dict(day=day,clocks=data.clocks,listings=len(data.listing_ids),cost_bps=cost,execution=asdict(execution),
                         identity=data.identity,feature_receipt_sha256=file_hash(a.feature_cache/day/'complete.json'),
                         load_seconds=load_seconds,program_seconds=program_seconds,reference_seconds=ref_seconds,replay_seconds=gpu_seconds,
                         maximum_absolute_errors=errors,metrics={k:v.cpu().tolist() for k,v in actual.items()}))

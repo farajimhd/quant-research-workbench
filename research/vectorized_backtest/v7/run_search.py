@@ -7,11 +7,10 @@ from .io_pipeline import Publisher,prepare_host,TransferStaging
 from dataclasses import asdict
 from hashlib import sha256
 from pathlib import Path
-from time import perf_counter
+from time import perf_counter,time
 import numpy as np
 import torch
-from rich.progress import Progress,BarColumn,TextColumn,TimeElapsedColumn,TimeRemainingColumn
-from rich.table import Table
+from .terminal import CampaignProgress
 from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime,write_json,file_hash,configure_caches
 from research.vectorized_backtest.v6.torch_backtest.materialize import owned_run
 from research.vectorized_backtest.v6.torch_backtest.run_structure import training_days
@@ -46,10 +45,7 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
         device=device,backend=backend,seed=seed,execution=asdict(execution),maximum_data_gib=maximum_data_gib,maximum_gate_gib=maximum_gate_gib,
         objective=asdict(LowerTailDollarObjective()),timing='signals at second close; assumed fill at next observed close; terminal liquidation at last known mark')
     checkpoint=output/'checkpoint.json';rng=np.random.default_rng(seed);completed=0
-    with Publisher() as publisher,TransferStaging() as staging,ThreadPoolExecutor(max_workers=1,thread_name_prefix="v7-session") as loader,owned_run(output,version=VERSION),Progress(TextColumn('{task.description}'),BarColumn(),TextColumn('{task.completed}/{task.total}'),TimeElapsedColumn(),TimeRemainingColumn()) as panel:
-        generation_task=panel.add_task('Generations sealed',total=generations)
-        batch_task=panel.add_task('Session cohorts × strategy batches',total=math.ceil(len(days)/session_workers)*math.ceil(population_size/batch_size))
-        clock_task=panel.add_task('Current cohort replay clocks',total=1)
+    with Publisher() as publisher,TransferStaging() as staging,ThreadPoolExecutor(max_workers=1,thread_name_prefix="v7-session") as loader,owned_run(output,version=VERSION),CampaignProgress(output,contract) as panel:
         if checkpoint.exists():
             saved=json.loads(checkpoint.read_text())
             if saved['contract']!=contract:raise ValueError('Exact V7 resume contract changed')
@@ -70,7 +66,7 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
         host_cache={}
         for generation in range(completed+1,generations+1):
             started=perf_counter();root=require_runtime(output/f'generation-{generation:04d}');token=digest([v.payload() for v in population])
-            panel.update(generation_task,completed=generation-1);panel.update(batch_task,completed=0)
+            panel.begin_generation(generation)
             already_complete=(root/'complete.json').exists()
             if already_complete:
                 record=json.loads((root/'complete.json').read_text())
@@ -90,6 +86,7 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
             for first in ([] if already_complete else range(0,len(days),session_workers)):
                 cohort=days[first:first+session_workers];data=[]
                 try:
+                    panel.update(stage='Prepare session cohort',focus=', '.join(cohort),progress={},rule_tiles=0,total_rule_tiles=0)
                     if torch.device(device).type=='cuda':
                         free,_=torch.cuda.mem_get_info()
                         reserve=len(cohort)*(maximum_data_gib+maximum_gate_gib+2.)*1024**3
@@ -111,26 +108,30 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
                         members=population[offset:offset+batch_size];shared=shared_batches[offset]
                         status=dict(stage='strategy feature programs',generation=generation,total_generations=generations,
                             sessions=cohort,candidate_offset=offset,candidates=len(members),population=population_size,validation_opened=False)
-                        publisher.write(output/'status.json',status)
-                        rule_start=perf_counter();gates=[shared.evaluate(v,maximum_gate_gib=maximum_gate_gib) for v in data]
+                        panel.begin_batch(cohort,offset,max(v.clocks for v in data)-1)
+                        rule_start=perf_counter();gates=[shared.evaluate(v,maximum_gate_gib=maximum_gate_gib,progress=panel.rules) for v in data]
                         if torch.device(device).type=='cuda':torch.cuda.synchronize()
                         rule_seconds=perf_counter()-rule_start;replay_start=perf_counter()
-                        publisher.write(output/'status.json',dict(status,stage='batched position replay'))
-                        panel.update(clock_task,total=max(v.clocks for v in data)-1,completed=0)
+                        panel.begin_replay()
                         def clock_progress(clock,total):
-                            panel.update(clock_task,completed=clock,total=total)
-                            publisher.write(output/'status.json',dict(status,stage='batched position replay',replay_clock=clock,replay_clocks=total))
+                            panel.replay(clock,total)
                         metrics=replay_cohort(data,members,gates,execution=execution,backend=backend,progress=clock_progress)
                         timings.append(dict(sessions=cohort,offset=offset,candidates=len(members),load_seconds=load_seconds,
                             rule_seconds=rule_seconds,replay_seconds=perf_counter()-replay_start))
                         for day,result in zip(cohort,metrics):parts[day].append({k:v.detach().cpu().tolist() for k,v in result.items()})
+                        for day in cohort:
+                            publisher.write(require_runtime(root/day)/f'batch-{offset:06d}.json',dict(day=day,offset=offset,candidates=len(members),
+                                population_sha256=token,metrics=parts[day][-1],full_session=True,validation_opened=False))
                         publisher.write(root/'timings.json',timings);del gates,metrics
+                        publisher.flush()
                         if len(shared_batches)>1:shared.close()
-                        panel.advance(batch_task)
+                        panel.complete_batch(len(cohort),rule_seconds+timings[-1]['replay_seconds']+(load_seconds if offset==0 else 0))
                     for day,item in zip(cohort,data):
                         merged={k:sum((p[k] for p in parts[day]),[]) for k in parts[day][0]}
                         publisher.write(require_runtime(root/day)/'receipt.json',dict(day=day,metrics=merged,identity=item.identity,
                             population_sha256=token,full_session=True,validation_opened=False,execution=asdict(execution)))
+                    publisher.flush()
+                    panel.update(completed_sessions=first+len(cohort))
                 finally:
                     for item in data:
                         if hasattr(item,'resident_features'):item.resident_features.deactivate()
@@ -147,6 +148,7 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
             for shared in shared_batches.values():shared.close()
             shared_batches.clear()
             ordered=[json.loads((root/d/'receipt.json').read_text())['metrics'] for d in days]
+            panel.update(stage='Score complete training generation')
             matrix=lambda name:torch.tensor([v[name] for v in ordered],dtype=torch.bool if name=='terminal_valid' else torch.float64)
             complexity=torch.tensor([sum(p.validate(CATALOG)['active_nodes'] for p in effective_rules(v).values())+len(v.minimum_age) for v in population],dtype=torch.float64)
             ranking=score(*(matrix(k) for k in ('net_pnl','drawdown','stop_risk_dollar_seconds','capital_dollar_seconds','filled_batches','terminal_valid')),
@@ -163,10 +165,16 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
                 write_json(root/'winner.json',population[rank[0]].payload())
                 write_json(root/'complete.json',dict(population_sha256=token,training_days=days,selection_allowed=True,validation_opened=False,
                     session_receipts={d:file_hash(root/d/'receipt.json') for d in days},wall_seconds=perf_counter()-started))
-            display=Table(title=f'V7 generation {generation} • first 50 strategies')
-            for name in ('Strategy','Score','P&L','Ex-best P&L','Best session','Tail mean','Winning sessions','Worst position'):display.add_column(name)
-            for row in table[:50]:display.add_row(str(row['candidate']),*(f"{row[k]:.2f}" for k in ('score','pnl','ex_best_pnl','best_session_pnl','tail_session_mean','profitable_session_fraction','worst_position_pnl')))
-            panel.console.print(display)
+            leaders=[]
+            for place,i in enumerate(rank,1):
+                diagnostic={k:float(ranking[k][i]) for k in ('total_pnl','other_days_pnl','best_day_pnl','session_tail_mean_pnl','profitable_day_fraction','median_return','tail_loss')}
+                diagnostic.update(objective_components={k:float(v[i]) for k,v in ranking['components'].items()},
+                    worst_pnl=min(v['net_pnl'][i] for v in ordered),worst_drawdown=max(v['drawdown'][i] for v in ordered),
+                    positions=sum(v['filled_batches'][i] for v in ordered),closed_positions=sum(v['closed_positions'][i] for v in ordered),
+                    stop_risk_hours=sum(v['stop_risk_dollar_seconds'][i] for v in ordered)/3600,
+                    capital_hours=sum(v['capital_dollar_seconds'][i] for v in ordered)/3600,
+                    worst_position_pnl=min(v['worst_position_pnl'][i] for v in ordered))
+                leaders.append(dict(rank=place,candidate=i+1,score=float(ranking['score'][i]),valid=True,metrics=diagnostic))
             if generation<generations:
                 elite=rank[:max(1,len(rank)//10)];next_population=[population[i] for i in elite]
                 fresh=max(1,population_size//10);next_population.extend(sample(rng,fresh))
@@ -175,10 +183,15 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
                     next_population.append(mutate(rng,population[rank[int(tournament.min())]]))
                 population=next_population[:population_size]
             save(generation,file_hash(root/'complete.json'))
-            panel.update(generation_task,completed=generation)
-            publisher.write(output/'status.json',dict(stage='complete' if generation==generations else 'generation sealed',completed_generations=generation,
-                total_generations=generations,wall_seconds=perf_counter()-started,validation_opened=False))
-            if (output/'STOP').exists():return 130
+            panel.generation_samples.append(perf_counter()-started)
+            panel.update(stage='Training complete' if generation==generations else 'Generation sealed',completed_generations=generation,
+                completed_sessions=len(days),completed_batches=len(days)*math.ceil(population_size/batch_size),top_strategies=leaders,
+                evaluation_basis=f'Generation {generation}: all30 training-session search ranking',
+                wall_seconds=perf_counter()-started)
+            if (output/'STOP').exists():
+                panel.update(status='interrupted',stage='Stopped at generation boundary',finished_epoch=time());return 130
+        panel.update(status='complete',stage='Training complete',completed_generations=generations,
+            completed_sessions=len(days),completed_batches=len(days)*math.ceil(population_size/batch_size),finished_epoch=time())
     return 0
 
 def main():
@@ -189,11 +202,13 @@ def main():
     parser.add_argument('--batch-size',type=int,default=128);parser.add_argument('--session-workers',type=int,default=8)
     parser.add_argument('--device',default='cuda');parser.add_argument('--backend',choices=('eager','compile'),default='compile')
     parser.add_argument('--seed',type=int,default=2237);parser.add_argument('--cost-bps',type=float,default=0.)
+    parser.add_argument('--fee-per-share',type=float,default=0.);parser.add_argument('--minimum-order-fee',type=float,default=0.)
     parser.add_argument('--maximum-data-gib',type=float,default=4.);parser.add_argument('--maximum-gate-gib',type=float,default=2.)
     a=parser.parse_args()
+    torch.set_num_threads(1)  # Match the measured V7 execution configuration.
     if a.backend=='compile':configure_caches(require_runtime(a.output)/'cache',recompile_limit=128)
     return run(a.inputs,a.history,a.output,population_size=a.population,generations=a.generations,batch_size=a.batch_size,
-        session_workers=a.session_workers,device=a.device,backend=a.backend,seed=a.seed,execution=Execution(cost_bps=a.cost_bps),
+        session_workers=a.session_workers,device=a.device,backend=a.backend,seed=a.seed,execution=Execution(cost_bps=a.cost_bps,fee_per_share=a.fee_per_share,minimum_order_fee=a.minimum_order_fee),
         maximum_data_gib=a.maximum_data_gib,maximum_gate_gib=a.maximum_gate_gib,feature_cache=a.feature_cache)
 
 if __name__=='__main__':raise SystemExit(main())

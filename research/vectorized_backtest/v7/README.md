@@ -173,3 +173,23 @@ including net scoring and publication, without generating another population.
 
 GPU rule workspace is bounded by 80% of currently free device memory unless an
 explicit workspace limit is supplied; gate residency has its separate bound.
+
+### Full campaign terminal and commissions
+
+`run_search` publishes the V6-compatible terminal snapshot once per second in
+a dedicated thread. `python -B -m research.vectorized_backtest.v7.observe
+--output <campaign>` uses V6's ranking pages and financial/objective/position/
+performance views. Generations, durable sessions, durable session-batches,
+GPU-completed timestamps, and queued rule tiles occupy the top progress region.
+ETAs remain unavailable until measured work exists; batch/cohort counters reset
+with each generation and rankings always describe a completed all30 panel.
+Use N/B, J/K, [/] and F/O/T/P to navigate; Q closes only the read-only observer.
+Redirected workers emit plain stage summaries and preserve failure status.
+Uncollected V6 diagnostics are unavailable, never manufactured from V7 totals.
+
+`--fee-per-share 0.005 --minimum-order-fee 1` applies V6's commission formula
+to each assumed entry, add, reduction, exit and terminal sale. These commissions
+are additional to optional `--cost-bps`; both enter net P&L, drawdown and
+complete-position results. V7 treats each assumed fill as a completed order,
+without importing V6's partial-fill/pending-order machinery. Legacy defaults
+remain zero for explicit historical qualification comparisons.

@@ -1,0 +1,42 @@
+"""Read-only V7 terminal, using the V6 layout and navigation."""
+import os
+os.environ['PYTHONDONTWRITEBYTECODE']='1'
+import argparse,json,time
+from pathlib import Path
+from rich.console import Console
+from rich.live import Live
+from .terminal import render
+from research.vectorized_backtest.v6.torch_backtest.staged_dashboard import navigate
+
+
+def main(argv=None):
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--output',type=Path,required=True);p.add_argument('--once',action='store_true')
+    p.add_argument('--view',choices=('financial','objective','positions','performance'),default='financial')
+    args=p.parse_args(argv);console=Console(no_color=bool(os.environ.get('NO_COLOR')))
+    last={};rank=1;page=0;rank_page=0
+    def read():
+        nonlocal last
+        try:
+            candidate=json.loads((args.output/'status.json').read_text(encoding='utf-8'))
+            if candidate.get('validation_opened') is not False:raise ValueError('Invalid training snapshot')
+            last=candidate
+        except (OSError,ValueError):last={**last,'error':'Snapshot unavailable; retaining last good values'}
+        return render({**last,'_rank':rank,'_page':page,'_rank_page':rank_page},width=console.width,height=console.height,view=args.view)
+    if args.once or not console.is_terminal:console.print(read());return 0
+    with Live(read(),console=console,screen=True,refresh_per_second=1) as live:
+        try:
+            while True:
+                if os.name=='nt':
+                    import msvcrt
+                    if msvcrt.kbhit():
+                        key=msvcrt.getwch().lower()
+                        if key=='q':break
+                        rank,rank_page,page=navigate(last,key,rank=rank,rank_page=rank_page,detail_page=page,height=console.height)
+                        if key in 'fotp':args.view={'f':'financial','o':'objective','t':'positions','p':'performance'}[key];page=0
+                live.update(read());time.sleep(1)
+        except KeyboardInterrupt:pass
+    return 0
+
+
+if __name__=='__main__':raise SystemExit(main())
