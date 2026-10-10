@@ -1,0 +1,89 @@
+//@version=6
+indicator("Research: price jump screener / alerts v2.1", overlay = true, max_bars_back = 500)
+
+direction = input.string("Upward", "Detect", options = ["Upward", "Downward", "Both"])
+lookback = input.int(5, "Jump lookback (chart bars)", minval = 1, maxval = 200)
+threshold = input.float(2.0, "Minimum jump (%)", minval = 0.01, step = 0.1)
+rejectGaps = input.bool(true, "Reject windows containing missing bars / session gaps")
+recentBars = input.int(5, "Recent signal retention (bars, including signal bar)", minval = 1, maxval = 100)
+cooldownBars = input.int(0, "Minimum bars between same-direction alerts", minval = 0, maxval = 100)
+requireVolume = input.bool(false, "Require relative volume", group = "Optional gates")
+volumeLength = input.int(20, "Prior volume baseline (bars)", minval = 2, maxval = 200, group = "Optional gates")
+volumeMultiple = input.float(2.0, "Minimum relative volume", minval = 0.1, step = 0.1, group = "Optional gates")
+minimumDollarVolume = input.float(0, "Minimum current-bar dollar volume", minval = 0, group = "Optional gates")
+restrictSession = input.bool(false, "Restrict signal session", group = "Optional gates")
+signalSession = input.session("0400-2000", "Signal session (New York)", group = "Optional gates")
+showMarkers = input.bool(true, "Show alert markers", group = "Display")
+
+float barSeconds = timeframe.in_seconds()
+if barstate.isfirst and (not timeframe.isintraday or na(barSeconds) or not chart.is_standard)
+    runtime.error("Use a standard time-based intraday candle chart. For Pine Screener, choose 1m, 5m, 15m, 30m, 1h, 2h or 4h.")
+
+// Closed chart-bar returns, not an intrabar high/low excursion or an overnight gap detector.
+float anchor = close[lookback]
+bool priceReady = not na(anchor) and anchor > 0 and close > 0
+bool contiguous = not na(time[lookback]) and time - time[lookback] <= lookback * barSeconds * 1000
+bool windowReady = priceReady and (not rejectGaps or contiguous)
+float jumpPct = windowReady ? (close / anchor - 1) * 100 : na
+// The forming/current bar never contributes to its own volume baseline.
+float volumeBaseline = ta.sma(volume, volumeLength)[1]
+float relativeVolume = not na(volume) and not na(volumeBaseline) and volumeBaseline > 0 ? volume / volumeBaseline : na
+float dollarVolume = not na(volume) ? volume * close : na
+bool volumeReady = (not requireVolume or not na(relativeVolume)) and (minimumDollarVolume <= 0 or not na(dollarVolume))
+bool ready = windowReady and volumeReady
+bool insideSession = not restrictSession or not na(time(timeframe.period, signalSession, "America/New_York"))
+bool gates = ready and insideSession and (not requireVolume or relativeVolume >= volumeMultiple) and (minimumDollarVolume <= 0 or dollarVolume >= minimumDollarVolume)
+bool upQualified = direction != "Downward" and gates and jumpPct >= threshold
+bool downQualified = direction != "Upward" and gates and jumpPct <= -threshold
+
+// One alert per qualifying episode. A cooldown-delayed episode may emit later
+// if it remains qualified; a completed nonqualifying bar rearms that direction.
+var bool upEmitted = false
+var bool downEmitted = false
+var int lastUpBar = na
+var int lastDownBar = na
+bool fireUp = false
+bool fireDown = false
+if barstate.isconfirmed
+    if not upQualified
+        upEmitted := false
+    if not downQualified
+        downEmitted := false
+    fireUp := upQualified and not upEmitted and (na(lastUpBar) or bar_index - lastUpBar >= cooldownBars)
+    fireDown := downQualified and not downEmitted and (na(lastDownBar) or bar_index - lastDownBar >= cooldownBars)
+    if fireUp
+        upEmitted := true
+        lastUpBar := bar_index
+    if fireDown
+        downEmitted := true
+        lastDownBar := bar_index
+
+int sinceUp = ta.barssince(fireUp)
+int sinceDown = ta.barssince(fireDown)
+bool recentUp = not na(sinceUp) and sinceUp < recentBars
+bool recentDown = not na(sinceDown) and sinceDown < recentBars
+
+// Keep all numeric screener columns on the latest completed candle even while
+// a live candle forms. The first ten plots are the screener's default columns.
+confirmedValue(float value) =>
+    barstate.isconfirmed ? value : value[1]
+
+plot(confirmedValue(jumpPct), "Jump %", display = display.data_window)
+plot(confirmedValue(upQualified ? 1.0 : 0.0), "Up qualified", display = display.data_window)
+plot(confirmedValue(downQualified ? 1.0 : 0.0), "Down qualified", display = display.data_window)
+plot(confirmedValue(recentUp ? 1.0 : 0.0), "Recent up signal", display = display.data_window)
+plot(confirmedValue(recentDown ? 1.0 : 0.0), "Recent down signal", display = display.data_window)
+plot(confirmedValue(fireUp ? 1.0 : 0.0), "New up signal", display = display.data_window)
+plot(confirmedValue(fireDown ? 1.0 : 0.0), "New down signal", display = display.data_window)
+plot(confirmedValue(relativeVolume), "Relative volume", display = display.data_window)
+plot(confirmedValue(dollarVolume), "Bar dollar volume", display = display.data_window)
+plot(confirmedValue(ready ? 1.0 : 0.0), "Data ready", display = display.data_window)
+
+alertcondition(fireUp, "Upward price jump", "Upward price jump on {{ticker}} ({{interval}}), close={{close}}, jump_pct={{plot(\"Jump %\")}}")
+alertcondition(fireDown, "Downward price jump", "Downward price jump on {{ticker}} ({{interval}}), close={{close}}, jump_pct={{plot(\"Jump %\")}}")
+alertcondition(fireUp or fireDown, "Any price jump", "Price jump on {{ticker}} ({{interval}}), close={{close}}, jump_pct={{plot(\"Jump %\")}}")
+if fireUp or fireDown
+    alert("Research price jump v2.1 | " + syminfo.tickerid + " | " + (fireUp ? "UP" : "DOWN") + " | timeframe=" + timeframe.period + " | close=" + str.tostring(close, format.mintick) + " | jump_pct=" + str.tostring(jumpPct, "#.##"), alert.freq_once_per_bar_close)
+
+plotshape(showMarkers and fireUp, title = "Up jump marker", style = shape.triangleup, location = location.belowbar, color = color.lime, size = size.small, text = "JUMP")
+plotshape(showMarkers and fireDown, title = "Down jump marker", style = shape.triangledown, location = location.abovebar, color = color.red, size = size.small, text = "DROP")

@@ -2,6 +2,8 @@
 
 Copy the complete `structural_zones.pine` into TradingView's Pine Editor, replacing the old structural indicator. The independent v1 MACD/jump-alert scripts are unchanged. This is a chart-bar approximation, not the repo's causal v7 statistical builder.
 
+For a separate price-jump detector with numeric Pine Screener columns and upward/downward alerts, use `price_jump_alerts.pine`; setup and semantics are in [PRICE_JUMP_ALERTS.md](PRICE_JUMP_ALERTS.md).
+
 ## Daily-bar levels (v2.11)
 
 Daily-bar levels are enabled by default and calculated independently in TradingView's `1D` context, even when the intraday chart has little loaded history. They use a separate 365-calendar-day rolling window, five left/five confirmation daily bars, and four displayed levels per side by default. Change these in the **Daily levels** input group. Available daily feed history still limits coverage.
