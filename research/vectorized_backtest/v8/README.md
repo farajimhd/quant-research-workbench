@@ -106,3 +106,43 @@ validation features use the canonical source and the same V6 feature encoder.
 `prepare_validation` requires V7 completion before opening the held-out sources.
 Qualification/profiling authorization does not itself launch a 50-generation V8
 optimization campaign.
+
+## Nonblocking W&B metrics
+
+`wandb_observer` is a separately launched, CPU-only process. Search does not
+import, start, queue work to, or wait for it. It reads existing completed split
+rankings and the full-generation wall receipt, including from an older V8
+deployment. A network outage or SDK shutdown can delay only the observer.
+No changes to selection, validation, replay, or campaign checkpoints are needed.
+
+The default project is `optimization-v8`. Each generation sends about 30 scalars
+and the readable leader ID. Train and validation metrics refer to the **same
+training-selected leader**, with per-session profit, trimmed profit, trade/session
+tails, worst session drawdown, profitable/active session rates and position count.
+Raw scores are separately labeled because split lengths differ. Shortlist medians
+use the same training-selected candidates on both splits. Other charts show K,
+generation/validation seconds, exact-result reuse and unrelated-mate fallbacks.
+No-trade candidates remain in the validation shortlist median.
+
+Console capture, source/git, package lists, machine metadata, system metrics and
+job creation are disabled explicitly. No artifacts, trades, rankings, datasets,
+checkpoints or raw logs are uploaded. W&B still stores its normal run identity
+and metric history. SDK scratch data stays under the observer runtime directory.
+Credentials use environment/shared secret discovery and are never added to metrics.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -m research.vectorized_backtest.v8.wandb_observer `
+  --campaign D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v8/campaigns/NEW-RUN `
+  --output D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v8/observers/NEW-RUN `
+  --project optimization-v8 --entity mehdifaraji --follow
+```
+
+Run this in a separate process. It may start before the campaign exists. `--follow`
+retries SDK upload errors every 30 seconds and stops when the campaign completes
+or stops; remove the observer's `STOP` file before restarting. Without `--follow`
+it uploads available completed generations and exits. The stable run ID and SDK
+resume cursor prevent normal restart duplicates; local enqueue status is never
+claimed as cloud acknowledgement. Immutable small summaries are retained locally
+for recovery. `--mode offline` exercises the SDK without uploading. Observer
+status distinguishes waiting, queued-to-SDK, retry, upstream stop and completion.
