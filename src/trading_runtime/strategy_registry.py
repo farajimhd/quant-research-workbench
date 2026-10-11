@@ -1637,6 +1637,26 @@ def initialize_numbered_fixed_strategies() -> None:
                 certify_native_channel_bounded_reader_successor_source, channel_transport_release,
                 historical_parent_proof=channel_bounded_reader_parent_source_proof())))
         register_numbered_strategy(channel_bounded_reader)
+        from .strategy_one_hundred_twenty_nine_release import release_contract as channel_reader_isolation_release
+        from .strategy_one_hundred_twenty_nine_contract import strategy_one_hundred_twenty_nine_contract
+        from .strategy_one_hundred_twenty_nine_configuration import (
+            SOURCE_PREFIX as channel_reader_isolation_source_prefix,
+            derive_strategy_one_hundred_twenty_nine_configuration,
+            verify_strategy_one_hundred_twenty_nine_manifest,
+            historical_parent_source_proof as channel_reader_isolation_parent_source_proof)
+        from src.backend.backtest_native_channel_reader_isolation_successor_certification import certify_native_channel_reader_isolation_successor_source
+        channel_reader_isolation = channel_reader_isolation_release()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=channel_reader_isolation.executor_strategy_id, revision=channel_reader_isolation.executor_revision,
+            evaluation_interval=channel_reader_isolation.evaluation_interval,
+            strategy_factory=_strategy_two_factory,
+            contract_factory=strategy_one_hundred_twenty_nine_contract,
+            manifest_authority=NativeManifestAuthority(128, channel_reader_isolation_source_prefix,
+                derive_strategy_one_hundred_twenty_nine_configuration,
+                verify_strategy_one_hundred_twenty_nine_manifest,
+                certify_native_channel_reader_isolation_successor_source, channel_bounded_reader_release,
+                historical_parent_proof=channel_reader_isolation_parent_source_proof())))
+        register_numbered_strategy(channel_reader_isolation)
         _NUMBERED_FIXED_REGISTERED = True
 
 
