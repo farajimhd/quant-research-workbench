@@ -12,6 +12,38 @@ from research.rl_trading.v6.hierarchical_heads import sequence_losses
 VERSION = 'rl-v6-frozen-context-equal-row-head-fit-v1'
 
 
+def capture(policy, session, targets, device):
+    """Capture ordered decoder inputs through the real TRAIN causal evaluator.
+
+    The caller must first authenticate cache/selection/source receipts. This
+    function rejects non-TRAIN sessions and records identity alongside tensors,
+    so a later loader can verify more than row counts or class frequencies.
+    """
+    from research.rl_trading.v6.run_ranked_teacher_generalization import evaluate_probabilities
+    if session.role != 'train' or not targets:
+        raise ValueError('Frozen contexts require nonempty TRAIN targets')
+    rows = []
+    handle = policy.decoder.heads.register_forward_pre_hook(
+        lambda module, args: rows.append(args[0].detach().cpu().clone()))
+    evidence = {}
+    try:
+        metrics, probabilities, arrays = evaluate_probabilities(
+            policy, session, targets, device, regression_evidence=evidence)
+    finally:
+        handle.remove()
+    if len(rows) != len(targets) or any(row.ndim != 2 or len(row) != 1 for row in rows):
+        raise ValueError('Decoder context/target correspondence changed')
+    context = torch.cat(rows)
+    if not torch.isfinite(context).all():
+        raise ValueError('Nonfinite causal decoder context')
+    metrics.update(evidence)
+    packet = dict(version=VERSION, day=session.day.isoformat(), role='train',
+        context=context, action=arrays['action'], close_us=arrays['close_us'],
+        episode_uid=arrays['episode_uid'], listing_index=arrays['listing_index'],
+        weights=[target.sample_weight for target in targets])
+    return packet, metrics, probabilities
+
+
 def configure(policy):
     """Freeze causal representation parameters; return unique head parameters."""
     modules = (policy.decoder.heads.entry, policy.decoder.heads.exit,
@@ -23,6 +55,37 @@ def configure(policy):
         for parameter in module.parameters():
             parameter.requires_grad_(True)
     return [parameter for parameter in policy.parameters() if parameter.requires_grad]
+
+
+def targets_from_packet(session, targets, packet):
+    """Rebind captured rows to authoritative targets before fitting any head."""
+    import numpy as np
+    if (session.role != 'train' or packet.get('role') != 'train' or
+            packet.get('version') != VERSION or packet.get('day') != session.day.isoformat() or
+            len(targets) != len(packet['context'])):
+        raise ValueError('Captured TRAIN session binding changed')
+    actions = [(3 if item.token == 1 + len(session.listings) else 2)
+               if len(item.held_index) else (0 if item.token else 1) for item in targets]
+    expected = dict(action=actions, close_us=[item.close_us for item in targets],
+        episode_uid=[item.episode_uid for item in targets],
+        listing_index=[int(item.held_index[0]) if len(item.held_index)
+                       else item.soft_tokens[1] - 1 for item in targets],
+        weights=[item.sample_weight for item in targets])
+    if any(not np.array_equal(packet[name], value) for name, value in expected.items()):
+        raise ValueError('Captured row identity/action/weight changed')
+    quality = torch.tensor([item.soft_probabilities[0 if len(item.held_index) else 1]
+                            for item in targets], dtype=torch.float32)
+    allocation = torch.tensor([float('nan') if item.allocation_ratio_target is None
+                               else item.allocation_ratio_target for item in targets])
+    if any(item.forecast_actions is None or item.forecast_probabilities is None for item in targets):
+        raise ValueError('Missing saved forecast authority')
+    forecasts = []
+    for length in sorted({len(item.forecast_actions) for item in targets}):
+        indices = [i for i, item in enumerate(targets) if len(item.forecast_actions) == length]
+        forecasts.append((torch.tensor(indices, dtype=torch.long),
+            torch.tensor(np.stack([targets[i].forecast_actions for i in indices])),
+            torch.tensor(np.stack([targets[i].forecast_probabilities for i in indices]), dtype=torch.float32)))
+    return packet['context'], torch.tensor(actions, dtype=torch.long), quality, allocation, forecasts
 
 
 def objective(policy, context, actions, quality, allocation, forecasts, class_weights):

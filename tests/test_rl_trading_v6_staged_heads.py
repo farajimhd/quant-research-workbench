@@ -2,7 +2,7 @@ import pytest
 import torch
 from torch import nn
 from research.rl_trading.v6.hierarchical_heads import HierarchicalTickerHeads, HierarchicalForecast
-from research.rl_trading.v6.staged_heads import configure, objective
+from research.rl_trading.v6.staged_heads import configure, objective, capture, targets_from_packet, VERSION
 
 
 def fixture():
@@ -50,3 +50,41 @@ def test_fail_closed_targets(case):
     if case == 'invalid_ratio': ratio[1] = .5
     if case == 'invalid_future': forecasts[0][2][0, 0, :] = 0
     with pytest.raises(ValueError): objective(policy, x, actions, quality, ratio, forecasts, weights)
+
+
+def test_capture_rejects_non_train_before_reading_targets():
+    from types import SimpleNamespace
+    with pytest.raises(ValueError):
+        capture(None, SimpleNamespace(role='development'), [object()], 'cpu')
+
+
+def test_capture_removes_hook_after_evaluator_failure(monkeypatch):
+    from types import SimpleNamespace
+    from research.rl_trading.v6 import run_ranked_teacher_generalization as evaluator
+    policy, _ = fixture()
+    def fail(*args, **kwargs):
+        raise RuntimeError('causal source failure')
+    monkeypatch.setattr(evaluator, 'evaluate_probabilities', fail)
+    with pytest.raises(RuntimeError, match='causal source failure'):
+        capture(policy, SimpleNamespace(role='train'), [object()], 'cpu')
+    assert len(policy.decoder.heads._forward_pre_hooks) == 0
+
+
+def test_packet_identity_is_required_not_just_matching_counts():
+    from types import SimpleNamespace
+    from datetime import date
+    import numpy as np
+    session = SimpleNamespace(role='train', day=date(2026, 7, 31), listings=['A'])
+    target = SimpleNamespace(token=1, held_index=[], soft_tokens=(0, 1),
+        soft_probabilities=(.2, .8), close_us=10, episode_uid='episode-A',
+        sample_weight=.5, allocation_ratio_target=.4,
+        forecast_actions=np.array([2], dtype=np.int64),
+        forecast_probabilities=np.array([[0., 0., 1., 0.]]))
+    packet = dict(role='train', version=VERSION, day='2026-07-31',
+        context=torch.zeros(1, 8), action=[0], close_us=[10],
+        episode_uid=['episode-A'], listing_index=[0], weights=[.5])
+    tensors = targets_from_packet(session, [target], packet)
+    assert tensors[1].tolist() == [0]
+    packet['episode_uid'] = ['episode-B']
+    with pytest.raises(ValueError, match='identity'):
+        targets_from_packet(session, [target], packet)
