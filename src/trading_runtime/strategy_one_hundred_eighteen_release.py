@@ -1,6 +1,8 @@
 """Immutable declaration for the first causal completed-channel financial pilot."""
 from copy import deepcopy
 from dataclasses import replace
+import json
+from .journal_contract import canonical_json
 
 from . import strategy_one_hundred_seventeen_release as parent
 from .native_channel_management_policy import RULE, SOURCE_CONTRACT, POLICY_KEY, NativeChannelManagementPolicy
@@ -9,6 +11,9 @@ from .native_channel_quote_exit import NativeChannelQuoteExitPolicy
 from src.market_engine.native_causal_channel_contract import NativeChannelPolicy
 from src.backend.backtest_native_channel_sequences import NativeChannelSequencePolicy
 from src.backend.backtest_native_channel_exit_policy import NativeChannelExitPolicy
+
+CONTROL_REVISION = 'strategy-one-117:3c2d1cef-33bc-4ce0-811d-763f60185546'
+CONTROL_PAYLOAD_HASH = '20db5b939e3f68415f6c58b4eba6dc6fe718a96304fa86218f3cf979e8794d79'
 
 CHANNEL_POLICY = NativeChannelManagementPolicy(NativeChannelExitPolicy(
     NativeChannelSequencePolicy(
@@ -44,5 +49,5 @@ def release_contract():
 
 def declared_policies():
     policies=deepcopy(parent.declared_policies())
-    policies[POLICY_KEY]=CHANNEL_POLICY.payload()
+    policies[POLICY_KEY]=json.loads(canonical_json(CHANNEL_POLICY.payload()))
     return policies

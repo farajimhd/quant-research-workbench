@@ -1,0 +1,35 @@
+from copy import deepcopy
+from dataclasses import replace
+import pytest
+from src.trading_runtime import strategy_one_hundred_eighteen_configuration as child
+from src.trading_runtime import strategy_one_hundred_seventeen_configuration as parent
+from src.backend.backtest_strategy_one_configuration import CertifiedStrategyOneConfiguration
+from tests.test_strategy117_configuration import source_fixture as parent_input
+from test_strategy_thirty_three_configuration import APPROVAL
+from src.trading_runtime.native_channel_management_policy import POLICY_KEY
+
+
+def source_fixture():
+    prepared=parent.derive_strategy_one_hundred_seventeen_configuration(parent_input(),
+        **{**APPROVAL,'approved_code_commit':child.CONTROL_CODE_COMMIT,
+           'approved_code_fingerprint':child.CONTROL_CODE_FINGERPRINT})
+    return CertifiedStrategyOneConfiguration(child.CONTROL_REVISION.split(':')[1],
+        child.CONTROL_PAYLOAD_HASH,prepared['node_hash'],prepared['source_candidate_id'],
+        prepared['source_candidate_hash'],'prepared-test-only',prepared['payload'])
+
+
+def test_only_channel_policy_and_release_identity_change():
+    source=source_fixture(); before=deepcopy(source.payload)
+    result=child.derive_strategy_one_hundred_eighteen_configuration(source,**APPROVAL)
+    assert source.payload==before
+    for key in before.keys()-{'strategy','strategy_profile','run_plan'}:
+        assert result['payload'][key]==before[key]
+    old=before['strategy']['numbered_release']; new=result['payload']['strategy']['numbered_release']
+    for key in parent.manifest_policies(): assert new[key]==old[key]
+    assert new[POLICY_KEY]['exit_policy']['sequence']['minimum_bars']==2
+    child.verify_prepared_strategy_one_hundred_eighteen_manifest(result['payload']['strategy'])
+    with pytest.raises(ValueError):
+        child.derive_strategy_one_hundred_eighteen_configuration(replace(source,payload_hash='f'*64),**APPROVAL)
+    new[POLICY_KEY]['exit_policy']['sequence']['minimum_bars']=1
+    with pytest.raises(ValueError):
+        child.verify_prepared_strategy_one_hundred_eighteen_manifest(result['payload']['strategy'])
