@@ -99,8 +99,16 @@ class SimulationConfig:
     market_slippage_bps: float = 0.0
     allow_short: bool = False
     new_order_activation_delay_ms: float = 0.0
+    liquidity_resolution_ms: int = 100
+
+    @property
+    def liquidity_source(self) -> str:
+        return ("arte.liquidity_100ms_v1" if self.liquidity_resolution_ms == 100
+                else "arte.liquidity_bars_v2")
 
     def __post_init__(self) -> None:
+        if type(self.liquidity_resolution_ms) is not int or self.liquidity_resolution_ms not in (100, 1000):
+            raise ValueError("Broker liquidity resolution must be 100 or 1000 ms")
         # Callers may pass an integer initial balance (for example 100_000).
         # Normalize it once before any snapshot: a positive int otherwise
         # survives max(0.0, cash) and violates the typed Float64 journal.
@@ -993,19 +1001,20 @@ class SimulatedBrokerAdapter:
 
     def validate_liquidity_bar(self, row: Mapping[str, Any], *, at: datetime) -> None:
         """Reject malformed source rows before OMS or broker state changes."""
-        if at.tzinfo is None or int(row.get("resolution_ms") or 0) != 100:
-            raise ValueError("Broker requires a completed, timezone-aware 100ms liquidity bar")
+        resolution = self.config.liquidity_resolution_ms
+        if at.tzinfo is None or type(row.get("resolution_ms")) is not int or row["resolution_ms"] != resolution:
+            raise ValueError("Broker requires a completed, timezone-aware configured liquidity bar")
         local = at.astimezone(NEW_YORK)
         local_ms = ((local.hour * 3_600 + local.minute * 60 + local.second)
                     * 1_000 + local.microsecond // 1_000)
-        if (local.microsecond % 100_000
+        if (local.microsecond % 1000 or local_ms % resolution
                 or type(row.get("bucket_index")) is not int
-                or row["bucket_index"] != local_ms // 100 - 1):
+                or row["bucket_index"] != local_ms // resolution - 1):
             raise ValueError("Broker liquidity bucket identity differs from its completed boundary")
         ticker = str(row.get("ticker") or "").strip().upper()
         if not ticker or int(row.get("event_count") or 0) <= 0:
             raise ValueError("Broker liquidity bar requires a ticker and source events")
-        bucket_start = at - timedelta(milliseconds=100)
+        bucket_start = at - timedelta(milliseconds=resolution)
         boundary_us = int(at.timestamp() * 1_000_000)
         last_us = int(row.get("last_event_us") or 0)
         if last_us < int(bucket_start.timestamp() * 1_000_000) or last_us >= boundary_us:
@@ -1079,7 +1088,7 @@ class SimulatedBrokerAdapter:
     async def on_liquidity_bar(
         self, row: Mapping[str, Any], *, at: datetime,
     ) -> list[Execution]:
-        """Match against a completed 100 ms liquidity bucket, never an invented tape order.
+        """Match against a completed configured bucket, never an invented tape order.
 
         A decision/order from this bucket first becomes eligible in the next
         bucket. Stops triggered by an intrabucket range also wait for the next
@@ -1093,7 +1102,7 @@ class SimulatedBrokerAdapter:
     ) -> list[Execution]:
         """Runtime-only continuation after validation, before any OMS side effect."""
         ticker = str(row["ticker"]).strip().upper()
-        bucket_start = at - timedelta(milliseconds=100)
+        bucket_start = at - timedelta(milliseconds=self.config.liquidity_resolution_ms)
         boundary_us = int(at.timestamp() * 1_000_000)
         quote_us = int(row.get("quote_timestamp_us") or 0)
         valid_quote = bool(int(row.get("quote_valid") or 0)) and (
@@ -1110,7 +1119,7 @@ class SimulatedBrokerAdapter:
                 bid_exchange=0, bid_price=bid, bid_size=bid_size,
                 conditions=(), indicators=(), ingest_ts=at.astimezone(timezone.utc),
                 raw={"liquidity_bar_snapshot": True, "quote_timestamp_us": quote_us},
-                source="arte.liquidity_100ms_v1", ticker=ticker, ts=observed_at,
+                source=self.config.liquidity_source, ticker=ticker, ts=observed_at,
             )
         self._trades_by_ticker.pop(ticker, None)
         price_valid = bool(int(row.get("price_valid") or 0))
@@ -1171,7 +1180,8 @@ class SimulatedBrokerAdapter:
                 if state.status not in {OrderStatus.SUBMITTED, OrderStatus.PRE_SUBMITTED}:
                     continue
                 if (self.config.new_order_activation_delay_ms and
-                    at < state.submitted_at + timedelta(
+                    (bucket_start if self.config.liquidity_resolution_ms == 1000 else at)
+                    < state.submitted_at + timedelta(
                         milliseconds=self.config.new_order_activation_delay_ms)):
                     continue
                 if not self._session_allows(state.request, at):

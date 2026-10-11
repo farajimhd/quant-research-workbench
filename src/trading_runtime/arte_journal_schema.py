@@ -1446,6 +1446,12 @@ def schema_ddl() -> tuple[str, ...]:
     return tuple(table.ddl() for table in TABLES)
 
 
+def columnar_strategy_upgrade_ddl() -> tuple[str, ...]:
+    """Central staged contracts; never install from a Strategy or Backtest."""
+    from .columnar_strategy_schema import ddl
+    return ddl()
+
+
 def long_momentum_parameter_upgrade_ddl() -> tuple[str, ...]:
     """Operator-only staged parameter tables; excluded from active TABLES."""
     from src.trading_runtime.arte_long_momentum_parameter_journal import PARAMETER_TABLES
