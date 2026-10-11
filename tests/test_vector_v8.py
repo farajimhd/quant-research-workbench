@@ -179,7 +179,8 @@ def test_validation_no_trade_is_displayable():
     assert rows[0]['metrics']['closed_positions']==0 and not rows[0]['valid']
 
 
-def test_validation_cannot_change_successors(monkeypatch,tmp_path):
+@pytest.mark.parametrize("mixed_initialization",[False,True])
+def test_validation_cannot_change_successors(monkeypatch,tmp_path,mixed_initialization):
     import research.vectorized_backtest.v8.run_search as search
     from research.vectorized_backtest.v6.torch_backtest.runtime import write_json,require_runtime
     class Panel:
@@ -207,19 +208,31 @@ def test_validation_cannot_change_successors(monkeypatch,tmp_path):
     monkeypatch.setattr(search,'CampaignProgress',Panel);monkeypatch.setattr(search,'SessionLanes',Lanes)
     monkeypatch.setattr(search,'bind_dataset',lambda path,role:dict(days=['2026-08-01'] if role=='training' else ['2026-09-01'],
         inputs='unused',history='unused',receipts={'day':'bound'}))
+    initial=None
+    if mixed_initialization:
+        from research.vectorized_backtest.v8.genome import sample
+        initial=tmp_path/'initial.json';payload=[m.payload() for m in sample(np.random.default_rng(13),10)]
+        write_json(initial,dict(version='v8-mixed-initial-population-v1',population=payload,
+            population_sha256=search.digest(payload),source=dict(generation=43),
+            initialization=dict(seed_count=1,random_count=9,selected_candidates=[7],validation_feedback=False)))
     for suffix,multiplier in [('a',1),('b',-100)]:
         validation_multiplier[0]=multiplier
-        search.run('train','validation',tmp_path/suffix,population_size=10,generations=2,batch_size=4,device='cpu',backend='eager')
+        search.run('train','validation',tmp_path/suffix,population_size=10,generations=2,batch_size=4,device='cpu',backend='eager',initial_population=initial)
     first=json.loads((tmp_path/'a'/'checkpoint.json').read_text())['state']
     second=json.loads((tmp_path/'b'/'checkpoint.json').read_text())['state']
     for key in ('population','ids','pedigree','rng'):assert first[key]==second[key]
     assert first['validation_ranking']!=second['validation_ranking']
+    if mixed_initialization:
+        assert first['pedigree'][0]['operation']=='v7_seed'
+        assert first['pedigree'][0]['v7_source']==dict(generation=43,candidate=7)
+        assert all(r['operation']=='fresh' for r in first['pedigree'][1:10])
+        assert (tmp_path/'a/initialization.json').is_file()
     # Completed observations remain integrity checked on resume, without selection feedback.
-    assert search.run('train','validation',tmp_path/'a',population_size=10,generations=2,batch_size=4,device='cpu',backend='eager')==0
+    assert search.run('train','validation',tmp_path/'a',population_size=10,generations=2,batch_size=4,device='cpu',backend='eager',initial_population=initial)==0
     receipt=tmp_path/'a/validation/generation-0001/2026-09-01/receipt.json'
     receipt.write_text('{}',encoding='utf-8')
     with pytest.raises(ValueError,match='Sealed validation receipt changed'):
-        search.run('train','validation',tmp_path/'a',population_size=10,generations=2,batch_size=4,device='cpu',backend='eager')
+        search.run('train','validation',tmp_path/'a',population_size=10,generations=2,batch_size=4,device='cpu',backend='eager',initial_population=initial)
 
 
 def test_shared_rule_groups_expand_exactly():
