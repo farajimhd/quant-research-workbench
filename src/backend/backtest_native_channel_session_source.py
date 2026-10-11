@@ -9,6 +9,7 @@ from .backtest_native_channel_sequences import (
     NativeChannelSequencePolicy, PreparedNativeChannelSequence, prepare_installed_native_channel_sequence,
 )
 from .backtest_native_channel_store import storage_preflight
+from .backtest_native_channel_packet_inventory import select_parent_projected_native_packets
 from pipelines.market_sip.events.completed_endpoint_return_producer import read_arrow
 from src.market_engine.native_causal_channel_contract import (
     COVERAGE_TABLE, COVERAGE_SCHEMA, MAX_TICKERS, NativeChannelRequest,
@@ -22,6 +23,7 @@ class PreparedNativeChannelSession:
     """Compiled source evidence only; no entry, held-position or order authority."""
     tickers: tuple[str, ...]
     sequences: tuple
+    excluded_packet_identities: tuple = ()
     _by_ticker: object = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
@@ -73,40 +75,16 @@ def prepare_installed_native_channel_session(client, *, market, session_date, ti
             through_day_boundary_ms, policy.inputs).__post_init__()
     verify_market_day_plan(market, client)
     storage_preflight(client)
-    columns = ','.join(f'toString({field.name}) AS {field.name}'
-        if field.name.endswith('attempt_id') else field.name for field in COVERAGE_SCHEMA)
-    def read(predicate, bound):
-        sql = assert_select_only(f'SELECT {columns} FROM (SELECT {",".join(COVERAGE_SCHEMA.names)} '
-            f'FROM {COVERAGE_TABLE} WHERE {predicate} ORDER BY feature_attempt_id,ticker,resolution_ms '
-            f'LIMIT {bound + 1}) FORMAT ArrowStream')
-        return pl.from_arrow(read_arrow(client, sql, COVERAGE_SCHEMA, bound))
-    members = ','.join(_literal(ticker) for ticker in tickers)
-    selected = read(f'build_id={_literal(market.build_id)} AND session_date={_literal(session_date)} '
-        f'AND market_plan_token={_literal(market.token)} AND policy_digest={_literal(policy.inputs.digest)} '
-        f'AND producer_source_hash={_literal(producer_source_hash)} '
-        f'AND through_day_boundary_ms={through_day_boundary_ms} AND ticker IN ({members})',
-        len(tickers) * len(policy.inputs.resolutions_ms))
-    expected = pl.DataFrame({'ticker': tickers}).join(
-        pl.DataFrame({'resolution_ms': pl.Series(policy.inputs.resolutions_ms, dtype=pl.UInt32)}), how='cross')
-    keys = ['ticker', 'resolution_ms']
-    if (selected.height != expected.height or selected.select(keys).n_unique() != selected.height
-            or selected.select(keys).join(expected, on=keys, how='anti').height
-            or expected.join(selected.select(keys), on=keys, how='anti').height):
-        raise ValueError('Native session requires one exact installed attempt per ticker and resolution')
-    attempts = sorted(selected['feature_attempt_id'].unique().to_list())
-    if len(attempts) > max_packets:
-        raise ValueError('Native session exceeds its declared packet bound')
-    sequences = []
-    for attempt in attempts:
-        require_uuid(attempt)
-        inventory = read(f'feature_attempt_id=toUUID({_literal(attempt)})',
-            MAX_TICKERS * len(policy.inputs.resolutions_ms))
-        packet_tickers = tuple(sorted(inventory['ticker'].unique().to_list()))
-        request = NativeChannelRequest(market, session_date, packet_tickers,
-            through_day_boundary_ms, policy.inputs)
-        sequences.append(prepare_installed_native_channel_sequence(client, request, attempt,
-            policy=policy, producer_source_hash=producer_source_hash, authority=authority))
-    result = PreparedNativeChannelSession(tickers, tuple(sequences))
+    inventory = _discover_parent_projected_packets(client, market=market,
+        session_date=session_date, tickers=tickers, policy=policy,
+        producer_source_hash=producer_source_hash, max_packets=max_packets)
+    if inventory.horizon != through_day_boundary_ms:
+        raise ValueError('Installed native source horizon differs from its declared horizon')
+    sequences = tuple(prepare_installed_native_channel_sequence(client, request, attempt,
+        policy=policy, producer_source_hash=producer_source_hash, authority=authority)
+        for attempt, request in inventory.requests)
+    result = PreparedNativeChannelSession(tickers, sequences,
+        inventory.excluded_packet_identities)
     return result
 
 
@@ -155,26 +133,37 @@ def resolve_installed_native_channel_horizon(client, *, market, session_date,
         NativeChannelRequest(market,session_date,(ticker,),0,policy.inputs).__post_init__()
     verify_market_day_plan(market,client)
     storage_preflight(client)
-    bound=len(tickers)*len(policy.inputs.resolutions_ms)
-    columns=','.join(f'toString({field.name}) AS {field.name}'
+    return _discover_parent_projected_packets(client, market=market,
+        session_date=session_date, tickers=tickers, policy=policy,
+        producer_source_hash=producer_source_hash, max_packets=4096).horizon
+
+
+def _discover_parent_projected_packets(client, *, market, session_date, tickers,
+        policy, producer_source_hash, max_packets):
+    """Read bounded complete attempts, then check exact certified parent lineage."""
+    columns = ','.join(f'toString({field.name}) AS {field.name}'
         if field.name.endswith('attempt_id') else field.name for field in COVERAGE_SCHEMA)
-    members=','.join(_literal(ticker) for ticker in tickers)
-    sql=assert_select_only(f'SELECT {columns} FROM (SELECT {",".join(COVERAGE_SCHEMA.names)} '
-        f'FROM {COVERAGE_TABLE} WHERE build_id={_literal(market.build_id)} '
-        f'AND session_date={_literal(session_date)} AND market_plan_token={_literal(market.token)} '
+    def read(predicate, bound):
+        sql = assert_select_only(f'SELECT {columns} FROM (SELECT {",".join(COVERAGE_SCHEMA.names)} '
+            f'FROM {COVERAGE_TABLE} WHERE {predicate} ORDER BY feature_attempt_id,ticker,resolution_ms '
+            f'LIMIT {bound + 1}) FORMAT ArrowStream')
+        return pl.from_arrow(read_arrow(client, sql, COVERAGE_SCHEMA, bound))
+    members = ','.join(_literal(ticker) for ticker in tickers)
+    selected = read(f'build_id={_literal(market.build_id)} AND session_date={_literal(session_date)} '
         f'AND policy_digest={_literal(policy.inputs.digest)} '
-        f'AND producer_source_hash={_literal(producer_source_hash)} AND ticker IN ({members}) '
-        f'ORDER BY feature_attempt_id,ticker,resolution_ms LIMIT {bound+1}) FORMAT ArrowStream')
-    rows=pl.from_arrow(read_arrow(client,sql,COVERAGE_SCHEMA,bound))
-    expected=pl.DataFrame({'ticker':tickers}).join(pl.DataFrame({
-        'resolution_ms':pl.Series(policy.inputs.resolutions_ms,dtype=pl.UInt32)}),how='cross')
-    keys=['ticker','resolution_ms']
-    if (rows.height != expected.height or rows.select(keys).n_unique()!=rows.height
-            or rows.select(keys).join(expected,on=keys,how='anti').height
-            or expected.join(rows.select(keys),on=keys,how='anti').height
-            or rows['through_day_boundary_ms'].null_count()
-            or rows['through_day_boundary_ms'].n_unique()!=1):
-        raise ValueError('Native horizon requires one complete unambiguous installed inventory')
-    horizon=int(rows['through_day_boundary_ms'][0])
-    NativeChannelRequest(market,session_date,(tickers[0],),horizon,policy.inputs).__post_init__()
-    return horizon
+        f'AND producer_source_hash={_literal(producer_source_hash)} AND ticker IN ({members})',
+        max_packets * MAX_TICKERS * len(policy.inputs.resolutions_ms))
+    attempts = tuple(sorted(selected['feature_attempt_id'].unique().to_list()))
+    if not attempts or len(attempts) > max_packets:
+        raise ValueError('Native discovery requires a nonempty bounded packet inventory')
+    inventories = []
+    for attempt in attempts:
+        require_uuid(attempt)
+        inventories.append(read(f'feature_attempt_id=toUUID({_literal(attempt)})',
+            MAX_TICKERS * len(policy.inputs.resolutions_ms)))
+    inventory = select_parent_projected_native_packets(market, session_date, tickers,
+        policy, producer_source_hash, tuple(inventories))
+    discovered = pl.concat(inventories).filter(pl.col('ticker').is_in(tickers))
+    if not selected.sort(COVERAGE_SCHEMA.names).equals(discovered.sort(COVERAGE_SCHEMA.names)):
+        raise ValueError('Native packet discovery changed before complete inventory admission')
+    return inventory

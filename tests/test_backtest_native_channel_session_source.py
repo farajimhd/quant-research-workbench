@@ -29,7 +29,7 @@ def session_case(installed, monkeypatch):
     def batches(sql):
         if f'FROM {COVERAGE_TABLE} WHERE build_id=' in sql:
             assert packet.request.market.build_id in sql
-            assert packet.request.market.token in sql
+            assert 'AND market_plan_token=' not in sql
             assert packet.request.policy.digest in sql
             assert issue_source_plan(packet).producer_source_hash in sql
             assert 'ticker IN (' in sql
@@ -82,6 +82,53 @@ def test_prepare_bind_preserves_full_source_horizon_and_shorter_execution(instal
     with pytest.raises(ValueError): prepare_and_bind_native_channel_session(other,client,
         **{**kwargs,'execution_through_day_boundary_ms':args['through_day_boundary_ms']+1})
     assert other._feature_session is None and len(client.sql)==reads
+
+
+def test_actual_projected_packet_loads_through_larger_parent(unit, monkeypatch):
+    from pipelines.market_sip.events.native_causal_channel_producer import produce_native_channels
+    from pipelines.market_sip.events.native_channel_campaign import publish_packet
+    from src.backend.backtest_market_data import project_market_day_plan, MARKET_DAY_STAGES
+    from src.backend import backtest_native_channel_session_source as session_module
+    from src.backend import backtest_native_channel_store as store
+    from src.backend.backtest_native_channel_sequences import prepare_installed_native_channel_sequence
+    client, authority, original, _ = unit
+    market = original.request.market
+    parent = replace(market, tickers=('X', 'Y'), units=tuple(
+        replace(market.units[0], ticker=ticker, stage=stage)
+        for ticker in ('X', 'Y') for stage in MARKET_DAY_STAGES))
+    projected = project_market_day_plan(parent, original.request.tickers)
+    packet = produce_native_channels(replace(original.request, market=projected),
+        original.feature_attempt_id, client)
+    publish_packet(client, packet, authority=authority, producer_client=client.writer)
+    import polars as pl
+    decisions = pl.from_arrow(packet.coverage).select(
+        'build_id', 'session_date', 'ticker', 'attempt_id').unique().join(
+        pl.DataFrame({'decision_day_ms': [360000]}), how='cross')
+    fixture = (client, authority, packet, decisions, None)
+    prior, policy, _, _ = setup(fixture)
+    monkeypatch.setattr(session_module, 'verify_market_day_plan', store.verify_market_day_plan)
+    transport = client.iter_arrow_record_batches
+    def batches(sql):
+        if f'FROM {COVERAGE_TABLE} WHERE build_id=' in sql:
+            assert 'AND market_plan_token=' not in sql
+            client.sql.append(sql)
+            return iter(client.tables[COVERAGE_TABLE].to_batches(max_chunksize=3))
+        return transport(sql)
+    monkeypatch.setattr(client, 'iter_arrow_record_batches', batches)
+    args = dict(market=parent, session_date=packet.request.session_date,
+        tickers=packet.request.tickers, policy=policy.sequence,
+        producer_source_hash=issue_source_plan(packet).producer_source_hash)
+    writes = tuple(client.writes)
+    horizon = resolve_installed_native_channel_horizon(client, **args)
+    loaded = prepare_installed_native_channel_session(client, **args,
+        through_day_boundary_ms=horizon, authority=authority, max_packets=1)
+    independent = prepare_installed_native_channel_sequence(client, packet.request,
+        packet.feature_attempt_id, policy=policy.sequence,
+        producer_source_hash=args['producer_source_hash'], authority=authority)
+    assert loaded.sequences[0].source_plan == independent.source_plan == prior.source_plan
+    assert loaded.sequences[0].windows.equals(independent.windows)
+    assert loaded.sequences[0].packet.request.market == projected
+    assert tuple(client.writes) == writes
 
 
 def test_horizon_discovery_requires_unique_complete_inventory(installed,monkeypatch):
