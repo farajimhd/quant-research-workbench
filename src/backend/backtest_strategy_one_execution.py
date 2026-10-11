@@ -344,15 +344,16 @@ async def run_certified_strategy_one_session(
         market, tuple(row.ticker for row in candidates.prepared))
     projected_prices = prices.projected(projected)
     sparse_started = perf_counter() if stage_time is not None else 0.0
+    contract = resolve_numbered_fixed_strategy(
+        assignments[0].strategy_id, assignments[0].strategy_revision)
     scheduler = build_certified_strategy_one_scheduler(
         projected, survivors, activations=activation_schedule,
         price_plan=projected_prices, through_boundary_ms=through_boundary_ms,
         client_factory=client_factory, max_workers=max_workers,
         activation_source_candidates=visible, stage_time=stage_time,
         start_after_boundary_ms=start_after_boundary_ms,
-        installed_session=selected_session)
-    contract = resolve_numbered_fixed_strategy(
-        assignments[0].strategy_id, assignments[0].strategy_revision)
+        installed_session=selected_session,
+        market_read_policy=getattr(contract, 'bounded_market_read_policy', None))
     if contract.allows_session_exit:
         scheduler.install_session_clocks(tuple(boundary for boundary in (
             19_500_000, 19_740_000, 19_800_000, 57_000_000, 57_300_000, 57_600_000)

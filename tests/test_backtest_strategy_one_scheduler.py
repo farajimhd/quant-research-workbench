@@ -831,7 +831,9 @@ def test_scheduler_requires_joined_closed_bar_evidence():
     clock.close()
 
 
-def test_active_source_reads_persisted_window_and_closes_on_deactivation():
+@pytest.mark.parametrize('bounded', (False, True))
+def test_active_source_reads_persisted_window_and_closes_on_deactivation(bounded):
+    from src.trading_runtime.bounded_market_read_policy import BoundedMarketReadPolicy
     build = "a" * 64
     attempt = "00000000-0000-0000-0000-000000000001"
     units = tuple(MarketDayUnit(build, DAY, "AAA", stage, attempt,
@@ -870,6 +872,8 @@ def test_active_source_reads_persisted_window_and_closes_on_deactivation():
     source = persisted_active_market_source(
         plan, price_plan=prices, through_boundary_ms=1_000,
         client_factory=client,
+        market_read_policy=(BoundedMarketReadPolicy(1000, 100, 100_000, True)
+                            if bounded else None),
         stage_time=lambda name, started: timings.append((name, started)))
     clock = StrategyOneBoundaryScheduler(
         session_date=DAY, candidate_rows=iter((candidate("AAA", 100),)),

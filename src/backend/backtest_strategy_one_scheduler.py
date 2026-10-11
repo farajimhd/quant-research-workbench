@@ -91,6 +91,7 @@ def build_certified_strategy_one_scheduler(
     stage_time: Callable[[str, float], None] | None = None,
     start_after_boundary_ms: int = 0,
     installed_session: object | None = None,
+    market_read_policy: object | None = None,
 ) -> StrategyOneBoundaryScheduler:
     """Build the sparse causal tape solely from certified arte products."""
     if (len(plan.sessions) != 1 or plan.execution_interval.kind != "fixed"
@@ -134,6 +135,8 @@ def build_certified_strategy_one_scheduler(
     source = installed_complete_market_source(installed_session, plan,
         prices=price_plan, through_boundary_ms=through_boundary_ms,
         client_factory=client_factory)
+    if source is not None and market_read_policy is not None:
+        raise ValueError('Only one declared market buffering policy may own the source')
     if start_after_boundary_ms == through_boundary_ms:
         # The market suffix is empty. A checkpoint at the terminal boundary
         # still needs journal finalization, but must not query market rows.
@@ -151,7 +154,8 @@ def build_certified_strategy_one_scheduler(
         source = persisted_active_market_source(
             plan, price_plan=price_plan,
             through_boundary_ms=through_boundary_ms,
-            client_factory=client_factory, stage_time=stage_time)
+            client_factory=client_factory, stage_time=stage_time,
+            market_read_policy=market_read_policy)
     return StrategyOneBoundaryScheduler(
         session_date=plan.sessions[0], candidate_rows=iter(paired),
         activation_rows=iter(activations.rows), active_source=source,
@@ -166,6 +170,7 @@ def persisted_active_market_source(
     plan: CertifiedMarketDayPlan, *, price_plan: PriceLevelPlan,
     through_boundary_ms: int, client_factory: Callable[[], Any],
     stage_time: Callable[[str, float], None] | None = None,
+    market_read_policy: object | None = None,
 ) -> MarketSource:
     """Open one SELECT-only ticker stream only while its financial state lives.
 
@@ -179,6 +184,15 @@ def persisted_active_market_source(
             or not 0 < through_boundary_ms <= 57_600_000
             or through_boundary_ms % 100 or not callable(client_factory)):
         raise ValueError("Active Strategy 1 source lacks a certified fixed session")
+    read_rows = iter_market_day_rows
+    read_options = {}
+    if market_read_policy is not None:
+        from src.trading_runtime.bounded_market_read_policy import BoundedMarketReadPolicy
+        from .backtest_market_data import iter_bounded_market_day_rows
+        if type(market_read_policy) is not BoundedMarketReadPolicy:
+            raise ValueError('Active market reader needs an exact declared buffering policy')
+        read_rows = iter_bounded_market_day_rows
+        read_options = market_read_policy.reader_options()
 
     def source(ticker: str, after_boundary_ms: int) -> Iterator[MarketGroup]:
         return _BufferedMarketIterator(rows_for_ticker(ticker, after_boundary_ms))
@@ -216,9 +230,9 @@ def persisted_active_market_source(
                         break
                     for attempt in range(2):
                         emitted = False
-                        rows = iter_market_day_rows(
+                        rows = read_rows(
                             scoped, client=reader, after_boundary_ms=cursor,
-                            through_boundary_ms=end, price_plan=prices)
+                            through_boundary_ms=end, price_plan=prices, **read_options)
                         try:
                             for day, boundary, symbol, resolutions in iter_market_boundary_groups(rows):
                                 if day != plan.sessions[0] or symbol != ticker:
@@ -233,7 +247,7 @@ def persisted_active_market_source(
                             # This is one pinned, read-only SELECT. It is safe
                             # to retry only when no boundary escaped the
                             # iterator; a partial stream must fail closed.
-                            if emitted or attempt:
+                            if market_read_policy is not None or emitted or attempt:
                                 raise
                         else:
                             break
