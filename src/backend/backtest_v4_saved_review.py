@@ -95,6 +95,18 @@ def _require_declared_read_profile(client, context, *, sealed_configuration=None
         validate_original_risk_profile(getattr(client,'automatic_ladder_profile',False),
             getattr(client,'entry_spread_risk_profile',False),actual)
         matches=actual==options[flag]
+    if 'native_channel_management_policy' in options:
+        from src.trading_runtime.native_channel_writer_profile import validate_channel_writer_profile
+        channel = getattr(client, 'native_channel_management_policy', None)
+        if channel is not None and channel != options['native_channel_management_policy']:
+            raise ValueError('Saved native-channel reader carries a foreign typed policy')
+        validate_channel_writer_profile(channel,
+            automatic_ladder=getattr(client, 'automatic_ladder_profile', False),
+            entry_spread_risk=getattr(client, 'entry_spread_risk_profile', False),
+            risk_policy=getattr(client, 'confirmed_original_risk_policy', None),
+            ladder_geometry_policy=getattr(client, 'ladder_geometry_policy', None),
+            fixed_structural_lot_profile=getattr(client, 'fixed_structural_lot_profile', None))
+        matches = matches and channel == options['native_channel_management_policy']
     if flag is not None and not matches:
         if _DECLARED_READ_SCOPE.get() is not None:
             raise _DeclaredReadProfileRequired(options)

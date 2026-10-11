@@ -54,6 +54,7 @@ class SelectOnly:
         self.automatic_ladder_profile = getattr(client, 'automatic_ladder_profile', False)
         self.ladder_geometry_policy = getattr(client, 'ladder_geometry_policy', None)
         self.confirmed_original_risk_policy = getattr(client, 'confirmed_original_risk_policy', None)
+        self.native_channel_management_policy = getattr(client, 'native_channel_management_policy', None)
         self.v4_batched_detail_readback = getattr(client, 'v4_batched_detail_readback', False)
         self.fixed_structural_lot_profile = getattr(client, 'fixed_structural_lot_profile', None)
 
