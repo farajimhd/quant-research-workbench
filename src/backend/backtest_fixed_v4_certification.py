@@ -1239,7 +1239,14 @@ def certify_fixed_rebalance_unreachable(
     """Bind the Strategy 1 capital guard to Portfolio's rebalance condition."""
     paths = (runtime_path, portfolio_path, intent_path)
     sources = tuple(path.read_text(encoding="utf-8") for path in paths)
-    runtime, portfolio, intent = (ast.parse(source) for source in sources)
+    from .backtest_native_execution_transport_compatibility import restore_native_execution_transport_parent
+    try:
+        reviewed_runtime = restore_native_execution_transport_parent(
+            sources[0], "trading_runtime/runtime.py")
+    except ValueError as exc:
+        raise ValueError("Strategy 1 replacement guard source is not reviewed") from exc
+    runtime, portfolio, intent = (ast.parse(source) for source in
+                                  (reviewed_runtime, sources[1], sources[2]))
 
     def method(tree: ast.AST, owner: str, name: str, kind: type) -> ast.AST:
         classes = [node for node in getattr(tree, "body", ())
