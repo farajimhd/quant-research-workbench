@@ -556,6 +556,50 @@ class BacktestMarketDataTests(unittest.TestCase):
         self.assertEqual(observed, [{'SUGP':(100,1000)}, {'SUGP':(1100,2000)}])
         self.assertEqual([row['boundary_ms'] for row in rows], [100,1000,1100,2000])
 
+    def test_capacity_subdivision_preserves_rows_and_closes_discarded_stream(self):
+        calls, closed = [], []
+        def source(plan, **kwargs):
+            bounds = (kwargs['after_boundary_ms'], kwargs['through_boundary_ms'])
+            calls.append(bounds)
+            try:
+                for clock in range(100, 1001, 100):
+                    if bounds[0] < clock <= bounds[1]:
+                        yield dict(session_date='2026-08-18', boundary_ms=clock,
+                                   ticker='SUGP', resolution_ms=100)
+            finally:
+                closed.append(bounds)
+        with patch('src.backend.backtest_market_data.iter_market_day_rows', source):
+            rows = list(iter_bounded_market_day_rows(self._plan(), client=object(),
+                through_boundary_ms=1000, window_ms=1000, max_window_rows=2,
+                subdivide_oversized_windows=True))
+        self.assertEqual([row['boundary_ms'] for row in rows], list(range(100,1001,100)))
+        self.assertEqual(closed[0], (0,1000))
+        self.assertEqual(len(calls), len(closed))
+
+    def test_subdivision_does_not_retry_transport_failures(self):
+        calls = []
+        def source(plan, **kwargs):
+            calls.append(kwargs)
+            yield dict(session_date='2026-08-18', boundary_ms=100,
+                       ticker='SUGP', resolution_ms=100)
+            raise OSError('truncated response')
+        with patch('src.backend.backtest_market_data.iter_market_day_rows', source):
+            with self.assertRaisesRegex(OSError, 'truncated'):
+                next(iter_bounded_market_day_rows(self._plan(), client=object(),
+                    through_boundary_ms=1000, subdivide_oversized_windows=True))
+        self.assertEqual(len(calls), 1)
+
+    def test_subdivision_fails_if_one_boundary_exceeds_capacity(self):
+        def source(plan, **kwargs):
+            for ticker in ('AAAA','BBBB'):
+                yield dict(session_date='2026-08-18', boundary_ms=100,
+                           ticker=ticker, resolution_ms=100)
+        with patch('src.backend.backtest_market_data.iter_market_day_rows', source):
+            with self.assertRaisesRegex(ValueError, 'capacity'):
+                next(iter_bounded_market_day_rows(self._plan(), client=object(),
+                    through_boundary_ms=100, max_window_rows=1,
+                    subdivide_oversized_windows=True))
+
     def test_time_group_waits_for_all_tickers_at_completed_boundary(self) -> None:
         rows = [
             {"session_date": "2026-08-18", "boundary_ms": 100, "ticker": "AAPL", "resolution_ms": 100},
