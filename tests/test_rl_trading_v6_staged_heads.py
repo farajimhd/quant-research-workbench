@@ -88,3 +88,39 @@ def test_packet_identity_is_required_not_just_matching_counts():
     packet['episode_uid'] = ['episode-B']
     with pytest.raises(ValueError, match='identity'):
         targets_from_packet(session, [target], packet)
+
+
+def test_fit_resume_reproduces_optimizer_and_rejects_binding_drift(tmp_path):
+    from research.rl_trading.v6.run_staged_underfit import restore_fit
+    from research.rl_trading.v1.common import file_hash
+    policy, packet = fixture(); parameters = configure(policy)
+    optimizer = torch.optim.AdamW(parameters, lr=.003)
+    objective(policy, *packet).backward(); optimizer.step(); optimizer.zero_grad()
+    checkpoint = tmp_path / 'fit.pt'
+    torch.save(dict(model=policy.state_dict(), optimizer=optimizer.state_dict(),
+        torch_rng=torch.get_rng_state(), binding='verified-packet', step=1), checkpoint)
+    objective(policy, *packet).backward(); optimizer.step()
+    expected = {k: v.clone() for k, v in policy.state_dict().items()}
+    restored, packet2 = fixture(); optimizer2 = torch.optim.AdamW(configure(restored), lr=.003)
+    assert restore_fit(checkpoint, file_hash(checkpoint), 'verified-packet', restored, optimizer2, 2) == 1
+    objective(restored, *packet2).backward(); optimizer2.step()
+    assert all(torch.equal(v, restored.state_dict()[k]) for k, v in expected.items())
+    with pytest.raises(ValueError, match='binding'):
+        restore_fit(checkpoint, file_hash(checkpoint), 'different-packet', restored, optimizer2, 2)
+    with pytest.raises(ValueError, match='hash'):
+        restore_fit(checkpoint, '0'*64, 'verified-packet', restored, optimizer2, 2)
+
+
+def test_launcher_rejects_changed_receipts(tmp_path):
+    import json
+    from research.rl_trading.v1.common import digest
+    from research.rl_trading.v6.run_staged_underfit import read_authenticated
+    payload = dict(role='train', rows=128)
+    payload['hash'] = digest(payload)
+    path = tmp_path / 'receipt.json'
+    path.write_text(json.dumps(payload))
+    assert read_authenticated(path)['rows'] == 128
+    payload['rows'] = 129
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match='hash changed'):
+        read_authenticated(path)

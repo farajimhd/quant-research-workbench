@@ -29,7 +29,7 @@ def prepare_causal_history(frame: pl.DataFrame, names: tuple[str, ...]) -> pl.Da
     history, while empty activity contributes zero. Temporal rule evaluation
     must retain elapsed clocks, including empty seconds.
     """
-    required = {"listing_id", "boundary_at", "available_at", "observed",
+    required = {"listing_id", "boundary_at", "available_at", "observed", "extremes_valid",
         "source_known", "reference_close", "close", "high", "low", "notional"}
     if not required <= set(frame.columns) or not 1 <= frame.height <= 262144:
         raise ValueError("History producer needs bounded certified dense bar columns")
@@ -47,23 +47,25 @@ def prepare_causal_history(frame: pl.DataFrame, names: tuple[str, ...]) -> pl.Da
     if (np.any(clocks % 1000000) or np.any(np.diff(clocks) != 1000000)
             or frame.filter(pl.col("available_at") > pl.col("boundary_at")).height):
         raise ValueError("History producer has gaps, unordered or future clocks")
-    for name in ("observed", "source_known"):
+    for name in ("observed", "extremes_valid", "source_known"):
         if frame.schema[name] != pl.Boolean or frame[name].null_count():
             raise ValueError("History observation/known masks must be explicit Boolean")
     observed = frame["observed"].to_numpy()
+    extremes = frame["extremes_valid"].to_numpy() & observed
     known = frame["source_known"].to_numpy()
     arrays = {name: frame[name].cast(pl.Float64).to_numpy() for name in (
         "close", "high", "low", "notional", "reference_close")}
     notional = arrays["notional"]
-    if not np.isfinite(notional).all() or np.any(notional < 0) or np.any((~observed) & (notional != 0)):
-        raise ValueError("History activity must be finite nonnegative, zero for empty buckets")
-    for name in ("close", "high", "low"):
-        if np.any(observed & (~np.isfinite(arrays[name]) | (arrays[name] <= 0))):
-            raise ValueError("Observed history bars need certified positive OHLC")
-        arrays[name] = np.where(observed, arrays[name], np.nan)
-    if np.any(observed & ((arrays["low"] > arrays["high"])
-            | (arrays["close"] < arrays["low"]) | (arrays["close"] > arrays["high"]))):
-        raise ValueError("History OHLC bounds differ")
+    if not np.isfinite(notional).all() or np.any(notional < 0) or np.any((~known) & (notional != 0)):
+        raise ValueError("History activity must be finite nonnegative and source-known")
+    for name, mask in (("close", observed), ("high", extremes), ("low", extremes)):
+        if np.any(mask & (~np.isfinite(arrays[name]) | (arrays[name] <= 0))):
+            raise ValueError("Eligible history prices must be finite and positive")
+        arrays[name] = np.where(mask, arrays[name], np.nan)
+    # Last-price and extrema eligibility are independently certified. A
+    # last-only closing trade may legitimately lie outside eligible extrema.
+    if np.any(extremes & (arrays["low"] > arrays["high"])):
+        raise ValueError("History extrema bounds differ")
     if np.any(observed & ~known):
         raise ValueError("Observed history bucket has no certified source row")
     mark, high, low = (arrays[name] for name in ("close", "high", "low"))

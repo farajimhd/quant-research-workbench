@@ -58,6 +58,30 @@ The bounded October 11 experiment passed the balanced 128-target gate through
 two exact six-session full-pipeline replays with one checkpoint. This establishes
 underfit capacity, not natural-population accuracy or generalization. The shared
 execution GRU is updated by forecast supervision, so behavior with actual order
-outcomes still requires separate evaluation. A reusable authenticated staged
-launcher is not yet integrated; the tensor objective alone is not an end-to-end
-training command.
+outcomes still requires separate evaluation.
+
+`run_staged_underfit` authenticates the parent, selected rows, normalizers,
+session caches and source receipts, captures fresh causal contexts, fits only
+the approved heads on CPU, and requires two exact full CUDA replay passes.
+Its end-to-end repository reproduction passed the full gate and exact reload.
+The later host guard, progress reporting and authenticated resume additions
+have focused test coverage; the full run used the preserved pre-hardening
+launcher revision. Example command:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -u -m research.rl_trading.v6.run_staged_underfit `
+  --parent D:/TradingML/runtimes/v6-own-channel-overfit-20261011 `
+  --checkpoint D:/TradingML/runtimes/v6-own-channel-overfit-20261011/epoch-010.pt `
+  --checkpoint-sha256 E27EF42DBCFB10E26EC1574A42A2E336B5058CEB0EA4AE8B1E27F1C576BB30B3 `
+  --updates 400 --output D:/TradingML/runtimes/v6-staged-underfit-new-run
+```
+
+Use a fresh output directory. Fit checkpoints are atomic and retain optimizer,
+step, RNG and packet/objective bindings. To continue an interrupted fit, add
+`--resume-fit-state <old-run>/fit-state.pt --resume-sha256 <receipt-sha256>`;
+the launcher recaptures contexts and verifies their binding before restoring.
+Old unbound experimental checkpoints are rejected. CPU fitting uses two threads,
+50% duty pacing and an 8 GiB host reserve. CUDA capture/replay retains 4 GiB
+VRAM and 8 GiB host reserve at 50% duty. W&B logs all acceptance labels and
+regressions for both replay passes. No development or sealed targets are read.

@@ -20,7 +20,7 @@ def source(n=200):
     price = np.where(known, close[last.clip(0)], np.nan)
     clocks = [datetime(2026, 8, 3, 14, tzinfo=timezone.utc) + timedelta(seconds=i) for i in range(n)]
     frame = pl.DataFrame(dict(listing_id=["listing"] * n, boundary_at=clocks, available_at=clocks,
-        observed=observed, source_known=known, close=close, high=high, low=low,
+        observed=observed, extremes_valid=observed, source_known=known, close=close, high=high, low=low,
         notional=notional, reference_close=price))
     return frame, calculate(close, high, low, observed, notional)
 
@@ -61,3 +61,41 @@ def test_missing_elapsed_second_and_future_availability_rejected():
                                ("history.attention_mean.58",))
     with pytest.raises(ValueError, match="relative-to-price"):
         prepare_causal_history(frame, ("history.attention_mean.58.relative_to_close",))
+
+
+def test_last_price_and_extrema_masks_match_optimization_independently():
+    frame, _ = source()
+    frame = frame.with_columns(
+        ((pl.int_range(pl.len()) % 7 != 0) & pl.col("observed")).alias("extremes_valid"))
+    observed = frame["observed"].to_numpy()
+    high = np.where(frame["extremes_valid"].to_numpy(), frame["high"].to_numpy(), np.nan)
+    low = np.where(frame["extremes_valid"].to_numpy(), frame["low"].to_numpy(), np.nan)
+    expected = calculate(frame["close"].to_numpy(), high, low, observed, frame["notional"].to_numpy())
+    names = ("history.recent_high.1", "history.momentum_close.1", "history.attention_mean.1")
+    actual = prepare_causal_history(frame, names)
+    for name, column in zip(names, (0, 60, 120)):
+        np.testing.assert_array_equal(actual[name].to_numpy(), expected[:, column])
+
+
+def test_activity_without_a_last_price_update_is_not_discarded():
+    frame, _ = source()
+    # A certified source row can carry executable activity independently of
+    # this interval's last-price eligibility. Only known source activity counts.
+    frame = frame.with_columns(pl.when(pl.int_range(pl.len()) == 10).then(False)
+        .otherwise(pl.col("observed")).alias("observed"),
+        pl.when(pl.int_range(pl.len()) == 10).then(True)
+        .otherwise(pl.col("source_known")).alias("source_known"),
+        pl.when(pl.int_range(pl.len()) == 10).then(1234.)
+        .otherwise(pl.col("notional")).alias("notional"))
+    actual = prepare_causal_history(frame, ("history.attention_mean.1",))
+    assert actual["history.attention_mean.1"][11] == 1234.
+
+
+def test_independent_extrema_do_not_require_last_only_price_inside_the_range():
+    frame, _ = source()
+    frame = frame.with_columns(pl.when(pl.col("observed")).then(pl.col("high") + 1.)
+        .otherwise(pl.col("close")).alias("close"))
+    prepare_causal_history(frame, ("history.momentum_close.1",))
+    with pytest.raises(ValueError, match="extrema bounds"):
+        prepare_causal_history(frame.with_columns((pl.col("high") + 1.).alias("low")),
+                               ("history.recent_high.1",))
