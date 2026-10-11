@@ -83,7 +83,10 @@ def main(argv=None):
     parser.add_argument('--transformer-search', action='store_true', help='Frozen 32 transformer variants')
     parser.add_argument('--snapshot-runtime', type=Path, help='Reuse authenticated completed benchmark snapshots')
     parser.add_argument('--candidate-indices', type=int, nargs='+', help='Explicit 1-based transformer subset for bounded smoke tests')
+    parser.add_argument('--wandb-project', default='rl-trading-v6', help='Dedicated W&B project; bound into the experiment manifest')
     args = parser.parse_args(argv)
+    if not args.wandb_project or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in args.wandb_project):
+        raise ValueError('Explicit alphanumeric W&B project name required')
     runtime = Path('D:/TradingML/runtimes').resolve(); output = args.output.resolve()
     if not runtime.is_dir() or not output.is_relative_to(runtime) or not args.parent.resolve().is_relative_to(runtime):
         raise ValueError('Explicit laptop runtime root required')
@@ -145,6 +148,7 @@ def main(argv=None):
     else:
         save(train_path, train)
     plan = dict(version=transformer_search.VERSION if args.transformer_search else VERSION, source_commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+        wandb_project=args.wandb_project,
         snapshot_runtime=str(args.snapshot_runtime.resolve()) if args.snapshot_runtime else None,
         snapshot_manifest_sha256=file_hash(args.snapshot_runtime/'manifest.json') if args.snapshot_runtime else None,
         source_runtime=str(args.source_runtime.resolve()), parent_runtime=str(args.parent.resolve()),
@@ -213,11 +217,13 @@ def main(argv=None):
                 optimizer.load_state_dict(state['optimizer'])
             wandb_path = root / 'wandb.json'
             run_id = json.loads(wandb_path.read_text())['id'] if wandb_path.exists() else None
-            logger = wandb.init(project='rl-trading-v6', group=output.name, name=output.name + '-' + name,
+            logger = wandb.init(project=args.wandb_project, group=output.name, name=output.name + '-' + name,
                 mode='online', dir=str(root), config={**plan, 'candidate': spec}, id=run_id, resume='allow' if run_id else None)
             if logger is None or logger.settings.mode != 'online':
                 raise ValueError('Online W&B required')
-            write(wandb_path, dict(id=logger.id, url=logger.url))
+            if logger.project != args.wandb_project:
+                raise ValueError('W&B project identity mismatch')
+            write(wandb_path, dict(id=logger.id, url=logger.url, project=logger.project))
             started = time.perf_counter(); metrics = None
             try:
                 for update in range(start, args.joint_updates + args.head_updates):

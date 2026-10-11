@@ -56,7 +56,7 @@ BelowNormal, 4 GiB VRAM and 8 GiB host-memory reserve. Online per-label W&B requ
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
-C:/Users/g835l/miniconda3/envs/ml4t/python.exe -B -m research.rl_trading.v6.run_architecture_benchmark --transformer-search --snapshot-runtime D:/TradingML/runtimes/v6-matched-architectures-20261011 --output D:/TradingML/runtimes/v6-transformer-search-32-20261011
+C:/Users/g835l/miniconda3/envs/ml4t/python.exe -B -m research.rl_trading.v6.run_architecture_benchmark --transformer-search --wandb-project rl-v6-transformer-search --snapshot-runtime D:/TradingML/runtimes/v6-matched-architectures-20261011 --output D:/TradingML/runtimes/v6-transformer-search-32-project-20261011
 ```
 
 Sources: https://arxiv.org/abs/2211.14730 (patches and channel independence),
