@@ -155,3 +155,15 @@ def test_producer_output_feeds_shared_vectorized_rule_evaluator_without_rebuildi
     assert result["entry"].to_list() == expected.to_series().to_list()
     assert result["entry__valid"].equals(frame[name + "__valid"].rename("entry__valid"))
     assert result["boundary_at"].equals(frame["boundary_at"])
+
+
+@pytest.mark.parametrize("day", [date(2026, 3, 8), date(2026, 11, 1)])
+def test_declared_clock_interval_uses_post_transition_new_york_offset(day):
+    scope, bars, liquidity, fields = inputs()
+    scope = replace(scope, session_date=day)
+    dense = p.prepare_dense_inputs(scope, bars, liquidity)
+    assert dense["boundary_at"][0] == p.completed_clock(scope, scope.first_bucket)
+    assert dense["boundary_at"][-1] == p.completed_clock(scope, scope.stop_bucket - 1)
+    prepared = p.prepare_product(scope, bars, liquidity, fields, volume_window_seconds=30,
+                                 producer_code_hash="a" * 64)
+    assert expand(prepared, first_ordinal=0, stop_ordinal=scope.clock_count)["boundary_at"].equals(dense["boundary_at"])

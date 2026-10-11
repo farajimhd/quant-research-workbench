@@ -211,6 +211,13 @@ def completed_clock(scope, bucket):
             + timedelta(seconds=bucket + 1)).astimezone(timezone.utc)
 
 
+def session_clock_anchor_us(scope):
+    # DST switches precede the supported 04:00 origin. All declared 04:00–20:00
+    # buckets use that interval's UTC offset, rather than midnight's offset.
+    four = datetime.combine(scope.session_date, datetime.min.time(), NEW_YORK) + timedelta(hours=4)
+    return (int(four.timestamp()) - 14400) * 1000000
+
+
 def prepare_dense_inputs(scope, bars: pl.DataFrame, liquidity: pl.DataFrame):
     """Join separately certified sparse parents onto the declared dense clocks.
 
@@ -263,8 +270,7 @@ def prepare_dense_inputs(scope, bars: pl.DataFrame, liquidity: pl.DataFrame):
             pl.lit(scope.listing_id).alias("listing_id"), pl.lit(scope.session_date).alias("session_date")))
     # Compute timestamps as a vector; the offset uses the explicit session's
     # timezone authority and includes the current completed second.
-    midnight = datetime.combine(scope.session_date, datetime.min.time(), NEW_YORK)
-    first_us = int(midnight.timestamp()) * 1000000
+    first_us = session_clock_anchor_us(scope)
     return frame.with_columns(((pl.col("bucket_index").cast(pl.Int64) + 1) * 1000000 + first_us)
         .cast(pl.Datetime("us", "UTC")).alias("boundary_at")).with_columns(pl.col("boundary_at").alias("available_at"))
 
@@ -402,7 +408,7 @@ def expand_values(prepared: PreparedHistory, *, first_ordinal: int, stop_ordinal
         raise ValueError("History clock reference price must be finite and positive")
     output = clocks.slice(first_ordinal, stop_ordinal - first_ordinal).with_columns(
         pl.Series("observed_ordinal", ordinals))
-    midnight_us = int(datetime.combine(scope.session_date, datetime.min.time(), NEW_YORK).timestamp()) * 1000000
+    midnight_us = session_clock_anchor_us(scope)
     output = output.with_columns(((pl.col("bucket_index").cast(pl.Int64) + 1) * 1000000 + midnight_us)
         .cast(pl.Datetime("us", "UTC")).alias("boundary_at"))
     output = output.with_columns(pl.col("boundary_at").alias("available_at"))
@@ -429,7 +435,8 @@ def expand_values(prepared: PreparedHistory, *, first_ordinal: int, stop_ordinal
                 or np.any((valid == 1) & ~np.isfinite(values))
                 or runs.filter((pl.col("valid") == 0) != pl.col("value").is_null()).height):
             raise ValueError("History interval value/validity semantics differ")
-        output = output.with_columns(pl.Series(field.name, values, dtype=pl.Float32),
+        output = output.with_columns(pl.Series(field.name, values, dtype=pl.Float32)
+                                        .set(pl.Series(valid == 0), None),
                                       pl.Series(field.name + "__valid", valid.astype(bool)))
     return output.with_columns(pl.lit(scope.listing_id).alias("listing_id"),
         pl.lit(evaluation_block).alias("evaluation_block"))

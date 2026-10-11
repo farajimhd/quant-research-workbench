@@ -223,6 +223,8 @@ struct DerivedStreamQuery {
 #[derive(Debug, Serialize)]
 struct HealthPayload {
     cache: CacheMetrics,
+    columnar_history_contract: &'static str,
+    columnar_history_cold_certification_required: bool,
     calculation_revision: &'static str,
     corporate_action_revision: &'static str,
     config: HistoricalGatewayConfig,
@@ -299,6 +301,8 @@ pub fn app(state: AppState) -> Router {
         .route("/features/session-relative-volume-baseline", post(relative_volume_baseline))
         .route("/features/session-volume-profile", post(session_volume_profile))
         .route("/features/previous-session-closes", post(previous_session_closes))
+        .route("/features/columnar-history-window", post(columnar_history_window)
+            .layer(DefaultBodyLimit::max(32 * 1024)))
         .route("/snapshot/scanner-derived", get(scanner_derived_snapshot))
         .route(
             "/estimate/generic-structure-event-counts",
@@ -394,6 +398,22 @@ async fn capability_catalog_snapshot() -> Json<Vec<ComputationCapability<'static
 }
 
 static RELATIVE_VOLUME_PERMITS: Semaphore = Semaphore::const_new(1);
+
+async fn columnar_history_window(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<crate::columnar_history::HistoryWindowRequest>,
+) -> Result<Json<crate::columnar_history::HistoryWindowResponse>, ApiError> {
+    crate::columnar_history::validate_request(&request).map_err(bad_request)?;
+    // Reuse the configured historical watchlist compute funnel. Saturation
+    // returns a retryable receipt instead of creating an unbounded work queue.
+    let _permit = state.watchlist_materialization_permits.clone().try_acquire_owned().map_err(|_| (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(json!({"error":"Historical input capacity busy", "error_code":"columnar_history_capacity_busy", "retryable":true})),
+    ))?;
+    tokio::time::timeout(std::time::Duration::from_secs(40), crate::columnar_history::load(&state.source, request))
+        .await.map_err(|_| service_error("History input window exceeded its deadline".into()))?
+        .map(Json).map_err(service_error)
+}
 
 async fn session_volume_profile(
     State(state): State<Arc<AppState>>,
@@ -875,6 +895,8 @@ async fn health(State(state): State<Arc<AppState>>) -> Result<Json<HealthPayload
     state.source.health().await.map_err(service_error)?;
     Ok(Json(HealthPayload {
         cache: state.cache.metrics().await,
+        columnar_history_contract: crate::columnar_history::CONTRACT,
+        columnar_history_cold_certification_required: true,
         calculation_revision: HISTORICAL_CALCULATION_REVISION,
         corporate_action_revision: HISTORICAL_CORPORATE_ACTION_REVISION,
         config: state.config.clone(),

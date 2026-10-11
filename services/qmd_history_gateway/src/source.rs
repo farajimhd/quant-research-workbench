@@ -4128,6 +4128,37 @@ impl HistoricalEventSource {
         Ok(text)
     }
 
+    pub(crate) async fn query_columnar_history(&self, sql: &str) -> Result<String, String> {
+        if !sql.starts_with("SELECT ") || sql.len() > 32 * 1024 {
+            return Err("History input transport requires bounded SELECT statements".into());
+        }
+        let url = format!("{}/?database={}", self.config.clickhouse_url,
+            urlencoding::encode(&self.config.clickhouse_database));
+        let mut request = self.client.post(url).timeout(Duration::from_secs(35))
+            .header("Accept-Encoding", "gzip").header("Content-Type", "text/plain; charset=utf-8")
+            .header("X-ClickHouse-User", &self.config.clickhouse_user)
+            .query(&[("readonly", "1"), ("max_execution_time", "30"),
+                ("max_threads", "1"), ("max_memory_usage", "268435456"),
+                ("max_result_bytes", "8388608"), ("result_overflow_mode", "throw"),
+                ("output_format_json_quote_64bit_integers", "0")]).body(sql.to_string());
+        if !self.config.clickhouse_password.is_empty() {
+            request = request.header("X-ClickHouse-Key", &self.config.clickhouse_password);
+        }
+        let mut response = request.send().await.map_err(|error| error.to_string())?;
+        let status = response.status();
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+            if bytes.len() + chunk.len() > 8 * 1024 * 1024 {
+                return Err("History input response exceeds its byte bound".into());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        if !status.is_success() {
+            return Err(format!("History input ClickHouse request failed: HTTP {status}"));
+        }
+        String::from_utf8(bytes).map_err(|_| "History input response is not UTF-8".into())
+    }
+
     async fn query_bounded(&self, sql: &str, timeout_seconds: u64) -> Result<String, String> {
         let timeout_seconds = timeout_seconds.clamp(1, 300);
         let url = format!(

@@ -95,10 +95,31 @@ connections and accounts for completed receipts even when the caller cancels.
 `qmd_columnar_history` supplies a SELECT-only cold consumer with pinned headers,
 bounded pagination, full child hashes and unchanged-seal verification.
 
+QMD History exposes `POST /features/columnar-history-window` over these sealed
+tables. It accepts an exact source scope, content pin, selected catalog IDs,
+elapsed ordinal window and timezone-aware as-of bound. It shares the configured
+watchlist compute funnel, returns a retryable busy response instead of queuing
+unbounded work, uses asynchronous SELECT-only reads, checks actual SSD placement,
+verifies the coverage hash and rechecks the seal after reading. Output consists
+of typed column arrays and lossless field intervals. Missing inputs are failures;
+this route never invokes a producer or privately calculates features.
+
+The app cold consumer can retain a `CertifiedHistoryPin` without retaining the
+audited data frames. `qmd_columnar_history_transport` uses the existing QMD HTTP
+transport off the event loop, checks the running service's approved source
+fingerprint and declared input contract, and reconstructs dense Polars columns
+from interval bits. It verifies header, catalog, clocks, masks and bounds before
+the scanner/rule stages. Invalid field values are nullable with explicit masks;
+no NaN transport convention is needed. The clock anchor uses New York 04:00's
+UTC offset consistently through the supported interval, including DST dates.
+The Rust query builder is qualified on generated ClickHouse rows via a bounded
+source-hashed SELECT probe; this does not qualify a production table or session.
+
 The shared history calculation, volume transform and scanner are tested, but
-QMD service access, typed signal-stream connection, main app actor/recovery
-wiring and all-30 app comparison remain
-required work. Synthetic tests and read-only generated-row SQL qualification
+current-path scanner and typed signal-stream integration, main app actor/recovery
+wiring and all-30 app comparison remain required work. The QMD endpoint still
+needs an approved deployment and full-session qualification. Synthetic tests
+and read-only generated-row SQL qualification
 do not establish real-session acceptance. No new strategy number is registered
 or published by these modules. Operational installation, publication, producers,
 services and real backtests still require the user's prior run approval.

@@ -14,6 +14,7 @@ pub const EXECUTION_RUNTIME_REVISION: u32 = 1;
 
 pub mod api;
 pub mod cache;
+pub mod columnar_history;
 pub mod config;
 pub mod scanner;
 pub mod relative_volume;

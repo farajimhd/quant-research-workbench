@@ -87,6 +87,34 @@ class CertifiedHistoryProduct:
         return c.expand_values(self.prepared, first_ordinal=first_ordinal,
             stop_ordinal=stop_ordinal, evaluation_block=evaluation_block)
 
+    def pin(self):
+        """Retain the cold proof for QMD transport without retaining data frames."""
+        return CertifiedHistoryPin(self.prepared.scope, self.prepared.fields, self.parents, self.header)
+
+
+@dataclass(frozen=True)
+class CertifiedHistoryPin:
+    scope: c.HistoryScope
+    fields: tuple[c.HistoryField, ...]
+    parents: c.HistoryParents
+    header: Mapping[str, object]
+
+    def __post_init__(self):
+        if type(self.scope) is not c.HistoryScope or type(self.parents) is not c.HistoryParents:
+            raise TypeError("QMD history pin requires typed cold-certified source contracts")
+        c.selected_catalog(self.fields)
+        header = c.restore_record(c.COVERAGE, dict(self.header))
+        if (any(header[n] != v for n, v in {**self.scope.prefix(), **self.parents.payload()}.items())
+                or header["content_hash"] != c.content_hash({n: v for n, v in header.items()
+                    if n not in {"content_hash", "certified_at"}})
+                or header["field_count"] != len(self.fields)
+                or self.scope.product_revision != c.product_revision(self.fields, self.parents.producer_code_hash,
+                    volume_window_seconds=self.parents.volume_window_seconds)
+                or header["field_content_hash"] != c.records_hash(c.FIELD,
+                    ({**self.scope.prefix(), "field_id": f.field_id, "field_name": f.name, "unit": f.unit} for f in self.fields))):
+            raise ValueError("QMD history pin differs from its cold coverage proof")
+        object.__setattr__(self, "header", MappingProxyType(header))
+
 
 def certify_history_product(reader, scope, fields, parents, *, expected_content_hash):
     """Verify all normalized children and source pins before exposing windows."""
