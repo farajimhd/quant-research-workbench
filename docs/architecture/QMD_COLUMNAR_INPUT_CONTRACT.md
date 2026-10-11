@@ -77,9 +77,27 @@ publication attempt does not define a temporal-rule reset. Exact optimizer
 comparison must preserve its pinned chunk origin and causal context, including
 Float32 cumulative-mean accumulation, before trimming consumer windows.
 
+Feature intervals include a defined nullable UInt32 `value_bits` scalar. It is
+the lossless Float32 authority; the nullable Float32 value remains queryable and
+must agree numerically with those bits. The publisher constructs Float32 values
+through `reinterpretAsFloat32`, avoiding decimal parse drift at numeric edges.
+The consumer restores signed zero from the bits before checking ordered hashes.
+Real SELECT-only ClickHouse checks cover nulls, adjacent Float32 values, signed
+zero and the minimum normal and maximum finite Float32 values.
+
+`columnar_history_producer.CertifiedHistoryInput` binds the effective opening
+identity, complete current market plan, verified 100ms liquidity/price parents
+and sealed derived 1s liquidity. The operator publisher rechecks source pins,
+inserts bounded typed children, verifies every child and key count, recomputes
+from the source, and seals coverage last. Ambiguous/unsealed writes require
+operator reconciliation. Its explicitly bounded pipeline owns each worker's
+connections and accounts for completed receipts even when the caller cancels.
+`qmd_columnar_history` supplies a SELECT-only cold consumer with pinned headers,
+bounded pagination, full child hashes and unchanged-seal verification.
+
 The shared history calculation, volume transform and scanner are tested, but
-the coverage-last history field product, QMD service access, typed signal-stream
-connection, main app actor/recovery wiring and all-30 app comparison remain
+QMD service access, typed signal-stream connection, main app actor/recovery
+wiring and all-30 app comparison remain
 required work. Synthetic tests and read-only generated-row SQL qualification
 do not establish real-session acceptance. No new strategy number is registered
 or published by these modules. Operational installation, publication, producers,

@@ -20,7 +20,8 @@ def inputs(n=200):
     fields = tuple(sorted([p.BY_NAME[name] for name, _ in WINNER_FIELDS.values()] +
                           [p.BY_NAME[STOP_FIELD]], key=lambda f: f.field_id))
     scope = p.HistoryScope("build", date(2026, 8, 3), "listing", "ABC",
-        "00000000-0000-0000-0000-000000000001", p.product_revision(fields, "a" * 64), 34200, 34200 + n)
+        "00000000-0000-0000-0000-000000000001", p.product_revision(fields, "a" * 64,
+            volume_window_seconds=30), 34200, 34200 + n)
     rng = np.random.default_rng(223)
     indices = np.flatnonzero(rng.uniform(size=n) > .2)
     indices = indices[indices >= 3]

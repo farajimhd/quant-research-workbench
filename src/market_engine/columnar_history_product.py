@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 import re
+import math
+from hashlib import sha256
 from uuid import UUID
 
 import numpy as np
@@ -37,7 +39,7 @@ CLOCK = TableContract("qmd_causal_history_clock_v1", PREFIX + (
     "toYYYYMM(session_date)", ORDER + ",bucket_index")
 VALUE = TableContract("qmd_causal_history_value_v1", PREFIX + (
     ("field_id", "UInt32"), ("first_ordinal", "UInt32"), ("stop_ordinal", "UInt32"),
-    ("value", "Nullable(Float32)"), ("valid", "UInt8")),
+    ("value", "Nullable(Float32)"), ("value_bits", "Nullable(UInt32)"), ("valid", "UInt8")),
     "toYYYYMM(session_date)", ORDER + ",field_id,first_ordinal")
 COVERAGE = TableContract("qmd_causal_history_coverage_v1", PREFIX + (
     ("source_bar_attempt_id", "UUID"), ("source_bar_unit_hash", "FixedString(64)"),
@@ -51,6 +53,78 @@ COVERAGE = TableContract("qmd_causal_history_coverage_v1", PREFIX + (
     ("certified_at", "DateTime64(6, 'UTC')")),
     "toYYYYMM(session_date)", ORDER)
 TABLES = (FIELD, CLOCK, VALUE, COVERAGE)
+
+
+def restore_record(table, row):
+    """Canonicalize scalar wire values before verifying persisted evidence."""
+    if table not in TABLES or set(row) != {n for n, _ in table.columns}:
+        raise ValueError("History record differs from its central scalar schema")
+    result = {}
+    for name, kind in table.columns:
+        value = row[name]
+        if kind.startswith("Nullable("):
+            if value is None:
+                result[name] = None
+                continue
+            kind = kind[9:-1]
+        if kind.startswith("UInt"):
+            if type(value) is str and re.fullmatch(r"0|[1-9][0-9]*", value):
+                value = int(value)
+            if type(value) is not int or not 0 <= value < 2 ** int(kind[4:]):
+                raise ValueError("History unsigned scalar differs")
+        elif kind in {"Float32", "Float64"}:
+            if type(value) not in (int, float) or not math.isfinite(value):
+                raise ValueError("History floating scalar differs")
+            if kind == "Float32" and abs(value) > np.finfo(np.float32).max:
+                raise ValueError("History value exceeds Float32")
+            value = float(np.float32(value)) if kind == "Float32" else float(value)
+        elif kind == "Date":
+            value = date.fromisoformat(value) if type(value) is str else value
+            if type(value) is not date:
+                raise ValueError("History date differs")
+        elif kind.startswith("DateTime64"):
+            if type(value) is str:
+                value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                if value.tzinfo is None:
+                    value = value.replace(tzinfo=timezone.utc)
+            if type(value) is not datetime or value.tzinfo is None:
+                raise ValueError("History timestamp must be timezone-aware")
+            value = value.astimezone(timezone.utc)
+        elif kind == "UUID":
+            if type(value) is not str or str(UUID(value)) != value:
+                raise ValueError("History UUID differs")
+        elif kind == "FixedString(64)":
+            require_hash(value)
+        elif kind in {"String", "LowCardinality(String)"}:
+            if type(value) is not str or not 1 <= len(value) <= 256:
+                raise ValueError("History text scalar differs")
+        else:
+            raise ValueError("Unsupported history scalar type")
+        result[name] = value
+    if table == VALUE:
+        if result["valid"] not in (0, 1):
+            raise ValueError("History value validity differs")
+        if result["valid"] == 0:
+            if result["value"] is not None or result["value_bits"] is not None:
+                raise ValueError("Invalid history values must have no numeric or bit value")
+        else:
+            if result["value"] is None or result["value_bits"] is None:
+                raise ValueError("Valid history values need exact typed bits")
+            decoded = float(np.asarray(result["value_bits"], dtype=np.uint32).view(np.float32))
+            if not math.isfinite(decoded) or decoded != result["value"]:
+                raise ValueError("History numeric value differs from its typed Float32 bits")
+            # ClickHouse's JSON wire can emit negative zero as 0; the explicit
+            # typed scalar bit pattern is the lossless value authority.
+            result["value"] = decoded
+    return result
+
+
+def records_hash(table, rows):
+    """Ordered streaming scalar digest, independent of ClickHouse wire notation."""
+    digest = sha256()
+    for row in rows:
+        digest.update(bytes.fromhex(content_hash(restore_record(table, row))))
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -86,13 +160,16 @@ def selected_catalog(fields):
     return fields
 
 
-def product_revision(fields, code_hash):
+def product_revision(fields, code_hash, *, volume_window_seconds):
     selected_catalog(fields)
     require_hash(code_hash)
+    if type(volume_window_seconds) is not int or not 1 <= volume_window_seconds <= 3600:
+        raise ValueError("History revision requires its explicit volume window")
     return content_hash(dict(algorithm=REVISION, producer_code_hash=code_hash,
         fields=[(f.field_id, f.name, f.unit) for f in fields],
         activity_basis="completed_execution_notional", rank_basis="completed_share_volume",
-        history_basis="declared_elapsed_session_origin", value_type="Float32"))
+        history_basis="declared_elapsed_session_origin", value_type="Float32",
+        volume_window_seconds=volume_window_seconds))
 
 
 @dataclass(frozen=True)
@@ -201,10 +278,71 @@ class PreparedHistory:
     values: pl.DataFrame
 
 
+@dataclass(frozen=True)
+class HistoryParents:
+    source_bar_attempt_id: str
+    source_bar_unit_hash: str
+    source_liquidity_attempt_id: str
+    source_liquidity_hash: str
+    opening_reference_hash: str
+    market_plan_hash: str
+    producer_code_hash: str
+    volume_window_seconds: int
+
+    def __post_init__(self):
+        for name in ("source_bar_attempt_id", "source_liquidity_attempt_id"):
+            value = getattr(self, name)
+            if type(value) is not str or str(UUID(value)) != value:
+                raise ValueError("History parent needs a canonical attempt identity")
+        for name in ("source_bar_unit_hash", "source_liquidity_hash", "opening_reference_hash",
+                     "market_plan_hash", "producer_code_hash"):
+            require_hash(getattr(self, name))
+        if type(self.volume_window_seconds) is not int or not 1 <= self.volume_window_seconds <= 3600:
+            raise ValueError("History parent requires an explicit elapsed volume window")
+
+    def payload(self):
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+
+def child_records(prepared, table):
+    """Stream centrally typed children without creating a second full row bank."""
+    prefix = prepared.scope.prefix()
+    if table == FIELD:
+        source = ({"field_id": f.field_id, "field_name": f.name, "unit": f.unit} for f in prepared.fields)
+    elif table == CLOCK:
+        source = prepared.clocks.iter_rows(named=True)
+    elif table == VALUE:
+        source = prepared.values.sort("field_id", "first_ordinal").iter_rows(named=True)
+    else:
+        raise ValueError("History child table differs from the shared product")
+    for row in source:
+        yield restore_record(table, {**prefix, **row})
+
+
+def history_seal(prepared, parents, *, certified_at):
+    """Project coverage evidence; publication must separately prove these parents."""
+    if type(prepared) is not PreparedHistory or type(parents) is not HistoryParents:
+        raise TypeError("History seal requires typed inputs and source pins")
+    if (prepared.volume_window_seconds != parents.volume_window_seconds
+            or prepared.scope.product_revision != product_revision(prepared.fields, parents.producer_code_hash,
+                volume_window_seconds=parents.volume_window_seconds)):
+        raise ValueError("History seal input revision or window differs")
+    expand_values(prepared, first_ordinal=0, stop_ordinal=1, evaluation_block="seal-validation")
+    header = {**prepared.scope.prefix(), **parents.payload(),
+        "elapsed_clock_count": prepared.scope.clock_count, "field_count": len(prepared.fields),
+        "clock_row_count": prepared.clocks.height, "value_row_count": prepared.values.height,
+        "field_content_hash": records_hash(FIELD, child_records(prepared, FIELD)),
+        "clock_content_hash": records_hash(CLOCK, child_records(prepared, CLOCK)),
+        "value_content_hash": records_hash(VALUE, child_records(prepared, VALUE))}
+    header["content_hash"] = content_hash(header)
+    header["certified_at"] = certified_at
+    return restore_record(COVERAGE, header)
+
+
 def prepare_product(scope, bars, liquidity, fields, *, volume_window_seconds, producer_code_hash):
     """Calculate once per listing and compress each field without row loops."""
     selected_catalog(fields)
-    if scope.product_revision != product_revision(fields, producer_code_hash):
+    if scope.product_revision != product_revision(fields, producer_code_hash, volume_window_seconds=volume_window_seconds):
         raise ValueError("History catalog/code revision differs from the source scope")
     frame = elapsed_volume_history(prepare_dense_inputs(scope, bars, liquidity), volume_window_seconds)
     history = prepare_causal_history(frame, tuple(f.name for f in fields))
@@ -221,6 +359,7 @@ def prepare_product(scope, bars, liquidity, fields, *, volume_window_seconds, pr
         values.append(pl.DataFrame({"field_id": pl.Series([field.field_id] * len(starts), dtype=pl.UInt32),
             "first_ordinal": starts, "stop_ordinal": stops,
             "value": pl.Series(selected, dtype=pl.Float32).set(pl.Series(~selected_valid), None),
+            "value_bits": pl.Series(selected.view(np.uint32), dtype=pl.UInt32).set(pl.Series(~selected_valid), None),
             "valid": pl.Series(selected_valid, dtype=pl.UInt8)}))
     clocks = frame.select("bucket_index", pl.col("source_known").cast(pl.UInt8),
         pl.col("observed").cast(pl.UInt8), pl.col("extremes_valid").cast(pl.UInt8),
@@ -277,6 +416,14 @@ def expand_values(prepared: PreparedHistory, *, first_ordinal: int, stop_ordinal
         indices = np.searchsorted(start, ordinals, side="right") - 1
         valid = runs["valid"].to_numpy()[indices]
         values = runs["value"].to_numpy()[indices]
+        if "value_bits" not in runs.columns:
+            raise ValueError("History intervals lack their typed Float32 bits")
+        bits_valid = runs["value_bits"].is_not_null().to_numpy()
+        all_values = runs["value"].to_numpy()
+        encoded_bits = runs["value_bits"].fill_null(0).cast(pl.UInt32).to_numpy()
+        if (np.any(bits_valid != (runs["valid"].to_numpy() == 1))
+                or np.any(all_values[bits_valid].astype(np.float32).view(np.uint32) != encoded_bits[bits_valid])):
+            raise ValueError("History interval Float32 bits differ from values or validity")
         if (runs["valid"].null_count() or runs.filter(~pl.col("valid").is_in([0, 1])).height
                 or runs.filter((pl.col("valid") == 1) & ~pl.col("value").is_finite()).height
                 or np.any((valid == 1) & ~np.isfinite(values))
