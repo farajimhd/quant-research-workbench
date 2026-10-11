@@ -4853,9 +4853,20 @@ class ReplayRunController:
             raise
 
         through_boundary_ms = self._fixed_through_boundary_ms()
-        source = iter_market_day_rows(
+        read_policy = getattr(getattr(getattr(self, '_strategy_one_manager', None),
+                                      'contract', None), 'bounded_market_read_policy', None)
+        read_rows = iter_market_day_rows
+        read_options = {}
+        if read_policy is not None:
+            from src.trading_runtime.bounded_market_read_policy import BoundedMarketReadPolicy
+            from .backtest_market_data import iter_bounded_market_day_rows
+            if type(read_policy) is not BoundedMarketReadPolicy:
+                raise ValueError('Market reader requires an exact declared policy')
+            read_rows = iter_bounded_market_day_rows
+            read_options = read_policy.reader_options()
+        source = read_rows(
             execution_plan, through_boundary_ms=through_boundary_ms,
-            price_plan=price_plan)
+            price_plan=price_plan, **read_options)
         groups = iter_market_time_groups(iter_market_boundary_groups(source))
         sequence = int(self._source_cursor.get("sequence") or 0)
         boundary_count = 0

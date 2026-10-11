@@ -390,6 +390,7 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
                     'first_price_break_policy', 'premarket_failure_policy',
                     'profit_protection_policy', 'confirmed_ah_failure_policy',
                     'liquidity_fade_policy', 'entry_activity_policy', 'episode_activity_policy'}
+        optional.add('bounded_market_read_policy')
         if set(payload) - set(required) - optional:
             raise ValueError('Declared fixed capability payload contains an unknown policy')
         bindings = (
@@ -412,6 +413,7 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
         self.all_held_original_risk_policy
         confirmed_policy = self.confirmed_original_risk_policy
         self.original_risk_verification_reuse_policy
+        self.bounded_market_read_policy
         from .native_channel_management_policy import parse_native_channel_management_policy
         channel_policy = parse_native_channel_management_policy(self.release, payload)
         if channel_policy is not None and confirmed_policy is None:
@@ -523,6 +525,12 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
         if selected is not None and self.confirmed_original_risk_policy is None:
             raise ValueError('Channel management snapshot requires inherited original-risk authority')
         return selected
+
+    @property
+    def bounded_market_read_policy(self):
+        import json
+        from .bounded_market_read_policy import parse_bounded_market_read_policy
+        return parse_bounded_market_read_policy(self.release, json.loads(self.policy_json))
 
     @property
     def _declared_confirmed_original_risk_policy(self):
