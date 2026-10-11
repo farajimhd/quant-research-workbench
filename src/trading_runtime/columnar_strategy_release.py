@@ -276,10 +276,16 @@ class ReleasePublisher:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
             # Do not release ownership while a blocking insert is still active.
-            try:
-                await task
-            finally:
-                self._failed = True
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if task.done() and not task.cancelled():
+                task.exception()
+            self._failed = True
             raise
         except BaseException:
             self._failed = True

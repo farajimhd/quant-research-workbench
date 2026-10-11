@@ -30,8 +30,11 @@ numbered releases and their certification gates remain intact.
   release projection, exact child foreign-key/count/hash readback, immutable
   number collision checks, children-before-seal publication, bounded asynchronous
   caller I/O, explicit SELECT-only reader grants and schema/physical SSD checks.
-  The publisher accepts an operator-owned storage/ownership adapter; its concrete
-  Keeper-fenced ClickHouse publication bootstrap remains to be integrated.
+  `columnar_strategy_publication.py` supplies the concrete operator-only transport:
+  distinct least-privilege connections, persistent single-use Keeper claims bound
+  to creation receipts, coverage-last publication and exact committed retry.
+  Ambiguous/unfinished claims are never adopted automatically. Cancellation drains
+  the owned worker. Operator installation/grants and approval integration remain open.
   Reader admission requires an explicitly pinned approval/content/code/winner
   identity. These components do not register or publish a number on import.
 - `filled_position_state.py`: a shared in-memory projection of verified execution
