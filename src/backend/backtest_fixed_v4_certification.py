@@ -1753,6 +1753,11 @@ def _reviewed_fixed_lot_execution_projection(source: str, name: str, expected: s
 
 def _reviewed_fixed_lot_management_projection(source: str, name: str, expected: str) -> bool:
     """Prove this exact selected owner leaves the complete default manager unchanged."""
+    from .backtest_native_manager_compatibility import restore_native_manager_parent
+    try:
+        source = restore_native_manager_parent(source)
+    except ValueError:
+        return False
     from .backtest_fixed_structural_lot_compatibility_v28 import restore_reviewed_parent_source as restore_v28
     source = restore_v28(source, 'src/backend/backtest_strategy_one_management.py')
     from .backtest_fixed_structural_lot_compatibility_v27 import restore_reviewed_parent_source as restore_v27
