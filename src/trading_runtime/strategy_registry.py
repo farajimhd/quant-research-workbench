@@ -1697,6 +1697,26 @@ def initialize_numbered_fixed_strategies() -> None:
                 certify_native_participation_binding_successor_source, participation_acquisition_release,
                 historical_parent_proof=participation_binding_parent_source_proof())))
         register_numbered_strategy(participation_binding)
+        from .strategy_one_hundred_thirty_two_release import release_contract as participation_quality_release
+        from .strategy_one_hundred_thirty_two_contract import strategy_one_hundred_thirty_two_contract
+        from .strategy_one_hundred_thirty_two_configuration import (
+            SOURCE_PREFIX as participation_quality_source_prefix,
+            derive_strategy_one_hundred_thirty_two_configuration,
+            verify_strategy_one_hundred_thirty_two_manifest,
+            historical_parent_source_proof as participation_quality_parent_source_proof)
+        from src.backend.backtest_native_participation_quality_successor_certification import certify_native_participation_quality_successor_source
+        participation_quality = participation_quality_release()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=participation_quality.executor_strategy_id, revision=participation_quality.executor_revision,
+            evaluation_interval=participation_quality.evaluation_interval,
+            strategy_factory=_strategy_two_factory,
+            contract_factory=strategy_one_hundred_thirty_two_contract,
+            manifest_authority=NativeManifestAuthority(131, participation_quality_source_prefix,
+                derive_strategy_one_hundred_thirty_two_configuration,
+                verify_strategy_one_hundred_thirty_two_manifest,
+                certify_native_participation_quality_successor_source, participation_binding_release,
+                historical_parent_proof=participation_quality_parent_source_proof())))
+        register_numbered_strategy(participation_quality)
         _NUMBERED_FIXED_REGISTERED = True
 
 

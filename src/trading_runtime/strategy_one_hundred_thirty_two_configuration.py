@@ -1,0 +1,119 @@
+"""Pure immutable configuration derivation; never publishes or approves source."""
+from copy import deepcopy
+from hashlib import sha256
+import re
+
+from . import strategy_one_hundred_thirty_one_release as parent
+from . import strategy_one_hundred_thirty_one_configuration as parent_configuration
+from .journal_contract import canonical_json
+from .strategy_one_configuration_tree import encode_nodes, node_hash
+from .strategy_one_hundred_thirty_two_release import (
+    CONTROL_REVISION, CONTROL_PAYLOAD_HASH, BEHAVIOR, declared_policies, release_contract,
+)
+
+CONTROL_CODE_COMMIT = '17609979d49dd1998474e93cbca96fc64b478ef6'
+CONTROL_CODE_FINGERPRINT = '833e691723f67e4e6f4717cfe3208e3b882d9d2f87c2d6004dfb41987010727e'
+SOURCE_PREFIX = 'strategy-one-hundred-thirty-two-from'
+
+
+def historical_parent_source_proof():
+    from .historical_parent_source_proof import HistoricalParentSourceProof
+    return HistoricalParentSourceProof(parent.release_contract().approved_digest,
+        CONTROL_CODE_COMMIT, CONTROL_CODE_FINGERPRINT,
+        '7988b128aa7818b490e83ae8018368129b00885420e5077e9a8bfbac0df1b61d')
+
+
+def manifest_policies():
+    return {**declared_policies(),
+        'entry_spread_risk_quote_source': deepcopy(parent_configuration.manifest_policies()['entry_spread_risk_quote_source'])}
+
+
+def verify_exact_parent(source):
+    from src.backend.backtest_strategy_one_configuration import CertifiedStrategyOneConfiguration
+    if (type(source) is not CertifiedStrategyOneConfiguration or source.strategy_number != 131
+            or source.revision()['revision_id'] != CONTROL_REVISION
+            or source.payload_hash != CONTROL_PAYLOAD_HASH):
+        raise ValueError('Strategy132 requires exact certified Strategy130 control')
+    manifest = parent_configuration.verify_prepared_strategy_one_hundred_thirty_one_manifest(source.payload['strategy'])
+    if (manifest['approved_code_commit'] != CONTROL_CODE_COMMIT
+            or manifest['approved_code_fingerprint'] != CONTROL_CODE_FINGERPRINT):
+        raise ValueError('Strategy132 parent source approval differs')
+    return manifest
+
+
+def verify_prepared_strategy_one_hundred_thirty_two_manifest(strategy):
+    release = release_contract()
+    if (type(strategy) is not dict
+            or type(strategy.get('strategy_number')) is not int
+            or strategy['strategy_number'] != release.number
+            or type(strategy.get('revision')) is not int
+            or strategy['revision'] != release.executor_revision
+            or strategy.get('strategy_id') != release.executor_strategy_id
+            or strategy.get('execution_interval') != release.evaluation_interval):
+        raise ValueError('Strategy132 prepared identity differs')
+    manifest = strategy.get('numbered_release')
+    policies = manifest_policies()
+    required = {'contract', 'approved_digest', 'approved_code_commit',
+        'approved_code_fingerprint', 'approval_reference', 'publication_mode',
+        'source_revision_id', 'source_payload_hash', 'manifest_hash', *policies}
+    if type(manifest) is not dict or set(manifest) != required:
+        raise ValueError('Strategy132 complete manifest shape differs')
+    if (canonical_json(manifest['contract']) != canonical_json(release.canonical_payload())
+            or manifest['approved_digest'] != release.approved_digest
+            or manifest['source_revision_id'] != CONTROL_REVISION
+            or manifest['source_payload_hash'] != CONTROL_PAYLOAD_HASH
+            or any(canonical_json(manifest[key]) != canonical_json(value)
+                   for key, value in policies.items())
+            or manifest['publication_mode'] != 'backtest_only'
+            or not re.fullmatch('[0-9a-f]{40}', str(manifest['approved_code_commit']))
+            or not re.fullmatch('[0-9a-f]{64}', str(manifest['approved_code_fingerprint']))
+            or type(manifest['approval_reference']) is not str
+            or not 1 <= len(manifest['approval_reference'].strip()) <= 512):
+        raise ValueError('Strategy132 policy or source approval differs')
+    if manifest['manifest_hash'] != sha256(canonical_json(
+            {k: v for k, v in manifest.items() if k != 'manifest_hash'}).encode()).hexdigest():
+        raise ValueError('Strategy132 manifest seal differs')
+    return manifest
+
+
+def verify_strategy_one_hundred_thirty_two_manifest(strategy):
+    manifest = verify_prepared_strategy_one_hundred_thirty_two_manifest(strategy)
+    from .strategy_registry import numbered_strategy, fixed_strategy_executor
+    release = release_contract()
+    if numbered_strategy(release.number) != release:
+        raise ValueError('Strategy132 installed declaration differs')
+    fixed_strategy_executor(release.executor_strategy_id, release.executor_revision).verify()
+    return manifest
+
+
+def derive_strategy_one_hundred_thirty_two_configuration(source, *, approved_code_commit,
+        approved_code_fingerprint, approval_reference):
+    verify_exact_parent(source)
+    payload = deepcopy(source.payload)
+    if payload.get('assignments'):
+        raise ValueError('Strategy132 cannot inherit mutable assignments')
+    release = release_contract()
+    manifest = {**manifest_policies(), 'contract': release.canonical_payload(),
+        'approved_digest': release.approved_digest,
+        'approved_code_commit': approved_code_commit,
+        'approved_code_fingerprint': approved_code_fingerprint,
+        'approval_reference': approval_reference, 'publication_mode': 'backtest_only',
+        'source_revision_id': CONTROL_REVISION, 'source_payload_hash': CONTROL_PAYLOAD_HASH}
+    manifest['manifest_hash'] = sha256(canonical_json(manifest).encode()).hexdigest()
+    number = release.number
+    profile = f'strategy-one-{number}'
+    payload['strategy'].update(strategy_number=number, revision=release.executor_revision,
+        name=f'Early Squeeze Strategy {number}', profile_id=profile,
+        profile_revision=number, numbered_release=manifest)
+    verify_prepared_strategy_one_hundred_thirty_two_manifest(payload['strategy'])
+    payload['strategy_profile'].update(profile_id=profile, revision=number,
+        definition_revision=number, name=f'Early Squeeze Strategy {number}', description=BEHAVIOR)
+    payload['run_plan'].update(name=f'Strategy {number} Backtest',
+        description=f'Sealed extended-session Strategy {number}', profile_id=profile)
+    nodes = encode_nodes(payload)
+    if not 1 <= len(nodes) <= 10000:
+        raise ValueError('Strategy132 exceeds native configuration node bound')
+    return dict(source_candidate_id=f'{SOURCE_PREFIX}:{CONTROL_REVISION}',
+        source_candidate_hash=source.payload_hash,
+        payload_hash=sha256(canonical_json(payload).encode()).hexdigest(),
+        node_hash=node_hash(nodes), node_count=len(nodes), payload=payload)
