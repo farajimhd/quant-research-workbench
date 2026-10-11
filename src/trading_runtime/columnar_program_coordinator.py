@@ -79,6 +79,37 @@ class ProgramProposal:
             reason=self.reason)
 
 
+def validate_program_proposal(release: ProgramRelease, proposal: ProgramProposal) -> None:
+    """Validate the semantic stage before journal, capital or OMS mutation."""
+    actions = {"entry": {"enter_long"}, "add": {"add_long"},
+               "reduce": {"reduce_long"}, "trail": {"replace_protective_stop"},
+               "exit": {"exit", "cancel_entry"}}
+    if (type(proposal) is not ProgramProposal
+            or proposal.stage not in release.programs
+            or proposal.action not in actions.get(proposal.stage, ())
+            or not proposal.ticker or not proposal.reason
+            or not isfinite(proposal.reference_price) or proposal.reference_price <= 0
+            or not isfinite(proposal.quantity) or proposal.quantity < 0):
+        raise ValueError("Program proposal has invalid stage or execution values")
+    UUID(proposal.intent_id)
+    acquisition = proposal.action in {"enter_long", "add_long"}
+    if acquisition:
+        cash_key = "entry_cash" if proposal.stage == "entry" else "add_cash"
+        if (proposal.requested_cash is None or not isfinite(proposal.requested_cash)
+                or Decimal(str(proposal.requested_cash)) != release.header[cash_key]
+                or proposal.quantity != 0):
+            raise ValueError("Program acquisition differs from immutable cash parameters")
+    elif proposal.requested_cash is not None:
+        raise ValueError("Program management cannot request acquisition cash")
+    if proposal.action in {"reduce_long", "exit"} and proposal.quantity <= 0:
+        raise ValueError("Program reduction requires actual positive held quantity")
+    if acquisition or proposal.action == "replace_protective_stop":
+        if (proposal.stop_price is None or not isfinite(proposal.stop_price)
+                or proposal.stop_price <= 0
+                or acquisition and proposal.stop_price >= proposal.reference_price):
+            raise ValueError("Program proposal lacks valid protection")
+
+
 def select_program_proposal(release: ProgramRelease, boundary: ProgramBoundary, *,
                             position: FilledPosition, management: ManagementState,
                             terminal: bool = False) -> tuple[ProgramProposal, ...]:

@@ -479,7 +479,8 @@ class TradingRuntime:
                     snapshot = ExecutionMarketSnapshot(
                         ticker=ticker, bid=bid, ask=ask, tick_size=0.01,
                         observed_at=utc_from_epoch_microseconds(quote_us),
-                        source="arte.liquidity_100ms_v1",
+                        source=getattr(getattr(self.broker, "config", None),
+                                       "liquidity_source", "arte.liquidity_100ms_v1"),
                     )
                     # A carried NBBO is not a new quote observation.
                     if self.execution_market_data.snapshot(ticker) != snapshot:
@@ -919,6 +920,7 @@ class TradingRuntime:
         confirmed_ah_source: tuple | None = None,
         liquidity_fade_source: tuple | None = None,
         automatic_entry: Any | None = None,
+        program_assignment_id: str | None = None,
     ) -> list[dict[str, Any]]:
         from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
         if (self.config.mode == RunMode.BACKTEST
@@ -929,6 +931,22 @@ class TradingRuntime:
             )
             require_no_replacement_capital(evaluation.intents)
             require_strategy_one_actions(evaluation.intents)
+        if program_assignment_id is not None:
+            from .columnar_strategy_release import ProgramRelease
+            release = getattr(self.strategy, "program_release", None)
+            if (not isinstance(release, ProgramRelease)
+                    or self.config.mode is not RunMode.BACKTEST
+                    or release.header["strategy_id"] != self.config.strategy_id
+                    or release.header["strategy_number"] != self.config.strategy_revision
+                    or event is not None or not program_assignment_id
+                    or account_id not in self.config.account_ids
+                    or any(intent.metadata for intent in evaluation.intents)
+                    or any(value is not None for value in (strategy_one_proposal,
+                        strategy_one_add_proposal, strategy_one_assignment_id,
+                        numbered_exit_assignment_id, followthrough_source,
+                        profit_giveback_source, confirmed_ah_source,
+                        liquidity_fade_source, automatic_entry))):
+                raise ValueError("Program submission lacks its exclusive release authority")
         from .numbered_fixed_strategy import is_numbered_fixed_strategy, resolve_numbered_fixed_strategy
         if (self.config.mode == RunMode.BACKTEST
                 and is_numbered_fixed_strategy(self.config.strategy_id, self.config.strategy_revision)):
@@ -1199,7 +1217,10 @@ class TradingRuntime:
                 if self.order_manager is None:
                     raise RuntimeError('Entry cancellation requires order management')
                 await self.order_manager.cancel_entry_acquisition(
-                    replace(intent, action='exit', metadata={**intent.metadata, 'cancel_entry_acquisition': True}),
+                    replace(intent, action='exit', metadata={**intent.metadata,
+                        **({'assignment_id': program_assignment_id}
+                           if program_assignment_id is not None else {}),
+                        'cancel_entry_acquisition': True}),
                     account_id=account_id)
                 await self.order_manager.reconcile()
                 results.append({'decision': {'status': 'acquisition_cancellation_requested'}, 'order_group': None})
@@ -1234,8 +1255,10 @@ class TradingRuntime:
                 await self._refresh_portfolio_from_broker(
                     for_entry_admission=(strategy_one_proposal is not None
                                          or strategy_one_add_proposal is not None
-                                         or automatic_entry is not None))
-            assignment_id = (automatic_entry.assignment_id if automatic_entry is not None
+                                         or automatic_entry is not None
+                                         or program_assignment_id is not None))
+            assignment_id = (program_assignment_id if program_assignment_id is not None
+                             else automatic_entry.assignment_id if automatic_entry is not None
                              else strategy_one_proposal.assignment_id
                              if strategy_one_proposal is not None
                              else strategy_one_add_proposal.assignment_id
@@ -1525,6 +1548,60 @@ class TradingRuntime:
                 session_date=self.config.anchor_date)
         from .strategy_one_intent import strategy_one_entry_intent
         return strategy_one_entry_intent(proposal, session_date=self.config.anchor_date)
+
+    async def submit_program_proposal(
+        self, proposal: Any, *, account_id: str, assignment_id: str,
+        execution_policy: Any, protection_profile: Any, outside_rth: bool,
+    ) -> list[dict[str, Any]]:
+        """Route a completed program proposal through actual Portfolio and OMS.
+
+        Assignment attribution is carried separately from the normalized
+        semantic intent. A proposal never creates a filled position.
+        """
+        from .columnar_program_coordinator import ProgramProposal
+        from .columnar_strategy_release import ProgramRelease
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
+        release = getattr(self.strategy, "program_release", None)
+        assignments = getattr(self.strategy, "assignments", None)
+        if (type(proposal) is not ProgramProposal or not isinstance(release, ProgramRelease)
+                or self.config.mode is not RunMode.BACKTEST
+                or not isinstance(self.journal, BacktestMemoryJournal)
+                or not callable(assignments)
+                or account_id not in self.config.account_ids):
+            raise ValueError("Program submission requires its typed Backtest runtime")
+        matches = [assignment for assignment in assignments()
+                   if assignment.assignment_id == assignment_id]
+        if (len(matches) != 1 or matches[0].account_id != account_id
+                or matches[0].ticker != proposal.ticker
+                or matches[0].strategy_id != self.config.strategy_id
+                or matches[0].strategy_revision != self.config.strategy_revision
+                or release.header["strategy_id"] != self.config.strategy_id
+                or release.header["strategy_number"] != self.config.strategy_revision):
+            raise ValueError("Program proposal attribution differs from its release assignment")
+        if (proposal.boundary_at.tzinfo is None
+                or proposal.boundary_at.utcoffset() is None
+                or self.last_event_time is None
+                or proposal.boundary_at != self.last_event_time):
+            raise ValueError("Program proposal requires the completed broker boundary")
+        from .columnar_program_coordinator import validate_program_proposal
+        validate_program_proposal(release, proposal)
+        permission = {"entry": "enter", "add": "add", "reduce": "reduce",
+                      "exit": "exit", "trail": "reduce"}[proposal.stage]
+        if (not matches[0].permissions.observe
+                or not getattr(matches[0].permissions, permission)
+                or proposal.boundary_at.microsecond != 0):
+            raise ValueError("Program proposal violates assignment permissions or cadence")
+        intent = proposal.to_intent(execution_policy=execution_policy,
+            protection_profile=protection_profile, outside_rth=outside_rth)
+        if intent.action in ENTRY_ACTIONS:
+            envelope = execution_policy.envelope
+            resolution = getattr(getattr(self.broker, "config", None), "liquidity_resolution_ms", None)
+            if (resolution not in (100, 1000)
+                    or not envelope.persist_until_cancelled
+                    and 0 < envelope.deadline_ms <= resolution):
+                raise ValueError("Program order deadline expires before its first eligible liquidity bucket")
+        return await self._execute_intents(StrategyEvaluation(intents=(intent,)),
+            account_id, None, program_assignment_id=assignment_id)
 
     async def submit_strategy_one_proposal(self, proposal: Any) -> list[dict[str, Any]]:
         """Route numbered entry evidence through the shared Portfolio/OMS path.
