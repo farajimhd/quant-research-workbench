@@ -49,3 +49,32 @@ def test_owner_rejects_changed_native_fill_source_and_foreign_checkpoint(install
     with pytest.raises(ValueError): owner.capture(rows.inherited,journal_batch_id='invalid')
     with pytest.raises(ValueError): owner.pending_requests(boundary_ms=args['boundary_ms']+100)
     with pytest.raises(ValueError): owner.stage(context['prepared'],{**quote,'quote_valid':0},**args)
+
+
+def test_actual_manager_binds_only_declared_owner_and_stages_its_original_entry(installed):
+    from types import SimpleNamespace
+    from src.backend.backtest_strategy_one_management import StrategyOneManagementRunner
+    from src.trading_runtime.runtime import RunMode
+    from src.trading_runtime.strategy_one_position import ProtectionState
+    owner,_,context,quote,args=owner_case(installed)
+    runtime=SimpleNamespace(run_id=owner.run_id,config=SimpleNamespace(strategy_revision=1,
+        mode=RunMode.BACKTEST,anchor_date=owner.session_date),
+        submit_strategy_one_proposal=lambda *_a:None,submit_strategy_one_add=lambda *_a:None,
+        submit_strategy_one_protection=lambda *_a:None,
+        _strategy_one_entry_intent=lambda _entry:SimpleNamespace(intent_id=args['source_entry_intent_id']))
+    runner=StrategyOneManagementRunner(runtime=runtime,
+        evidence=SimpleNamespace(management_evidence=lambda *_a:None),tick_for_ticker=lambda _:0.01)
+    with pytest.raises(ValueError): runner.bind_native_channel_management(owner)
+    runner.contract=SimpleNamespace(native_channel_management_policy=owner.policy)
+    runner.bind_native_channel_management(owner)
+    with pytest.raises(ValueError): runner.bind_native_channel_management(owner)
+    financial=args['financial']
+    key=(financial.account_id,financial.assignment_id,financial.ticker)
+    runner._submitted[key]=args['original_entry']
+    runner._positions[key]=ProtectionState(args['boundary_ms'],args['original_entry'].initial_stop,
+        args['original_entry'].initial_target)
+    staged=runner.stage_native_channel_management(context['prepared'],quote,financial=financial,
+        group=args['group'],executions=args['executions'],expected_conid=args['expected_conid'],
+        boundary_ms=args['boundary_ms'])
+    assert runner.native_channel_requests(boundary_ms=args['boundary_ms'])==(staged,)
+    with pytest.raises(ValueError): runner.native_channel_requests(boundary_ms=args['boundary_ms']+100)

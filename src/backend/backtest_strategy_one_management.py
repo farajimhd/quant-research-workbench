@@ -155,6 +155,7 @@ class StrategyOneManagementRunner:
         self._liquidity_latest_five_second: dict[str, Mapping] = {}
         self._completed_risk_lookup = None
         self._original_risk_requests = {}
+        self._native_channel_owner = None
         self._fixed_lot_owner = None
         self._cadence_financials = {}
         self._cadence_retry = set()
@@ -164,9 +165,48 @@ class StrategyOneManagementRunner:
             self.contract.management_cadence_policy)
             if type(self.contract) is FixedStructuralLotSelectedExitStrategyContract else None)
 
+    def bind_native_channel_management(self,owner):
+        """Bind one declared pending owner before native position processing."""
+        from .backtest_native_channel_management_owner import NativeChannelManagementOwner
+        from src.trading_runtime.runtime import RunMode
+        if (type(owner) is not NativeChannelManagementOwner or self._native_channel_owner is not None
+                or self._fixed_lot_owner is not None or self._submitted or self._positions
+                or getattr(self.contract,'native_channel_management_policy',None)!=owner.policy
+                or self.runtime.config.mode!=RunMode.BACKTEST
+                or owner.run_id!=self.runtime.run_id or owner.session_date!=self.runtime.config.anchor_date):
+            raise ValueError('Native manager lacks its exact unbound declared pending owner')
+        self._native_channel_owner=owner
+
+    def stage_native_channel_management(self,prepared,quote,*,financial,group,executions,
+            expected_conid,boundary_ms,position_index=None):
+        """Stage actual native entry ownership; checkpoint confirmation is separate."""
+        if type(financial) is not StrategyOneFinancialView:
+            raise ValueError('Native channel manager requires its exact current financial view')
+        owner=self._native_channel_owner
+        key=(financial.account_id,financial.assignment_id,financial.ticker)
+        source=self._submitted.get(key)
+        if (owner is None or getattr(self.contract,'native_channel_management_policy',None)!=owner.policy
+                or source is None or key not in self._positions):
+            raise ValueError('Native channel decision lacks its active manager-owned original entry')
+        intent=self.runtime._strategy_one_entry_intent(source)
+        return owner.stage(prepared,quote,financial=financial,original_entry=source,
+            group=group,executions=executions,source_entry_intent_id=intent.intent_id,
+            expected_conid=expected_conid,boundary_ms=boundary_ms,position_index=position_index)
+
+    def native_channel_requests(self,*,boundary_ms):
+        owner=self._native_channel_owner
+        if owner is None:
+            if getattr(self.contract,'native_channel_management_policy',None) is not None:
+                raise ValueError('Declared native channel manager has no bound pending owner')
+            return ()
+        if getattr(self.contract,'native_channel_management_policy',None)!=owner.policy:
+            raise ValueError('Native channel manager declaration changed after binding')
+        return owner.pending_requests(boundary_ms=boundary_ms)
+
     def bind_fixed_structural_lot_management(self,owner):
         from .backtest_fixed_structural_lot_management import NativeFixedStructuralLotManagement
         if (type(owner) is not NativeFixedStructuralLotManagement or self._fixed_lot_owner is not None
+                or self._native_channel_owner is not None
                 or self._submitted or owner.publisher.journal is not self.runtime.journal
                 or owner.operation.source.run_id!=self.runtime.run_id
                 or owner.operation.source._revision!=self.contract.strategy_number):
@@ -531,6 +571,9 @@ class StrategyOneManagementRunner:
     ) -> None:
         if self._original_risk_requests:
             self.original_risk_requests(boundary_ms=boundary_ms)
+        if (self._native_channel_owner is not None
+                or getattr(self.contract,'native_channel_management_policy',None) is not None):
+            self.native_channel_requests(boundary_ms=boundary_ms)
         if not isinstance(financial, StrategyOneFinancialView):
             raise TypeError("Strategy 1 management needs typed financial state")
         if self._fixed_lot_owner is not None:
