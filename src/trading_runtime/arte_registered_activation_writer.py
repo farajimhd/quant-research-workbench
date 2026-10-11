@@ -1,4 +1,4 @@
-"""Bounded asynchronous Strategy 1 activation publication.
+"""Bounded registered activation publication for explicit run scopes.
 
 This is a control-plane writer, not a live-runtime enablement switch. The
 execution thread only submits frozen inputs and receives a Future; it never
@@ -7,11 +7,12 @@ wait for the receipt on its own worker before publishing a durable ACK.
 """
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import Future
 from datetime import date, datetime
 from queue import Queue
 from threading import Lock, Thread
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
 from src.trading_runtime.arte_activation_insert_dispatch import (
@@ -19,6 +20,10 @@ from src.trading_runtime.arte_activation_insert_dispatch import (
 )
 from src.trading_runtime.arte_activation_projection import (
     ActivationProjection, strategy_one_activation_run_id,
+    _activation_run_id,
+)
+from src.trading_runtime.arte_journal_schema import (
+    ACTIVATION_TABLES, journal_permission_preflight, storage_preflight,
 )
 from src.backend.live_strategy_one_v4_principal import live_v4_preflight
 
@@ -36,25 +41,78 @@ class _Receipt(Future[str]):
 
 
 class RegisteredActivationWriter:
-    """One ordered I/O lane for previously initialized Strategy 1 run scopes."""
+    """One ordered I/O lane for previously initialized, exact run scopes."""
+
+    @classmethod
+    async def create_async(cls, client_factory: Callable[[], Any], dispatch, **scope):
+        """Own preflight I/O off-loop; cancellation drains and closes the writer."""
+        def construct():
+            client = client_factory()
+            try:
+                return cls(client, dispatch, **scope)
+            except BaseException:
+                close = getattr(client, "close", None)
+                if close is not None:
+                    close()
+                raise
+
+        task = asyncio.create_task(asyncio.to_thread(construct))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not task.cancelled() and task.exception() is None:
+                cleanup = asyncio.create_task(asyncio.to_thread(task.result().close))
+                while not cleanup.done():
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if not cleanup.cancelled():
+                    cleanup.exception()
+            raise
 
     def __init__(self, client: Any, dispatch: ActivationInsertDispatch, *,
                  session_date: date, mode: str,
-                 run_plan_ids: Iterable[str], capacity: int = 128) -> None:
-        if type(session_date) is not date or mode not in {"paper", "live"}:
+                 run_plan_ids: Iterable[str], capacity: int = 128,
+                 backtest_run_ids: Mapping[str, str] | None = None) -> None:
+        if type(session_date) is not date or mode not in {"paper", "live", "backtest"}:
             raise ValueError("Registered activation session or mode is invalid")
         if type(capacity) is not int or capacity < 1:
             raise ValueError("Registered activation capacity is invalid")
         if (not isinstance(dispatch, ActivationInsertDispatch)
-                or not dispatch.strategy_one):
+                or dispatch.strategy_one != (mode != "backtest")):
             raise ValueError(
                 "Strategy 1 activation needs isolated dispatch and exact preflight")
         plans = tuple(run_plan_ids)
         if not plans or len(plans) != len(set(plans)):
             raise ValueError("Registered activation plans are missing or duplicate")
-        self._run_ids = {plan: strategy_one_activation_run_id(
-            session_date, mode=mode, run_plan_id=plan) for plan in plans}
-        live_v4_preflight(client)
+        if mode == "backtest":
+            if (not isinstance(backtest_run_ids, Mapping)
+                    or set(backtest_run_ids) != set(plans)):
+                raise ValueError("Backtest activation needs exact plan-to-run scopes")
+            self._run_ids = dict(backtest_run_ids)
+            if (len(set(self._run_ids.values())) != len(plans)
+                    or any(not _activation_run_id(value).startswith("backtest:")
+                           for value in self._run_ids.values())):
+                raise ValueError("Backtest activation run scopes are invalid or duplicate")
+            storage_preflight(client, tables=ACTIVATION_TABLES)
+            journal_permission_preflight(client, journal_tables=frozenset(
+                table.name for table in ACTIVATION_TABLES))
+        else:
+            if backtest_run_ids is not None:
+                raise ValueError("Paper/live activation cannot use backtest run scopes")
+            self._run_ids = {plan: strategy_one_activation_run_id(
+                session_date, mode=mode, run_plan_id=plan) for plan in plans}
+            live_v4_preflight(client)
         for run_id in self._run_ids.values():
             dispatch.assert_open(run_id)
         self._client = client

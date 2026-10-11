@@ -106,6 +106,9 @@ class TypedActivationDispatchAdmission:
         rows = intents.get("intents")
         if not isinstance(rows, list) or len(rows) != len(batch.deliveries):
             raise ValueError("typed dispatch delivery count differs from intent")
+        predecessor = getattr(self._ack_writer, "require_committed_intents", None)
+        if predecessor is not None:
+            predecessor(intents)
         receipts = []
         for intent, delivery in zip(rows, batch.deliveries, strict=True):
             if any(intent.get(key) != delivery.get(key)

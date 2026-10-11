@@ -143,8 +143,11 @@ def test_writer_receipt_waits_for_insert_and_ack_extends_intent() -> None:
         intent_receipt = writer.submit_intents(intents)
         assert client.entered.wait(5)
         assert not intent_receipt.done()
+        with pytest.raises(ValueError, match="committed intent predecessor"):
+            writer.require_committed_intents(intents)
         client.release.set()
         assert intent_receipt.result(timeout=5) == intents["commit"]["content_hash"]
+        writer.require_committed_intents(intents)
         assert verified == [intents]
         ack_receipt = writer.submit_ack(acks)
         assert ack_receipt.result(timeout=5) == acks["commit"]["content_hash"]
@@ -188,7 +191,8 @@ def test_lost_ack_response_fails_writer_and_cold_fence() -> None:
         dispatch.close_for_cold(RUN)
 
 
-def test_registered_intent_activation_ack_chain_admits_after_both_receipts() -> None:
+@pytest.mark.parametrize("mode", ["paper", "backtest"])
+def test_registered_intent_activation_ack_chain_admits_after_both_receipts(mode) -> None:
     occurrence, delivery = _input()
     occurrence["evidence"] = {"market.last_price": 3.83}
     occurrence["field_evidence"] = {}
@@ -206,17 +210,20 @@ def test_registered_intent_activation_ack_chain_admits_after_both_receipts() -> 
     activation_client = _ActivationClient()
     activation_client.release.set()
     activation_dispatch = ActivationInsertDispatch(
-        _Client(_Store(), 11), strategy_one=True)
-    activation_run = strategy_one_activation_run_id(
-        date(2026, 9, 24),
-        mode="paper", run_plan_id="plan-1")
+        _Client(_Store(), 11), strategy_one=mode == "paper")
+    activation_run = (strategy_one_activation_run_id(
+        date(2026, 9, 24), mode="paper", run_plan_id="plan-1")
+        if mode == "paper" else "backtest:program-session-1")
     activation_dispatch.initialize_new_run(activation_run, has_ch_rows=False)
     from unittest.mock import patch
-    with patch("src.trading_runtime.arte_registered_activation_writer.live_v4_preflight"):
+    with patch("src.trading_runtime.arte_registered_activation_writer.live_v4_preflight"), \
+         patch("src.trading_runtime.arte_registered_activation_writer.storage_preflight"), \
+         patch("src.trading_runtime.arte_registered_activation_writer.journal_permission_preflight"):
         activation_writer = RegisteredActivationWriter(
             activation_client, activation_dispatch,
             session_date=date(2026, 9, 24),
-            mode="paper", run_plan_ids=("plan-1",))
+            mode=mode, run_plan_ids=("plan-1",),
+            backtest_run_ids={"plan-1": activation_run} if mode == "backtest" else None)
     admitted: list[dict] = []
     lane = TypedActivationDispatchAdmission(
         activation_writer, cursor_writer, admitted.extend)
@@ -233,7 +240,8 @@ def test_registered_intent_activation_ack_chain_admits_after_both_receipts() -> 
             strategy_one_activation_table,
         )
         parent_hash = activation_client.rows[
-            strategy_one_activation_table("trading_activation_v1")][0]["content_hash"]
+            strategy_one_activation_table("trading_activation_v1") if mode == "paper"
+            else "trading_activation_v1"][0]["content_hash"]
         activation_dispatch.assert_cold_receipts(activation_run, {
             delivery["delivery_id"]: activation_insert_proof(
                 delivery["delivery_id"], parent_hash)})

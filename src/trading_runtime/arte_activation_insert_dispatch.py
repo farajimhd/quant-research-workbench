@@ -15,6 +15,7 @@ from typing import Any, Mapping
 
 from src.trading_runtime.arte_activation_projection import (
     ActivationProjection, _family_hash, _require_first_watch_identity,
+    _activation_run_id, _require_table_authority,
     _stored, _verify_rows, prepare_activation_commit_row,
     prepare_activation_rows,
 )
@@ -322,17 +323,21 @@ def publish_registered_activation(
     projected: ActivationProjection, *, run_id: str,
     committed_at: datetime | None = None,
 ) -> str:
-    """Publish one Strategy 1 activation on a dedicated ordered writer lane.
+    """Publish one activation on its explicit registered table authority.
 
     This function does blocking network work and must never run on the market
     execution thread. The caller owns fresh-run preflight and submission queue.
     """
     if not isinstance(projected, ActivationProjection):
         raise TypeError("Registered activation needs a frozen projection")
-    if not isinstance(dispatch, ActivationInsertDispatch) or not dispatch.strategy_one:
+    if not isinstance(dispatch, ActivationInsertDispatch):
+        raise TypeError("Registered activation requires a Keeper dispatch")
+    _activation_run_id(run_id)
+    if run_id.startswith("strategy-one:") and not dispatch.strategy_one:
         raise ValueError("Strategy 1 activation requires its isolated Keeper dispatch")
-    if not isinstance(run_id, str) or not run_id.startswith("strategy-one:"):
-        raise ValueError("Strategy 1 activation requires its isolated run scope")
+    _require_table_authority(run_id, strategy_one=dispatch.strategy_one)
+    if not dispatch.strategy_one and not run_id.startswith("backtest:"):
+        raise ValueError("Registered generic activation requires an explicit backtest run scope")
     prepared = prepare_activation_rows(projected, run_id=run_id)
     committed_at = committed_at or datetime.now(timezone.utc)
     commit = prepare_activation_commit_row(prepared, committed_at=committed_at)
@@ -341,7 +346,7 @@ def publish_registered_activation(
     identity = {key: str(parent[key]) for key in (
         "run_id", "session_date", "run_plan_id", "ticker", "event_id")}
     delivery_id = str(parent["delivery_id"])
-    _require_first_watch_identity(client, identity, strategy_one=True)
+    _require_first_watch_identity(client, identity, strategy_one=dispatch.strategy_one)
     hashes = {name: _family_hash(rows) if rows else None
               for name, rows in families.items()}
     dispatch.reserve(run_id, delivery_id, hashes)
@@ -353,24 +358,25 @@ def publish_registered_activation(
         row_hash = hashes[name]
         if row_hash is None:
             raise RuntimeError("Activation family hash is absent")
-        token = (f"strategy_one_activation:{run_id}:{sha256(delivery_id.encode()).hexdigest()}:"
+        token_scope = "strategy_one_activation" if dispatch.strategy_one else "activation"
+        token = (f"{token_scope}:{run_id}:{sha256(delivery_id.encode()).hexdigest()}:"
                  f"{name}:{row_hash}")
         columns = ",".join(column for column, _ in contracts[name].columns)
         body = "\n".join(canonical_json(row) for row in rows)
-        physical_name = strategy_one_activation_table(name)
+        physical_name = strategy_one_activation_table(name) if dispatch.strategy_one else name
         sql = (f"INSERT INTO arte.{physical_name} ({columns}) SETTINGS "
                "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
                f"insert_deduplication_token='{token}' FORMAT JSONEachRow\n{body}")
         dispatch.execute(client, run_id=run_id, delivery_id=delivery_id,
                          table=name, row_hash=row_hash, sql=sql)
-        stored = _stored(client, name, identity, strategy_one=True)
+        stored = _stored(client, name, identity, strategy_one=dispatch.strategy_one)
         if (len(stored) != len(rows) or
                 sorted(row["content_hash"] for row in stored) !=
                 sorted(row["content_hash"] for row in rows)):
             raise RuntimeError("Activation typed family readback differs")
         dispatch.seal_readback(run_id=run_id, delivery_id=delivery_id,
                                table=name, row_hash=row_hash)
-    _verify_rows(client, identity, require_commit=True, strategy_one=True)
+    _verify_rows(client, identity, require_commit=True, strategy_one=dispatch.strategy_one)
     dispatch.compact(run_id=run_id, delivery_id=delivery_id,
                      parent_hash=parent["content_hash"])
     return parent["content_hash"]

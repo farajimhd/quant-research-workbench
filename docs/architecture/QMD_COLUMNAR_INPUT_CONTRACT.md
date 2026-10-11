@@ -307,3 +307,21 @@ controller selection, actual entry and exit fills at both liquidity resolutions,
 and reconstruction of the same fill/boundary water prefix. Full source/dispatch
 ACK orchestration, normalized run recovery, strategy/UI admission and all-session
 comparison remain required before an operational run.
+
+The registered activation writer also accepts explicitly mapped backtest
+plan/run scopes. It uses the existing central activation families, exact
+SSD/schema/grant preflight, child-first readback and Keeper receipts. Strategy 1
+paper/live retains its isolated authority. The asynchronous constructor owns
+preflight off-loop and drains/closes its worker and client when cancelled.
+This is activation admission durability, not proof that a program boundary's
+Portfolio/OMS decisions or fills completed. Dispatch/run-boundary recovery must
+verify those separate facts before replay; no operational route is enabled by
+this writer extension alone.
+
+Registered dispatch admission checks the exact committed intent predecessor
+before publishing activation rows. Pending, changed or unavailable predecessors
+cannot create activation side effects. The shared admission worker then waits
+for activation and dispatch-ACK receipts before promotion. Synthetic roundtrips
+cover both the existing isolated paper scope and central backtest scope;
+uncertain activation responses retain unresolved Keeper operations even if a
+database row was written, preventing a blind retry or cold-prefix acceptance.

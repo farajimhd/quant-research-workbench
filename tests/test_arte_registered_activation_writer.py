@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import date
 from concurrent.futures import Future
 from threading import Event
@@ -67,6 +68,87 @@ def test_exact_live_principal_preflight_cannot_be_skipped(monkeypatch) -> None:
         RegisteredActivationWriter(
             _BlockingClient(), dispatch, session_date=SESSION,
             mode="paper", run_plan_ids=("plan-1",))
+
+
+def test_backtest_writer_uses_explicit_shared_scope_and_registered_receipts() -> None:
+    run_id = "backtest:program-session-1"
+    client = _BlockingClient()
+    dispatch = ActivationInsertDispatch(_Client(_Store(), 11))
+    dispatch.initialize_new_run(run_id, has_ch_rows=False)
+    with patch("src.trading_runtime.arte_registered_activation_writer.storage_preflight") as storage, \
+         patch("src.trading_runtime.arte_registered_activation_writer.journal_permission_preflight") as grants:
+        writer = RegisteredActivationWriter(
+            client, dispatch, session_date=SESSION, mode="backtest",
+            run_plan_ids=("plan-1",), backtest_run_ids={"plan-1": run_id})
+    assert storage.call_count == grants.call_count == 1
+    try:
+        receipt = writer.submit(project_activation(_delivery()), owner_id="backtest-worker")
+        assert client.entered.wait(5) and not receipt.done()
+        client.release.set()
+        parent_hash = receipt.result(timeout=5)
+        assert len(client.inserts) == 4
+        assert all(not name.startswith("strategy_one_") for name in client.inserts)
+        assert client.rows["trading_activation_v1"][0]["run_id"] == run_id
+        dispatch.close_for_cold(run_id)
+        dispatch.assert_cold_receipts(run_id, {
+            "plan-1:event-1": activation_insert_proof("plan-1:event-1", parent_hash)})
+    finally:
+        client.release.set()
+        writer.close(timeout_seconds=5)
+
+
+@pytest.mark.parametrize("scope", [None, {}, {"plan-1": "live-strategy-runtime:activations"},
+                                   {"other": "backtest:run-1"}])
+def test_backtest_writer_rejects_missing_or_cross_mode_scopes(scope) -> None:
+    client = _BlockingClient()
+    dispatch = ActivationInsertDispatch(_Client(_Store(), 11))
+    with pytest.raises(ValueError, match="Backtest activation"):
+        RegisteredActivationWriter(
+            client, dispatch, session_date=SESSION, mode="backtest",
+            run_plan_ids=("plan-1",), backtest_run_ids=scope)
+    assert not client.inserts
+
+
+def test_backtest_storage_failure_prevents_writer_start(monkeypatch) -> None:
+    def misplaced(*args, **kwargs):
+        raise ValueError("active parts outside live_market_ssd")
+    monkeypatch.setattr("src.trading_runtime.arte_registered_activation_writer.storage_preflight", misplaced)
+    with pytest.raises(ValueError, match="outside live_market_ssd"):
+        RegisteredActivationWriter(
+            _BlockingClient(), ActivationInsertDispatch(_Client(_Store(), 11)),
+            session_date=SESSION, mode="backtest", run_plan_ids=("plan-1",),
+            backtest_run_ids={"plan-1": "backtest:run-1"})
+
+
+def test_cancelled_async_preflight_drains_and_closes_owned_client(monkeypatch) -> None:
+    entered, release, closed = Event(), Event(), Event()
+    class Client(_BlockingClient):
+        def close(self):
+            closed.set()
+    client = Client()
+    dispatch = ActivationInsertDispatch(_Client(_Store(), 11))
+    dispatch.initialize_new_run("backtest:run-1", has_ch_rows=False)
+    def preflight(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+    monkeypatch.setattr("src.trading_runtime.arte_registered_activation_writer.storage_preflight", preflight)
+    monkeypatch.setattr("src.trading_runtime.arte_registered_activation_writer.journal_permission_preflight", lambda *a, **k: None)
+    async def exercise():
+        task = asyncio.create_task(RegisteredActivationWriter.create_async(
+            lambda: client, dispatch, session_date=SESSION, mode="backtest",
+            run_plan_ids=("plan-1",), backtest_run_ids={"plan-1": "backtest:run-1"}))
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done() and not closed.is_set()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert closed.is_set()
+    try:
+        asyncio.run(exercise())
+    finally:
+        release.set()
 
 
 def test_submission_is_nonblocking_and_receipt_waits_for_clickhouse() -> None:

@@ -174,3 +174,30 @@ def test_registered_publisher_rejects_legacy_dispatch_before_any_insert() -> Non
         publish_registered_activation(
             client, dispatch, project_activation(_delivery()), run_id=run_id)
     assert client.inserts == []
+
+
+@pytest.mark.parametrize("persist_before_loss", [False, True])
+def test_backtest_registered_response_loss_never_becomes_retryable(persist_before_loss) -> None:
+    run_id = "backtest:program-session-1"
+    client = _ActivationClient(lose_table="trading_activation_v1",
+                              persist_before_loss=persist_before_loss)
+    dispatch = ActivationInsertDispatch(_Client(_Store(), 11))
+    dispatch.initialize_new_run(run_id, has_ch_rows=False)
+    projected = project_activation(_delivery())
+    with pytest.raises(TimeoutError, match="lost activation INSERT response"):
+        publish_registered_activation(client, dispatch, projected, run_id=run_id)
+    assert len(client.rows["trading_activation_v1"]) == int(persist_before_loss)
+    with pytest.raises(KeeperUnavailable, match="unresolved"):
+        dispatch.close_for_cold(run_id)
+    with pytest.raises(KeeperUnavailable, match="unresolved"):
+        publish_registered_activation(client, dispatch, projected, run_id=run_id)
+    assert len(client.rows["trading_activation_v1"]) == int(persist_before_loss)
+
+
+def test_registered_publisher_does_not_write_generic_live_scope() -> None:
+    client = _ActivationClient()
+    dispatch = ActivationInsertDispatch(_Client(_Store(), 11))
+    with pytest.raises(ValueError, match="explicit backtest run scope"):
+        publish_registered_activation(client, dispatch, project_activation(_delivery()),
+                                      run_id="live-strategy-runtime:activations")
+    assert not client.inserts

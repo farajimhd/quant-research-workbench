@@ -122,6 +122,20 @@ class RegisteredDispatchCursorWriter:
                 raise RuntimeError("Registered dispatch queue is full") from exc
             return receipt
 
+    def require_committed_intents(self, projected: Mapping[str, Any]) -> None:
+        """Verify the durable predecessor before activation side effects.
+
+        The writer only enters ACK phase after registered intent publication
+        and exact readback. This check performs no storage I/O.
+        """
+        verify_dispatch_intents(projected)
+        with self._lock:
+            if self._closed or self._fatal is not None:
+                raise RuntimeError("Registered dispatch writer is unavailable")
+            if (self._phase != "ack" or self._intents is None
+                    or projected != self._intents):
+                raise ValueError("Activation lacks its exact committed intent predecessor")
+
     def submit_ack(self, projected: Mapping[str, Any]) -> Future[str]:
         commit = projected.get("commit") if isinstance(projected, Mapping) else None
         with self._lock:

@@ -83,6 +83,20 @@ def test_nonblocking_submit_promotes_only_after_two_durable_receipts() -> None:
         lane.close()
 
 
+def test_registered_predecessor_rejection_precedes_activation_side_effects() -> None:
+    class UncommittedAck(FakeAckWriter):
+        def require_committed_intents(self, projected):
+            raise ValueError("Activation lacks its exact committed intent predecessor")
+    activation, ack, admitted = FakeActivationWriter(), UncommittedAck(), []
+    lane = TypedActivationDispatchAdmission(activation, ack, admitted.extend)
+    try:
+        with pytest.raises(ValueError, match="committed intent predecessor"):
+            lane.submit(_admission_batch()).result(timeout=3)
+        assert not activation.submissions and not ack.submissions and not admitted
+    finally:
+        lane.close()
+
+
 def test_activation_failure_never_publishes_ack_or_promotes() -> None:
     activation = FakeActivationWriter()
     ack = FakeAckWriter()
