@@ -201,3 +201,15 @@ recovered prefixes, routed admission evidence, constant-true rearming, stale
 sequence rejection and cancellation on both cold reads and publication. Main
 run-controller admission and recovery of committed but undispatched occurrences
 remain necessary before operational use.
+
+The main `ReplayRunController` can now construct its existing trading runtime
+with an explicit fresh program actor. Release/definition identity, resolved
+simulated accounts and the normalized Backtest journal must agree; legacy
+restart images, ticker truncation and assignment truncation are rejected for
+this binding. Broker liquidity is explicitly selected as 100 or 1000 ms,
+independently of program evaluation. Existing app fees and baseline/stress
+slippage are preserved. Synthetic tests exercise controller construction,
+Portfolio/OMS admission and subsequent actual partial fills at both resolutions.
+Construction does not authorize publication or launch: the operational gate
+still requires full program input/source orchestration, normalized run settings
+and cold recovery qualification before this binding may run an app Backtest.

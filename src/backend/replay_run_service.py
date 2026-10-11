@@ -1185,9 +1185,29 @@ class ReplayRunController:
         resume_state: dict[str, Any] | None = None,
         resume_journal_prefix: dict[str, Any] | None = None,
         fixed_v4_runtime_image: object | None = None,
+        program_strategy: object | None = None,
+        program_liquidity_resolution_ms: int | None = None,
     ) -> None:
         self.definition = definition
         self.run_id = run_id or str(uuid4())
+        if program_strategy is not None:
+            from src.trading_runtime.columnar_program_actor import AssignedProgramStrategy
+            strategy = dict(definition.configuration_revision.get("payload", {}).get("strategy") or {})
+            if (type(program_strategy) is not AssignedProgramStrategy
+                    or definition.mode is not RunMode.BACKTEST
+                    or definition.execution_mode != "strategy"
+                    or definition.execution_interval not in {"100ms", "1s"}
+                    or type(program_liquidity_resolution_ms) is not int
+                    or program_liquidity_resolution_ms not in {100, 1000}
+                    or resume_state is not None or fixed_v4_runtime_image is not None
+                    or (program_strategy.strategy_id, program_strategy.revision) !=
+                       (strategy.get("strategy_id"), strategy.get("revision"))
+                    or program_strategy.execution_state.positions):
+                raise ValueError("Program controller needs a fresh actor matching its Backtest definition")
+        elif program_liquidity_resolution_ms is not None:
+            raise ValueError("Program liquidity selection requires its program actor")
+        self._program_strategy = program_strategy
+        self._program_liquidity_resolution_ms = program_liquidity_resolution_ms
         if fixed_v4_runtime_image is not None:
             from src.backend.backtest_v4_running_recovery import V4FixedRuntimeImage
             if (definition.mode != RunMode.BACKTEST or resume_state is not None
@@ -4800,6 +4820,11 @@ class ReplayRunController:
         review_only: bool = False,
     ) -> None:
         configuration = self.definition.configuration_revision["payload"]
+        if self._program_strategy is not None:
+            from src.backend.backtest_journal_memory import BacktestMemoryJournal
+            if (not isinstance(self._journal, BacktestMemoryJournal)
+                    or self._journal.run_id != self.run_id):
+                raise RuntimeError("Program controller requires its normalized Backtest journal")
         fixed_restore = getattr(self, "_fixed_v4_runtime_image", None)
         if fixed_restore is not None:
             from src.backend.backtest_journal_memory import BacktestMemoryJournal
@@ -4851,7 +4876,13 @@ class ReplayRunController:
                 and self._fixed_v4_account_ids is not None
                 and self.account_ids != self._fixed_v4_account_ids):
             raise RuntimeError("V4 runtime accounts differ from published run context")
-        if self._resume_state is not None and strategy_enabled:
+        if self._program_strategy is not None and strategy_enabled:
+            assignments = list(self._program_strategy.assignments())
+            if {row.account_id for row in assignments} - set(resolved_accounts):
+                raise ValueError("Program assignments differ from the resolved Backtest accounts")
+            if self.definition.assignment_ids or self.definition.tickers:
+                raise ValueError("Program controller cannot truncate its certified assignment population")
+        elif self._resume_state is not None and strategy_enabled:
             checkpoint_assignments = self._resume_state.get("assignments")
             if not isinstance(checkpoint_assignments, list):
                 raise ValueError("Restart checkpoint omitted Strategy assignment state")
@@ -4877,6 +4908,9 @@ class ReplayRunController:
                 int(strategy_configuration["revision"]),
                 assignments,
             )
+        elif strategy_enabled and self._program_strategy is not None:
+            self._strategy_registration = None
+            self._strategy = self._program_strategy
         elif strategy_enabled:
             assignment_identities = {
                 (assignment.strategy_id, assignment.strategy_revision)
@@ -5014,12 +5048,17 @@ class ReplayRunController:
             typed_recovery=(fixed_restore.portfolio if fixed_restore is not None else None),
             drawdown_measure_policy=selected_drawdown,
         )
+        simulation = _simulation_config(self.definition)
+        if self._program_strategy is not None:
+            simulation = replace(simulation,
+                liquidity_resolution_ms=self._program_liquidity_resolution_ms)
         broker = SimulatedBrokerAdapter(
             list(self.account_ids),
-            _simulation_config(self.definition),
+            simulation,
             mode=TradingMode(self.definition.mode.value),
             initial_time=self.definition.session_start,
-            fixed_bar_mode=(fixed_restore is None and self._resume_state is None
+            fixed_bar_mode=(self._program_strategy is not None or
+                            fixed_restore is None and self._resume_state is None
                             and self.definition.mode == RunMode.BACKTEST
                             and not _backtest_launch_blocker(self.definition)
                             and self.definition.execution_interval == "100ms"),
