@@ -7,6 +7,10 @@ each year.
 
 ## 2026
 
+### [2026-10-11 - Native strategy research final report](docs/codex/chat-summaries/2026/CHAT-20261005-UNKNOWN-native-strategy-research-final-report.md)
+
+TASK-0222 continuation. Preserves causal PM/AH rules, complete financial comparisons and the final stopped state. Strategy117: 26 sessions, 133 positions, +$2,891.33, four sessions reaching $1,000. Strategy132: four verified sessions, +$1,170.94; participation quality reduced some losses but also removed winners. Records the 581-packet big-move feature campaign, ranking versus admission evidence, the committed but financially untested AH-window correction, and the ladder's lack of a completed financial test. Validation remains unqualified. Final app startup exposed missing historical executors and native journal compatibility failures; services started here were stopped. Goal remains unmet and paused; user prohibited another strategy. Includes source identities, evidence links, session results and explicit unfinished work. Partial source completeness; task ledger unchanged.
+
 ### [2026-10-05 - Strategy42 optimization and generic squeeze-ladder handoff](docs/codex/chat-summaries/2026/CHAT-20260930-UNKNOWN-strategy42-optimization-ladder-handoff.md)
 
 TASK-0222. Strategy42 development baseline: 26 PM/AH sessions, $10,000 each, 138 positions, +$1,883.96 summed net; only 7 sessions reached +$500. Preserves causal trade diagnostics, frozen harness and reports, LGHL exclusion, exposed-date/holdout boundaries and the unpublished ladder's source-probe failures. Latest requirement is generic strategy-declared execution. Commit 768949363 delivers 2–32 independent fixed long lots through the existing typed policy, shared OMS partial-fill repair and restart recovery; regression and ladder suites passed. Planning microbenchmark showed existing profiles unchanged, but full-session throughput is unqualified. Native ladder publication, session locks, portfolio rotation and untouched validation remain open. Records the premature blocked-goal decision and prioritizes runnable financial comparisons. Partial source completeness; unrelated chats were inventoried, not reviewed.
