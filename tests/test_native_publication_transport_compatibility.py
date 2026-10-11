@@ -18,6 +18,10 @@ from src.backend.backtest_native_execution_transport_compatibility import (
     'trading_runtime/arte_journal_commit_v4.py',
     'trading_runtime/arte_journal_writer.py',
     'trading_runtime/numbered_fixed_strategy.py',
+    'trading_runtime/strategy_followthrough_exit.py',
+    'trading_runtime/strategy_one_broker_match_snapshot.py',
+    'trading_runtime/strategy_one_management_snapshot.py',
+    'trading_runtime/strategy_registry.py',
 ])
 def test_complete_parent_restoration_and_fail_closed_mutation(relative):
     source=(Path(__file__).parents[1]/'src'/relative).read_text(encoding='utf-8')
