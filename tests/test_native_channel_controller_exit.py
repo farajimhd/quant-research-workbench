@@ -23,6 +23,14 @@ def test_controller_prepares_declared_features_once_with_actual_horizons(install
     monkeypatch.setattr('src.backend.replay_run_service.ReplayRunController._fixed_through_boundary_ms',
         lambda self:packet.request.through_day_boundary_ms//2-SESSION_OPEN_OFFSET_MS)
     controller=ReplayRunController.__new__(ReplayRunController)
+    controller.definition=SimpleNamespace(market_data_plan={
+        'strategy_one_input_exclusions': ['EXCLUDED']})
+    def feature_market(market,policy,*,exclusions):
+        assert market is args['market'] and policy==owner.policy.exit_policy.sequence
+        assert exclusions==('EXCLUDED',)
+        return market
+    monkeypatch.setattr('src.backend.backtest_native_channel_market_source.certify_native_channel_market_source',
+        feature_market)
     controller._native_channel_read_client=client
     controller._fixed_keeper_session=SimpleNamespace(client=args['authority'].keeper)
     controller._strategy=SimpleNamespace(assignments=lambda:tuple(
