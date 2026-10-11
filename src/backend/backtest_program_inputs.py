@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
+from hashlib import sha256
 from types import MappingProxyType
 from typing import Mapping
 
@@ -55,6 +56,48 @@ class PreparedProgramBlock:
                 or row["evaluation_block"] != self.evaluation_block for row in (market, masks)):
             raise ValueError("Prepared program row lost its exact clock/listing identity")
         return market, masks
+
+    def ordinal_for(self, listing_id: str, at: datetime) -> int:
+        """Locate an exact certified dense 1s clock, including cold readback."""
+        first, _ = self.row_for(listing_id, self.first_ordinal)
+        elapsed = at - first["boundary_at"]
+        if elapsed < timedelta(0) or elapsed % timedelta(seconds=1):
+            raise ValueError("Program completion is outside its exact dense clock")
+        ordinal = self.first_ordinal + elapsed // timedelta(seconds=1)
+        row, _ = self.row_for(listing_id, ordinal)
+        if row["boundary_at"] != at:
+            raise ValueError("Program completion differs from its prepared clock")
+        return ordinal
+
+    def boundary_for(self, release, population, *, listing_id, ticker, ordinal):
+        from src.trading_runtime.columnar_program_coordinator import ProgramBoundary
+        if self.release_hash != release.header["content_hash"]:
+            raise ValueError("Program boundary release differs from prepared inputs")
+        row, mask = self.row_for(listing_id, ordinal)
+        policy = release.header
+        stop_field = f"history.swing_low.{policy['swing_left']}.{policy['swing_right']}"
+        if policy["swing_left"]:
+            if stop_field not in row or stop_field + "__valid" not in row:
+                raise ValueError("Program dispatch lacks its certified initial-stop field")
+            stop = row[stop_field] if row[stop_field + "__valid"] else None
+        else:
+            stop = row["reference_close"] * (1 - policy["stop_fraction"])
+        return ProgramBoundary(row["boundary_at"], row["available_at"], listing_id, ticker,
+            row["reference_close"], population.is_ranked(listing_id, row["boundary_at"]),
+            {stage: mask[stage] for stage in release.programs},
+            {stage: mask[stage + "__valid"] for stage in release.programs}, stop)
+
+    def completion_identity(self, *, run_id, assignment_id, source_hash,
+            listing_id, ordinal, terminal):
+        from src.trading_runtime.journal_contract import canonical_json
+        if type(terminal) is not bool:
+            raise ValueError("Program completion terminal flag must be typed")
+        self.row_for(listing_id, ordinal)
+        return sha256(canonical_json(dict(schema_version=1, run_id=run_id,
+            assignment_id=assignment_id, source_commit_hash=source_hash,
+            release_hash=self.release_hash, history_hash=self.history_hashes[listing_id],
+            evaluation_block=self.evaluation_block, observed_ordinal=ordinal,
+            terminal=terminal)).encode()).hexdigest()
 
 
 async def prepare_program_block(release: ProgramRelease, pins: Mapping[str, CertifiedHistoryPin], *,

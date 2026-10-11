@@ -4825,9 +4825,7 @@ class ReplayRunController:
         """
         from .backtest_program_inputs import PreparedProgramBlock
         from .qmd_columnar_population import CertifiedPopulationWindow
-        from src.trading_runtime.columnar_program_coordinator import ProgramBoundary
         from src.trading_runtime.signals import StrategySignal
-        from src.trading_runtime.journal_contract import canonical_json
         actor = self._program_strategy
         source = self._program_signal_runtime
         if self._program_dispatch_failure is not None:
@@ -4847,18 +4845,8 @@ class ReplayRunController:
         if (sequence < 1 or cutoff != at or self._runtime.last_event_time != at
                 or mask["boundary_at"] != at or row["evaluation_block"] != block.evaluation_block):
             raise ValueError("Program dispatch differs from its committed source/broker clock")
-        policy = actor.program_release.header
-        stop_field = f"history.swing_low.{policy['swing_left']}.{policy['swing_right']}"
-        if policy["swing_left"]:
-            if stop_field not in row or stop_field + "__valid" not in row:
-                raise ValueError("Program dispatch lacks its certified initial-stop field")
-            stop = row[stop_field] if row[stop_field + "__valid"] else None
-        else:
-            stop = row["reference_close"] * (1 - policy["stop_fraction"])
-        boundary = ProgramBoundary(at, row["available_at"], listing, assignment.ticker,
-            row["reference_close"], population.is_ranked(listing, at),
-            {stage: mask[stage] for stage in actor.program_release.programs},
-            {stage: mask[stage + "__valid"] for stage in actor.program_release.programs}, stop)
+        boundary = block.boundary_for(actor.program_release, population, listing_id=listing,
+            ticker=assignment.ticker, ordinal=ordinal)
         observation = self.program_order_observation(assignment_id=assignment_id, at=at)
         if observation.unobserved_order_ids:
             await self._runtime.order_manager.reconcile()
@@ -4875,11 +4863,8 @@ class ReplayRunController:
                     execution_policy=execution_policy,
                     protection_profile=protection_profile if proposal.action in {"enter_long", "add_long"} else None,
                     outside_rth=outside_rth))
-            identity = hashlib.sha256(canonical_json(dict(schema_version=1,
-                run_id=self.run_id, assignment_id=assignment_id, source_commit_hash=source_hash,
-                release_hash=block.release_hash, history_hash=block.history_hashes[listing],
-                evaluation_block=block.evaluation_block, observed_ordinal=ordinal,
-                terminal=terminal)).encode()).hexdigest()
+            identity = block.completion_identity(run_id=self.run_id, assignment_id=assignment_id,
+                source_hash=source_hash, listing_id=listing, ordinal=ordinal, terminal=terminal)
             reason = "program:" + selection.status
             metadata = dict(assignment_id=assignment_id, reference_price=row["reference_close"],
                 status="completed", reason_code=reason, reason_detail=selection.status,
@@ -4941,6 +4926,32 @@ class ReplayRunController:
             session_key=self.definition.session_date.isoformat(), source_commit_hashes=hashes,
             configuration_revision_id=self.definition.configuration_revision["revision_id"],
             registered_dispatch=registered_dispatch)
+
+    async def recover_program_policy(self, reader_factory, prefix, *, blocks,
+            population, executions, maximum_events: int):
+        """Stage cold policy state; do not install actors or resubmit broker work."""
+        from .program_policy_recovery import recover_program_policy_async
+        from .qmd_columnar_population import CertifiedPopulationWindow
+        from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+        source, actor = self._program_signal_runtime, self._program_strategy
+        if (source is None or actor is None or self._runtime is None
+                or self._runtime.strategy is not actor or self._runtime.order_manager is None
+                or type(prefix) is not V4CommittedPrefix or prefix.run_id != self.run_id
+                or type(population) is not CertifiedPopulationWindow
+                or population.source_revision != source._typed_scope[1]
+                or not callable(reader_factory)):
+            raise ValueError("Program policy recovery differs from the controller's owned scope")
+        hashes = source.typed_source_commit_hashes()
+        sequence, content_hash, _ = source.typed_source_cursor()
+        if len(hashes) != sequence or hashes and hashes[-1] != content_hash:
+            raise ValueError("Program policy recovery source prefix is inconsistent")
+        recovered = await recover_program_policy_async(reader_factory, prefix, actor,
+            source_hashes=hashes, blocks=blocks, population=population,
+            executions=executions, order_manager=self._runtime.order_manager,
+            maximum_events=maximum_events)
+        if source.typed_source_commit_hashes() != hashes:
+            raise ValueError("Program policy recovery source advanced during cold readback")
+        return recovered
 
     async def prepare_program_inputs(self, pins, *, first_ordinal: int,
             stop_ordinal: int, evaluation_block: str, as_of: datetime,

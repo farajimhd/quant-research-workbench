@@ -339,3 +339,19 @@ orders already accepted and prohibiting another dispatch. These records become
 durable only through the existing journal fence; in-memory presence alone is
 not a resume certificate. The merged financial/source-prefix cold restoration
 and operational admission remain outstanding.
+
+`recover_program_policy` now stages a fresh actor from the committed typed
+financial-event prefix and the same prepared inputs/scanner membership. Fills
+must match the existing broker execution cache and exact OMS attribution;
+separate final commission rows must match before recovery can succeed.
+Completed-boundary rows must match their source hash, assignment, prepared
+history/block identity and reference mark. Recovery consumes journal sequence
+order, projects trail masks without executing proposals, and restores the last
+consumed boundary/terminal signature. It submits no orders, writes no tables,
+and does not install the staged actor. Its owned SELECT client runs off-loop
+and closes after success, failure or drained cancellation. A caller-supplied
+event bound prevents truncation or unbounded replay; gaps, changed histories,
+missing fees and ambiguous prepared clocks fail closed. Synthetic 100ms/1s
+tests compare state at flat, held and closed prefixes. A common certified
+Portfolio/OMS/broker/source installation and app admission remain necessary;
+this policy packet alone cannot authorize resuming a backtest.

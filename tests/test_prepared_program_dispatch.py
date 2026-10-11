@@ -1,5 +1,6 @@
 import asyncio
 from copy import deepcopy
+from threading import Event
 from dataclasses import replace
 from datetime import timedelta
 
@@ -122,6 +123,114 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 else:
                     position = actor.position_for("assignment")
                     assert not position.position_open and position.closed_positions == 1 and position.fees > 0
+                from src.trading_runtime.arte_journal_projection import project_journal_record
+                from src.trading_runtime.arte_journal_reader import TypedJournalEvent
+                from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+                from src.backend.program_policy_recovery import rebuild_program_policy_events
+                from unittest.mock import patch
+                executions = await controller._runtime.broker.trades()
+                raw_keys = ("strategy_id", "canonical_strategy_revision", "canonical_run_id", "canonical_metadata")
+                lineages = {execution.order_ref: ({key: execution.raw.get(key) for key in raw_keys},
+                    execution.account, execution.symbol, execution.conid) for execution in executions}
+                events = []
+                for record in controller._journal.records(controller.run_id):
+                    detail, family = None, None
+                    event = dict(run_id=record.run_id, sequence=record.sequence,
+                        category=record.category, entity_type=record.entity_type, entity_id=record.entity_id,
+                        event_time=record.event_time, account_id=record.account_id,
+                        correlation_id=record.payload.get("correlation_id", ""),
+                        causation_id=record.payload.get("causation_id", ""))
+                    if record.category == "execution" or record.payload.get("signal_type") == "program_boundary_completed":
+                        batch = project_journal_record(record, run_month=at.date().replace(day=1),
+                            attempt_id="00000000-0000-0000-0000-000000000001",
+                            batch_id="00000000-0000-0000-0000-000000000002",
+                            prior_batch_id="00000000-0000-0000-0000-000000000000", source_cursor="synthetic",
+                            committed_order_lineage=lineages)
+                        event = dict(batch.events[0])
+                        if record.entity_type == "fill":
+                            family, detail = "trading_execution_v1", dict(batch.executions[0])
+                        elif record.entity_type == "commission":
+                            family, detail = "trading_commission_v1", dict(batch.commissions[0])
+                        else:
+                            family, detail = "trading_strategy_signal_v2", dict(batch.signals[0])
+                    events.append(TypedJournalEvent(event, family, detail))
+                prefix = V4CommittedPrefix(controller.run_id, len(events),
+                    "00000000-0000-0000-0000-000000000002", "synthetic", "running",
+                    ("00000000-0000-0000-0000-000000000002",))
+                class Reader:
+                    closed = False
+                    def close(self):
+                        self.closed = True
+                reader = Reader()
+                def page(client, selected_prefix, *, after_sequence, limit):
+                    assert client is reader and selected_prefix is prefix
+                    return tuple(events[after_sequence:after_sequence + limit])
+                with patch("src.backend.program_policy_recovery.load_typed_event_page", page):
+                    recovered = await controller.recover_program_policy(lambda: reader, prefix,
+                        blocks=(block,), population=population, executions=executions, maximum_events=1000)
+                assert reader.closed and recovered.actor is not actor and controller._runtime.strategy is actor
+                assert recovered.actor.execution_state.positions == actor.execution_state.positions
+                assert recovered.actor.target_state._targets == actor.target_state._targets
+                assert recovered.actor.target_state._entry_intents == actor.target_state._entry_intents
+                assert recovered.actor.target_state._advanced_intents == actor.target_state._advanced_intents
+                assert recovered.actor.trail_state._water == actor.trail_state._water
+                assert recovered.actor._selection_clocks == actor._selection_clocks
+                assert recovered.completion_count == offset + 1
+                assert recovered.completed_source_sequences == {"assignment": offset + 1}
+                if offset == 2:
+                    bad = list(events)
+                    bad[-1] = replace(bad[-1], detail={**bad[-1].detail, "decision_reference_price": 999.})
+                    with pytest.raises(ValueError, match="reference mark changed"):
+                        rebuild_program_policy_events(actor, bad, run_id=controller.run_id,
+                            source_hashes=runtime.typed_source_commit_hashes(), blocks=(block,), population=population,
+                            executions=executions, order_manager=controller._runtime.order_manager,
+                            maximum_events=1000, last_sequence=len(events))
+                    altered = [replace(execution, commission=execution.commission + 1) for execution in executions]
+                    with pytest.raises(ValueError, match="commission differs"):
+                        rebuild_program_policy_events(actor, events, run_id=controller.run_id,
+                            source_hashes=runtime.typed_source_commit_hashes(), blocks=(block,), population=population,
+                            executions=altered, order_manager=controller._runtime.order_manager,
+                            maximum_events=1000, last_sequence=len(events))
+                    changed_history = replace(block, history_hashes={"listing": "f" * 64})
+                    with pytest.raises(ValueError, match="prepared identity changed"):
+                        rebuild_program_policy_events(actor, events, run_id=controller.run_id,
+                            source_hashes=runtime.typed_source_commit_hashes(), blocks=(changed_history,), population=population,
+                            executions=executions, order_manager=controller._runtime.order_manager,
+                            maximum_events=1000, last_sequence=len(events))
+                    gapped = [replace(events[0], event={**events[0].event, "sequence": 2}), *events[1:]]
+                    with pytest.raises(ValueError, match="gapped"):
+                        rebuild_program_policy_events(actor, gapped, run_id=controller.run_id,
+                            source_hashes=runtime.typed_source_commit_hashes(), blocks=(block,), population=population,
+                            executions=executions, order_manager=controller._runtime.order_manager,
+                            maximum_events=1000, last_sequence=len(events))
+                    missing_fee = [replace(item, event={**item.event, "category": "ignored"}, detail=None)
+                        if item.event["entity_type"] == "commission" else item for item in events]
+                    with pytest.raises(ValueError, match="coverage is incomplete"):
+                        rebuild_program_policy_events(actor, missing_fee, run_id=controller.run_id,
+                            source_hashes=runtime.typed_source_commit_hashes(), blocks=(block,), population=population,
+                            executions=executions, order_manager=controller._runtime.order_manager,
+                            maximum_events=1000, last_sequence=len(events))
+                    entered, release_read = Event(), Event()
+                    cancelled_reader = Reader()
+                    def blocked_page(client, selected_prefix, *, after_sequence, limit):
+                        assert client is cancelled_reader and selected_prefix is prefix
+                        entered.set()
+                        assert release_read.wait(5)
+                        return tuple(events[after_sequence:after_sequence + limit])
+                    with patch("src.backend.program_policy_recovery.load_typed_event_page", blocked_page):
+                        task = asyncio.create_task(controller.recover_program_policy(lambda: cancelled_reader,
+                            prefix, blocks=(block,), population=population, executions=executions, maximum_events=1000))
+                        try:
+                            assert await asyncio.to_thread(entered.wait, 5)
+                            task.cancel()
+                            await asyncio.sleep(0)
+                            assert not task.done() and not cancelled_reader.closed
+                            release_read.set()
+                            with pytest.raises(asyncio.CancelledError):
+                                await task
+                            assert cancelled_reader.closed and controller._runtime.strategy is actor
+                        finally:
+                            release_read.set()
             completions = [record for record in controller._journal.records(controller.run_id)
                 if record.payload.get("signal_type") == "program_boundary_completed"]
             assert len(completions) == 3 and len({record.entity_id for record in completions}) == 3
