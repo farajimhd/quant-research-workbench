@@ -25,7 +25,8 @@ from tests.test_broker_liquidity_resolution import second_bar
 
 
 @pytest.mark.parametrize("resolution", [100, 1000])
-def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(prepared_source, tmp_path, resolution):
+@pytest.mark.parametrize("failure", [None, "submission", "completion_record"])
+def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(prepared_source, tmp_path, resolution, failure):
     storage = Store()
     publish(storage, prepared_source)
     certificate = consume(storage, prepared_source)
@@ -81,6 +82,32 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 runtime.promote_staged(pending)
                 stop = row["history.swing_low.2.1"]
                 profile = ProtectionProfile("program-stop", 1, (ProtectionSlice("one", 1., StopRule(price=stop)),))
+                if offset == 0 and failure:
+                    async def failed_submit(*args, **kwargs):
+                        raise RuntimeError("injected submission uncertainty")
+                    original_append = controller._journal.append
+                    def failed_append(**kwargs):
+                        if kwargs["payload"].get("signal_type") == "program_boundary_completed":
+                            raise RuntimeError("injected completion uncertainty")
+                        return original_append(**kwargs)
+                    if failure == "submission":
+                        controller._runtime.submit_program_proposal = failed_submit
+                    else:
+                        controller._journal.append = failed_append
+                    with pytest.raises(RuntimeError, match="injected .* uncertainty"):
+                        await controller.dispatch_prepared_program_boundary(block, population,
+                            ordinal=ordinal, assignment_id="assignment", execution_policy=policy,
+                            protection_profile=profile, outside_rth=False)
+                    orders_before_retry = await controller._runtime.broker.live_orders()
+                    assert bool(orders_before_retry) == (failure == "completion_record")
+                    with pytest.raises(RuntimeError, match="requires recovery"):
+                        await controller.dispatch_prepared_program_boundary(block, population,
+                            ordinal=ordinal, assignment_id="assignment", execution_policy=policy,
+                            protection_profile=profile, outside_rth=False)
+                    assert await controller._runtime.broker.live_orders() == orders_before_retry
+                    assert not [record for record in controller._journal.records(controller.run_id)
+                        if record.payload.get("signal_type") == "program_boundary_completed"]
+                    return
                 result = await controller.dispatch_prepared_program_boundary(block, population,
                     ordinal=ordinal + offset, assignment_id="assignment", execution_policy=policy,
                     protection_profile=profile, outside_rth=False, terminal=offset == 2)
@@ -95,6 +122,19 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 else:
                     position = actor.position_for("assignment")
                     assert not position.position_open and position.closed_positions == 1 and position.fees > 0
+            completions = [record for record in controller._journal.records(controller.run_id)
+                if record.payload.get("signal_type") == "program_boundary_completed"]
+            assert len(completions) == 3 and len({record.entity_id for record in completions}) == 3
+            from src.trading_runtime.arte_journal_projection import project_journal_record
+            for record in completions:
+                batch = project_journal_record(record, run_month=record.event_time.date().replace(day=1),
+                    attempt_id="00000000-0000-0000-0000-000000000001",
+                    batch_id="00000000-0000-0000-0000-000000000002",
+                    prior_batch_id="00000000-0000-0000-0000-000000000000", source_cursor="synthetic")
+                assert batch.signals[0]["decision_status"] == "completed"
+                assert batch.signals[0]["decision_assignment_id"] == "assignment"
+                assert batch.events[0]["causation_id"] in runtime.typed_source_commit_hashes()
+                assert not batch.signal_evidence_nodes
         finally:
             await controller._runtime.finish()
     try:

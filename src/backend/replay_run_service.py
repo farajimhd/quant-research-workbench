@@ -1209,6 +1209,7 @@ class ReplayRunController:
         self._program_strategy = program_strategy
         self._program_liquidity_resolution_ms = program_liquidity_resolution_ms
         self._program_signal_runtime = None
+        self._program_dispatch_failure = None
         if fixed_v4_runtime_image is not None:
             from src.backend.backtest_v4_running_recovery import V4FixedRuntimeImage
             if (definition.mode != RunMode.BACKTEST or resume_state is not None
@@ -4825,9 +4826,14 @@ class ReplayRunController:
         from .backtest_program_inputs import PreparedProgramBlock
         from .qmd_columnar_population import CertifiedPopulationWindow
         from src.trading_runtime.columnar_program_coordinator import ProgramBoundary
+        from src.trading_runtime.signals import StrategySignal
+        from src.trading_runtime.journal_contract import canonical_json
         actor = self._program_strategy
         source = self._program_signal_runtime
+        if self._program_dispatch_failure is not None:
+            raise RuntimeError("Program dispatch requires recovery after an uncertain boundary") from self._program_dispatch_failure
         if (actor is None or source is None or self._runtime is None
+                or self._journal is None or self._runtime.journal is not self._journal
                 or type(block) is not PreparedProgramBlock or type(population) is not CertifiedPopulationWindow
                 or block.release_hash != actor.program_release.header["content_hash"]
                 or population.source_revision != source._typed_scope[1]
@@ -4837,7 +4843,7 @@ class ReplayRunController:
         listing = actor._listings[assignment_id]
         row, mask = block.row_for(listing, ordinal)
         at = row["boundary_at"]
-        sequence, _, cutoff = source.typed_source_cursor()
+        sequence, source_hash, cutoff = source.typed_source_cursor()
         if (sequence < 1 or cutoff != at or self._runtime.last_event_time != at
                 or mask["boundary_at"] != at or row["evaluation_block"] != block.evaluation_block):
             raise ValueError("Program dispatch differs from its committed source/broker clock")
@@ -4857,15 +4863,37 @@ class ReplayRunController:
         if observation.unobserved_order_ids:
             await self._runtime.order_manager.reconcile()
             observation = self.program_order_observation(assignment_id=assignment_id, at=at)
-        selection = actor.select_from_orders(boundary, assignment_id=assignment_id,
-            observation=observation, terminal=terminal)
         results = []
-        for proposal in selection.proposals:
-            results.extend(await self._runtime.submit_program_proposal(proposal,
-                account_id=assignment.account_id, assignment_id=assignment_id,
-                execution_policy=execution_policy,
-                protection_profile=protection_profile if proposal.action in {"enter_long", "add_long"} else None,
-                outside_rth=outside_rth))
+        try:
+            selection = actor.select_from_orders(boundary, assignment_id=assignment_id,
+                observation=observation, terminal=terminal)
+            if selection.status == "already_consumed":
+                return {"status": selection.status, "results": results}
+            for proposal in selection.proposals:
+                results.extend(await self._runtime.submit_program_proposal(proposal,
+                    account_id=assignment.account_id, assignment_id=assignment_id,
+                    execution_policy=execution_policy,
+                    protection_profile=protection_profile if proposal.action in {"enter_long", "add_long"} else None,
+                    outside_rth=outside_rth))
+            identity = hashlib.sha256(canonical_json(dict(schema_version=1,
+                run_id=self.run_id, assignment_id=assignment_id, source_commit_hash=source_hash,
+                release_hash=block.release_hash, history_hash=block.history_hashes[listing],
+                evaluation_block=block.evaluation_block, observed_ordinal=ordinal,
+                terminal=terminal)).encode()).hexdigest()
+            reason = "program:" + selection.status
+            metadata = dict(assignment_id=assignment_id, reference_price=row["reference_close"],
+                status="completed", reason_code=reason, reason_detail=selection.status,
+                correlation_id=identity, causation_id=source_hash)
+            signal = StrategySignal(identity, "program_boundary_completed", assignment.ticker,
+                at, "wait", "neutral", 0., 1., reason, working_timeframe="1s", metadata=metadata)
+            self._journal.append(run_id=self.run_id, category="strategy_decision",
+                entity_type="signal", entity_id=identity, account_id=assignment.account_id,
+                event_time=at, payload={**signal.payload(), "strategy_id": actor.strategy_id,
+                    "strategy_revision": actor.revision, "correlation_id": identity,
+                    "causation_id": source_hash})
+        except BaseException as exc:
+            self._program_dispatch_failure = exc
+            raise
         return {"status": selection.status, "results": results}
 
     def program_order_observation(self, *, assignment_id: str, at: datetime):

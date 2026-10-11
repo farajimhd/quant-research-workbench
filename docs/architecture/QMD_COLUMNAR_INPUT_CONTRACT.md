@@ -325,3 +325,17 @@ for activation and dispatch-ACK receipts before promotion. Synthetic roundtrips
 cover both the existing isolated paper scope and central backtest scope;
 uncertain activation responses retain unresolved Keeper operations even if a
 database row was written, preventing a blind retry or cold-prefix acceptance.
+
+After prepared-boundary selection and Portfolio/OMS submission return, the
+controller appends `program_boundary_completed` to the existing normalized
+strategy-signal journal. Its fixed decision fields identify the assignment,
+reference mark, completion status and selection reason. The event's causation
+is the exact committed source hash; its deterministic identity binds the run,
+assignment, release, listing history, original evaluation block, ordinal and
+terminal flag. No generic evidence tree or JSON table field is introduced.
+Repeated consumed boundaries append no second completion. Submission or append
+failure latches the controller into recovery-required state, preserving any
+orders already accepted and prohibiting another dispatch. These records become
+durable only through the existing journal fence; in-memory presence alone is
+not a resume certificate. The merged financial/source-prefix cold restoration
+and operational admission remain outstanding.
