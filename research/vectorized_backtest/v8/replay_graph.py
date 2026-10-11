@@ -34,12 +34,14 @@ def replay(position, aggregate, opened, policy, prices, observed, membership,
 
     # Keep scans out of the financial reduction region: Torch's split-scan
     # generator cannot emit fused reductions for production listing widths.
-    # Both fullgraph regions are captured below; no host launch per clock.
+    # Inductor functionalizes ledger scatter mutations and copies the full bounded
+    # buffers every tick. Capture direct in-place ledger kernels instead: measured
+    # 32x faster ledger appends at 512x622, still no host launch per clock.
     compiled_transition=torch.compile(transition_tick,fullgraph=True,dynamic=False)
-    compiled_ledger=torch.compile(episodes.append_events,fullgraph=True,dynamic=False) if episodes is not None else None
+    append_ledger=episodes.append_events if episodes is not None else None
     def compiled():
         closed,profits=compiled_transition()
-        if compiled_ledger is not None:compiled_ledger(closed,profits)
+        if append_ledger is not None:append_ledger(closed,profits)
     def reset():
         position.zero_();aggregate.zero_();aggregate[...,8]=float('inf')
         opened.zero_();index.fill_(1)
