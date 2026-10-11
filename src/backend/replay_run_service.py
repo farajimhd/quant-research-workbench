@@ -4812,6 +4812,31 @@ class ReplayRunController:
         if names and not report['eligible_ticker_count']:
             raise ValueError('No strategy tickers have required V7 books; see level-book-coverage.json')
 
+    async def prepare_program_inputs(self, pins, *, first_ordinal: int,
+            stop_ordinal: int, evaluation_block: str, as_of: datetime,
+            concurrency: int, history_post=None):
+        """Prepare certified market masks for this controller's shared actor.
+
+        Preparation creates no position, signal receipt, order or run seal.
+        The source/dispatch coordinator must still commit its completed boundary
+        and select these masks using execution-derived state in event-time order.
+        """
+        from .backtest_program_inputs import prepare_program_block
+        from .qmd_columnar_history import CertifiedHistoryPin
+        actor = self._program_strategy
+        if (actor is None or self._runtime is None or self._runtime.strategy is not actor
+                or self.definition.mode is not RunMode.BACKTEST):
+            raise RuntimeError("Program input preparation requires the bound app runtime")
+        assignments = {actor._listings[row.assignment_id]: row.ticker for row in actor.assignments()}
+        if (not pins or any(type(pin) is not CertifiedHistoryPin or listing not in assignments
+                or pin.scope.ticker != assignments[listing]
+                or pin.scope.session_date != self.definition.session_date for listing, pin in pins.items())):
+            raise ValueError("Program input identity differs from the controller assignment scope")
+        return await prepare_program_block(actor.program_release, pins,
+            first_ordinal=first_ordinal, stop_ordinal=stop_ordinal,
+            evaluation_block=evaluation_block, as_of=as_of, concurrency=concurrency,
+            history_post=history_post)
+
     async def _initialize_runtime(
         self,
         *,

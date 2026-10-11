@@ -213,3 +213,16 @@ Portfolio/OMS admission and subsequent actual partial fills at both resolutions.
 Construction does not authorize publication or launch: the operational gate
 still requires full program input/source orchestration, normalized run settings
 and cold recovery qualification before this binding may run an app Backtest.
+
+`ReplayRunController.prepare_program_inputs` now reads cold-certified QMD
+history pins for its bound actor's dated listing/ticker identities. The shared
+input preparer validates every field's product, revision, unit and cadence,
+session/origin and completed clock before starting HTTP reads. A fixed worker
+pool reads bounded packets; cancellation drains owned transports. Packets are
+joined before the five market-only programs evaluate off the event loop, so
+HTTP packet boundaries never reset temporal warm-up or Float32 accumulation.
+Preparation does not promote signals, create positions or submit orders.
+Synthetic tests compare exact cold-product columns and rule masks across a
+4,096-row transport boundary and exercise the main controller's input call.
+The run loop still needs durable source/dispatch sequencing, operational source
+admission and normalized recovery before real-session qualification.
