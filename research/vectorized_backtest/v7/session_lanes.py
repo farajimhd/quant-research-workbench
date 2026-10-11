@@ -87,7 +87,8 @@ class Worker:
                             rule_seconds=rule_seconds,replay_seconds=perf_counter()-replay_clock,
                             rule_started_epoch=rule_start,replay_started_epoch=replay_start,finished_epoch=time(),pid=os.getpid(),replay_listing_width=replay_width)
                         if plan.plan is not None:
-                            timing.update(capture_builds=plan.plan.builds,capture_hits=plan.plan.hits,capture_bytes=plan.plan.capture_bytes)
+                            timing.update(capture_builds=plan.plan.builds,capture_hits=plan.plan.hits,capture_bytes=plan.plan.capture_bytes,
+                                capture_evictions=plan.plan.evictions,capture_seconds=plan.plan.capture_seconds)
                         timings.append(timing)
                         publisher.write(root/f'batch-{offset:06d}.json',dict(day=day,offset=offset,candidates=len(members),
                             population_sha256=token,metrics=metrics,full_session=True,validation_opened=False))

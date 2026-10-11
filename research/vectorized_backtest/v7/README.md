@@ -241,3 +241,18 @@ sessions under both source versions, requires exact metrics, measures warm
 wall time and selection overhead, and binds unchanged GPU engines. Its 3%
 wall-noise tolerance is separate from the one-second maximum selection gate;
 future generation time can still vary with generated rule complexity.
+### Rule graph cache residency
+
+Capture workspace estimates enforce workspace/device headroom, while measured
+graph-pool bytes enforce the existing 4 GiB retained cache per lane. A transient
+capture is admitted with physical device headroom and then its measured pool is
+charged to the cache; LRU eviction keeps retained bytes within that budget.
+Comparing a worst-case workspace estimate with the retained cache budget caused
+premature eviction and repeated capture as populations grew more complex.
+Batch timings expose capture wall time and eviction counts. Strategy programs,
+floating-point operations, feature clocks, financial execution, batch sizes and
+concurrency remain unchanged. `qualify_capture_cache` compares the saved actual
+population across two full training sessions, cold and warm, requiring exact
+receipts and at least 10% lower warm wall time before successor launch. This is
+a same-workload acceptance gate; full all30 generation timings remain the
+operational throughput authority.

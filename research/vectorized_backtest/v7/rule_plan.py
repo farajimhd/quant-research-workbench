@@ -81,6 +81,8 @@ class RulePlan:
         self.maximum_capture_bytes = int(maximum_capture_gib*1024**3)
         self.builds = 0
         self.hits = 0
+        self.evictions = 0
+        self.capture_seconds = 0.
         self.workspace_gib = None
 
     def execute(self, group_id, values, known):
@@ -91,19 +93,23 @@ class RulePlan:
         key = (group_id, tuple(values.shape))
         rows=values.shape[0]*values.shape[1]
         estimate=rows*(values.shape[2]*5+len(group['candidates'])*(group['program'].width*20+64))
-        limit=(self.workspace_gib*1024**3 if self.workspace_gib is not None
-               else torch.cuda.mem_get_info(self.device)[0]*.8)
-        if estimate>limit:raise MemoryError('V7 rule workspace exceeds declared budget')
+        if self.workspace_gib is not None and estimate>self.workspace_gib*1024**3:
+            raise MemoryError('V7 rule workspace exceeds declared budget')
         if key not in self.captures:
+            started=perf_counter()
             torch.cuda.synchronize(self.device)
-            # Reserve headroom before capture; evicted graphs have no queued work.
-            evicted=False
-            while self.captures and self.capture_bytes+estimate > self.maximum_capture_bytes:
+            # Workspace is transient; the cache budget bounds measured retained
+            # graph pools. Comparing cache bytes + workspace against that budget
+            # evicts useful graphs even when all their actual pools fit.
+            # Still reserve physical device headroom before building a graph.
+            while self.captures and estimate > torch.cuda.mem_get_info(self.device)[0]*.8:
                 _, (old, size) = self.captures.popitem(last=False)
                 del old
                 self.capture_bytes -= size
-                evicted=True
-            if evicted:torch.cuda.empty_cache()
+                self.evictions += 1
+                torch.cuda.empty_cache()
+            if estimate > torch.cuda.mem_get_info(self.device)[0]*.8:
+                raise MemoryError('Insufficient device headroom for V7 rule capture')
             capture = CapturedGroup(group['program'], values.shape, self.device)
             torch.cuda.synchronize(self.device)
             size = capture.memory_bytes
@@ -115,11 +121,13 @@ class RulePlan:
                 _, (old, old_size) = self.captures.popitem(last=False)
                 del old
                 self.capture_bytes -= old_size
+                self.evictions += 1
                 evicted=True
             if evicted:torch.cuda.empty_cache()
             self.captures[key] = (capture, size)
             self.capture_bytes += size
             self.builds += 1
+            self.capture_seconds += perf_counter()-started
         else:
             self.hits += 1
             self.captures.move_to_end(key)
