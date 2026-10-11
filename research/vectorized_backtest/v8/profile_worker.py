@@ -12,7 +12,10 @@ def main():
     for name in ('campaign','output'):p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--engine',choices=('v7','v8'),required=True)
     p.add_argument('--days',nargs='+');p.add_argument('--repeats',type=int,default=2)
-    a=p.parse_args();prefix='research.vectorized_backtest.'+a.engine
+    p.add_argument('--capture-gib',type=float,default=4.)
+    a=p.parse_args()
+    if not .25<=a.capture_gib<=16. or (a.engine=='v7' and a.capture_gib!=4.):raise ValueError('Bounded V8-only cache experiment required')
+    prefix='research.vectorized_backtest.'+a.engine
     search=importlib.import_module(prefix+'.run_search');genome=importlib.import_module(prefix+'.genome')
     lanes_module=importlib.import_module(prefix+'.session_lanes');terminal=importlib.import_module(prefix+'.terminal')
     from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime,write_json,file_hash
@@ -29,7 +32,7 @@ def main():
         device='cuda',backend='compile',batch_size=contract['batch_size'],execution=contract['execution'],
         maximum_data_gib=contract['maximum_data_gib'],maximum_gate_gib=contract['maximum_gate_gib'],
         source_sha256=search.source_hash(),split='training',episode_capacity=65536,plan_limit=2,
-        reuse_results=False)
+        reuse_results=False,capture_gib=a.capture_gib)
     receipts=[];times=[]
     with terminal.CampaignProgress(output,contract) as panel,lanes_module.SessionLanes(config,contract['session_workers'],panel) as lanes:
         for repeat in range(1,a.repeats+1):
@@ -40,7 +43,7 @@ def main():
             write_json(output/'progress.json',dict(repeat=repeat,seconds=elapsed,completed=len(days),timings=timings))
         panel.update(status='complete',stage='Fixed population comparison complete',completed_generations=a.repeats)
     write_json(output/'profile.json',dict(engine=a.engine,source_sha256=config['source_sha256'],population_sha256=token,
-        days=days,repeats=a.repeats,wall_seconds=times,session_receipts=receipts,result_reuse=False))
+        days=days,repeats=a.repeats,wall_seconds=times,session_receipts=receipts,result_reuse=False,capture_gib=a.capture_gib))
 
 
 if __name__=='__main__':main()

@@ -178,3 +178,11 @@ Seeds retain V7 generation/candidate provenance; V8 ancestry starts at import be
 V7 did not persist parent links. Sampling, hashes and selected indices are frozen in
 the initialization artifact and checkpoint contract. Validation is never read.
 Matched-workload V7/V8 profiles retain their identical comparison populations.
+
+Graph-cache experiments use `--capture-gib` on `run_search`, `qualify_workstation`
+or `workstation_acceptance`. The unchanged default is 4 GiB **per worker**, split
+across its retained plans; the explicit bound is 0.25 through 16 GiB. Admission
+includes this allocation in each worker's memory budget. Profiling changes only
+the V8 budget, retains the V7 baseline, and records the setting in its receipt.
+The search checkpoint freezes the setting for exact resume. Larger caches are
+experimental until measured; no larger default is assumed to be faster.

@@ -193,7 +193,9 @@ def test_validation_cannot_change_successors(monkeypatch,tmp_path,mixed_initiali
         def publish(self):pass
     validation_multiplier=[1]
     class Lanes:
-        def __init__(self,config,*a):self.config=config
+        def __init__(self,config,*a):
+            assert config['capture_gib']==8.
+            self.config=config
         def __enter__(self):return self
         def __exit__(self,*a):pass
         def release_plans(self):pass
@@ -217,7 +219,8 @@ def test_validation_cannot_change_successors(monkeypatch,tmp_path,mixed_initiali
             initialization=dict(seed_count=1,random_count=9,selected_candidates=[7],validation_feedback=False)))
     for suffix,multiplier in [('a',1),('b',-100)]:
         validation_multiplier[0]=multiplier
-        search.run('train','validation',tmp_path/suffix,population_size=10,generations=2,batch_size=4,device='cpu',backend='eager',initial_population=initial)
+        search.run('train','validation',tmp_path/suffix,population_size=10,generations=2,batch_size=4,device='cpu',backend='eager',initial_population=initial,capture_gib=8.)
+    assert json.loads((tmp_path/'a'/'checkpoint.json').read_text())['contract']['capture_gib']==8.
     first=json.loads((tmp_path/'a'/'checkpoint.json').read_text())['state']
     second=json.loads((tmp_path/'b'/'checkpoint.json').read_text())['state']
     for key in ('population','ids','pedigree','rng'):assert first[key]==second[key]
@@ -228,11 +231,11 @@ def test_validation_cannot_change_successors(monkeypatch,tmp_path,mixed_initiali
         assert all(r['operation']=='fresh' for r in first['pedigree'][1:10])
         assert (tmp_path/'a/initialization.json').is_file()
     # Completed observations remain integrity checked on resume, without selection feedback.
-    assert search.run('train','validation',tmp_path/'a',population_size=10,generations=2,batch_size=4,device='cpu',backend='eager',initial_population=initial)==0
+    assert search.run('train','validation',tmp_path/'a',population_size=10,generations=2,batch_size=4,device='cpu',backend='eager',initial_population=initial,capture_gib=8.)==0
     receipt=tmp_path/'a/validation/generation-0001/2026-09-01/receipt.json'
     receipt.write_text('{}',encoding='utf-8')
     with pytest.raises(ValueError,match='Sealed validation receipt changed'):
-        search.run('train','validation',tmp_path/'a',population_size=10,generations=2,batch_size=4,device='cpu',backend='eager',initial_population=initial)
+        search.run('train','validation',tmp_path/'a',population_size=10,generations=2,batch_size=4,device='cpu',backend='eager',initial_population=initial,capture_gib=8.)
 
 
 def test_shared_rule_groups_expand_exactly():
@@ -352,3 +355,10 @@ def test_initial_seeds_filter_scaled_behavior_and_fill_random_shortfall():
     assert len({program_key(m) for m in left})==100
     assert left[0].payload()==population[0].payload() and left[1].payload()==population[2].payload()
     with pytest.raises(ValueError):mix(population,ordered,[0],100,fraction=1.1)
+
+
+@pytest.mark.parametrize('budget',[0.,17.,float('nan'),float('inf')])
+def test_search_rejects_unbounded_capture_cache_before_opening_data(budget):
+    from research.vectorized_backtest.v8.run_search import run
+    with pytest.raises(ValueError,match='Capture cache'):
+        run('unused','unused','unused',capture_gib=budget)

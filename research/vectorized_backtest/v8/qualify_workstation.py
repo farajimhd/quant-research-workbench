@@ -17,7 +17,10 @@ def main():
     for name in ('campaign','output'):parser.add_argument('--'+name,type=Path,required=True)
     parser.add_argument('--days',nargs='+');parser.add_argument('--repeats',type=int,default=2)
     parser.add_argument('--stopped-v7-receipt',type=Path)
-    a=parser.parse_args();require_finished(a.campaign,a.stopped_v7_receipt)
+    parser.add_argument('--capture-gib',type=float,default=4.)
+    a=parser.parse_args()
+    if not .25<=a.capture_gib<=16.:raise ValueError("Capture cache must be between 0.25 and 16 GiB per worker")
+    require_finished(a.campaign,a.stopped_v7_receipt)
     if not 2<=a.repeats<=5:raise ValueError('At least cold/warm measurements, maximum five repeats')
     output=require_runtime(a.output);active=json.loads((a.campaign/'active.json').read_text(encoding='utf-8-sig'))
     script=Path(__file__).with_name('profile_worker.py')
@@ -26,6 +29,7 @@ def main():
         command=[sys.executable,'-B','-P',str(script),'--engine',version,'--campaign',str(a.campaign),
                  '--output',str(output/version),'--repeats',str(a.repeats)]
         if a.days:command+=['--days',*a.days]
+        if version=='v8':command+=['--capture-gib',str(a.capture_gib)]
         env=dict(os.environ,PYTHONPATH=str(code),PYTHONDONTWRITEBYTECODE='1')
         print(' '.join(command),flush=True)
         with (output/(version+'.log')).open('w',encoding='utf-8') as stream:
@@ -46,7 +50,7 @@ def main():
         objective_checks.append(dict(eligible=int(values['feasible'].sum()),positions=int(values['closed_positions'].sum())))
     old_warm=float(np.median(old['wall_seconds'][1:]));new_warm=float(np.median(new['wall_seconds'][1:]))
     result=dict(status='passed' if new_warm<old_warm else 'speed_gate_failed',source_sha256=source_hash(),
-        population_sha256=new['population_sha256'],days=new['days'],exact_accounting_parity=True,
+        population_sha256=new['population_sha256'],days=new['days'],exact_accounting_parity=True,capture_gib=a.capture_gib,
         v7_warm_seconds=old_warm,v8_warm_seconds=new_warm,speedup=old_warm/new_warm,
         full_training_panel=len(new['days'])==len(saved['contract']['input_receipts']),
         full_generation_with_validation_qualified=False,objective_checks=objective_checks,

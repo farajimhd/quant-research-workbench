@@ -14,13 +14,17 @@ def main():
     p.add_argument('--validation-inputs',type=Path)
     p.add_argument('--wait',action='store_true')
     p.add_argument('--stopped-v7-receipt',type=Path)
-    a=p.parse_args();root=require_runtime(a.output);code=source_hash()
+    p.add_argument('--capture-gib',type=float,default=4.)
+    a=p.parse_args()
+    if not .25<=a.capture_gib<=16.:raise ValueError("Capture cache must be between 0.25 and 16 GiB per worker")
+    root=require_runtime(a.output);code=source_hash()
     def status(stage,**extra):
         write_json(root/'status.json',dict(stage=stage,updated_epoch=time.time(),**{'source_sha256':code,**extra}))
         print(stage,flush=True)
     def command(module,arguments,log):
         if a.stopped_v7_receipt and module in ('qualify_workstation','prepare_validation'):
             arguments=[*arguments,'--stopped-v7-receipt',a.stopped_v7_receipt]
+        if module in ('qualify_workstation','run_search'):arguments=[*arguments,'--capture-gib',a.capture_gib]
         argv=[sys.executable,'-B','-u','-m','research.vectorized_backtest.v8.'+module,*map(str,arguments)]
         status(log,status='running',arguments=argv)
         with (root/(log+'.log')).open('a',encoding='utf-8') as stream:

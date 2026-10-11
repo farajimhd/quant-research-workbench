@@ -93,10 +93,11 @@ def read_panel(root,days,token):
 def run(training,validation,output,*,population_size=1024,generations=50,batch_size=512,
         session_workers=2,seed=2237,device='cuda',backend='compile',execution=Execution(fee_per_share=.005,minimum_order_fee=1),
         objective=Objective(),selection=Selection(),episode_capacity=65536,maximum_gate_gib=6.665611267089844,
-        maximum_data_gib=4.,plan_limit=2,initial_population=None):
+        maximum_data_gib=4.,plan_limit=2,capture_gib=4.,initial_population=None):
     if not 10<=population_size<=65536 or not 1<=batch_size<=1024 or not 1<=session_workers<=8 or generations<1:
         raise ValueError('Explicit bounded campaign required')
     if not 1<=plan_limit<=4 or maximum_gate_gib<=0 or maximum_data_gib<=0:raise ValueError('Invalid memory/plan bounds')
+    if not .25<=capture_gib<=16.:raise ValueError('Capture cache must be between 0.25 and 16 GiB per worker')
     objective.validate();selection.validate();execution.validate()
     train=bind_dataset(training,'training');valid=bind_dataset(validation,'validation')
     if set(train['days'])&set(valid['days']) or max(train['days'])>=min(valid['days']):
@@ -106,13 +107,13 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
         population=population_size,generations=generations,batch_size=batch_size,session_workers=session_workers,
         seed=seed,device=device,backend=backend,execution=asdict(execution),objective=asdict(objective),selection=asdict(selection),
         episode_capacity=episode_capacity,maximum_gate_gib=maximum_gate_gib,maximum_data_gib=maximum_data_gib,
-        plan_limit=plan_limit,validation_feedback=False,input_receipts=train['receipts'],session_execution='independent',
+        plan_limit=plan_limit,capture_gib=capture_gib,validation_feedback=False,input_receipts=train['receipts'],session_execution='independent',
         initial_population_sha256=file_hash(initial_population) if initial_population else None)
     def lane_config(data,role):
         return dict(inputs=data['inputs'],history=data['history'],feature_cache=data.get('feature_cache'),
             output=str(output/role),device=device,backend=backend,batch_size=batch_size,
             maximum_data_gib=maximum_data_gib,maximum_gate_gib=maximum_gate_gib,execution=asdict(execution),
-            source_sha256=version_hash,split=role,episode_capacity=episode_capacity,plan_limit=plan_limit)
+            source_sha256=version_hash,split=role,episode_capacity=episode_capacity,plan_limit=plan_limit,capture_gib=capture_gib)
     rng=np.random.default_rng(seed);checkpoint=output/'checkpoint.json';completed=0
     with owned_run(output,version=VERSION),CampaignProgress(output,contract) as panel:
         if checkpoint.exists():
@@ -232,6 +233,7 @@ def main():
     parser.add_argument('--initial-population',type=Path,help='Immutable mixed initialization manifest or matched-workload checkpoint')
     parser.add_argument('--maximum-gate-gib',type=float,default=6.665611267089844)
     parser.add_argument('--maximum-data-gib',type=float,default=4.)
+    parser.add_argument('--capture-gib',type=float,default=4.,help='Total graph-cache GiB per worker, split across retained plans')
     args=vars(parser.parse_args());args['population_size']=args.pop('population')
     args['objective']=Objective(**json.loads(args['objective'].read_text(encoding='utf-8-sig'))) if args['objective'] else Objective()
     args['selection']=Selection(**json.loads(args['selection'].read_text(encoding='utf-8-sig'))) if args['selection'] else Selection()

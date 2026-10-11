@@ -198,7 +198,8 @@ class SessionLanes:
         # Preserve the measured RulePlan budget per execution path. Splitting
         # one plan's cache between workers forces repeated graph recaptures.
         # Admission below still bounds the combined resident allocation.
-        c['capture_gib']=4.
+        c['capture_gib']=float(c.get('capture_gib',4.))
+        if not .25<=c['capture_gib']<=16.:raise ValueError('Capture cache must be between 0.25 and 16 GiB per worker')
         c['lane_memory_bytes']=torch.cuda.mem_get_info(c['device'])[0]*.8/self.workers if torch.device(c['device']).type=='cuda' else 0
         self.pools=[ProcessPoolExecutor(max_workers=1,mp_context=self.context,
             initializer=initialize,initargs=(c,self.events,lane)) for lane in range(self.workers)]
