@@ -30,6 +30,19 @@ def test_same_backend_accounting_gate_rejects_even_roundoff():
     exact_accounting(expected,expected)
 
 
+def test_worker_preserves_nonpickleable_compiler_error(monkeypatch):
+    from research.vectorized_backtest.v8 import session_lanes
+    import pickle
+    class Worker:
+        def run(self,*args):
+            error=ValueError('compiler failure')
+            error.callback=lambda:None
+            raise error
+    monkeypatch.setattr(session_lanes,'_worker',Worker())
+    with pytest.raises(RuntimeError,match='compiler failure') as error:session_lanes.evaluate()
+    assert 'compiler failure' in str(pickle.loads(pickle.dumps(error.value)))
+
+
 def test_authorized_stop_gate_binds_checkpoint_and_sealed_receipts(tmp_path):
     from research.vectorized_backtest.v8.prepare_validation import require_finished
     from research.vectorized_backtest.v6.torch_backtest.runtime import write_json,file_hash

@@ -11,7 +11,7 @@ def replay(position, aggregate, opened, policy, prices, observed, membership,
     total=prices.shape[0]-1
     index=torch.ones((),dtype=torch.int64,device=device)
 
-    def tick():
+    def transition_tick():
         # Device-side index stays dynamic across graph replays. Tail clocks
         # are clamped for safe reads and masked out of every state update.
         clock=index.clamp_max(total)
@@ -24,13 +24,22 @@ def replay(position, aggregate, opened, policy, prices, observed, membership,
             clock.to(torch.float64),(index==lengths-1)[:,None,None],
             execution.entry_dollars,execution.add_dollars,execution.cost_bps/10000.,execution.fee_per_share,execution.minimum_order_fee)
         active=index<lengths
-        if episodes is not None:episodes.append(position,p,active)
+        closed=held&(p[...,0]<=1e-12)&active[:,None,None]
+        profits=p[...,7]-position[...,8]
         opened.copy_(torch.where(active[:,None,None]&~held&(p[...,0]>1e-12),clock,opened))
         position.copy_(torch.where(active[:,None,None,None],p,position))
         aggregate.copy_(torch.where(active[:,None,None],a,aggregate))
         index.add_(1)
+        return closed,profits
 
-    compiled=torch.compile(tick,fullgraph=True,dynamic=False)
+    # Keep scans out of the financial reduction region: Torch's split-scan
+    # generator cannot emit fused reductions for production listing widths.
+    # Both fullgraph regions are captured below; no host launch per clock.
+    compiled_transition=torch.compile(transition_tick,fullgraph=True,dynamic=False)
+    compiled_ledger=torch.compile(episodes.append_events,fullgraph=True,dynamic=False) if episodes is not None else None
+    def compiled():
+        closed,profits=compiled_transition()
+        if compiled_ledger is not None:compiled_ledger(closed,profits)
     def reset():
         position.zero_();aggregate.zero_();aggregate[...,8]=float('inf')
         opened.zero_();index.fill_(1)

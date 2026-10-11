@@ -17,17 +17,21 @@ class Episodes:
 
     def append(self, before, after, active):
         closed = (before[...,0]>1e-12)&(after[...,0]<=1e-12)&active[:,None,None]
-        offsets = closed.to(torch.int64).cumsum(-1)-1+self.counts[...,None]
         if before.shape[-2]>self.max_listings:raise ValueError('Episode listing bound exceeded')
-        listings = torch.arange(before.shape[-2],device=before.device).expand_as(offsets)
+        self.append_events(closed,after[...,7]-before[...,8])
+
+    def append_events(self,closed,profits):
+        prefix=closed.to(torch.int64).cumsum(-1)
+        offsets = prefix-1+self.counts[...,None]
+        listings = torch.arange(closed.shape[-1],device=closed.device).expand_as(offsets)
         retained=closed&(offsets<self.capacity)
         # One scratch slot per listing avoids a heavily contended shared sentinel.
         # All indices are unique within a candidate, allowing non-atomic scatter.
         indices = torch.where(retained, offsets.clamp_min(0), self.capacity+listings)
-        pnl = torch.where(retained, after[...,7]-before[...,8], 0.)
+        pnl = torch.where(retained, profits, 0.)
         self.profits.scatter_(-1, indices, pnl)
         self.listings.scatter_(-1, indices, torch.where(retained,listings,0))
-        self.counts.add_(closed.sum(-1))
+        self.counts.add_(prefix[...,-1])
 
     def export(self):
         counts = self.counts.cpu().numpy()

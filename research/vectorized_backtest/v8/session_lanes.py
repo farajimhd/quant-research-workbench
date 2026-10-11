@@ -165,7 +165,13 @@ def initialize(config,events,lane):
     _worker=Worker(config,events,lane)
 
 
-def evaluate(*args):return _worker.run(*args)
+def evaluate(*args):
+    try:return _worker.run(*args)
+    except Exception as error:
+        # Compiler exceptions may capture non-pickleable closure cells. Preserve
+        # the real worker traceback as text across the process boundary.
+        import traceback
+        raise RuntimeError(traceback.format_exc()) from None
 def cleanup():_worker.close()
 def release_plans():
     for plan in _worker.plans.values():plan.close()
