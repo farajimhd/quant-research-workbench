@@ -11,6 +11,7 @@ from research.mlops.clickhouse import ClickHouseHttpClient
 
 @pytest.mark.parametrize("failure", [
     http.client.RemoteDisconnected("idle socket closed"),
+    http.client.IncompleteRead(b"partial response"),
     ConnectionAbortedError(10053, "host aborted connection"),
     ConnectionResetError(10054, "connection reset"),
     BrokenPipeError(32, "broken pipe"),
@@ -38,6 +39,7 @@ def test_reconnects_one_plain_select_after_transport_close(monkeypatch, failure)
                                        "WITH 1 AS x SELECT x"])
 @pytest.mark.parametrize("failure", [
     http.client.RemoteDisconnected("no response"),
+    http.client.IncompleteRead(b"partial response"),
     ConnectionAbortedError(10053, "host aborted connection"),
 ])
 def test_never_replays_ambiguous_non_select(monkeypatch, sql, failure):
@@ -53,6 +55,32 @@ def test_never_replays_ambiguous_non_select(monkeypatch, sql, failure):
     with pytest.raises(type(failure)):
         client.execute(sql)
     assert calls == [sql]
+
+
+def test_incomplete_select_discards_partial_body_and_reconnects_once(monkeypatch):
+    broken, fresh = MagicMock(), MagicMock()
+    failed_response = MagicMock(status=200)
+    failed_response.read.side_effect = http.client.IncompleteRead(b"untrusted partial")
+    broken.getresponse.return_value = failed_response
+    complete_response = MagicMock(status=200, will_close=False)
+    complete_response.read.return_value = b"complete result"
+    fresh.getresponse.return_value = complete_response
+    sockets = iter((broken, fresh))
+    client = ClickHouseHttpClient("http://localhost:8123", "reader", "secret", persistent=True)
+    monkeypatch.setattr(client, "_new_connection", lambda: next(sockets))
+    assert client.execute("SELECT 1", query_id="bounded-read") == "complete result"
+    broken.close.assert_called_once()
+    assert broken.request.call_count == fresh.request.call_count == 1
+    assert broken.request.call_args == fresh.request.call_args
+
+
+def test_incomplete_select_second_failure_is_terminal(monkeypatch):
+    client = ClickHouseHttpClient("http://localhost:8123", "reader", "secret", persistent=True)
+    execute = MagicMock(side_effect=http.client.IncompleteRead(b"partial"))
+    monkeypatch.setattr(client, "_execute_persistent", execute)
+    with pytest.raises(http.client.IncompleteRead):
+        client.execute("SELECT 1")
+    assert execute.call_count == 2
 
 
 def test_writer_reopens_idle_socket_before_sending_insert(monkeypatch):

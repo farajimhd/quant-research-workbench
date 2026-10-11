@@ -310,7 +310,7 @@ class ClickHouseHttpClient:
         if self.persistent:
             try:
                 return self._execute_persistent(sql, params)
-            except (http.client.RemoteDisconnected, ConnectionAbortedError,
+            except (http.client.RemoteDisconnected, http.client.IncompleteRead, ConnectionAbortedError,
                     ConnectionResetError, BrokenPipeError, TimeoutError):
                 # The host or server can abort a persistent socket before a
                 # SELECT response, even when it was not idle. A plain SELECT
