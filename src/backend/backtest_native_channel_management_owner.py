@@ -126,6 +126,13 @@ class NativeChannelManagementOwner:
             raise ValueError('Native feature binding requires one exact bounded declared source session')
         self._feature_session=(session,through_day_boundary_ms,max_positions)
 
+    @property
+    def prepared_feature_session(self):
+        """Expose the bound source without its execution horizon/capacity tuple."""
+        if self._feature_session is None:
+            raise ValueError('Native feature session is not bound')
+        return self._feature_session[0]
+
     def _position_index(self, prepared, clock):
         from .backtest_native_channel_position_index import (
             _acquisition_key, prepare_native_channel_acquisition_index,

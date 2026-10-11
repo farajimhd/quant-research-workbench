@@ -54,7 +54,11 @@ def test_bound_feature_owner_reuses_only_exact_acquisition_index(installed):
         policy=replace(owner.policy,exit_policy=replace(owner.policy.exit_policy,sequence=prepared.policy,
             quote=replace(owner.policy.exit_policy.quote,max_rows=prepared.policy.max_decisions))))
     session=PreparedNativeChannelSession((args['financial'].ticker,),(prepared,))
+    with pytest.raises(ValueError, match='not bound'):
+        _ = owner.prepared_feature_session
     owner.bind_feature_session(session,through_day_boundary_ms=through,max_positions=1)
+    assert owner.prepared_feature_session is session
+    assert owner._feature_session == (session, through, 1)
     clock=acquisition_clock_from_entry_executions(args['group'],args['executions'],
         session_date=owner.session_date,as_of=market_day_boundary(owner.session_date,args['boundary_ms']),
         source_entry_intent_id=args['source_entry_intent_id'],expected_conid=args['expected_conid'])

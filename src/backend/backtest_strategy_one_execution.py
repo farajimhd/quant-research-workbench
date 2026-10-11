@@ -463,7 +463,9 @@ async def run_certified_strategy_one_session(
                 from .backtest_prepared_participation_scores import score_prepared_native_session
                 from .backtest_participation_acquisition_order import prepare_participation_acquisition_order
                 owner = getattr(manager, '_native_channel_owner', None)
-                feature_session = getattr(owner, '_feature_session', None)
+                if owner is None:
+                    raise ValueError('Acquisition ranking lacks its declared native feature owner')
+                feature_session = owner.prepared_feature_session
                 decisions = native_price_candidate_feature_decisions(initial_momentum_plan,
                     max_rows=ranking_policy.scoring.max_rows)
                 def prepare_order():
