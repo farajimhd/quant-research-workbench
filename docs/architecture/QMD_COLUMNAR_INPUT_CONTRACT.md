@@ -123,3 +123,21 @@ and read-only generated-row SQL qualification
 do not establish real-session acceptance. No new strategy number is registered
 or published by these modules. Operational installation, publication, producers,
 services and real backtests still require the user's prior run approval.
+
+The shared history product supports an explicit activity-only catalog. Its
+revision pins zero feature fields, and its coverage seal records zero feature
+rows with the empty-stream hashes. Publication and cold recovery still verify
+the same market, opening-reference and liquidity parents, dense clocks and
+actual storage placement. Preparing this population skips program-history
+calculation; QMD window reads skip feature-table queries and return the same
+certified volume clocks. This supplies the scanner population without preparing
+program features for every nonparticipant. Feature-bearing products retain
+their explicit catalogs and exact masks; missing requested fields still fail.
+
+Historical watchlist plans may opt into schema 5 with a declared
+`ranking_tie_field`. The shared reducer and app ranker compare positive UInt64
+identities directly, including IDs above Float64's exact integer range. Missing
+identity evidence fails closed, and incremental app caches include the tie field
+in their dependency fingerprint. Schema-4 plans retain their existing hashes
+and ordering. A certified population source and current-path plan admission are
+still required before this contract can be used by an operational strategy.

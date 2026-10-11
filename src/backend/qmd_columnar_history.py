@@ -180,9 +180,10 @@ def certify_history_product(reader, scope, fields, parents, *, expected_content_
                 first = next_first
             if len(rows) < 1024:
                 break
-    if not values:
+    if fields and not values:
         raise ValueError("QMD history feature intervals are missing")
-    prepared = c.PreparedHistory(scope, fields, parents.volume_window_seconds, pl.concat(clocks), pl.concat(values))
+    prepared = c.PreparedHistory(scope, fields, parents.volume_window_seconds, pl.concat(clocks),
+        pl.concat(values) if values else pl.DataFrame(schema=c.VALUE_FRAME_SCHEMA))
     for table, count, key in ((c.FIELD, len(fields), "field_id"),
             (c.CLOCK, prepared.clocks.height, "bucket_index"),
             (c.VALUE, prepared.values.height, "(field_id,first_ordinal)")):

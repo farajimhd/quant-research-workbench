@@ -53,6 +53,8 @@ COVERAGE = TableContract("qmd_causal_history_coverage_v1", PREFIX + (
     ("certified_at", "DateTime64(6, 'UTC')")),
     "toYYYYMM(session_date)", ORDER)
 TABLES = (FIELD, CLOCK, VALUE, COVERAGE)
+VALUE_FRAME_SCHEMA = {"field_id": pl.UInt32, "first_ordinal": pl.UInt32,
+    "stop_ordinal": pl.UInt32, "value": pl.Float32, "value_bits": pl.UInt32, "valid": pl.UInt8}
 
 
 def restore_record(table, row):
@@ -152,7 +154,7 @@ BY_NAME = {field.name: field for field in CATALOG}
 
 
 def selected_catalog(fields):
-    if (type(fields) is not tuple or not 1 <= len(fields) <= len(CATALOG)
+    if (type(fields) is not tuple or not 0 <= len(fields) <= len(CATALOG)
             or any(type(f) is not HistoryField or BY_NAME.get(f.name) != f for f in fields)
             or tuple(sorted(fields, key=lambda f: f.field_id)) != fields
             or len({f.field_id for f in fields}) != len(fields)):
@@ -351,7 +353,9 @@ def prepare_product(scope, bars, liquidity, fields, *, volume_window_seconds, pr
     if scope.product_revision != product_revision(fields, producer_code_hash, volume_window_seconds=volume_window_seconds):
         raise ValueError("History catalog/code revision differs from the source scope")
     frame = elapsed_volume_history(prepare_dense_inputs(scope, bars, liquidity), volume_window_seconds)
-    history = prepare_causal_history(frame, tuple(f.name for f in fields))
+    # The whole scanner population needs activity clocks, not program features.
+    # An explicit empty catalog has its own revision and seals zero feature rows.
+    history = prepare_causal_history(frame, tuple(f.name for f in fields)) if fields else None
     values = []
     for field in fields:
         array = history[field.name].cast(pl.Float32).to_numpy()
@@ -371,7 +375,8 @@ def prepare_product(scope, bars, liquidity, fields, *, volume_window_seconds, pr
         pl.col("observed").cast(pl.UInt8), pl.col("extremes_valid").cast(pl.UInt8),
         "reference_close", pl.col("volume").alias("share_volume"),
         pl.col("notional").alias("execution_notional"), "rolling_volume")
-    return PreparedHistory(scope, fields, volume_window_seconds, clocks, pl.concat(values))
+    return PreparedHistory(scope, fields, volume_window_seconds, clocks,
+        pl.concat(values) if values else pl.DataFrame(schema=VALUE_FRAME_SCHEMA))
 
 
 def expand_values(prepared: PreparedHistory, *, first_ordinal: int, stop_ordinal: int,

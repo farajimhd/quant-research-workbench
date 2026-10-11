@@ -197,7 +197,6 @@ pub fn validate_request(request: &HistoryWindowRequest) -> Result<(), String> {
         || request.first_ordinal >= request.stop_ordinal
         || request.stop_ordinal > s.stop_bucket - s.first_bucket
         || request.stop_ordinal - request.first_ordinal > 4096
-        || request.field_ids.is_empty()
         || request.field_ids.len() > 604
         || request.field_ids.iter().any(|v| !(149..753).contains(v))
         || request.field_ids.windows(2).any(|v| v[0] >= v[1])
@@ -298,7 +297,10 @@ fn validate_header(header: &HistoryCoverage, request: &HistoryWindowRequest) -> 
         .any(|v| !hash_valid(v))
         || header.elapsed_clock_count != request.scope.stop_bucket - request.scope.first_bucket
         || header.clock_row_count != header.elapsed_clock_count
-        || !(1..=604).contains(&header.field_count)
+        || header.field_count > 604
+        || (header.field_count == 0
+            && (header.field_content_hash != format!("{:x}", Sha256::digest([]))
+                || header.value_content_hash != format!("{:x}", Sha256::digest([]))))
         || header.field_count < request.field_ids.len() as u32
         || !(1..=3600).contains(&header.volume_window_seconds)
         || header.value_row_count < u64::from(header.field_count)
@@ -383,8 +385,13 @@ where
       isNotNull(value) AND isNotNull(value_bits) AND reinterpretAsUInt32(ifNull(value,toFloat32(0)))=ifNull(value_bits,toUInt32(0)))) AS bits_consistent \
       FROM arte.qmd_causal_history_value_v1 WHERE {predicate} AND field_id IN ({ids}) \
       AND first_ordinal<{} AND stop_ordinal>{} ORDER BY field_id,first_ordinal LIMIT {} FORMAT JSONEachRow", request.stop_ordinal, request.first_ordinal, request.field_ids.len() * n + 1);
-    let (fields, clocks, values) =
-        tokio::try_join!(query(field_sql), query(clock_sql), query(value_sql))?;
+    // A certified activity-only product carries dense clocks and zero fields.
+    // Do not issue feature reads or derive private features for that population.
+    let (fields, clocks, values) = if request.field_ids.is_empty() {
+        (String::new(), query(clock_sql).await?, String::new())
+    } else {
+        tokio::try_join!(query(field_sql), query(clock_sql), query(value_sql))?
+    };
     let fields = rows::<FieldRow>(&fields, request.field_ids.len() + 1)?;
     let clocks = rows::<ClockRow>(&clocks, n + 1)?;
     let values = rows::<ValueRow>(&values, request.field_ids.len() * n + 1)?;
@@ -615,7 +622,15 @@ mod tests {
 
     async fn fixture(case: &'static str) -> Result<HistoryWindowResponse, String> {
         let mut r = request();
-        let h = header(&r);
+        let mut h = header(&r);
+        if case == "activity-only" {
+            r.field_ids.clear();
+            h.field_count = 0;
+            h.value_row_count = 0;
+            h.field_content_hash = format!("{:x}", Sha256::digest([]));
+            h.value_content_hash = h.field_content_hash.clone();
+            h.content_hash = header_hash(&h).unwrap();
+        }
         r.expected_content_hash = h.content_hash.clone();
         let seals = Arc::new(AtomicUsize::new(0));
         let queries = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
@@ -644,6 +659,14 @@ mod tests {
             } else { panic!("Unexpected synthetic query {sql}"); };
             async move { Ok(body) }
         }).await;
+        if case == "activity-only" {
+            assert!(!queries
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|sql| sql.contains("FROM arte.qmd_causal_history_field_v1")
+                    || sql.contains("FROM arte.qmd_causal_history_value_v1")));
+        }
         if case == "valid" && std::env::var("QUALIFY_HISTORY_SQL_PROBE").as_deref() == Ok("1") {
             let root = std::path::Path::new("D:/TradingML/runtimes/task-0223-app");
             if !root.is_dir() {
@@ -668,6 +691,14 @@ mod tests {
         assert_eq!(response.bucket_index, vec![34200, 34201]);
         assert_eq!(response.rolling_volume, vec![1., 2.]);
         assert_eq!(response.fields[0].value_bits, vec![Some((-0f32).to_bits())]);
+    }
+
+    #[tokio::test]
+    async fn activity_only_population_reads_clocks_without_feature_work() {
+        let response = fixture("activity-only").await.unwrap();
+        assert!(response.fields.is_empty());
+        assert_eq!(response.coverage.field_count, 0);
+        assert_eq!(response.rolling_volume, vec![1., 2.]);
     }
 
     #[tokio::test]

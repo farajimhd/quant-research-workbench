@@ -194,6 +194,35 @@ def test_coverage_last_publication_exact_cold_consumer_and_readonly_retry(prepar
     assert store.writes == writes
 
 
+def test_activity_only_population_skips_features_and_preserves_cold_seal(prepared_source, monkeypatch):
+    from src.backend import qmd_columnar_history_transport as transport
+    from test_qmd_columnar_history_transport import response_for
+    def forbidden_features(*args, **kwargs):
+        raise AssertionError("Scanner population must not calculate program features")
+    monkeypatch.setattr(c, "prepare_causal_history", forbidden_features)
+    source = replace(prepared_source, fields=())
+    store = Store()
+    assert publish(store, source) == "published"
+    certificate = consume(store, source)
+    assert certificate.header["field_count"] == certificate.header["value_row_count"] == 0
+    assert store.records[c.FIELD.name] == store.records[c.VALUE.name] == []
+    assert set(store.writes) == {c.CLOCK.name, c.COVERAGE.name}
+    pin = certificate.pin()
+    frame = transport.read_history_window(pin, first_ordinal=0, stop_ordinal=200,
+        evaluation_block="scanner-window", as_of=c.completed_clock(pin.scope, pin.scope.stop_bucket - 1),
+        history_post=lambda path, request, timeout: response_for(certificate, 0, 200))
+    from polars.testing import assert_frame_equal
+    assert_frame_equal(frame, certificate.window(first_ordinal=0, stop_ordinal=200,
+        evaluation_block="scanner-window"), check_exact=True)
+    assert frame["rolling_volume"][-1] == 300.
+    assert publish(store, source) == "skipped_verified"
+    field = prepared_source.fields[0]
+    store.records[c.FIELD.name].extend(p.wire_records(c.FIELD, [{**pin.scope.prefix(),
+        "field_id": field.field_id, "field_name": field.name, "unit": field.unit}]))
+    with pytest.raises(ValueError, match="catalog differs"):
+        consume(store, source)
+
+
 def test_ambiguous_child_never_seals_or_blindly_retries(prepared_source):
     store = Store()
     store.failure = c.VALUE.name
