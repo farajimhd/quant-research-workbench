@@ -14,6 +14,85 @@ from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
 
 
+def test_declared_session_source_binds_actual_publisher_and_closes_failed_reader(installed, monkeypatch):
+    from types import SimpleNamespace
+    from src.backend.backtest_native_channel_publisher_source import bind_declared_native_channel_session_source
+    from src.trading_runtime import original_risk_diagnostic_profile as profiles
+    from src.trading_runtime import strategy_one_management_snapshot as managers
+    from src.trading_runtime import strategy_one_broker_match_snapshot as brokers
+    from src.trading_runtime import arte_journal_writer as module
+    writer, live, history, context, _, _, _ = publication_transport(installed, monkeypatch)
+    memory = BacktestMemoryJournal(run_id=context.base.run_id,
+        initial_sequence=history['prefix'].last_sequence)
+    transport = SimpleNamespace(run_id=context.base.run_id, run_mode='backtest',
+        journal_profile='backtest_v4', coalesce_batches=False, max_events_per_commit=1000,
+        _client=writer)
+    publisher = BacktestTypedJournalPublisher(memory, transport,
+        attempt_id=context.attempt_id, run_month=context.base.run_month,
+        initial_sequence=history['prefix'].last_sequence,
+        prior_batch_id=context.base.prior_batch_id, source_cursor=context.base.source_cursor,
+        expected_config=dict(strategy_id='early-squeeze-strategy', strategy_revision=1))
+    publisher._first_price_source = context.first_price_source
+    configuration = {'declared-test-packet': True}
+    calls, closed = [], []
+    options = {'native_channel_management_policy': context.policy}
+    monkeypatch.setattr(profiles, 'declared_fixed_runner_options',
+        lambda value: options if value is configuration else None)
+    def reader(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(native_channel_management_policy=context.policy,
+            close=lambda: closed.append(True))
+    monkeypatch.setattr(module, 'backtest_v4_operator_client_from_env', reader)
+    monkeypatch.setattr(managers, 'ManagedManagerSnapshotHeadReader', lambda value: live['manager_keeper'])
+    monkeypatch.setattr(brokers, 'ManagedBrokerMatchHeadReader', lambda value: live['broker_keeper'])
+    try:
+        client = bind_declared_native_channel_session_source(publisher, object(), configuration)
+        source = publisher._native_channel_exit_source
+        assert source.client is client and source.first_price_source is context.first_price_source
+        assert source.manager_keeper is live['manager_keeper']
+        assert source.broker_keeper is live['broker_keeper']
+        assert calls == [options] and not closed and source.contexts == ()
+        with pytest.raises(ValueError):
+            bind_declared_native_channel_session_source(publisher, object(), configuration)
+        assert len(calls) == 2 and closed == [True]
+        client.close()
+        options.clear()
+        assert bind_declared_native_channel_session_source(publisher, object(), configuration) is None
+        assert len(calls) == 2
+    finally:
+        memory.close()
+
+
+@pytest.mark.parametrize('failure', [None, 'writer', 'native_reader'])
+def test_actual_controller_closes_native_reader_even_after_writer_failure(failure):
+    from types import SimpleNamespace
+    from src.backend.replay_run_service import ReplayRunController
+    controller = ReplayRunController.__new__(ReplayRunController)
+    closed = []
+    def resource(name):
+        def close():
+            closed.append(name)
+            if failure == name:
+                raise RuntimeError(name)
+        return SimpleNamespace(close=close)
+    controller._journal_writer = resource('writer')
+    controller._journal_publisher = object()
+    controller._fixed_terminal_authority = object()
+    controller._native_channel_read_client = resource('native_reader')
+    controller._ladder_writer_read_client = None
+    controller._journal = resource('journal')
+    controller._fixed_keeper_session = resource('keeper')
+    controller._fixed_v4_lease = SimpleNamespace(release=lambda: closed.append('lease'))
+    controller._record_stage_time = lambda *_args: None
+    if failure:
+        with pytest.raises(RuntimeError, match=failure):
+            asyncio.run(controller._close_fixed_journal())
+    else:
+        asyncio.run(controller._close_fixed_journal())
+    assert closed == ['writer', 'native_reader', 'journal', 'lease', 'keeper']
+    assert controller._native_channel_read_client is None
+
+
 @pytest.mark.parametrize('defect',[None,'unbound','lost_commit'])
 def test_actual_typed_publisher_dispatch_and_fence(installed,monkeypatch,defect):
     from src.trading_runtime import arte_journal_writer as module

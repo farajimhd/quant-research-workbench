@@ -1251,6 +1251,7 @@ class ReplayRunController:
         self._journal_writer = None
         self._fixed_terminal_authority = None
         self._fixed_keeper_session = None
+        self._native_channel_read_client = None
         self._fixed_v4_lease = None
         self._fixed_v4_account_ids: tuple[str, ...] | None = None
         self._account_map: dict[str, str] = {}
@@ -3756,6 +3757,8 @@ class ReplayRunController:
         self._fixed_v4_lease = None
         ladder_reader = getattr(self, "_ladder_writer_read_client", None)
         self._ladder_writer_read_client = None
+        native_reader = getattr(self, '_native_channel_read_client', None)
+        self._native_channel_read_client = None
         try:
             if writer is not None:
                 close_started = time.perf_counter()
@@ -3769,8 +3772,12 @@ class ReplayRunController:
                         self._journal_writer_final_metrics = metrics()
         finally:
             try:
-                if self._journal is not None:
-                    self._journal.close()
+                try:
+                    if native_reader is not None:
+                        await asyncio.to_thread(native_reader.close)
+                finally:
+                    if self._journal is not None:
+                        self._journal.close()
             finally:
                 if ladder_reader is not None:
                     await asyncio.to_thread(ladder_reader.close)
@@ -4078,6 +4085,11 @@ class ReplayRunController:
             if publisher is None:
                 raise RuntimeError('Strategy20 session lacks its typed publisher')
             publisher.bind_first_price_source(source)
+            from .backtest_native_channel_publisher_source import bind_declared_native_channel_session_source
+            if self._native_channel_read_client is not None:
+                raise RuntimeError('Native channel session reader is already bound')
+            self._native_channel_read_client = bind_declared_native_channel_session_source(
+                publisher, self._fixed_keeper_session, self.definition.configuration_revision['payload'])
 
         try:
             session_started = time.perf_counter()

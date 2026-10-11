@@ -5,6 +5,32 @@ from src.trading_runtime.native_channel_management_policy import NativeChannelMa
 from src.trading_runtime.native_channel_exit_journal_context import NativeChannelExitJournalContext
 
 
+def bind_declared_native_channel_session_source(publisher, keeper, configuration):
+    """Bind the declared SELECT-only source; caller owns the returned client.
+
+    This performs no source query, grants no order authority, and does not
+    reconstruct committed historical contexts for a restarted session.
+    """
+    from src.trading_runtime.original_risk_diagnostic_profile import declared_fixed_runner_options
+    options = declared_fixed_runner_options(configuration)
+    policy = options.get('native_channel_management_policy')
+    if policy is None:
+        return None
+    from src.trading_runtime.arte_journal_writer import backtest_v4_operator_client_from_env
+    from src.trading_runtime.strategy_one_management_snapshot import ManagedManagerSnapshotHeadReader
+    from src.trading_runtime.strategy_one_broker_match_snapshot import ManagedBrokerMatchHeadReader
+    client = backtest_v4_operator_client_from_env(**options)
+    try:
+        source = NativeChannelExitPublisherSource(publisher.journal.run_id, client,
+            ManagedManagerSnapshotHeadReader(keeper), ManagedBrokerMatchHeadReader(keeper),
+            policy, publisher._first_price_source)
+        publisher.bind_native_channel_exit_source(source)
+    except BaseException:
+        client.close()
+        raise
+    return client
+
+
 @dataclass(frozen=True,slots=True)
 class NativeChannelExitPublisherSource:
     run_id: str
