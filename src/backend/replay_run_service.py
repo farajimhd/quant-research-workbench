@@ -4859,7 +4859,7 @@ class ReplayRunController:
         read_options = {}
         if read_policy is not None:
             from src.trading_runtime.bounded_market_read_policy import BoundedMarketReadPolicy
-            from .backtest_market_data import iter_bounded_market_day_rows
+            from .backtest_bounded_market_data import iter_bounded_market_day_rows
             if type(read_policy) is not BoundedMarketReadPolicy:
                 raise ValueError('Market reader requires an exact declared policy')
             read_rows = iter_bounded_market_day_rows

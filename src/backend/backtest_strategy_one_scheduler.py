@@ -188,7 +188,7 @@ def persisted_active_market_source(
     read_options = {}
     if market_read_policy is not None:
         from src.trading_runtime.bounded_market_read_policy import BoundedMarketReadPolicy
-        from .backtest_market_data import iter_bounded_market_day_rows
+        from .backtest_bounded_market_data import iter_bounded_market_day_rows
         if type(market_read_policy) is not BoundedMarketReadPolicy:
             raise ValueError('Active market reader needs an exact declared buffering policy')
         read_rows = iter_bounded_market_day_rows

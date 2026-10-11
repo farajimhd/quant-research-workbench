@@ -6,6 +6,8 @@ import unittest
 from datetime import date, time
 from unittest.mock import patch
 
+from src.backend.backtest_bounded_market_data import iter_bounded_market_day_rows
+
 from src.backend.backtest_market_data import (
     CertifiedMarketDayPlan,
     ExecutionInterval,
@@ -17,7 +19,6 @@ from src.backend.backtest_market_data import (
     project_empty_market_day_plan,
     iter_market_boundary_groups,
     iter_market_day_rows,
-    iter_bounded_market_day_rows,
     iter_market_time_groups,
     load_previous_completed_100ms_close,
     load_previous_completed_100ms_closes_batch,
@@ -498,7 +499,7 @@ class BacktestMarketDataTests(unittest.TestCase):
                 yield dict(session_date='2026-08-18', boundary_ms=upper,
                            ticker='SUGP', resolution_ms=resolution)
             completed.append(upper)
-        with patch('src.backend.backtest_market_data.iter_market_day_rows', source):
+        with patch('src.backend.backtest_bounded_market_data.iter_market_day_rows', source):
             rows = iter_bounded_market_day_rows(self._plan(), client=object(),
                 through_boundary_ms=2000, window_ms=1000)
             first = next(rows)
@@ -512,7 +513,7 @@ class BacktestMarketDataTests(unittest.TestCase):
             yield dict(session_date='2026-08-18', boundary_ms=100,
                        ticker='SUGP', resolution_ms=100)
             raise OSError('truncated response')
-        with patch('src.backend.backtest_market_data.iter_market_day_rows', broken):
+        with patch('src.backend.backtest_bounded_market_data.iter_market_day_rows', broken):
             with self.assertRaisesRegex(OSError, 'truncated'):
                 next(iter_bounded_market_day_rows(self._plan(), client=object(),
                      through_boundary_ms=1000))
@@ -520,7 +521,7 @@ class BacktestMarketDataTests(unittest.TestCase):
             for boundary in (100,200):
                 yield dict(session_date='2026-08-18', boundary_ms=boundary,
                            ticker='SUGP', resolution_ms=100)
-        with patch('src.backend.backtest_market_data.iter_market_day_rows', oversized):
+        with patch('src.backend.backtest_bounded_market_data.iter_market_day_rows', oversized):
             with self.assertRaisesRegex(ValueError, 'capacity'):
                 next(iter_bounded_market_day_rows(self._plan(), client=object(),
                      through_boundary_ms=1000, max_window_rows=1))
@@ -536,7 +537,7 @@ class BacktestMarketDataTests(unittest.TestCase):
             with self.subTest(error=error):
                 def source(plan, **kwargs):
                     yield from supplied
-                with patch('src.backend.backtest_market_data.iter_market_day_rows',
+                with patch('src.backend.backtest_bounded_market_data.iter_market_day_rows',
                            source):
                     with self.assertRaisesRegex(ValueError, error):
                         next(iter_bounded_market_day_rows(self._plan(), client=object(),
@@ -549,7 +550,7 @@ class BacktestMarketDataTests(unittest.TestCase):
             for clock in kwargs['candidate_boundaries']['SUGP']:
                 yield dict(session_date='2026-08-18', boundary_ms=clock,
                            ticker='SUGP', resolution_ms=100)
-        with patch('src.backend.backtest_market_data.iter_market_day_rows', source):
+        with patch('src.backend.backtest_bounded_market_data.iter_market_day_rows', source):
             rows = list(iter_bounded_market_day_rows(self._plan(), client=object(),
                 through_boundary_ms=2000, window_ms=1000,
                 candidate_boundaries={'SUGP': (100,1000,1100,2000)}))
@@ -568,7 +569,7 @@ class BacktestMarketDataTests(unittest.TestCase):
                                    ticker='SUGP', resolution_ms=100)
             finally:
                 closed.append(bounds)
-        with patch('src.backend.backtest_market_data.iter_market_day_rows', source):
+        with patch('src.backend.backtest_bounded_market_data.iter_market_day_rows', source):
             rows = list(iter_bounded_market_day_rows(self._plan(), client=object(),
                 through_boundary_ms=1000, window_ms=1000, max_window_rows=2,
                 subdivide_oversized_windows=True))
@@ -583,7 +584,7 @@ class BacktestMarketDataTests(unittest.TestCase):
             yield dict(session_date='2026-08-18', boundary_ms=100,
                        ticker='SUGP', resolution_ms=100)
             raise OSError('truncated response')
-        with patch('src.backend.backtest_market_data.iter_market_day_rows', source):
+        with patch('src.backend.backtest_bounded_market_data.iter_market_day_rows', source):
             with self.assertRaisesRegex(OSError, 'truncated'):
                 next(iter_bounded_market_day_rows(self._plan(), client=object(),
                     through_boundary_ms=1000, subdivide_oversized_windows=True))
@@ -594,7 +595,7 @@ class BacktestMarketDataTests(unittest.TestCase):
             for ticker in ('AAAA','BBBB'):
                 yield dict(session_date='2026-08-18', boundary_ms=100,
                            ticker=ticker, resolution_ms=100)
-        with patch('src.backend.backtest_market_data.iter_market_day_rows', source):
+        with patch('src.backend.backtest_bounded_market_data.iter_market_day_rows', source):
             with self.assertRaisesRegex(ValueError, 'capacity'):
                 next(iter_bounded_market_day_rows(self._plan(), client=object(),
                     through_boundary_ms=100, max_window_rows=1,
