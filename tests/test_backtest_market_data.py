@@ -17,6 +17,7 @@ from src.backend.backtest_market_data import (
     project_empty_market_day_plan,
     iter_market_boundary_groups,
     iter_market_day_rows,
+    iter_bounded_market_day_rows,
     iter_market_time_groups,
     load_previous_completed_100ms_close,
     load_previous_completed_100ms_closes_batch,
@@ -488,6 +489,41 @@ class BacktestMarketDataTests(unittest.TestCase):
         rows = list(iter_market_day_rows(plan, client=Sources(), through_boundary_ms=1000))
         self.assertEqual([(row["boundary_ms"], row["resolution_ms"]) for row in rows],
                          [(100, 100), (1000, 100), (1000, 1000)])
+
+    def test_bounded_windows_complete_before_yield_and_preserve_boundary_rows(self):
+        completed = []
+        def source(plan, **kwargs):
+            upper = kwargs['through_boundary_ms']
+            for resolution in (100, 1000):
+                yield dict(session_date='2026-08-18', boundary_ms=upper,
+                           ticker='SUGP', resolution_ms=resolution)
+            completed.append(upper)
+        with patch('src.backend.backtest_market_data.iter_market_day_rows', source):
+            rows = iter_bounded_market_day_rows(self._plan(), client=object(),
+                through_boundary_ms=2000, window_ms=1000)
+            first = next(rows)
+            self.assertEqual(completed, [1000])
+            remaining = list(rows)
+        self.assertEqual([(x['boundary_ms'], x['resolution_ms']) for x in [first, *remaining]],
+                         [(1000,100),(1000,1000),(2000,100),(2000,1000)])
+
+    def test_failed_or_oversized_window_exposes_no_partial_rows(self):
+        def broken(plan, **kwargs):
+            yield dict(session_date='2026-08-18', boundary_ms=100,
+                       ticker='SUGP', resolution_ms=100)
+            raise OSError('truncated response')
+        with patch('src.backend.backtest_market_data.iter_market_day_rows', broken):
+            with self.assertRaisesRegex(OSError, 'truncated'):
+                next(iter_bounded_market_day_rows(self._plan(), client=object(),
+                     through_boundary_ms=1000))
+        def oversized(plan, **kwargs):
+            for boundary in (100,200):
+                yield dict(session_date='2026-08-18', boundary_ms=boundary,
+                           ticker='SUGP', resolution_ms=100)
+        with patch('src.backend.backtest_market_data.iter_market_day_rows', oversized):
+            with self.assertRaisesRegex(ValueError, 'capacity'):
+                next(iter_bounded_market_day_rows(self._plan(), client=object(),
+                     through_boundary_ms=1000, max_window_rows=1))
 
     def test_time_group_waits_for_all_tickers_at_completed_boundary(self) -> None:
         rows = [
