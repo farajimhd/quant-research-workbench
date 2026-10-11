@@ -15,6 +15,7 @@ from .columnar_strategy_release import ProgramRelease
 from .filled_position_state import FillFact, FeeFact, FilledPosition, FilledPositionState
 from .ibkr_schema import Execution
 from .strategy_engine import StrategyAssignment
+from .program_target_state import ProgramTargetState
 
 
 class AssignedProgramStrategy:
@@ -41,6 +42,7 @@ class AssignedProgramStrategy:
         self._by_assignment = {row.assignment_id: row for row in assignments}
         self._listings = MappingProxyType(dict(listing_by_assignment))
         self.execution_state = FilledPositionState()
+        self.target_state = ProgramTargetState(release.header["target_fraction"])
 
     def assignments(self):
         return self._assignments
@@ -86,7 +88,8 @@ class AssignedProgramStrategy:
             if lineage.role == "entry" and lineage.action in {"enter_long", "add_long"}:
                 action = lineage.action
             elif lineage.role == "managed_exit" and lineage.action in {"reduce_long", "exit"}:
-                action = lineage.action
+                action = ("take_profit" if lineage.action == "reduce_long"
+                    and lineage.reason == "program:target" else lineage.action)
             elif lineage.role == "profit_target":
                 action = "take_profit"
             elif lineage.role in {"protective_stop", "trailing_stop", "protective_exit"}:
@@ -103,6 +106,10 @@ class AssignedProgramStrategy:
                    if execution.commission is not None else None)
             facts.append((fact, fee))
         for fact, fee in facts:
-            self.execution_state.apply_fill(fact)
+            before = self.position_for(fact.assignment_id)
+            known = fact.execution_id in self.execution_state._fills
+            after = self.execution_state.apply_fill(fact)
+            if not known:
+                self.target_state.apply_new_fill(fact, before, after)
             if fee is not None:
                 self.execution_state.apply_fee(fee)

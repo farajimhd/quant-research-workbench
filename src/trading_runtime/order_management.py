@@ -274,6 +274,7 @@ class ExecutionAttribution:
     intent_id: str
     action: str
     role: str
+    reason: str = ""
 
 
 @dataclass(slots=True)
@@ -1800,7 +1801,7 @@ class OrderManagementEngine:
                 or sides.get(execution.side.upper()) != request.side.upper()):
             raise ValueError("Execution identity conflicts with its actual OMS request")
         return ExecutionAttribution(group.account_id, assignment_id, group.intent.intent_id,
-                                    str(group.intent.action), role)
+                                    str(group.intent.action), role, group.intent.reason)
 
     async def close(self) -> None:
         self._closed = True

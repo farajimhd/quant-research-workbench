@@ -256,3 +256,25 @@ processed order facts, partial versus complete fills, acknowledged stop coverage
 and independence from unacknowledged request changes. Program target-policy
 progress, chronological selection/submission and complete run recovery still
 require integration before operational admission.
+
+The program actor now rebuilds target-policy progress from the same verified
+execution prefix as position state. Initial partial fills use actual weighted
+acquisition cost; adds retain the target. A reduction whose persisted OMS intent
+reason is `program:target` advances it once per semantic intent, so partial and
+duplicate executions cannot advance it repeatedly. Ordinary reductions retain
+the target, and a closed episode clears it. The execution projection continues
+to include actual commissions in net results. No additional table or checkpoint
+authority is introduced and this target is not a program feature.
+
+Shared source seals include the new program input, source/dispatch, OMS
+observation and target-state dependencies. Controller source hashes in dependent
+certificates are refreshed alongside the metadata anchor; source and mutation
+checks remain intact. Chronological trail-policy progress and complete run
+recovery are still required before operational launch or all-session comparison.
+
+Actual-broker target-reduction qualification also exposed an incomplete shared
+OMS path: a fresh partial sell competes with the position's full protective-stop
+capacity and is rejected by the broker's unconfigured-short guard. The reduction
+needs acknowledged protection allocation through OMS before it can execute.
+That guard is retained; execution-derived target projection tests do not prove
+that the full target-reduction path is operationally qualified.

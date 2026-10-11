@@ -63,6 +63,7 @@ def test_same_execution_prefix_rebuilds_positions_and_net_results():
         target.on_broker_executions((execution,), manager)
         target.on_broker_executions((exit_execution,), exit_manager)
     assert recovered.execution_state.finalized_positions() == actor.execution_state.finalized_positions()
+    assert recovered.target_state.target_for(recovered.position_for("assignment")) is None
     position = recovered.position_for("assignment")
     assert not position.position_open and position.net_realized_pnl == Decimal(3)
     assert position.closed_positions == position.winning_positions == 1
