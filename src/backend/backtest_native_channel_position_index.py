@@ -74,3 +74,31 @@ def prepare_native_channel_position_index(prepared,decisions,*,acquisition):
         np.full(ordered.height,acquisition.acquisition_day_us,dtype=np.int64))
     return NativeChannelPositionIndex(key,ordered['decision_day_ms'].to_numpy().tobytes(),
         evidence['qualified'].to_numpy().tobytes(),prepared)
+
+
+def prepare_native_channel_acquisition_index(prepared, *, acquisition, through_day_boundary_ms):
+    """Compile the declared decision grid once, starting at the actual first fill.
+
+    The execution horizon may be shorter than the certified source horizon.
+    Full source provenance is preserved; each feature predicate remains as-of
+    its own completed decision boundary.
+    """
+    _acquisition_key(acquisition)
+    if (type(prepared) is not PreparedNativeChannelSequence
+            or type(through_day_boundary_ms) is not int
+            or not 0 <= through_day_boundary_ms <= prepared.packet.request.through_day_boundary_ms):
+        raise ValueError('Acquisition schedule requires its bounded certified source horizon')
+    interval = prepared.policy.inputs.decision_interval_ms
+    first = ((acquisition.acquisition_day_us + interval * 1000 - 1)
+             // (interval * 1000)) * interval
+    count = (through_day_boundary_ms - first) // interval + 1
+    if not 0 < count <= prepared.policy.max_decisions:
+        raise ValueError('Acquisition schedule is empty or exceeds its declared decision bound')
+    scope = prepared.scope.filter(
+        (pl.col('ticker') == acquisition.ticker)
+        & (pl.col('session_date') == acquisition.session_date.isoformat()))
+    if scope.height != 1:
+        raise ValueError('Acquisition schedule lacks one exact installed source identity')
+    decisions = scope.join(pl.DataFrame({'decision_day_ms': pl.Series(
+        range(first, first + count * interval, interval), dtype=pl.Int64)}), how='cross')
+    return prepare_native_channel_position_index(prepared, decisions, acquisition=acquisition)

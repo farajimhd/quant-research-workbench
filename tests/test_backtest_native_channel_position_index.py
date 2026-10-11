@@ -6,7 +6,9 @@ import pytest
 
 from tests.test_backtest_native_channel_qualification import installed, unit  # noqa: F401
 from tests.test_backtest_native_channel_exit_request import inputs
-from src.backend.backtest_native_channel_position_index import prepare_native_channel_position_index
+from src.backend.backtest_native_channel_position_index import (
+    prepare_native_channel_position_index, prepare_native_channel_acquisition_index,
+)
 
 
 def test_index_matches_vectorized_screening_without_new_source_reads(installed):
@@ -39,6 +41,41 @@ def test_later_schedule_rows_do_not_change_an_earlier_feature_candidate(installe
     first=prepare_native_channel_position_index(prepared,decisions,acquisition=acquired)
     at=decisions['decision_day_ms'].item()
     assert full.candidate_at(at,acquisition=acquired,prepared=prepared)==first.candidate_at(at,acquisition=acquired,prepared=prepared)
+
+
+def test_acquisition_grid_preserves_source_and_matches_causal_single_boundary(installed):
+    prepared,_,decisions,_,_,acquired=inputs(installed)
+    before=len(installed[0].sql)
+    at=decisions['decision_day_ms'].item()
+    prepared=replace(prepared,policy=replace(prepared.policy,
+        max_decisions=at//prepared.policy.inputs.decision_interval_ms+1))
+    index=prepare_native_channel_acquisition_index(prepared,acquisition=acquired,
+        through_day_boundary_ms=at)
+    single=prepare_native_channel_position_index(prepared,decisions,acquisition=acquired)
+    assert index.prepared is prepared
+    assert index.candidate_at(at,acquisition=acquired,prepared=prepared)==single.candidate_at(
+        at,acquisition=acquired,prepared=prepared)
+    boundaries=np.frombuffer(index.boundaries_bytes,dtype=np.int64)
+    assert boundaries[0]==0 and boundaries[-1]==at
+    assert np.all(np.diff(boundaries)==prepared.policy.inputs.decision_interval_ms)
+    assert len(installed[0].sql)==before
+    from datetime import timedelta
+    shifted=replace(acquired,acquisition_day_us=1,
+        first_execution_time=acquired.first_execution_time+timedelta(microseconds=1))
+    shifted_index=prepare_native_channel_acquisition_index(prepared,acquisition=shifted,
+        through_day_boundary_ms=at)
+    assert np.frombuffer(shifted_index.boundaries_bytes,dtype=np.int64)[0]==(
+        prepared.policy.inputs.decision_interval_ms)
+    with pytest.raises(ValueError):
+        prepare_native_channel_acquisition_index(prepared,acquisition=shifted,
+            through_day_boundary_ms=0)
+    with pytest.raises(ValueError):
+        prepare_native_channel_acquisition_index(prepared,acquisition=acquired,
+            through_day_boundary_ms=prepared.packet.request.through_day_boundary_ms+1)
+    with pytest.raises(ValueError):
+        prepare_native_channel_acquisition_index(replace(prepared,
+            policy=replace(prepared.policy,max_decisions=1)),acquisition=acquired,
+            through_day_boundary_ms=at)
 
 
 @pytest.mark.parametrize('defect',['ticker','date','duplicate','before_fill'])
