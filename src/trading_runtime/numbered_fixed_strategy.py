@@ -391,6 +391,7 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
                     'profit_protection_policy', 'confirmed_ah_failure_policy',
                     'liquidity_fade_policy', 'entry_activity_policy', 'episode_activity_policy'}
         optional.add('bounded_market_read_policy')
+        optional.add('participation_acquisition_policy')
         if set(payload) - set(required) - optional:
             raise ValueError('Declared fixed capability payload contains an unknown policy')
         bindings = (
@@ -414,6 +415,7 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
         confirmed_policy = self.confirmed_original_risk_policy
         self.original_risk_verification_reuse_policy
         self.bounded_market_read_policy
+        self.participation_acquisition_policy
         from .native_channel_management_policy import parse_native_channel_management_policy
         channel_policy = parse_native_channel_management_policy(self.release, payload)
         if channel_policy is not None and confirmed_policy is None:
@@ -531,6 +533,12 @@ class DeclaredFixedStrategyContract(NumberedFixedStrategyContract):
         import json
         from .bounded_market_read_policy import parse_bounded_market_read_policy
         return parse_bounded_market_read_policy(self.release, json.loads(self.policy_json))
+
+    @property
+    def participation_acquisition_policy(self):
+        import json
+        from .participation_acquisition_policy import parse_participation_acquisition_policy
+        return parse_participation_acquisition_policy(self.release, json.loads(self.policy_json))
 
     @property
     def _declared_confirmed_original_risk_policy(self):
