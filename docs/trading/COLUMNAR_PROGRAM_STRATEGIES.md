@@ -55,9 +55,24 @@ numbered releases and their certification gates remain intact.
   resolution.100ms remains the default.1s matching conservatively requires
   delayed order activation before the entire eligible bucket begins.
   Actual orders, shared liquidity, positions and commissions remain owned
-  by the existing broker.1s source metadata names the future shared
-  `arte.liquidity_bars_v2` product; that product is not implemented or
-  certified by this change.
+  by the existing broker.1s source metadata names the shared
+  `arte.liquidity_bars_v2` product described below.
+- `liquidity_resolution_sql.py` and `liquidity_resolution_producer.py`:
+  central scalar SSD schemas and an operator-only coverage-last1s derivation
+  from pinned certified100ms ARTE liquidity and eligible-price rows. Publication
+  verifies parent certificates, children, bucket volume parity and readback.
+  Ambiguous writes leave unsealed attempts; no raw-event fallback or deletion
+  is available. Cancelled asynchronous publication drains its owned unit and
+  closes both connections. Concrete producer ownership/bootstrap remains open.
+- `backtest_liquidity_resolution.py`: SELECT-only schema/placement/parent/hash
+  certification and bounded256-bucket reads, preserving quote-only buckets and
+  normalized eligible prices. Read-only ClickHouse synthetic SQL output was
+  fed through this reader into the existing broker and confirmed partial fills
+  and commissions. This does not certify real-session products or app wiring.
+- `backtest_broker_contract.py`: exact normalized projection/recovery of the
+  selected broker resolution, plan identity, commissions, slippage, activation
+  delay and participation. Recovery rejects changed settings and verifies an
+  exact round-trip into the existing broker. Run-journal wiring remains open.
 
 ## Frozen source behavior
 
@@ -88,8 +103,8 @@ fills are comparison expectations, not an app execution policy.
 3. Add the shared chronological program coordinator, actual position/age
    projection, pending-order handling, semantic intents and normalized
    lifecycle recovery through Portfolio/OMS. No assumed-position updates.
-4. Implement and certify the reusable1s liquidity producer/read plan and
-   typed broker-setting publication/recovery. Thread the chosen resolution
+4. Install and qualify the reusable1s liquidity producer/read plan on real
+   sessions and wire typed broker-setting publication/recovery. Thread the chosen resolution
    through the current Backtest configuration, preflight, launch and UI.
 5. Qualify a new shared execution/projection certificate and wire the generic
    app route. The existing `TradingRuntime` module is whole-source certified;
