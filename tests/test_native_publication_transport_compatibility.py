@@ -15,6 +15,7 @@ from src.backend.backtest_native_execution_transport_compatibility import (
 
 @pytest.mark.parametrize('relative',[
     'backend/backtest_typed_publisher.py','backend/replay_run_service.py','trading_runtime/runtime.py',
+    'trading_runtime/arte_journal_commit_v4.py',
 ])
 def test_complete_parent_restoration_and_fail_closed_mutation(relative):
     source=(Path(__file__).parents[1]/'src'/relative).read_text(encoding='utf-8')
