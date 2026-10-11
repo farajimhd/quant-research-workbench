@@ -144,3 +144,24 @@ identity evidence fails closed, and incremental app caches include the tie field
 in their dependency fingerprint. Schema-4 plans retain their existing hashes
 and ordering. A certified population source and current-path plan admission are
 still required before this contract can be used by an operational strategy.
+
+`qmd_columnar_population` binds the complete opening certificate to activity-only
+history pins for every price-eligible listing. Build, session, market-plan,
+opening-reference and elapsed-window identities must agree before any transport
+starts. The caller supplies concurrency from its admitted compute funnel; a
+fixed worker pool reads bounded QMD windows without one task per listing.
+Failures reject the whole window, and cancellation drains owned HTTP reads.
+The output accounts for eligible, price-rejected, covered-empty and excluded
+identity listings and preserves source revisions, rather than inferring missing
+listings as zeros.
+
+The application registry exposes producer-owned rolling share volume and the
+opening-known prior regular close as Backtest fields. The existing Reference
+Gateway listing identity remains the identity authority; its current registry
+metadata now correctly declares canonical identity IDs as strings. Scanner
+projection feeds the registered flat fields to the existing Watchlist runtime.
+The explicit `on_re_evaluation` policy replaces membership at each evaluation;
+existing expiry policies retain their behavior. Synthetic tests exercise QMD
+column transport, shared app rules/rank/cache/membership changes and normalized
+configuration validation. Main actor and typed-stream orchestration, operational
+publication and full-session acceptance remain pending.

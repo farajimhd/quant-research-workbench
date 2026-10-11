@@ -24,6 +24,18 @@ from src.backend.application_registry import (
 
 
 class ApplicationRegistryTests(unittest.TestCase):
+    def test_certified_population_fields_have_one_typed_backtest_source(self) -> None:
+        fields = {field.field_id: field for field in FIELD_DEFINITIONS}
+        for name in ("market.opening_prior_regular_close", "market.rolling_share_volume"):
+            field = fields[name]
+            self.assertEqual(field.modes, ("backtest",))
+            self.assertEqual(field.query_plan_id, "qmd.certified-volume-population.v1")
+            self.assertEqual(field.coverage_query_plan, field.query_plan_id)
+            self.assertIn("listing_id", field.identity_join)
+            self.assertEqual(field.historical_support, "point_in_time")
+        self.assertEqual(fields["identity.listing_id"].value_type, "string")
+        self.assertEqual(fields["market.rolling_share_volume"].unit, "shares")
+
     def test_presentation_labels_preserve_semantic_context_and_market_acronyms(self) -> None:
         self.assertEqual(_field_presentation_label("event.ipo.date"), "IPO Date")
         self.assertEqual(_field_presentation_label("event.split.days_to_event"), "Split Days to Event")

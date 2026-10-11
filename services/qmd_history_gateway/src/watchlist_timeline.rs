@@ -358,7 +358,7 @@ pub fn validate_plan(
     }
     if !matches!(
         plan.membership_expiry.as_str(),
-        "end_of_trading_day" | "time_to_live" | "never"
+        "end_of_trading_day" | "time_to_live" | "never" | "on_re_evaluation"
     ) {
         return Err("historical Watchlist membership_expiry is invalid".to_string());
     }

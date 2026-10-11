@@ -883,6 +883,8 @@ def retain_unconfirmed_members(
     if not enabled:
         return current
     policy = str(watchlist.get("membership_expiry") or "end_of_trading_day")
+    if policy == "on_re_evaluation":
+        return current
     excluded = {
         str(value).strip().upper()
         for value in watchlist.get("manual_exclusions") or []
@@ -899,7 +901,7 @@ def retain_unconfirmed_members(
 
 def membership_expiry_at(watchlist: dict[str, Any], as_of: datetime) -> str | None:
     policy = str(watchlist.get("membership_expiry") or "end_of_trading_day")
-    if policy == "never":
+    if policy in {"never", "on_re_evaluation"}:
         return None
     if policy == "time_to_live":
         ttl_ms = max(1, int(watchlist.get("membership_ttl_ms") or 0))

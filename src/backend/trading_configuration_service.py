@@ -5080,7 +5080,7 @@ def _validate_market_discovery(
         if int(watchlist.get("refresh_interval_ms") or 0) <= 0:
             raise ValueError(f"Watchlist {watchlist.get('name')} refresh interval must be positive")
         expiry = str(watchlist.get("membership_expiry") or "end_of_trading_day")
-        if expiry not in {"end_of_trading_day", "time_to_live", "never"}:
+        if expiry not in {"end_of_trading_day", "time_to_live", "never", "on_re_evaluation"}:
             raise ValueError(f"Watchlist {watchlist.get('name')} has an unknown membership expiry policy")
         if int(watchlist.get("membership_ttl_ms") or 0) < 0:
             raise ValueError(f"Watchlist {watchlist.get('name')} membership TTL cannot be negative")
@@ -5090,6 +5090,14 @@ def _validate_market_discovery(
             raise ValueError(f"Watchlist {watchlist.get('name')} references an unknown ranking data definition")
         if str(watchlist.get("ranking_direction") or "descending") not in {"ascending", "descending"}:
             raise ValueError(f"Watchlist {watchlist.get('name')} has an unknown ranking direction")
+        tie_field = watchlist.get("ranking_tie_field")
+        if tie_field is not None:
+            if (type(tie_field) is not str or tie_field not in field_source_ids
+                    or watchlist.get("ranking_tie_type", "uint64") not in {"string", "uint64"}
+                    or watchlist.get("manual_inclusions")):
+                raise ValueError(f"Watchlist {watchlist.get('name')} has an invalid identity tie contract")
+        elif watchlist.get("ranking_tie_type") is not None:
+            raise ValueError(f"Watchlist {watchlist.get('name')} tie type requires a source field")
         if str(watchlist.get("inclusion_operator") or "all") not in {"all", "any"}:
             raise ValueError(f"Watchlist {watchlist.get('name')} has unsupported inclusion logic")
         unknown_columns = set(watchlist.get("columns") or []) - column_ids

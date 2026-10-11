@@ -489,6 +489,14 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
     )
     return (
         QueryPlanDefinition(
+            "qmd.certified-volume-population.v1", "qmd_history_gateway",
+            "src.backend.qmd_columnar_population:read_population_window",
+            ("arte.qmd_causal_history_clock_v1", "arte.qmd_opening_price_reference_v1"),
+            "certified effective listing_id and ticker in the complete opening population",
+            "completed elapsed-second boundary", "completed boundary and prior opening-known reference",
+            "arte.qmd_causal_history_coverage_v1,arte.qmd_opening_price_reference_coverage_v1",
+        ),
+        QueryPlanDefinition(
             "qmd.scanner.snapshot.v1",
             "qmd_gateway",
             "src.backend.qmd_gateway_client:qmd_scanner_snapshot",
@@ -1551,6 +1559,7 @@ def _field(
     unit: str = "scalar",
     entity_grain: str = "symbol_interval",
     source_columns: Iterable[str] = (),
+    identity_join: str = "point-in-time symbol/security/issuer identity",
     event_at: str = "source effective timestamp",
     available_at: str = "source publication timestamp",
     ttl_seconds: int | None = 86_400,
@@ -1596,7 +1605,7 @@ def _field(
         source_path=source_path,
         source_columns=columns,
         query_plan_id=query_plan_id,
-        identity_join="point-in-time symbol/security/issuer identity",
+        identity_join=identity_join,
         event_at=event_at,
         available_at=available_at,
         ttl_seconds=ttl_seconds,
@@ -1788,6 +1797,22 @@ def _bar_gpt_field_label(field_id: str) -> str:
 
 def _fields() -> tuple[FieldDefinition, ...]:
     rows: list[FieldDefinition] = []
+
+    for field_id, value_type, unit, column, source_path, calculation in (
+        ("market.opening_prior_regular_close", "number", "currency", "opening_prior_regular_close",
+         "arte.qmd_opening_price_reference_v1", "Certified prior regular-session closing trade adjusted by opening-known split terms."),
+        ("market.rolling_share_volume", "number", "shares", "rolling_share_volume",
+         "arte.qmd_causal_history_clock_v1", "Producer-owned elapsed share-volume window including the current completed second; window length is pinned by the run contract."),
+    ):
+        rows.append(_field(field_id, "qmd_certified_population", "qmd_history_gateway", source_path,
+            "qmd.certified-volume-population.v1", value_type=value_type, unit=unit,
+            entity_grain="listing_at_completed_market_clock", source_columns=(column,),
+            identity_join="certified effective listing_id and ticker in the complete opening population",
+            event_at="completed elapsed-second boundary", available_at="completed boundary with opening-known prior reference",
+            ttl_seconds=None, publication_cadence="completed_1s", modes=("backtest",),
+            provenance="derived", coverage_query_plan="qmd.certified-volume-population.v1",
+            source_summary="Sealed central QMD History population products; missing coverage fails preflight.",
+            calculation_summary=calculation, timeframes=("1s",)))
 
     for field_id, value_type, unit in (
         ("market.last_price", "number", "currency"),
@@ -2007,6 +2032,7 @@ def _fields() -> tuple[FieldDefinition, ...]:
         ),
     }
     string_fields = {"symbol", "company_name", "security_name", "composite_figi", "share_class_figi", "cik", "conid", "cusip", "isin", "previous_symbol", "current_symbol", "exchange", "primary_exchange", "currency", "asset_class", "security_type", "ticker_type", "block_reason", "listing", "issuer_legal", "headquarters", "issue", "effective", "logo_url", "asset_status", "source", "kind", "selection_revision", "quality_class"}
+    string_fields.update({"symbol_id", "listing_id", "security_id", "issuer_id"})
     for group, (source, plan, names) in reference_specs.items():
         for name in names:
             rows.append(_field(f"{group}.{name}", group, "reference_gateway", source, plan, value_type="string" if name in string_fields else "boolean" if name == "is_tradable" else "number", coverage_query_plan="reference.schema_inventory.v1"))
@@ -2216,6 +2242,9 @@ FIELD_BY_ID = {field.field_id: field for field in FIELD_DEFINITIONS}
 
 
 DISCOVERY_FIELD_PRESENTATIONS = (
+    DiscoveryFieldPresentation("identity.listing_id", "identity.listing_id", "listing_id", "Listing ID", "Certified effective listing identity.", "reference", False, False, True, (), ("event",)),
+    DiscoveryFieldPresentation("market.opening_prior_regular_close", "market.opening_prior_regular_close", "opening_prior_regular_close", "Opening prior regular close", "Prior regular-session closing trade with opening-known split adjustments.", "reference", False, True, True, ("greater_or_equal", "less_or_equal"), ("event",)),
+    DiscoveryFieldPresentation("market.rolling_share_volume", "market.rolling_share_volume", "rolling_share_volume", "Rolling share volume", "Eligible shares over the explicitly pinned elapsed-second window.", "market_data", False, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals"), ("event",)),
     DiscoveryFieldPresentation("identity.symbol", "identity.symbol", "symbol", "Symbol", "Point-in-time ticker identity for the eligible listing.", "reference", True, False, True, (), ("event",)),
     DiscoveryFieldPresentation("identity.company_name", "identity.company_name", "company_name", "Company", "Issuer or security name available for the listing at evaluation time.", "reference", True, False, True, (), ("event",)),
     DiscoveryFieldPresentation("market.last_price", "market.last_price", "last_price", "Last price", "Most recent causally available eligible trade price.", "market_data", True, True, True, ("greater_or_equal", "greater_than", "less_or_equal", "less_than", "equals", "above_by_bps"), ("event",)),
