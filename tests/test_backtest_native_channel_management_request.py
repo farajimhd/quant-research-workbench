@@ -21,10 +21,10 @@ def native_inputs(installed):
         ticker=context['current_financial'].ticker,session_date=context['session_date'].isoformat(),boundary_ms=360000),acquisition
 
 
-def build(context,quote,acquisition):
+def build(context,quote,acquisition,position_index=None):
     return build_native_channel_management_request(context['prepared'],quote,policy=context['policy'],
         financial=context['current_financial'],acquisition=acquisition,
-        original_entry=context['original_entry'],boundary_ms=360000)
+        original_entry=context['original_entry'],boundary_ms=360000,position_index=position_index)
 
 
 def test_native_adapter_preserves_causal_clock_original_risk_and_no_source_reads(installed):
@@ -60,3 +60,29 @@ def test_native_adapter_rejects_crossed_quote_identity(installed,field,value):
     context,quote,acquisition=native_inputs(installed)
     quote[field]=value
     with pytest.raises(ValueError): build(context,quote,acquisition)
+
+
+@pytest.mark.parametrize('qualified',[True,False])
+def test_indexed_native_adapter_matches_complete_pending_evidence(installed,qualified):
+    import polars as pl
+    from src.backend.backtest_native_channel_position_index import prepare_native_channel_position_index
+    from src.backend.backtest_native_channel_sequences import _prepare_loaded_sequence
+    context,quote,acquisition=native_inputs(installed)
+    if not qualified:
+        sequence=replace(context['policy'].sequence,threshold=999.0)
+        context['policy']=replace(context['policy'],sequence=sequence)
+        context['prepared']=_prepare_loaded_sequence(context['prepared'].packet,sequence)
+    prepared=context['prepared']
+    decisions=prepared.scope.with_columns(pl.lit(14_760_000,dtype=pl.Int64).alias('decision_day_ms'))
+    index=prepare_native_channel_position_index(prepared,decisions,acquisition=acquisition)
+    before=len(installed[0].sql)
+    direct=build(context,quote,acquisition)
+    indexed=build(context,quote,acquisition,index)
+    assert (direct is not None)==qualified
+    if qualified:
+        assert dict(indexed.decision)==dict(direct.decision)
+        assert indexed.supporting_rows.equals(direct.supporting_rows)
+        assert indexed.reference_rows.equals(direct.reference_rows)
+        assert indexed.acquisition==direct.acquisition
+    else: assert indexed is None
+    assert len(installed[0].sql)==before
