@@ -185,3 +185,19 @@ Shared source certificates include this dependency and retain their metadata
 anchor, mutation and exact-source checks. Production actor admission, typed
 stream/run-controller orchestration and database-backed cold recovery still
 require integration and qualification before publication or a real Backtest.
+
+Typed Signal Stream startup now installs the same cold-verified committed cursor
+in a fresh shared runtime that the publication queue uses. Configuration and
+source revisions, session, sequence, previous commit hash and cutoff remain
+bound through staging and promotion. Cursor-codec timestamp formatting is
+applied before publication so exact cold readback agrees with the staged state
+and routed admissions; equality checks are retained.
+
+Cold SELECT/Keeper bootstrap and receipt waits run off the event loop.
+Cancellation drains the owned operation; waiting never promotes state or
+dispatches an occurrence. A successful receipt still requires explicit promotion
+and the existing dispatch acknowledgement. Synthetic tests cover fresh and
+recovered prefixes, routed admission evidence, constant-true rearming, stale
+sequence rejection and cancellation on both cold reads and publication. Main
+run-controller admission and recovery of committed but undispatched occurrences
+remain necessary before operational use.

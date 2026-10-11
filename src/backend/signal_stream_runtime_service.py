@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import threading
@@ -93,11 +94,12 @@ class PendingSignalTransition:
     """A staged transition bound to one publisher receipt, not a dispatch ACK."""
 
     def __init__(self, owner: SignalStreamRuntime, stage: StagedSignalTransition,
-                 receipt: Future[str]) -> None:
+                 receipt: Future[str], *, batch_sequence: int | None = None) -> None:
         self._owner = owner
         self._stage = stage
         self._receipt = receipt
         self._promoted = False
+        self._batch_sequence = batch_sequence
 
     @property
     def done(self) -> bool:
@@ -111,6 +113,28 @@ class PendingSignalTransition:
                 or any(char not in "0123456789abcdef" for char in head)):
             raise ValueError("typed Signal Stream receipt has invalid commit hash")
         return head
+
+    async def wait_async(self) -> str:
+        """Wait off the event loop; cancellation drains the owned publication.
+
+        Waiting does not promote stream state or dispatch occurrences. The
+        controller must still consume the successful receipt exactly once.
+        """
+        receipt = asyncio.wrap_future(self._receipt)
+        try:
+            await asyncio.shield(receipt)
+            return self.result()
+        except asyncio.CancelledError:
+            while not receipt.done():
+                try:
+                    await asyncio.shield(receipt)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if receipt.done() and not receipt.cancelled():
+                receipt.exception()
+            raise
 
 
 class _StagingPort:
@@ -179,6 +203,54 @@ class SignalStreamRuntime:
         self._live_occurrences: tuple[str, list[dict[str, Any]]] | None = None
         self._generation = 0
         self._typed_pending: PendingSignalTransition | None = None
+        self._typed_scope: tuple[str, str] | None = None
+        self._typed_cursor: tuple[int, str, datetime | None] | None = None
+
+    def _install_committed_source(self, head, *, configuration_revision: str,
+                                  source_revision: str) -> None:
+        """Install only the publisher's cold-verified normalized source prefix.
+
+        The publisher calls this after its storage/Keeper bootstrap. No legacy
+        checkpoint, disk journal or inferred empty state is read here.
+        """
+        from .signal_stream_typed_readback import CommittedCursorHead
+        from .signal_stream_typed_cursor import _state
+        if (type(head) is not CommittedCursorHead or not head.session_key
+                or type(head.sequence) is not int or head.sequence < 0
+                or type(head.occurrence_count) is not int or head.occurrence_count < 0
+                or type(head.content_hash) is not str or len(head.content_hash) != 64
+                or any(c not in "0123456789abcdef" for c in head.content_hash)
+                or not configuration_revision or not source_revision):
+            raise ValueError("Typed Signal Stream cold source head is invalid")
+        cutoff = datetime.fromisoformat(head.cutoff_at.replace("Z", "+00:00")) if head.cutoff_at is not None else None
+        if cutoff is not None and (cutoff.tzinfo is None or cutoff.utcoffset() is None):
+            raise ValueError("Typed Signal Stream cold source cutoff must be timezone-aware")
+        cutoff = cutoff.astimezone(UTC) if cutoff is not None else None
+        if (head.sequence == 0 and (head.content_hash != "0" * 64 or head.states
+                or head.admissions or head.occurrence_count or cutoff is not None)
+                or head.sequence > 0 and (head.content_hash == "0" * 64 or cutoff is None)
+                or cutoff is not None and signal_stream_session(cutoff)["session_key"] != head.session_key):
+            raise ValueError("Typed Signal Stream cold source cursor differs from its session")
+        states = _state(head.states)
+        if cutoff is not None and any(_parse_datetime(row["last_emitted_at"]) > cutoff
+                for rows in states.values() for row in rows.values() if "last_emitted_at" in row):
+            raise ValueError("Typed Signal Stream state sees a future occurrence")
+        with self._lock:
+            if (self._hydrated or self._typed_pending is not None or self._generation
+                    or self._states or self._admissions or self._session_key):
+                raise RuntimeError("Typed source installation requires a fresh Signal Stream runtime")
+            self._states = deepcopy(states)
+            self._admissions = deepcopy(head.admissions)
+            self._session_key = head.session_key
+            self._typed_scope = (configuration_revision, source_revision)
+            self._typed_cursor = (head.sequence, head.content_hash, cutoff)
+            self._hydrated = True
+
+    def typed_source_cursor(self):
+        with self._lock:
+            if self._typed_cursor is None:
+                raise RuntimeError("Signal Stream runtime lacks a cold typed source cursor")
+            return self._typed_cursor
 
     def stage_resolve(
         self, configuration: dict[str, Any], candidates: list[dict[str, Any]],
@@ -199,6 +271,10 @@ class SignalStreamRuntime:
         with self._lock:
             if not self._hydrated:
                 raise RuntimeError("staged Signal Stream requires cold-hydrated state")
+            if self._typed_cursor is not None and (
+                    signal_stream_session(as_of)["session_key"] != self._session_key
+                    or self._typed_cursor[2] is not None and as_of <= self._typed_cursor[2]):
+                raise ValueError("Typed Signal Stream boundary must advance its sealed session cursor")
             generation = self._generation
             before_states = deepcopy(self._states)
             before_admissions = deepcopy(self._admissions)
@@ -215,6 +291,16 @@ class SignalStreamRuntime:
             persistence=port, watchlist_runtime=watchlist_runtime,
             include_occurrences=False, data_fields_projected=data_fields_projected,
         )
+        if self._typed_scope is not None:
+            from .signal_stream_typed_cursor import _state, _time
+            clone._states = _state(clone._states)
+            # The cursor codec owns canonical scalar timestamp formatting.
+            # Evidence/causation is still independently verified by publication.
+            for rows in clone._admissions.values():
+                for row in rows.values():
+                    row["event_time"] = _time(row["event_time"])
+                    if row["expires_at"] is not None:
+                        row["expires_at"] = _time(row["expires_at"])
         return StagedSignalTransition(
             base_generation=generation, before_session_key=before_session_key,
             session_key=clone._session_key,
@@ -237,6 +323,11 @@ class SignalStreamRuntime:
         from src.backend.signal_stream_typed_publication import PublicationBatch
 
         with self._lock:
+            if self._typed_scope is not None and (
+                    self._typed_scope != (configuration_revision, source_revision)
+                    or batch_sequence != self._typed_cursor[0] + 1
+                    or previous_commit_hash != self._typed_cursor[1]):
+                raise ValueError("Typed Signal Stream submission differs from its cold source cursor")
             if (not self._hydrated or stage.base_generation != self._generation
                     or self._typed_pending is not None
                     or stage.before_session_key != self._session_key
@@ -257,7 +348,7 @@ class SignalStreamRuntime:
                 catalogs=dict(catalogs),
             )
             receipt = publisher.submit(batch)
-            pending = PendingSignalTransition(self, stage, receipt)
+            pending = PendingSignalTransition(self, stage, receipt, batch_sequence=batch_sequence)
             self._typed_pending = pending
             return pending
 
@@ -265,7 +356,7 @@ class SignalStreamRuntime:
         """Promote only after durable receipt; return signals once for later dispatch."""
         if pending._owner is not self:
             raise ValueError("typed Signal Stream receipt belongs to another runtime")
-        pending.result()  # Nonblocking: pending receipts raise; failures propagate.
+        head = pending.result()  # Nonblocking: pending receipts raise; failures propagate.
         stage = pending._stage
         with self._lock:
             if pending._promoted:
@@ -276,11 +367,15 @@ class SignalStreamRuntime:
                     or _thaw_transition(stage.before_states) != self._states
                     or _thaw_transition(stage.before_admissions) != self._admissions):
                 raise ValueError("staged Signal Stream promotion lost source fence")
+            if self._typed_cursor is not None and pending._batch_sequence != self._typed_cursor[0] + 1:
+                raise ValueError("Typed Signal Stream promotion lost its source sequence")
             self._states = _thaw_transition(stage.after_states)
             self._admissions = _thaw_transition(stage.after_admissions)
             self._diagnostics = _thaw_transition(stage.diagnostics)
             self._session_key = stage.session_key
             self._generation += 1
+            if self._typed_cursor is not None:
+                self._typed_cursor = (pending._batch_sequence, head, _parse_datetime(stage.cutoff_at))
             pending._promoted = True
             self._typed_pending = None
             with self._snapshot_lock:

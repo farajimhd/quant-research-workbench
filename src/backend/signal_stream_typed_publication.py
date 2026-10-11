@@ -5,6 +5,7 @@ is terminal for this lane: MergeTree has no uniqueness guarantee for retries.
 """
 from __future__ import annotations
 
+import asyncio
 import queue
 import threading
 from concurrent.futures import Future, InvalidStateError
@@ -188,7 +189,7 @@ class TypedSignalPublicationQueue:
         self._started = False
 
     def bootstrap_session(self, *, session_key: str, configuration_revision: str,
-                          source_revision: str, catalogs: Mapping[str, SourceCatalog]) -> None:
+                          source_revision: str, catalogs: Mapping[str, SourceCatalog]):
         """Control-plane cold verification; never call on the realtime submit path."""
         with self._lock:
             if self._started or self._closing or self._pending or self._fatal is not None:
@@ -214,9 +215,40 @@ class TypedSignalPublicationQueue:
                     raise RuntimeError("typed Signal Stream bootstrap raced publication")
                 self._last_completed[session_key] = (head.sequence, head.content_hash)
                 self._bootstrapped[session_key] = (configuration_revision, source_revision)
+            return head
         finally:
             with self._lock:
                 self._bootstrapping.discard(session_key)
+
+    def bootstrap_runtime_session(self, runtime, **scope):
+        """Hand the same verified cold head to its fresh stream runtime."""
+        from .signal_stream_runtime_service import SignalStreamRuntime
+        if type(runtime) is not SignalStreamRuntime:
+            raise TypeError("Typed source bootstrap requires the shared Signal Stream runtime")
+        with runtime._lock:
+            if runtime._hydrated or runtime._generation or runtime._typed_pending is not None:
+                raise RuntimeError("Typed source bootstrap requires a fresh Signal Stream runtime")
+        head = self.bootstrap_session(**scope)
+        runtime._install_committed_source(head,
+            configuration_revision=scope["configuration_revision"], source_revision=scope["source_revision"])
+        return head
+
+    async def bootstrap_runtime_session_async(self, runtime, **scope):
+        """Own and drain the bounded cold SELECT/Keeper operation off-loop."""
+        task = asyncio.create_task(asyncio.to_thread(self.bootstrap_runtime_session, runtime, **scope))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if task.done() and not task.cancelled():
+                task.exception()
+            raise
 
     def submit(self, batch: PublicationBatch) -> Future[str]:
         if not isinstance(batch, PublicationBatch):
