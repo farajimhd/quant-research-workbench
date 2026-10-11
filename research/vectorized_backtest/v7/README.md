@@ -221,3 +221,23 @@ and warm timing. `handoff.successor` requires that qualification and a sealed
 generation-boundary stop, copies and hash-verifies completed generations,
 preserves population/RNG, and records the explicit source/execution change.
 It never edits the old checkpoint or opens validation.
+
+### Diversity successor
+
+Search v4 retains one elite representative per exact all30 metric vector and
+selects mutation parents from those representatives. Every newly generated
+population has unique canonical reachable-program/policy hashes; duplicates
+are retried with an eight-attempt bound, then replaced by a fresh sample.
+Batch size, population size, mutation strength, accounting and causal clocks
+are unchanged. A migrated checkpoint population is evaluated unchanged first;
+diversity selection applies when constructing its successor. Equivalent-result
+ranking rows are grouped in the viewer and include their candidate count.
+`diversity.json` records unique programs/profiles, duplicate offspring,
+fallbacks and generations without best-score improvement. Full raw rankings
+remain available. Equal metric vectors do not prove identical trades.
+
+`qualify_diversity` compares the same actual checkpoint candidates on two full
+sessions under both source versions, requires exact metrics, measures warm
+wall time and selection overhead, and binds unchanged GPU engines. Its 3%
+wall-noise tolerance is separate from the one-second maximum selection gate;
+future generation time can still vary with generated rule complexity.

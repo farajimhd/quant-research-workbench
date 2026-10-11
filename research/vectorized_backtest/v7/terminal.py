@@ -51,6 +51,11 @@ def render(status, *, width=110, height=38, now=None, view='financial'):
     # These V6 columns therefore have no V7 authority and must not imply coverage.
     leaders_panel.renderable.columns=[column for column in leaders_panel.renderable.columns
                                       if str(column.header) not in ('Position tail $','PF')]
+    if width>=160 and any('equivalent_candidates' in v for v in status.get('top_strategies',[])):
+        grouped={v['rank']:v.get('equivalent_candidates',1) for v in status['top_strategies']}
+        ranks=leaders_panel.renderable.columns[0]._cells
+        leaders_panel.renderable.add_column('Equivalent\ncandidates',justify='right',no_wrap=True)
+        leaders_panel.renderable.columns[-1]._cells=[str(grouped[int(str(v).replace('*','').strip())]) for v in ranks]
     tail_count=max(1,math.ceil(config.get('training_sessions',30)*.2))
     names={'Win %':'Position\nwin %','Ex-best $':'P&L excluding\nbest day $',
            'Tail day $':f'Worst {tail_count} days\navg P&L $','Days +%':'Profitable\ndays %'}

@@ -479,6 +479,14 @@ def test_spawned_session_paths_match_cohort_receipts_and_resume(tmp_path,monkeyp
     assert migrated['population']==saved['population'] and migrated['rng_state']==saved['rng_state']
     assert migrated['completed_generations']==1
     assert run_search.run(inputs,history,target,session_execution='independent',**args)==0
+    from research.vectorized_backtest.v7.diversity import VERSION as diversity_version
+    q=json.loads(qualification.read_text());q.update(diversity_version=diversity_version,no_slowdown=False)
+    qualification.write_text(json.dumps(q))
+    with pytest.raises(ValueError,match='performance qualification'):successor(sequential,tmp_path/'slow',qualification)
+    q['no_slowdown']=True;qualification.write_text(json.dumps(q))
+    migrated=successor(sequential,tmp_path/'diverse',qualification)
+    assert migrated['contract']['diversity']==diversity_version
+    assert migrated['population']==saved['population'] and migrated['rng_state']==saved['rng_state']
     (sequential/'generation-0001'/days[0]/'receipt.json').write_text('{}')
     with pytest.raises(ValueError,match='Session seal mismatch'):successor(sequential,tmp_path/'rejected',qualification)
 

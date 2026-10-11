@@ -172,3 +172,12 @@ def test_large_console_frame_uses_bounded_native_writes():
     stream=BoundedConsole();console=Console(file=stream,width=320,height=90,force_terminal=True,legacy_windows=False)
     screen=FixedTerminal(console);screen.update('first row')
     assert '\x1b[90;1H' in stream.getvalue()
+
+
+def test_grouped_rankings_show_equivalent_candidate_count(tmp_path):
+    ui=CampaignProgress(tmp_path,contract(),console=Console(file=io.StringIO()))
+    status=ui.snapshot();status['top_strategies']=[dict(rank=1,score=10.,metrics={},equivalent_candidates=3)]
+    layout=render(status,width=180,height=55)
+    table=layout['leaders'].renderable.renderable
+    assert str(table.columns[-1].header)=='Equivalent\ncandidates'
+    assert table.columns[-1]._cells==['3']

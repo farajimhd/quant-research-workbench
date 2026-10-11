@@ -19,10 +19,11 @@ from research.vectorized_backtest.v6.torch_backtest.run_structure import trainin
 from research.vectorized_backtest.v6.torch_backtest.stability import LowerTailDollarObjective,score
 from .features import CATALOG,VERSION as FEATURE_VERSION
 from .genome import Individual,sample,mutate,effective_rules
+from .diversity import VERSION as DIVERSITY_VERSION,summarize,next_population
 from .data import SessionData
 from .evaluator import PopulationPrograms,Execution,replay_cohort
 
-VERSION='v7-state-conditional-assumed-fill-search-v3'
+VERSION='v7-state-conditional-diverse-search-v4'
 
 def digest(value):return sha256(json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
 
@@ -48,6 +49,7 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
         device=device,backend=backend,seed=seed,execution=asdict(execution),maximum_data_gib=maximum_data_gib,maximum_gate_gib=maximum_gate_gib,
         objective=asdict(LowerTailDollarObjective()),timing='signals at second close; assumed fill at next observed close; terminal liquidation at last known mark')
     if session_execution=='independent':contract['session_execution']='independent'
+    contract['diversity']=DIVERSITY_VERSION
     lane_config=dict(inputs=str(inputs),history=str(history),output=str(output),feature_cache=str(feature_cache) if feature_cache else None,
         device=device,backend=backend,batch_size=batch_size,maximum_data_gib=maximum_data_gib,maximum_gate_gib=maximum_gate_gib,execution=asdict(execution))
     checkpoint=output/'checkpoint.json';rng=np.random.default_rng(seed);completed=0
@@ -69,6 +71,15 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
             write_json(checkpoint,dict(contract=contract,completed_generations=index,population=[v.payload() for v in population],
                 population_sha256=digest([v.payload() for v in population]),rng_state=rng.bit_generator.state,last_generation_sha256=last))
         if not checkpoint.exists():save(0)
+        best_score=None;stagnant=0
+        if completed and (output/'resume-panel.json').exists():
+            previous=json.loads((output/'resume-panel.json').read_text())
+            if previous.get('validation_opened') is not False or previous['completed_generations']!=completed:
+                raise ValueError('Resume panel generation mismatch')
+            panel.update(top_strategies=previous.get('top_strategies',[]),
+                         evaluation_basis=previous.get('evaluation_basis','Completed generation'))
+            if previous.get('top_strategies'):best_score=previous['top_strategies'][0]['score']
+            stagnant=previous.get('diversity',{}).get('generations_without_improvement',0)
         with (SessionLanes(lane_config,session_workers,panel) if session_execution=='independent' else nullcontext()) as lanes:
             host_cache={}
             for generation in range(completed+1,generations+1):
@@ -166,6 +177,11 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
                 eligible=[i for i,v in enumerate(ranking['feasible'].tolist()) if v]
                 rank=sorted(eligible,key=lambda i:(-float(ranking['score'][i]),i))
                 if not rank:raise ValueError('No valid parent; preserve evaluation and stop')
+                representatives,group_sizes,diversity=summarize(population,ordered,rank)
+                current_score=float(ranking['score'][rank[0]])
+                stagnant=stagnant+1 if best_score is not None and current_score<=best_score else 0
+                best_score=current_score if best_score is None else max(best_score,current_score)
+                diversity['generations_without_improvement']=stagnant
                 table=[dict(candidate=i,score=float(ranking['score'][i]),pnl=float(ranking['total_pnl'][i]),
                     ex_best_pnl=float(ranking['other_days_pnl'][i]),best_session_pnl=float(ranking['best_day_pnl'][i]),
                     tail_session_mean=float(ranking['session_tail_mean_pnl'][i]),profitable_session_fraction=float(ranking['profitable_day_fraction'][i]),
@@ -190,18 +206,21 @@ def run(inputs,history,output,*,population_size,generations,batch_size=128,sessi
                     diagnostic['winning_positions']=wins
                     leaders.append(dict(rank=place,candidate=i+1,score=float(ranking['score'][i]),valid=True,metrics=diagnostic))
                 if generation<generations:
-                    elite=rank[:max(1,len(rank)//10)];next_population=[population[i] for i in elite]
-                    fresh=max(1,population_size//10);next_population.extend(sample(rng,fresh))
-                    while len(next_population)<population_size:
-                        tournament=rng.integers(0,len(rank),size=3)
-                        next_population.append(mutate(rng,population[rank[int(tournament.min())]]))
-                    population=next_population[:population_size]
+                    population,selection=next_population(rng,population,representatives)
+                    diversity.update(selection)
+                write_json(root/'diversity.json',diversity)
+                representative_set=set(representatives)
+                leaders=[dict(v,equivalent_candidates=group_sizes[v['candidate']-1]) for v in leaders
+                         if v['candidate']-1 in representative_set]
+                for place,leader in enumerate(leaders,1):leader['rank']=place
                 save(generation,file_hash(root/'complete.json'))
                 panel.generation_samples.append(perf_counter()-started)
                 panel.update(stage='Training complete' if generation==generations else 'Generation sealed',completed_generations=generation,
                     completed_sessions=len(days),completed_batches=len(days)*math.ceil(population_size/batch_size),top_strategies=leaders,
                     evaluation_basis=f'Generation {generation}: all30 training-session search ranking',
                     wall_seconds=perf_counter()-started)
+                panel.update(diversity=diversity)
+                write_json(output/'resume-panel.json',panel.snapshot())
                 if (output/'STOP').exists():
                     panel.update(status='interrupted',stage='Stopped at generation boundary',finished_epoch=time());return 130
             panel.update(status='complete',stage='Training complete',completed_generations=generations,
