@@ -6,13 +6,28 @@ from pathlib import Path
 from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime,write_json,file_hash
 
 
-def require_finished(campaign):
+def require_finished(campaign,stopped_receipt=None):
     campaign=Path(campaign)
     status=json.loads((campaign/'status.json').read_text(encoding='utf-8-sig'))
     checkpoint=json.loads((campaign/'checkpoint.json').read_text(encoding='utf-8-sig'))
-    if status.get('status')!='complete' or checkpoint['completed_generations']!=checkpoint['contract']['generations']:
-        raise RuntimeError('Wait for V7 to complete before workstation work')
     import psutil
+    if stopped_receipt is not None:
+        receipt=json.loads(Path(stopped_receipt).read_text(encoding='utf-8-sig'))
+        generation=checkpoint['completed_generations'];seal=campaign/f'generation-{generation:04d}'/'complete.json'
+        if (receipt.get('version')!='v8-authorized-v7-stop-v1' or Path(receipt['campaign']).resolve()!=campaign.resolve()
+                or receipt['checkpoint_sha256']!=file_hash(campaign/'checkpoint.json') or receipt['generation']!=generation
+                or generation<1 or receipt['seal_sha256']!=file_hash(seal) or status.get('status')!='interrupted'):
+            raise RuntimeError('Authorized stopped checkpoint identity mismatch')
+        sealed=json.loads(seal.read_text(encoding='utf-8-sig'))
+        if set(sealed['session_receipts'])!=set(checkpoint['contract']['input_receipts']):raise RuntimeError('Incomplete sealed panel')
+        for day,h in sealed['session_receipts'].items():
+            if file_hash(seal.parent/day/'receipt.json')!=h:raise RuntimeError('Stopped session receipt changed')
+        for owner in receipt['processes']:
+            try:
+                if abs(psutil.Process(owner['pid']).create_time()-owner['created'])<.01:raise RuntimeError('Stopped V7 process still alive')
+            except psutil.NoSuchProcess:pass
+    elif status.get('status')!='complete' or checkpoint['completed_generations']!=checkpoint['contract']['generations']:
+        raise RuntimeError('Wait for V7 to complete before workstation work')
     active=json.loads((campaign/'active.json').read_text(encoding='utf-8-sig'))
     pid=active.get('pid');created=active.get('creation_time')
     if pid and psutil.pid_exists(pid) and (created is None or abs(psutil.Process(pid).create_time()-created)<.01):
@@ -42,7 +57,8 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('v7-campaign','sessions','output'):p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--workers',type=int,default=8)
-    a=p.parse_args();require_finished(a.v7_campaign)
+    p.add_argument('--stopped-v7-receipt',type=Path)
+    a=p.parse_args();require_finished(a.v7_campaign,a.stopped_v7_receipt)
     if not 1<=a.workers<=8:raise ValueError('Bounded preparation workers 1..8 required')
     root=require_runtime(a.output);spec=json.loads(a.sessions.read_text(encoding='utf-8-sig'))
     spec['validation_mode']='display_only'

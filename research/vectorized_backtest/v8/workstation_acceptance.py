@@ -13,18 +13,21 @@ def main():
     for name in ('v7-campaign','sessions','output'):p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--validation-inputs',type=Path)
     p.add_argument('--wait',action='store_true')
+    p.add_argument('--stopped-v7-receipt',type=Path)
     a=p.parse_args();root=require_runtime(a.output);code=source_hash()
     def status(stage,**extra):
         write_json(root/'status.json',dict(stage=stage,updated_epoch=time.time(),**{'source_sha256':code,**extra}))
         print(stage,flush=True)
     def command(module,arguments,log):
+        if a.stopped_v7_receipt and module in ('qualify_workstation','prepare_validation'):
+            arguments=[*arguments,'--stopped-v7-receipt',a.stopped_v7_receipt]
         argv=[sys.executable,'-B','-u','-m','research.vectorized_backtest.v8.'+module,*map(str,arguments)]
         status(log,status='running',arguments=argv)
         with (root/(log+'.log')).open('a',encoding='utf-8') as stream:
             subprocess.run(argv,stdout=stream,stderr=subprocess.STDOUT,check=True,env=dict(os.environ,PYTHONDONTWRITEBYTECODE='1'))
     try:
         while True:
-            try:require_finished(a.v7_campaign);break
+            try:require_finished(a.v7_campaign,a.stopped_v7_receipt);break
             except RuntimeError as error:
                 if not a.wait:raise
                 state=json.loads((a.v7_campaign/'status.json').read_text(encoding='utf-8-sig'))

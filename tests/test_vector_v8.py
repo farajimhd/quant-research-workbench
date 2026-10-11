@@ -22,6 +22,26 @@ def metrics(profits):
         stop_risk_dollar_seconds=[0.]*len(profits),worst_position_pnl=[min(p,default=0.) for p in profits])
 
 
+def test_authorized_stop_gate_binds_checkpoint_and_sealed_receipts(tmp_path):
+    from research.vectorized_backtest.v8.prepare_validation import require_finished
+    from research.vectorized_backtest.v6.torch_backtest.runtime import write_json,file_hash
+    root=tmp_path/'v7';session=root/'generation-0001'/'2026-08-01';session.mkdir(parents=True)
+    write_json(session/'receipt.json',dict(full_session=True))
+    seal=session.parent/'complete.json'
+    write_json(seal,dict(session_receipts={'2026-08-01':file_hash(session/'receipt.json')}))
+    write_json(root/'checkpoint.json',dict(completed_generations=1,contract=dict(generations=50,input_receipts={'2026-08-01':{}})))
+    write_json(root/'status.json',dict(status='interrupted'));write_json(root/'active.json',dict(pid=None))
+    receipt=tmp_path/'stop.json'
+    write_json(receipt,dict(version='v8-authorized-v7-stop-v1',campaign=str(root),generation=1,
+        checkpoint_sha256=file_hash(root/'checkpoint.json'),seal_sha256=file_hash(seal),processes=[]))
+    with pytest.raises(RuntimeError,match='Wait for V7'):require_finished(root)
+    require_finished(root,receipt)
+    (root/'owner.lock').write_text('held')
+    with pytest.raises(RuntimeError,match='ownership'):require_finished(root,receipt)
+    (root/'owner.lock').unlink();write_json(session/'receipt.json',dict(full_session=False))
+    with pytest.raises(RuntimeError,match='receipt changed'):require_finished(root,receipt)
+
+
 def test_fractional_trade_tails():
     config=Objective(top_trim_fraction=.25,trade_tail_fraction=.25)
     # Tail mass 1.25; losses are retained and then penalized independently.

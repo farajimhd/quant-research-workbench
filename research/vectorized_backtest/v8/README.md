@@ -80,6 +80,13 @@ Full all-training + validation + selection + publication wall time must also be
 measured before accepting V8 as faster. No measured speedup is claimed by source
 implementation or synthetic tests.
 
+An explicitly user-authorized early V7 stop can be qualified with
+`--stopped-v7-receipt PATH` on `workstation_acceptance`, `qualify_workstation`,
+and `prepare_validation`. This binds the preserved checkpoint and last complete
+generation seal, verifies every session receipt and confirms recorded processes
+and ownership locks are gone. Partial next-generation files are retained but
+excluded. Without that explicit receipt, the original full-completion gate remains.
+
 ## Commands
 
 All generated artifacts go beneath `D:/TradingML/runtimes`; every launcher sets
