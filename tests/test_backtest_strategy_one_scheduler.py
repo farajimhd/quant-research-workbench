@@ -320,6 +320,59 @@ def test_coordinator_stage_timing_preserves_candidate_order():
     assert stages.count("strategy_one_finish") == 1
 
 
+def test_post_evaluation_dispatch_preserves_broker_and_management_order():
+    actions = []
+    cash = [0]
+
+    async def broker(work):
+        actions.append(('broker', tuple(ticker for ticker, _ in work.broker_rows)))
+        cash[0] = 100  # Only an actual broker update releases cash.
+
+    async def evaluate(ticker, rows, candidate_row):
+        actions.append(('management', ticker))
+
+    async def acquire(work):
+        assert work.boundary_ms == 100 and cash[0] == 100
+        assert actions == [('broker', ('AAA', 'BBB')),
+                           ('management', 'AAA'), ('management', 'BBB')]
+        actions.append(('acquire', cash[0]))
+        cash[0] = 20
+
+    async def finish(work):
+        assert cash[0] == 20
+        actions.append(('finish', work.boundary_ms))
+
+    scheduler = StrategyOneBoundaryScheduler(
+        session_date=DAY,
+        candidate_rows=iter((candidate('AAA', 100), candidate('BBB', 100))),
+        active_source=lambda _ticker, _after: iter(()))
+    assert asyncio.run(run_strategy_one_boundaries(
+        scheduler, process_broker_boundary=broker, evaluate_ticker=evaluate,
+        financially_active_tickers=lambda: (), finish_boundary=finish,
+        after_evaluations=acquire)) == 1
+    assert actions[-2:] == [('acquire', 100), ('finish', 100)]
+
+
+def test_post_evaluation_dispatch_failure_prevents_boundary_commit():
+    async def noop(*args):
+        pass
+
+    async def acquire(work):
+        raise RuntimeError('acquisition admission failed')
+
+    async def finish(work):
+        pytest.fail('Failed admission cannot finish the boundary')
+
+    scheduler = StrategyOneBoundaryScheduler(
+        session_date=DAY, candidate_rows=iter((candidate('AAA', 100),)),
+        active_source=lambda _ticker, _after: iter(()))
+    with pytest.raises(RuntimeError, match='acquisition admission failed'):
+        asyncio.run(run_strategy_one_boundaries(
+            scheduler, process_broker_boundary=noop, evaluate_ticker=noop,
+            financially_active_tickers=lambda: (), finish_boundary=finish,
+            after_evaluations=acquire))
+
+
 def _gate(*rows):
     facts = tuple(CandidateFact(ticker, boundary, boundary, None, "", None,
                                 "", "", "", False, None, None, "", None)

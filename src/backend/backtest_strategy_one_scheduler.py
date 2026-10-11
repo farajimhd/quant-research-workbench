@@ -647,6 +647,7 @@ async def run_strategy_one_boundaries(
     observe_completed_seconds: Callable[[StrategyOneBoundaryWork], Awaitable[None]] | None = None,
     static_gate: StrategyOneStaticGate | None = None,
     stage_time: Callable[[str, float], None] | None = None,
+    after_evaluations: Callable[[StrategyOneBoundaryWork], Awaitable[None]] | None = None,
 ) -> int:
     """One causal coordinator; market I/O cannot block the asyncio engine.
 
@@ -664,6 +665,8 @@ async def run_strategy_one_boundaries(
         raise TypeError("Strategy 1 completed-second observer must be callable")
     if before_boundary is not None and not callable(before_boundary):
         raise TypeError("Strategy 1 boundary control must be callable")
+    if after_evaluations is not None and not callable(after_evaluations):
+        raise TypeError("Strategy 1 post-evaluation stage must be callable")
     from src.backend.backtest_strategy_one_static_gate import StrategyOneStaticGate
     if static_gate is not None and not isinstance(static_gate, StrategyOneStaticGate):
         raise TypeError("Strategy 1 coordinator needs a typed static gate")
@@ -753,6 +756,11 @@ async def run_strategy_one_boundaries(
                     candidate = None
                 await timed("strategy_one_evaluation", evaluate_ticker(
                     ticker, resolutions, candidate))
+            # Optional caller-owned acquisition dispatch sees every completed
+            # broker event and management callback before consulting Portfolio.
+            # It cannot manufacture fills or borrow pending exit proceeds.
+            if after_evaluations is not None:
+                await timed("strategy_one_after_evaluations", after_evaluations(work))
             await timed("strategy_one_finish", finish_boundary(work))
             desired = financially_active_tickers()
             if desired != scheduler.active_tickers:
