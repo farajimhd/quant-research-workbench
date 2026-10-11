@@ -57,6 +57,24 @@ def test_individual_retirement_requires_exact_request_and_boundary(installed):
     assert reprove_native_channel_manager_snapshot(captured,owner.policy,inputs)
 
 
+def test_individual_retirement_preserves_other_position_and_blocks_clock_advance(installed):
+    owner,_,context,quote,args=owner_case(installed)
+    first=owner.stage(context['prepared'],quote,**args)
+    other_assignment=args['financial'].assignment_id+'-other'
+    second_args=dict(args,
+        financial=replace(args['financial'],assignment_id=other_assignment),
+        original_entry=replace(args['original_entry'],assignment_id=other_assignment),
+        group=replace(args['group'],assignment_id=other_assignment))
+    second=owner.stage(context['prepared'],quote,**second_args)
+    assert first is not second
+    owner.complete_one(first,boundary_ms=args['boundary_ms'])
+    assert owner.pending_requests(boundary_ms=args['boundary_ms'])==(second,)
+    with pytest.raises(ValueError): owner.pending_requests(boundary_ms=args['boundary_ms']+100)
+    with pytest.raises(ValueError): owner.complete((first,),boundary_ms=args['boundary_ms'])
+    owner.complete((second,),boundary_ms=args['boundary_ms'])
+    assert owner.pending_requests(boundary_ms=args['boundary_ms']+100)==()
+
+
 def test_frozen_pending_capture_survives_live_inventory_drain(installed):
     owner,rows,context,quote,args=owner_case(installed)
     owner.stage(context['prepared'],quote,**args)
