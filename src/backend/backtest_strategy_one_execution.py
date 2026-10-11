@@ -456,11 +456,28 @@ async def run_certified_strategy_one_session(
                 ready=manager_ready(manager)
                 if isawaitable(ready):
                     await ready
+            acquisition_order = None
+            ranking_policy = getattr(manager.contract, 'participation_acquisition_policy', None)
+            if ranking_policy is not None:
+                from .backtest_native_price_candidate_features import native_price_candidate_feature_decisions
+                from .backtest_prepared_participation_scores import score_prepared_native_session
+                from .backtest_participation_acquisition_order import prepare_participation_acquisition_order
+                owner = getattr(manager, '_native_channel_owner', None)
+                feature_session = getattr(owner, '_feature_session', None)
+                decisions = native_price_candidate_feature_decisions(initial_momentum_plan,
+                    max_rows=ranking_policy.scoring.max_rows)
+                def prepare_order():
+                    scores = score_prepared_native_session(feature_session, decisions,
+                        initial_momentum_plan.eligible_mask, policy=ranking_policy.scoring)
+                    return prepare_participation_acquisition_order(initial_momentum_plan,
+                        scores, policy=ranking_policy)
+                acquisition_order = await asyncio.to_thread(prepare_order)
             counts = await run_strategy_one_fixed_session(
                 scheduler, entry, evidence, manager, runtime=runtime,
                 static_gate=surviving_gate, assignments=assignments, momentum_plan=momentum_plan,
                 initial_momentum_plan=initial_momentum_plan,
                 entry_spread_risk_source=cost_authority,
+                acquisition_order=acquisition_order,
                 market_plan=projected, client_factory=client_factory,
                 before_boundary=before_boundary,
                 finish_boundary=finish_boundary,
@@ -481,6 +498,7 @@ async def run_strategy_one_fixed_session(
     momentum_plan=None,
     initial_momentum_plan=None,
     entry_spread_risk_source=None,
+    acquisition_order=None,
     assignments: Sequence[StrategyAssignment],
     market_plan: CertifiedMarketDayPlan | None = None,
     client_factory: Callable[[], Any] | None = None,
@@ -635,7 +653,8 @@ async def run_strategy_one_fixed_session(
             observe_completed_seconds=observe_numbered_boundary,
             static_gate=static_gate, stage_time=stage_time,
             strategy_number=config.strategy_revision, momentum_plan=momentum_plan,
-            initial_momentum_plan=initial_momentum_plan, entry_spread_risk_source=entry_spread_risk_source)
+            initial_momentum_plan=initial_momentum_plan, entry_spread_risk_source=entry_spread_risk_source,
+            acquisition_order=acquisition_order)
     finally:
         try:
             if prior_close_reader is not None:
