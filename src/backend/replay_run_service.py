@@ -4813,6 +4813,61 @@ class ReplayRunController:
         if names and not report['eligible_ticker_count']:
             raise ValueError('No strategy tickers have required V7 books; see level-book-coverage.json')
 
+    async def dispatch_prepared_program_boundary(self, block, population, *, ordinal: int,
+            assignment_id: str, execution_policy, protection_profile, outside_rth: bool,
+            terminal: bool = False):
+        """Consume one committed source boundary through actual policy/Portfolio/OMS.
+
+        No market feature is recalculated here. Eligibility comes from the
+        certified scanner projection, masks from the prepared Polars block,
+        and position/protection state from the completed filling-broker runtime.
+        """
+        from .backtest_program_inputs import PreparedProgramBlock
+        from .qmd_columnar_population import CertifiedPopulationWindow
+        from src.trading_runtime.columnar_program_coordinator import ProgramBoundary
+        actor = self._program_strategy
+        source = self._program_signal_runtime
+        if (actor is None or source is None or self._runtime is None
+                or type(block) is not PreparedProgramBlock or type(population) is not CertifiedPopulationWindow
+                or block.release_hash != actor.program_release.header["content_hash"]
+                or population.source_revision != source._typed_scope[1]
+                or type(ordinal) is not int or not block.first_ordinal <= ordinal < block.stop_ordinal):
+            raise ValueError("Program dispatch lacks its bound prepared/source contracts")
+        assignment = actor._by_assignment[assignment_id]
+        listing = actor._listings[assignment_id]
+        row, mask = block.row_for(listing, ordinal)
+        at = row["boundary_at"]
+        sequence, _, cutoff = source.typed_source_cursor()
+        if (sequence < 1 or cutoff != at or self._runtime.last_event_time != at
+                or mask["boundary_at"] != at or row["evaluation_block"] != block.evaluation_block):
+            raise ValueError("Program dispatch differs from its committed source/broker clock")
+        policy = actor.program_release.header
+        stop_field = f"history.swing_low.{policy['swing_left']}.{policy['swing_right']}"
+        if policy["swing_left"]:
+            if stop_field not in row or stop_field + "__valid" not in row:
+                raise ValueError("Program dispatch lacks its certified initial-stop field")
+            stop = row[stop_field] if row[stop_field + "__valid"] else None
+        else:
+            stop = row["reference_close"] * (1 - policy["stop_fraction"])
+        boundary = ProgramBoundary(at, row["available_at"], listing, assignment.ticker,
+            row["reference_close"], population.is_ranked(listing, at),
+            {stage: mask[stage] for stage in actor.program_release.programs},
+            {stage: mask[stage + "__valid"] for stage in actor.program_release.programs}, stop)
+        observation = self.program_order_observation(assignment_id=assignment_id, at=at)
+        if observation.unobserved_order_ids:
+            await self._runtime.order_manager.reconcile()
+            observation = self.program_order_observation(assignment_id=assignment_id, at=at)
+        selection = actor.select_from_orders(boundary, assignment_id=assignment_id,
+            observation=observation, terminal=terminal)
+        results = []
+        for proposal in selection.proposals:
+            results.extend(await self._runtime.submit_program_proposal(proposal,
+                account_id=assignment.account_id, assignment_id=assignment_id,
+                execution_policy=execution_policy,
+                protection_profile=protection_profile if proposal.action in {"enter_long", "add_long"} else None,
+                outside_rth=outside_rth))
+        return {"status": selection.status, "results": results}
+
     def program_order_observation(self, *, assignment_id: str, at: datetime):
         """Expose processed OMS facts at this program runtime's completed clock."""
         from src.trading_runtime.oms_assignment_observation import observe_assignment_orders

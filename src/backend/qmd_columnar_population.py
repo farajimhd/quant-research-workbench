@@ -7,7 +7,7 @@ transport. A missing listing is a coverage failure, never an inferred zero.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 from types import MappingProxyType
 from typing import Mapping
@@ -68,6 +68,18 @@ class CertifiedPopulationWindow:
     covered_empty_reference_count: int
     excluded_identity_count: int
     price_rejected_count: int
+    _membership: Mapping = field(init=False, repr=False)
+
+    def __post_init__(self):
+        identities = self.ranked.select("boundary_at", "listing_id")
+        if identities.select(pl.struct("boundary_at", "listing_id").is_duplicated().any()).item():
+            raise ValueError("Scanner population repeated a ranked listing/clock")
+        grouped = identities.group_by("boundary_at").agg(pl.col("listing_id"))
+        object.__setattr__(self, "_membership", MappingProxyType({at: frozenset(listings)
+            for at, listings in grouped.iter_rows()}))
+
+    def is_ranked(self, listing_id: str, at: datetime):
+        return listing_id in self._membership.get(at, ())
 
     def scanner_frame(self):
         """Registered flat field projection for the existing app scanner funnel."""

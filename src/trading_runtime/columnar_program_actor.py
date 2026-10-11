@@ -7,6 +7,7 @@ file journal, feature calculation or alternative broker.
 from __future__ import annotations
 
 from decimal import Decimal
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Mapping, Sequence
 
@@ -16,6 +17,14 @@ from .filled_position_state import FillFact, FeeFact, FilledPosition, FilledPosi
 from .ibkr_schema import Execution
 from .strategy_engine import StrategyAssignment
 from .program_target_state import ProgramTargetState
+from .program_trail_state import ProgramTrailState
+from .oms_assignment_observation import AssignmentOrderObservation
+
+
+@dataclass(frozen=True)
+class ProgramSelection:
+    status: str
+    proposals: tuple
 
 
 class AssignedProgramStrategy:
@@ -43,6 +52,8 @@ class AssignedProgramStrategy:
         self._listings = MappingProxyType(dict(listing_by_assignment))
         self.execution_state = FilledPositionState()
         self.target_state = ProgramTargetState(release.header["target_fraction"])
+        self.trail_state = ProgramTrailState()
+        self._selection_clocks = {}
 
     def assignments(self):
         return self._assignments
@@ -66,6 +77,59 @@ class AssignedProgramStrategy:
                   management: ManagementState, terminal: bool = False):
         return select_program_proposal(self.program_release, boundary,
             position=self.position_for(assignment_id), management=management, terminal=terminal)
+
+    def select_from_orders(self, boundary: ProgramBoundary, *, assignment_id: str,
+            observation: AssignmentOrderObservation, terminal: bool = False) -> ProgramSelection:
+        """Select using actual OMS facts and the actor's execution-derived policy.
+
+        Missing/uniformity/coverage observations remain explicit wait reasons.
+        Neither caller-provided target prices nor broker quote peaks are used.
+        """
+        assignment = self._by_assignment[assignment_id]
+        position = self.position_for(assignment_id)
+        clocks = (boundary.boundary_at, boundary.available_at, observation.observed_at)
+        if any(getattr(clock, "tzinfo", None) is None or clock.utcoffset() is None for clock in clocks):
+            raise ValueError("Program selection requires timezone-aware completed clocks")
+        if (type(observation) is not AssignmentOrderObservation
+                or (observation.account_id, observation.assignment_id, observation.ticker) !=
+                   (assignment.account_id, assignment_id, assignment.ticker)
+                or observation.observed_at != boundary.boundary_at
+                or boundary.listing_id != position.listing_id or boundary.ticker != position.ticker
+                or set(boundary.rules) != set(self.program_release.programs)
+                or set(boundary.validity) != set(self.program_release.programs)
+                or any(type(value) is not bool for value in (*boundary.rules.values(), *boundary.validity.values()))
+                or type(boundary.eligible) is not bool or type(terminal) is not bool):
+            raise ValueError("Program selection differs from its completed assignment inputs")
+        if any(type(value) is not bool for value in (observation.pending_acquisition, observation.pending_reduction)):
+            raise ValueError("Program selection requires typed pending-order state")
+        if position.last_management_fill_at is not None and position.last_management_fill_at > boundary.boundary_at:
+            raise ValueError("Program selection cannot see a future fill")
+        signature = (boundary, terminal)
+        previous = self._selection_clocks.get(assignment_id)
+        if previous is not None and boundary.boundary_at <= previous[0]:
+            if boundary.boundary_at == previous[0] and signature == previous[1]:
+                return ProgramSelection("already_consumed", ())
+            raise ValueError("Program selection boundary is conflicting or out of order")
+        self.trail_state.observe(boundary, position,
+            minimum_age_seconds=self.program_release.minimum_age_seconds["trail"])
+        stops = [order for order in observation.working_orders
+            if order.role in {"protective_stop", "trailing_stop"} and order.stop_price > 0]
+        prices = {order.stop_price for order in stops}
+        target = self.target_state.target_for(position)
+        management = ManagementState(observation.observed_at, observation.pending_acquisition,
+            observation.pending_reduction, next(iter(prices)) if len(prices) == 1 else 0.,
+            float(target) if target is not None else 0., float(self.trail_state.water_for(position)))
+        if (not observation.pending_acquisition and not observation.pending_reduction
+                and (observation.unobserved_order_ids or position.position_open and (len(prices) != 1
+                    or sum(order.remaining_quantity for order in stops) + 1e-6 < float(position.quantity)))):
+            status, proposals = "awaiting_protection_observation", ()
+        else:
+            proposals = self.proposals(boundary, assignment_id=assignment_id,
+                management=management, terminal=terminal)
+            status = "selected" if proposals else "pending_reduction" if observation.pending_reduction else (
+                "pending_acquisition" if observation.pending_acquisition else "wait")
+        self._selection_clocks[assignment_id] = (boundary.boundary_at, signature)
+        return ProgramSelection(status, proposals)
 
     def on_broker_executions(self, executions: Sequence[Execution], order_manager):
         """Resolve exact OMS request/role lineage before projecting any fill.
@@ -111,5 +175,6 @@ class AssignedProgramStrategy:
             after = self.execution_state.apply_fill(fact)
             if not known:
                 self.target_state.apply_new_fill(fact, before, after)
+                self.trail_state.apply_new_fill(fact, before, after)
             if fee is not None:
                 self.execution_state.apply_fee(fee)

@@ -58,6 +58,9 @@ async def scenario(resolution, invalid=None, initial_cash=100000., stop_exit=Fal
             proposal = replace(proposal, boundary_at=proposal.boundary_at + timedelta(seconds=1))
         elif invalid == "deadline":
             kwargs["execution_policy"] = ExecutionPolicy()
+        elif invalid == "profile":
+            kwargs["protection_profile"] = ProtectionProfile("wrong-stop", 1,
+                (ProtectionSlice("one", 1., StopRule(price=8.)),))
         before = journal.latest_sequence(journal.run_id)
         if invalid:
             with pytest.raises(ValueError):
@@ -294,7 +297,7 @@ def test_add_then_partial_reduction_preserves_exact_surviving_lot_protection(res
     asyncio.run(scenario(resolution, target_reduce=True, add_before_reduce=True))
 
 
-@pytest.mark.parametrize("invalid", ["cash", "assignment", "future", "deadline"])
+@pytest.mark.parametrize("invalid", ["cash", "assignment", "future", "deadline", "profile"])
 def test_invalid_proposals_do_not_mutate_journal_or_broker(invalid):
     asyncio.run(scenario(1000, invalid))
 

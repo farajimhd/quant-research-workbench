@@ -7,7 +7,7 @@ No history calculation, broker projection or alternative backtest is owned here.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from types import MappingProxyType
 from typing import Mapping
@@ -29,6 +29,32 @@ class PreparedProgramBlock:
     history_hashes: Mapping[str, str]
     market: pl.DataFrame
     masks: pl.DataFrame
+    _offsets: Mapping[str, int] = field(init=False, repr=False)
+
+    def __post_init__(self):
+        width = self.stop_ordinal - self.first_ordinal
+        keys = ("listing_id", "evaluation_block", "observed_ordinal", "boundary_at")
+        if (width < 1 or self.market.height != len(self.history_hashes) * width
+                or self.masks.height != self.market.height
+                or not self.market.select(keys).equals(self.masks.select(keys))):
+            raise ValueError("Prepared program block has inconsistent market/mask coverage")
+        groups = self.market.group_by("listing_id", maintain_order=True).len()
+        listings = groups["listing_id"].to_list()
+        if listings != sorted(self.history_hashes) or groups.filter(pl.col("len") != width).height:
+            raise ValueError("Prepared program block has inconsistent listing intervals")
+        object.__setattr__(self, "_offsets", MappingProxyType({listing: index * width
+            for index, listing in enumerate(listings)}))
+
+    def row_for(self, listing_id: str, ordinal: int):
+        """O(1) completed-row lookup; never rescan a full block at each clock."""
+        if type(ordinal) is not int or not self.first_ordinal <= ordinal < self.stop_ordinal:
+            raise ValueError("Program row is outside its prepared evaluation block")
+        index = self._offsets[listing_id] + ordinal - self.first_ordinal
+        market, masks = self.market.row(index, named=True), self.masks.row(index, named=True)
+        if any(row["listing_id"] != listing_id or row["observed_ordinal"] != ordinal
+                or row["evaluation_block"] != self.evaluation_block for row in (market, masks)):
+            raise ValueError("Prepared program row lost its exact clock/listing identity")
+        return market, masks
 
 
 async def prepare_program_block(release: ProgramRelease, pins: Mapping[str, CertifiedHistoryPin], *,

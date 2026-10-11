@@ -290,3 +290,20 @@ during allocation, with exact surviving protection and execution-derived target
 recovery. This uses existing normalized OMS state, orders and execution facts;
 it introduces no strategy-owned table or disk/JSON authority. Real-session
 acceptance, complete run recovery and operational admission remain pending.
+
+The controller's prepared-boundary dispatcher now combines the prepared rule
+masks, certified scanner membership and committed source cursor with the actual
+broker runtime at one clock. It reconciles missing order observations, selects
+using actual position/target state, and submits semantic proposals through the
+existing Portfolio/OMS path. Acquisition profiles must preserve the program's
+fixed stop-only output. Missing protection stays an explicit wait reason;
+duplicate boundaries are not submitted twice. Prepared row offsets and scanner
+membership are indexed once, avoiding full-frame scans at every clock.
+
+Trail water starts at the actual opening fill and advances only under a valid,
+age-eligible trail mask. Broker quote peaks cannot substitute for that policy
+state. Synthetic tests exercise prepared QMD columns through scanner/source,
+controller selection, actual entry and exit fills at both liquidity resolutions,
+and reconstruction of the same fill/boundary water prefix. Full source/dispatch
+ACK orchestration, normalized run recovery, strategy/UI admission and all-session
+comparison remain required before an operational run.

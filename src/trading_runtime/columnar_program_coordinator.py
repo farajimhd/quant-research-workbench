@@ -17,7 +17,7 @@ from uuid import UUID, uuid5
 
 from .columnar_strategy_release import ProgramRelease
 from .filled_position_state import FilledPosition
-from .execution_policies import ExecutionPolicy, ProtectionProfile
+from .execution_policies import ExecutionPolicy, ProtectionProfile, StopRuleType, TrailingRuleType
 from .signals import CapitalRequest, StrategyIntent
 
 
@@ -69,6 +69,11 @@ class ProgramProposal:
             raise ValueError("Proposal needs the resolved app execution contract")
         if self.action in {"enter_long", "add_long"} and not isinstance(protection_profile, ProtectionProfile):
             raise ValueError("Acquisition needs an explicit app protection profile")
+        if self.action in {"enter_long", "add_long"} and any(
+                item.stop.rule_type != StopRuleType.FIXED_PRICE or item.stop.price != self.stop_price
+                or item.profit_target_price is not None or item.trailing.rule_type != TrailingRuleType.NONE
+                for item in protection_profile.slices):
+            raise ValueError("Program protection must preserve its fixed stop-only policy output")
         return StrategyIntent(intent_id=self.intent_id, ticker=self.ticker,
             event_time=self.boundary_at, action=self.action, quantity=self.quantity,
             reference_price=self.reference_price,
@@ -153,10 +158,6 @@ def select_program_proposal(release: ProgramRelease, boundary: ProgramBoundary, 
         if stop is None or not isfinite(stop) or not 0 < stop < boundary.close:
             return ()
         return (proposal("entry", "enter_long", cash=float(release.header["entry_cash"]), stop=stop),)
-    # Held tickers continue management after leaving the ranked top10.
-    if not all(isfinite(v) and v > 0 for v in (
-            management.stop_price, management.target_price, management.high_water_price)):
-        raise ValueError("Open position lacks its actual management/protection state")
     if position.average_price <= 0 or position.last_management_fill_at is None:
         raise ValueError("Open position lacks verified execution cost and management clock")
     if position.last_management_fill_at > at:
@@ -167,9 +168,15 @@ def select_program_proposal(release: ProgramRelease, boundary: ProgramBoundary, 
     # An unfilled remainder must be cancelled/negotiated by OMS. Never emit a
     # competing reduction or pretend that remainder is already cancelled.
     if management.pending_acquisition:
-        if terminal or enabled("exit") or boundary.close <= management.stop_price:
+        if terminal or enabled("exit") or (
+                isfinite(management.stop_price) and management.stop_price > 0
+                and boundary.close <= management.stop_price):
             return (proposal("exit", "cancel_entry", reason="program:cancel_pending_acquisition"),)
         return ()
+    # Held tickers continue management after leaving the ranked top10.
+    if not all(isfinite(v) and v > 0 for v in (
+            management.stop_price, management.target_price, management.high_water_price)):
+        raise ValueError("Open position lacks its actual management/protection state")
     stop = management.stop_price
     trail = ()
     if enabled("trail"):
