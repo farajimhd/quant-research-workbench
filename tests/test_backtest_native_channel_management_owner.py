@@ -109,3 +109,33 @@ def test_actual_manager_binds_only_declared_owner_and_stages_its_original_entry(
         boundary_ms=args['boundary_ms'])
     assert runner.native_channel_requests(boundary_ms=args['boundary_ms'])==(staged,)
     with pytest.raises(ValueError): runner.native_channel_requests(boundary_ms=args['boundary_ms']+100)
+
+
+def test_actual_manager_initialization_selects_declared_owner(installed, monkeypatch):
+    from types import SimpleNamespace
+    from src.backend.backtest_strategy_one_management import StrategyOneManagementRunner
+    from src.trading_runtime.runtime import RunMode
+    from src.trading_runtime import numbered_fixed_strategy as contracts
+    owner, _, _, _, _ = owner_case(installed)
+    runtime = SimpleNamespace(run_id=owner.run_id,
+        config=SimpleNamespace(strategy_revision=1, mode=RunMode.BACKTEST,
+            anchor_date=owner.session_date),
+        submit_strategy_one_proposal=lambda *_a: None,
+        submit_strategy_one_add=lambda *_a: None,
+        submit_strategy_one_protection=lambda *_a: None)
+    def build():
+        return StrategyOneManagementRunner(runtime=runtime,
+            evidence=SimpleNamespace(management_evidence=lambda *_a: None),
+            tick_for_ticker=lambda _: 0.01)
+    assert build()._native_channel_owner is None
+    monkeypatch.setattr(contracts, 'numbered_fixed_strategy',
+        lambda _number: SimpleNamespace(native_channel_management_policy=owner.policy))
+    runner = build()
+    selected = runner._native_channel_owner
+    assert type(selected) is NativeChannelManagementOwner
+    assert (selected.run_id, selected.session_date, selected.policy) == (
+        runtime.run_id, runtime.config.anchor_date, owner.policy)
+    assert runner.native_channel_requests(boundary_ms=0) == ()
+    with pytest.raises(ValueError): runner.bind_native_channel_management(owner)
+    runtime.config.mode = RunMode.REPLAY
+    with pytest.raises(ValueError): build()

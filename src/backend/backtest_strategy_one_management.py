@@ -164,6 +164,12 @@ class StrategyOneManagementRunner:
         self._management_cadence = (require_declared_management_cadence(self.contract.release,
             self.contract.management_cadence_policy)
             if type(self.contract) is FixedStructuralLotSelectedExitStrategyContract else None)
+        channel_policy = getattr(self.contract, 'native_channel_management_policy', None)
+        if channel_policy is not None:
+            from .backtest_native_channel_management_owner import NativeChannelManagementOwner
+            self.bind_native_channel_management(NativeChannelManagementOwner(
+                run_id=runtime.run_id, session_date=runtime.config.anchor_date,
+                policy=channel_policy))
 
     def bind_native_channel_management(self,owner):
         """Bind one declared pending owner before native position processing."""
