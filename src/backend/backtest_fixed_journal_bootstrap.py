@@ -977,5 +977,15 @@ def _v4_cold_reader_preflight(client: Any) -> None:
             entry_spread_risk=getattr(client,'entry_spread_risk_profile',False),
             ladder_geometry_policy=geometry_policy,risk_policy=risk_policy)
         expected_principal='backtest_v4_fixed_structural_lot_runner'
+    channel_policy = getattr(client, 'native_channel_management_policy', None)
+    from src.trading_runtime.native_channel_writer_profile import (
+        validate_channel_writer_profile, channel_runner_identity)
+    validate_channel_writer_profile(channel_policy,
+        automatic_ladder=getattr(client, 'automatic_ladder_profile', False),
+        entry_spread_risk=getattr(client, 'entry_spread_risk_profile', False),
+        risk_policy=risk_policy, ladder_geometry_policy=geometry_policy,
+        fixed_structural_lot_profile=lot_profile)
+    if channel_policy is not None:
+        expected_principal = channel_runner_identity(channel_policy, risk_policy)[1]
     if client.execute("SELECT currentUser()").strip() != expected_principal:
         raise RuntimeError("V4 cold reader has unexpected principal")

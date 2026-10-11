@@ -1437,6 +1437,26 @@ def initialize_numbered_fixed_strategies() -> None:
                 certify_native_channel_successor_source, reuse_successor_release,
                 historical_parent_proof=channel_parent_source_proof())))
         register_numbered_strategy(channel)
+        from .strategy_one_hundred_nineteen_release import release_contract as channel_reader_release
+        from .strategy_one_hundred_nineteen_contract import strategy_one_hundred_nineteen_contract
+        from .strategy_one_hundred_nineteen_configuration import (
+            SOURCE_PREFIX as channel_reader_source_prefix,
+            derive_strategy_one_hundred_nineteen_configuration,
+            verify_strategy_one_hundred_nineteen_manifest,
+            historical_parent_source_proof as channel_reader_parent_source_proof)
+        from src.backend.backtest_native_channel_reader_successor_certification import certify_native_channel_reader_successor_source
+        channel_reader = channel_reader_release()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=channel_reader.executor_strategy_id, revision=channel_reader.executor_revision,
+            evaluation_interval=channel_reader.evaluation_interval,
+            strategy_factory=_strategy_two_factory,
+            contract_factory=strategy_one_hundred_nineteen_contract,
+            manifest_authority=NativeManifestAuthority(118, channel_reader_source_prefix,
+                derive_strategy_one_hundred_nineteen_configuration,
+                verify_strategy_one_hundred_nineteen_manifest,
+                certify_native_channel_reader_successor_source, channel_release,
+                historical_parent_proof=channel_reader_parent_source_proof())))
+        register_numbered_strategy(channel_reader)
         _NUMBERED_FIXED_REGISTERED = True
 
 
