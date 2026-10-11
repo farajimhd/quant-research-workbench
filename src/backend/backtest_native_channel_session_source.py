@@ -134,3 +134,47 @@ def prepare_and_bind_native_channel_session(owner, client, *, market, tickers,
     owner.bind_feature_session(prepared,
         through_day_boundary_ms=execution_through_day_boundary_ms, max_positions=max_positions)
     return prepared
+
+
+def resolve_installed_native_channel_horizon(client, *, market, session_date,
+        tickers, policy, producer_source_hash):
+    """Resolve a unique certified inventory horizon, never a latest attempt.
+
+    This is discovery only. The caller must still load and certify complete
+    packets through prepare_installed_native_channel_session before binding.
+    """
+    if (type(market) is not CertifiedMarketDayPlan or type(policy) is not NativeChannelSequencePolicy
+            or type(tickers) is not tuple or not tickers
+            or len(tickers) > MAX_TICKERS * 4096
+            or tickers != tuple(sorted(set(tickers)))
+            or any(type(ticker) is not str for ticker in tickers)):
+        raise ValueError('Exact bounded native horizon discovery scope required')
+    policy.__post_init__()
+    require_hash(producer_source_hash)
+    for ticker in tickers:
+        NativeChannelRequest(market,session_date,(ticker,),0,policy.inputs).__post_init__()
+    verify_market_day_plan(market,client)
+    storage_preflight(client)
+    bound=len(tickers)*len(policy.inputs.resolutions_ms)
+    columns=','.join(f'toString({field.name}) AS {field.name}'
+        if field.name.endswith('attempt_id') else field.name for field in COVERAGE_SCHEMA)
+    members=','.join(_literal(ticker) for ticker in tickers)
+    sql=assert_select_only(f'SELECT {columns} FROM (SELECT {",".join(COVERAGE_SCHEMA.names)} '
+        f'FROM {COVERAGE_TABLE} WHERE build_id={_literal(market.build_id)} '
+        f'AND session_date={_literal(session_date)} AND market_plan_token={_literal(market.token)} '
+        f'AND policy_digest={_literal(policy.inputs.digest)} '
+        f'AND producer_source_hash={_literal(producer_source_hash)} AND ticker IN ({members}) '
+        f'ORDER BY feature_attempt_id,ticker,resolution_ms LIMIT {bound+1}) FORMAT ArrowStream')
+    rows=pl.from_arrow(read_arrow(client,sql,COVERAGE_SCHEMA,bound))
+    expected=pl.DataFrame({'ticker':tickers}).join(pl.DataFrame({
+        'resolution_ms':pl.Series(policy.inputs.resolutions_ms,dtype=pl.UInt32)}),how='cross')
+    keys=['ticker','resolution_ms']
+    if (rows.height != expected.height or rows.select(keys).n_unique()!=rows.height
+            or rows.select(keys).join(expected,on=keys,how='anti').height
+            or expected.join(rows.select(keys),on=keys,how='anti').height
+            or rows['through_day_boundary_ms'].null_count()
+            or rows['through_day_boundary_ms'].n_unique()!=1):
+        raise ValueError('Native horizon requires one complete unambiguous installed inventory')
+    horizon=int(rows['through_day_boundary_ms'][0])
+    NativeChannelRequest(market,session_date,(tickers[0],),horizon,policy.inputs).__post_init__()
+    return horizon

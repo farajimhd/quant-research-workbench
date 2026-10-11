@@ -9,6 +9,7 @@ from tests.test_backtest_native_channel_exit import setup
 from src.backend.backtest_native_channel_session_source import (
     PreparedNativeChannelSession, prepare_installed_native_channel_session,
     prepare_and_bind_native_channel_session,
+    resolve_installed_native_channel_horizon,
 )
 from src.market_engine.native_causal_channel_contract import COVERAGE_TABLE, issue_source_plan
 from src.market_engine.completed_return_insert_authority import InsertAuthorityUnavailable
@@ -31,7 +32,7 @@ def session_case(installed, monkeypatch):
             assert packet.request.market.token in sql
             assert packet.request.policy.digest in sql
             assert issue_source_plan(packet).producer_source_hash in sql
-            assert 'through_day_boundary_ms=' in sql and 'ticker IN (' in sql
+            assert 'ticker IN (' in sql
             assert sql.startswith('SELECT ') and 'SETTINGS' not in sql
             client.sql.append(sql)
             return iter(client.tables[COVERAGE_TABLE].to_batches(max_chunksize=3))
@@ -81,6 +82,23 @@ def test_prepare_bind_preserves_full_source_horizon_and_shorter_execution(instal
     with pytest.raises(ValueError): prepare_and_bind_native_channel_session(other,client,
         **{**kwargs,'execution_through_day_boundary_ms':args['through_day_boundary_ms']+1})
     assert other._feature_session is None and len(client.sql)==reads
+
+
+def test_horizon_discovery_requires_unique_complete_inventory(installed,monkeypatch):
+    client,packet,_,args=session_case(installed,monkeypatch)
+    kwargs={key:args[key] for key in ('market','session_date','tickers','policy','producer_source_hash')}
+    assert resolve_installed_native_channel_horizon(client,**kwargs)==packet.request.through_day_boundary_ms
+    table=client.tables[COVERAGE_TABLE]
+    client.tables[COVERAGE_TABLE]=pa.concat_tables([table,table])
+    with pytest.raises(ValueError): resolve_installed_native_channel_horizon(client,**kwargs)
+    client.tables[COVERAGE_TABLE]=table.slice(0,table.num_rows-1)
+    with pytest.raises(ValueError): resolve_installed_native_channel_horizon(client,**kwargs)
+    import polars as pl
+    client.tables[COVERAGE_TABLE]=pl.from_arrow(table).with_row_index('_row').with_columns(
+        pl.when(pl.col('_row')==0).then(pl.col('through_day_boundary_ms')+100)
+        .otherwise(pl.col('through_day_boundary_ms')).alias('through_day_boundary_ms')
+    ).drop('_row').to_arrow().cast(table.schema)
+    with pytest.raises(ValueError): resolve_installed_native_channel_horizon(client,**kwargs)
 
 
 @pytest.mark.parametrize('defect', ['missing', 'ambiguous', 'foreign', 'pending'])
