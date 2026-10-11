@@ -1657,6 +1657,26 @@ def initialize_numbered_fixed_strategies() -> None:
                 certify_native_channel_reader_isolation_successor_source, channel_bounded_reader_release,
                 historical_parent_proof=channel_reader_isolation_parent_source_proof())))
         register_numbered_strategy(channel_reader_isolation)
+        from .strategy_one_hundred_thirty_release import release_contract as participation_acquisition_release
+        from .strategy_one_hundred_thirty_contract import strategy_one_hundred_thirty_contract
+        from .strategy_one_hundred_thirty_configuration import (
+            SOURCE_PREFIX as participation_acquisition_source_prefix,
+            derive_strategy_one_hundred_thirty_configuration,
+            verify_strategy_one_hundred_thirty_manifest,
+            historical_parent_source_proof as participation_acquisition_parent_source_proof)
+        from src.backend.backtest_native_participation_acquisition_successor_certification import certify_native_participation_acquisition_successor_source
+        participation_acquisition = participation_acquisition_release()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=participation_acquisition.executor_strategy_id, revision=participation_acquisition.executor_revision,
+            evaluation_interval=participation_acquisition.evaluation_interval,
+            strategy_factory=_strategy_two_factory,
+            contract_factory=strategy_one_hundred_thirty_contract,
+            manifest_authority=NativeManifestAuthority(129, participation_acquisition_source_prefix,
+                derive_strategy_one_hundred_thirty_configuration,
+                verify_strategy_one_hundred_thirty_manifest,
+                certify_native_participation_acquisition_successor_source, channel_reader_isolation_release,
+                historical_parent_proof=participation_acquisition_parent_source_proof())))
+        register_numbered_strategy(participation_acquisition)
         _NUMBERED_FIXED_REGISTERED = True
 
 
