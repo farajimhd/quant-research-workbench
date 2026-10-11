@@ -16,6 +16,8 @@ Approved decisions from this conversation:
 - Produce causal PM, regular and AH V7 checkpoints; retain retrospective labels separately.
 - Derive context from launch parameters and feature requirements. Events back to 2019 and checkpoints from 2025 are potential inputs, not automatically compatible seeds.
 - Define the full output catalog and dependencies before implementation. Copy required SIP migration files G to D SSD through the ingestion-owned path.
+- Integrate `pipelines/market_sip/flatfiles/download_update_events.py` as the acquisition/encoding/publication stage, so the same launcher manages missing earlier sources and future updates.
+- Every durable schema must declare compact encoding, lossless compression, partition/order keys and append/backfill behavior before implementation; dense expanded caches are optional bounded accelerators.
 
 No training, search, sealed evaluation, monitor restart, deletion or deployment is part of preparing this design. Existing unrelated changes and immutable research artifacts remain intact.
 
@@ -63,6 +65,16 @@ Prices retain scaled-integer authority; share sizes and notionals retain source 
 ### 4.1 Canonical events and ingestion repairs
 
 Authority: `market_sip_compact.events_YYYY`, source-day stats and reporting coverage. Maintain full quote/trade lineage, ordinals, price/size scales, condition eligibility, reporting state and source hash. Canonical quote handling is separate from the trade reporting gate.
+
+The ingestion entry point is `pipelines/market_sip/flatfiles/download_update_events.py`. Its current code supports remote discovery or explicit start/end source dates, bounded download workers, compact encoding/ClickHouse insert, continuity checks, sampled raw-to-encoded audits, ticker/day index and source-day statistics. New imports compute reporting flags. An updater `ok` manifest is not sufficient by itself to satisfy downstream reporting coverage: reconcile/publish the source-matching reporting receipt required by market-day consumers.
+
+At plan time classify each source day: already certified and reusable; imported but requiring reporting/provenance repair; cached but not imported; or absent and requiring remote acquisition. Reuse certified days without re-reading retained raw files. Copy required existing G files into verified D cache; configure fresh downloads and ClickHouse file paths to that D cache. Validate Windows/UNC and ClickHouse mount paths refer to the same files. Download/import missing sources, certify encoding and source receipts, then run applicable legacy migrations. This ingestion-owned path is the only raw-file consumer.
+
+The updater also builds legacy macro/daily-session bars by default. For this unified campaign use its existing `--skip-bars` mode when the shared strict-policy producer owns all derived products. Its current daily-session identity/quote-fallback behavior is not automatically equivalent to the new research price contract. Reuse compatible daily products only after explicit parity/source checks. Do not publish two competing daily-price authorities.
+
+Audit optional execution-clock sidecar ownership separately: the current updater DDL passes the common storage-policy argument to its clock sidecars too. Integration must enforce the appropriate explicit workload policy for each table and verify actual parts; one global storage-policy override is not proof that all source and operational products are correctly placed.
+
+Never enable `--force-day-delete` or rebuild-existing deletion flags by default. Existing-source repair requires a separately planned restart-safe migration and lineage invalidation. Earlier imports must respect yearly ordinal continuity, not merely insert rows into an older date partition; audit updater support before permitting earlier-range extension. An ordinal-changing canonical migration invalidates indexes/sidecars and descendant receipts. Encoding/schema evolution must be versioned without reinterpreting old bitfields.
 
 The new shared trade gate requires the timely classification, valid reporting provenance and ordinary product-specific condition eligibility. Current reporting bits encode timely as `(event_meta & 0xC0) == 0x40`; delayed, unknown and invalid combinations fail. Current rules include conditions 5/13/30/31/32/33, prior NY reporting date and lag greater than 10 seconds. Missing, zero or inconsistent/future participant clocks must not escape as timely. Classification and aggregation eligibility are separately hashed.
 
@@ -177,8 +189,9 @@ News/SEC narrative synthesis, embeddings, borrow inventory/rates and book-depth 
 flowchart TD
  P[Freeze range, catalog, context, storage and source versions] --> U[Reconstruct dated identities and universe]
  P --> R[Reference/SEC/short-data gap fills and vintage repair]
- P --> H[Inventory and stage required migration files G to D]
- H --> M[Repair/certify canonical event reporting]
+ P --> H[Inventory sources; stage required cached files G to D]
+ H --> Q[download_update_events: acquire missing files to D, encode and publish]
+ Q --> M[Repair legacy events; reconcile reporting/source certificates]
  M --> S[Certify source and close canonical mutation barrier]
  S --> A[One canonical scan per bounded unit: shared trade/quote aggregates]
  U --> A
@@ -232,6 +245,8 @@ Events available from 2019 are not a mandate to rebuild every product from 2019.
 
 Proposed single entry point exposes `plan`, `run`, `resume`, `status`, `verify`. This is an interface proposal, not an existing runnable command. Resolve configuration once and freeze a content-addressed plan.
 
+The controller wraps the existing updater rather than implementing a second downloader/encoder. It maps the frozen source range and D cache/mount roots, resource limits, explicit `sip_raw_ssd` storage policy and `--skip-bars` to that stage. Modes distinguish reuse-only, acquire-missing and explicitly planned canonical repair. Automatic remote discovery may propose new dates, but execution freezes fully published source days first; an updating provider frontier must not change a running dataset. Completion resumes from verified source-day receipts, not a downloader exit code.
+
 Configuration groups: target/context ranges; use-case presets and metric catalog; session checkpoints; source/universe/public-availability policy; G archive and D cache roots/hydration mode; machine/runtime root; global resource budgets; disk headroom; retry bounds; split roles and consumer export options. Strict unknown exclusion is fixed in this dataset revision, not a convenient opt-out. Defaults are complete and safe; ambiguity blocks planning.
 
 Hydration inventory includes context migration files. Existing reporting tool supports verified temporary copy, hashes, atomic publication and mismatch rejection. Canonical SIP flatfiles may be opened only by the ingestion-owned migration/import path. If all files cannot stage within D headroom, fail or explicitly plan bounded staging tranches. Never overwrite mismatched files or delete caches/old products without authorization.
@@ -254,6 +269,35 @@ Three milestones: (1) common market/reference certification; (2) RL-compatible b
 
 ## 9. Storage and measured capacity
 
+### 9.1 Mandatory compact persistence contract
+
+Compression and compaction are schema requirements across canonical, intermediate, checkpoint, model-ready and certification layers. Lossless compression does not justify lossy price/volume rounding, dropping masks or shortening history. Physical MergeTree part merging is distinct from logical deduplication; neither changes the declared authoritative population. Default policy: ZSTD-compressed durable columns/files, narrow validated numeric types, reusable identity dictionaries, sparse/change-point records and explicit missingness. Final codec levels are selected by representative benchmarks, not assumed universally optimal.
+
+Current event DDL is the baseline example: `UInt8` packed metadata/exchange/condition codes, scaled `UInt32` prices, `UInt64` ordinal/time, `LowCardinality(String)` ticker; ordinal/prices use `T64,ZSTD(1)`, time uses `DoubleDelta,ZSTD(1)` and source sizes use Float32/ZSTD(1), ordered by ticker/ordinal. Preserve this existing precision contract; do not copy Float32 size precision into exact derived counts/threshold authorities without a proven bound. Audit overflow for both earlier and future data.
+
+| Persisted family | Compact layout | Compression and physical organization |
+| --- | --- | --- |
+| Canonical events/indexes | Existing encoded fields; dictionaries and yearly tables; compact continuity/index records | Existing approved codecs; monthly partitions and ticker/ordinal order; bounded bulk inserts, no per-ticker partition explosion |
+| Shared aggregates/bars/liquidity | Sparse buckets, dictionary listing keys, scaled prices, exact counters, bit-packed flags where lossless | Monthly partitions; order supporting build/listing/date/resolution/bucket reads; benchmark count/price Delta or T64 + ZSTD; explicit staging retention |
+| Indicators | Typed numeric columns, compact readiness flags, shared clocks/identity; omit synthetic padded rows | Compare Gorilla/ZSTD versus ZSTD for Float64 under actual ordering; exact values/state retained; measured narrow projections avoid duplicating full tables |
+| Identity/universe/actions | Stable UInt64 surrogate IDs backed by immutable string-ID mapping; dated intervals and membership changes | Dictionary/repeated-value compression and ZSTD; materialize session views only where useful; never renumber IDs when earlier data is added |
+| Fundamentals/short data | Long-form typed metric/vintage change records; metric IDs and evidence dictionary; sparse validity intervals | ZSTD/dictionary encoding; period and availability indices/order; immutable revisions, no second-by-second unchanged copies |
+| V7 updates/checkpoints | Numeric level/observation arrays, stable level IDs, sparse updates; full state at explicit boundaries | Lossless compressed versioned binary/columnar payload plus searchable header/hash; no huge repeated JSON on every bar; optional bounded delta checkpoints require a complete reachable base chain |
+| Model banks | Actual rows once, identity offsets, integer clocks, packed masks; no overlapping 120-row copies | Compressed columnar shards as durable form; bounded verified mmap hot-cache expansion where current loaders require NPY; schema/storage adapter version changes are explicit |
+| Optimizer history/cache | Existing lossless run-length rows and indices; reachable selected-channel tiles | ZSTD/packed validity for durable shards; preserve NaN/validity semantics and Float64 authority where required; optional decoded cache under a size cap |
+| Labels/trajectories | Sparse targets/transitions with integer identity/clock references; no repeated market feature payload | Compressed Parquet/Arrow-compatible shards and dictionary categories; targets kept separate from observation bank |
+| Manifests/certificates | Compact per-unit receipts and content-addressed source/evidence dictionaries | Small inspectable JSON headers permitted; large inventories/proofs in compressed indexed sidecars, not duplicated in every row/receipt |
+
+Scalar identity dictionaries must retain security/listing distinctions and original external IDs. Hash collisions cannot be accepted as identity; stable surrogate assignments need verified uniqueness. Choose counters/offsets after cardinality bounds (UInt64 for unbounded archive/global indices); do not downcast all history offsets to UInt32. Keep unavailable reasons in small enums/dictionaries plus precise evidence.
+
+Candidate codecs follow [ClickHouse compression guidance](https://github.com/ClickHouse/clickhouse-docs/blob/main/docs/data-compression/compression-in-clickhouse.md). Sort order affects codec efficiency; benchmark encoded bytes/row, read/decode throughput, write CPU, representative as-of/range reads, merge cost and peak memory. Schema acceptance requires round-trip parity plus overflow/mask tests. Record both pre-merge and settled part sizes, row counts and small-part counts. Use bounded batches and normal merges; do not make routine `OPTIMIZE FINAL` a campaign dependency.
+
+Extend by appendable month/year/listing shards with stable dictionaries and independently sealed receipts. Adding earlier history may change initialization/RVOL/V7 lineage for later derived units; recompute only declared affected descendants into a new dataset version. Adding future data must not rewrite past public vintages or certificate hashes. Old versions remain readable; no implicit TTL deletion/move to backup disks. Codec changes do not automatically rewrite existing parts: any physical re-encoding is an explicit verified migration with temporary-space estimates.
+
+Current NPY banks/histories are mmap-friendly but uncompressed. Compatibility alone does not satisfy the new durable-compression requirement: implement compressed archive plus bounded decode-cache adapters, or an equivalent measured compressed random-access reader. Decoded caches have lifecycle/space limits and are reproducible from certified shards. This is a required storage upgrade, not a claim that the current loader already supports it.
+
+### 9.2 Capacity estimates and admission
+
 Earlier October 11 audit: existing physical bars/indicators/liquidity occupy about 611 GiB across attempts; estimated certified 36-session footprint is 304 GiB. Session/source-volume extrapolation for 189 target sessions suggests 1.6–2.0 TiB new core data and a provisional 2.3–2.8 TiB additional-space budget including working headroom/small derivatives. These estimates do not include extensive prior-context rebuilds, full RL banks, optimizer full-universe histories, expanded tiles or the January G→D staging inventory.
 
 New disk check: `live_market_ssd` free 5,003,820,261,376 bytes (~4.55 TiB); `sip_raw_ssd` free 1,502,394,458,112 bytes (~1.37 TiB). Do not add the displayed capacities: configured paths report the same total backing capacity, so verify mount/device relationships and concurrent physical-space consumption before admitting budgets. Recheck immediately before launch.
@@ -269,6 +313,7 @@ Plan measures representative dense/sparse units and calculates base tables + con
 | Package | Runtime prerequisites | Produces |
 | --- | --- | --- |
 | Plan/catalog/preflight | Code/source inventory and launch parameters | Frozen range/context/DAG/budgets and enumerated product schemas |
+| Download/encode/publish | Frozen source plan, verified D cache/mount mapping, provider access | Missing canonical sources through existing updater, continuity/index/stats and source receipts |
 | Canonical migration | Plan; required verified D cache | Reporting-fixed events and completed source-matching receipts |
 | Historical reference reconstruction | Dated providers, ticker events, broker/SEC mapping evidence | Certified identity/universe/corporate-action intervals |
 | Reference publication repair | Identity resolution, source gap fills | Public-vintage SEC, short-volume/interest and related facts |
@@ -279,6 +324,8 @@ Plan measures representative dense/sparse units and calculates base tables + con
 | Execution materialization | Aggregate/liquidity/price-level evidence; tick/scenario authority | Indexed reusable execution shards |
 | RL and optimizer adapters | Required certified products above | Sparse banks, optional labels, compact/history/cache exports |
 | Final publication | All required unit/product receipts and parity checks | Immutable dataset registry and downstream compatibility certificates |
+
+Compact-schema/reader acceptance is a prerequisite for persistence in every package: select tested codecs/layouts and certify round-trip/random-access behavior before a full-range writer starts. Acquisition also contributes raw staging, canonical growth and encoding/merge temporary space to admission budgets.
 
 ## 11. Decisions before implementation
 
@@ -291,6 +338,7 @@ Plan measures representative dense/sparse units and calculates base tables + con
 ## 12. Source pointers
 
 - `pipelines/market_sip/events/{market_day_sql.py,trade_reporting_flags.py}`; `scripts/backfill_trade_reporting_flags.py`.
+- `pipelines/market_sip/flatfiles/download_update_events.py`; `pipelines/market_sip/events/clickhouse_build_unified_events.py` for encoded DDL.
 - `services/reference_gateway/{tradability.py,tradable_snapshots.py,ticker_events.py,resolved_float.py,market_publications.py}`.
 - `pipelines/reference_data/{security_dimensions.py,market_publications_historical_gap_fill.py}`; `migration/step_06_build_q_live_bridge_features.py`.
 - `src/backend/query_plans/sec_fundamentals_asof_v1.py`; `src/backend/ticker_facts_service.py`.
