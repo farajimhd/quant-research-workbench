@@ -1572,8 +1572,11 @@ def _reviewed_fixed_lot_journal_projection(source: str, name: str, expected: str
     """Require the exact reviewed additions and restore the complete legacy class."""
     if name not in {"BacktestMemoryJournal", "mark_fenced"}:
         return False
-    classes = [n for n in ast.parse(source).body if isinstance(n, ast.ClassDef)
-               and n.name == "BacktestMemoryJournal"]
+    from .backtest_native_channel_journal_compatibility import restore_native_channel_journal_class
+    try:
+        classes = [restore_native_channel_journal_class(source)]
+    except ValueError:
+        return False
     if len(classes) != 1 or sha256(ast.unparse(classes[0]).encode()).hexdigest() != '01914e8ce460382054490ea0a0dc077855a30c8fa9835be64c257583d9db434f':
         return False
     removals = frozenset(('0a7ce668d3c12d143b102b40759495fbecc2aa1d3b92a93f689120afc2ed1592', '0a8d2da2565ce817e72be348340d38266a603be684a4ed6f3814c0f60a8a188f', '0c5579e2332dc3c4f0544cfbf2d74103ca143e202983957be985504c8b7747db', '1be930cc8246d457e3be65afc642a294fbfc9fb61c9af02721860cd63eaaf599', '1dca3c9b86a96f8518d4cae33470e9387f34598bfaf7c98d86d933bc87f8cbd2', '257a177707eaaace8a3dc5e91e167f79d727bd34a943f2b7a75fe469a84a7374', '2a6fd94ba651606f2bc36db8e67fc5004989142efd7a8009db5381a1e289f29d', '3ecac4741cb622176a4b21a79929b76da34cfe03aacc5a594eaa2cb408f9c9e7', '46ee16662c23866ffcc124cf7f5133932ff23a9b3dd1993fef84b4cb43222f7b', '4d2433bff2045aef06a1bbebd521a4349182e54c5fb1fed7bb0c2101f5cff5e6', '5854317a514eff1ed4ee63c2ca31da5c6541db259e727f95cdbea9c12619633c', '5a53564a434198c0dce46f18660662a3182c5889c5fe53fdee34001d5b613f05', '60f4f7be5dec3e07d537b3670b21264eed0ab9aa91f2075cdf7d810b0cb297c8', '71ecb0f3f944ffc1a8a1da244f900861d2a5fd7f43178860721ce5ce63fbaa0a', '7320760affba866926b1f21ac0aa9a964981e7eabf306162eb09327770147f1d', '8044ea161ac59fdfbfd1c58f6b4633152673e12101f5260ee74400ce88156130', '84fbed29e22a66d75a74f0d8c659b2f3e0ad4db0073ab4fd1f5637c5047df1be', '86c268ecd2a3173d3651a67c9a1f2dd0b2794a6dff0c0fcd18b64bc4f226c594', '956c9c5687ccb96743f2ca45b87528be4b3b19f5dff5cba6750802567cd092cc', '9fcf69efc273a2a1a93b1752f0d3c06a31cc77e4fb45b45cf36607abe3964a84', 'b1868341474ff8836e7c948473b4638c79ffd41d55d162078425fb1a8d00b146', 'd0ecef495d8a53b32f08cd55ca564c052a3e1139fd962cd9c5bedb70dab2bf49', 'da613a30a6869344123151d6a4e84dfc9e75a0edcc771bbb9cb5b8cbde2c02ca', 'ddc55aa82e625821820c2b470e7e6f2a918dfabb2f0e52b7508181b35ae9d4d8', 'fb9fc011fe09c98ecc7adac29901e14bea195344502f90044ec8fcef87a1ec78', 'fde37b89cdadf5797407e7482749815d5c75b23d3f24982c25343b8d9181a7ea'))
