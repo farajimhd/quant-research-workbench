@@ -347,6 +347,9 @@ def _project_manager_snapshot_scalar(*, run_id: str, session_date: date,
 def restore_manager_snapshot(rows: ManagerSnapshotRows, *,
                              max_pending_breaks: int = 256,
                              ) -> StrategyOneManagementState:
+    from src.backend.backtest_native_channel_inherited_checkpoint import NativeInheritedCheckpointRows
+    if type(rows) is NativeInheritedCheckpointRows:
+        rows=rows.require().inherited
     return _restore_manager_snapshot_scalar(rows,max_pending_breaks=max_pending_breaks)
 
 
@@ -501,6 +504,10 @@ def load_unattested_manager_snapshot_rows(
             or type(checkpoint_sequence) is not int or checkpoint_sequence < 1
             or not callable(getattr(client, "execute", None))):
         raise ValueError("Strategy 1 manager cold read needs exact run and cursor")
+    if getattr(client,'native_channel_management_policy',None) is not None:
+        from src.backend.backtest_native_channel_inherited_checkpoint import load_unattested_native_inherited_checkpoint_rows
+        return load_unattested_native_inherited_checkpoint_rows(client,run_id=run_id,
+            checkpoint_sequence=checkpoint_sequence)
 
     def read(contract: TableContract, predicate: str, limit: int) -> tuple[dict, ...]:
         columns = ",".join(
@@ -586,6 +593,7 @@ def load_attested_manager_snapshot(client: Any, keeper: ManagerSnapshotHeadReade
     """Read only a Keeper-selected snapshot at the exact cold V4 cursor."""
     return _load_attested_manager_image(client, keeper, run_id=run_id,
         checkpoint_sequence=checkpoint_sequence, first_price_source=first_price_source,
+        native_channel_contexts=getattr(client,'native_channel_checkpoint_history',()),
         load_rows=load_unattested_manager_snapshot_rows, restore_rows=restore_manager_snapshot)
 
 

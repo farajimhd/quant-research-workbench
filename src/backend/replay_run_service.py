@@ -2670,6 +2670,8 @@ class ReplayRunController:
             with closing(backtest_v4_operator_client_from_env(**declared_contract_runner_options(
                     manager.contract, owner=getattr(manager, '_fixed_lot_owner', None),
                     publisher=publisher, run_id=self.run_id))) as reader:
+                from .backtest_native_channel_inherited_checkpoint import bind_native_inherited_checkpoint_history
+                reader=bind_native_inherited_checkpoint_history(reader,publisher=publisher,run_id=self.run_id)
                 from src.trading_runtime.selected_checkpoint_products import selected,CheckpointReader,manager_head_reader
                 owner=getattr(manager,'_fixed_lot_owner',None)
                 source=owner.operation.source if owner is not None else None
@@ -2722,6 +2724,8 @@ class ReplayRunController:
             with closing(backtest_v4_operator_client_from_env(**declared_contract_runner_options(
                     manager.contract, owner=getattr(manager, '_fixed_lot_owner', None),
                     publisher=publisher, run_id=self.run_id))) as reader:
+                from .backtest_native_channel_inherited_checkpoint import bind_native_inherited_checkpoint_history
+                reader=bind_native_inherited_checkpoint_history(reader,publisher=publisher,run_id=self.run_id)
                 from src.trading_runtime.selected_checkpoint_products import selected,CheckpointReader,manager_head_reader
                 owner=getattr(manager,'_fixed_lot_owner',None)
                 source=owner.operation.source if owner is not None else None
@@ -2917,6 +2921,8 @@ class ReplayRunController:
             with closing(backtest_v4_operator_client_from_env(**declared_contract_runner_options(
                     manager.contract, owner=getattr(manager, '_fixed_lot_owner', None),
                     publisher=publisher, run_id=self.run_id))) as reader:
+                from .backtest_native_channel_inherited_checkpoint import bind_native_inherited_checkpoint_history
+                reader=bind_native_inherited_checkpoint_history(reader,publisher=publisher,run_id=self.run_id)
                 from src.trading_runtime.selected_checkpoint_products import selected,CheckpointReader,manager_head_reader
                 owner=getattr(manager,'_fixed_lot_owner',None)
                 source=owner.operation.source if owner is not None else None
