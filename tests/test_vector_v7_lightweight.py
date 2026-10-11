@@ -160,7 +160,14 @@ def test_resident_features_and_reachable_plan_match_dense_oracle(tmp_path):
     oracle=PopulationPrograms(members).evaluate(data,chunk=17,listing_batch=1)
     expected=mask_reference(oracle,data.host_tensors)
     plan=RulePlan(members,'cpu')
-    actual=plan.evaluate(data,members,17,1,1.)
+    calls=[];updates=[];execute=plan.execute
+    def tracked(group_id,values,known):
+        calls.append(group_id)
+        return execute(group_id,values,known)
+    plan.execute=tracked
+    actual=plan.evaluate(data,members,17,1,1.,progress=updates.append)
+    assert calls==sorted(calls)
+    assert updates[-1]['tiles']==updates[-1]['total_tiles']==len(calls)
     torch.testing.assert_close(actual,expected,rtol=0,atol=0)
     for cost in (0.,10.):
         left=replay_cohort([data],members,[oracle],execution=Execution(cost_bps=cost))[0]

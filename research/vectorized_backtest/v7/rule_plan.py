@@ -180,10 +180,16 @@ class RulePlan:
         gpu_membership=data.tensors['membership']
         gpu_following=transfer(next_observed)
         started = perf_counter(); completed = 0
-        if progress:progress(dict(tiles=0,total_tiles=len(geometry)))
-        for offset,listings,begin,end,queries in geometry:
-            gpu_listings=gpu_order[offset:offset+len(listings)]
-            for group_id, group in enumerate(self.groups):
+        group_geometry=[(i,g,[tile for tile in geometry if not g["sparse"] or tile[4][g["bit"]==0] is not None])
+                        for i,g in enumerate(self.groups)]
+        total_tiles=sum(len(tiles) for _,_,tiles in group_geometry)
+        if progress:progress(dict(tiles=0,total_tiles=total_tiles))
+        # Keep one program group's shapes hot across the full session.
+        # Tile-major traversal churns private graph pools between groups.
+        # Stage bits combine by OR, so group order does not alter gates.
+        for group_id, group, tiles in group_geometry:
+            for offset,listings,begin,end,queries in tiles:
+                gpu_listings=gpu_order[offset:offset+len(listings)]
                 bit = group['bit']; candidates = group['candidates']
                 if group['sparse']:
                     query=queries[bit==0]
@@ -216,10 +222,10 @@ class RulePlan:
                     elif bit!=4:eligible &= gpu_following[begin:end,ui]
                     signal = signal & eligible.T[None]
                     gates[candidates[:,None,None],ti[None,None,:],ui[None,:,None]] |= signal.to(torch.uint8)*(1<<bit)
-            completed += 1
-            if progress and (completed % 16 == 0 or completed==len(geometry)):
-                progress(dict(stage='rule evaluation',tiles=completed,total_tiles=len(geometry),listing_groups_completed=offset//listing_batch,
-                              wall_seconds=perf_counter()-started,capture_builds=self.builds,capture_hits=self.hits))
+                completed += 1
+                if progress and (completed % 16 == 0 or completed==total_tiles):
+                    progress(dict(stage='rule evaluation',tiles=completed,total_tiles=total_tiles,listing_groups_completed=offset//listing_batch,
+                                  wall_seconds=perf_counter()-started,capture_builds=self.builds,capture_hits=self.hits))
         return gates
 
     def close(self):

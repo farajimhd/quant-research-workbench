@@ -256,3 +256,5 @@ population across two full training sessions, cold and warm, requiring exact
 receipts and at least 10% lower warm wall time before successor launch. This is
 a same-workload acceptance gate; full all30 generation timings remain the
 operational throughput authority.
+
+Rule evaluation traverses all reachable tiles for one program group before advancing to the next group. This keeps that group's graph shapes resident within the existing 4 GiB cache, rather than cycling groups at every tile. Stage bits combine by OR; time windows, cumulative-sum rounding, eligibility and accounting are unchanged. Rule progress counts the actual group/tile work units and reaches its exact total. Deploy only after identical full-session receipts and same-population warm-wall qualification.
