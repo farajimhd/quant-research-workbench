@@ -2742,6 +2742,40 @@ class ReplayRunController:
                 request.source_entry_intent_id, source)
         manager.complete_liquidity_fade_requests(requests, boundary_ms=boundary)
 
+    async def _prepare_native_channel_manager_features(self,manager,*,market,start_after):
+        native_owner=getattr(manager,'_native_channel_owner',None)
+        if native_owner is not None:
+            if start_after:
+                raise ValueError('Native channel restart requires complete reconstructed committed contexts')
+            from .backtest_native_channel_session_source import (
+                resolve_installed_native_channel_horizon, prepare_and_bind_native_channel_session,
+            )
+            from src.market_engine.native_causal_channel_contract import producer_implementation_hash
+            from src.market_engine.native_channel_insert_authority import NativeChannelInsertAuthority
+            from .backtest_market_data import SESSION_OPEN_OFFSET_MS
+            assignments=self._strategy.assignments()
+            tickers=tuple(sorted({assignment.ticker for assignment in assignments}))
+            reader=self._native_channel_read_client
+            if reader is None or self._fixed_keeper_session is None or not tickers:
+                raise ValueError('Declared native feature session lacks its reader, Keeper or assignment scope')
+            def prepare_features():
+                producer_hash=producer_implementation_hash()
+                horizon=resolve_installed_native_channel_horizon(reader,market=market,
+                    session_date=market.sessions[0],tickers=tickers,policy=native_owner.policy.exit_policy.sequence,
+                    producer_source_hash=producer_hash)
+                return prepare_and_bind_native_channel_session(native_owner,reader,market=market,
+                    tickers=tickers,source_through_day_boundary_ms=horizon,
+                    execution_through_day_boundary_ms=self._fixed_through_boundary_ms()+SESSION_OPEN_OFFSET_MS,
+                    producer_source_hash=producer_hash,
+                    authority=NativeChannelInsertAuthority(self._fixed_keeper_session.client),
+                    max_packets=min(4096,len(tickers)),max_positions=len(assignments))
+            preparation=asyncio.create_task(asyncio.to_thread(prepare_features))
+            try:
+                await asyncio.shield(preparation)
+            except asyncio.CancelledError:
+                await preparation
+                raise
+
     async def _confirm_native_channel_checkpoint(self, requests: tuple, *, event_time):
         """Drain exact staged exits with a fresh checkpoint after each order."""
         from .backtest_native_channel_management_owner import NativeChannelManagementOwner
@@ -4122,6 +4156,7 @@ class ReplayRunController:
                     from .backtest_fixed_journal_bootstrap import restore_fixed_structural_lot_native_manager
                     await restore_fixed_structural_lot_native_manager(owner, manager, self._fixed_keeper_session)
             self._strategy_one_manager = manager
+            await self._prepare_native_channel_manager_features(manager,market=market,start_after=start_after)
             if getattr(manager.contract,'confirmed_original_risk_policy',None) is not None:
                 requests=manager.original_risk_requests(boundary_ms=start_after)
                 if requests:

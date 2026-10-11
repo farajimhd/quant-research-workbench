@@ -13,6 +13,33 @@ from src.backend.replay_run_service import ReplayRunController
 from src.trading_runtime.runtime import RunMode
 
 
+def test_controller_prepares_declared_features_once_with_actual_horizons(installed,monkeypatch):
+    from tests.test_backtest_native_channel_session_source import session_case
+    from src.backend.backtest_market_data import SESSION_OPEN_OFFSET_MS
+    client,packet,_,args=session_case(installed,monkeypatch)
+    owner,_,_,_,_=owner_case(installed,strategy_number=2)
+    monkeypatch.setattr('src.market_engine.native_causal_channel_contract.producer_implementation_hash',
+        lambda:args['producer_source_hash'])
+    monkeypatch.setattr('src.backend.replay_run_service.ReplayRunController._fixed_through_boundary_ms',
+        lambda self:packet.request.through_day_boundary_ms//2-SESSION_OPEN_OFFSET_MS)
+    controller=ReplayRunController.__new__(ReplayRunController)
+    controller._native_channel_read_client=client
+    controller._fixed_keeper_session=SimpleNamespace(client=args['authority'].keeper)
+    controller._strategy=SimpleNamespace(assignments=lambda:tuple(
+        SimpleNamespace(ticker=ticker) for ticker in args['tickers']))
+    manager=SimpleNamespace(_native_channel_owner=owner)
+    asyncio.run(controller._prepare_native_channel_manager_features(manager,
+        market=args['market'],start_after=0))
+    assert owner._feature_session[1]==packet.request.through_day_boundary_ms//2
+    reads=len(client.sql)
+    with pytest.raises(ValueError):
+        asyncio.run(controller._prepare_native_channel_manager_features(manager,
+            market=args['market'],start_after=1))
+    assert len(client.sql)==reads
+    asyncio.run(controller._prepare_native_channel_manager_features(SimpleNamespace(),
+        market=args['market'],start_after=0))
+
+
 def controller_case(installed,monkeypatch,*,reject=False,changed=False):
     owner,_,evidence,quote,args=owner_case(installed,strategy_number=2)
     first=owner.stage(evidence['prepared'],quote,**args)
