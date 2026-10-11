@@ -41,6 +41,22 @@ def test_owner_stages_native_fills_captures_full_root_and_reproves_every_request
     assert owner.pending_requests(boundary_ms=args['boundary_ms'])==()
 
 
+def test_individual_retirement_requires_exact_request_and_boundary(installed):
+    owner,rows,context,quote,args=owner_case(installed)
+    request=owner.stage(context['prepared'],quote,**args)
+    frozen=owner.freeze(boundary_ms=args['boundary_ms'])
+    for supplied,boundary in ((replace(request),args['boundary_ms']),
+                              (request,args['boundary_ms']+100)):
+        with pytest.raises(ValueError): owner.complete_one(supplied,boundary_ms=boundary)
+        assert owner.pending_requests(boundary_ms=args['boundary_ms'])==(request,)
+    owner.complete_one(request,boundary_ms=args['boundary_ms'])
+    assert owner.pending_requests(boundary_ms=args['boundary_ms'])==()
+    with pytest.raises(ValueError): owner.complete_one(request,boundary_ms=args['boundary_ms'])
+    captured,inputs=frozen.capture(rows.inherited,journal_batch_id=context['batch_id'])
+    assert len(captured.pending)==1
+    assert reprove_native_channel_manager_snapshot(captured,owner.policy,inputs)
+
+
 def test_frozen_pending_capture_survives_live_inventory_drain(installed):
     owner,rows,context,quote,args=owner_case(installed)
     owner.stage(context['prepared'],quote,**args)

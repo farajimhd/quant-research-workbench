@@ -168,6 +168,18 @@ class NativeChannelManagementOwner:
         rows=capture_native_channel_manager_rows(inherited,requests,contexts,policy=self.policy)
         return rows,MappingProxyType({key:MappingProxyType(value) for key,value in contexts.items()})
 
+    def complete_one(self,request,*,boundary_ms):
+        """Retire one exact observation after the controller accepts its exit.
+
+        This inventory operation grants no order authority. Remaining requests
+        retain their boundary and require a fresh financial checkpoint.
+        """
+        self.pending_requests(boundary_ms=boundary_ms)
+        matches=tuple(key for key,item in self._pending.items() if item.request is request)
+        if len(matches)!=1:
+            raise ValueError('Native management retirement requires its exact pending request')
+        del self._pending[matches[0]]
+
     def complete(self,requests,*,boundary_ms):
         pending=self.pending_requests(boundary_ms=boundary_ms)
         if type(requests) is not tuple or len(requests)!=len(pending) or any(
