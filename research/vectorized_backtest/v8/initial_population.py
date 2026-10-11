@@ -55,9 +55,23 @@ def reconstruct(campaign):
     from research.vectorized_backtest.v7.diversity import summarize,next_population
     saved=json.loads((campaign/'checkpoint.json').read_text(encoding='utf-8-sig'))
     contract=saved['contract'];rng=np.random.default_rng(contract['seed'])
-    population=original_sample(rng,contract['population']);generation=saved['completed_generations']
+    population=original_sample(rng,contract['population']);generation=saved['completed_generations'];start=1
+    # A migrated campaign can contain earlier generations from another selector.
+    # Use its hash-bound predecessor checkpoint as the exact RNG/population anchor.
+    handoff=campaign/'handoff.json'
+    if handoff.exists():
+        migration=json.loads(handoff.read_text(encoding='utf-8-sig'))
+        predecessor=Path(migration['old_campaign'])/'checkpoint.json'
+        if file_hash(predecessor)!=migration['old_checkpoint_sha256']:raise ValueError('V7 predecessor checkpoint changed')
+        anchor=json.loads(predecessor.read_text(encoding='utf-8-sig'))
+        start=anchor['completed_generations']+1
+        if start!=migration['completed_generations']+1 or not 1<=start<=generation:
+            raise ValueError('Invalid V7 reconstruction anchor')
+        if digest(anchor['population'])!=migration['population_sha256']:raise ValueError('V7 anchor population mismatch')
+        population=[Individual.restore(v) for v in anchor['population']]
+        rng.bit_generator.state=anchor['rng_state']
     days=sorted(contract['input_receipts'])
-    for number in range(1,generation+1):
+    for number in range(start,generation+1):
         root=campaign/f'generation-{number:04d}'
         seal=json.loads((root/'complete.json').read_text(encoding='utf-8-sig'))
         if seal.get('validation_opened') is not False or seal['training_days']!=days:
