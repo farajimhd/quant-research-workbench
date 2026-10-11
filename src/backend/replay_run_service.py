@@ -2776,6 +2776,47 @@ class ReplayRunController:
                 await preparation
                 raise
 
+    async def _stage_native_channel_boundary(self,manager,work,*,event_time):
+        """Stage current-held observations after inherited exits, then drain."""
+        owner=getattr(manager,'_native_channel_owner',None)
+        if owner is None:
+            return
+        if owner._feature_session is None:
+            raise ValueError('Declared native decisions lack prepared certified features')
+        from .backtest_market_data import SESSION_OPEN_OFFSET_MS, market_day_boundary
+        boundary=work.boundary_ms
+        day_ms=boundary+SESSION_OPEN_OFFSET_MS
+        if event_time != market_day_boundary(owner.session_date,boundary):
+            raise ValueError('Native boundary staging differs from its completed source clock')
+        if day_ms % owner.policy.exit_policy.sequence.inputs.decision_interval_ms:
+            return
+        assignments=self._strategy.assignments()
+        by_owner={(item.account_id,item.assignment_id,item.ticker):item for item in assignments}
+        if len(by_owner)!=len(assignments):
+            raise ValueError('Native boundary repeats assignment ownership')
+        quotes={ticker:resolutions.get(100) for ticker,resolutions in work.broker_rows}
+        if len(quotes)!=len(work.broker_rows):
+            raise ValueError('Native boundary repeats ticker source ownership')
+        prepared=owner._feature_session[0]
+        for key in sorted(manager._positions):
+            assignment=by_owner.get(key)
+            if assignment is None:
+                raise ValueError('Native held position lacks its exact current assignment')
+            quote=quotes.get(assignment.ticker)
+            if quote is None:
+                continue
+            expected_quote={'ticker':assignment.ticker,'session_date':owner.session_date.isoformat(),
+                'boundary_ms':boundary}
+            if any(name in quote and quote[name]!=value for name,value in expected_quote.items()):
+                raise ValueError('Native quote contradicts its completed ticker or session ownership')
+            quote=dict(quote,ticker=assignment.ticker,session_date=owner.session_date.isoformat(),
+                boundary_ms=boundary)
+            await manager.stage_current_native_channel_management(
+                prepared.sequence_for(assignment.ticker),quote,assignment=assignment,boundary_ms=boundary)
+        requests=manager.native_channel_requests(boundary_ms=boundary)
+        if requests:
+            await self._confirm_native_channel_checkpoint(requests,event_time=event_time)
+
     async def _confirm_native_channel_checkpoint(self, requests: tuple, *, event_time):
         """Drain exact staged exits with a fresh checkpoint after each order."""
         from .backtest_native_channel_management_owner import NativeChannelManagementOwner
@@ -4141,6 +4182,7 @@ class ReplayRunController:
                 requests = manager.profit_arming_requests(boundary_ms=work.boundary_ms)
                 if requests:
                     await self._confirm_profit_arming_checkpoint(requests, event_time=at)
+            await self._stage_native_channel_boundary(manager,work,event_time=at)
             if boundary_count % 256 == 0:
                 await self._publish()
 

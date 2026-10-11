@@ -40,6 +40,31 @@ def test_controller_prepares_declared_features_once_with_actual_horizons(install
         market=args['market'],start_after=0))
 
 
+def test_controller_stages_owned_quotes_then_drains_exact_pending(installed):
+    from src.backend.backtest_market_data import market_day_boundary
+    owner,_,context,quote,args=owner_case(installed,strategy_number=2)
+    assignment=SimpleNamespace(account_id=args['financial'].account_id,
+        assignment_id=args['financial'].assignment_id,ticker=args['financial'].ticker)
+    key=(assignment.account_id,assignment.assignment_id,assignment.ticker)
+    prepared=SimpleNamespace(sequence_for=lambda ticker:context['prepared'])
+    owner._feature_session=(prepared,1,1)
+    staged=AsyncMock(return_value=None)
+    requests=(object(),)
+    manager=SimpleNamespace(_native_channel_owner=owner,_positions={key:object()},
+        stage_current_native_channel_management=staged,native_channel_requests=lambda **kw:requests)
+    controller=ReplayRunController.__new__(ReplayRunController)
+    controller._strategy=SimpleNamespace(assignments=lambda:(assignment,))
+    controller._confirm_native_channel_checkpoint=AsyncMock()
+    work=SimpleNamespace(boundary_ms=args['boundary_ms'],broker_rows=((assignment.ticker,{100:quote}),))
+    at=market_day_boundary(owner.session_date,work.boundary_ms)
+    asyncio.run(controller._stage_native_channel_boundary(manager,work,event_time=at))
+    staged.assert_awaited_once_with(context['prepared'],quote,assignment=assignment,boundary_ms=work.boundary_ms)
+    controller._confirm_native_channel_checkpoint.assert_awaited_once_with(requests,event_time=at)
+    with pytest.raises(ValueError):
+        asyncio.run(controller._stage_native_channel_boundary(manager,
+            SimpleNamespace(boundary_ms=work.boundary_ms,broker_rows=work.broker_rows*2),event_time=at))
+
+
 def controller_case(installed,monkeypatch,*,reject=False,changed=False):
     owner,_,evidence,quote,args=owner_case(installed,strategy_number=2)
     first=owner.stage(evidence['prepared'],quote,**args)
