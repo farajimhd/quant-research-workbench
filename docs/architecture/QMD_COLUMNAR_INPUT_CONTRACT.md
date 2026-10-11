@@ -64,6 +64,15 @@ silently acquire an extra premarket/overnight warm-up. Empty price clocks remain
 missing. Last-price and high/low eligibility masks are independent; a last-only
 update does not invalidate otherwise usable close/activity fields.
 
+`columnar_history_product` defines the shared scalar field, completed-clock,
+feature-interval and coverage tables on `live_market_ssd`. Its catalog preserves
+the original 604 history feature IDs. Preparation joins separately certified
+bar and liquidity parents, calculates each selected field once, and stores
+unchanged Float32 values as lossless intervals with explicit validity. Bounded
+consumer expansion restores dense ordinals, timezone-aware completed clocks,
+volume and masks directly consumable by the shared rule evaluator. This is a
+product projection; it does not certify caller-supplied parents or publish rows.
+
 The shared history calculation, volume transform and scanner are tested, but
 the coverage-last history field product, QMD service access, typed signal-stream
 connection, main app actor/recovery wiring and all-30 app comparison remain
