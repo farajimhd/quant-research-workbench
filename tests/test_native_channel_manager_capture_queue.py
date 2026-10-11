@@ -64,3 +64,45 @@ def test_frozen_capture_is_reproved_on_actual_journal_worker(installed,monkeypat
             with pytest.raises(RuntimeError): journal.close()
         else: journal.close()
     assert not journal._thread.is_alive()
+
+
+def test_actual_publisher_routes_frozen_native_checkpoint_with_financial_captures(installed):
+    import asyncio
+    from concurrent.futures import Future
+    from tests.test_backtest_typed_publisher import FakeWriter,_publisher,_journal,RUN,DAY,AT
+    from src.backend.backtest_native_channel_management_owner import NativeChannelManagementOwner,NativeChannelManagerCheckpoint
+    from src.backend.backtest_strategy_one_management import OriginalRiskManagementState
+    from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
+    policy=owner_case(installed)[0].policy
+    owner=NativeChannelManagementOwner(run_id=RUN,session_date=DAY,policy=policy)
+    state=NativeChannelManagerCheckpoint(OriginalRiskManagementState(300000,(),(),()),owner.freeze(boundary_ms=300000))
+    class CheckpointWriter(FakeWriter):
+        journal_profile='backtest_v4'
+        def submit_base_v4(self,batch): return FakeWriter.submit(self,batch)
+        def capture(self,kind,**kwargs):
+            self.captures[kind]=kwargs
+            receipt=Future();receipt.set_result(kwargs['journal_batch_id']);return receipt
+        def submit_native_channel_manager_snapshot(self,**kwargs): return self.capture('native',**kwargs)
+        def submit_broker_match_snapshot(self,**kwargs): return self.capture('broker',**kwargs)
+        def submit_oms_observation_snapshot(self,**kwargs): return self.capture('oms',**kwargs)
+        def submit_running_portfolio_snapshot(self,**kwargs): return self.capture('portfolio',**kwargs)
+    async def exercise():
+        writer=CheckpointWriter();writer.captures={}
+        publisher=_publisher(_journal(),writer)
+        # Reader/principal admission is covered separately; this verifies the
+        # actual checkpoint coordinator dispatch with controlled writer receipts.
+        publisher._native_channel_exit_source=SimpleNamespace(policy=policy,contexts=())
+        portfolio=CapturedPortfolioSnapshot(run_id=RUN,account_id='DU1',state_revision=2,
+            snapshot_at=AT,account_key='DU1',control_mode='enabled',sync_state='entries_blocked',
+            broker_snapshot_id='',observed_at=None,stale_reason='',peak_net_liquidation=0.0,
+            realized_pnl_baseline=None,selected_policy=None,disabled_strategies=(),commands=(),
+            requests=(),reservations=(),allocations=(),reconciliation=())
+        receipt=await publisher.enqueue_checkpoint(boundary_id=f'{DAY}:300000',manager_state=state,
+            broker_state=(300000,{}),oms_observations={},portfolio_captures=(portfolio,))
+        assert receipt.last_sequence==2
+        assert set(writer.captures)=={'native','broker','oms','portfolio'}
+        assert writer.captures['native']['capture'] is state.pending
+        assert writer.captures['native']['state'] is state.inherited
+        assert writer.captures['native']['native_channel_contexts']==()
+        assert all(value['journal_batch_id']==receipt.last_batch_id for value in writer.captures.values())
+    asyncio.run(exercise())

@@ -55,6 +55,23 @@ def test_frozen_pending_capture_survives_live_inventory_drain(installed):
     with pytest.raises(ValueError): replace(frozen,boundary_ms=frozen.boundary_ms+100)
 
 
+def test_controller_checkpoint_joins_pending_to_active_inherited_entry(installed):
+    from src.backend.backtest_native_channel_management_owner import NativeChannelManagerCheckpoint
+    from src.trading_runtime.strategy_one_management_snapshot import restore_manager_snapshot
+    owner,rows,context,quote,args=owner_case(installed)
+    owner.stage(context['prepared'],quote,**args)
+    pending=owner.freeze(boundary_ms=args['boundary_ms'])
+    inherited=restore_manager_snapshot(rows.inherited)
+    # Use the actual manager-owned source for this controller capture, rather
+    # than the older normalized recovery fixture's independently supplied entry.
+    key=pending.items[0][0]
+    inherited=replace(inherited,submitted=((key,args['original_entry']),))
+    joined=NativeChannelManagerCheckpoint(inherited,pending)
+    assert joined.pending is pending
+    with pytest.raises(ValueError): NativeChannelManagerCheckpoint(replace(inherited,submitted=()),pending)
+    with pytest.raises(ValueError): NativeChannelManagerCheckpoint(replace(inherited,positions=()),pending)
+
+
 def test_owner_rejects_changed_native_fill_source_and_foreign_checkpoint(installed):
     owner,rows,context,quote,args=owner_case(installed)
     with pytest.raises(ValueError): owner.stage(context['prepared'],quote,

@@ -66,6 +66,25 @@ class NativeChannelPendingCapture:
         return owner.capture(inherited,journal_batch_id=journal_batch_id)
 
 
+@dataclass(frozen=True,slots=True)
+class NativeChannelManagerCheckpoint:
+    """Controller-frozen inherited manager and complete native pending inventory."""
+    inherited: object
+    pending: NativeChannelPendingCapture
+
+    def __post_init__(self):
+        from .backtest_strategy_one_management import OriginalRiskManagementState
+        if (type(self.inherited) is not OriginalRiskManagementState
+                or type(self.pending) is not NativeChannelPendingCapture
+                or self.inherited.boundary_ms!=self.pending.boundary_ms):
+            raise ValueError('Native checkpoint requires its exact inherited and pending boundary')
+        self.pending.__post_init__()
+        sources=dict(self.inherited.submitted)
+        held=dict(self.inherited.positions)
+        if any(key not in held or sources.get(key)!=item.original_entry for key,item in self.pending.items):
+            raise ValueError('Native checkpoint pending position differs from active inherited entry ownership')
+
+
 class NativeChannelManagementOwner:
     """Keep exact accepted observations until the controller drains them.
 

@@ -2466,6 +2466,13 @@ class ReplayRunController:
                                 raise RuntimeError('Selected checkpoint publication did not reach its captured frontier')
                 manager_state = (selected_owner.capture(manager, boundary_ms=boundary)
                     if selected_owner is not None else manager.capture_state(boundary_ms=boundary))
+                native_owner=getattr(manager,'_native_channel_owner',None)
+                if native_owner is not None:
+                    if selected_owner is not None:
+                        raise RuntimeError('Native channel checkpoint cannot mix fixed-lot management owners')
+                    from .backtest_native_channel_management_owner import NativeChannelManagerCheckpoint
+                    manager_state=NativeChannelManagerCheckpoint(manager_state,
+                        native_owner.freeze(boundary_ms=boundary))
                 evidence_state = manager.evidence.capture_recovery_state()
                 if evidence_state.boundary_ms != boundary:
                     raise RuntimeError("Strategy 1 evidence clock differs from checkpoint")

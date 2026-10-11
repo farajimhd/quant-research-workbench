@@ -777,7 +777,20 @@ class BacktestTypedJournalPublisher:
                                     from src.backend.backtest_fixed_structural_lot_management import FixedStructuralLotManagerCheckpoint
                                     selected_manager=(isinstance(manager_state,tuple) and len(manager_state)==2
                                         and type(manager_state[1]) is FixedStructuralLotManagerCheckpoint)
-                                    if manager_state is not None and not selected_manager:
+                                    from .backtest_native_channel_management_owner import NativeChannelManagerCheckpoint
+                                    native_manager=type(manager_state) is NativeChannelManagerCheckpoint
+                                    if native_manager:
+                                        source=self._native_channel_exit_source
+                                        if source is None or source.policy!=manager_state.pending.policy:
+                                            raise ValueError('Native checkpoint lost its bound publisher source')
+                                        manager_receipt=self.writer.submit_native_channel_manager_snapshot(
+                                            capture=manager_state.pending,state=manager_state.inherited,
+                                            checkpoint_sequence=sequence,journal_batch_id=self._batch_id,
+                                            first_price_source=self._first_price_source,
+                                            native_channel_contexts=source.contexts)
+                                        if await asyncio.wrap_future(manager_receipt)!=self._batch_id:
+                                            raise RuntimeError('Native manager snapshot differs from committed checkpoint')
+                                    elif manager_state is not None and not selected_manager:
                                         manager_receipt = self.writer.submit_manager_snapshot(
                                             session_date=session_date,
                                             checkpoint_sequence=sequence,
@@ -909,6 +922,17 @@ class BacktestTypedJournalPublisher:
                    ("checkpoint", "market_boundary", boundary_id)):
             raise ValueError("Typed Backtest checkpoint needs the last normalized cursor")
         if manager_state is not None:
+            from .backtest_native_channel_management_owner import NativeChannelManagerCheckpoint
+            is_native_capture=type(manager_state) is NativeChannelManagerCheckpoint
+            if is_native_capture:
+                manager_state.__post_init__()
+                source=self._native_channel_exit_source
+                if (source is None or source.policy!=manager_state.pending.policy
+                        or manager_state.pending.run_id!=self.journal.run_id
+                        or manager_state.pending.boundary_ms!=pending[-1].payload.get('boundary_ms')
+                        or fixed_lot_owner is not None or broker_state is None
+                        or oms_observations is None or not portfolio_captures):
+                    raise ValueError('Native checkpoint requires its bound source and all financial captures')
             from src.backend.backtest_fixed_structural_lot_management import (
                 FixedStructuralLotManagerCheckpoint,NativeFixedStructuralLotManagement)
             is_selected_capture=type(manager_state) is FixedStructuralLotManagerCheckpoint
@@ -926,7 +950,7 @@ class BacktestTypedJournalPublisher:
                 StrategyOneManagementState,
             )
             if (self.writer.journal_profile != "backtest_v4"
-                    or (not is_selected_capture and (
+                    or (not is_selected_capture and not is_native_capture and (
                     not isinstance(manager_state, StrategyOneManagementState)
                     or manager_state.boundary_ms != pending[-1].payload.get(
                         "boundary_ms")))):
