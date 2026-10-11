@@ -133,10 +133,23 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
             panel.update(top_strategies=state.get('leaders',[]),validation_ranking=state.get('validation_ranking',[]),
                          validation_generation=completed,completed_generations=completed)
         else:
-            population=sample(rng,population_size) if initial_population is None else [Individual.restore(v) for v in json.loads(Path(initial_population).read_text(encoding='utf-8-sig'))['population']]
+            initial=json.loads(Path(initial_population).read_text(encoding='utf-8-sig')) if initial_population else None
+            population=sample(rng,population_size) if initial is None else [Individual.restore(v) for v in initial['population']]
             if len(population)!=population_size:raise ValueError('Initial population size differs from contract')
+            operations=['fresh']*population_size
+            if initial and initial.get('version')=='v8-mixed-initial-population-v1':
+                if digest(initial['population'])!=initial['population_sha256']:raise ValueError('Initial population identity changed')
+                report=initial['initialization'];seeds=report['seed_count']
+                if report.get('validation_feedback') is not False or not 0<=seeds<=population_size or report['random_count']+seeds!=population_size:
+                    raise ValueError('Invalid training-only initialization report')
+                operations=['v7_seed']*seeds+['fresh']*(population_size-seeds)
+                write_json(output/'initialization.json',dict(source=initial['source'],initialization=report))
             pedigree=Pedigree(selection.ancestry_generations)
-            ids=pedigree.birth(population,1,[(-1,-1)]*population_size,['fresh']*population_size)
+            ids=pedigree.birth(population,1,[(-1,-1)]*population_size,operations)
+            if initial and initial.get('version')=='v8-mixed-initial-population-v1':
+                for serial,candidate in zip(ids,initial['initialization']['selected_candidates']):
+                    pedigree.records[int(serial)]['v7_source']=dict(initial['source'],candidate=candidate)
+
         def save(index,leaders=None,validation_rows=None):
             state=dict(completed=index,population=[m.payload() for m in population],ids=ids.tolist(),
                 pedigree=pedigree.records,rng=rng.bit_generator.state,leaders=leaders or [],validation_ranking=validation_rows or [])
@@ -216,7 +229,7 @@ def main():
     parser.add_argument('--device',default='cuda');parser.add_argument('--backend',choices=('compile','eager'),default='compile')
     parser.add_argument('--objective',type=Path,help='JSON with explicit Objective fields')
     parser.add_argument('--selection',type=Path,help='JSON with explicit Selection fields')
-    parser.add_argument('--initial-population',type=Path,help='Explicit immutable population/checkpoint for matched-workload profiling')
+    parser.add_argument('--initial-population',type=Path,help='Immutable mixed initialization manifest or matched-workload checkpoint')
     parser.add_argument('--maximum-gate-gib',type=float,default=6.665611267089844)
     parser.add_argument('--maximum-data-gib',type=float,default=4.)
     args=vars(parser.parse_args());args['population_size']=args.pop('population')

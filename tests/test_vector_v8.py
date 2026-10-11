@@ -322,3 +322,20 @@ def test_episode_compact_export_preserves_empty_and_ragged_candidates():
         dict(episode_profits=[[7.], [], []], episode_listings=[[1], [], []])]
     ledger.reset()
     assert ledger.export() == [dict(episode_profits=[[], [], []], episode_listings=[[], [], []])] * 2
+
+
+def test_initial_seeds_filter_scaled_behavior_and_fill_random_shortfall():
+    from research.vectorized_backtest.v8.initial_population import diverse_seeds,mix
+    from research.vectorized_backtest.v8.genome import sample
+    population=sample(np.random.default_rng(19),4)
+    ordered=[dict(net_pnl=[10.,20.,0.,0.],closed_positions=[1,2,0,0]),
+             dict(net_pnl=[0.,0.,10.,0.],closed_positions=[0,0,1,0])]
+    selected,rejected=diverse_seeds(population,ordered,[0,1,2,3],4)
+    assert selected==[0,2] and rejected==1
+    left,report=mix(population,ordered,[0,1,2,3],100,77)
+    right,again=mix(population,ordered,[0,1,2,3],100,77)
+    assert report==again and [v.payload() for v in left]==[v.payload() for v in right]
+    assert report['seed_count']==2 and report['random_count']==98 and report['requested_seed_count']==10
+    assert len({program_key(m) for m in left})==100
+    assert left[0].payload()==population[0].payload() and left[1].payload()==population[2].payload()
+    with pytest.raises(ValueError):mix(population,ordered,[0],100,fraction=1.1)

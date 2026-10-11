@@ -153,3 +153,28 @@ resume cursor prevent normal restart duplicates; local enqueue status is never
 claimed as cloud acknowledgement. Immutable small summaries are retained locally
 for recovery. `--mode offline` exercises the SDK without uploading. Observer
 status distinguishes waiting, queued-to-SDK, retry, upstream stop and completion.
+
+## Initial sampling from V7
+
+For the final run, prepare a frozen population with `python -B -m
+research.vectorized_backtest.v8.initial_population --v7-campaign <campaign>
+--stopped-v7-receipt <authorized-stop.json> --output
+D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v8/initialization/population.json`.
+Then pass that file to `run_search --initial-population` alongside the normal
+training, validation and output arguments. No optimization starts during preparation.
+Default: 1024 candidates, at most floor(10%) = 102 V7 seeds and 922 fresh random
+candidates. Fraction, population, RNG seed and similarity threshold are explicit options.
+
+V7 seeds come in descending V7 training-score order from the last completed
+generation, reconstructed deterministically and verified against every generation's
+population hash and sealed session receipts. The checkpoint's successor population
+is never indexed with the preceding generation's ranking. Ranking is independently
+recomputed from training receipts. Exact effective-program duplicates are excluded;
+candidates with both session-profit and closed-position-count cosine similarity
+at least 0.98 to an accepted seed are excluded. This is a compact behavioral proxy,
+not a guarantee of different trades. It runs once; no per-generation similarity cost.
+Any diversity shortfall is explicitly reported and filled with unique random candidates.
+Seeds retain V7 generation/candidate provenance; V8 ancestry starts at import because
+V7 did not persist parent links. Sampling, hashes and selected indices are frozen in
+the initialization artifact and checkpoint contract. Validation is never read.
+Matched-workload V7/V8 profiles retain their identical comparison populations.
