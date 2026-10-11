@@ -1,5 +1,5 @@
 """Columnar per-acquisition feature screening; no quote, cash or order authority."""
-from dataclasses import dataclass
+from dataclasses import dataclass,field
 
 import numpy as np
 import polars as pl
@@ -27,9 +27,11 @@ class NativeChannelPositionIndex:
     acquisition_key: tuple
     boundaries_bytes: bytes
     qualified_bytes: bytes
+    prepared: PreparedNativeChannelSequence = field(repr=False,compare=False)
 
     def __post_init__(self):
-        if (type(self.acquisition_key) is not tuple or len(self.acquisition_key)!=9
+        if (type(self.prepared) is not PreparedNativeChannelSequence
+                or type(self.acquisition_key) is not tuple or len(self.acquisition_key)!=9
                 or type(self.boundaries_bytes) is not bytes or type(self.qualified_bytes) is not bytes
                 or not self.qualified_bytes or len(self.boundaries_bytes)!=8*len(self.qualified_bytes)):
             raise ValueError('Native feature index requires complete immutable boundary and predicate storage')
@@ -38,8 +40,9 @@ class NativeChannelPositionIndex:
                 value not in (0,1) for value in self.qualified_bytes):
             raise ValueError('Native feature index boundaries or predicates are invalid')
 
-    def candidate_at(self,decision_day_ms,*,acquisition):
+    def candidate_at(self,decision_day_ms,*,acquisition,prepared):
         if (type(decision_day_ms) is not int or decision_day_ms<0
+                or prepared is not self.prepared
                 or _acquisition_key(acquisition)!=self.acquisition_key):
             raise ValueError('Native feature lookup differs from original position acquisition')
         boundaries=np.frombuffer(self.boundaries_bytes,dtype=np.int64)
@@ -70,4 +73,4 @@ def prepare_native_channel_position_index(prepared,decisions,*,acquisition):
     evidence=prepared.decision_evidence(ordered,np.ones(ordered.height,dtype=bool),
         np.full(ordered.height,acquisition.acquisition_day_us,dtype=np.int64))
     return NativeChannelPositionIndex(key,ordered['decision_day_ms'].to_numpy().tobytes(),
-        evidence['qualified'].to_numpy().tobytes())
+        evidence['qualified'].to_numpy().tobytes(),prepared)
