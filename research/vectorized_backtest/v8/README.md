@@ -22,7 +22,7 @@ Zero-position strategies have no empirical trade distribution and cannot be pare
 Inactivity has no direct penalty; participation and profitable-session rates are
 diagnostics. Validation cannot select coefficients or candidates.
 
-The bounded per-candidate/session episode buffer defaults to 4096 positions.
+The bounded per-candidate/session episode buffer defaults to 65536 positions.
 An overflow fails explicitly before any score is published. It never truncates
 authoritative positions. Training score verifies episode-count and profit sums
 against financial replay. Tail sorting/reduction uses NumPy segmented operations.

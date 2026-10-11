@@ -28,7 +28,7 @@ def main():
     config=dict(inputs=arg('inputs'),history=arg('history'),feature_cache=arg('feature-cache'),output=str(output),
         device='cuda',backend='compile',batch_size=contract['batch_size'],execution=contract['execution'],
         maximum_data_gib=contract['maximum_data_gib'],maximum_gate_gib=contract['maximum_gate_gib'],
-        source_sha256=search.source_hash(),split='training',episode_capacity=4096,plan_limit=2,
+        source_sha256=search.source_hash(),split='training',episode_capacity=65536,plan_limit=2,
         reuse_results=False)
     receipts=[];times=[]
     with terminal.CampaignProgress(output,contract) as panel,lanes_module.SessionLanes(config,contract['session_workers'],panel) as lanes:

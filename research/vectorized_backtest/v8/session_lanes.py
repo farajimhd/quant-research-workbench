@@ -65,7 +65,7 @@ class Worker:
         root=require_runtime(Path(c['output'])/f'generation-{generation:04d}'/day)
         cache_path=require_runtime(Path(c['output'])/'result-cache')/(day+'.json')
         identity=dict(source=c['source_sha256'],data=item.identity,execution=c['execution'],
-                      split=c.get('split','training'),episode_capacity=c.get('episode_capacity',4096))
+                      split=c.get('split','training'),episode_capacity=c.get('episode_capacity',65536))
         keys=[v.get('canonical_sha256') or program_key(m) for v,m in zip(payload,population)];cached={}
         if cache_path.exists() and c.get('reuse_results',True):
             record=json.loads(cache_path.read_text(encoding='utf-8-sig'))
@@ -79,7 +79,7 @@ class Worker:
             if missing:
                 if device.type=='cuda':
                     required=item.bytes+item.resident_features.bytes+(2*c['maximum_gate_gib']+2+c['capture_gib'])*1024**3
-                    required+=c['batch_size']*(c.get('episode_capacity',4096)+replay_width)*16
+                    required+=c['batch_size']*(c.get('episode_capacity',65536)+replay_width)*16
                     if required>c['lane_memory_bytes']:raise MemoryError('Independent session exceeds admitted GPU memory budget')
                 self.staging.activate([(day,item)],device)
             load_seconds=perf_counter()-started
@@ -115,7 +115,7 @@ class Worker:
                     rule_seconds=perf_counter()-batch_start;replay_start=time();replay_clock=perf_counter()
                     self.emit(day,stage='Replay positions',candidate_offset=offset,replay_started=replay_start)
                     result=replay_cohort([item],members,[gates],execution=execution,backend=c['backend'],listing_width=replay_width,
-                        episode_capacity=c.get('episode_capacity',4096),
+                        episode_capacity=c.get('episode_capacity',65536),
                         progress=lambda done,total:self.emit(day,stage='Replay positions',candidate_offset=offset,
                             completed_seconds=done,total_seconds=total))[0]
                     metrics={k:v.detach().cpu().tolist() if isinstance(v,torch.Tensor) else v for k,v in result.items()}

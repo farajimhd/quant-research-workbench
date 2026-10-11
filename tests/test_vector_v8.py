@@ -308,3 +308,17 @@ def test_grouped_rules_match_v7_on_certified_fixture(tmp_path):
         actual=right.evaluate(data,members,17,1,.1)
         torch.testing.assert_close(actual,expected,rtol=0,atol=0)
     finally:left.close();right.close();data.close()
+
+
+def test_episode_compact_export_preserves_empty_and_ragged_candidates():
+    from research.vectorized_backtest.v8.episodes import Episodes
+    ledger = Episodes(2, 3, 8, 'cpu', max_listings=2)
+    closed = torch.tensor([[[True, False], [False, False], [True, True]],
+                           [[False, True], [False, False], [False, False]]])
+    profits = torch.arange(12, dtype=torch.float64).reshape(2, 3, 2)
+    ledger.append_events(closed, profits)
+    assert ledger.export() == [
+        dict(episode_profits=[[0.], [], [4., 5.]], episode_listings=[[0], [], [0, 1]]),
+        dict(episode_profits=[[7.], [], []], episode_listings=[[1], [], []])]
+    ledger.reset()
+    assert ledger.export() == [dict(episode_profits=[[], [], []], episode_listings=[[], [], []])] * 2

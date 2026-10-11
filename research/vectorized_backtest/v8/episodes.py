@@ -37,6 +37,18 @@ class Episodes:
         counts = self.counts.cpu().numpy()
         if (counts>self.capacity).any():
             raise MemoryError('Completed-position buffer overflow; no truncated score published')
-        profits = self.profits.cpu().numpy(); listings = self.listings.cpu().numpy()
-        return [dict(episode_profits=[profits[s,i,:n].tolist() for i,n in enumerate(row)],
-                     episode_listings=[listings[s,i,:n].tolist() for i,n in enumerate(row)]) for s,row in enumerate(counts)]
+        largest = int(counts.max())
+        # Transfer completed positions only; unused bounded capacity stays on GPU.
+        mask = torch.arange(largest, device=self.counts.device) < self.counts[..., None]
+        profits = self.profits[..., :largest].masked_select(mask).cpu().numpy()
+        listings = self.listings[..., :largest].masked_select(mask).cpu().numpy()
+        result = []; offset = 0
+        for row in counts:
+            session_profits = []; session_listings = []
+            for count in row:
+                end = offset + int(count)
+                session_profits.append(profits[offset:end].tolist())
+                session_listings.append(listings[offset:end].tolist())
+                offset = end
+            result.append(dict(episode_profits=session_profits, episode_listings=session_listings))
+        return result

@@ -140,7 +140,7 @@ def state_signals(signals,held,age,limits,stateful:bool):
     return signals&mask
 
 
-def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',progress=None,listing_width=None, episode_capacity=4096):
+def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',progress=None,listing_width=None, episode_capacity=65536):
     """One batched position engine across independent sessions and strategies.
 
     No bid/ask, spread, volume-capacity, cash, or pending-order tensors enter

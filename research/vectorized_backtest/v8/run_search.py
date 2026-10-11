@@ -92,7 +92,7 @@ def read_panel(root,days,token):
 
 def run(training,validation,output,*,population_size=1024,generations=50,batch_size=512,
         session_workers=2,seed=2237,device='cuda',backend='compile',execution=Execution(fee_per_share=.005,minimum_order_fee=1),
-        objective=Objective(),selection=Selection(),episode_capacity=4096,maximum_gate_gib=6.665611267089844,
+        objective=Objective(),selection=Selection(),episode_capacity=65536,maximum_gate_gib=6.665611267089844,
         maximum_data_gib=4.,plan_limit=2,initial_population=None):
     if not 10<=population_size<=65536 or not 1<=batch_size<=1024 or not 1<=session_workers<=8 or generations<1:
         raise ValueError('Explicit bounded campaign required')
@@ -211,7 +211,7 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ('training','validation','output'):parser.add_argument('--'+name,type=Path,required=True)
-    for name,default in (('population',1024),('generations',50),('batch-size',512),('session-workers',2),('seed',2237),('episode-capacity',4096),('plan-limit',2)):
+    for name,default in (('population',1024),('generations',50),('batch-size',512),('session-workers',2),('seed',2237),('episode-capacity',65536),('plan-limit',2)):
         parser.add_argument('--'+name,type=int,default=default)
     parser.add_argument('--device',default='cuda');parser.add_argument('--backend',choices=('compile','eager'),default='compile')
     parser.add_argument('--objective',type=Path,help='JSON with explicit Objective fields')
