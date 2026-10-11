@@ -1677,6 +1677,26 @@ def initialize_numbered_fixed_strategies() -> None:
                 certify_native_participation_acquisition_successor_source, channel_reader_isolation_release,
                 historical_parent_proof=participation_acquisition_parent_source_proof())))
         register_numbered_strategy(participation_acquisition)
+        from .strategy_one_hundred_thirty_one_release import release_contract as participation_binding_release
+        from .strategy_one_hundred_thirty_one_contract import strategy_one_hundred_thirty_one_contract
+        from .strategy_one_hundred_thirty_one_configuration import (
+            SOURCE_PREFIX as participation_binding_source_prefix,
+            derive_strategy_one_hundred_thirty_one_configuration,
+            verify_strategy_one_hundred_thirty_one_manifest,
+            historical_parent_source_proof as participation_binding_parent_source_proof)
+        from src.backend.backtest_native_participation_binding_successor_certification import certify_native_participation_binding_successor_source
+        participation_binding = participation_binding_release()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=participation_binding.executor_strategy_id, revision=participation_binding.executor_revision,
+            evaluation_interval=participation_binding.evaluation_interval,
+            strategy_factory=_strategy_two_factory,
+            contract_factory=strategy_one_hundred_thirty_one_contract,
+            manifest_authority=NativeManifestAuthority(130, participation_binding_source_prefix,
+                derive_strategy_one_hundred_thirty_one_configuration,
+                verify_strategy_one_hundred_thirty_one_manifest,
+                certify_native_participation_binding_successor_source, participation_acquisition_release,
+                historical_parent_proof=participation_binding_parent_source_proof())))
+        register_numbered_strategy(participation_binding)
         _NUMBERED_FIXED_REGISTERED = True
 
 
