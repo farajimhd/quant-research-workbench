@@ -98,6 +98,39 @@ class NativeChannelManagementOwner:
         policy.__post_init__()
         self.run_id,self.session_date,self.policy=run_id,session_date,policy
         self._pending={}
+        self._feature_session=None
+        self._feature_indexes={}
+
+    def bind_feature_session(self, session, *, through_day_boundary_ms, max_positions):
+        """Bind source-only preparation once; actual ownership is read per stage."""
+        from .backtest_native_channel_session_source import PreparedNativeChannelSession
+        if (type(session) is not PreparedNativeChannelSession or self._feature_session is not None
+                or self._pending or type(max_positions) is not int or max_positions <= 0
+                or type(through_day_boundary_ms) is not int or through_day_boundary_ms < 0
+                or any(sequence.policy != self.policy.exit_policy.sequence
+                    or through_day_boundary_ms > sequence.packet.request.through_day_boundary_ms
+                    or sequence.packet.request.session_date != self.session_date.isoformat()
+                    for sequence in session.sequences)):
+            raise ValueError('Native feature binding requires one exact bounded declared source session')
+        self._feature_session=(session,through_day_boundary_ms,max_positions)
+
+    def _position_index(self, prepared, clock):
+        from .backtest_native_channel_position_index import (
+            _acquisition_key, prepare_native_channel_acquisition_index,
+        )
+        session,through,capacity=self._feature_session
+        if session.sequence_for(clock.ticker) is not prepared:
+            raise ValueError('Native feature cache cannot borrow another prepared source')
+        key=(clock.account_id,clock.assignment_id,clock.ticker)
+        previous=self._feature_indexes.get(key)
+        if previous is not None and previous.acquisition_key==_acquisition_key(clock):
+            return previous
+        if previous is None and len(self._feature_indexes)>=capacity:
+            raise ValueError('Native feature cache exceeds its explicit position capacity')
+        index=prepare_native_channel_acquisition_index(prepared,acquisition=clock,
+            through_day_boundary_ms=through)
+        self._feature_indexes[key]=index
+        return index
 
     def stage(self,prepared,quote,*,financial,original_entry,group,executions,
             source_entry_intent_id,expected_conid,boundary_ms,position_index=None):
@@ -106,6 +139,11 @@ class NativeChannelManagementOwner:
         clock=acquisition_clock_from_entry_executions(group,executions,
             session_date=self.session_date,as_of=market_day_boundary(self.session_date,boundary_ms),
             source_entry_intent_id=source_entry_intent_id,expected_conid=expected_conid)
+        if self._feature_session is not None:
+            cached=self._position_index(prepared,clock)
+            if position_index is not None and position_index is not cached:
+                raise ValueError('Bound native feature owner requires its exact cached acquisition index')
+            position_index=cached
         request=build_native_channel_management_request(prepared,quote,policy=self.policy.exit_policy,
             financial=financial,acquisition=clock,original_entry=original_entry,
             boundary_ms=boundary_ms,position_index=position_index)

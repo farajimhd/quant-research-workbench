@@ -41,6 +41,40 @@ def test_owner_stages_native_fills_captures_full_root_and_reproves_every_request
     assert owner.pending_requests(boundary_ms=args['boundary_ms'])==()
 
 
+def test_bound_feature_owner_reuses_only_exact_acquisition_index(installed):
+    from src.backend.backtest_native_channel_session_source import PreparedNativeChannelSession
+    from src.trading_runtime.native_acquisition_clock import acquisition_clock_from_entry_executions
+    from src.backend.backtest_market_data import market_day_boundary
+    owner,_,context,quote,args=owner_case(installed)
+    prepared=context['prepared']
+    through=prepared.packet.request.through_day_boundary_ms
+    prepared=replace(prepared,policy=replace(prepared.policy,
+        max_decisions=through//prepared.policy.inputs.decision_interval_ms+1))
+    owner=NativeChannelManagementOwner(run_id=owner.run_id,session_date=owner.session_date,
+        policy=replace(owner.policy,exit_policy=replace(owner.policy.exit_policy,sequence=prepared.policy,
+            quote=replace(owner.policy.exit_policy.quote,max_rows=prepared.policy.max_decisions))))
+    session=PreparedNativeChannelSession((args['financial'].ticker,),(prepared,))
+    owner.bind_feature_session(session,through_day_boundary_ms=through,max_positions=1)
+    clock=acquisition_clock_from_entry_executions(args['group'],args['executions'],
+        session_date=owner.session_date,as_of=market_day_boundary(owner.session_date,args['boundary_ms']),
+        source_entry_intent_id=args['source_entry_intent_id'],expected_conid=args['expected_conid'])
+    before=len(installed[0].sql)
+    index=owner._position_index(prepared,clock)
+    assert owner._position_index(prepared,clock) is index
+    assert owner._position_index(prepared,replace(clock,execution_ids=(*clock.execution_ids,'add'))) is index
+    assert len(installed[0].sql)==before
+    request=owner.stage(prepared,quote,**args)
+    assert request is not None
+    assert owner.stage(prepared,quote,**args) is request
+    assert owner._position_index(prepared,clock) is index
+    with pytest.raises(ValueError): owner._position_index(replace(prepared),clock)
+    with pytest.raises(ValueError): owner._position_index(prepared,replace(clock,assignment_id='foreign'))
+    with pytest.raises(ValueError): owner.bind_feature_session(session,
+        through_day_boundary_ms=through,max_positions=1)
+    changed=replace(clock,source_entry_intent_id='new-entry')
+    assert owner._position_index(prepared,changed) is not index
+
+
 def test_individual_retirement_requires_exact_request_and_boundary(installed):
     owner,rows,context,quote,args=owner_case(installed)
     request=owner.stage(context['prepared'],quote,**args)
