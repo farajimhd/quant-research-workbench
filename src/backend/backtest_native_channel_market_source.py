@@ -44,3 +44,27 @@ def certify_native_channel_market_source(market, policy, *, exclusions=(),
         raise ValueError('Native feature plan differs from the certified trading source units or dependencies')
     selected = tuple(value for value in source.tickers if value not in exclusions)
     return project_market_day_plan(source, selected) if selected != source.tickers else source
+
+
+def native_channel_feature_source_pin(market, policy, *, exclusions):
+    """Pin declared exclusions independently of effective candidate projection."""
+    source = certify_native_channel_market_source(market, policy, exclusions=exclusions)
+    return {'schema': 'native-channel-feature-source@1',
+        'parent_market_plan_token': source.token, 'policy_digest': policy.inputs.digest,
+        'declared_input_exclusions': list(exclusions)}
+
+
+def certify_pinned_native_channel_market_source(market, policy, pins):
+    """Recheck the launch-pinned source; never reread a mutable exclusion file."""
+    pin = pins.get('native_channel_feature_source') if type(pins) is dict else None
+    if (type(pin) is not dict or set(pin) != {'schema', 'parent_market_plan_token',
+            'policy_digest', 'declared_input_exclusions'}
+            or pin['schema'] != 'native-channel-feature-source@1'
+            or type(pin['declared_input_exclusions']) is not list
+            or pin['policy_digest'] != policy.inputs.digest):
+        raise ValueError('Native feature source lacks its exact launch-pinned declaration')
+    source = certify_native_channel_market_source(market, policy,
+        exclusions=tuple(pin['declared_input_exclusions']))
+    if source.token != pin['parent_market_plan_token']:
+        raise ValueError('Native feature source parent changed after launch preflight')
+    return source

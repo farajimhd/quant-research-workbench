@@ -25,7 +25,12 @@ def test_controller_prepares_declared_features_once_with_actual_horizons(install
         lambda self:packet.request.through_day_boundary_ms//2-SESSION_OPEN_OFFSET_MS)
     controller=ReplayRunController.__new__(ReplayRunController)
     controller.definition=SimpleNamespace(market_data_plan={
-        'strategy_one_input_exclusions': ['EXCLUDED']})
+        'strategy_one_input_exclusions': [],
+        'native_channel_feature_source': {
+            'schema': 'native-channel-feature-source@1',
+            'parent_market_plan_token': args['market'].token,
+            'policy_digest': owner.policy.exit_policy.sequence.inputs.digest,
+            'declared_input_exclusions': ['EXCLUDED']}})
     def feature_market(market,policy,*,exclusions):
         assert market is args['market'] and policy==owner.policy.exit_policy.sequence
         assert exclusions==('EXCLUDED',)

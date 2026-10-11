@@ -66,3 +66,33 @@ def test_malformed_external_exclusions_fail_before_source_read(exclusions):
     with pytest.raises(ValueError):
         certify_native_channel_market_source(market(), POLICY, exclusions=exclusions,
             plan_factory=lambda **kwargs: pytest.fail('Malformed scope performed I/O'))
+
+
+def test_feature_pin_preserves_declared_exclusion_when_candidate_exclusions_are_empty(monkeypatch):
+    from src.backend import backtest_native_channel_market_source as subject
+    m = market()
+    m = replace(m, tickers=('X', 'Y'), units=m.units + tuple(
+        replace(unit, ticker='Y') for unit in m.units))
+    original = subject.certify_native_channel_market_source
+    monkeypatch.setattr(subject, 'certify_native_channel_market_source',
+        lambda market, policy, **kwargs: original(market, policy, **kwargs,
+            plan_factory=lambda **unused: feature(m)))
+    pin = subject.native_channel_feature_source_pin(m, POLICY, exclusions=('Y',))
+    metadata = {'strategy_one_input_exclusions': [], 'native_channel_feature_source': pin}
+    selected = subject.certify_pinned_native_channel_market_source(m, POLICY, metadata)
+    assert selected == project_market_day_plan(feature(m), ('X',))
+    assert pin['declared_input_exclusions'] == ['Y']
+    assert metadata['strategy_one_input_exclusions'] == []
+    with pytest.raises(ValueError, match='parent changed'):
+        subject.certify_pinned_native_channel_market_source(m, POLICY, {
+            **metadata, 'native_channel_feature_source': {**pin, 'parent_market_plan_token': '0' * 64}})
+
+
+@pytest.mark.parametrize('pin', [None, {}, {'schema': 'foreign'}])
+def test_missing_source_pin_never_falls_back_to_effective_candidate_exclusions(monkeypatch, pin):
+    from src.backend import backtest_native_channel_market_source as subject
+    monkeypatch.setattr(subject, 'certify_native_channel_market_source',
+        lambda *a, **k: pytest.fail('Unpinned source performed I/O'))
+    with pytest.raises(ValueError, match='launch-pinned'):
+        subject.certify_pinned_native_channel_market_source(market(), POLICY, {
+            'strategy_one_input_exclusions': [], 'native_channel_feature_source': pin})

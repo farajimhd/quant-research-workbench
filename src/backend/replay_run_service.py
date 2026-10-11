@@ -2761,11 +2761,10 @@ class ReplayRunController:
             def prepare_features():
                 from contextlib import closing
                 from src.market_engine.native_channel_keeper import open_native_channel_keeper
-                from .backtest_native_channel_market_source import certify_native_channel_market_source
-                source_market = certify_native_channel_market_source(
+                from .backtest_native_channel_market_source import certify_pinned_native_channel_market_source
+                source_market = certify_pinned_native_channel_market_source(
                     market, native_owner.policy.exit_policy.sequence,
-                    exclusions=tuple(self.definition.market_data_plan.get(
-                        'strategy_one_input_exclusions', ())))
+                    self.definition.market_data_plan)
                 producer_hash=producer_implementation_hash()
                 horizon=resolve_installed_native_channel_horizon(reader,market=source_market,
                     session_date=market.sessions[0],tickers=tickers,policy=native_owner.policy.exit_policy.sequence,
@@ -12585,7 +12584,17 @@ def backtest_preflight(
             )
             # The certificate constructor already hashes the selected market
             # rows. Downstream price and V7 proofs use independent read clients.
-            market_data_plan = certified.payload()
+            certified_metadata = certified.payload()
+            native_feature_policy = (declared_fixed_runner_options(configuration).get(
+                'native_channel_management_policy')
+                if is_numbered_fixed_configuration(configuration) else None)
+            if native_feature_policy is not None:
+                from .backtest_input_scope import input_exclusions
+                from .backtest_native_channel_market_source import native_channel_feature_source_pin
+                certified_metadata['native_channel_feature_source'] = native_channel_feature_source_pin(
+                    certified, native_feature_policy.exit_policy.sequence,
+                    exclusions=input_exclusions(certified.sessions[0]))
+            market_data_plan = certified_metadata
             if needs_v7 and not activated_signal_streams:
                 if experimental_structure_book not in {"", "level-book-v7"}:
                     raise ValueError("Fixed-interval Backtest requires causal Level Book V7")
