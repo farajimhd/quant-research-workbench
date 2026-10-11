@@ -26,6 +26,31 @@ numbered releases and their certification gates remain intact.
   and broker settings. Fields have explicit types; no JSON/blob column,
   dynamic value payload or strategy-owned DDL is permitted. These contracts
   are not installed or added to the existing active journal table set.
+- `columnar_strategy_release.py` and `columnar_strategy_reader.py`: normalized
+  release projection, exact child foreign-key/count/hash readback, immutable
+  number collision checks, children-before-seal publication, bounded asynchronous
+  caller I/O, explicit SELECT-only reader grants and schema/physical SSD checks.
+  The publisher accepts an operator-owned storage/ownership adapter; its concrete
+  Keeper-fenced ClickHouse publication bootstrap remains to be integrated.
+  Reader admission requires an explicitly pinned approval/content/code/winner
+  identity. These components do not register or publish a number on import.
+- `filled_position_state.py`: a shared in-memory projection of verified execution
+  and commission facts, with actual weighted fill cost, position age, partial
+  acquisitions/reductions, exact execution deduplication, late-fee win-count
+  correction and cold-prefix replay. Pending fees block finalized financial
+  results. It owns no tables and is not yet connected to normalized OMS lineage.
+- `columnar_program_coordinator.py`: pure sequential selection of precomputed
+  stage masks using actual filled position/age and supplied OMS management state.
+  It retains held tickers outside top10, checks pending acquisition/reduction,
+  requests $1,000/$200 through the existing `CapitalRequest`, and emits only
+  existing semantic intent types with explicitly supplied app execution and
+  protection contracts. It does not advance position or OMS state on a signal.
+  Protection/target lifecycle transport and app coordinator wiring remain open.
+- `causal_market_history.py`: shared producer-side dense elapsed-second history
+  calculation. Synthetic parity covers all332 original channels and the search's
+  relative-value rounding order. Missing elapsed clocks and future availability
+  fail closed. This helper is not a certified persisted product or a Backtest
+  source; the existing QMD History producer must publish and seal its output.
 - The existing simulated broker accepts an explicit100ms or1000ms liquidity
   resolution.100ms remains the default.1s matching conservatively requires
   delayed order activation before the entire eligible bucket begins.
@@ -57,9 +82,9 @@ fills are comparison expectations, not an app execution policy.
    signal-product bridge. Verify reusable existing coverage first; do not
    calculate private history inside a strategy or read research files as
    Backtest market inputs.
-2. Complete the central release publisher/reader, coverage-last seals,
-   exact type/hash/storage checks and least-privilege grants. The staged
-   table declarations alone provide no durability or admission authority.
+2. Integrate the central release publisher/reader with the concrete operator
+   Keeper/ClickHouse transport, normalized approval and least-privilege grants.
+   Pure readback/publication contracts alone provide no installed authority.
 3. Add the shared chronological program coordinator, actual position/age
    projection, pending-order handling, semantic intents and normalized
    lifecycle recovery through Portfolio/OMS. No assumed-position updates.
@@ -84,6 +109,13 @@ independence, listing isolation, search-evaluator rule/mask parity, volume
 selection and real simulated-broker order filling. These do not establish
 full-session real-data parity or throughput. The installed numbered source
 certification and registry checks must continue to pass.
+
+Review finding: `PortfolioEngine.on_order_group_update` currently supplies
+reservation reference prices to its allocation projection. Future program
+management must obtain execution cost and position age from verified actual
+execution/OMS attribution, rather than interpret that allocation price as the
+actual fill cost. The execution-derived projection above is not yet a change
+to the existing Portfolio allocation implementation.
 
 No schema installation, data producer, service, optimization, app Backtest,
 workstation deployment or monitor is authorized merely by importing these
