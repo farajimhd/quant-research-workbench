@@ -16,6 +16,23 @@ from src.backend.trading_configuration_service import _default_draft
 
 
 class HistoricalWatchlistPlanTests(unittest.TestCase):
+    def test_identity_tie_is_explicit_versioned_and_hashed(self) -> None:
+        configuration = _default_draft()
+        watchlist = next(row for row in configuration["market_discovery"]["watchlists"]
+                         if row["watchlist_id"] == "core-candidates")
+        bounds = dict(start=datetime(2026, 8, 7, 13, 30, tzinfo=UTC),
+                      end=datetime(2026, 8, 7, 20, 0, tzinfo=UTC))
+        original = compile_historical_watchlist_plan(configuration, "core-candidates", **bounds)
+        self.assertNotIn("ranking_tie_field", original)
+        watchlist["ranking_tie_field"] = "reference.float_shares"
+        tied = compile_historical_watchlist_plan(configuration, "core-candidates", **bounds)
+        self.assertEqual(tied["schema_version"], 5)
+        self.assertEqual(tied["ranking_tie_field"], "reference.float_shares")
+        self.assertNotEqual(tied["plan_hash"], original["plan_hash"])
+        watchlist["manual_inclusions"] = ["AAA"]
+        with self.assertRaisesRegex(ValueError, "manual inclusions"):
+            compile_historical_watchlist_plan(configuration, "core-candidates", **bounds)
+
     def test_event_native_signal_recovery_uses_persisted_qmd_occurrences(self) -> None:
         templates = compile_signal_stream_recovery_templates(
             _default_draft(),

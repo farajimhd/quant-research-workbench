@@ -73,6 +73,8 @@ pub struct HistoricalWatchlistPlan {
     pub exclusion_rule_sets: Vec<String>,
     pub rule_sets: Vec<Value>,
     pub ranking_field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ranking_tie_field: Option<String>,
     pub ranking_direction: String,
     pub maximum_size: usize,
     pub focused_seed_multiplier: usize,
@@ -217,6 +219,7 @@ pub struct WatchlistTimelineReducer<'a> {
 struct RankKey {
     missing: bool,
     normalized_score: f64,
+    identity: Option<u64>,
     ticker: String,
 }
 
@@ -224,6 +227,7 @@ impl PartialEq for RankKey {
     fn eq(&self, other: &Self) -> bool {
         self.missing == other.missing
             && self.normalized_score.to_bits() == other.normalized_score.to_bits()
+            && self.identity == other.identity
             && self.ticker == other.ticker
     }
 }
@@ -241,6 +245,7 @@ impl Ord for RankKey {
         self.missing
             .cmp(&other.missing)
             .then_with(|| self.normalized_score.total_cmp(&other.normalized_score))
+            .then_with(|| self.identity.cmp(&other.identity))
             .then_with(|| self.ticker.cmp(&other.ticker))
     }
 }
@@ -248,11 +253,19 @@ impl Ord for RankKey {
 pub fn validate_plan(
     plan: &HistoricalWatchlistPlan,
 ) -> Result<HistoricalWatchlistPlanValidation, String> {
-    if plan.schema_version != WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION {
+    if !matches!(plan.schema_version, 4 | 5) {
         return Err(format!(
             "unsupported historical Watchlist plan schema_version={}",
             plan.schema_version
         ));
+    }
+    match (plan.schema_version, &plan.ranking_tie_field) {
+        (4, None) => {}
+        (5, Some(field)) if !field.trim().is_empty()
+            && plan.manual_inclusions.is_empty()
+            && (plan.qmd_sources.contains(field)
+                || plan.external_features.iter().any(|source| &source.field_id == field)) => {}
+        _ => return Err("historical Watchlist identity tie field requires schema 5, a declared source and no manual inclusions".to_string()),
     }
     if plan.watchlist_id.trim().is_empty() {
         return Err("historical Watchlist plan requires watchlist_id".to_string());
@@ -407,7 +420,7 @@ pub fn validate_plan(
     let evaluation_count = validate_evaluation_windows(plan, start, end)?;
     let chunk_count = evaluation_count.div_ceil(plan.max_evaluations_per_chunk);
     Ok(HistoricalWatchlistPlanValidation {
-        schema_version: WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION,
+        schema_version: plan.schema_version,
         plan_hash: plan.plan_hash.clone(),
         watchlist_id: plan.watchlist_id.clone(),
         evaluation_count,
@@ -511,8 +524,7 @@ impl<'a> WatchlistTimelineReducer<'a> {
         let start_index = prior_state
             .as_ref()
             .map(|state| {
-                if state.schema_version != WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION
-                    || state.plan_hash != plan.plan_hash
+                if state.schema_version != plan.schema_version || state.plan_hash != plan.plan_hash
                 {
                     return Err(
                         "historical Watchlist timeline state does not match the admitted plan"
@@ -741,14 +753,14 @@ impl<'a> WatchlistTimelineReducer<'a> {
             members: self.members,
             next_evaluation_index: end_index,
             plan_hash: self.plan.plan_hash.clone(),
-            schema_version: WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION,
+            schema_version: self.plan.schema_version,
         };
         Ok(WatchlistTimelineChunk {
             cadence_ms: self.plan.cadence_ms,
             end_evaluation_index: end_index,
             next_state,
             plan_hash: self.plan.plan_hash.clone(),
-            schema_version: WATCHLIST_TIMELINE_PLAN_SCHEMA_VERSION,
+            schema_version: self.plan.schema_version,
             start_evaluation_index: self.start_index,
             transitions: self.transitions,
             watchlist_id: self.plan.watchlist_id.clone(),
@@ -802,6 +814,19 @@ fn evaluate_candidate(
     if !((included && !excluded) || manual_inclusions.contains(&ticker)) {
         return Ok(None);
     }
+    if let Some(field) = &plan.ranking_tie_field {
+        if candidate
+            .values
+            .get(field)
+            .and_then(Value::as_u64)
+            .filter(|value| *value > 0)
+            .is_none()
+        {
+            return Err(
+                "historical Watchlist identity tie value must be a positive UInt64".to_string(),
+            );
+        }
+    }
     Ok(Some(WatchlistTimelineMember {
         evidence: candidate.values.clone(),
         membership_reason: if manual_inclusions.contains(&ticker) {
@@ -818,6 +843,11 @@ fn evaluate_candidate(
 fn rank_key(plan: &HistoricalWatchlistPlan, member: &WatchlistTimelineMember) -> RankKey {
     RankKey {
         missing: member.score.is_none(),
+        identity: plan
+            .ranking_tie_field
+            .as_ref()
+            .and_then(|field| member.evidence.get(field))
+            .and_then(Value::as_u64),
         normalized_score: member.score.map_or(0.0, |score| {
             if plan.ranking_direction == "descending" {
                 -score
@@ -1216,6 +1246,7 @@ mod tests {
                 "scope": "watchlist"
             })],
             ranking_field: "liquidity-rank".to_string(),
+            ranking_tie_field: None,
             ranking_direction: "descending".to_string(),
             maximum_size: 250,
             focused_seed_multiplier: 5,
@@ -1281,7 +1312,9 @@ mod tests {
     fn accepts_large_watchlists_only_with_bounded_chunks() {
         let mut large = plan();
         large.maximum_size = 10_000;
-        assert!(validate_plan(&large).unwrap_err().contains("membership-slot budget"));
+        assert!(validate_plan(&large)
+            .unwrap_err()
+            .contains("membership-slot budget"));
         large.max_evaluations_per_chunk = super::MAX_MEMBERSHIP_SLOTS_PER_CHUNK / 10_000;
         large.chunk_duration_ms = large.cadence_ms * large.max_evaluations_per_chunk;
         rehash(&mut large);
@@ -1349,6 +1382,67 @@ mod tests {
                 ("reference.float_shares".to_string(), json!(public_float)),
             ]),
         }
+    }
+
+    #[test]
+    fn identity_ties_preserve_uint64_precision_and_cold_state() {
+        let mut plan = plan();
+        plan.end = "2026-08-07T13:30:02+00:00".to_string();
+        plan.evaluation_windows[0].end = plan.end.clone();
+        plan.max_evaluations_per_chunk = 1;
+        plan.chunk_duration_ms = 1_000;
+        plan.schema_version = 5;
+        plan.ranking_tie_field = Some("identity.listing_id".to_string());
+        let mut identity = plan.external_features[0].clone();
+        identity.field_id = "identity.listing_id".to_string();
+        plan.external_features.push(identity);
+        plan.maximum_size = 1;
+        rehash(&mut plan);
+        let mut a = candidate("AAA", 10.0, 3_000_000.0);
+        let mut z = candidate("ZZZ", 10.0, 3_000_000.0);
+        a.values.insert(
+            "identity.listing_id".to_string(),
+            json!(9_007_199_254_740_993_u64),
+        );
+        z.values.insert(
+            "identity.listing_id".to_string(),
+            json!(9_007_199_254_740_992_u64),
+        );
+        let first = materialize_candidate_chunk(
+            &plan,
+            &[WatchlistCandidateFrame {
+                effective_at: plan.start.clone(),
+                candidates: vec![a.clone(), z.clone()],
+            }],
+            None,
+        )
+        .unwrap();
+        assert_eq!(first.schema_version, 5);
+        assert_eq!(first.next_state.schema_version, 5);
+        assert_eq!(first.transitions[0].ticker, "ZZZ");
+        let second = materialize_candidate_chunk(
+            &plan,
+            &[WatchlistCandidateFrame {
+                effective_at: "2026-08-07T13:30:01+00:00".to_string(),
+                candidates: vec![a.clone(), z],
+            }],
+            Some(first.next_state),
+        )
+        .unwrap();
+        assert!(second.transitions.is_empty());
+        a.values.remove("identity.listing_id");
+        assert!(materialize_candidate_chunk(
+            &plan,
+            &[WatchlistCandidateFrame {
+                effective_at: plan.start.clone(),
+                candidates: vec![a],
+            }],
+            None
+        )
+        .is_err());
+        plan.schema_version = 4;
+        rehash(&mut plan);
+        assert!(validate_plan(&plan).is_err());
     }
 
     #[test]

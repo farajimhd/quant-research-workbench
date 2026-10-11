@@ -160,6 +160,13 @@ def compile_historical_watchlist_plan(
         "output_mode": "initial_membership_then_transition_deltas",
         "state_carry_required": True,
     }
+    tie_field = watchlist.get("ranking_tie_field")
+    if tie_field is not None:
+        if (type(tie_field) is not str or not tie_field.strip()
+                or tie_field not in sources or body["manual_inclusions"]):
+            raise ValueError("historical Watchlist identity tie field must be a declared source without manual inclusions")
+        body["schema_version"] = 5
+        body["ranking_tie_field"] = tie_field
     encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     return {**body, "plan_hash": f"sha256:{hashlib.sha256(encoded).hexdigest()}"}
 
@@ -316,6 +323,12 @@ def _validated_sources(
     ranking_source = str(watchlist.get("ranking_field") or "")
     if ranking_source:
         specs[ranking_source] = _qmd_source_spec(ranking_source, "")
+    tie_field = watchlist.get("ranking_tie_field")
+    if tie_field is not None:
+        if type(tie_field) is not str or not tie_field.strip():
+            raise ValueError("historical Watchlist identity tie field is invalid")
+        sources.add(tie_field)
+        specs[tie_field] = _qmd_source_spec(tie_field, "")
     for rule in rules:
         operator = str(rule.get("operator") or "all")
         if operator not in {"all", "any", "score"}:
