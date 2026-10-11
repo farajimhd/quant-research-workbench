@@ -525,6 +525,37 @@ class BacktestMarketDataTests(unittest.TestCase):
                 next(iter_bounded_market_day_rows(self._plan(), client=object(),
                      through_boundary_ms=1000, max_window_rows=1))
 
+    def test_bounded_reader_rejects_duplicates_out_of_range_and_byte_overflow(self):
+        row = dict(session_date='2026-08-18', boundary_ms=100,
+                   ticker='SUGP', resolution_ms=100)
+        for supplied, options, error in (
+            ([row, row], {}, 'duplicated'),
+            ([dict(row, boundary_ms=1100)], {}, 'outside'),
+            ([row], {'max_window_bytes': 1}, 'capacity'),
+        ):
+            with self.subTest(error=error):
+                def source(plan, **kwargs):
+                    yield from supplied
+                with patch('src.backend.backtest_market_data.iter_market_day_rows',
+                           source):
+                    with self.assertRaisesRegex(ValueError, error):
+                        next(iter_bounded_market_day_rows(self._plan(), client=object(),
+                             through_boundary_ms=1000, **options))
+
+    def test_bounded_reader_partitions_candidate_clocks_without_dropping_edges(self):
+        observed = []
+        def source(plan, **kwargs):
+            observed.append(kwargs['candidate_boundaries'])
+            for clock in kwargs['candidate_boundaries']['SUGP']:
+                yield dict(session_date='2026-08-18', boundary_ms=clock,
+                           ticker='SUGP', resolution_ms=100)
+        with patch('src.backend.backtest_market_data.iter_market_day_rows', source):
+            rows = list(iter_bounded_market_day_rows(self._plan(), client=object(),
+                through_boundary_ms=2000, window_ms=1000,
+                candidate_boundaries={'SUGP': (100,1000,1100,2000)}))
+        self.assertEqual(observed, [{'SUGP':(100,1000)}, {'SUGP':(1100,2000)}])
+        self.assertEqual([row['boundary_ms'] for row in rows], [100,1000,1100,2000])
+
     def test_time_group_waits_for_all_tickers_at_completed_boundary(self) -> None:
         rows = [
             {"session_date": "2026-08-18", "boundary_ms": 100, "ticker": "AAPL", "resolution_ms": 100},
