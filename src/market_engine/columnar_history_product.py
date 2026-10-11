@@ -229,9 +229,12 @@ def prepare_product(scope, bars, liquidity, fields, *, volume_window_seconds, pr
     return PreparedHistory(scope, fields, volume_window_seconds, clocks, pl.concat(values))
 
 
-def expand_values(prepared: PreparedHistory, *, first_ordinal: int, stop_ordinal: int):
+def expand_values(prepared: PreparedHistory, *, first_ordinal: int, stop_ordinal: int,
+                  evaluation_block: str):
     """Reconstruct a bounded columnar consumer window with explicit masks."""
     scope = prepared.scope
+    if not isinstance(evaluation_block, str) or not 1 <= len(evaluation_block) <= 128:
+        raise ValueError("History consumer requires its explicit rule evaluation block")
     if (type(first_ordinal) is not int or type(stop_ordinal) is not int
             or not 0 <= first_ordinal < stop_ordinal <= scope.clock_count
             or stop_ordinal - first_ordinal > 4096):
@@ -282,4 +285,4 @@ def expand_values(prepared: PreparedHistory, *, first_ordinal: int, stop_ordinal
         output = output.with_columns(pl.Series(field.name, values, dtype=pl.Float32),
                                       pl.Series(field.name + "__valid", valid.astype(bool)))
     return output.with_columns(pl.lit(scope.listing_id).alias("listing_id"),
-        pl.lit(scope.attempt_id).alias("evaluation_block"))
+        pl.lit(evaluation_block).alias("evaluation_block"))

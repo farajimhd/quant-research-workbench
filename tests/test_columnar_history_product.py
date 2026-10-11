@@ -12,6 +12,10 @@ from src.trading_runtime.optimized_program_specification import WINNER_FIELDS, S
 from src.trading_runtime.columnar_rule_program import InputField, Operation, RuleNode, RuleProgram, evaluate_rules
 
 
+def expand(prepared, **window):
+    return p.expand_values(prepared, evaluation_block='explicit-rule-block', **window)
+
+
 def inputs(n=200):
     fields = tuple(sorted([p.BY_NAME[name] for name, _ in WINNER_FIELDS.values()] +
                           [p.BY_NAME[STOP_FIELD]], key=lambda f: f.field_id))
@@ -44,7 +48,7 @@ def test_normalized_interval_product_reconstructs_exact_dense_float32_inputs():
                                  producer_code_hash="a" * 64)
     dense = p.prepare_dense_inputs(scope, bars, liquidity)
     expected = prepare_causal_history(dense, tuple(f.name for f in fields))
-    actual = p.expand_values(prepared, first_ordinal=0, stop_ordinal=scope.clock_count)
+    actual = expand(prepared, first_ordinal=0, stop_ordinal=scope.clock_count)
     for field in fields:
         valid = expected[field.name + "__valid"].to_numpy()
         result = actual[field.name].to_numpy()
@@ -64,8 +68,8 @@ def test_window_read_does_not_reset_history_or_change_boundary_values():
     scope, bars, liquidity, fields = inputs()
     prepared = p.prepare_product(scope, bars, liquidity, fields, volume_window_seconds=30,
                                  producer_code_hash="a" * 64)
-    whole = p.expand_values(prepared, first_ordinal=0, stop_ordinal=scope.clock_count)
-    tail = p.expand_values(prepared, first_ordinal=100, stop_ordinal=150)
+    whole = expand(prepared, first_ordinal=0, stop_ordinal=scope.clock_count)
+    tail = expand(prepared, first_ordinal=100, stop_ordinal=150)
     assert tail.equals(whole.slice(100, 50))
 
 
@@ -76,14 +80,14 @@ def test_interval_gaps_overlaps_and_invalid_value_masks_fail_closed():
     gap = prepared.values.with_columns(pl.when(pl.int_range(pl.len()) == 0).then(1)
         .otherwise(pl.col("first_ordinal")).cast(pl.UInt32).alias("first_ordinal"))
     with pytest.raises(ValueError, match="coverage"):
-        p.expand_values(replace(prepared, values=gap), first_ordinal=0, stop_ordinal=50)
+        expand(replace(prepared, values=gap), first_ordinal=0, stop_ordinal=50)
     with pytest.raises(ValueError, match="coverage"):
-        p.expand_values(replace(prepared, values=pl.concat([prepared.values, prepared.values.head(1)])),
+        expand(replace(prepared, values=pl.concat([prepared.values, prepared.values.head(1)])),
                         first_ordinal=0, stop_ordinal=50)
     bad = prepared.values.with_columns(pl.when(pl.col("valid") == 0).then(5.)
                                        .otherwise(pl.col("value")).alias("value"))
     with pytest.raises(ValueError, match="validity"):
-        p.expand_values(replace(prepared, values=bad), first_ordinal=0, stop_ordinal=50)
+        expand(replace(prepared, values=bad), first_ordinal=0, stop_ordinal=50)
 
 
 def test_parent_duplicates_unknown_flags_and_wrong_scopes_fail_closed():
@@ -107,8 +111,8 @@ def test_future_tail_is_independent_of_an_earlier_field_prefix():
     prefix = p.prepare_product(shorter, bars.filter(pl.col("bucket_index") < shorter.stop_bucket),
         liquidity.filter(pl.col("bucket_index") < shorter.stop_bucket), fields,
         volume_window_seconds=30, producer_code_hash="a" * 64)
-    assert p.expand_values(prepared, first_ordinal=0, stop_ordinal=100).equals(
-        p.expand_values(prefix, first_ordinal=0, stop_ordinal=100))
+    assert expand(prepared, first_ordinal=0, stop_ordinal=100).equals(
+        expand(prefix, first_ordinal=0, stop_ordinal=100))
 
 
 def test_product_schema_is_central_scalar_and_explicit_ssd():
@@ -121,25 +125,25 @@ def test_consumer_returns_completed_clocks_and_rejects_corruption_outside_window
     scope, bars, liquidity, fields = inputs()
     prepared = p.prepare_product(scope, bars, liquidity, fields, volume_window_seconds=30,
                                  producer_code_hash="a" * 64)
-    frame = p.expand_values(prepared, first_ordinal=100, stop_ordinal=150)
+    frame = expand(prepared, first_ordinal=100, stop_ordinal=150)
     assert frame["boundary_at"][0] == p.completed_clock(scope, scope.first_bucket + 100)
     assert frame["available_at"].equals(frame["boundary_at"])
     assert frame["rolling_volume"].equals(prepared.clocks["rolling_volume"].slice(100, 50))
     unknown = pl.concat([prepared.values, prepared.values.head(1).with_columns(pl.lit(9999).cast(pl.UInt32).alias("field_id"))])
     with pytest.raises(ValueError, match="catalog"):
-        p.expand_values(replace(prepared, values=unknown), first_ordinal=100, stop_ordinal=150)
+        expand(replace(prepared, values=unknown), first_ordinal=100, stop_ordinal=150)
     for clocks in (prepared.clocks.slice(1), prepared.clocks.with_columns(
             pl.when(pl.col("bucket_index") == scope.first_bucket).then(2)
             .otherwise(pl.col("source_known")).alias("source_known"))):
         with pytest.raises(ValueError, match="clock"):
-            p.expand_values(replace(prepared, clocks=clocks), first_ordinal=100, stop_ordinal=150)
+            expand(replace(prepared, clocks=clocks), first_ordinal=100, stop_ordinal=150)
 
 
 def test_producer_output_feeds_shared_vectorized_rule_evaluator_without_rebuilding_features():
     scope, bars, liquidity, fields = inputs()
     prepared = p.prepare_product(scope, bars, liquidity, fields, volume_window_seconds=30,
                                  producer_code_hash="a" * 64)
-    frame = p.expand_values(prepared, first_ordinal=0, stop_ordinal=scope.clock_count)
+    frame = expand(prepared, first_ordinal=0, stop_ordinal=scope.clock_count)
     name = "history.attention_mean.58"
     contracts = {name: InputField(name, "dollars", "arte.qmd_causal_history_value_v1", scope.product_revision, 1000)}
     rule = RuleProgram((RuleNode(Operation.FEATURE, field=name),

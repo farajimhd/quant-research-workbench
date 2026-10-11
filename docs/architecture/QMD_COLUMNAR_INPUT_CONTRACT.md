@@ -72,6 +72,10 @@ unchanged Float32 values as lossless intervals with explicit validity. Bounded
 consumer expansion restores dense ordinals, timezone-aware completed clocks,
 volume and masks directly consumable by the shared rule evaluator. This is a
 product projection; it does not certify caller-supplied parents or publish rows.
+The caller must supply an explicit rule evaluation-block identity. A history
+publication attempt does not define a temporal-rule reset. Exact optimizer
+comparison must preserve its pinned chunk origin and causal context, including
+Float32 cumulative-mean accumulation, before trimming consumer windows.
 
 The shared history calculation, volume transform and scanner are tested, but
 the coverage-last history field product, QMD service access, typed signal-stream
