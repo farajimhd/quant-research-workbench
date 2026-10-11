@@ -73,6 +73,7 @@ async def run_strategy_one_proposals(
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
     contract = numbered_fixed_strategy(strategy_number)
     ranking_policy = getattr(contract, 'participation_acquisition_policy', None)
+    quality_policy = getattr(contract, 'participation_admission_policy', None)
     if ranking_policy is not None:
         from .backtest_participation_acquisition_order import PreparedAcquisitionOrder
         if (type(acquisition_order) is not PreparedAcquisitionOrder
@@ -84,8 +85,17 @@ async def run_strategy_one_proposals(
         initial_momentum_plan.__post_init__()
         if set(acquisition_order.ranks) != set(initial_momentum_plan.momentum.keys):
             raise ValueError('Declared acquisition ranking omits native source candidates')
+        if quality_policy is not None:
+            if (acquisition_order.admission_policy != quality_policy
+                    or acquisition_order.admission_rejections is None
+                    or set(acquisition_order.admission_rejections) != set(acquisition_order.ranks)):
+                raise ValueError('Declared acquisition quality lacks its complete source mask')
+        elif acquisition_order.admission_policy is not None or acquisition_order.admission_rejections is not None:
+            raise ValueError('Undeclared strategy cannot carry acquisition quality')
     elif acquisition_order is not None:
         raise ValueError('Undeclared strategy cannot carry acquisition ranking')
+    elif quality_policy is not None:
+        raise ValueError('Declared acquisition quality requires causal ranking inputs')
     if contract.entry_spread_risk_policy is not None:
         from .backtest_declared_entry_quote_source import entry_spread_risk_authority_type
         if (type(entry_spread_risk_source) is not entry_spread_risk_authority_type(strategy_number)
@@ -205,6 +215,18 @@ async def run_strategy_one_proposals(
                 if key not in deferred_acquisitions:
                     deferred_acquisitions[key] = (resolutions, candidate, set())
                 deferred_acquisitions[key][2].add(identity)
+                continue
+            if quality_policy is not None and acquisition_order.admission_rejection(ticker, boundary):
+                candidate_count += 1
+                if (current.position_quantity > 0 or current.pending_entry or current.pending_exit
+                        or current.pending_capital_request or ticker in scheduler.active_tickers):
+                    management_count += 1
+                    await timed("strategy_one_management", on_management(current, resolutions, boundary))
+                    if index + 1 < len(ordered_ids):
+                        refreshed = await timed("strategy_one_financial_views", current_views())
+                        if set(refreshed) != set(ordered_ids):
+                            raise ValueError("Strategy 1 assignment roster changed within boundary")
+                        current_by_id = refreshed
                 continue
             reentry = (await timed("strategy_one_reentry", reentry_witness(current, candidate))
                        if current.completed_entries and reentry_witness is not None else None)

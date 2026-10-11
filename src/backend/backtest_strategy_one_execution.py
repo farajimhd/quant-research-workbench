@@ -472,7 +472,8 @@ async def run_certified_strategy_one_session(
                     scores = score_prepared_native_session(feature_session, decisions,
                         initial_momentum_plan.eligible_mask, policy=ranking_policy.scoring)
                     return prepare_participation_acquisition_order(initial_momentum_plan,
-                        scores, policy=ranking_policy)
+                        scores, policy=ranking_policy,
+                        admission_policy=getattr(manager.contract, 'participation_admission_policy', None))
                 acquisition_order = await asyncio.to_thread(prepare_order)
             counts = await run_strategy_one_fixed_session(
                 scheduler, entry, evidence, manager, runtime=runtime,

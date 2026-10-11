@@ -19,6 +19,16 @@ class PreparedAcquisitionOrder:
     source_token: str
     policy: ParticipationAcquisitionPolicy
     ranks: object
+    admission_policy: object = None
+    admission_rejections: object = None
+
+    def admission_rejection(self, ticker, boundary_ms):
+        if self.admission_policy is None or self.admission_rejections is None:
+            raise ValueError('Acquisition quality lacks its declared prepared mask')
+        try:
+            return self.admission_rejections[(ticker, boundary_ms)]
+        except KeyError as exc:
+            raise ValueError('Acquisition quality candidate is outside certified population') from exc
 
     def rank(self, ticker, boundary_ms):
         try:
@@ -27,7 +37,7 @@ class PreparedAcquisitionOrder:
             raise ValueError('Acquisition candidate is outside the prepared certified population') from exc
 
 
-def prepare_participation_acquisition_order(source, scores, *, policy):
+def prepare_participation_acquisition_order(source, scores, *, policy, admission_policy=None):
     """Keep every source key; score availability never creates eligibility.
 
     Filtering and ordering use Polars once before replay. The bounded final
@@ -61,4 +71,12 @@ def prepare_participation_acquisition_order(source, scores, *, policy):
     ranks = MappingProxyType({(ticker, day_ms - SESSION_OPEN_OFFSET_MS): index
         for index, (ticker, day_ms) in enumerate(
             ranked.select('ticker', 'decision_day_ms').iter_rows())})
-    return PreparedAcquisitionOrder(source, source.token, policy, ranks)
+    rejections = None
+    if admission_policy is not None:
+        from .backtest_participation_admission import prepare_participation_admission
+        mask = prepare_participation_admission(scores, policy=admission_policy)
+        rejections = MappingProxyType({(ticker, day_ms - SESSION_OPEN_OFFSET_MS): int(reason)
+            for (ticker, day_ms), reason in zip(
+                rows.select('ticker', 'decision_day_ms').iter_rows(), mask.rejection_mask)})
+    return PreparedAcquisitionOrder(source, source.token, policy, ranks,
+                                   admission_policy, rejections)

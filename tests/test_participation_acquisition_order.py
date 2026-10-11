@@ -44,6 +44,23 @@ def test_complete_order_keeps_unknown_candidates_and_original_admission(source):
         plan.rank('UNKNOWN', 100)
 
 
+def test_quality_mask_is_bound_to_original_candidate_keys_and_immutable(source):
+    from src.trading_runtime.participation_admission_policy import ParticipationAdmissionPolicy
+    from src.backend.backtest_participation_admission import prepare_participation_admission
+    scores = scores_for(source)
+    quality = ParticipationAdmissionPolicy(1.0)
+    expected = prepare_participation_admission(scores, policy=quality)
+    order = prepare_participation_acquisition_order(
+        source, scores, policy=policy(), admission_policy=quality)
+    keys = source.parent.momentum.keys
+    assert [order.admission_rejection(*key) for key in keys] == expected.rejection_mask.tolist()
+    assert set(order.admission_rejections) == set(order.ranks)
+    with pytest.raises(TypeError):
+        order.admission_rejections[keys[0]] = 0
+    with pytest.raises(ValueError, match='outside certified population'):
+        order.admission_rejection('UNKNOWN', 100)
+
+
 @pytest.mark.parametrize('mutation', ['mutable', 'omitted', 'mask', 'score'])
 def test_unbound_or_corrupted_scores_fail_closed(source, mutation):
     original = scores_for(source)

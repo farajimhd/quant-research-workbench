@@ -16,13 +16,15 @@ from src.trading_runtime.strategy_one_stateful import StrategyOneReentryWitness
 
 
 @pytest.mark.parametrize('management_blocks_entry', [False, True])
+@pytest.mark.parametrize('quality_gate', [False, True])
 def test_declared_ranking_manages_owned_assignment_before_fresh_acquisition(
-        monkeypatch, management_blocks_entry):
+        monkeypatch, management_blocks_entry, quality_gate):
     from tests.test_native_price_candidate_features import native_plan
     from src.backend.backtest_native_participation_ranking import PreparedParticipationScores
     from src.backend.backtest_participation_acquisition_order import prepare_participation_acquisition_order
     from src.trading_runtime.participation_acquisition_policy import ParticipationAcquisitionPolicy
     from research.causal_strategy_features.v7.ranking import ParticipationRankingPolicy
+    from src.trading_runtime.participation_admission_policy import ParticipationAdmissionPolicy
     from src.trading_runtime import numbered_fixed_strategy as contracts
 
     plan = native_plan()
@@ -30,14 +32,16 @@ def test_declared_ranking_manages_owned_assignment_before_fresh_acquisition(
         ParticipationRankingPolicy(((60000, 1.),), .5, .5, 1., 1, 1000), 'eligible_unranked_last')
     def frozen(values, dtype):
         return np.frombuffer(np.asarray(values, dtype=dtype).tobytes(), dtype=dtype)
+    quality = ParticipationAdmissionPolicy(1.0) if quality_gate else None
     order = prepare_participation_acquisition_order(plan, PreparedParticipationScores(
         frozen([np.nan] * len(plan.eligible_mask), np.float64),
         frozen([False] * len(plan.eligible_mask), bool),
-        frozen(plan.eligible_mask, bool)), policy=policy)
+        frozen(plan.eligible_mask, bool)), policy=policy, admission_policy=quality)
     original_factory = contracts.numbered_fixed_strategy
     original_contract = original_factory(20)
     class DeclaredContract:
         participation_acquisition_policy = policy
+        participation_admission_policy = quality
         def __getattr__(self, name):
             return getattr(original_contract, name)
     monkeypatch.setattr(contracts, 'numbered_fixed_strategy',
@@ -53,6 +57,10 @@ def test_declared_ranking_manages_owned_assignment_before_fresh_acquisition(
                         pending_entry=managed[0] and management_blocks_entry),
                 replace(financial, assignment_id='Z-owned'))
     async def manage(view, *args):
+        if view.assignment_id == 'A-entry':
+            assert quality_gate and management_blocks_entry and view.pending_entry
+            actions.append('pending-management')
+            return
         assert view.assignment_id == 'Z-owned'
         actions.append('management')
         managed[0] = True
@@ -67,8 +75,9 @@ def test_declared_ranking_manages_owned_assignment_before_fresh_acquisition(
         financially_active_tickers=lambda: (), finish_boundary=noop,
         observe_activation=noop, observe_completed_seconds=noop, strategy_number=20,
         momentum_plan=plan.momentum, initial_momentum_plan=plan, acquisition_order=order))
-    assert counts.management_evaluations == 1 and counts.candidate_decisions == 1
-    assert counts.entry_proposals == int(not management_blocks_entry)
+    assert counts.management_evaluations == 1 + int(quality_gate and management_blocks_entry)
+    assert counts.candidate_decisions == 1
+    assert counts.entry_proposals == int(not management_blocks_entry and not quality_gate)
     assert actions[:3] == ['views-before', 'management', 'views-after']
 
 
