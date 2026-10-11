@@ -7,6 +7,49 @@ from .backtest_typed_publisher import TypedBacktestReceipt
 from src.trading_runtime.native_channel_exit_journal_context import NativeChannelExitJournalContext
 
 
+def prepare_native_channel_execution_source(source, receipt, capture, request, *,
+        recorded_at, attempt_id, batch_id, parent_record_id, decision_record_id):
+    """Cold-rebuild the full frozen inventory against its saved checkpoint.
+
+    The caller still routes the returned request through runtime confirmation,
+    Portfolio and OMS. This function performs no writes or order submission.
+    """
+    from .backtest_native_channel_management_owner import NativeChannelPendingCapture
+    from .backtest_native_channel_exit_unit import prepare_confirmed_native_channel_exit_request
+    from src.trading_runtime.native_channel_manager_reader import load_unattested_native_channel_manager_rows
+    if (type(source) is not NativeChannelExitPublisherSource
+            or type(receipt) is not TypedBacktestReceipt
+            or type(capture) is not NativeChannelPendingCapture
+            or type(request) is not NativeChannelExitRequest
+            or capture.run_id != source.run_id or capture.policy != source.policy
+            or sum(item.request is request for _, item in capture.items) != 1):
+        raise ValueError('Native execution preparation requires its exact frozen pending inventory')
+    capture.__post_init__()
+    source.__post_init__()
+    saved = load_unattested_native_channel_manager_rows(source.client,
+        run_id=source.run_id, checkpoint_sequence=receipt.last_sequence, policy=source.policy)
+    rebuilt, contexts = capture.capture(saved.inherited, journal_batch_id=receipt.last_batch_id)
+    if rebuilt != saved:
+        raise ValueError('Native execution frozen inventory differs from complete saved checkpoint')
+    owner = (request.financial.account_id, request.financial.assignment_id, request.financial.ticker)
+    keys = tuple(key for key, evidence in contexts.items()
+        if (evidence['current_financial'].account_id, evidence['current_financial'].assignment_id,
+            evidence['current_financial'].ticker) == owner)
+    if len(keys) != 1:
+        raise ValueError('Native execution requires exactly one pending position owner')
+    unit, confirmed = prepare_confirmed_native_channel_exit_request(source.client,
+        source.manager_keeper, source.broker_keeper, receipt, run_id=source.run_id,
+        management_policy=source.policy, contexts=contexts, pending_record_id=keys[0],
+        first_price_source=source.first_price_source, recorded_at=recorded_at,
+        attempt_id=attempt_id, batch_id=batch_id, parent_record_id=parent_record_id,
+        decision_record_id=decision_record_id, native_channel_contexts=source.contexts)
+    context = NativeChannelExitJournalContext(unit, source.policy, contexts,
+        source.first_price_source, recorded_at=recorded_at, attempt_id=attempt_id,
+        batch_id=batch_id, parent_record_id=parent_record_id, decision_record_id=decision_record_id)
+    execution = NativeChannelExitExecutionSource(source, receipt, context, keys[0])
+    return confirmed, execution
+
+
 @dataclass(frozen=True, slots=True)
 class NativeChannelExitExecutionSource:
     """Read bindings, not order authority; confirm() independently reproves them."""

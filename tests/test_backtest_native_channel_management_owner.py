@@ -9,8 +9,8 @@ from src.backend.backtest_native_channel_management_owner import NativeChannelMa
 from src.backend.backtest_native_channel_manager_recovery import reprove_native_channel_manager_snapshot
 
 
-def owner_case(installed):
-    rows,policy,contexts=manager_case(installed)
+def owner_case(installed, *, strategy_number=1):
+    rows,policy,contexts=manager_case(installed,strategy_number=strategy_number)
     context=next(iter(contexts.values()))
     elapsed=context['as_of']-datetime(1970,1,1,tzinfo=timezone.utc)
     stamp=(elapsed.days*86400+elapsed.seconds)*1_000_000+elapsed.microseconds

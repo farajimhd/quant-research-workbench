@@ -79,6 +79,59 @@ def test_native_exit_cold_reproves_then_uses_shared_portfolio_and_oms(installed,
         runtime.journal.close()
 
 
+def test_preparation_rebuilds_full_capture_then_routes_confirmed_exit(installed, monkeypatch):
+    from tests.test_backtest_native_channel_management_owner import owner_case
+    from src.backend.backtest_native_channel_execution_source import prepare_native_channel_execution_source
+    owner, original, evidence, quote, args = owner_case(installed,strategy_number=2)
+    pending = owner.stage(evidence['prepared'],quote,**args)
+    capture = owner.freeze(boundary_ms=args['boundary_ms'])
+    saved, contexts = capture.capture(original.inherited,journal_batch_id=evidence['batch_id'])
+    monkeypatch.setattr('tests.test_backtest_native_channel_financial_checkpoint.manager_case',
+        lambda *_args,**_kwargs:(saved,owner.policy,{key:dict(value) for key,value in contexts.items()}))
+    runtime, _, execution, _ = runtime_case(installed,monkeypatch)
+    monkeypatch.setattr('src.trading_runtime.native_channel_manager_reader.load_unattested_native_channel_manager_rows',
+        lambda *_args,**_kwargs:saved)
+    try:
+        context=execution.context
+        confirmed, prepared=prepare_native_channel_execution_source(execution.publisher_source,
+            execution.receipt,capture,pending,recorded_at=context.recorded_at,
+            attempt_id=context.attempt_id,batch_id=context.batch_id,
+            parent_record_id=context.parent_record_id,decision_record_id=context.decision_record_id)
+        assert confirmed.financial==pending.financial
+        assert confirmed.acquisition==pending.acquisition
+        asyncio.run(runtime.submit_native_channel_exit(confirmed,prepared))
+        runtime.portfolio.approve.assert_awaited_once()
+        runtime.order_manager.submit_intent.assert_awaited_once()
+    finally:
+        runtime.journal.close()
+
+
+def test_preparation_rejects_frozen_inventory_that_differs_from_saved_checkpoint(installed, monkeypatch):
+    from tests.test_backtest_native_channel_management_owner import owner_case
+    from src.backend.backtest_native_channel_execution_source import prepare_native_channel_execution_source
+    owner, saved, evidence, quote, args = owner_case(installed)
+    pending = owner.stage(evidence['prepared'], quote, **args)
+    capture = owner.freeze(boundary_ms=args['boundary_ms'])
+    runtime, _, execution, _ = runtime_case(installed, monkeypatch)
+    # Controlled saved-row transport isolates the inventory comparison; the
+    # other runtime tests exercise independent cold checkpoint confirmation.
+    monkeypatch.setattr('src.trading_runtime.native_channel_manager_reader.load_unattested_native_channel_manager_rows',
+        lambda *_args, **_kwargs: saved)
+    try:
+        context = execution.context
+        # The existing saved transport contains a different pending identity.
+        # Rebuilding must reject it before reaching order execution.
+        with pytest.raises(ValueError, match='frozen inventory differs'):
+            prepare_native_channel_execution_source(execution.publisher_source,
+                execution.receipt, capture, pending, recorded_at=context.recorded_at,
+                attempt_id=context.attempt_id, batch_id=context.batch_id,
+                parent_record_id=context.parent_record_id, decision_record_id=context.decision_record_id)
+        runtime.portfolio.approve.assert_not_awaited()
+        runtime.order_manager.submit_intent.assert_not_awaited()
+    finally:
+        runtime.journal.close()
+
+
 @pytest.mark.parametrize('defect', ['naked', 'quantity', 'clock', 'source', 'mixed', 'checkpoint'])
 def test_native_exit_invalid_authority_never_reaches_orders(installed, monkeypatch, defect):
     runtime, request, source, intent = runtime_case(installed, monkeypatch)
