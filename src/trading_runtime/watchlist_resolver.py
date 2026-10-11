@@ -249,6 +249,22 @@ def rank_watchlist_membership(
         str(watchlist.get("ranking_field") or ""),
     )
     descending = str(watchlist.get("ranking_direction") or "descending") == "descending"
+    tie_source = watchlist.get("ranking_tie_field")
+    if tie_source is not None:
+        if type(tie_source) is not str or not tie_source.strip() or manual_inclusions:
+            raise ValueError("Watchlist identity tie field requires an explicit source without manual inclusions")
+        tie_field = SOURCE_FIELDS.get(tie_source, tie_source)
+        for row in rows:
+            identity = row.get(tie_field)
+            if type(identity) is not int or not 0 < identity < 2**64:
+                raise ValueError("Watchlist identity tie value must be a positive UInt64")
+        def identity_rank(row):
+            score = _number(row.get(ranking_field) if row.get(ranking_field) is not None
+                            else row.get(legacy_ranking_field) if not ranking_interval else None)
+            return (score is None, 0.0 if score is None else -score if descending else score,
+                    row[tie_field], str(row.get("ticker") or "").upper())
+        rows.sort(key=identity_rank)
+        return rows[: max(1, int(watchlist.get("maximum_size") or 1))]
     rows.sort(
         key=lambda row: _rank_key(
             row.get(ranking_field)

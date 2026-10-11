@@ -42,6 +42,21 @@ class FakeJournal:
 
 
 class WatchlistRuntimeServiceTests(unittest.TestCase):
+    def test_identity_changes_invalidate_incremental_rank_evidence(self) -> None:
+        runtime = WatchlistRuntime()
+        watchlist = dict(watchlist_id="identity-tie-test", ranking_field="score",
+                         ranking_tie_field="listing_id", ranking_direction="descending",
+                         maximum_size=1)
+        rows = {"AAA": dict(ticker="AAA", score=10, listing_id=2**53 + 1),
+                "ZZZ": dict(ticker="ZZZ", score=10, listing_id=2**53)}
+        first, changed = runtime._resolve_incremental(watchlist, [], rows)
+        self.assertEqual((first[0]["ticker"], changed), ("ZZZ", 2))
+        stable, changed = runtime._resolve_incremental(watchlist, [], rows)
+        self.assertEqual((stable[0]["ticker"], changed), ("ZZZ", 0))
+        rows["AAA"] = {**rows["AAA"], "listing_id": 1}
+        updated, changed = runtime._resolve_incremental(watchlist, [], rows)
+        self.assertEqual((updated[0]["ticker"], changed), ("AAA", 1))
+
     def setUp(self) -> None:
         clear_computation_target_publication_cache()
         self.configuration = _default_draft()

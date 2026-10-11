@@ -7,11 +7,27 @@ from src.trading_runtime.watchlist_resolver import (
     classify_watchlist_row,
     evaluate_rule_set_result,
     evaluate_rule_sets_frame,
+    rank_watchlist_membership,
     resolve_watchlist_membership,
 )
 
 
 class WatchlistResolverTest(unittest.TestCase):
+    def test_explicit_identity_tie_preserves_integer_precision(self) -> None:
+        watchlist = dict(ranking_field="score", ranking_direction="descending",
+                         ranking_tie_field="listing_id", maximum_size=2)
+        rows = [dict(ticker="AAA", score=10, listing_id=2**53 + 1),
+                dict(ticker="ZZZ", score=10, listing_id=2**53),
+                dict(ticker="MISSING", score=None, listing_id=1)]
+        self.assertEqual([row["ticker"] for row in rank_watchlist_membership(watchlist, rows)],
+                         ["ZZZ", "AAA"])
+        for value in (None, True, 0, -1, 2**64, float(2**53), str(2**53)):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "UInt64"):
+                rank_watchlist_membership(watchlist, [dict(ticker="AAA", score=10, listing_id=value)])
+        watchlist["manual_inclusions"] = ["AAA"]
+        with self.assertRaisesRegex(ValueError, "manual inclusions"):
+            rank_watchlist_membership(watchlist, rows)
+
     def setUp(self) -> None:
         self.discovery = _default_draft()["market_discovery"]
         self.watchlists = {

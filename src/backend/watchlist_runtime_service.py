@@ -699,6 +699,7 @@ def watchlist_dependency_fields(
     ranking_interval = interval_expression(watchlist.get("ranking_interval"))
     source_ids = {
         str(watchlist.get("ranking_field") or ""),
+        str(watchlist.get("ranking_tie_field") or ""),
         field_instance_ref(ranking_ref, ranking_interval, watchlist.get("ranking_aggregation"))
         if ranking_ref and ranking_interval else "",
     }
@@ -939,6 +940,7 @@ def focused_target_contract(
     referenced_sources = {
         str(watchlist.get("ranking_field") or ""),
         str(watchlist.get("ranking_field_ref") or ""),
+        str(watchlist.get("ranking_tie_field") or ""),
     }
     ranking_interval = interval_expression(watchlist.get("ranking_interval"))
     if ranking_interval:
