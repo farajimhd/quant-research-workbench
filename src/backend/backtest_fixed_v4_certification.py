@@ -1817,6 +1817,11 @@ def _reviewed_fixed_lot_management_projection(source: str, name: str, expected: 
 
 def _reviewed_fixed_lot_typed_projection(source: str, name: str, expected: str) -> bool:
     """Accept exact source-bound selected projection with the unchanged default projector."""
+    from .backtest_native_typed_projection_compatibility import restore_native_typed_projection_parent
+    try:
+        source = restore_native_typed_projection_parent(source)
+    except ValueError:
+        return False
     from .backtest_fixed_structural_lot_compatibility_v9 import restore_reviewed_parent_source as restore_v9
     from .backtest_fixed_structural_lot_compatibility_v10 import restore_reviewed_parent_source as restore_v10
     from .backtest_fixed_structural_lot_compatibility_v11 import restore_reviewed_parent_source as restore_v11
