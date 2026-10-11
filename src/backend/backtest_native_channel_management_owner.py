@@ -104,6 +104,18 @@ class NativeChannelManagementOwner:
     def bind_feature_session(self, session, *, through_day_boundary_ms, max_positions):
         """Bind source-only preparation once; actual ownership is read per stage."""
         from .backtest_native_channel_session_source import PreparedNativeChannelSession
+        from .backtest_native_channel_participant_scope import EmptyNativeChannelParticipantSession
+        if type(session) is EmptyNativeChannelParticipantSession:
+            from .backtest_market_data import SESSION_OPEN_OFFSET_MS
+            session.__post_init__()
+            if (self._feature_session is not None or self._pending
+                    or type(max_positions) is not int or max_positions <= 0
+                    or any(row.session_date != self.session_date.isoformat()
+                           for row in session.candidates.coverage)
+                    or through_day_boundary_ms != session.through_boundary_ms+SESSION_OPEN_OFFSET_MS):
+                raise ValueError('Empty native feature binding lacks its exact flat run window')
+            self._feature_session=(session,through_day_boundary_ms,max_positions)
+            return
         if (type(session) is not PreparedNativeChannelSession or self._feature_session is not None
                 or self._pending or type(max_positions) is not int or max_positions <= 0
                 or type(through_day_boundary_ms) is not int or through_day_boundary_ms < 0

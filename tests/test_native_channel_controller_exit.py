@@ -17,12 +17,15 @@ from src.trading_runtime.runtime import RunMode
 def test_controller_prepares_declared_features_once_with_actual_horizons(installed,monkeypatch,namespace_allowed):
     from tests.test_backtest_native_channel_session_source import session_case
     from src.backend.backtest_market_data import SESSION_OPEN_OFFSET_MS
+    # The miniature installed packet starts at midnight, unlike production's
+    # 04:00 source origin. Keep its controller and candidate clocks aligned.
+    monkeypatch.setattr('src.backend.backtest_market_data.SESSION_OPEN_OFFSET_MS',0)
     client,packet,_,args=session_case(installed,monkeypatch)
     owner,_,_,_,_=owner_case(installed,strategy_number=2)
     monkeypatch.setattr('src.market_engine.native_causal_channel_contract.producer_implementation_hash',
         lambda:args['producer_source_hash'])
     monkeypatch.setattr('src.backend.replay_run_service.ReplayRunController._fixed_through_boundary_ms',
-        lambda self:packet.request.through_day_boundary_ms//2-SESSION_OPEN_OFFSET_MS)
+        lambda self:packet.request.through_day_boundary_ms//2)
     controller=ReplayRunController.__new__(ReplayRunController)
     controller.definition=SimpleNamespace(market_data_plan={
         'strategy_one_input_exclusions': [],
@@ -55,25 +58,32 @@ def test_controller_prepares_declared_features_once_with_actual_horizons(install
         open_feature_keeper)
     controller._strategy=SimpleNamespace(assignments=lambda:tuple(
         SimpleNamespace(ticker=ticker) for ticker in args['tickers']))
+    from tests.test_native_channel_participant_scope import certified_plan
+    from src.backend.backtest_strategy_one_candidate_store import _token
+    plan=certified_plan()
+    prepared=tuple(replace(plan.prepared[0],ticker=ticker) for ticker in args['tickers'])
+    coverage=tuple(replace(plan.coverage[0],ticker=ticker) for ticker in args['tickers'])
+    candidates=replace(plan,prepared=prepared,coverage=coverage,
+        token=_token(plan.source_build_id,plan.candidate_rule_digest,plan.scan_query_sha256,coverage))
     manager=SimpleNamespace(_native_channel_owner=owner)
     if not namespace_allowed:
         with pytest.raises(ValueError,match='private reader/owner ACL'):
             asyncio.run(controller._prepare_native_channel_manager_features(manager,
-                market=args['market'],start_after=0))
+                market=args['market'],start_after=0,candidates=candidates,flat_start_boundary_ms=0))
         assert owner._feature_session is None
         assert lifecycle==['opened','verified','closed']
         return
     asyncio.run(controller._prepare_native_channel_manager_features(manager,
-        market=args['market'],start_after=0))
+        market=args['market'],start_after=0,candidates=candidates,flat_start_boundary_ms=0))
     assert owner._feature_session[1]==packet.request.through_day_boundary_ms//2
     assert lifecycle==['opened','verified','closed']
     reads=len(client.sql)
     with pytest.raises(ValueError):
         asyncio.run(controller._prepare_native_channel_manager_features(manager,
-            market=args['market'],start_after=1))
+            market=args['market'],start_after=1,candidates=candidates,flat_start_boundary_ms=0))
     assert len(client.sql)==reads
     asyncio.run(controller._prepare_native_channel_manager_features(SimpleNamespace(),
-        market=args['market'],start_after=0))
+        market=args['market'],start_after=0,candidates=candidates,flat_start_boundary_ms=0))
 
 
 def test_controller_stages_owned_quotes_then_drains_exact_pending(installed):
@@ -99,6 +109,29 @@ def test_controller_stages_owned_quotes_then_drains_exact_pending(installed):
     with pytest.raises(ValueError):
         asyncio.run(controller._stage_native_channel_boundary(manager,
             SimpleNamespace(boundary_ms=work.boundary_ms,broker_rows=work.broker_rows*2),event_time=at))
+
+
+def test_owner_binds_certified_empty_window_once_and_rejects_wrong_horizon(installed):
+    from tests.test_native_channel_participant_scope import certified_plan
+    from src.backend.backtest_native_channel_participant_scope import EmptyNativeChannelParticipantSession
+    from src.backend.backtest_strategy_one_candidate_store import _token
+    from src.backend.backtest_market_data import SESSION_OPEN_OFFSET_MS
+    owner,_,_,_,_=owner_case(installed,strategy_number=2)
+    plan=certified_plan()
+    coverage=tuple(replace(row,session_date=owner.session_date.isoformat()) for row in plan.coverage)
+    plan=replace(plan,coverage=coverage,token=_token(plan.source_build_id,
+        plan.candidate_rule_digest,plan.scan_query_sha256,coverage))
+    empty=EmptyNativeChannelParticipantSession(plan,600,700)
+    with pytest.raises(ValueError,match='exact flat run window'):
+        owner.bind_feature_session(empty,through_day_boundary_ms=701+SESSION_OPEN_OFFSET_MS,
+                                   max_positions=1)
+    assert owner._feature_session is None
+    owner.bind_feature_session(empty,through_day_boundary_ms=700+SESSION_OPEN_OFFSET_MS,
+                               max_positions=1)
+    assert owner._feature_session[0] is empty
+    with pytest.raises(ValueError):
+        owner.bind_feature_session(empty,through_day_boundary_ms=700+SESSION_OPEN_OFFSET_MS,
+                                   max_positions=1)
 
 
 def controller_case(installed,monkeypatch,*,reject=False,changed=False):
