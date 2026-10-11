@@ -42,3 +42,22 @@ Success requires one checkpoint with all current/future class F1 >= 0.95,
 all supervised sizing/quality MAE <= 0.02, complete coverage, and exact reload
 replay. A balanced overfit pass is not evidence of generalization or a natural
 class-population pass.
+
+## Staged frozen-context fitting
+
+`staged_heads` exposes the experimental equal-row head-fitting objective and
+an explicit parameter freeze. It updates current ENTRY/EXIT/quality, allocation,
+separate forecast heads and the forecast GRU while retaining encoder parameters.
+The input contexts must come from authenticated causal TRAIN replay; this module
+does not authorize arbitrary saved tensors or development data. Its fitting loss
+uses equal selected-row mass, whereas acceptance keeps the existing weighted
+allocation/quality metrics and all five forecast gates. Missing allocation is
+NaN and is supervised only for selected ENTRY rows.
+
+The bounded October 11 experiment passed the balanced 128-target gate through
+two exact six-session full-pipeline replays with one checkpoint. This establishes
+underfit capacity, not natural-population accuracy or generalization. The shared
+execution GRU is updated by forecast supervision, so behavior with actual order
+outcomes still requires separate evaluation. A reusable authenticated staged
+launcher is not yet integrated; the tensor objective alone is not an end-to-end
+training command.
