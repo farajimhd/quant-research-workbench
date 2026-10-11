@@ -22,6 +22,14 @@ def metrics(profits):
         stop_risk_dollar_seconds=[0.]*len(profits),worst_position_pnl=[min(p,default=0.) for p in profits])
 
 
+def test_same_backend_accounting_gate_rejects_even_roundoff():
+    from research.vectorized_backtest.v8.qualify_synthetic import exact_accounting
+    expected={'net_pnl':torch.tensor([1.],dtype=torch.float64)}
+    actual={'net_pnl':torch.tensor([1.+1e-13],dtype=torch.float64)}
+    with pytest.raises(AssertionError):exact_accounting(expected,actual)
+    exact_accounting(expected,expected)
+
+
 def test_authorized_stop_gate_binds_checkpoint_and_sealed_receipts(tmp_path):
     from research.vectorized_backtest.v8.prepare_validation import require_finished
     from research.vectorized_backtest.v6.torch_backtest.runtime import write_json,file_hash
