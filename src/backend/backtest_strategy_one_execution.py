@@ -21,7 +21,7 @@ import numpy as np
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_market_data import (
-    load_previous_completed_100ms_closes_batch, market_day_boundary,
+    load_previous_completed_100ms_closes_batch, market_day_boundary, SESSION_OPEN_OFFSET_MS,
 )
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, project_market_day_plan
 from src.backend.backtest_liquidity_price import PriceLevelPlan
@@ -470,7 +470,9 @@ async def run_certified_strategy_one_session(
                     max_rows=ranking_policy.scoring.max_rows)
                 def prepare_order():
                     scores = score_prepared_native_session(feature_session, decisions,
-                        initial_momentum_plan.eligible_mask, policy=ranking_policy.scoring)
+                        initial_momentum_plan.eligible_mask, policy=ranking_policy.scoring,
+                        execution_window_day_ms=(flat_start_boundary_ms + SESSION_OPEN_OFFSET_MS,
+                                                 through_boundary_ms + SESSION_OPEN_OFFSET_MS))
                     return prepare_participation_acquisition_order(initial_momentum_plan,
                         scores, policy=ranking_policy,
                         admission_policy=getattr(manager.contract, 'participation_admission_policy', None))

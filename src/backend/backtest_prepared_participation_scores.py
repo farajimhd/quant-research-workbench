@@ -3,6 +3,8 @@ import numpy as np
 import polars as pl
 
 from .backtest_native_channel_session_source import PreparedNativeChannelSession
+from .backtest_native_channel_participant_scope import EmptyNativeChannelParticipantSession
+from .backtest_market_data import SESSION_OPEN_OFFSET_MS
 from .backtest_native_participation_ranking import PreparedParticipationScores
 from research.causal_strategy_features.v5.decisions import (
     DECISION_IDENTITY, MAX_EXPANDED_DECISIONS, multi_resolution_decisions,
@@ -10,8 +12,9 @@ from research.causal_strategy_features.v5.decisions import (
 from research.causal_strategy_features.v7.ranking import ParticipationRankingPolicy, opportunity_scores
 
 
-def score_prepared_native_session(session, decisions, mandatory, *, policy):
-    if (type(session) is not PreparedNativeChannelSession
+def score_prepared_native_session(session, decisions, mandatory, *, policy,
+                                  execution_window_day_ms=None):
+    if (type(session) not in (PreparedNativeChannelSession, EmptyNativeChannelParticipantSession)
             or type(decisions) is not pl.DataFrame
             or type(policy) is not ParticipationRankingPolicy):
         raise ValueError('Exact prepared native session, decisions and scoring policy required')
@@ -26,14 +29,34 @@ def score_prepared_native_session(session, decisions, mandatory, *, policy):
             or type(mandatory) is not np.ndarray or mandatory.dtype != np.dtype(bool)
             or mandatory.shape != (decisions.height,)):
         raise ValueError('Complete bounded decisions and Boolean admission mask required')
-    if not set(decisions['ticker']).issubset(session.tickers):
+    keys = decisions.select(*required).with_row_index('_index')
+    if execution_window_day_ms is not None:
+        if (type(execution_window_day_ms) is not tuple or len(execution_window_day_ms) != 2
+                or any(type(v) is not int or v % 100 for v in execution_window_day_ms)
+                or not 0 <= execution_window_day_ms[0]
+                   < execution_window_day_ms[1] <= 86400000):
+            raise ValueError('Explicit aligned native scoring execution window required')
+        start, end = execution_window_day_ms
+        if keys.filter((pl.col('decision_day_ms') < 0)
+                       | (pl.col('decision_day_ms') > 86400000)
+                       | (pl.col('decision_day_ms') % 100 != 0)).height:
+            raise ValueError('Native scoring source clock is outside the canonical day')
+        keys = keys.filter((pl.col('decision_day_ms') > start)
+                           & (pl.col('decision_day_ms') <= end))
+    if type(session) is EmptyNativeChannelParticipantSession:
+        expected = (session.flat_start_boundary_ms + SESSION_OPEN_OFFSET_MS,
+                    session.through_boundary_ms + SESSION_OPEN_OFFSET_MS)
+        if execution_window_day_ms != expected or not keys.is_empty():
+            raise ValueError('Certified empty session differs from scoring execution window')
+    elif not set(keys['ticker']).issubset(session.tickers):
         raise ValueError('Prepared session omits native candidate tickers')
     mandatory = np.frombuffer(mandatory.tobytes(), dtype=bool)
     scores = np.full(decisions.height, np.nan, dtype=np.float64)
     available = np.zeros(decisions.height, dtype=bool)
-    covered = np.zeros(decisions.height, dtype=bool)
-    keys = decisions.select(*required).with_row_index('_index')
-    for sequence in session.sequences:
+    covered = np.ones(decisions.height, dtype=bool)
+    covered[keys['_index'].to_numpy()] = False
+    sequences = session.sequences if type(session) is PreparedNativeChannelSession else ()
+    for sequence in sequences:
         request = sequence.packet.request
         inputs = request.policy
         selected = keys.filter(pl.col('ticker').is_in(request.tickers))
