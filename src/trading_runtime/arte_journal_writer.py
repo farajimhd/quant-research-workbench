@@ -4059,6 +4059,8 @@ class _ManagerSnapshotUnit:
     first_price_source: Any | None = None
     fixed_lot_context: Any | None = None
     native_channel_image: Any | None = None
+    native_channel_capture: Any | None = None
+    native_channel_contexts: tuple = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -5015,6 +5017,43 @@ class ArteJournalWriter:
             self._accepted_writes = True
         return receipt
 
+    def submit_native_channel_manager_snapshot(self,*,capture,state,checkpoint_sequence,
+            journal_batch_id,first_price_source=None,native_channel_contexts=()) -> Future[str]:
+        """Freeze on the controller; project, reprove and publish on the worker."""
+        from src.backend.backtest_native_channel_management_owner import NativeChannelPendingCapture
+        from src.backend.backtest_strategy_one_management import OriginalRiskManagementState,StrategyOneManagementRunner
+        from .native_channel_exit_journal_context import channel_contexts_by_batch
+        if (self._journal_profile!='backtest_v4' or type(capture) is not NativeChannelPendingCapture
+                or capture.run_id!=self._run_id
+                or capture.policy!=getattr(self._client,'native_channel_management_policy',None)
+                or type(state) is not OriginalRiskManagementState or state.boundary_ms!=capture.boundary_ms
+                or type(checkpoint_sequence) is not int or checkpoint_sequence<1
+                or type(journal_batch_id) is not str or str(UUID(journal_batch_id))!=journal_batch_id
+                or UUID(journal_batch_id).int==0):
+            raise ValueError('Native manager queue requires exact declared capture and inherited frontier')
+        capture.__post_init__()
+        StrategyOneManagementRunner._validate_capture(state,max_pending_breaks=256)
+        channel_contexts_by_batch(self._run_id,native_channel_contexts,max_commits=100_000)
+        if any(context.policy!=capture.policy or context.first_price_source is not first_price_source
+                for context in native_channel_contexts):
+            raise ValueError('Native manager queue has foreign committed exit evidence')
+        if first_price_source is not None:
+            from src.backend.backtest_strategy_certified_price_break import CertifiedPriceReadbackAuthority
+            if type(first_price_source) is not CertifiedPriceReadbackAuthority or first_price_source.run_id!=self._run_id:
+                raise ValueError('Native manager queue has foreign first-price authority')
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError('Native manager writer is closed or failed')
+            receipt: Future[str]=Future()
+            try:
+                self._queue.put_nowait((_ManagerSnapshotUnit(capture.session_date,checkpoint_sequence,
+                    journal_batch_id,state,first_price_source,native_channel_capture=capture,
+                    native_channel_contexts=native_channel_contexts),receipt))
+            except Full as exc:
+                raise JournalQueueFull('Native manager capture queue is full') from exc
+            self._accepted_writes=True
+        return receipt
+
     def submit_native_channel_exit_publication(self,image,*,verified_prior_prefix) -> Future[str]:
         """Queue a complete issued exit; source/readback I/O runs on the writer."""
         from .native_channel_exit_publication import require_native_channel_exit_publication
@@ -5610,11 +5649,26 @@ class ArteJournalWriter:
                     price_context = ({} if unit.first_price_source is None else
                                      {'first_price_source': unit.first_price_source})
                     if unit.native_channel_image is not None:
-                        if unit.fixed_lot_context is not None:
+                        if unit.fixed_lot_context is not None or unit.native_channel_capture is not None:
                             raise RuntimeError('Manager queue cannot mix channel and fixed-lot authorities')
                         from .native_channel_manager_publication import publish_native_channel_manager_publication
                         publish_native_channel_manager_publication(self._client,
                             self._client.manager_keeper_session, unit.native_channel_image)
+                    elif unit.native_channel_capture is not None:
+                        if unit.fixed_lot_context is not None:
+                            raise RuntimeError('Native manager capture cannot borrow fixed-lot authority')
+                        from .native_channel_manager_publication import (
+                            issue_native_channel_manager_publication,publish_native_channel_manager_publication)
+                        inherited=project_manager_snapshot(run_id=self._run_id,session_date=unit.session_date,
+                            checkpoint_sequence=unit.checkpoint_sequence,state=unit.state,**price_context)
+                        rows,contexts=unit.native_channel_capture.capture(inherited,
+                            journal_batch_id=unit.journal_batch_id)
+                        image=issue_native_channel_manager_publication(self._client,rows,
+                            policy=unit.native_channel_capture.policy,contexts=contexts,
+                            journal_batch_id=unit.journal_batch_id,
+                            native_channel_contexts=unit.native_channel_contexts,**price_context)
+                        publish_native_channel_manager_publication(self._client,
+                            self._client.manager_keeper_session,image)
                     elif unit.fixed_lot_context is not None:
                         from .fixed_structural_lot_manager_snapshot import publish_manager_publication
                         publish_manager_publication(self._client,self._client.manager_keeper_session,
