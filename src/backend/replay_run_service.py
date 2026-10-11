@@ -2759,6 +2759,8 @@ class ReplayRunController:
             if reader is None or self._fixed_keeper_session is None or not tickers:
                 raise ValueError('Declared native feature session lacks its reader, Keeper or assignment scope')
             def prepare_features():
+                from contextlib import closing
+                from src.market_engine.native_channel_keeper import open_native_channel_keeper
                 from .backtest_native_channel_market_source import certify_native_channel_market_source
                 source_market = certify_native_channel_market_source(
                     market, native_owner.policy.exit_policy.sequence,
@@ -2768,12 +2770,14 @@ class ReplayRunController:
                 horizon=resolve_installed_native_channel_horizon(reader,market=source_market,
                     session_date=market.sessions[0],tickers=tickers,policy=native_owner.policy.exit_policy.sequence,
                     producer_source_hash=producer_hash)
-                return prepare_and_bind_native_channel_session(native_owner,reader,market=source_market,
-                    tickers=tickers,source_through_day_boundary_ms=horizon,
-                    execution_through_day_boundary_ms=self._fixed_through_boundary_ms()+SESSION_OPEN_OFFSET_MS,
-                    producer_source_hash=producer_hash,
-                    authority=NativeChannelInsertAuthority(self._fixed_keeper_session.client),
-                    max_packets=min(4096,len(tickers)),max_positions=len(assignments))
+                with closing(open_native_channel_keeper('read')) as feature_keeper:
+                    feature_keeper.verify_namespace()
+                    return prepare_and_bind_native_channel_session(native_owner,reader,market=source_market,
+                        tickers=tickers,source_through_day_boundary_ms=horizon,
+                        execution_through_day_boundary_ms=self._fixed_through_boundary_ms()+SESSION_OPEN_OFFSET_MS,
+                        producer_source_hash=producer_hash,
+                        authority=NativeChannelInsertAuthority(feature_keeper.client),
+                        max_packets=min(4096,len(tickers)),max_positions=len(assignments))
             preparation=asyncio.create_task(asyncio.to_thread(prepare_features))
             try:
                 await asyncio.shield(preparation)

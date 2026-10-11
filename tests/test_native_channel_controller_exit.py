@@ -13,7 +13,8 @@ from src.backend.replay_run_service import ReplayRunController
 from src.trading_runtime.runtime import RunMode
 
 
-def test_controller_prepares_declared_features_once_with_actual_horizons(installed,monkeypatch):
+@pytest.mark.parametrize('namespace_allowed', [True, False])
+def test_controller_prepares_declared_features_once_with_actual_horizons(installed,monkeypatch,namespace_allowed):
     from tests.test_backtest_native_channel_session_source import session_case
     from src.backend.backtest_market_data import SESSION_OPEN_OFFSET_MS
     client,packet,_,args=session_case(installed,monkeypatch)
@@ -33,12 +34,34 @@ def test_controller_prepares_declared_features_once_with_actual_horizons(install
         feature_market)
     controller._native_channel_read_client=client
     controller._fixed_keeper_session=SimpleNamespace(client=args['authority'].keeper)
+    lifecycle=[]
+    def verify_namespace():
+        lifecycle.append('verified')
+        if not namespace_allowed:
+            raise ValueError('Native product Keeper lacks exact private reader/owner ACL')
+    feature_keeper=SimpleNamespace(client=args['authority'].keeper,
+        verify_namespace=verify_namespace,
+        close=lambda:lifecycle.append('closed'))
+    def open_feature_keeper(role):
+        assert role=='read'
+        lifecycle.append('opened')
+        return feature_keeper
+    monkeypatch.setattr('src.market_engine.native_channel_keeper.open_native_channel_keeper',
+        open_feature_keeper)
     controller._strategy=SimpleNamespace(assignments=lambda:tuple(
         SimpleNamespace(ticker=ticker) for ticker in args['tickers']))
     manager=SimpleNamespace(_native_channel_owner=owner)
+    if not namespace_allowed:
+        with pytest.raises(ValueError,match='private reader/owner ACL'):
+            asyncio.run(controller._prepare_native_channel_manager_features(manager,
+                market=args['market'],start_after=0))
+        assert owner._feature_session is None
+        assert lifecycle==['opened','verified','closed']
+        return
     asyncio.run(controller._prepare_native_channel_manager_features(manager,
         market=args['market'],start_after=0))
     assert owner._feature_session[1]==packet.request.through_day_boundary_ms//2
+    assert lifecycle==['opened','verified','closed']
     reads=len(client.sql)
     with pytest.raises(ValueError):
         asyncio.run(controller._prepare_native_channel_manager_features(manager,

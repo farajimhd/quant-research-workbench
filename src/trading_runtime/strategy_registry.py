@@ -1497,6 +1497,26 @@ def initialize_numbered_fixed_strategies() -> None:
                 certify_native_channel_packet_successor_source, channel_market_release,
                 historical_parent_proof=channel_packet_parent_source_proof())))
         register_numbered_strategy(channel_packet)
+        from .strategy_one_hundred_twenty_two_release import release_contract as channel_auth_release
+        from .strategy_one_hundred_twenty_two_contract import strategy_one_hundred_twenty_two_contract
+        from .strategy_one_hundred_twenty_two_configuration import (
+            SOURCE_PREFIX as channel_auth_source_prefix,
+            derive_strategy_one_hundred_twenty_two_configuration,
+            verify_strategy_one_hundred_twenty_two_manifest,
+            historical_parent_source_proof as channel_auth_parent_source_proof)
+        from src.backend.backtest_native_channel_keeper_successor_certification import certify_native_channel_keeper_successor_source
+        channel_auth = channel_auth_release()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=channel_auth.executor_strategy_id, revision=channel_auth.executor_revision,
+            evaluation_interval=channel_auth.evaluation_interval,
+            strategy_factory=_strategy_two_factory,
+            contract_factory=strategy_one_hundred_twenty_two_contract,
+            manifest_authority=NativeManifestAuthority(121, channel_auth_source_prefix,
+                derive_strategy_one_hundred_twenty_two_configuration,
+                verify_strategy_one_hundred_twenty_two_manifest,
+                certify_native_channel_keeper_successor_source, channel_packet_release,
+                historical_parent_proof=channel_auth_parent_source_proof())))
+        register_numbered_strategy(channel_auth)
         _NUMBERED_FIXED_REGISTERED = True
 
 
