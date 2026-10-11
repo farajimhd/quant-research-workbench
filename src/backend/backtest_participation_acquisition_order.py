@@ -8,6 +8,8 @@ import polars as pl
 from .backtest_native_candidate_feature_scope import declared_candidate_feature_decisions
 from .backtest_native_participation_ranking import PreparedParticipationScores
 from .backtest_market_data import SESSION_OPEN_OFFSET_MS
+from .backtest_strategy_certified_price_break import CertifiedInitialPriceBreakPlan
+from .backtest_native_price_candidate_features import native_price_candidate_feature_decisions
 from src.trading_runtime.participation_acquisition_policy import ParticipationAcquisitionPolicy
 
 
@@ -35,7 +37,10 @@ def prepare_participation_acquisition_order(source, scores, *, policy):
     if type(policy) is not ParticipationAcquisitionPolicy or type(scores) is not PreparedParticipationScores:
         raise ValueError('Exact declared policy and prepared scores required')
     policy.__post_init__()
-    rows = declared_candidate_feature_decisions(source, max_rows=policy.scoring.max_rows)
+    if type(source) is CertifiedInitialPriceBreakPlan:
+        rows = native_price_candidate_feature_decisions(source, max_rows=policy.scoring.max_rows)
+    else:
+        rows = declared_candidate_feature_decisions(source, max_rows=policy.scoring.max_rows)
     for values, dtype in ((scores.scores, np.float64), (scores.available, bool),
                           (scores.mandatory_eligible, bool)):
         if (type(values) is not np.ndarray or values.dtype != np.dtype(dtype)
