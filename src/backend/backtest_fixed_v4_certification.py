@@ -1688,6 +1688,11 @@ def _reviewed_fixed_lot_configuration_projection(source: str, name: str, expecte
 
 def _reviewed_fixed_lot_execution_projection(source: str, name: str, expected: str) -> bool:
     """Reinline the exact extracted legacy pipeline; selected route stays separately pinned."""
+    from .backtest_native_session_execution_compatibility import restore_native_session_execution_parent
+    try:
+        source = restore_native_session_execution_parent(source)
+    except ValueError:
+        return False
     from .backtest_fixed_structural_lot_compatibility_v19 import restore_reviewed_parent_source as restore_v19
     source = restore_v19(source, 'src/backend/backtest_strategy_one_execution.py')
     from .backtest_fixed_structural_lot_compatibility_v18 import restore_reviewed_parent_source as restore_v18
