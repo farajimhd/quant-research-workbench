@@ -80,12 +80,18 @@ def main(argv=None):
     parser.add_argument('--head-updates', type=int, default=384)
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--prepare-only', action='store_true')
+    parser.add_argument('--transformer-search', action='store_true', help='Frozen 32 transformer variants')
+    parser.add_argument('--snapshot-runtime', type=Path, help='Reuse authenticated completed benchmark snapshots')
+    parser.add_argument('--candidate-indices', type=int, nargs='+', help='Explicit 1-based transformer subset for bounded smoke tests')
     args = parser.parse_args(argv)
     runtime = Path('D:/TradingML/runtimes').resolve(); output = args.output.resolve()
     if not runtime.is_dir() or not output.is_relative_to(runtime) or not args.parent.resolve().is_relative_to(runtime):
         raise ValueError('Explicit laptop runtime root required')
     if not 1 <= args.joint_updates <= 1200 or not 1 <= args.head_updates <= 1200:
         raise ValueError('Bounded matched update budget required')
+    if args.candidate_indices is not None and (not args.transformer_search or len(set(args.candidate_indices)) != len(args.candidate_indices)
+            or any(not 1 <= index <= 32 for index in args.candidate_indices)):
+        raise ValueError('Unique bounded transformer indices required')
     if output.exists() and not args.resume:
         raise ValueError('Fresh output required, or explicit authenticated --resume')
     import psutil
@@ -99,13 +105,37 @@ def main(argv=None):
     if psutil.virtual_memory().available < 8 * 1024**3:
         raise RuntimeError('Laptop requires 8 GiB available host memory')
     output.mkdir(exist_ok=args.resume)
-    write(output / 'progress.json', dict(phase='authenticating_train', active=1, queued=3, completed=0, failed=0))
-    parent, train, bindings = training(args.parent)
+    write(output / 'progress.json', dict(phase='authenticating_train', active=1, queued=32 if args.transformer_search else 3, completed=0, failed=0))
+    snapshot_plan = None
+    if args.snapshot_runtime is not None:
+        snapshot = args.snapshot_runtime.resolve()
+        if not snapshot.is_relative_to(runtime): raise ValueError('Snapshot runtime escaped laptop root')
+        snapshot_plan = json.loads((snapshot / 'manifest.json').read_text())
+        proof = json.loads((snapshot / 'comparison-audit.json').read_text())
+        if proof['status'] != 'passed' or proof['sealed_labels_read'] or not proof['source_and_snapshot_hashes_verified']:
+            raise ValueError('Verified completed benchmark snapshot required')
+        if snapshot_plan['parent_manifest_sha256'] != file_hash(args.parent / 'manifest.json') or snapshot_plan['train_sha256'] != file_hash(snapshot / 'train.pt'):
+            raise ValueError('Snapshot TRAIN/parent binding changed')
+        if snapshot_plan['normalization_sha256'] != file_hash(args.parent / 'normalization.json') or snapshot_plan['channel_normalization_sha256'] != file_hash(args.parent / 'channel-normalization.json'):
+            raise ValueError('Snapshot normalization binding changed')
+        train = torch.load(snapshot / 'train.pt', weights_only=False)
+        parent = None
+        bindings = [dict(day=d) for d in snapshot_plan['train_days']]
+    else:
+        parent, train, bindings = training(args.parent)
     base = json.loads((args.parent / 'normalization.json').read_text())
     extra = json.loads((args.parent / 'channel-normalization.json').read_text())
     # Preserve global RNG while capacity is chosen without any outcomes.
     with torch.random.fork_rng():
-        sizes = matched_sizes(base, extra)
+        if args.transformer_search:
+            from research.rl_trading.v6 import transformer_search
+            sizes = transformer_search.plan(base, extra)
+            if args.candidate_indices: sizes = [sizes[i-1] for i in args.candidate_indices]
+        else:
+            sizes = matched_sizes(base, extra)
+    def build_model(spec):
+        return (transformer_search.build(spec, base, extra) if args.transformer_search
+            else WindowTeacher(Candidate(spec['architecture'], spec['width']), base, extra))
     train_path = output / 'train.pt'
     if train_path.exists():
         old_train = torch.load(train_path, weights_only=False)
@@ -114,7 +144,9 @@ def main(argv=None):
             raise ValueError('Resumed causal TRAIN snapshot changed')
     else:
         save(train_path, train)
-    plan = dict(version=VERSION, source_commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+    plan = dict(version=transformer_search.VERSION if args.transformer_search else VERSION, source_commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+        snapshot_runtime=str(args.snapshot_runtime.resolve()) if args.snapshot_runtime else None,
+        snapshot_manifest_sha256=file_hash(args.snapshot_runtime/'manifest.json') if args.snapshot_runtime else None,
         source_runtime=str(args.source_runtime.resolve()), parent_runtime=str(args.parent.resolve()),
         parent_manifest_sha256=file_hash(args.parent / 'manifest.json'), train_sha256=file_hash(train_path),
         normalization_sha256=file_hash(args.parent / 'normalization.json'), channel_normalization_sha256=file_hash(args.parent / 'channel-normalization.json'),
@@ -144,7 +176,7 @@ def main(argv=None):
         write(manifest_path, plan)
     print(json.dumps(dict(phase='prepared', candidates=sizes, train_rows=len(train['action']), exposure=plan['sample_exposure_per_candidate'])), flush=True)
     if args.prepare_only:
-        write(output / 'progress.json', dict(phase='prepared_not_training', queued=3, active=0, completed=0, failed=0))
+        write(output / 'progress.json', dict(phase='prepared_not_training', queued=len(sizes), active=0, completed=0, failed=0))
         return 0
     if not torch.cuda.is_available():
         raise ValueError('Laptop CUDA required')
@@ -164,7 +196,7 @@ def main(argv=None):
                     raise ValueError('Completed candidate binding changed')
                 results.append(result); continue
             torch.manual_seed(17)
-            model = WindowTeacher(Candidate(name, spec['width']), base, extra).to(device)
+            model = build_model(spec).to(device)
             optimizer = torch.optim.AdamW(model.parameters(), lr=.001, weight_decay=.0001)
             start = 0; frozen = None
             state_receipt = root / 'state.json'
@@ -222,12 +254,12 @@ def main(argv=None):
                         save(state_path, dict(update=update+1, model=model.state_dict(), optimizer=optimizer.state_dict()))
                         write(state_receipt, dict(file=state_path.name, sha256=file_hash(state_path), manifest_sha256=file_hash(manifest_path)))
                         write(output / 'progress.json', dict(phase='training', architecture=name, update=update+1,
-                            total_updates=args.joint_updates+args.head_updates, active=1, completed=len(results), queued=2-len(results), failed=0,
+                            total_updates=args.joint_updates+args.head_updates, active=1, completed=len(results), queued=len(sizes)-1-len(results), failed=0,
                             elapsed_seconds=time.perf_counter()-started, entry_f1=metrics['current']['ENTRY']['f1'], gate_passed=passes(metrics)))
                         print(json.dumps(dict(architecture=name, update=update+1, loss=total_loss,
                             f1={k:v['f1'] for k,v in metrics['current'].items()}, passed=passes(metrics))), flush=True)
                 save(root / 'selected.pt', model.state_dict())
-                reloaded = WindowTeacher(Candidate(name, spec['width']), base, extra).to(device)
+                reloaded = build_model(spec).to(device)
                 reloaded.load_state_dict(torch.load(root / 'selected.pt', weights_only=True, map_location=device))
                 # requires_grad flags are not tensors in state_dict. CUDA may
                 # choose a different inference kernel when these flags differ.
@@ -251,7 +283,14 @@ def main(argv=None):
                             validation_data = torch.load(val_path, weights_only=False)
                         else:
                             write(output / 'progress.json', dict(phase='authenticating_public_validation', architecture=name, active=1))
-                            validation_data, scope = validation(args.source_runtime, parent, plan['validation_days'])
+                            if args.snapshot_runtime:
+                                old_receipt = json.loads((args.snapshot_runtime/'validation.json').read_text())
+                                if old_receipt['manifest_sha256'] != file_hash(args.snapshot_runtime/'manifest.json') or old_receipt['sha256'] != file_hash(args.snapshot_runtime/'validation.pt'):
+                                    raise ValueError('Snapshot validation binding changed')
+                                validation_data = torch.load(args.snapshot_runtime/'validation.pt', weights_only=False)
+                                scope = old_receipt['scope']
+                            else:
+                                validation_data, scope = validation(args.source_runtime, parent, plan['validation_days'])
                             save(val_path, validation_data)
                             write(val_receipt, dict(sha256=file_hash(val_path), manifest_sha256=file_hash(manifest_path), scope=scope,
                                 first_admitted_checkpoint_sha256=file_hash(root/'selected.pt')))
@@ -270,6 +309,7 @@ def main(argv=None):
                 logger.finish()
             del model, optimizer, reloaded, frozen; gc.collect(); torch.cuda.empty_cache()
             write(output / 'results.json', dict(candidates=results, sealed_labels_read=False, production_teacher_certified=False))
+            if args.transformer_search: write(output / 'selection.json', transformer_search.selection(results))
         write(output / 'complete.json', dict(status='completed', candidates=results,
             equal_sample_exposure=len({r['sample_exposure'] for r in results}) == 1,
             validation_is_exploratory=True, sealed_labels_read=False, workstation_gpu_used=False))
