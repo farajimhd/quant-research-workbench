@@ -542,6 +542,11 @@ class TradingRuntime:
                     },
                 })
         self.journal.append_many(entries)
+        from .columnar_program_actor import AssignedProgramStrategy
+        if isinstance(self.strategy, AssignedProgramStrategy):
+            if self.config.mode is not RunMode.BACKTEST or self.order_manager is None:
+                raise RuntimeError("Program execution projection requires the actual Backtest OMS")
+            self.strategy.on_broker_executions(executions, self.order_manager)
 
     def process_passive_market_event(self, event: MarketEvent) -> None:
         """Advance market state when no order can match and strategy evaluation is external."""

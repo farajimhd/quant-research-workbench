@@ -267,6 +267,15 @@ class OrderGroupSnapshot:
     protection_task: asyncio.Task[None] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutionAttribution:
+    account_id: str
+    assignment_id: str
+    intent_id: str
+    action: str
+    role: str
+
+
 @dataclass(slots=True)
 class _ManagedOrderGroup:
     group_id: str
@@ -1764,6 +1773,34 @@ class OrderManagementEngine:
     def snapshot_for_intent(self, intent_id: str) -> OrderGroupSnapshot | None:
         group = next((row for row in self._groups.values() if row.intent.intent_id == intent_id), None)
         return group.snapshot(self.policy.version) if group is not None else None
+
+    def execution_attribution(self, execution) -> ExecutionAttribution:
+        """Read actual request lineage in constant time; never infer from ticker.
+
+        The existing broker-ID/request-index views are restored with normalized
+        OMS state. A missing or conflicting identity fails rather than treating
+        a protection fill as an acquisition or borrowing another assignment.
+        """
+        from .ibkr_schema import Execution
+        if type(execution) is not Execution:
+            raise TypeError("OMS attribution requires a typed broker execution")
+        group_id = self._group_by_broker_id.get(execution.order_id)
+        group = self._groups.get(group_id)
+        index = group.broker_order_request_indexes.get(execution.order_id) if group else None
+        if group is None or index is None or not 0 <= index < len(group.orders):
+            raise ValueError("Execution lacks exact OMS broker request lineage")
+        request = group.orders[index]
+        role = group.broker_order_roles.get(execution.order_id)
+        assignment_id = group.intent.metadata.get("assignment_id")
+        sides = {"B": "BUY", "S": "SELL", "BUY": "BUY", "SELL": "SELL"}
+        if (not role or type(assignment_id) is not str or not assignment_id
+                or execution.account != group.account_id or execution.account != request.acctId
+                or execution.order_ref != request.cOID or execution.conid != request.conid
+                or execution.symbol != request.ticker or execution.symbol != group.intent.ticker
+                or sides.get(execution.side.upper()) != request.side.upper()):
+            raise ValueError("Execution identity conflicts with its actual OMS request")
+        return ExecutionAttribution(group.account_id, assignment_id, group.intent.intent_id,
+                                    str(group.intent.action), role)
 
     async def close(self) -> None:
         self._closed = True

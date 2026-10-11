@@ -165,3 +165,23 @@ existing expiry policies retain their behavior. Synthetic tests exercise QMD
 column transport, shared app rules/rank/cache/membership changes and normalized
 configuration validation. Main actor and typed-stream orchestration, operational
 publication and full-session acceptance remain pending.
+
+The shared runtime now feeds actual typed broker executions to
+`AssignedProgramStrategy` after journaling the existing fill/commission facts.
+The actor obtains constant-time exact attribution from the existing OMS
+broker-ID/request-index views. Account, client order, broker order, conid,
+ticker, assignment, intent, side and persisted execution role must agree.
+Unknown lineage fails closed; acquisition, profit-target and protective-stop
+fills cannot be inferred from ticker or submitted order quantity.
+
+The actor keeps the existing bounded execution-derived position projection;
+rule evaluation never receives actual costs, quantities or P&L. Completed
+selection uses actual position-open/age and normal management policy. Partial
+fills, remainder cancellation and repair-stop exits use normal Portfolio/OMS
+and SimulatedBroker behavior. Both 100ms and 1s synthetic runtime tests cover
+the actual fill lifecycle, commissions, exact-content deduplication and replay
+of the same execution prefix. No new journal table or authority is introduced.
+Shared source certificates include this dependency and retain their metadata
+anchor, mutation and exact-source checks. Production actor admission, typed
+stream/run-controller orchestration and database-backed cold recovery still
+require integration and qualification before publication or a real Backtest.
