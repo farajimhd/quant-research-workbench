@@ -17,6 +17,8 @@ from src.market_engine.native_causal_channel_contract import (
 )
 from src.market_engine.native_channel_insert_authority import NativeChannelInsertAuthority
 
+MAX_DISCOVERY_PACKETS = 4096
+
 
 @dataclass(frozen=True, slots=True)
 class PreparedNativeChannelSession:
@@ -62,7 +64,7 @@ def prepare_installed_native_channel_session(client, *, market, session_date, ti
     """
     if (type(market) is not CertifiedMarketDayPlan or type(policy) is not NativeChannelSequencePolicy
             or type(authority) is not NativeChannelInsertAuthority
-            or type(max_packets) is not int or not 1 <= max_packets <= 4096
+            or type(max_packets) is not int or not 1 <= max_packets <= MAX_DISCOVERY_PACKETS
             or type(tickers) is not tuple or not tickers or len(tickers) > MAX_TICKERS * max_packets
             or any(type(ticker) is not str for ticker in tickers)
             or tickers != tuple(sorted(set(tickers)))):
@@ -135,7 +137,7 @@ def resolve_installed_native_channel_horizon(client, *, market, session_date,
     storage_preflight(client)
     return _discover_parent_projected_packets(client, market=market,
         session_date=session_date, tickers=tickers, policy=policy,
-        producer_source_hash=producer_source_hash, max_packets=4096).horizon
+        producer_source_hash=producer_source_hash, max_packets=MAX_DISCOVERY_PACKETS).horizon
 
 
 def _discover_parent_projected_packets(client, *, market, session_date, tickers,
@@ -154,8 +156,10 @@ def _discover_parent_projected_packets(client, *, market, session_date, tickers,
         f'AND producer_source_hash={_literal(producer_source_hash)} AND ticker IN ({members})',
         max_packets * MAX_TICKERS * len(policy.inputs.resolutions_ms))
     attempts = tuple(sorted(selected['feature_attempt_id'].unique().to_list()))
-    if not attempts or len(attempts) > max_packets:
-        raise ValueError('Native discovery requires a nonempty bounded packet inventory')
+    if not attempts:
+        raise ValueError('Native discovery has no matching packet inventory')
+    if len(attempts) > max_packets:
+        raise ValueError(f'Native discovery found {len(attempts)} packet attempts; declared limit is {max_packets}')
     inventories = []
     for attempt in attempts:
         require_uuid(attempt)

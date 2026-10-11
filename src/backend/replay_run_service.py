@@ -2754,6 +2754,7 @@ class ReplayRunController:
                 raise ValueError('Native channel restart requires complete reconstructed committed contexts')
             from .backtest_native_channel_session_source import (
                 resolve_installed_native_channel_horizon, prepare_and_bind_native_channel_session,
+                MAX_DISCOVERY_PACKETS,
             )
             from src.market_engine.native_causal_channel_contract import producer_implementation_hash
             from src.market_engine.native_channel_insert_authority import NativeChannelInsertAuthority
@@ -2795,7 +2796,7 @@ class ReplayRunController:
                         execution_through_day_boundary_ms=self._fixed_through_boundary_ms()+SESSION_OPEN_OFFSET_MS,
                         producer_source_hash=producer_hash,
                         authority=NativeChannelInsertAuthority(feature_keeper.client),
-                        max_packets=min(4096,len(tickers)),max_positions=len(assignments))
+                        max_packets=MAX_DISCOVERY_PACKETS,max_positions=len(assignments))
             preparation=asyncio.create_task(asyncio.to_thread(prepare_features))
             try:
                 await asyncio.shield(preparation)
