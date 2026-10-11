@@ -37,6 +37,8 @@ def test_dispatch_cold_storage_projects_only_exact_registered_families() -> None
     assert storage.list_dispatch_commits(
         ACK_COMMIT.name, session_key="2026-09-24") == [acks["commit"]]
     assert storage.has_any_dispatch_rows(session_key="2026-09-24")
+    assert storage.has_dispatch_rows_after(session_key="2026-09-24", source_batch_sequence=0)
+    assert any("source_batch_sequence>0" in sql for sql in client.queries)
     assert all("SELECT " in sql and "INSERT" not in sql
                for sql in client.queries)
     with pytest.raises(ValueError, match="not registered"):
@@ -49,6 +51,8 @@ def test_dispatch_cold_storage_projects_only_exact_registered_families() -> None
     with pytest.raises(ValueError, match="batch sequence"):
         storage.read_dispatch_rows(INTENT.name, session_key="2026-09-24",
                                    source_batch_sequence=0)
+    with pytest.raises(ValueError, match="inventory boundary"):
+        storage.has_dispatch_rows_after(session_key="2026-09-24", source_batch_sequence=True)
     rows[INTENT.name] = rows[INTENT.name] * 2
     with pytest.raises(RuntimeError, match="bounded family"):
         ClickHouseDispatchColdStorage(client, max_family_rows=1).read_dispatch_rows(

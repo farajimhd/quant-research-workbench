@@ -1208,6 +1208,7 @@ class ReplayRunController:
             raise ValueError("Program liquidity selection requires its program actor")
         self._program_strategy = program_strategy
         self._program_liquidity_resolution_ms = program_liquidity_resolution_ms
+        self._program_signal_runtime = None
         if fixed_v4_runtime_image is not None:
             from src.backend.backtest_v4_running_recovery import V4FixedRuntimeImage
             if (definition.mode != RunMode.BACKTEST or resume_state is not None
@@ -4811,6 +4812,38 @@ class ReplayRunController:
                 event_time=self.definition.requested_start, payload=report)
         if names and not report['eligible_ticker_count']:
             raise ValueError('No strategy tickers have required V7 books; see level-book-coverage.json')
+
+    async def bootstrap_program_signals(self, publisher, **scope):
+        """Bind the program controller to the publisher's exact cold source head."""
+        from .signal_stream_runtime_service import SignalStreamRuntime
+        from .signal_stream_typed_publication import TypedSignalPublicationQueue
+        if (self._program_strategy is None or self._runtime is None
+                or self._runtime.strategy is not self._program_strategy
+                or self._program_signal_runtime is not None
+                or type(publisher) is not TypedSignalPublicationQueue
+                or scope.get("session_key") != self.definition.session_date.isoformat()
+                or scope.get("configuration_revision") !=
+                   self.definition.configuration_revision["revision_id"]):
+            raise ValueError("Program Signal Stream bootstrap differs from its controller scope")
+        runtime = SignalStreamRuntime()
+        head = await publisher.bootstrap_runtime_session_async(runtime, **scope)
+        self._program_signal_runtime = runtime
+        return head
+
+    async def recover_program_dispatch(self, storage, *, registered_dispatch):
+        """Recover exact ACK progress independently of the committed source head."""
+        from .signal_dispatch_recovery import recover_dispatch_backlog_async
+        runtime = self._program_signal_runtime
+        if runtime is None:
+            raise RuntimeError("Program dispatch recovery requires its cold source runtime")
+        sequence, content_hash, _ = runtime.typed_source_cursor()
+        hashes = runtime.typed_source_commit_hashes()
+        if len(hashes) != sequence or hashes and hashes[-1] != content_hash:
+            raise ValueError("Program dispatch source prefix differs from its cold source head")
+        return await recover_dispatch_backlog_async(storage,
+            session_key=self.definition.session_date.isoformat(), source_commit_hashes=hashes,
+            configuration_revision_id=self.definition.configuration_revision["revision_id"],
+            registered_dispatch=registered_dispatch)
 
     async def prepare_program_inputs(self, pins, *, first_ordinal: int,
             stop_ordinal: int, evaluation_block: str, as_of: datetime,

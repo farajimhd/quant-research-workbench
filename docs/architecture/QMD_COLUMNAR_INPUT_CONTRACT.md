@@ -226,3 +226,20 @@ Synthetic tests compare exact cold-product columns and rule masks across a
 4,096-row transport boundary and exercise the main controller's input call.
 The run loop still needs durable source/dispatch sequencing, operational source
 admission and normalized recovery before real-session qualification.
+
+The controller now binds its isolated Signal Stream runtime through the exact
+cold source bootstrap. That runtime retains the verified source commit hashes;
+dispatch recovery derives its source bound from that prefix rather than a
+caller-supplied sequence. The generic normalized dispatch reader distinguishes
+a verified completed ACK prefix from source batches with no dispatch facts.
+An all-family tail inventory rejects partial intent/ACK writes. Keeper's closed
+gate and exact receipt proofs must agree before a resumed writer reopens the
+same prefix and appends the next sequence. Prior receipts and rows are retained;
+unresolved INSERT phases still require reconciliation.
+
+Synthetic tests cover source committed before dispatch, completed ACKs followed
+by pending source batches, orphan children, changed hashes, duplicate ACKs and
+resumed publication without rewriting prior facts. The main controller's cold
+source/backlog call is exercised through these shared contracts. Activation,
+program boundary dispatch and normalized run recovery still need completion
+before the operational launch gate can be opened.

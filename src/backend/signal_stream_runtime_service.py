@@ -205,6 +205,7 @@ class SignalStreamRuntime:
         self._typed_pending: PendingSignalTransition | None = None
         self._typed_scope: tuple[str, str] | None = None
         self._typed_cursor: tuple[int, str, datetime | None] | None = None
+        self._typed_prefix: list[str] = []
 
     def _install_committed_source(self, head, *, configuration_revision: str,
                                   source_revision: str) -> None:
@@ -220,8 +221,12 @@ class SignalStreamRuntime:
                 or type(head.occurrence_count) is not int or head.occurrence_count < 0
                 or type(head.content_hash) is not str or len(head.content_hash) != 64
                 or any(c not in "0123456789abcdef" for c in head.content_hash)
+                or type(head.commit_hashes) is not tuple or len(head.commit_hashes) != head.sequence
+                or any(type(value) is not str or len(value) != 64
+                    or any(c not in "0123456789abcdef" for c in value) for value in head.commit_hashes)
+                or head.commit_hashes and head.commit_hashes[-1] != head.content_hash
                 or not configuration_revision or not source_revision):
-            raise ValueError("Typed Signal Stream cold source head is invalid")
+            raise ValueError("Typed Signal Stream cold source cursor head is invalid")
         cutoff = datetime.fromisoformat(head.cutoff_at.replace("Z", "+00:00")) if head.cutoff_at is not None else None
         if cutoff is not None and (cutoff.tzinfo is None or cutoff.utcoffset() is None):
             raise ValueError("Typed Signal Stream cold source cutoff must be timezone-aware")
@@ -244,6 +249,7 @@ class SignalStreamRuntime:
             self._session_key = head.session_key
             self._typed_scope = (configuration_revision, source_revision)
             self._typed_cursor = (head.sequence, head.content_hash, cutoff)
+            self._typed_prefix = list(head.commit_hashes)
             self._hydrated = True
 
     def typed_source_cursor(self):
@@ -251,6 +257,12 @@ class SignalStreamRuntime:
             if self._typed_cursor is None:
                 raise RuntimeError("Signal Stream runtime lacks a cold typed source cursor")
             return self._typed_cursor
+
+    def typed_source_commit_hashes(self):
+        with self._lock:
+            if self._typed_cursor is None:
+                raise RuntimeError("Signal Stream runtime lacks a cold typed source cursor")
+            return tuple(self._typed_prefix)
 
     def stage_resolve(
         self, configuration: dict[str, Any], candidates: list[dict[str, Any]],
@@ -376,6 +388,7 @@ class SignalStreamRuntime:
             self._generation += 1
             if self._typed_cursor is not None:
                 self._typed_cursor = (pending._batch_sequence, head, _parse_datetime(stage.cutoff_at))
+                self._typed_prefix.append(head)
             pending._promoted = True
             self._typed_pending = None
             with self._snapshot_lock:

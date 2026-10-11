@@ -64,6 +64,7 @@ def test_cold_bootstrap_publication_and_recovery_use_the_same_prefix(route):
     try:
         head = publisher.bootstrap_runtime_session(recovered, **scope)
         assert recovered.typed_source_cursor() == first
+        assert recovered.typed_source_commit_hashes() == (first[1],)
         assert recovered._admissions == runtime._admissions
         with pytest.raises(ValueError, match="advance"):
             recovered.stage_resolve(configuration, [row], as_of=AT, data_fields_projected=True)
@@ -80,6 +81,7 @@ def test_cold_bootstrap_publication_and_recovery_use_the_same_prefix(route):
         asyncio.run(pending.wait_async())
         assert len(recovered.promote_staged(pending)) == 1
         assert recovered.typed_source_cursor()[0] == 2
+        assert recovered.typed_source_commit_hashes() == (first[1], pending.result())
     finally:
         publisher.close()
 

@@ -40,6 +40,7 @@ class RegisteredDispatchCursorWriter:
         source_commit_verifier: Callable[[Mapping[str, Any]], None],
         preflight: Callable[[Any], None] | None = None,
         strategy_one: bool = False,
+        recovered_prefix: Any | None = None,
     ) -> None:
         if (not callable(source_commit_verifier)
                 or type(strategy_one) is not bool
@@ -58,10 +59,26 @@ class RegisteredDispatchCursorWriter:
             fixed_backtest_v2_preflight(client)
         else:
             preflight(client)
+        completed_count = 0
+        if recovered_prefix is not None:
+            from .signal_dispatch_recovery import DispatchRecovery
+            if type(recovered_prefix) is not DispatchRecovery:
+                raise ValueError("Registered dispatch resume requires its verified recovery projection")
+            expected = {}
+            for sequence, (intents, acks) in enumerate(recovered_prefix.completed, 1):
+                verify_dispatch_cursor(intents, acks)
+                commit = intents["commit"]
+                if (commit["session_key"] != session_key
+                        or commit["configuration_revision_id"] != configuration_revision_id
+                        or commit["source_batch_sequence"] != sequence):
+                    raise ValueError("Registered dispatch resume prefix differs from writer scope")
+                expected[sequence] = (commit["content_hash"], acks["commit"]["content_hash"])
+            completed_count = len(expected)
+            dispatch.reopen_verified_prefix(self.run_id, expected)
         gate, _ = dispatch._read(self.run_id)
         if (gate.mode != "open" or gate.active or gate.phase != "intent"
-                or gate.sequence != 1 or gate.count != 0):
-            raise RuntimeError("Registered dispatch writer needs a fresh session")
+                or gate.sequence != completed_count + 1 or gate.count != completed_count):
+            raise RuntimeError("Registered dispatch writer needs its exact admitted prefix")
         self._client, self._dispatch = client, dispatch
         self._session_key = session_key
         self._configuration_revision_id = configuration_revision_id
@@ -72,7 +89,7 @@ class RegisteredDispatchCursorWriter:
         self._queue: Queue[tuple[str, Mapping[str, Any], Future[str]] | None] = Queue(
             maxsize=2)
         self._phase = "intent"
-        self._sequence = 1
+        self._sequence = completed_count + 1
         self._intents: Mapping[str, Any] | None = None
         self._fatal: BaseException | None = None
         self._closed = False

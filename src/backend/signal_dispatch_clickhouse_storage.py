@@ -88,3 +88,17 @@ class ClickHouseDispatchColdStorage:
             if self._client.execute(sql).strip():
                 return True
         return False
+
+    def has_dispatch_rows_after(self, *, session_key: str, source_batch_sequence: int) -> bool:
+        """Prove a replayable tail has no uncommitted child or parent rows."""
+        if type(source_batch_sequence) is not int or source_batch_sequence < 0:
+            raise ValueError("dispatch inventory boundary is invalid")
+        day = _session(session_key)
+        for table_name in _TABLES:
+            sql = (f"SELECT 1 FROM arte.{self._physical(table_name)} "
+                   f"WHERE session_key=toDate('{day}') "
+                   f"AND source_batch_sequence>{source_batch_sequence} "
+                   "LIMIT 1 FORMAT JSONEachRow")
+            if self._client.execute(sql).strip():
+                return True
+        return False

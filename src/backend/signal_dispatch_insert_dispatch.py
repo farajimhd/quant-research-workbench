@@ -349,3 +349,19 @@ class SignalDispatchInsertDispatch:
                 raise KeeperUnavailable("Dispatch cursor receipt differs")
         if self._read(run_id)[0] != gate:
             raise KeeperUnavailable("Dispatch cold fence changed during audit")
+
+    def reopen_verified_prefix(self, run_id: str,
+            expected: Mapping[int, tuple[str, str]]) -> None:
+        """Reopen only the exact audited cold receipt prefix, preserving all proofs.
+
+        The caller must verify normalized ClickHouse facts while the gate is
+        closed before supplying their receipt hashes. No unresolved phase can
+        be reopened or reset through this operation.
+        """
+        self.assert_cold_receipts(run_id, expected)
+        gate, version = self._read(run_id)
+        if (gate.mode != "closed" or gate.active or gate.phase != "intent"
+                or gate.count != len(expected) or gate.sequence != len(expected) + 1):
+            raise KeeperUnavailable("Dispatch reopen lost its verified cold prefix")
+        if not self._cas(run_id, version, replace(gate, mode="open")):
+            raise KeeperUnavailable("Dispatch reopen cold fence changed")
