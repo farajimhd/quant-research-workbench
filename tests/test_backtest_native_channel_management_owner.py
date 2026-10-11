@@ -139,3 +139,46 @@ def test_actual_manager_initialization_selects_declared_owner(installed, monkeyp
     with pytest.raises(ValueError): runner.bind_native_channel_management(owner)
     runtime.config.mode = RunMode.REPLAY
     with pytest.raises(ValueError): build()
+
+
+def test_manager_stages_current_raw_broker_oms_observations(installed):
+    import asyncio
+    from types import SimpleNamespace
+    from src.backend.backtest_strategy_one_management import StrategyOneManagementRunner
+    from src.trading_runtime.runtime import RunMode
+    from src.trading_runtime.strategy_engine import StrategyAssignment
+    from src.trading_runtime.strategy_one_position import ProtectionState
+    owner, _, context, quote, args = owner_case(installed)
+    financial = args['financial']
+    entry_group = args['group']
+    assignment = StrategyAssignment(financial.assignment_id, 'early-squeeze-strategy', 1,
+        financial.account_id, financial.ticker, args['expected_conid'],
+        financial.status, financial.permissions, {})
+    async def positions(_account): return []
+    async def trades(): return args['executions']
+    broker = SimpleNamespace(position_quantity=lambda *_args: financial.position_quantity,
+        positions=positions, trades=trades)
+    oms = SimpleNamespace(snapshots=lambda: (entry_group,),
+        snapshots_for_assignment=lambda *_args: (entry_group,))
+    runtime = SimpleNamespace(run_id=owner.run_id, broker=broker, order_manager=oms,
+        config=SimpleNamespace(strategy_id='early-squeeze-strategy', strategy_revision=1,
+            mode=RunMode.BACKTEST, anchor_date=owner.session_date),
+        submit_strategy_one_proposal=lambda *_a: None, submit_strategy_one_add=lambda *_a: None,
+        submit_strategy_one_protection=lambda *_a: None,
+        _strategy_one_entry_intent=lambda _entry: SimpleNamespace(intent_id=args['source_entry_intent_id']))
+    manager = StrategyOneManagementRunner(runtime=runtime,
+        evidence=SimpleNamespace(management_evidence=lambda *_a: None), tick_for_ticker=lambda _: 0.01)
+    manager.contract=SimpleNamespace(native_channel_management_policy=owner.policy)
+    manager.bind_native_channel_management(owner)
+    key = (financial.account_id, financial.assignment_id, financial.ticker)
+    manager._submitted[key] = args['original_entry']
+    manager._positions[key] = ProtectionState(args['boundary_ms'], args['original_entry'].initial_stop,
+        args['original_entry'].initial_target)
+    staged = asyncio.run(manager.stage_current_native_channel_management(context['prepared'], quote,
+        assignment=assignment, boundary_ms=args['boundary_ms']))
+    assert staged is not None
+    assert manager.native_channel_requests(boundary_ms=args['boundary_ms']) == (staged,)
+    assert owner.freeze(boundary_ms=args['boundary_ms']).items[0][1].group is entry_group
+    with pytest.raises(ValueError):
+        asyncio.run(manager.stage_current_native_channel_management(context['prepared'], quote,
+            assignment=replace(assignment, strategy_revision=2), boundary_ms=args['boundary_ms']))

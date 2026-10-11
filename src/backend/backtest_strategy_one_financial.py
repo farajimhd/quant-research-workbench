@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 from math import isfinite
+from dataclasses import dataclass
 
 from src.trading_runtime.native_acquisition_clock import acquisition_clock_from_entry_executions
 
@@ -117,7 +118,16 @@ async def read_strategy_one_financial_views(
     return tuple(result)
 
 
-async def read_current_native_acquisition_clock(assignment, broker, order_manager, *,
+@dataclass(frozen=True, slots=True)
+class NativeAcquisitionObservation:
+    """Current raw broker/OMS observations, never checkpoint or order authority."""
+    quantity: float
+    group: object
+    executions: tuple
+    acquisition: object
+
+
+async def read_current_native_acquisition_observation(assignment, broker, order_manager, *,
         session_date, as_of, source_entry_intent_id):
     """Opt-in fill evidence bound to the current native broker/OMS position.
 
@@ -144,6 +154,20 @@ async def read_current_native_acquisition_clock(assignment, broker, order_manage
     if not entries or entries[-1].intent_id != source_entry_intent_id:
         raise ValueError('Current held entry differs from original source intent')
     executions = tuple(await broker.trades())
-    return acquisition_clock_from_entry_executions(entries[-1], executions,
+    after_quantity = broker.position_quantity(assignment.account_id, assignment.conid, assignment.ticker)
+    if (tuple(order_manager.snapshots_for_assignment(assignment.account_id, assignment.assignment_id)) != groups
+            or type(after_quantity) not in (int, float) or not isfinite(after_quantity)
+            or after_quantity != quantity):
+        raise ValueError('Native broker/OMS ownership changed during acquisition observation')
+    acquisition = acquisition_clock_from_entry_executions(entries[-1], executions,
         session_date=session_date, as_of=as_of,
         source_entry_intent_id=source_entry_intent_id, expected_conid=assignment.conid)
+    return NativeAcquisitionObservation(quantity, entries[-1], executions, acquisition)
+
+
+async def read_current_native_acquisition_clock(assignment, broker, order_manager, *,
+        session_date, as_of, source_entry_intent_id):
+    """Compatibility projection of the shared current raw acquisition reader."""
+    observation = await read_current_native_acquisition_observation(assignment, broker, order_manager,
+        session_date=session_date, as_of=as_of, source_entry_intent_id=source_entry_intent_id)
+    return None if observation is None else observation.acquisition

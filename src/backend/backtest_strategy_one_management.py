@@ -199,6 +199,45 @@ class StrategyOneManagementRunner:
             group=group,executions=executions,source_entry_intent_id=intent.intent_id,
             expected_conid=expected_conid,boundary_ms=boundary_ms,position_index=position_index)
 
+    async def stage_current_native_channel_management(self, prepared, quote, *, assignment,
+            boundary_ms, position_index=None):
+        """Read current ownership after inherited management, then stage evidence.
+
+        The caller must await this before advancing the completed boundary.
+        Submission still requires independently confirmed checkpoint evidence.
+        """
+        from src.trading_runtime.strategy_engine import StrategyAssignment
+        from .backtest_strategy_one_financial import (
+            read_strategy_one_financial_view, read_current_native_acquisition_observation,
+        )
+        from .backtest_market_data import market_day_boundary
+        if (type(assignment) is not StrategyAssignment
+                or assignment.strategy_id != self.runtime.config.strategy_id
+                or assignment.strategy_revision != self.runtime.config.strategy_revision
+                or self._native_channel_owner is None
+                or getattr(self.contract, 'native_channel_management_policy', None) != self._native_channel_owner.policy):
+            raise ValueError('Current native management requires its declared assignment and owner')
+        financial = await read_strategy_one_financial_view(
+            assignment, self.runtime.broker, self.runtime.order_manager)
+        if financial.position_quantity == 0 or financial.pending_exit:
+            return None
+        key = (financial.account_id, financial.assignment_id, financial.ticker)
+        source = self._submitted.get(key)
+        if source is None or key not in self._positions:
+            raise ValueError('Current native management lacks its active original entry')
+        entry = self.runtime._strategy_one_entry_intent(source)
+        observation = await read_current_native_acquisition_observation(assignment,
+            self.runtime.broker, self.runtime.order_manager,
+            session_date=self.runtime.config.anchor_date,
+            as_of=market_day_boundary(self.runtime.config.anchor_date, boundary_ms),
+            source_entry_intent_id=entry.intent_id)
+        if observation is None or observation.quantity != financial.position_quantity:
+            raise ValueError('Native financial view changed before pending decision staging')
+        return self.stage_native_channel_management(prepared, quote, financial=financial,
+            group=observation.group, executions=observation.executions,
+            expected_conid=assignment.conid, boundary_ms=boundary_ms,
+            position_index=position_index)
+
     def native_channel_requests(self,*,boundary_ms):
         owner=self._native_channel_owner
         if owner is None:

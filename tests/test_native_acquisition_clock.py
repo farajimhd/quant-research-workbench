@@ -5,6 +5,7 @@ import pytest
 import asyncio
 from types import SimpleNamespace
 from src.backend.backtest_strategy_one_financial import read_current_native_acquisition_clock
+from src.backend.backtest_strategy_one_financial import read_current_native_acquisition_observation
 from src.trading_runtime.strategy_engine import StrategyAssignment, AssignmentStatus, StrategyPermissions
 
 from src.trading_runtime.ibkr_schema import Execution
@@ -135,3 +136,28 @@ def test_native_financial_acquisition_binds_actual_broker_and_oms(defect):
     else:
         result=asyncio.run(request)
         assert result is None if defect=='flat' else result==clock(group(),(fill('first',5),))
+
+
+@pytest.mark.parametrize('mutation', [None, 'quantity', 'group'])
+def test_raw_native_acquisition_observation_bookends_current_ownership(mutation):
+    assignment=StrategyAssignment('assignment','early-squeeze-strategy',1,'account','TEST',11,
+        AssignmentStatus.WATCHING,StrategyPermissions(enter=True),{})
+    observed = {'after': False}
+    entry = group()
+    executions = (fill('first', 5),)
+    async def trades():
+        observed['after'] = True
+        return executions
+    broker=SimpleNamespace(position_quantity=lambda *_args:
+        6.0 if observed['after'] and mutation == 'quantity' else 5.0, trades=trades)
+    owner=SimpleNamespace(snapshots_for_assignment=lambda *_args:
+        (replace(entry, filled_quantity=6.0),) if observed['after'] and mutation == 'group' else (entry,))
+    call=read_current_native_acquisition_observation(assignment,broker,owner,
+        session_date=date(2026,8,4),as_of=NOW,source_entry_intent_id='intent')
+    if mutation:
+        with pytest.raises(ValueError, match='ownership changed'): asyncio.run(call)
+    else:
+        result=asyncio.run(call)
+        assert result.quantity == 5.0 and result.group is entry
+        assert result.executions == executions
+        assert result.acquisition == clock(entry, executions)
