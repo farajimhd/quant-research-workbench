@@ -2059,6 +2059,11 @@ _DRAWDOWN_CORE_LEGACY_SELF_AST = "fb07a0cb88e0e19b384ddd6a86bf19baed495378708dd7
 def _reviewed_fixed_lot_core_projection(source: str, relative: str, name: str, expected: str) -> bool:
     """Retain core source pins under the same bounded, independently reviewed projection."""
     supplied_source = source
+    from .backtest_native_execution_transport_compatibility import restore_native_execution_transport_parent
+    try:
+        source = restore_native_execution_transport_parent(source, relative.removeprefix('src/'))
+    except ValueError:
+        return False
     from .backtest_fixed_structural_lot_compatibility_v31 import restore_reviewed_parent_source as restore_v31
     source = restore_v31(source, relative)
     from .backtest_fixed_structural_lot_compatibility_v30 import restore_reviewed_parent_source as restore_v30

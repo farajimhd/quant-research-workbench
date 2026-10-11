@@ -22,6 +22,14 @@ from src.backend.backtest_native_execution_transport_compatibility import (
     'trading_runtime/strategy_one_broker_match_snapshot.py',
     'trading_runtime/strategy_one_management_snapshot.py',
     'trading_runtime/strategy_registry.py',
+    'backend/backtest_fixed_journal_bootstrap.py',
+    'backend/backtest_typed_projection.py',
+    'trading_runtime/confirmed_original_risk_failure.py',
+    'trading_runtime/arte_original_risk_diagnostic_v4.py',
+    'trading_runtime/original_risk_diagnostic_profile.py',
+    'backend/backtest_confirmed_original_risk_source.py',
+    'trading_runtime/original_risk_pending_snapshot.py',
+    'trading_runtime/strategy_liquidity_fade_financial_checkpoint.py',
 ])
 def test_complete_parent_restoration_and_fail_closed_mutation(relative):
     source=(Path(__file__).parents[1]/'src'/relative).read_text(encoding='utf-8')
