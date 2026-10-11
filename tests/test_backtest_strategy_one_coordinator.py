@@ -15,6 +15,63 @@ from test_strategy_one_stateful import _facts
 from src.trading_runtime.strategy_one_stateful import StrategyOneReentryWitness
 
 
+@pytest.mark.parametrize('management_blocks_entry', [False, True])
+def test_declared_ranking_manages_owned_assignment_before_fresh_acquisition(
+        monkeypatch, management_blocks_entry):
+    from tests.test_native_price_candidate_features import native_plan
+    from src.backend.backtest_native_participation_ranking import PreparedParticipationScores
+    from src.backend.backtest_participation_acquisition_order import prepare_participation_acquisition_order
+    from src.trading_runtime.participation_acquisition_policy import ParticipationAcquisitionPolicy
+    from research.causal_strategy_features.v7.ranking import ParticipationRankingPolicy
+    from src.trading_runtime import numbered_fixed_strategy as contracts
+
+    plan = native_plan()
+    policy = ParticipationAcquisitionPolicy(
+        ParticipationRankingPolicy(((60000, 1.),), .5, .5, 1., 1, 1000), 'eligible_unranked_last')
+    def frozen(values, dtype):
+        return np.frombuffer(np.asarray(values, dtype=dtype).tobytes(), dtype=dtype)
+    order = prepare_participation_acquisition_order(plan, PreparedParticipationScores(
+        frozen([np.nan] * len(plan.eligible_mask), np.float64),
+        frozen([False] * len(plan.eligible_mask), bool),
+        frozen(plan.eligible_mask, bool)), policy=policy)
+    original_factory = contracts.numbered_fixed_strategy
+    original_contract = original_factory(20)
+    class DeclaredContract:
+        participation_acquisition_policy = policy
+        def __getattr__(self, name):
+            return getattr(original_contract, name)
+    monkeypatch.setattr(contracts, 'numbered_fixed_strategy',
+                        lambda number: DeclaredContract() if number == 20 else original_factory(number))
+    candidate, _, _, financial = _facts()
+    actions = []
+    managed = [False]
+    async def noop(*args):
+        pass
+    async def views(*args):
+        actions.append('views-after' if managed[0] else 'views-before')
+        return (replace(financial, assignment_id='A-entry',
+                        pending_entry=managed[0] and management_blocks_entry),
+                replace(financial, assignment_id='Z-owned'))
+    async def manage(view, *args):
+        assert view.assignment_id == 'Z-owned'
+        actions.append('management')
+        managed[0] = True
+    async def proposed(proposal):
+        assert managed[0] and proposal.assignment_id == 'A-entry'
+        actions.append('proposal')
+    scheduler = StrategyOneBoundaryScheduler(session_date='2026-08-18',
+        candidate_rows=iter((candidate,)), active_source=lambda *_: iter(()))
+    counts = asyncio.run(run_strategy_one_proposals(scheduler, plan.entry,
+        process_broker_boundary=noop, financial_views=views, on_entry_proposal=proposed,
+        on_management=manage, position_source_owned=lambda view: view.assignment_id == 'Z-owned',
+        financially_active_tickers=lambda: (), finish_boundary=noop,
+        observe_activation=noop, observe_completed_seconds=noop, strategy_number=20,
+        momentum_plan=plan.momentum, initial_momentum_plan=plan, acquisition_order=order))
+    assert counts.management_evaluations == 1 and counts.candidate_decisions == 1
+    assert counts.entry_proposals == int(not management_blocks_entry)
+    assert actions[:3] == ['views-before', 'management', 'views-after']
+
+
 @pytest.mark.parametrize('pending_entry', [False, True])
 @pytest.mark.parametrize('strategy_number', [20, 21, 22, 23, 24, 25])
 def test_native_coordinator_keeps_source_evidence_and_financial_rejections(pending_entry, strategy_number):

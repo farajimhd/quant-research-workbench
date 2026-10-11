@@ -56,6 +56,7 @@ async def run_strategy_one_proposals(
     momentum_plan=None,
     initial_momentum_plan=None,
     entry_spread_risk_source=None,
+    acquisition_order=None,
 ) -> StrategyOneProposalCounts:
     """Dispatch certified entry proposals after broker liquidity at each clock."""
     if (not isinstance(scheduler, StrategyOneBoundaryScheduler)
@@ -71,6 +72,20 @@ async def run_strategy_one_proposals(
         raise ValueError("Strategy 1 proposal lane lacks pinned causal callbacks")
     from src.trading_runtime.numbered_fixed_strategy import numbered_fixed_strategy
     contract = numbered_fixed_strategy(strategy_number)
+    ranking_policy = getattr(contract, 'participation_acquisition_policy', None)
+    if ranking_policy is not None:
+        from .backtest_participation_acquisition_order import PreparedAcquisitionOrder
+        if (type(acquisition_order) is not PreparedAcquisitionOrder
+                or acquisition_order.policy != ranking_policy
+                or acquisition_order.source is not initial_momentum_plan
+                or acquisition_order.source_token != initial_momentum_plan.token):
+            raise ValueError('Declared acquisition ranking lacks its exact native source plan')
+        initial_momentum_plan.source.__post_init__()
+        initial_momentum_plan.__post_init__()
+        if set(acquisition_order.ranks) != set(initial_momentum_plan.momentum.keys):
+            raise ValueError('Declared acquisition ranking omits native source candidates')
+    elif acquisition_order is not None:
+        raise ValueError('Undeclared strategy cannot carry acquisition ranking')
     if contract.entry_spread_risk_policy is not None:
         from .backtest_declared_entry_quote_source import entry_spread_risk_authority_type
         if (type(entry_spread_risk_source) is not entry_spread_risk_authority_type(strategy_number)
@@ -103,9 +118,10 @@ async def run_strategy_one_proposals(
     if len(activations) != len(entry.activations):
         raise ValueError("Strategy 1 entry activations are duplicated")
     candidate_count = proposal_count = management_count = 0
+    deferred_acquisitions = {}
 
     async def evaluate(ticker: str, resolutions: Mapping[int, Mapping],
-                       candidate) -> None:
+                       candidate, acquisition_identities=None) -> None:
         nonlocal candidate_count, proposal_count, management_count
         boundary = next(iter(resolutions.values()))["boundary_ms"]
         async def timed(stage: str, operation):
@@ -155,6 +171,8 @@ async def run_strategy_one_proposals(
         if activation is None:
             raise ValueError("Strategy 1 proposal lacks frozen activation")
         for index, identity in enumerate(ordered_ids):
+            if acquisition_identities is not None and identity not in acquisition_identities:
+                continue
             current = current_by_id[identity]
             # A broker exit may have flattened this assignment earlier in
             # the same aggregate bucket. Retire its old source first, and
@@ -163,6 +181,10 @@ async def run_strategy_one_proposals(
             if type(owned) is not bool:
                 raise TypeError("Strategy 1 source ownership must be boolean")
             if owned:
+                if acquisition_identities is not None:
+                    # This assignment already received management in the first
+                    # stage. Fresh ownership cannot authorize another entry.
+                    continue
                 management_count += 1
                 await timed("strategy_one_management", on_management(current, resolutions, boundary))
                 if index + 1 < len(ordered_ids):
@@ -176,6 +198,13 @@ async def run_strategy_one_proposals(
                 if current.position_quantity > 0 or current.pending_entry or current.pending_exit:
                     management_count += 1
                     await timed("strategy_one_management", on_management(current, resolutions, boundary))
+                continue
+            if ranking_policy is not None and acquisition_identities is None:
+                key = (ticker, boundary)
+                acquisition_order.rank(*key)
+                if key not in deferred_acquisitions:
+                    deferred_acquisitions[key] = (resolutions, candidate, set())
+                deferred_acquisitions[key][2].add(identity)
                 continue
             reentry = (await timed("strategy_one_reentry", reentry_witness(current, candidate))
                        if current.completed_entries and reentry_witness is not None else None)
@@ -209,6 +238,17 @@ async def run_strategy_one_proposals(
                     raise ValueError("Strategy 1 assignment roster changed within boundary")
                 current_by_id = refreshed
 
+    async def dispatch_acquisitions(work):
+        pending = sorted(deferred_acquisitions.items(),
+                         key=lambda item: acquisition_order.rank(*item[0]))
+        deferred_acquisitions.clear()
+        for (ticker, boundary), (resolutions, candidate, identities) in pending:
+            if boundary != work.boundary_ms:
+                raise ValueError('Deferred acquisition crossed a completed boundary')
+            # Each evaluation obtains current financial views after all earlier
+            # callbacks; pending exits do not substitute for released cash.
+            await evaluate(ticker, resolutions, candidate, identities)
+
     completed = await run_strategy_one_boundaries(
         scheduler, before_boundary=before_boundary,
         process_broker_boundary=process_broker_boundary,
@@ -217,6 +257,7 @@ async def run_strategy_one_proposals(
         finish_boundary=finish_boundary,
         observe_activation=observe_activation,
         observe_completed_seconds=observe_completed_seconds,
-        static_gate=static_gate, stage_time=stage_time)
+        static_gate=static_gate, stage_time=stage_time,
+        after_evaluations=dispatch_acquisitions if ranking_policy is not None else None)
     return StrategyOneProposalCounts(
         completed, candidate_count, proposal_count, management_count)
