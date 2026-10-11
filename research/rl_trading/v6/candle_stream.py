@@ -88,7 +88,9 @@ class SparseCandleState:
             raise ValueError('Positive projection refresh batch size required')
         for start in range(0, len(self.history), batch_size):
             end = start+batch_size
-            projected = encoder.project(self.raw_history[start:end])
+            project_history = getattr(encoder, 'project_history', None)
+            projected = (project_history(self.raw_history[start:end], self.raw_present[start:end])
+                         if project_history else encoder.project(self.raw_history[start:end]))
             projected *= self.raw_present[start:end, :, None]
             self.history[start:end] = projected
             encoded = encoder.encode_history(projected,self.raw_present[start:end])
@@ -134,9 +136,12 @@ class SparseCandleState:
         updated = torch.cat((previous[:, 1:], projected[:, None]), dim=1)
         present=torch.arange(encoder.history_candles,device=updated.device)[None]>= (
             encoder.history_candles-(self.seen[listing_index]+1).clamp_max(encoder.history_candles))[:,None]
-        if torch.is_grad_enabled() and getattr(encoder,'reproject_history_for_gradient',False):
+        if (getattr(encoder,'requires_ordered_projection',False) or
+                (torch.is_grad_enabled() and getattr(encoder,'reproject_history_for_gradient',False))):
             if self.raw_history is None:raise ValueError('Temporal training requires refreshable raw history')
-            updated=encoder.project(self.raw_history[listing_index])*present[...,None]
+            project_history = getattr(encoder, 'project_history', None)
+            updated=(project_history(self.raw_history[listing_index], present) if project_history
+                     else encoder.project(self.raw_history[listing_index]))*present[...,None]
         encoded = encoder.encode_history(updated,present)
         if torch.is_grad_enabled():
             for offset, key in enumerate(keys):
@@ -215,5 +220,10 @@ def seed_previous_session(state: SparseCandleState,
                     len(identities), length, encoder.project.in_features)
             state.raw_present[start:start+len(identities)] = torch.from_numpy(present).to(
                 device=state.history.device, dtype=torch.bool)
+        if getattr(encoder, 'project_history', None):
+            if state.raw_history is None:raise ValueError('Ordered projection requires raw context')
+            projected = encoder.project_history(state.raw_history[start:start+len(identities)],
+                                                state.raw_present[start:start+len(identities)])
+            state.history[start:start+len(identities)] = projected
         state.encoded[start:start+len(identities)] = encoder.encode_history(projected,
             torch.from_numpy(present.astype(bool)).to(state.history.device))
