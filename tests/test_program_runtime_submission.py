@@ -8,6 +8,7 @@ import pytest
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.columnar_program_coordinator import select_program_proposal
 from src.trading_runtime.columnar_program_actor import AssignedProgramStrategy
+from src.trading_runtime.oms_assignment_observation import observe_assignment_orders
 from src.trading_runtime.execution_policies import ExecutionPolicy, ExecutionEnvelope, ProtectionProfile, ProtectionSlice, StopRule
 from src.trading_runtime.runtime import TradingRuntime, RunConfig, RunMode
 from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter, SimulationConfig
@@ -86,6 +87,11 @@ async def scenario(resolution, invalid=None, initial_cash=100000., stop_exit=Fal
         assert actual.position_open and actual.opened_at <= at
         assert float(actual.quantity) == broker.position_quantity("account", 1, "ABC")
         assert actual.fees > 0 and strategy.execution_state.pending_fee_count == 0
+        observation = observe_assignment_orders(runtime.order_manager, account_id="account",
+            assignment_id="assignment", ticker="ABC", at=at)
+        assert observation.pending_acquisition and not observation.pending_reduction
+        assert any(order.role == "entry" and order.remaining_quantity > 0
+            for order in observation.working_orders)
         # The callback receives the broker adapter's typed execution objects;
         # canonical_executions is a different domain projection.
         executions = tuple(broker._executions)

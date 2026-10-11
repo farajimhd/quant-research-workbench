@@ -75,6 +75,12 @@ def test_controller_builds_program_actor_on_existing_runtime_without_legacy_fact
                     (ProtectionSlice("one", 1., StopRule(price=9.)),)), outside_rth=False)
             assert result[0]["decision"]["status"] in {"approved", "resized"}
             assert not actor.position_for("assignment").position_open
+            observed = controller.program_order_observation(assignment_id="assignment", at=at)
+            assert observed.pending_acquisition and not observed.pending_reduction
+            # Submission ACK alone has no processed broker-order fingerprint.
+            assert observed.unobserved_order_ids and not observed.working_orders
+            with pytest.raises(ValueError, match="completed app runtime"):
+                controller.program_order_observation(assignment_id="assignment", at=at + timedelta(seconds=1))
             at += timedelta(seconds=1)
             row.update(last_event_us=int(at.timestamp() * 1_000_000) - 1,
                 quote_timestamp_us=int(at.timestamp() * 1_000_000) - 10001,
@@ -84,6 +90,35 @@ def test_controller_builds_program_actor_on_existing_runtime_without_legacy_fact
             assert position.position_open and position.fees > 0
             assert float(position.quantity) == runtime.broker.position_quantity(
                 actor.assignments()[0].account_id, 1, "ABC")
+            observed = controller.program_order_observation(assignment_id="assignment", at=at)
+            assert not observed.pending_acquisition and not observed.pending_reduction
+            assert observed.high_water_price > 0
+            assert any(order.role == "protective_stop" and order.remaining_quantity == float(position.quantity)
+                and order.stop_price == 9. for order in observed.working_orders)
+            stop = next(order for order in observed.working_orders if order.role == "protective_stop")
+            manager = runtime.order_manager
+            group = manager._groups[manager._group_by_broker_id[stop.broker_order_id]]
+            request_index = group.broker_order_request_indexes[stop.broker_order_id]
+            request = group.orders[request_index]
+            group.orders[request_index] = replace(request, auxPrice=123., quantity=1.)
+            try:
+                assert controller.program_order_observation(assignment_id="assignment", at=at) == observed
+            finally:
+                group.orders[request_index] = request
+            fingerprint = group.broker_order_state_fingerprints[stop.broker_order_id]
+            group.broker_order_state_fingerprints[stop.broker_order_id] = fingerprint[:-1]
+            try:
+                with pytest.raises(ValueError, match="unknown codec"):
+                    controller.program_order_observation(assignment_id="assignment", at=at)
+            finally:
+                group.broker_order_state_fingerprints[stop.broker_order_id] = fingerprint
+            updated_at = group.updated_at
+            group.updated_at = at + timedelta(seconds=1)
+            try:
+                with pytest.raises(ValueError, match="future order state"):
+                    controller.program_order_observation(assignment_id="assignment", at=at)
+            finally:
+                group.updated_at = updated_at
         finally:
             await controller._runtime.finish()
     asyncio.run(run())

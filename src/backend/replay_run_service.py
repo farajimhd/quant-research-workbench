@@ -4813,6 +4813,20 @@ class ReplayRunController:
         if names and not report['eligible_ticker_count']:
             raise ValueError('No strategy tickers have required V7 books; see level-book-coverage.json')
 
+    def program_order_observation(self, *, assignment_id: str, at: datetime):
+        """Expose processed OMS facts at this program runtime's completed clock."""
+        from src.trading_runtime.oms_assignment_observation import observe_assignment_orders
+        actor = self._program_strategy
+        if (actor is None or self._runtime is None or self._runtime.strategy is not actor
+                or self._runtime.last_event_time != at):
+            raise ValueError("Program OMS observation requires its completed app runtime")
+        assignment = actor._by_assignment.get(assignment_id)
+        if assignment is None:
+            raise ValueError("Program OMS observation has an unknown assignment")
+        return observe_assignment_orders(self._runtime.order_manager,
+            account_id=assignment.account_id, assignment_id=assignment_id,
+            ticker=assignment.ticker, at=at)
+
     async def bootstrap_program_signals(self, publisher, **scope):
         """Bind the program controller to the publisher's exact cold source head."""
         from .signal_stream_runtime_service import SignalStreamRuntime

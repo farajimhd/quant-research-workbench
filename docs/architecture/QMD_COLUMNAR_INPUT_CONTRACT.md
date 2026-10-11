@@ -243,3 +243,16 @@ resumed publication without rewriting prior facts. The main controller's cold
 source/backlog call is exercised through these shared contracts. Activation,
 program boundary dispatch and normalized run recovery still need completion
 before the operational launch gate can be opened.
+
+The program controller exposes an assignment-scoped observation of the existing
+OMS's processed order facts at the completed runtime clock. Pending acquisition
+and reduction state, acknowledged working quantities/prices, missing order
+observations and active acquisition high-water marks remain separate. Both
+processed LiveOrder and canonical OrderState fingerprint codecs are explicit;
+unknown shapes or future order/market observations fail. Requested prices and
+quantities are not substituted for broker observations. This projection owns
+no table or feature and performs no broker I/O. Tests cover submission without
+processed order facts, partial versus complete fills, acknowledged stop coverage
+and independence from unacknowledged request changes. Program target-policy
+progress, chronological selection/submission and complete run recovery still
+require integration before operational admission.
