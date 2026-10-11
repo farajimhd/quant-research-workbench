@@ -2742,6 +2742,56 @@ class ReplayRunController:
                 request.source_entry_intent_id, source)
         manager.complete_liquidity_fade_requests(requests, boundary_ms=boundary)
 
+    async def _confirm_native_channel_checkpoint(self, requests: tuple, *, event_time):
+        """Drain exact staged exits with a fresh checkpoint after each order."""
+        from .backtest_native_channel_management_owner import NativeChannelManagementOwner
+        from .backtest_native_channel_publisher_source import NativeChannelExitPublisherSource
+        from .backtest_native_channel_execution_source import prepare_native_channel_execution_source
+        from .backtest_strategy_one_financial import read_strategy_one_financial_view
+        manager, publisher = self._strategy_one_manager, self._journal_publisher
+        owner = getattr(manager, '_native_channel_owner', None)
+        source = getattr(publisher, '_native_channel_exit_source', None)
+        boundary = dict(self._source_cursor).get('boundary_ms')
+        if (self.definition.mode != RunMode.BACKTEST
+                or type(owner) is not NativeChannelManagementOwner
+                or type(source) is not NativeChannelExitPublisherSource
+                or owner.policy != source.policy or owner.run_id != self.run_id
+                or getattr(manager.contract, 'native_channel_management_policy', None) != owner.policy
+                or type(requests) is not tuple or not requests
+                or len(requests) != len(owner.pending_requests(boundary_ms=boundary))
+                or any(a is not b for a,b in zip(requests,owner.pending_requests(boundary_ms=boundary),strict=True))
+                or self._runtime.last_event_time != event_time):
+            raise RuntimeError('Native exit lacks its exact completed pending boundary and source')
+        assignments = {(item.account_id,item.assignment_id,item.ticker):item
+                       for item in self._runtime.strategy.assignments()}
+        while owner.pending_requests(boundary_ms=boundary):
+            pending = owner.pending_requests(boundary_ms=boundary)
+            for request in pending:
+                view = request.financial
+                assignment = assignments.get((view.account_id,view.assignment_id,view.ticker))
+                if assignment is None or await read_strategy_one_financial_view(
+                        assignment,self._runtime.broker,self._runtime.order_manager) != view:
+                    raise RuntimeError('Native pending financial state changed before checkpoint')
+            capture = owner.freeze(boundary_ms=boundary)
+            receipt = await self._save_restart_checkpoint_responsive(event_time)
+            def prepare():
+                return prepare_native_channel_execution_source(source,receipt,capture,pending[0],
+                    recorded_at=datetime.now(UTC),attempt_id=str(uuid4()),batch_id=str(uuid4()),
+                    parent_record_id=str(uuid4()),decision_record_id=str(uuid4()))
+            task = asyncio.create_task(asyncio.to_thread(prepare))
+            try:
+                confirmed, execution_source = await asyncio.shield(task)
+            except asyncio.CancelledError:
+                await task
+                raise
+            results = await self._runtime.submit_native_channel_exit(confirmed,execution_source)
+            if (len(results) != 1 or results[0]['decision'].get('status') != 'approved'
+                    or results[0].get('order_group') is None):
+                raise RuntimeError('Native pending exit was not accepted by shared Portfolio and OMS')
+            publisher.enqueue_pending()
+            await publisher.await_fence()
+            owner.complete_one(pending[0],boundary_ms=boundary)
+
     async def _confirm_original_risk_checkpoint(self, requests: tuple, *, event_time):
         """Fence the completed decision before ordinary Portfolio/OMS submission."""
         manager, publisher = self._strategy_one_manager, self._journal_publisher
