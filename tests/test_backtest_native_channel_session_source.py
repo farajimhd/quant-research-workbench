@@ -8,6 +8,7 @@ from tests.test_backtest_native_channel_qualification import installed, unit  # 
 from tests.test_backtest_native_channel_exit import setup
 from src.backend.backtest_native_channel_session_source import (
     PreparedNativeChannelSession, prepare_installed_native_channel_session,
+    prepare_and_bind_native_channel_session,
 )
 from src.market_engine.native_causal_channel_contract import COVERAGE_TABLE, issue_source_plan
 from src.market_engine.completed_return_insert_authority import InsertAuthorityUnavailable
@@ -58,6 +59,28 @@ def test_installed_session_compiles_once_and_lookup_has_no_source_reads(installe
     with pytest.raises(ValueError): session.sequence_for('OUTSIDE-SCOPE')
     with pytest.raises(TypeError): session._by_ticker['OUTSIDE-SCOPE'] = selected
     with pytest.raises(ValueError): replace(session, sequences=(selected, selected))
+
+
+def test_prepare_bind_preserves_full_source_horizon_and_shorter_execution(installed, monkeypatch):
+    from tests.test_backtest_native_channel_management_owner import owner_case
+    client,packet,_,args=session_case(installed,monkeypatch)
+    owner,_,_,_,_=owner_case(installed)
+    kwargs=dict(market=args['market'],tickers=args['tickers'],
+        source_through_day_boundary_ms=args['through_day_boundary_ms'],
+        execution_through_day_boundary_ms=args['through_day_boundary_ms']//2,
+        producer_source_hash=args['producer_source_hash'],authority=args['authority'],
+        max_packets=1,max_positions=1)
+    prepared=prepare_and_bind_native_channel_session(owner,client,**kwargs)
+    assert owner._feature_session==(prepared,kwargs['execution_through_day_boundary_ms'],1)
+    assert prepared.sequences[0].packet.request.through_day_boundary_ms==args['through_day_boundary_ms']
+    reads=len(client.sql)
+    with pytest.raises(ValueError): prepare_and_bind_native_channel_session(owner,client,**kwargs)
+    assert len(client.sql)==reads
+    other,_,_,_,_=owner_case(installed)
+    reads=len(client.sql)
+    with pytest.raises(ValueError): prepare_and_bind_native_channel_session(other,client,
+        **{**kwargs,'execution_through_day_boundary_ms':args['through_day_boundary_ms']+1})
+    assert other._feature_session is None and len(client.sql)==reads
 
 
 @pytest.mark.parametrize('defect', ['missing', 'ambiguous', 'foreign', 'pending'])

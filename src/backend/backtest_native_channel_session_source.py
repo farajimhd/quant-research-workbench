@@ -108,3 +108,29 @@ def prepare_installed_native_channel_session(client, *, market, session_date, ti
             policy=policy, producer_source_hash=producer_source_hash, authority=authority))
     result = PreparedNativeChannelSession(tickers, tuple(sequences))
     return result
+
+
+def prepare_and_bind_native_channel_session(owner, client, *, market, tickers,
+        source_through_day_boundary_ms, execution_through_day_boundary_ms,
+        producer_source_hash, authority, max_packets, max_positions):
+    """Prepare the exact installed source before atomically binding its owner.
+
+    Source horizon identifies certified producer packets. Execution horizon
+    bounds this run's acquisition schedules without changing packet identity.
+    Discovery, full certification and compilation happen before any mutation.
+    """
+    from .backtest_native_channel_management_owner import NativeChannelManagementOwner
+    if (type(owner) is not NativeChannelManagementOwner or owner._feature_session is not None
+            or owner._pending or type(execution_through_day_boundary_ms) is not int
+            or type(source_through_day_boundary_ms) is not int
+            or not 0 <= execution_through_day_boundary_ms <= source_through_day_boundary_ms
+            or type(max_positions) is not int or max_positions <= 0):
+        raise ValueError('Native preparation requires its unbound owner and ordered declared horizons')
+    prepared = prepare_installed_native_channel_session(client, market=market,
+        session_date=owner.session_date.isoformat(), tickers=tickers,
+        through_day_boundary_ms=source_through_day_boundary_ms,
+        policy=owner.policy.exit_policy.sequence, producer_source_hash=producer_source_hash,
+        authority=authority, max_packets=max_packets)
+    owner.bind_feature_session(prepared,
+        through_day_boundary_ms=execution_through_day_boundary_ms, max_positions=max_positions)
+    return prepared
