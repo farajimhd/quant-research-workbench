@@ -13,11 +13,11 @@ from src.backend.backtest_native_channel_exit_unit import (
 from src.trading_runtime.numbered_fixed_strategy import session_policy_payload
 
 
-def confirmed_unit_case(installed,monkeypatch,defect=None):
-    scope=checkpoint_case(installed,monkeypatch,defect,return_scope=True)
+def confirmed_unit_case(installed,monkeypatch,defect=None, *, strategy_number=1):
+    scope=checkpoint_case(installed,monkeypatch,defect,return_scope=True,strategy_number=strategy_number)
     policy=scope['management_policy']
     monkeypatch.setattr('src.trading_runtime.numbered_fixed_strategy.numbered_fixed_strategy',
-        lambda number:SimpleNamespace(native_channel_management_policy=policy if number==1 else None,
+        lambda number:SimpleNamespace(native_channel_management_policy=policy if number==strategy_number else None,
             policy_json=json.dumps({'session_policy':session_policy_payload()})))
     key=next(iter(scope['contexts']))
     evidence=scope['contexts'][key]

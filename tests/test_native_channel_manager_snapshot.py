@@ -13,12 +13,12 @@ from src.trading_runtime.arte_native_channel_pending_schema import PENDING, PEND
 from src.trading_runtime.arte_journal_writer import _CONTRACTS, verify_typed_contract_row
 
 
-def snapshot_case(installed):
+def snapshot_case(installed, *, strategy_number=1):
     rows, args = recovery_case(installed)
     request = reprove_native_channel_exit_rows(*rows, **args)
     # Isolated schema fixture: Strategy117 production snapshots separately
     # require their certified price-source context, never this base proposal.
-    entry = replace(args['original_entry'], strategy_number=1)
+    entry = replace(args['original_entry'], strategy_number=strategy_number)
     key = entry.account_id, entry.assignment_id, entry.ticker
     boundary = request.decision['decision_day_ms'] - 14_400_000
     state = OriginalRiskManagementState(boundary, ((key, entry),),

@@ -21,8 +21,8 @@ from src.trading_runtime.strategy_one_broker_match_snapshot import BrokerMatchHe
 from src.trading_runtime.order_management import OrderManagementState
 
 
-def checkpoint_case(installed, monkeypatch, defect=None, *, return_scope=False, return_history=False):
-    rows, policy, contexts = manager_case(installed)
+def checkpoint_case(installed, monkeypatch, defect=None, *, return_scope=False, return_history=False, strategy_number=1):
+    rows, policy, contexts = manager_case(installed, strategy_number=strategy_number)
     root = rows.snapshot
     args = next(iter(contexts.values()))
     native_conid = args['expected_conid']
@@ -50,7 +50,7 @@ def checkpoint_case(installed, monkeypatch, defect=None, *, return_scope=False, 
     order = OrderRequest(acctId=financial.account_id,conid=native_conid,ticker=financial.ticker,
         orderType='LMT',side='BUY',quantity=financial.position_quantity,price=1.0,cOID='entry-client')
     group = dict(run_id=run,batch_id=batch,group_id=request.acquisition.source_group_id,
-        account_id=financial.account_id,strategy_id=STRATEGY_ID,strategy_revision=1,
+        account_id=financial.account_id,strategy_id=STRATEGY_ID,strategy_revision=strategy_number,
         strategy_intent_id=intent.intent_id,state=OrderManagementState.WORKING.value)
     native_group = args['group']
     group['state'] = native_group.state.value
@@ -72,7 +72,7 @@ def checkpoint_case(installed, monkeypatch, defect=None, *, return_scope=False, 
         exit_group = {**group,'group_id':'exit','strategy_intent_id':'exit-intent'}
         lineage += (replace(lineage[0],state=replace(recovered,intent_record_id='exit-record',group=exit_group),
             source_intent=exit_source,approved_intent=replace(exit_intent,metadata={'assignment_id':financial.assignment_id})),)
-    context = dict(run_id=run,mode='backtest',strategy_id=STRATEGY_ID,strategy_revision=1,
+    context = dict(run_id=run,mode='backtest',strategy_id=STRATEGY_ID,strategy_revision=strategy_number,
         account_ids=(financial.account_id,),session_date=root['session_date'],evaluation_interval_ms=100)
     if defect == 'context': context['strategy_revision'] = 2
     cursor = dict(run_id=run,event_sequence=sequence,batch_id=batch,boundary_ms=state.boundary_ms,session_date=root['session_date'])
@@ -94,7 +94,7 @@ def checkpoint_case(installed, monkeypatch, defect=None, *, return_scope=False, 
     payload = asdict(execution)
     payload['trade_time'] = execution.trade_time.isoformat()
     monkeypatch.setattr('src.backend.backtest_v4_execution_restore.load_v4_broker_executions',lambda *_a,**_k:[] if defect=='execution_missing' else [payload])
-    monkeypatch.setattr('src.trading_runtime.numbered_fixed_strategy.numbered_fixed_strategy',lambda n:SimpleNamespace(native_channel_management_policy=policy if n==1 else None))
+    monkeypatch.setattr('src.trading_runtime.numbered_fixed_strategy.numbered_fixed_strategy',lambda n:SimpleNamespace(native_channel_management_policy=policy if n==strategy_number else None))
     class Keeper:
         def __init__(self,head): self.head,self.reads=head,0
         def read_head(self,**_scope):

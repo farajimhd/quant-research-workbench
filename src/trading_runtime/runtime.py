@@ -923,8 +923,43 @@ class TradingRuntime:
         declared_submission: Any | None = None,
         declared_management: Any | None = None,
         fixed_structural_lot_request: Any | None = None,
+        native_channel_source: Any | None = None,
     ) -> list[dict[str, Any]]:
         from .strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
+        if native_channel_source is not None:
+            from src.backend.backtest_native_channel_execution_source import NativeChannelExitExecutionSource
+            from src.backend.backtest_native_channel_exit_request import NativeChannelExitRequest
+            from src.backend.backtest_native_channel_exit_unit import native_channel_exit_intent
+            from src.backend.backtest_journal_memory import BacktestMemoryJournal
+            if (type(native_channel_source) is not tuple or len(native_channel_source) != 2
+                    or type(native_channel_source[0]) is not NativeChannelExitRequest
+                    or type(native_channel_source[1]) is not NativeChannelExitExecutionSource
+                    or self.config.mode is not RunMode.BACKTEST or type(self.journal) is not BacktestMemoryJournal
+                    or self.config.strategy_id != STRATEGY_ID or event is not None
+                    or any(value is not None for value in (strategy_one_proposal, strategy_one_add_proposal,
+                        strategy_one_assignment_id, numbered_exit_assignment_id, followthrough_source,
+                        profit_giveback_source, confirmed_ah_source, liquidity_fade_source, automatic_entry,
+                        declared_submission, declared_management, fixed_structural_lot_request))):
+                raise ValueError('Native exit requires its exclusive declared Backtest source')
+            request, source = native_channel_source
+            if (source.publisher_source.run_id != self.run_id
+                    or source.context.first_price_source is not self._strategy_one_price_source
+                    or account_id != request.financial.account_id or account_id not in self.config.account_ids
+                    or request.acquisition.session_date != self.config.anchor_date):
+                raise ValueError('Native exit source differs from the runtime owner or source session')
+            expected = native_channel_exit_intent(request, strategy_number=self.config.strategy_revision,
+                management_policy=source.context.policy)
+            if evaluation.intents != (expected,) or self.last_event_time != expected.event_time:
+                raise ValueError('Native exit differs from its declared exact intent factory')
+            confirmation = asyncio.create_task(asyncio.to_thread(source.confirm, request))
+            try:
+                confirmed = await asyncio.shield(confirmation)
+            except asyncio.CancelledError:
+                await confirmation
+                raise
+            native_channel_source = (confirmed, source)
+        elif any(intent.reason.endswith('_native_completed_channel_exit') for intent in evaluation.intents):
+            raise ValueError('Native exit lacks independent current-held source confirmation')
         if (self.config.mode == RunMode.BACKTEST
                 and self.config.strategy_id == STRATEGY_ID
                 and self.config.strategy_revision == STRATEGY_NUMBER):
@@ -1189,7 +1224,11 @@ class TradingRuntime:
             self.portfolio.withdraw_invalidated_requests(account_id, active)
         for intent in evaluation.intents:
             intent = replace(intent, metadata=self.journal.reference_evidence(intent.metadata))
-            if fixed_structural_lot_request is not None:
+            if native_channel_source is not None:
+                request, source = native_channel_source
+                self.journal.append_native_channel_exit(intent=intent, request=request, context=source.context,
+                    strategy_id=self.config.strategy_id, strategy_revision=self.config.strategy_revision)
+            elif fixed_structural_lot_request is not None:
                 from .fixed_structural_lot_entry_v4 import _exact as exact_fixed_lot_intent
                 if not exact_fixed_lot_intent(intent, fixed_structural_lot_request.intent):
                     raise ValueError('Selected journal source differs from executed reference evidence')
@@ -1313,7 +1352,8 @@ class TradingRuntime:
                                          or strategy_one_proposal is not None
                                          or strategy_one_add_proposal is not None
                                          or automatic_entry is not None))
-            assignment_id = (fixed_structural_lot_request.entry.proposal.assignment_id if fixed_structural_lot_request is not None
+            assignment_id = (native_channel_source[0].financial.assignment_id if native_channel_source is not None
+                             else fixed_structural_lot_request.entry.proposal.assignment_id if fixed_structural_lot_request is not None
                              else declared_management.assignment_id if declared_management is not None
                              else declared_submission.assignment_id if declared_submission is not None
                              else automatic_entry.assignment_id if automatic_entry is not None
@@ -1522,6 +1562,17 @@ class TradingRuntime:
                                           strategy_number=self.config.strategy_revision)
         return await self._execute_intents(StrategyEvaluation(intents=(intent,)), financial.account_id, None,
             liquidity_fade_source=(witness, financial, source_entry_intent_id, observation_source))
+
+    async def submit_native_channel_exit(self, request, source):
+        """Reconfirm current-held evidence, then use shared Portfolio and OMS."""
+        from src.backend.backtest_native_channel_exit_unit import native_channel_exit_intent
+        from src.backend.backtest_native_channel_execution_source import NativeChannelExitExecutionSource
+        if type(source) is not NativeChannelExitExecutionSource:
+            raise ValueError('Native exit requires its exact independent execution source')
+        intent = native_channel_exit_intent(request, strategy_number=self.config.strategy_revision,
+            management_policy=source.context.policy)
+        return await self._execute_intents(StrategyEvaluation(intents=(intent,)),
+            request.financial.account_id, None, native_channel_source=(request, source))
 
     async def submit_numbered_session_exit(self, financial, resolutions, boundary_ms):
         """Submit once per live exit; fills belong to later broker liquidity."""

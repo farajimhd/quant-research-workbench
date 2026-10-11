@@ -13,12 +13,12 @@ from src.trading_runtime.arte_native_channel_pending_schema import PENDING_SOURC
 from src.backend.backtest_native_channel_manager_recovery import reprove_native_channel_manager_snapshot
 
 
-def manager_case(installed):
-    inherited, (header, sources, fills) = snapshot_case(installed)
+def manager_case(installed, *, strategy_number=1):
+    inherited, (header, sources, fills) = snapshot_case(installed, strategy_number=strategy_number)
     _, args = recovery_case(installed)
     args.pop('checkpoint')
     args.update(parent_record_id=inherited.snapshot['snapshot_id'], max_rows_per_family=100,
-                original_entry=replace(args['original_entry'], strategy_number=1))
+                original_entry=replace(args['original_entry'], strategy_number=strategy_number))
     policy = NativeChannelManagementPolicy(args['policy'], 10, 100)
     rows = seal_native_channel_manager_rows(inherited, (header,), sources, fills,
         max_pending_requests=policy.max_pending_requests, max_rows_per_family=policy.max_rows_per_family)
