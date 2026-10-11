@@ -155,7 +155,7 @@ def teacher_loss_balance(decisions, listings, close_us, clocks_per_chunk, *, wai
     sample_weights = np.asarray([getattr(d, 'sample_weight', 1.) for d in decisions])
     counts = np.bincount(classes, weights=sample_weights, minlength=6 if wait_hold else 5)
     weights = np.zeros(len(counts), dtype=np.float64)
-    if mode=='branch-balanced-v3':
+    if mode in ('branch-balanced-v3', 'branch-balanced-v4'):
         if not wait_hold or not np.isin(classes,[0,1,2,5]).all():
             raise ValueError('Conditional branch balance requires WAIT/ENTRY/HOLD/EXIT teacher actions')
         from research.rl_trading.v6.bias_models import balance_weights
@@ -169,7 +169,11 @@ def teacher_loss_balance(decisions, listings, close_us, clocks_per_chunk, *, wai
     else:raise ValueError('Unknown teacher class balance')
     span = (int(np.max(close_us)) - int(np.min(close_us))) // 1_000_000 + 1
     blocks = max(1, math.ceil(span / clocks_per_chunk))
-    return weights, max(1., sample_weights.sum() / blocks)
+    # v4 uses the same fixed per-session weighted-mass convention as the
+    # forecast/quality/allocation objectives. Flooring only current-action
+    # mass suppresses its relative gradient on sparse underfit selections.
+    denominator = sample_weights.sum() / blocks
+    return weights, denominator if mode == 'branch-balanced-v4' else max(1., denominator)
 
 
 def _validate(decisions: tuple[TeacherDecision, ...],
@@ -311,7 +315,7 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
         raise ValueError('Training-set evaluation requires evaluation mode')
     evaluation_roles = ('development', 'train') if evaluate_train else ('development',)
     if (session.role not in (evaluation_roles if evaluation else ('train',)) or clocks_per_chunk < 1 or grad_clip <= 0 or
-            not decisions or teacher_loss not in ('legacy', 'balanced-v2','branch-balanced-v3')):
+            not decisions or teacher_loss not in ('legacy', 'balanced-v2','branch-balanced-v3', 'branch-balanced-v4')):
         raise ValueError('V6 trainer requires a train session and labels')
     listings = len(session.listings)
     from research.rl_trading.v6.price_action_opportunities import VERSION as OPPORTUNITY_VERSION
@@ -326,8 +330,8 @@ def train_session(policy: BracketPolicy, optimizer: torch.optim.Optimizer,
         policy.reset_market(listings)
     pending_entries = {}
     wait_hold = policy.decoder.wait_hold
-    if teacher_loss=='branch-balanced-v3' and not (wait_hold and getattr(policy,'hierarchical_teacher',False)):
-        raise ValueError('Branch-balanced-v3 requires hierarchical WAIT/ENTRY/HOLD/EXIT heads')
+    if teacher_loss in ('branch-balanced-v3', 'branch-balanced-v4') and not (wait_hold and getattr(policy,'hierarchical_teacher',False)):
+        raise ValueError('Branch-balanced teacher loss requires hierarchical WAIT/ENTRY/HOLD/EXIT heads')
     action_names = SIX_ACTION_NAMES if wait_hold else ACTION_NAMES
     _validate(decisions, outcomes, listings, wait_hold=wait_hold,ticker_heads=hasattr(policy.decoder,'ticker_outputs'))
     balance, loss_denominator = (teacher_loss_balance(decisions, listings,

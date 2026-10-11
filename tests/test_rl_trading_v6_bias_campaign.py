@@ -30,6 +30,24 @@ def test_main_trainer_branch_balance_maps_identity_action_axes():
     assert denominator==31 and not weights[3:5].any()
 
 
+def test_sparse_branch_v4_retains_action_mass_relative_to_auxiliary_tasks():
+    from types import SimpleNamespace
+    from research.rl_trading.v6.training import teacher_loss_balance
+    records = [SimpleNamespace(token=t, held_index=(), sample_weight=.1)
+               for t in (0, 1)]
+    clocks = np.array([1_000_000, 64_000_000])
+    old_weights, old_denominator = teacher_loss_balance(
+        records, 2, clocks, 32, wait_hold=True, mode='branch-balanced-v3')
+    weights, denominator = teacher_loss_balance(
+        records, 2, clocks, 32, wait_hold=True, mode='branch-balanced-v4')
+    np.testing.assert_array_equal(weights, old_weights)
+    assert old_denominator == 1.
+    assert denominator == pytest.approx(.1)
+    # Two blocks together carry two weighted mean action losses, exactly
+    # the normalization used by forecast/quality tasks with the same mass.
+    assert sum(r.sample_weight * weights[r.token] for r in records) / denominator == pytest.approx(2.)
+
+
 def test_candle_normalization_adds_no_execution_observations_and_is_single_authority():
     from research.rl_trading.v6.ranked_policy import RankedBracketActorCritic
     policy=RankedBracketActorCritic(width=8,wait_hold=True)
@@ -199,7 +217,8 @@ def test_export_reuse_rejects_changed_calculations_and_extra_source_drift():
 
 
 @pytest.mark.parametrize('architecture',['lag','tcn','gru','transformer','mlp'])
-def test_real_ranked_training_core_accepts_encoder_and_separate_heads(architecture):
+@pytest.mark.parametrize('teacher_loss', ['branch-balanced-v3', 'branch-balanced-v4'])
+def test_real_ranked_training_core_accepts_encoder_and_separate_heads(architecture, teacher_loss):
     from dataclasses import replace
     from test_rl_trading_v6_teacher_forecast import fixture
     from research.rl_trading.v6.teacher_forecast import configure
@@ -215,7 +234,7 @@ def test_real_ranked_training_core_accepts_encoder_and_separate_heads(architectu
         soft_probabilities=(.2,.8) if actions[i]==0 else (.9,.1),forecast_actions=actions[i:i+5],forecast_probabilities=probabilities[i:i+5]) for i,d in enumerate(labels))
     optimizer=torch.optim.Adam(policy.parameters(),lr=.001)
     policy.configure_candle_features(dict(mean=[0.]*147,std=[1.]*147,scope='train_only',units='bps-v1'))
-    result=train_session(policy,optimizer,session,labels,(),device=torch.device('cpu'),clocks_per_chunk=2,teacher_loss='branch-balanced-v3')
+    result=train_session(policy,optimizer,session,labels,(),device=torch.device('cpu'),clocks_per_chunk=2,teacher_loss=teacher_loss)
     assert result.optimizer_steps==2 and np.isfinite(result.mean_loss)
 
 

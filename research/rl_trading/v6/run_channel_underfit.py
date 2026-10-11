@@ -120,7 +120,7 @@ def main(argv=None):
         cpu_saved_tensors=args.cpu_saved_tensors,
         laptop_resources=dict(history_microbatch=args.history_microbatch,duty_cycle=args.gpu_duty_cycle,reserve_bytes=4*1024**3),
         seed=17, learning_rate=3e-4, weight_decay=1e-4,
-        ranking=prior['ranking'], teacher_loss='branch-balanced-v3', regression_weights=[0.,0.],
+        ranking=prior['ranking'], teacher_loss='branch-balanced-v4', regression_weights=[0.,0.],
         auxiliary_weights=dict(ratio=1., forecast=1., quality=1., future_quality=1.),
         input_population_preserved=True, sealed_labels_read=False, development_labels_read=False,
         generalization_evaluated=False, workstation_gpu_used=False,
@@ -150,7 +150,7 @@ def main(argv=None):
             evidence = {}
             report = asdict(train_session(p, None, s, t, (), device=device, evaluation=True,
                 clocks_per_chunk=args.clocks_per_chunk,
-                evaluate_train=True, teacher_loss='branch-balanced-v3', regression_weights=(0.,0.),
+                evaluate_train=True, teacher_loss='branch-balanced-v4', regression_weights=(0.,0.),
                 regression_evidence=evidence))
             report.update(evidence); reports.append(report)
         return pool_gate_metrics(reports), reports
@@ -161,7 +161,7 @@ def main(argv=None):
                 write('progress.json', dict(phase='training', epoch=epoch, day=s.day.isoformat()))
                 train_session(policy, optimizer, s, t, (), device=device,
                     clocks_per_chunk=args.clocks_per_chunk,
-                    teacher_loss='branch-balanced-v3', regression_weights=(0.,0.))
+                    teacher_loss='branch-balanced-v4', regression_weights=(0.,0.))
             if epoch != 1 and epoch % 5 and epoch != args.epochs: continue
             write('progress.json', dict(phase='evaluation', epoch=epoch))
             metrics, reports = evaluate(policy); passed = passes(metrics)
