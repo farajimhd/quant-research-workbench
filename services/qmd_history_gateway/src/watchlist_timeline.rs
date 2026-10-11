@@ -75,6 +75,8 @@ pub struct HistoricalWatchlistPlan {
     pub ranking_field: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ranking_tie_field: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ranking_tie_type: Option<String>,
     pub ranking_direction: String,
     pub maximum_size: usize,
     pub focused_seed_multiplier: usize,
@@ -219,8 +221,34 @@ pub struct WatchlistTimelineReducer<'a> {
 struct RankKey {
     missing: bool,
     normalized_score: f64,
-    identity: Option<u64>,
+    identity: Option<TieIdentity>,
     ticker: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum TieIdentity {
+    Integer(u64),
+    Text(String),
+}
+
+fn tie_identity(
+    plan: &HistoricalWatchlistPlan,
+    values: &BTreeMap<String, Value>,
+) -> Option<TieIdentity> {
+    let value = values.get(plan.ranking_tie_field.as_ref()?)?;
+    if plan.ranking_tie_type.as_deref() == Some("string") {
+        value
+            .as_str()
+            .filter(|text| {
+                !text.is_empty() && text.len() <= 128 && !text.chars().any(char::is_control)
+            })
+            .map(|text| TieIdentity::Text(text.to_string()))
+    } else {
+        value
+            .as_u64()
+            .filter(|value| *value > 0)
+            .map(TieIdentity::Integer)
+    }
 }
 
 impl PartialEq for RankKey {
@@ -260,8 +288,9 @@ pub fn validate_plan(
         ));
     }
     match (plan.schema_version, &plan.ranking_tie_field) {
-        (4, None) => {}
+        (4, None) if plan.ranking_tie_type.is_none() => {}
         (5, Some(field)) if !field.trim().is_empty()
+            && matches!(plan.ranking_tie_type.as_deref(), None | Some("uint64") | Some("string"))
             && plan.manual_inclusions.is_empty()
             && (plan.qmd_sources.contains(field)
                 || plan.external_features.iter().any(|source| &source.field_id == field)) => {}
@@ -815,15 +844,9 @@ fn evaluate_candidate(
         return Ok(None);
     }
     if let Some(field) = &plan.ranking_tie_field {
-        if candidate
-            .values
-            .get(field)
-            .and_then(Value::as_u64)
-            .filter(|value| *value > 0)
-            .is_none()
-        {
+        if tie_identity(plan, &candidate.values).is_none() {
             return Err(
-                "historical Watchlist identity tie value must be a positive UInt64".to_string(),
+                format!("historical Watchlist identity tie value {field} differs from its declared scalar type"),
             );
         }
     }
@@ -843,11 +866,7 @@ fn evaluate_candidate(
 fn rank_key(plan: &HistoricalWatchlistPlan, member: &WatchlistTimelineMember) -> RankKey {
     RankKey {
         missing: member.score.is_none(),
-        identity: plan
-            .ranking_tie_field
-            .as_ref()
-            .and_then(|field| member.evidence.get(field))
-            .and_then(Value::as_u64),
+        identity: tie_identity(plan, &member.evidence),
         normalized_score: member.score.map_or(0.0, |score| {
             if plan.ranking_direction == "descending" {
                 -score
@@ -1247,6 +1266,7 @@ mod tests {
             })],
             ranking_field: "liquidity-rank".to_string(),
             ranking_tie_field: None,
+            ranking_tie_type: None,
             ranking_direction: "descending".to_string(),
             maximum_size: 250,
             focused_seed_multiplier: 5,
@@ -1443,6 +1463,31 @@ mod tests {
         plan.schema_version = 4;
         rehash(&mut plan);
         assert!(validate_plan(&plan).is_err());
+    }
+
+    #[test]
+    fn declared_string_identity_matches_optimizer_lexical_order() {
+        let mut plan = plan();
+        plan.schema_version = 5;
+        plan.ranking_tie_field = Some("identity.listing_id".into());
+        plan.ranking_tie_type = Some("string".into());
+        let mut identity = plan.external_features[0].clone();
+        identity.field_id = "identity.listing_id".into();
+        plan.external_features.push(identity);
+        rehash(&mut plan);
+        validate_plan(&plan).unwrap();
+        let mut a = candidate("AAA", 10., 3_000_000.);
+        let mut z = candidate("ZZZ", 10., 3_000_000.);
+        a.values.insert("identity.listing_id".into(), json!("2"));
+        z.values.insert("identity.listing_id".into(), json!("10"));
+        let a = super::evaluate_candidate(&plan, &a).unwrap().unwrap();
+        let z = super::evaluate_candidate(&plan, &z).unwrap().unwrap();
+        assert!(super::rank_key(&plan, &z) < super::rank_key(&plan, &a));
+        let mut invalid = candidate("AAA", 10., 3_000_000.);
+        invalid
+            .values
+            .insert("identity.listing_id".into(), json!(10));
+        assert!(super::evaluate_candidate(&plan, &invalid).is_err());
     }
 
     #[test]

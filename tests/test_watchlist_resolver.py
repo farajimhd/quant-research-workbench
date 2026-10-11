@@ -28,6 +28,17 @@ class WatchlistResolverTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "manual inclusions"):
             rank_watchlist_membership(watchlist, rows)
 
+    def test_string_identity_tie_matches_optimizer_listing_sort(self) -> None:
+        watchlist = dict(ranking_field="score", ranking_direction="descending",
+                         ranking_tie_field="listing_id", ranking_tie_type="string", maximum_size=2)
+        rows = [dict(ticker="AAA", score=10, listing_id="2"),
+                dict(ticker="ZZZ", score=10, listing_id="10")]
+        self.assertEqual([row["ticker"] for row in rank_watchlist_membership(watchlist, rows)],
+                         ["ZZZ", "AAA"])
+        for value in (None, 10, "", "bad\nidentity", "x" * 129):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "bounded string"):
+                rank_watchlist_membership(watchlist, [dict(ticker="AAA", score=10, listing_id=value)])
+
     def setUp(self) -> None:
         self.discovery = _default_draft()["market_discovery"]
         self.watchlists = {

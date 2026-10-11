@@ -135,8 +135,11 @@ program features for every nonparticipant. Feature-bearing products retain
 their explicit catalogs and exact masks; missing requested fields still fail.
 
 Historical watchlist plans may opt into schema 5 with a declared
-`ranking_tie_field`. The shared reducer and app ranker compare positive UInt64
-identities directly, including IDs above Float64's exact integer range. Missing
+`ranking_tie_field`. The explicit `ranking_tie_type` selects string or UInt64
+identity comparison. The frozen optimizer sorts certified listing-ID strings;
+its app plan must select `string` to reproduce that lexical order. The generic
+UInt64 mode compares integers directly, including IDs above Float64's exact
+integer range. Missing
 identity evidence fails closed, and incremental app caches include the tie field
 in their dependency fingerprint. Schema-4 plans retain their existing hashes
 and ordering. A certified population source and current-path plan admission are

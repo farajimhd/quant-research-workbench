@@ -167,6 +167,13 @@ def compile_historical_watchlist_plan(
             raise ValueError("historical Watchlist identity tie field must be a declared source without manual inclusions")
         body["schema_version"] = 5
         body["ranking_tie_field"] = tie_field
+        tie_type = watchlist.get("ranking_tie_type")
+        if tie_type is not None:
+            if tie_type not in ("uint64", "string"):
+                raise ValueError("historical Watchlist identity tie scalar type is invalid")
+            body["ranking_tie_type"] = tie_type
+    elif watchlist.get("ranking_tie_type") is not None:
+        raise ValueError("historical Watchlist identity tie type requires a tie field")
     encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     return {**body, "plan_hash": f"sha256:{hashlib.sha256(encoded).hexdigest()}"}
 

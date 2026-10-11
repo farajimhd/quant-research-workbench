@@ -29,6 +29,10 @@ class HistoricalWatchlistPlanTests(unittest.TestCase):
         self.assertEqual(tied["schema_version"], 5)
         self.assertEqual(tied["ranking_tie_field"], "reference.float_shares")
         self.assertNotEqual(tied["plan_hash"], original["plan_hash"])
+        watchlist["ranking_tie_type"] = "string"
+        string_tied = compile_historical_watchlist_plan(configuration, "core-candidates", **bounds)
+        self.assertEqual(string_tied["ranking_tie_type"], "string")
+        self.assertNotEqual(string_tied["plan_hash"], tied["plan_hash"])
         watchlist["manual_inclusions"] = ["AAA"]
         with self.assertRaisesRegex(ValueError, "manual inclusions"):
             compile_historical_watchlist_plan(configuration, "core-candidates", **bounds)

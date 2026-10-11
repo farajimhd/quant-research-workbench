@@ -250,13 +250,22 @@ def rank_watchlist_membership(
     )
     descending = str(watchlist.get("ranking_direction") or "descending") == "descending"
     tie_source = watchlist.get("ranking_tie_field")
+    if tie_source is None and watchlist.get("ranking_tie_type") is not None:
+        raise ValueError("Watchlist identity tie type requires a tie field")
     if tie_source is not None:
         if type(tie_source) is not str or not tie_source.strip() or manual_inclusions:
             raise ValueError("Watchlist identity tie field requires an explicit source without manual inclusions")
         tie_field = SOURCE_FIELDS.get(tie_source, tie_source)
+        tie_type = watchlist.get("ranking_tie_type", "uint64")
+        if tie_type not in ("uint64", "string"):
+            raise ValueError("Watchlist identity tie scalar type is invalid")
         for row in rows:
             identity = row.get(tie_field)
-            if type(identity) is not int or not 0 < identity < 2**64:
+            if tie_type == "string":
+                if (type(identity) is not str or not identity or len(identity.encode("utf-8")) > 128
+                        or any(ord(char) < 32 or 127 <= ord(char) < 160 for char in identity)):
+                    raise ValueError("Watchlist identity tie value must be a bounded string")
+            elif type(identity) is not int or not 0 < identity < 2**64:
                 raise ValueError("Watchlist identity tie value must be a positive UInt64")
         def identity_rank(row):
             score = _number(row.get(ranking_field) if row.get(ranking_field) is not None
