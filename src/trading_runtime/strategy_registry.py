@@ -1577,6 +1577,26 @@ def initialize_numbered_fixed_strategies() -> None:
                 certify_native_channel_checkpoint_successor_source, channel_participant_release,
                 historical_parent_proof=channel_checkpoint_parent_source_proof())))
         register_numbered_strategy(channel_checkpoint)
+        from .strategy_one_hundred_twenty_six_release import release_contract as channel_packet_capacity_release
+        from .strategy_one_hundred_twenty_six_contract import strategy_one_hundred_twenty_six_contract
+        from .strategy_one_hundred_twenty_six_configuration import (
+            SOURCE_PREFIX as channel_packet_capacity_source_prefix,
+            derive_strategy_one_hundred_twenty_six_configuration,
+            verify_strategy_one_hundred_twenty_six_manifest,
+            historical_parent_source_proof as channel_packet_capacity_parent_source_proof)
+        from src.backend.backtest_native_channel_packet_capacity_successor_certification import certify_native_channel_packet_capacity_successor_source
+        channel_packet_capacity = channel_packet_capacity_release()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=channel_packet_capacity.executor_strategy_id, revision=channel_packet_capacity.executor_revision,
+            evaluation_interval=channel_packet_capacity.evaluation_interval,
+            strategy_factory=_strategy_two_factory,
+            contract_factory=strategy_one_hundred_twenty_six_contract,
+            manifest_authority=NativeManifestAuthority(125, channel_packet_capacity_source_prefix,
+                derive_strategy_one_hundred_twenty_six_configuration,
+                verify_strategy_one_hundred_twenty_six_manifest,
+                certify_native_channel_packet_capacity_successor_source, channel_checkpoint_release,
+                historical_parent_proof=channel_packet_capacity_parent_source_proof())))
+        register_numbered_strategy(channel_packet_capacity)
         _NUMBERED_FIXED_REGISTERED = True
 
 
