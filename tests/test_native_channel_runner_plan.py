@@ -23,3 +23,51 @@ def test_dedicated_plan_retains_financial_grants_without_feature_writes(installe
     assert parent.principal=='backtest_v4_original_risk_runner'
     with pytest.raises(ValueError): desired_plan(None,risk)
     with pytest.raises(ValueError): desired_plan(owner.policy,None)
+
+
+def test_storage_failure_precedes_credentials_or_mutation(installed,monkeypatch):
+    from scripts.clickhouse.native_channel_runner_plan import apply_with_clients
+    from types import SimpleNamespace
+    owner,_,_,_,_=owner_case(installed)
+    calls=[]
+    admin=SimpleNamespace(execute=lambda sql:calls.append(sql) or ('operator' if 'currentUser' in sql else '0'))
+    def fail(*args,**kwargs): raise ValueError('SSD missing')
+    monkeypatch.setattr('src.trading_runtime.arte_journal_schema.storage_preflight',fail)
+    with pytest.raises(ValueError,match='SSD missing'):
+        apply_with_clients(admin=admin,credential=lambda **kw:pytest.fail('credential opened'),
+            client_factory=lambda *args:pytest.fail('runner opened'),channel_policy=owner.policy,
+            risk_policy=ConfirmedOriginalRiskPolicy())
+    assert all(sql.startswith('SELECT ') for sql in calls)
+
+
+def test_apply_reconciles_exact_grants_and_closes_runner(installed,monkeypatch):
+    from scripts.clickhouse.native_channel_runner_plan import apply_with_clients
+    from scripts.clickhouse.provision_fixed_backtest_v3_principals import _desired_grants
+    from types import SimpleNamespace
+    owner,_,_,_,_=owner_case(installed)
+    risk=ConfirmedOriginalRiskPolicy()
+    expected=desired_plan(owner.policy,risk)
+    trace=[]
+    admin=SimpleNamespace(execute=lambda sql:trace.append(sql) or ('operator' if 'currentUser' in sql else '1'))
+    runner=SimpleNamespace(execute=lambda sql:expected.principal,close=lambda:trace.append('closed'))
+    monkeypatch.setattr('src.trading_runtime.arte_journal_schema.storage_preflight',
+        lambda *args,**kw:trace.append('journal SSD'))
+    monkeypatch.setattr('src.backend.backtest_native_channel_store.storage_preflight',
+        lambda *args,**kw:trace.append('feature SSD'))
+    monkeypatch.setattr('src.trading_runtime.arte_journal_writer._v4_preflight',
+        lambda client:trace.append('runner preflight'))
+    inventories=iter((set(),_desired_grants(expected)))
+    monkeypatch.setattr('scripts.clickhouse.provision_fixed_backtest_v3_principals._effective_grants',
+        lambda *args:next(inventories))
+    def credential(**kwargs):
+        assert kwargs=={'account_exists':True}
+        assert 'journal SSD' in trace and 'feature SSD' in trace
+        return 'x'*40
+    assert apply_with_clients(admin=admin,credential=credential,client_factory=lambda *args:runner,
+        channel_policy=owner.policy,risk_policy=risk)==expected
+    assert trace[-1]=='closed'
+    grants=[sql for sql in trace if sql.startswith('GRANT ')]
+    assert len(grants)==len(_desired_grants(expected))
+    assert not any('GRANT INSERT ON arte.'+table.removeprefix('arte.')+' ' in sql
+        for table in (FEATURE_TABLE,COVERAGE_TABLE) for sql in grants)
+    assert not any(sql.startswith(('ALTER ','CREATE TABLE','INSERT ')) for sql in trace)
