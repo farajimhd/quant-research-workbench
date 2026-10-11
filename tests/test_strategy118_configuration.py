@@ -28,6 +28,7 @@ def test_only_channel_policy_and_release_identity_change():
     for key in parent.manifest_policies(): assert new[key]==old[key]
     assert new[POLICY_KEY]['exit_policy']['sequence']['minimum_bars']==2
     child.verify_prepared_strategy_one_hundred_eighteen_manifest(result['payload']['strategy'])
+    assert child.verify_strategy_one_hundred_eighteen_manifest(result['payload']['strategy'])==new
     with pytest.raises(ValueError):
         child.derive_strategy_one_hundred_eighteen_configuration(replace(source,payload_hash='f'*64),**APPROVAL)
     new[POLICY_KEY]['exit_policy']['sequence']['minimum_bars']=1

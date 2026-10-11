@@ -1417,6 +1417,26 @@ def initialize_numbered_fixed_strategies() -> None:
                 certify_original_risk_reuse_successor_source, combined_price_risk_release,
                 historical_parent_proof=reuse_successor_parent_source_proof())))
         register_numbered_strategy(reuse_successor)
+        from .strategy_one_hundred_eighteen_release import release_contract as channel_release
+        from .strategy_one_hundred_eighteen_contract import strategy_one_hundred_eighteen_contract
+        from .strategy_one_hundred_eighteen_configuration import (
+            SOURCE_PREFIX as channel_source_prefix,
+            derive_strategy_one_hundred_eighteen_configuration,
+            verify_strategy_one_hundred_eighteen_manifest,
+            historical_parent_source_proof as channel_parent_source_proof)
+        from src.backend.backtest_native_channel_successor_certification import certify_native_channel_successor_source
+        channel = channel_release()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=channel.executor_strategy_id, revision=channel.executor_revision,
+            evaluation_interval=channel.evaluation_interval,
+            strategy_factory=_strategy_two_factory,
+            contract_factory=strategy_one_hundred_eighteen_contract,
+            manifest_authority=NativeManifestAuthority(117, channel_source_prefix,
+                derive_strategy_one_hundred_eighteen_configuration,
+                verify_strategy_one_hundred_eighteen_manifest,
+                certify_native_channel_successor_source, reuse_successor_release,
+                historical_parent_proof=channel_parent_source_proof())))
+        register_numbered_strategy(channel)
         _NUMBERED_FIXED_REGISTERED = True
 
 
