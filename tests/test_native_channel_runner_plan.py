@@ -71,3 +71,23 @@ def test_apply_reconciles_exact_grants_and_closes_runner(installed,monkeypatch):
     assert not any('GRANT INSERT ON arte.'+table.removeprefix('arte.')+' ' in sql
         for table in (FEATURE_TABLE,COVERAGE_TABLE) for sql in grants)
     assert not any(sql.startswith(('ALTER ','CREATE TABLE','INSERT ')) for sql in trace)
+
+
+def test_writer_feature_reads_are_selected_by_exact_channel_policy(installed,monkeypatch):
+    from src.trading_runtime import arte_journal_writer as writer
+    from types import SimpleNamespace
+    owner,_,_,_,_=owner_case(installed)
+    permissions=[]
+    monkeypatch.setattr(writer,'storage_preflight',lambda *args,**kw:None)
+    monkeypatch.setattr(writer,'journal_permission_preflight',lambda *args,**kw:permissions.append(kw))
+    client=SimpleNamespace(native_channel_management_policy=owner.policy,
+        confirmed_original_risk_policy=ConfirmedOriginalRiskPolicy(),
+        execute=lambda sql:'backtest_v4_native_channel_runner' if 'currentUser' in sql else '')
+    writer._v4_preflight(client)
+    products={table.removeprefix('arte.') for table in (FEATURE_TABLE,COVERAGE_TABLE)}
+    assert products <= permissions[-1]['read_only_tables']
+    assert not products & permissions[-1]['journal_tables']
+    client.native_channel_management_policy=None
+    client.confirmed_original_risk_policy=None
+    writer._v4_preflight(client)
+    assert not products & permissions[-1]['read_only_tables']

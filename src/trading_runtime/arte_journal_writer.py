@@ -2561,6 +2561,9 @@ def _v4_preflight(client: Any) -> _V4PreflightSeal:
         readonly |= frozenset({entry_context_name})
     elif entry_context_rows:
         raise RuntimeError("Strategy 1 entry context table inventory is ambiguous")
+    if channel_policy is not None:
+        from src.market_engine.native_causal_channel_contract import FEATURE_TABLE, COVERAGE_TABLE
+        readonly |= frozenset(table.removeprefix('arte.') for table in (FEATURE_TABLE, COVERAGE_TABLE))
     journal_permission_preflight(
         client, journal_tables=writable, read_only_tables=readonly)
     return _V4PreflightSeal(client, _V4_PREFLIGHT_SECRET)
