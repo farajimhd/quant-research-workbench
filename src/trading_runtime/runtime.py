@@ -301,6 +301,10 @@ class TradingRuntime:
             install_typed_oms_actor_image(self.order_manager, typed_oms_image)
         elif recovered_backtest and not review_only:
             raise RuntimeError("Active recovered Backtest lacks its verified OMS image")
+        from .columnar_program_actor import AssignedProgramStrategy
+        if type(strategy) is AssignedProgramStrategy and self.order_manager is not None:
+            self.order_manager._stop_only_management_scopes = {
+                (assignment.account_id, assignment.assignment_id) for assignment in strategy.assignments()}
         self._typed_oms_recovered = typed_oms_image is not None
         self.risk_supervisor = ContinuousRiskSupervisor(
             self.portfolio,
@@ -1334,6 +1338,8 @@ class TradingRuntime:
                     approved_intent,
                     account_id=account_id,
                     event=event,
+                    **({"stop_only_reduction": True} if program_assignment_id is not None
+                        and approved_intent.action == "reduce_long" else {}),
                 )
                 if str(approved_intent.action) in {"replace_profit_target", "replace_protective_stop"}:
                     self.portfolio.release_intent(
@@ -1358,7 +1364,9 @@ class TradingRuntime:
                     "decision": decision.payload(),
                     "order_group": asdict(order_group),
                 })
-            except Exception as exc:
+            except (Exception, asyncio.CancelledError) as exc:
+                if isinstance(exc, asyncio.CancelledError) and program_assignment_id is None:
+                    raise
                 if str(approved_intent.action) in {"replace_profit_target", "replace_protective_stop"}:
                     handler = getattr(self.strategy, "on_intent_rejected", None)
                     if handler is not None:

@@ -272,9 +272,21 @@ certificates are refreshed alongside the metadata anchor; source and mutation
 checks remain intact. Chronological trail-policy progress and complete run
 recovery are still required before operational launch or all-session comparison.
 
-Actual-broker target-reduction qualification also exposed an incomplete shared
-OMS path: a fresh partial sell competes with the position's full protective-stop
-capacity and is rejected by the broker's unconfigured-short guard. The reduction
-needs acknowledged protection allocation through OMS before it can execute.
-That guard is retained; execution-derived target projection tests do not prove
-that the full target-reduction path is operationally qualified.
+The shared OMS now admits an explicit stop-only reduction scope for the program
+actor. Processed acquisition fills, own protective fills and executable pending
+managed-order quantities determine FIFO survivor rights. Before submitting a
+partial sell, OMS resizes/cancels only that scope's active stop orders and verifies
+the resulting broker capacity. Working reductions reserve their own quantity;
+surviving acquisitions own the remaining stops. Filled or cancelled reductions
+refresh the actual stop coverage, and rejected/cancelled allocation attempts
+restore it when no new sell is live. Ambiguous submission outcomes remain
+unresolved rather than replayed.
+
+Broker share-step rounding determines executable capacity; requested fractions
+are not treated as filled or left as phantom reservations. Existing target/stop
+OCA modes retain their guard. Synthetic tests exercise both 100ms and 1s fills,
+adds followed by reductions, partial-fill cancellation, rejection and cancellation
+during allocation, with exact surviving protection and execution-derived target
+recovery. This uses existing normalized OMS state, orders and execution facts;
+it introduces no strategy-owned table or disk/JSON authority. Real-session
+acceptance, complete run recovery and operational admission remain pending.

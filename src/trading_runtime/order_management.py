@@ -438,6 +438,7 @@ class OrderManagementEngine:
         # boundary. Index the authoritative mutable groups once at admission;
         # never sort/snapshot every historical group for each 100 ms read.
         self._groups_by_assignment: dict[tuple[str, str], list[_ManagedOrderGroup]] = {}
+        self._stop_only_management_scopes: set[tuple[str, str]] = set()
         # Quote processing is per ticker. Keep references to the authoritative
         # mutable groups in insertion order; no duplicate order state is stored.
         self._groups_by_ticker: dict[str, list[_ManagedOrderGroup]] = {}
@@ -906,12 +907,18 @@ class OrderManagementEngine:
         *,
         account_id: str,
         event: MarketEvent | None,
+        stop_only_reduction: bool = False,
     ) -> OrderGroupSnapshot:
         if self._closed:
             raise RuntimeError("Order management engine is closed")
         if not self._broker_connected:
             raise RuntimeError("Broker stream is disconnected; new order intents are frozen")
         self._require_portfolio_approval(intent, account_id)
+        if type(stop_only_reduction) is not bool:
+            raise ValueError("Stop-only reduction selection must be Boolean")
+        if stop_only_reduction and (intent.action != "reduce_long" or
+                (account_id, intent.metadata.get("assignment_id")) not in self._stop_only_management_scopes):
+            raise ValueError("Stop-only reduction requires its admitted assignment scope")
         persisted_intent_ids = {
             str(dict(row.get("state") or {}).get("intent", {}).get("intent_id") or "")
             for row in self.journal.order_management_states()
@@ -958,7 +965,7 @@ class OrderManagementEngine:
         protected_exit: OrderGroupSnapshot | None = None
         for stale_attempt in range(2):
             try:
-                protected_exit = await self._modify_existing_protected_exit(
+                protected_exit = None if stop_only_reduction else await self._modify_existing_protected_exit(
                     working_intent,
                     account_id=account_id,
                     plan=plan,
@@ -1041,6 +1048,9 @@ class OrderManagementEngine:
             current_limit_price=(tactic.steps[0].price if tactic and tactic.steps else None),
         )
         self._remember_group(group)
+        if stop_only_reduction:
+            from .stop_only_management import managed_order_quantity
+            group.remaining_quantity = managed_order_quantity(group)
         if group.intent.metadata.get('entry_body_trigger'):
             self._body_entry_group_ids.add(group.group_id)
         for order in group.orders:
@@ -1093,10 +1103,19 @@ class OrderManagementEngine:
                 event_time=working_intent.event_time,
             )
         try:
+            if stop_only_reduction:
+                from .stop_only_management import allocate_stop_only_protection
+                await allocate_stop_only_protection(self, group, affected_sources=delegated_sources)
             self.risk.reserve(account_id, group.orders)
             self._transition(group, OrderManagementState.RISK_RESERVED, {"event": "risk_reserved"})
             await self._submit(group)
-        except Exception:
+            if stop_only_reduction:
+                for protected in delegated_sources:
+                    protected.protection_delegated = False
+                    self._transition(protected, protected.state, {"event": "stop_only_allocation_effective"})
+        except (Exception, asyncio.CancelledError) as submission_error:
+            if isinstance(submission_error, asyncio.CancelledError) and not stop_only_reduction:
+                raise
             # If the replacement never became live, restore broker-held
             # protection before surfacing the failure. If a fresh exit member
             # is already working, restoring old children would over-sell.
@@ -1108,6 +1127,13 @@ class OrderManagementEngine:
             fresh_exit_is_live = any(
                 str(order_id) in live_order_ids for order_id in group.broker_order_ids
             )
+            if stop_only_reduction:
+                planned_ids = {request.cOID for request in group.orders}
+                fresh_exit_is_live = fresh_exit_is_live or any(order.account == account_id
+                    and order.cOID in planned_ids and order.order_status in OPEN_ORDER_STATUSES
+                    for order in await self.broker.live_orders())
+                self._transition(group, OrderManagementState.OUTCOME_UNKNOWN if fresh_exit_is_live
+                    else OrderManagementState.REJECTED, {"event": "stop_only_reduction_submission_failed"})
             if not fresh_exit_is_live:
                 for protected in delegated_sources:
                     protected.protection_delegated = False
@@ -1402,6 +1428,7 @@ class OrderManagementEngine:
             order_id,
             float(order.filledQuantity),
             fill_role,
+            executable_quantity=(self._stop_only_execution_quantity(group, fill_role)),
         )
         if fill_role == 'entry' and float(order.filledQuantity) > 0:
             await self._reconcile_r1_entry_stop(group, order_id, float(order.filledQuantity), float(order.avgPrice))
@@ -1418,6 +1445,8 @@ class OrderManagementEngine:
             )
         elif fill_role == "managed_exit" and float(order.filledQuantity) > 0:
             next_state = (
+                next_state if (group.account_id, group.intent.metadata.get("assignment_id"))
+                    in self._stop_only_management_scopes and next_state in TERMINAL_MANAGEMENT_STATES else
                 OrderManagementState.FILLED
                 if group.remaining_quantity <= 1e-9
                 else OrderManagementState.PARTIALLY_FILLED
@@ -1487,6 +1516,9 @@ class OrderManagementEngine:
                     await self.apply_profit_pocket_transition(group)
                 if self.state_callback is not None:
                     await self.state_callback(group.snapshot(self.policy.version))
+        if fill_role == "managed_exit" and (incremental > 0 or next_state in TERMINAL_MANAGEMENT_STATES):
+            from .stop_only_management import refresh_stop_only_protection
+            await refresh_stop_only_protection(self, group)
         return snapshot
 
     async def on_broker_message(self, message: dict[str, Any]) -> list[OrderGroupSnapshot]:
@@ -3106,6 +3138,7 @@ class OrderManagementEngine:
             order.broker_order_id,
             float(order.filled_quantity),
             fill_role,
+            executable_quantity=(self._stop_only_execution_quantity(group, fill_role)),
         )
         if fill_role == 'entry' and float(order.filled_quantity) > 0:
             await self._reconcile_r1_entry_stop(group, order.broker_order_id,
@@ -3124,6 +3157,8 @@ class OrderManagementEngine:
             )
         elif fill_role == "managed_exit" and float(order.filled_quantity) > 0:
             next_state = (
+                next_state if (group.account_id, group.intent.metadata.get("assignment_id"))
+                    in self._stop_only_management_scopes and next_state in TERMINAL_MANAGEMENT_STATES else
                 OrderManagementState.FILLED
                 if group.remaining_quantity <= 1e-9
                 else OrderManagementState.PARTIALLY_FILLED
@@ -3190,7 +3225,17 @@ class OrderManagementEngine:
                     await self.apply_profit_pocket_transition(group)
                 if self.state_callback is not None:
                     await self.state_callback(group.snapshot(self.policy.version))
+        if fill_role == "managed_exit" and (incremental > 0 or next_state in TERMINAL_MANAGEMENT_STATES):
+            from .stop_only_management import refresh_stop_only_protection
+            await refresh_stop_only_protection(self, group)
         return snapshot
+
+    def _stop_only_execution_quantity(self, group, role):
+        if (role == "managed_exit" and (group.account_id, group.intent.metadata.get("assignment_id"))
+                in self._stop_only_management_scopes):
+            from .stop_only_management import managed_order_quantity
+            return managed_order_quantity(group)
+        return None
 
     async def _reconcile_momentum_entry(self, group, order_id, quantity, average):
         """Reconcile this purchase's target to cumulative broker fill cost.
@@ -3343,6 +3388,10 @@ class OrderManagementEngine:
         self._transition(group, group.state, {'event':event_prefix+'_actual_fill_stop_reconciled', 'stop_price':desired})
 
     async def reconcile_protection(self, group: _ManagedOrderGroup) -> dict[str, Any]:
+        if (group.intent.action == "reduce_long" and
+                (group.account_id, group.intent.metadata.get("assignment_id")) in self._stop_only_management_scopes):
+            return {"required_quantity": 0.0, "protected_quantity": 0.0,
+                    "actions": [], "status": "protection_owned_by_acquisition_groups"}
         # Portfolio grants this capability only to the isolated threshold backtest.
         # Its contract deliberately has no stop or target to reconcile.
         if (group.intent.metadata.get("unprotected_backtest_authorized") is True
@@ -3406,6 +3455,10 @@ class OrderManagementEngine:
             if initial_entry_group
             else abs(position_quantity)
         )
+        scope = (group.account_id, group.intent.metadata.get("assignment_id"))
+        if scope in self._stop_only_management_scopes and initial_entry_group:
+            from .stop_only_management import residual_rights
+            required = min(abs(position_quantity), residual_rights(self, *scope)[group.group_id])
         processed_entry_parent_quantities = {
             group.orders[request_index].cOID: float(filled)
             for broker_order_id, filled in group.filled_by_broker_order.items()
@@ -4639,6 +4692,7 @@ def _apply_cumulative_fill(
     broker_order_id: str,
     cumulative_quantity: float,
     role: str,
+    *, executable_quantity: float | None = None,
 ) -> float:
     previous = group.filled_by_broker_order.get(broker_order_id, 0.0)
     cumulative = max(previous, cumulative_quantity)
@@ -4652,8 +4706,9 @@ def _apply_cumulative_fill(
         )
         group.remaining_quantity = max(0.0, float(group.intent.quantity) - group.filled_quantity)
     elif role == "managed_exit":
+        quantity_budget = float(group.intent.quantity) if executable_quantity is None else executable_quantity
         group.filled_quantity = min(
-            float(group.intent.quantity),
+            quantity_budget,
             sum(
                 quantity
                 for order_id, quantity in group.filled_by_broker_order.items()
@@ -4661,7 +4716,7 @@ def _apply_cumulative_fill(
             ),
         )
         group.remaining_quantity = max(
-            0.0, float(group.intent.quantity) - group.filled_quantity
+            0.0, quantity_budget - group.filled_quantity
         )
     return incremental
 

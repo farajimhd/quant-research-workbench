@@ -18,7 +18,7 @@ from tests.test_columnar_program_coordinator import inputs
 from tests.test_broker_liquidity_resolution import second_bar
 
 
-async def scenario(resolution, invalid=None, initial_cash=100000., stop_exit=False):
+async def scenario(resolution, invalid=None, initial_cash=100000., stop_exit=False, target_reduce=False, cancel_reduce=False, partial_cancel=False, allocation_failure=None, add_before_reduce=False):
     release, boundary, position, management = inputs(entry=True)
     at = datetime(2026, 10, 12, 14, tzinfo=timezone.utc)
     boundary = replace(boundary, boundary_at=at, available_at=at)
@@ -105,6 +105,138 @@ async def scenario(resolution, invalid=None, initial_cash=100000., stop_exit=Fal
         assert any(r.entity_type == "commission" for r in journal.records(journal.run_id))
         assert result[0]["decision"]["approved_notional"] <= 1000
         assert result[0]["decision"]["approved_notional"] <= initial_cash
+        if target_reduce:
+            phase_price = 110000 if add_before_reduce else 200000
+            for jump in (200, 1):
+                at += timedelta(seconds=jump)
+                row.update(last_event_us=int(at.timestamp() * 1_000_000) - 1,
+                    quote_timestamp_us=int(at.timestamp() * 1_000_000) - 10001,
+                    bucket_index=row["bucket_index"] + jump * 1000 // resolution,
+                    bid_int=phase_price - 100, ask_int=phase_price, close_int=phase_price,
+                    low_int=phase_price - 200, high_int=phase_price + 100,
+                    execution_price_levels=({"price_int": phase_price, "volume": float(row["execution_volume"])},))
+                await runtime.process_liquidity_boundary((row,), at=at)
+            # Consume repair-order ACKs through the existing OMS reconciliation;
+            # a submit response cannot be substituted for processed protection.
+            await runtime.order_manager.reconcile()
+            observation = observe_assignment_orders(runtime.order_manager, account_id="account",
+                assignment_id="assignment", ticker="ABC", at=at)
+            assert not observation.pending_acquisition
+            stops = [order.stop_price for order in observation.working_orders if order.role == "protective_stop"]
+            assert stops, (observation, strategy.position_for("assignment"),
+                [(group.state, group.broker_order_roles, group.filled_by_broker_order,
+                    group.terminal_broker_order_ids) for group in runtime.order_manager._groups.values()])
+            stop = stops[0]
+            target_before = strategy.target_state.target_for(strategy.position_for("assignment"))
+            if add_before_reduce:
+                signals = dict(boundary.rules, add=True)
+                add_proposal, = strategy.proposals(replace(boundary, boundary_at=at, available_at=at,
+                    close=11., rules=signals), assignment_id="assignment", management=replace(management,
+                    observed_at=at, stop_price=stop, target_price=float(target_before),
+                    high_water_price=observation.high_water_price))
+                assert add_proposal.requested_cash == 200.
+                await runtime.submit_program_proposal(add_proposal, **kwargs)
+                at += timedelta(seconds=1)
+                row.update(last_event_us=int(at.timestamp() * 1_000_000) - 1,
+                    quote_timestamp_us=int(at.timestamp() * 1_000_000) - 10001,
+                    bucket_index=row["bucket_index"] + 1000 // resolution)
+                await runtime.process_liquidity_boundary((row,), at=at)
+                assert strategy.position_for("assignment").adds == 1
+                assert strategy.target_state.target_for(strategy.position_for("assignment")) == target_before
+                at += timedelta(seconds=200)
+                row.update(last_event_us=int(at.timestamp() * 1_000_000) - 1,
+                    quote_timestamp_us=int(at.timestamp() * 1_000_000) - 10001,
+                    bucket_index=row["bucket_index"] + 200 * 1000 // resolution,
+                    bid_int=199900, ask_int=200000, close_int=200000, low_int=199800, high_int=200100,
+                    execution_price_levels=({"price_int": 200000, "volume": float(row["execution_volume"])},))
+                await runtime.process_liquidity_boundary((row,), at=at)
+            selected = strategy.proposals(replace(boundary, boundary_at=at, available_at=at, close=20.),
+                assignment_id="assignment", management=replace(management, observed_at=at,
+                    stop_price=stop, target_price=float(target_before),
+                    high_water_price=observation.high_water_price))
+            assert len(selected) == 1 and selected[0].reason == "program:target"
+            if allocation_failure:
+                method = "modify_order" if allocation_failure in {"modify", "cancel"} else "place_orders"
+                original = getattr(broker, method)
+                failed = False
+                async def fail_once(*args, **kw):
+                    nonlocal failed
+                    if not failed:
+                        failed = True
+                        if allocation_failure == "cancel":
+                            await original(*args, **kw)
+                            raise asyncio.CancelledError()
+                        if allocation_failure == "lost_response":
+                            await original(*args, **kw)
+                            raise TimeoutError("synthetic lost broker response")
+                        raise ValueError("synthetic allocation rejection")
+                    return await original(*args, **kw)
+                setattr(broker, method, fail_once)
+                try:
+                    expected = (asyncio.CancelledError if allocation_failure == "cancel" else
+                        TimeoutError if allocation_failure == "lost_response" else ValueError)
+                    with pytest.raises(expected):
+                        await runtime.submit_program_proposal(selected[0], account_id="account", assignment_id="assignment",
+                            execution_policy=kwargs["execution_policy"], protection_profile=None, outside_rth=False)
+                    if allocation_failure == "lost_response":
+                        snapshot = runtime.order_manager.snapshot_for_intent(selected[0].intent_id)
+                        assert snapshot.state.value == "outcome_unknown"
+                        open_orders = [order for order in await broker.live_orders()
+                            if str(order.order_status) in {"Submitted", "PreSubmitted"}]
+                        assert sum(float(order.remainingQuantity) for order in open_orders
+                            if order.side == "SELL") == float(strategy.position_for("assignment").quantity)
+                        assert strategy.target_state.target_for(strategy.position_for("assignment")) == target_before
+                        return
+                    await runtime.order_manager.reconcile()
+                    observation = observe_assignment_orders(runtime.order_manager, account_id="account",
+                        assignment_id="assignment", ticker="ABC", at=at)
+                    assert not observation.pending_reduction
+                    assert sum(order.remaining_quantity for order in observation.working_orders
+                        if order.role == "protective_stop") == float(strategy.position_for("assignment").quantity)
+                    assert strategy.target_state.target_for(strategy.position_for("assignment")) == target_before
+                finally:
+                    setattr(broker, method, original)
+                return
+            await runtime.submit_program_proposal(selected[0], account_id="account", assignment_id="assignment",
+                execution_policy=kwargs["execution_policy"], protection_profile=None, outside_rth=False)
+            assert strategy.target_state.target_for(strategy.position_for("assignment")) == target_before
+            if cancel_reduce:
+                reduction = next(group for group in runtime.order_manager._groups.values()
+                    if group.intent.intent_id == selected[0].intent_id)
+                if partial_cancel:
+                    at += timedelta(seconds=1)
+                    row.update(last_event_us=int(at.timestamp() * 1_000_000) - 1,
+                        quote_timestamp_us=int(at.timestamp() * 1_000_000) - 10001,
+                        bucket_index=row["bucket_index"] + 1000 // resolution, bid_size=20.)
+                    await runtime.process_liquidity_boundary((row,), at=at)
+                    assert strategy.position_for("assignment").quantity == 20
+                    assert strategy.target_state.target_for(strategy.position_for("assignment")) > target_before
+                retained_target = strategy.target_state.target_for(strategy.position_for("assignment"))
+                for order_id in reduction.broker_order_ids:
+                    await broker.cancel_order("account", order_id)
+                await runtime.order_manager.reconcile()
+                observation = observe_assignment_orders(runtime.order_manager, account_id="account",
+                    assignment_id="assignment", ticker="ABC", at=at)
+                assert not observation.pending_reduction
+                stops = [order for order in observation.working_orders if order.role == "protective_stop"]
+                assert sum(order.remaining_quantity for order in stops) == float(strategy.position_for("assignment").quantity)
+                assert strategy.target_state.target_for(strategy.position_for("assignment")) == retained_target
+                return
+            at += timedelta(seconds=1)
+            row.update(last_event_us=int(at.timestamp() * 1_000_000) - 1,
+                quote_timestamp_us=int(at.timestamp() * 1_000_000) - 10001,
+                bucket_index=row["bucket_index"] + 1000 // resolution)
+            await runtime.process_liquidity_boundary((row,), at=at)
+            assert strategy.target_state.target_for(strategy.position_for("assignment")) > target_before
+            if add_before_reduce:
+                await runtime.order_manager.reconcile()
+                protected = observe_assignment_orders(runtime.order_manager, account_id="account",
+                    assignment_id="assignment", ticker="ABC", at=at)
+                assert sum(order.remaining_quantity for order in protected.working_orders
+                    if order.role == "protective_stop") == float(strategy.position_for("assignment").quantity)
+            rebuilt = AssignedProgramStrategy(release, (assignment,), {"assignment": "listing"})
+            rebuilt.on_broker_executions(tuple(broker._executions), runtime.order_manager)
+            assert rebuilt.target_state.target_for(rebuilt.position_for("assignment")) == strategy.target_state.target_for(strategy.position_for("assignment"))
         if stop_exit:
             at += timedelta(seconds=1)
             row.update(last_event_us=int(at.timestamp() * 1_000_000) - 1,
@@ -135,6 +267,31 @@ async def scenario(resolution, invalid=None, initial_cash=100000., stop_exit=Fal
 @pytest.mark.parametrize("resolution", [100, 1000])
 def test_program_uses_actual_cash_oms_and_later_broker_fills(resolution):
     asyncio.run(scenario(resolution))
+
+
+@pytest.mark.parametrize("resolution", [100, 1000])
+def test_target_advances_after_actual_oms_reduction_fill_and_rebuilds(resolution):
+    asyncio.run(scenario(resolution, target_reduce=True))
+
+
+@pytest.mark.parametrize("resolution", [100, 1000])
+def test_cancelled_partial_reduction_restores_actual_stop_capacity(resolution):
+    asyncio.run(scenario(resolution, target_reduce=True, cancel_reduce=True))
+
+
+@pytest.mark.parametrize("resolution", [100, 1000])
+def test_partially_filled_then_cancelled_reduction_restores_remaining_position_protection(resolution):
+    asyncio.run(scenario(resolution, target_reduce=True, cancel_reduce=True, partial_cancel=True))
+
+
+@pytest.mark.parametrize("failure", ["modify", "submit", "cancel", "lost_response"])
+def test_failed_partial_reduction_restores_broker_confirmed_stop_capacity(failure):
+    asyncio.run(scenario(1000, target_reduce=True, allocation_failure=failure))
+
+
+@pytest.mark.parametrize("resolution", [100, 1000])
+def test_add_then_partial_reduction_preserves_exact_surviving_lot_protection(resolution):
+    asyncio.run(scenario(resolution, target_reduce=True, add_before_reduce=True))
 
 
 @pytest.mark.parametrize("invalid", ["cash", "assignment", "future", "deadline"])
