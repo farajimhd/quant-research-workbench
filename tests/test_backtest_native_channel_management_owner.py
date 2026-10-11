@@ -41,6 +41,20 @@ def test_owner_stages_native_fills_captures_full_root_and_reproves_every_request
     assert owner.pending_requests(boundary_ms=args['boundary_ms'])==()
 
 
+def test_frozen_pending_capture_survives_live_inventory_drain(installed):
+    owner,rows,context,quote,args=owner_case(installed)
+    owner.stage(context['prepared'],quote,**args)
+    frozen=owner.freeze(boundary_ms=args['boundary_ms'])
+    before,inputs=frozen.capture(rows.inherited,journal_batch_id=context['batch_id'])
+    owner.complete(owner.pending_requests(boundary_ms=args['boundary_ms']),boundary_ms=args['boundary_ms'])
+    after,restored=frozen.capture(rows.inherited,journal_batch_id=context['batch_id'])
+    assert before==after and set(inputs)==set(restored)
+    assert len(after.pending)==1
+    assert reprove_native_channel_manager_snapshot(after,owner.policy,restored)
+    with pytest.raises(ValueError): replace(frozen,items=(*frozen.items,*frozen.items))
+    with pytest.raises(ValueError): replace(frozen,boundary_ms=frozen.boundary_ms+100)
+
+
 def test_owner_rejects_changed_native_fill_source_and_foreign_checkpoint(installed):
     owner,rows,context,quote,args=owner_case(installed)
     with pytest.raises(ValueError): owner.stage(context['prepared'],quote,

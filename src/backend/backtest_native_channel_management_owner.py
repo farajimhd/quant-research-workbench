@@ -25,6 +25,47 @@ class _PendingPosition:
     boundary_ms: int
 
 
+@dataclass(frozen=True,slots=True)
+class NativeChannelPendingCapture:
+    """Frozen queue input; the worker must still cold-verify its publication."""
+    run_id: str
+    session_date: date
+    policy: NativeChannelManagementPolicy
+    boundary_ms: int
+    items: tuple
+
+    def __post_init__(self):
+        if (type(self.run_id) is not str or not self.run_id or type(self.session_date) is not date
+                or type(self.policy) is not NativeChannelManagementPolicy
+                or type(self.boundary_ms) is not int or self.boundary_ms<0 or self.boundary_ms%100
+                or type(self.items) is not tuple or len(self.items)>self.policy.max_pending_requests):
+            raise ValueError('Native pending capture requires its complete bounded immutable scope')
+        self.policy.__post_init__()
+        keys=[]
+        for pair in self.items:
+            if type(pair) is not tuple or len(pair)!=2:
+                raise ValueError('Native pending capture has a malformed position record')
+            key,item=pair
+            if type(item) is not _PendingPosition or type(key) is not tuple or len(key)!=3:
+                raise ValueError('Native pending capture requires exact position observations')
+            view=item.request.financial
+            if (key!=(view.account_id,view.assignment_id,view.ticker)
+                    or item.boundary_ms!=self.boundary_ms or item.request.policy!=self.policy.exit_policy
+                    or item.request.acquisition.session_date!=self.session_date):
+                raise ValueError('Native pending capture crossed a position, policy or decision boundary')
+            keys.append(key)
+        if keys!=sorted(set(keys)):
+            raise ValueError('Native pending capture repeats or reorders position ownership')
+
+    def capture(self,inherited,*,journal_batch_id):
+        self.__post_init__()
+        if inherited.snapshot['boundary_ms']!=self.boundary_ms:
+            raise ValueError('Native frozen inventory differs from its inherited checkpoint boundary')
+        owner=NativeChannelManagementOwner(run_id=self.run_id,session_date=self.session_date,policy=self.policy)
+        owner._pending=dict(self.items)
+        return owner.capture(inherited,journal_batch_id=journal_batch_id)
+
+
 class NativeChannelManagementOwner:
     """Keep exact accepted observations until the controller drains them.
 
@@ -71,6 +112,11 @@ class NativeChannelManagementOwner:
         if any(item.boundary_ms!=boundary_ms for item in self._pending.values()):
             raise ValueError('Native pending inventory differs from its completed decision boundary')
         return tuple(item.request for _,item in sorted(self._pending.items()))
+
+    def freeze(self,*,boundary_ms):
+        self.pending_requests(boundary_ms=boundary_ms)
+        return NativeChannelPendingCapture(self.run_id,self.session_date,self.policy,
+            boundary_ms,tuple(sorted(self._pending.items())))
 
     def capture(self,inherited,*,journal_batch_id):
         root=inherited.snapshot
