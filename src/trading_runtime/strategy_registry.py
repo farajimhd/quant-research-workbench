@@ -1617,6 +1617,26 @@ def initialize_numbered_fixed_strategies() -> None:
                 certify_native_channel_transport_successor_source, channel_packet_capacity_release,
                 historical_parent_proof=channel_transport_parent_source_proof())))
         register_numbered_strategy(channel_transport)
+        from .strategy_one_hundred_twenty_eight_release import release_contract as channel_bounded_reader_release
+        from .strategy_one_hundred_twenty_eight_contract import strategy_one_hundred_twenty_eight_contract
+        from .strategy_one_hundred_twenty_eight_configuration import (
+            SOURCE_PREFIX as channel_bounded_reader_source_prefix,
+            derive_strategy_one_hundred_twenty_eight_configuration,
+            verify_strategy_one_hundred_twenty_eight_manifest,
+            historical_parent_source_proof as channel_bounded_reader_parent_source_proof)
+        from src.backend.backtest_native_channel_bounded_reader_successor_certification import certify_native_channel_bounded_reader_successor_source
+        channel_bounded_reader = channel_bounded_reader_release()
+        register_fixed_strategy_executor(FixedStrategyExecutorRegistration(
+            strategy_id=channel_bounded_reader.executor_strategy_id, revision=channel_bounded_reader.executor_revision,
+            evaluation_interval=channel_bounded_reader.evaluation_interval,
+            strategy_factory=_strategy_two_factory,
+            contract_factory=strategy_one_hundred_twenty_eight_contract,
+            manifest_authority=NativeManifestAuthority(127, channel_bounded_reader_source_prefix,
+                derive_strategy_one_hundred_twenty_eight_configuration,
+                verify_strategy_one_hundred_twenty_eight_manifest,
+                certify_native_channel_bounded_reader_successor_source, channel_transport_release,
+                historical_parent_proof=channel_bounded_reader_parent_source_proof())))
+        register_numbered_strategy(channel_bounded_reader)
         _NUMBERED_FIXED_REGISTERED = True
 
 
