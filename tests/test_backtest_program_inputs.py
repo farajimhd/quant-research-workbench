@@ -84,11 +84,40 @@ def test_cohort_preparation_reuses_full_feature_origin_and_bounds_parallel_io(pr
     assert block.first_ordinal == 0 and block.stop_ordinal == 200
     assert block.evaluation_block == "optimizer-origin" and len(result.projection.clock_offsets) == 10
     assert_frame_equal(block.masks, evaluate_rules(block.market, release.programs, release.fields), check_exact=True)
+    from src.backend.backtest_program_session import PreparedProgramCohortWork
+    definition, original = definition_and_actor()
+    definition = replace(definition, session_date=feature_pin.scope.session_date)
+    assignments = tuple(replace(original.assignments()[0], assignment_id=identity,
+        strategy_id=release.header["strategy_id"], strategy_revision=release.header["strategy_number"])
+        for identity in ("first",))
+    actor = AssignedProgramStrategy(release, assignments,
+        {"first": feature_pin.scope.listing_id})
+    controller = ReplayRunController(definition, program_strategy=actor,
+        program_liquidity_resolution_ms=100)
+    # Preparation carries the scheduler's scope without granting execution;
+    # actual source-publisher/planner validation remains at launch/cohort entry.
+    scope = dict(source_publisher=None, catalogs=None, reader_factory=None, concurrency=concurrency,
+        assignment_order=("first",), execution_policy=None, protection_profiles_at=None,
+        outside_rth=False, maximum_events=1000)
+    native = asyncio.run(controller.prepare_program_cohort_work(
+        {feature_pin.scope.listing_id: feature_pin}, population, scope=scope,
+        **kwargs, history_post=post))
+    assert type(native) is PreparedProgramCohortWork
+    assert tuple(native.blocks) == ("first",)
+    assert native.scope == scope and native.first_bucket == kwargs["first_bucket"]
+    assert_frame_equal(native.projection.frame, result.projection.frame, check_exact=True)
+    from datetime import timedelta
+    controller.definition = replace(controller.definition,
+        session_date=controller.definition.session_date + timedelta(days=1))
+    with pytest.raises(ValueError, match="exact certified session"):
+        asyncio.run(controller.prepare_program_cohort_work(
+            {feature_pin.scope.listing_id: feature_pin}, population, scope=scope,
+            **kwargs, history_post=post))
     with pytest.raises(ValueError, match="feature origin"):
         asyncio.run(prepare_program_cohort_inputs(release,
             {feature_pin.scope.listing_id: feature_pin}, population,
             {"first": feature_pin.scope.listing_id}, **{**kwargs, "first_ordinal": 81}, history_post=post))
-    assert len(calls) == 2
+    assert len(calls) == 4
 
 
 def test_prepared_scanner_bridge_keeps_exact_top10_and_rejects_missing_history(prepared_source):

@@ -4827,6 +4827,11 @@ class ReplayRunController:
         from .backtest_program_session import run_prepared_program_session
         return await run_prepared_program_session(self, cohorts, **scope)
 
+    async def prepare_program_cohort_work(self, pins, population_pin, **scope):
+        """Prepare certified native cohort work; this does not launch execution."""
+        from .backtest_program_inputs import prepare_program_cohort_work
+        return await prepare_program_cohort_work(self, pins, population_pin, **scope)
+
     async def bind_prepared_program_session(self, cohorts, *, checkpoint_connection_factory, checkpoint_concurrency):
         """Bind adopted prepared coverage to this controller's normal lifecycle."""
         from .backtest_program_launch import bind_prepared_program_launch

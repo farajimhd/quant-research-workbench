@@ -356,3 +356,38 @@ async def prepare_program_cohort_inputs(release, pins, population_pin, listing_b
         start_at=market_day_boundary(day, (first_bucket - 14400) * 1000),
         stop_at=market_day_boundary(day, (stop_bucket - 14400) * 1000))
     return PreparedProgramCohortInputs({identity: block for identity in assignments}, population, projection)
+
+
+async def prepare_program_cohort_work(controller, pins, population_pin, *, scope,
+        first_ordinal, stop_ordinal, evaluation_block, first_bucket, stop_bucket,
+        as_of, concurrency, history_post=None):
+    """Prepare native scheduler work without changing policy or execution state."""
+    from .replay_run_service import ReplayRunController
+    from .backtest_program_session import PreparedProgramCohortWork
+    from .qmd_columnar_population import CertifiedPopulationPin
+    from src.trading_runtime.columnar_program_actor import AssignedProgramStrategy
+    if type(controller) is not ReplayRunController:
+        raise ValueError("Programme preparation requires its native controller")
+    actor = controller._program_strategy
+    if (type(actor) is not AssignedProgramStrategy or type(population_pin) is not CertifiedPopulationPin
+            or population_pin.opening.scope.session_date != controller.definition.session_date):
+        raise ValueError("Programme preparation lacks its installed actor or exact certified session")
+    assignments = actor.assignments()
+    listings = dict(actor._listings)
+    release = actor.program_release
+    # Validate scheduler scope shape before network requests. Execution
+    # authorities are checked again by the existing launch/cohort gates.
+    prototype = PreparedProgramCohortWork(first_bucket, stop_bucket, {}, None, None, scope)
+    def require_owner():
+        if (controller._program_strategy is not actor or actor.program_release is not release
+                or actor.assignments() != assignments or actor._listings != listings
+                or controller._runtime_finished or controller._program_dispatch_failure is not None):
+            raise RuntimeError("Programme preparation authority changed during QMD reads")
+    require_owner()
+    prepared = await prepare_program_cohort_inputs(release, pins, population_pin, listings,
+        first_ordinal=first_ordinal, stop_ordinal=stop_ordinal, evaluation_block=evaluation_block,
+        first_bucket=first_bucket, stop_bucket=stop_bucket, as_of=as_of,
+        concurrency=concurrency, history_post=history_post)
+    require_owner()
+    return PreparedProgramCohortWork(first_bucket, stop_bucket, prepared.blocks,
+        prepared.population, prepared.projection, prototype.scope)
