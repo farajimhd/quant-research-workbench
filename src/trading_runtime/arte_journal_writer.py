@@ -161,6 +161,17 @@ _CONTRACTS.update({table.name: table for table in PROTECTION_CHANGE_TABLES})
 _CONTRACTS[PROTECTED_EXIT_SNAPSHOT.name] = PROTECTED_EXIT_SNAPSHOT
 _CONTRACTS[PORTFOLIO_ALLOCATION_FILL.name] = PORTFOLIO_ALLOCATION_FILL
 
+# Scalar transport registration only. This does not add commit families,
+# writer grants, publication admission or operator-owned tables.
+from src.trading_runtime.trading_price_contracts import exact_price_contracts, PRICE_FAMILIES
+from src.trading_runtime.trading_price_codec import decode_trading_price
+_EXACT_PRICE_CONTRACTS = exact_price_contracts(_CONTRACTS)
+_CONTRACTS.update(_EXACT_PRICE_CONTRACTS)
+_EXACT_PRICE_FIELDS = {
+    target: frozenset(field + "_bits" for field in fields)
+    for target, fields in PRICE_FAMILIES.values()
+}
+
 
 def _without_text_prefix(value: str) -> str:
     """Ignore whitespace and UTF-8 BOMs when checking for opaque JSON text."""
@@ -1557,6 +1568,10 @@ def _canonical_typed_content(
                             f"{name}.{column} requires normalized typed rows, not JSON text"
                         )
             canonical[column] = value
+    if name in _EXACT_PRICE_FIELDS:
+        for column in _EXACT_PRICE_FIELDS[name]:
+            decode_trading_price(canonical[column], allow_zero=True,
+                                 nullable=canonical[column] is None)
     return canonical
 
 

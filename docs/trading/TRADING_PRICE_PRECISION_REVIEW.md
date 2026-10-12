@@ -72,11 +72,21 @@ existing decimal writers. It can retain raw thresholds under either option.
 
 ## Required source and qualification scope
 
-The operator choice remains pending: preserve exact native values through a
-versioned shared schema, or explicitly normalize submitted orders while
-retaining raw programme thresholds. The first option preserves current
-programme/planner semantics. The second changes submitted prices and may
-change fills; it needs an explicit increment source and rounding direction.
+Source development proceeds with exact native values through versioned shared
+schemas, following the first-version requirement to preserve programme/planner
+outputs. No order-price rounding policy is introduced. Operator approval is
+still required before any schema publication or real run.
+
+`trading_price_contracts.py` defines a closed registry of eleven shared price
+families with twenty-four named UInt64 price fields. Existing table definitions,
+partitioning, sorting and nonprice columns remain unchanged. These staged
+contracts are registered only with the scalar journal codec. They are absent
+from admitted commit families and confer no writer grants or publication right.
+`trading_price_rows.py` projects native prices before legacy decimal conversion
+and verifies the selected schema's canonical content hash before restoration.
+Malformed/nonfinite price bits are rejected by shared canonicalization as well
+as by restoration. This is scalar transport integration, not yet complete OMS
+publication, snapshot recovery or operator provisioning.
 
 Whichever option is selected must cover central schema definitions, projectors,
 binary insert/readback hashes, compound family seals, grants/storage audits,
