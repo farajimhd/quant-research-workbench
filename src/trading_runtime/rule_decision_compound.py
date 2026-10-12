@@ -85,3 +85,25 @@ def verify_compound_rule_readback(compound, persisted_families):
         selected = tuple(sorted((row for row in children if row["parent_record_id"] == parent["record_id"]),
                                 key=lambda row: row["ordinal"]))
         verify_rule_decision_basis(parent, selected)
+
+
+def prepare_qualified_compound_commit(client, compound, *, committed_at,
+                                      verified_prior_prefix=None, first_price_source=None):
+    """Seal ordinary and qualified decision families under one V4 commit."""
+    from types import MappingProxyType
+    from .arte_journal_commit_v4 import prepare_commit_v4, verify_commit_v4
+    from .rule_decision_publication import PreparedRuleDecisionCommit
+    _, families = prepare_qualified_compound_families(client, compound,
+        verified_prior_prefix=verified_prior_prefix, first_price_source=first_price_source)
+    families = tuple((name, rows) for name, rows in families if rows)
+    base = compound.base
+    commit, seals = prepare_commit_v4(run_id=base.run_id, run_month=base.run_month,
+        attempt_id=base.attempt_id, batch_id=base.batch_id, prior_batch_id=base.prior_batch_id,
+        first_sequence=base.first_sequence, last_sequence=base.last_sequence,
+        source_cursor=base.source_cursor, status=base.status,
+        sealed_families=families, committed_at=committed_at)
+    verify_commit_v4(commit, seals, detail_identities={name: tuple(
+        (row["record_id"], row["content_hash"]) for row in rows) for name, rows in families})
+    return PreparedRuleDecisionCommit(MappingProxyType(dict(commit)),
+        tuple(MappingProxyType(dict(row)) for row in seals),
+        tuple((name, tuple(MappingProxyType(dict(row)) for row in rows)) for name, rows in families))

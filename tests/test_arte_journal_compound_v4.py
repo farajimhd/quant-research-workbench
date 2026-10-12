@@ -151,6 +151,35 @@ def test_compound_retains_qualified_rule_rows_and_reseals_dependent_child_hashes
             (("base", ()),), (("ordinary", ()), (BASIS.name, (expected_parent,)),
                              (INTENT.name, expected_children)))
     assert calls == [True]
+    from src.trading_runtime.arte_journal_writer import _sealed_families, _v4_family_table
+    second_real = project_journal_record(replace(record, sequence=4, record_id=str(UUID(int=34))),
+        run_month=scope["event_month"], attempt_id=ATTEMPT, batch_id=str(UUID(int=33)),
+        prior_batch_id=base.batch_id, source_cursor="start")
+    real_compound = coalesce_v4_units((first, second_real), max_events=2)
+    ordinary_families = tuple((_v4_family_table(name), rows) for name, rows in _sealed_families(real_compound.base) if rows)
+    monkeypatch.setattr(compound_module, "prepare_compound_v4_families",
+                        lambda *args, **kwargs: (ordinary_families, ordinary_families))
+    from src.trading_runtime.rule_decision_compound import prepare_qualified_compound_commit
+    from src.trading_runtime.rule_decision_publication import verify_rule_decision_commit_readback
+    committed = prepare_qualified_compound_commit(object(), real_compound, committed_at=at)
+    assert committed.commit["first_sequence"] == first.base.first_sequence
+    assert committed.commit["last_sequence"] == second.last_sequence
+    assert {name for name, _ in committed.families} == {name for name, _ in ordinary_families} | {BASIS.name, INTENT.name}
+    from src.trading_runtime.arte_journal_writer import _CONTRACTS, _datetime_wire
+    persisted = []
+    for name, rows in committed.families:
+        converted = []
+        for row in rows:
+            stored_row = dict(row)
+            for column, kind in _CONTRACTS[name].columns:
+                if kind.startswith("DateTime64"):
+                    precision = int(kind.split("(")[1].split(",")[0])
+                    stored_row[column] = _datetime_wire(stored_row[column], precision)
+            converted.append(stored_row)
+        persisted.append((name, tuple(converted)))
+    verify_rule_decision_commit_readback(committed, persisted)
+    with pytest.raises(TypeError):
+        committed.commit["batch_id"] = first.base.batch_id
     with pytest.raises(ValueError, match="Backtest owner"):
         prepare_qualified_compound_families(type("Live", (), {"live_v4_lease": object()})(), result)
     with pytest.raises(RuntimeError, match="integrated writer hook"):
