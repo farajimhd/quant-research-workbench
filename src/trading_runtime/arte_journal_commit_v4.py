@@ -588,6 +588,7 @@ def _load_verified_details_v4(
                f"AND batch_id=toUUID({_literal(batch_id)}) ")
     details = {}
     related_rows = {}
+    from .rule_decision_basis_schema import BASIS as RULE_BASIS, INTENT as RULE_INTENT
     family_specs = []
     for family in family_rows:
         name = str(family["family_name"])
@@ -633,6 +634,8 @@ def _load_verified_details_v4(
                 raise RuntimeError("V4 typed detail differs from its row hash")
             identities.append((str(UUID(str(row["record_id"]))), digest))
         details[name] = identities
+        if name in {RULE_BASIS.name, RULE_INTENT.name, "trading_strategy_signal_v2"}:
+            related_rows[name] = rows
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
                     ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name, PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name, LIQUIDITY_FADE_FAILURE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name, ENTRY_ACTIVITY.name, ENTRY_SPREAD_RISK.name,
                     ACKNOWLEDGEMENT.name,
@@ -990,6 +993,11 @@ def _load_verified_details_v4(
             from src.backend.backtest_ladder_source_authority import declared_numbered_session_exit_reasons
             if set(session_exits).intersection(declared_numbered_session_exit_reasons()):
                 raise RuntimeError('Cold declared ladder session exit lacks source authority')
+    from .rule_decision_commit_graph import verify_rule_decision_commit_graph
+    try:
+        verify_rule_decision_commit_graph(related_rows, run_id=run_id, batch_id=batch_id)
+    except ValueError as exc:
+        raise RuntimeError("V4 rule decision commit graph differs") from exc
     return details
 
 

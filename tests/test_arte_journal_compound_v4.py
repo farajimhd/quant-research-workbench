@@ -410,6 +410,17 @@ def test_qualified_wait_decision_uses_real_v4_publication_and_cold_readback(monk
     prefix = load_verified_v4_prefix(client, RUN)
     assert prefix.last_sequence == 1 and prefix.last_batch_id == base.batch_id
     assert len(client.tables[BASIS.name]) == 1
+    from src.trading_runtime.rule_decision_commit_graph import verify_rule_decision_commit_graph
+    from src.trading_runtime.rule_decision_basis_projection import _seal
+    families = {name: tuple(rows) for name, rows in client.tables.items()}
+    verify_rule_decision_commit_graph(families, run_id=RUN, batch_id=base.batch_id)
+    missing = {**families, BASIS.name: ()}
+    with pytest.raises(ValueError, match="coverage"):
+        verify_rule_decision_commit_graph(missing, run_id=RUN, batch_id=base.batch_id)
+    forged = _seal(BASIS, {**{key: value for key, value in parent.items() if key != "content_hash"},
+                           "assignment_id": "different-assignment"})
+    with pytest.raises(ValueError, match="journal authority"):
+        verify_rule_decision_commit_graph({**families, BASIS.name: (forged,)}, run_id=RUN, batch_id=base.batch_id)
     original_inserts = tuple(client.inserts)
     assert publish_qualified_rule_decision(client, unit) == base.batch_id
     assert tuple(client.inserts) == original_inserts
