@@ -26,6 +26,7 @@ INTENT = TableContract(
     "trading_rule_decision_intent_v1",
     (("run_id", "String"), ("event_month", "Date"),
      ("batch_id", "UUID"), ("record_id", "UUID"), ("decision_id", "FixedString(64)"),
+     ("parent_record_id", "UUID"),
      ("ordinal", "UInt16"), ("stage", "LowCardinality(String)"),
      ("strategy_intent_id", "String"), ("content_hash", "FixedString(64)")),
     "toYYYYMM(event_month)", "run_id, decision_id, ordinal",

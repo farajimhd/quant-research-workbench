@@ -152,3 +152,24 @@ def test_rekey_changes_only_transport_identity_and_dependent_hashes():
     assert rekey_rule_decision_basis(updated, updated_children, batch_id=parent["batch_id"]) == (parent, children)
     with pytest.raises(ValueError):
         rekey_rule_decision_basis(parent, children, batch_id="invalid")
+
+
+def test_multiple_intents_have_distinct_stable_child_ids_accepted_by_shared_commit_seal():
+    from src.trading_runtime.arte_journal_commit_v4 import prepare_commit_v4, verify_commit_v4
+    inputs = {**values(), "decision_sequence": 6}
+    parent, children = project_rule_decision_basis(inputs,
+        [dict(stage="trail", strategy_intent_id="stop"), dict(stage="add", strategy_intent_id="add")])
+    assert len({child["record_id"] for child in children}) == 2
+    assert all(child["parent_record_id"] == parent["record_id"] for child in children)
+    assert parent["record_id"] not in {child["record_id"] for child in children}
+    assert project_rule_decision_basis(inputs,
+        [dict(stage="trail", strategy_intent_id="stop"), dict(stage="add", strategy_intent_id="add")]) == (parent, children)
+    families = (("trading_event_v1", ({"record_id": parent["record_id"], "run_id": "run",
+        "batch_id": parent["batch_id"], "content_hash": "f" * 64},)),
+        ("trading_rule_decision_basis_v1", (parent,)), ("trading_rule_decision_intent_v1", children))
+    commit, seals = prepare_commit_v4(run_id="run", run_month=date(2026, 8, 1),
+        attempt_id=str(uuid4()), batch_id=parent["batch_id"], prior_batch_id=str(uuid4()),
+        first_sequence=6, last_sequence=6, source_cursor="source", status="running",
+        sealed_families=families, committed_at=inputs["boundary_at"])
+    verify_commit_v4(commit, seals, detail_identities={name: tuple(
+        (row["record_id"], row["content_hash"]) for row in rows) for name, rows in families})

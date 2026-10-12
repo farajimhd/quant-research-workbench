@@ -5,7 +5,7 @@ future writer must resolve those independently before publishing these rows.
 """
 from datetime import datetime
 from hashlib import sha256
-from uuid import UUID
+from uuid import UUID, uuid5
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -158,6 +158,8 @@ def project_rule_decision_basis(values, intents):
         raise ValueError("Rule decision boundary must be timezone-aware")
     common = {key: values[key] for key in ("run_id", "event_month", "batch_id", "record_id", "decision_id")}
     children = tuple(_seal(INTENT, {**common, "ordinal": index,
+        "parent_record_id": values["record_id"],
+        "record_id": str(uuid5(UUID(str(values["record_id"])), f"rule-decision-intent:{index}")),
         "stage": item["stage"], "strategy_intent_id": item["strategy_intent_id"]})
         for index, item in enumerate(intents))
     parent = _seal(BASIS, {**values, "intent_count": len(children), "intent_hash": _digest(children)})
@@ -198,7 +200,9 @@ def verify_rule_decision_basis(parent, children):
         if (child != _seal(INTENT, {key: value for key, value in child.items() if key != "content_hash"})
                 or child["ordinal"] != index or child["stage"] not in {"entry", "exit", "add", "reduce", "trail"}
                 or not child["strategy_intent_id"] or child["strategy_intent_id"] in seen
-                or any(child[key] != parent[key] for key in ("run_id", "event_month", "batch_id", "record_id", "decision_id"))):
+                or child["parent_record_id"] != parent["record_id"]
+                or child["record_id"] != str(uuid5(UUID(parent["record_id"]), f"rule-decision-intent:{index}"))
+                or any(child[key] != parent[key] for key in ("run_id", "event_month", "batch_id", "decision_id"))):
             raise ValueError("Rule decision intent linkage differs")
         seen.add(child["strategy_intent_id"])
     return parent, children
