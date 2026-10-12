@@ -9,7 +9,25 @@ from types import MappingProxyType
 from .arte_journal_commit_v4 import prepare_commit_v4, verify_commit_v4
 from .arte_journal_writer import _sealed_families, _v4_family_table
 from .rule_decision_basis_projection import RuleDecisionBasisBatch, _seal
-from .rule_decision_basis_schema import BASIS, INTENT
+from .rule_decision_basis_schema import BASIS, INTENT, STAGED_TABLES
+
+
+def rule_decision_storage_contracts():
+    """Exact opt-in catalog; do not alter existing V4 startup or legacy tables."""
+    from .arte_journal_writer import v4_storage_contracts
+    contracts = (*v4_storage_contracts(), *STAGED_TABLES)
+    by_name = {}
+    for contract in contracts:
+        prior = by_name.setdefault(contract.name, contract)
+        if prior != contract:
+            raise ValueError("Rule decision storage has conflicting shared contracts")
+    return tuple(by_name.values())
+
+
+def preflight_rule_decision_storage(client):
+    """Read-only schema/policy/actual-part audit; missing tables fail closed."""
+    from .arte_journal_writer import storage_preflight
+    storage_preflight(client, tables=rule_decision_storage_contracts())
 
 
 @dataclass(frozen=True, slots=True)
