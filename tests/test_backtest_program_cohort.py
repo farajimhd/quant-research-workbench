@@ -47,7 +47,7 @@ def assert_multiple_entry_fill_geometry(actor, executions):
 
 @pytest.mark.parametrize("resolution", [100, 1000])
 @pytest.mark.parametrize("partial_fills", [False, True, "multiple"])
-@pytest.mark.parametrize("fenced", [False, True])
+@pytest.mark.parametrize("fenced", [False, True, "session"])
 def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepared_source, tmp_path, monkeypatch, resolution, partial_fills, fenced):
     store = Store()
     publish(store, prepared_source)
@@ -101,7 +101,7 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                 writer = queued_writer
             controller._journal_publisher = BacktestTypedJournalPublisher(controller._journal, writer,
                 attempt_id="00000000-0000-0000-0000-000000000001", run_month=pin.scope.session_date.replace(day=1),
-                expected_config=typed_run_config_payload(controller._runtime.config), exact_oms_prices=fenced)
+                expected_config=typed_run_config_payload(controller._runtime.config), exact_oms_prices=bool(fenced))
             survivor_probe = fenced and not partial_fills and resolution == 1000
             if survivor_probe:
                 from src.backend.backtest_program_inputs import publish_prepared_program_source_clock
@@ -234,7 +234,44 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                 assert controller._runtime.last_event_time == before_clock
             if fenced:
                 from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
-                result = await controller.run_fenced_program_cohort({"assignment": block}, population, projection, **arguments)
+                if fenced == "session":
+                    from src.backend.backtest_program_session import PreparedProgramCohortWork
+                    from src.backend.backtest_market_data import market_day_boundary
+                    start_at = market_day_boundary(day, first_bucket * 1000 - 14400000)
+                    stop_at = market_day_boundary(day, (first_bucket + 4) * 1000 - 14400000)
+                    controller.definition = replace(controller.definition,
+                        start_time=start_at.timetz().replace(tzinfo=None),
+                        end_time=stop_at.timetz().replace(tzinfo=None))
+                    unit_scope = {key: value for key, value in arguments.items()
+                        if key not in ("first_bucket", "stop_bucket")}
+                    async def session_read(*args, **kwargs):
+                        if calls:
+                            calls.append(kwargs)
+                            return {"ABC": ()}
+                        return await read(*args, **kwargs)
+                    monkeypatch.setattr(liquidity, "read_fixed_liquidity_cohort_async" if resolution == 100
+                        else "read_liquidity_cohort_async", session_read)
+                    session = await controller.run_prepared_program_session((PreparedProgramCohortWork(
+                        first_bucket, first_bucket + 3, {"assignment": block}, population, projection, unit_scope),
+                        PreparedProgramCohortWork(first_bucket + 3, first_bucket + 4,
+                            {"assignment": block}, population, projection, unit_scope)),
+                        terminal=False)
+                    assert session.status == "evaluated" and session.completed_cohorts == 2
+                    assert session.source_clocks == session.qualified_decisions == 4
+                    assert session.liquidity_boundaries == (40 if resolution == 100 else 4)
+                    assert not controller._program_session_active
+                    assert len(calls) == 2
+                    assert controller._journal_publisher.fenced_sequence == session.policy_packet.journal_sequence
+                    assert load_verified_v4_prefix(persisted, controller.run_id).last_sequence == session.policy_packet.journal_sequence
+                    assert not controller._journal.unfenced_records()
+                    executions = await controller._runtime.broker.trades()
+                    assert executions and sum(row.commission for row in executions) >= 1.
+                    if partial_fills == "multiple":
+                        assert_multiple_entry_fill_geometry(actor, executions)
+                    assert controller._program_dispatch_failure is None
+                    return
+                else:
+                    result = await controller.run_fenced_program_cohort({"assignment": block}, population, projection, **arguments)
                 assert result.status == "completed" and result.qualified_decisions == 3
                 first_sequence = result.policy_packet.journal_sequence
                 assert controller._journal_publisher.fenced_sequence == first_sequence
