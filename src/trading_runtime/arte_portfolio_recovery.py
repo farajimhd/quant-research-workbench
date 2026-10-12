@@ -57,6 +57,28 @@ def recover_portfolio_engine_state(
             run_id=run_id, account_id=account, state_revision=revision))
 
 
+def recover_portfolio_checkpoint_state(client, *, run_id, profiles, state_revisions, cutoff_at):
+    """Read each normalized account once at its exact completed checkpoint clock.
+
+    The caller must supply verified revisions; this does not admit execution.
+    Historical recovery retains its existing less-than-or-equal cutoff behavior.
+    """
+    from datetime import timezone
+    if not isinstance(cutoff_at, datetime) or cutoff_at.tzinfo is None:
+        raise ValueError("Portfolio checkpoint needs a timezone-aware completed clock")
+    expected_at = cutoff_at.astimezone(timezone.utc).isoformat()
+    def snapshot(account, revision):
+        value = load_portfolio_snapshot(client, run_id=run_id,
+            account_id=account, state_revision=revision)
+        if (value is None or value.get("state_revision") != revision
+                or value.get("snapshot_at") != expected_at):
+            raise ValueError("Portfolio snapshot differs from its completed source clock")
+        return value
+    return _recover_portfolio_engine_image(run_id=run_id, profiles=profiles,
+        state_revisions=state_revisions, cutoff_at=cutoff_at,
+        load_context=lambda: load_typed_run_context(client, run_id), load_snapshot=snapshot)
+
+
 def recover_prepared_portfolio_engine_state(*, run_id, profiles, run_account_ids,
         prepared, cutoff_at):
     """Reconstruct a blocked staged image, never a committed recovery receipt."""

@@ -3,14 +3,13 @@
 These images preserve blocked admission until broker/OMS synchronization. They
 are neither a strategy checkpoint nor permission to place orders.
 """
-from datetime import datetime, timezone
+from datetime import datetime
 from copy import deepcopy
 
 from src.backend.qmd_columnar_history_transport import _owned_worker
 from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix, load_verified_v4_prefix
-from src.trading_runtime.arte_portfolio_recovery import recover_portfolio_engine_state
+from src.trading_runtime.arte_portfolio_recovery import recover_portfolio_checkpoint_state
 from src.trading_runtime.portfolio import PortfolioAccountProfile
-from src.trading_runtime.arte_portfolio_snapshot import load_portfolio_snapshot
 
 
 def qualify_program_financial_runtime(runtime, cold, prefix, broker, *, oms_image,
@@ -237,13 +236,7 @@ async def recover_program_portfolio_async(reader_factory, prefix, *, profiles, c
         try:
             if load_verified_v4_prefix(client, prefix.run_id) != prefix:
                 raise ValueError("Program financial prefix changed before cold read")
-            for profile in profiles:
-                snapshot = load_portfolio_snapshot(client, run_id=prefix.run_id,
-                    account_id=profile.account_id, state_revision=basis_sequence)
-                if (snapshot is None or snapshot.get("state_revision") != basis_sequence
-                        or snapshot.get("snapshot_at") != cutoff_at.astimezone(timezone.utc).isoformat()):
-                    raise ValueError("Program financial snapshot differs from its completed source clock")
-            image = recover_portfolio_engine_state(client, run_id=prefix.run_id,
+            image = recover_portfolio_checkpoint_state(client, run_id=prefix.run_id,
                 profiles=profiles,
                 state_revisions={row.account_id: basis_sequence for row in profiles},
                 cutoff_at=cutoff_at)

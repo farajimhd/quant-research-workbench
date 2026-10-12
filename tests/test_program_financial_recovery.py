@@ -109,6 +109,25 @@ def test_program_portfolio_rejects_earlier_snapshot_at_same_revision(monkeypatch
     assert closed == [True]
 
 
+def test_program_portfolio_reads_each_exact_account_snapshot_once(monkeypatch):
+    from src.trading_runtime import arte_portfolio_recovery
+    client, profile = _client(monkeypatch)
+    profile = replace(profile, mode="backtest")
+    prefix = V4CommittedPrefix("live-run", 7, "batch", "cursor", "running", ("batch",))
+    reads = []
+    original = arte_portfolio_recovery.load_portfolio_snapshot
+    def snapshot(*args, **kwargs):
+        reads.append((kwargs["account_id"], kwargs["state_revision"]))
+        return original(*args, **kwargs)
+    monkeypatch.setattr(arte_portfolio_recovery, "load_portfolio_snapshot", snapshot)
+    monkeypatch.setattr(module, "load_verified_v4_prefix", lambda *_: prefix)
+    monkeypatch.setattr(client, "close", lambda: None, raising=False)
+    image = asyncio.run(module.recover_program_portfolio_async(lambda: client, prefix,
+        profiles=(profile,), cutoff_at=AT))
+    assert reads == [("account-id", 7)]
+    assert image.revisions == {"account-id": 7}
+
+
 def test_program_portfolio_constructs_shared_actor_without_mutating_cold_evidence(monkeypatch):
     from src.backend.backtest_journal_memory import BacktestMemoryJournal
     from src.trading_runtime.arte_portfolio_recovery import recover_portfolio_engine_state
