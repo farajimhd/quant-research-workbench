@@ -4814,6 +4814,11 @@ class ReplayRunController:
         if names and not report['eligible_ticker_count']:
             raise ValueError('No strategy tickers have required V7 books; see level-book-coverage.json')
 
+    async def run_fenced_program_cohort(self, blocks, population, projection, **scope):
+        """Run a bounded native cohort and retain ownership until its receipt."""
+        from .backtest_program_cohort import run_fenced_program_cohort
+        return await run_fenced_program_cohort(self, blocks, population, projection, **scope)
+
     async def run_prepared_program_cohort(self, blocks, population, projection, **scope):
         """Schedule one bounded prepared cohort on this owned native runtime."""
         from .backtest_program_cohort import run_prepared_program_cohort

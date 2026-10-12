@@ -4,6 +4,14 @@ Status: implementation in progress. The components below are source-level
 foundations, not a selectable, published or runnable app strategy. Existing
 numbered releases and their certification gates remain intact.
 
+The controller now exposes `run_fenced_program_cohort`: prepared source and
+liquidity execution, native qualification, bounded worker publication and exact
+receipt verification remain under one cohort owner. Native synthetic tests use
+this controller API for consecutive cohorts after journal compaction. The
+standard `_run_engine` bootstrap and `_backtest_launch_blocker` still require
+numbered releases; programme release admission and journal assembly must be
+integrated before normal app launch. No legacy frame fallback is authorized.
+
 ## Delivered components
 
 - `columnar_rule_program.py`: bounded typed DAGs evaluated with native Polars

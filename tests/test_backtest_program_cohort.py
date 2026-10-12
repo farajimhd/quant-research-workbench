@@ -200,9 +200,8 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                 assert not controller._program_cohort_active
                 assert controller._runtime.last_event_time == before_clock
             if fenced:
-                from src.backend.backtest_program_cohort import run_fenced_program_cohort
                 from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
-                result = await run_fenced_program_cohort(controller, {"assignment": block}, population, projection, **arguments)
+                result = await controller.run_fenced_program_cohort({"assignment": block}, population, projection, **arguments)
                 assert result.status == "completed" and result.qualified_decisions == 3
                 first_sequence = result.policy_packet.journal_sequence
                 assert controller._journal_publisher.fenced_sequence == first_sequence
@@ -219,7 +218,7 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                     return {"ABC": ()}
                 monkeypatch.setattr(liquidity, "read_fixed_liquidity_cohort_async" if resolution == 100
                     else "read_liquidity_cohort_async", empty_next)
-                continued = await run_fenced_program_cohort(controller, {"assignment": block}, population, projection,
+                continued = await controller.run_fenced_program_cohort({"assignment": block}, population, projection,
                     **{**arguments, "first_bucket": first_bucket + 3, "stop_bucket": first_bucket + 4,
                        "initial_packet": result.policy_packet})
                 assert continued.qualified_decisions == continued.source_clocks == 1
