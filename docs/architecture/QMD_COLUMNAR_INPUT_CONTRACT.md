@@ -393,3 +393,12 @@ reject lost ownership and foreign financial batch identities, and prove the
 last completed decision remains idempotent afterward. Portfolio rows use the
 normalized reader; OMS/broker and storage receipts in these tests are fixtures.
 This does not enable app launch or qualify full-session operational cold reads.
+
+Prepared dispatch and policy recovery now select the exact committed source
+boundary at the broker clock, rather than consuming the latest source head.
+The source producer may commit later batches while strategy state advances
+sequentially. Recovery clips its source hashes to that financial clock and
+rechecks the same immutable prefix after qualification. Synthetic tests cover
+prepublished batches, sequential actual fills and a cold runtime swap with the
+source head still ahead. Later Signal Stream state is not read as an earlier
+program feature or position state.

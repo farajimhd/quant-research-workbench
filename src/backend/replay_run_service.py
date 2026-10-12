@@ -4841,7 +4841,7 @@ class ReplayRunController:
         listing = actor._listings[assignment_id]
         row, mask = block.row_for(listing, ordinal)
         at = row["boundary_at"]
-        sequence, source_hash, cutoff = source.typed_source_cursor()
+        sequence, source_hash, cutoff = source.typed_source_boundary(at)
         if (sequence < 1 or cutoff != at or self._runtime.last_event_time != at
                 or mask["boundary_at"] != at or row["evaluation_block"] != block.evaluation_block):
             raise ValueError("Program dispatch differs from its committed source/broker clock")
@@ -4941,15 +4941,16 @@ class ReplayRunController:
                 or population.source_revision != source._typed_scope[1]
                 or not callable(reader_factory)):
             raise ValueError("Program policy recovery differs from the controller's owned scope")
-        hashes = source.typed_source_commit_hashes()
-        sequence, content_hash, _ = source.typed_source_cursor()
+        sequence, content_hash, at = source.typed_source_boundary(self._runtime.last_event_time)
+        hashes = source.typed_source_commit_hashes()[:sequence]
         if len(hashes) != sequence or hashes and hashes[-1] != content_hash:
             raise ValueError("Program policy recovery source prefix is inconsistent")
         recovered = await recover_program_policy_async(reader_factory, prefix, actor,
             source_hashes=hashes, blocks=blocks, population=population,
             executions=executions, order_manager=self._runtime.order_manager,
             maximum_events=maximum_events)
-        if source.typed_source_commit_hashes() != hashes:
+        if (source.typed_source_commit_hashes()[:sequence] != hashes
+                or source.typed_source_boundary(at) != (sequence, content_hash, at)):
             raise ValueError("Program policy recovery source advanced during cold readback")
         return recovered
 
@@ -5073,8 +5074,8 @@ class ReplayRunController:
                         for task in (group.reprice_task, group.protection_task))):
                 raise ValueError("Program runtime installation lacks its owned idle financial fence")
         require_fence()
-        hashes = source.typed_source_commit_hashes()
-        sequence, _, at = source.typed_source_cursor()
+        sequence, source_hash, at = source.typed_source_boundary(candidate.last_event_time)
+        hashes = source.typed_source_commit_hashes()[:sequence]
         if sequence < 1 or runtime.last_event_time != at or candidate.last_event_time != at:
             raise ValueError("Program runtime installation lacks its completed source clock")
         await _owned_worker(lease.assert_current)
@@ -5100,7 +5101,9 @@ class ReplayRunController:
             portfolio_recovery=comparison, observations=observations, population=population)
         await _owned_worker(lease.assert_current)
         require_fence()
-        if (source.typed_source_commit_hashes() != hashes or runtime.last_event_time != at
+        if (source.typed_source_commit_hashes()[:sequence] != hashes
+                or source.typed_source_boundary(at) != (sequence, source_hash, at)
+                or runtime.last_event_time != at
                 or candidate.last_event_time != at):
             raise ValueError("Program runtime installation cursors advanced during qualification")
         # No await below: publisher and controller switch to the same buffer.
@@ -5142,8 +5145,8 @@ class ReplayRunController:
                     or self._journal.pending_record_count != 0):
                 raise ValueError("Program installation lacks its owned fully fenced financial prefix")
         require_fence()
-        hashes = source.typed_source_commit_hashes()
-        sequence, _, at = source.typed_source_cursor()
+        sequence, source_hash, at = source.typed_source_boundary(runtime.last_event_time)
+        hashes = source.typed_source_commit_hashes()[:sequence]
         if sequence < 1 or runtime.last_event_time != at:
             raise ValueError("Program installation lacks its completed source/broker clock")
         await _owned_worker(lease.assert_current)
@@ -5166,7 +5169,9 @@ class ReplayRunController:
             observations=observations, population=population)
         await _owned_worker(lease.assert_current)
         require_fence()
-        if source.typed_source_commit_hashes() != hashes or runtime.last_event_time != at:
+        if (source.typed_source_commit_hashes()[:sequence] != hashes
+                or source.typed_source_boundary(at) != (sequence, source_hash, at)
+                or runtime.last_event_time != at):
             raise ValueError("Program installation cursor advanced during qualification")
         runtime.strategy = self._strategy = self._program_strategy = packet.actor
         self._program_dispatch_failure = None

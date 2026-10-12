@@ -27,7 +27,8 @@ from tests.test_broker_liquidity_resolution import second_bar
 
 @pytest.mark.parametrize("resolution", [100, 1000])
 @pytest.mark.parametrize("failure", [None, "submission", "completion_record"])
-def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(prepared_source, tmp_path, resolution, failure, monkeypatch):
+@pytest.mark.parametrize("prefetch", [False, True])
+def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(prepared_source, tmp_path, resolution, failure, prefetch, monkeypatch):
     storage = Store()
     publish(storage, prepared_source)
     certificate = consume(storage, prepared_source)
@@ -62,6 +63,21 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
             ordinal = candidates.filter(pl.col("entry") & pl.col("history.swing_low.2.1__valid"))["observed_ordinal"][0]
             await controller.bootstrap_program_signals(publisher, **scope)
             policy = ExecutionPolicy(envelope=ExecutionEnvelope(deadline_ms=2000))
+            runtime = controller._program_signal_runtime
+            async def publish_source_row(row):
+                source_at = row["boundary_at"]
+                candidate.update(last_price=row["reference_close"], rolling_share_volume=row["rolling_volume"])
+                stage = runtime.stage_resolve(revision["payload"], [candidate], as_of=source_at, data_fields_projected=True)
+                sequence, prior, _ = runtime.typed_source_cursor()
+                pending = runtime.submit_staged(stage, publisher, batch_sequence=sequence + 1,
+                    previous_commit_hash=prior, configuration_revision=scope["configuration_revision"],
+                    source_revision=scope["source_revision"], catalogs=scope["catalogs"])
+                await pending.wait_async()
+                runtime.promote_staged(pending)
+            if prefetch:
+                for source_offset in range(3):
+                    source_row, _ = block.row_for("listing", ordinal + source_offset)
+                    await publish_source_row(source_row)
             for offset in range(3):
                 row, _ = block.row_for("listing", ordinal + offset)
                 at = row["boundary_at"]
@@ -73,15 +89,12 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 if resolution == 100:
                     liquidity.update(resolution_ms=100, bucket_index=(liquidity["bucket_index"] + 1) * 10 - 1)
                 await controller._runtime.process_liquidity_boundary((liquidity,), at=at)
-                runtime = controller._program_signal_runtime
-                candidate.update(last_price=row["reference_close"], rolling_share_volume=row["rolling_volume"])
-                stage = runtime.stage_resolve(revision["payload"], [candidate], as_of=at, data_fields_projected=True)
-                sequence, prior, _ = runtime.typed_source_cursor()
-                pending = runtime.submit_staged(stage, publisher, batch_sequence=sequence + 1,
-                    previous_commit_hash=prior, configuration_revision=scope["configuration_revision"],
-                    source_revision=scope["source_revision"], catalogs=scope["catalogs"])
-                await pending.wait_async()
-                runtime.promote_staged(pending)
+                if not prefetch:
+                    await publish_source_row(row)
+                source_prefix_hashes = runtime.typed_source_commit_hashes()[:offset + 1]
+                assert runtime.typed_source_boundary(at)[0] == offset + 1
+                if prefetch:
+                    assert runtime.typed_source_cursor()[0] == 3
                 stop = row["history.swing_low.2.1"]
                 profile = ProtectionProfile("program-stop", 1, (ProtectionSlice("one", 1., StopRule(price=stop)),))
                 if offset == 0 and failure:
@@ -180,6 +193,7 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 assert recovered.actor._selection_clocks == actor._selection_clocks
                 assert recovered.completion_count == offset + 1
                 assert recovered.completed_source_sequences == {"assignment": offset + 1}
+                assert recovered.source_commit_hashes == source_prefix_hashes
                 from src.backend.program_policy_recovery import verify_recovered_program_positions, program_policy_fingerprint
                 from src.trading_runtime.arte_portfolio_recovery import PortfolioRecovery
                 portfolio = controller._runtime.portfolio
@@ -194,7 +208,7 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 broker_orders = await controller._runtime.broker.canonical_orders()
                 observations = {"assignment": controller.program_order_observation(assignment_id="assignment", at=at)}
                 verify_recovered_program_positions(recovered, actor, run_id=controller.run_id,
-                    source_hashes=runtime.typed_source_commit_hashes(), at=at,
+                    source_hashes=source_prefix_hashes, at=at,
                     broker_positions=broker_positions, broker_ledgers=broker_ledgers, broker_executions=executions,
                     broker_orders=broker_orders,
                     order_manager=controller._runtime.order_manager, portfolio=portfolio,
@@ -204,7 +218,7 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                     for account, ledger in broker_ledgers.items()}
                 with pytest.raises(ValueError, match="cash ledger differs"):
                     verify_recovered_program_positions(recovered, actor, run_id=controller.run_id,
-                        source_hashes=runtime.typed_source_commit_hashes(), at=at,
+                        source_hashes=source_prefix_hashes, at=at,
                         broker_positions=broker_positions, broker_ledgers=changed_ledgers, broker_executions=executions,
                         broker_orders=broker_orders, order_manager=controller._runtime.order_manager,
                         portfolio=portfolio, portfolio_recovery=portfolio_image,
@@ -213,7 +227,7 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 recovered.actor.target_state.fraction = fraction + 1
                 with pytest.raises(ValueError, match="policy changed"):
                     verify_recovered_program_positions(recovered, actor, run_id=controller.run_id,
-                        source_hashes=runtime.typed_source_commit_hashes(), at=at,
+                        source_hashes=source_prefix_hashes, at=at,
                         broker_positions=broker_positions, broker_ledgers=broker_ledgers, broker_executions=executions,
                         broker_orders=broker_orders, order_manager=controller._runtime.order_manager,
                         portfolio=portfolio, portfolio_recovery=portfolio_image,
@@ -227,32 +241,32 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                         detail={**bad[last_completion].detail, "decision_reference_price": 999.})
                     with pytest.raises(ValueError, match="reference mark changed"):
                         rebuild_program_policy_events(actor, bad, run_id=controller.run_id,
-                            source_hashes=runtime.typed_source_commit_hashes(), blocks=(block,), population=population,
+                            source_hashes=source_prefix_hashes, blocks=(block,), population=population,
                             executions=executions, order_manager=controller._runtime.order_manager,
                             maximum_events=1000, last_sequence=len(events))
                     altered = [replace(execution, commission=execution.commission + 1) for execution in executions]
                     with pytest.raises(ValueError, match="commission differs"):
                         rebuild_program_policy_events(actor, events, run_id=controller.run_id,
-                            source_hashes=runtime.typed_source_commit_hashes(), blocks=(block,), population=population,
+                            source_hashes=source_prefix_hashes, blocks=(block,), population=population,
                             executions=altered, order_manager=controller._runtime.order_manager,
                             maximum_events=1000, last_sequence=len(events))
                     changed_history = replace(block, history_hashes={"listing": "f" * 64})
                     with pytest.raises(ValueError, match="prepared identity changed"):
                         rebuild_program_policy_events(actor, events, run_id=controller.run_id,
-                            source_hashes=runtime.typed_source_commit_hashes(), blocks=(changed_history,), population=population,
+                            source_hashes=source_prefix_hashes, blocks=(changed_history,), population=population,
                             executions=executions, order_manager=controller._runtime.order_manager,
                             maximum_events=1000, last_sequence=len(events))
                     gapped = [replace(events[0], event={**events[0].event, "sequence": 2}), *events[1:]]
                     with pytest.raises(ValueError, match="gapped"):
                         rebuild_program_policy_events(actor, gapped, run_id=controller.run_id,
-                            source_hashes=runtime.typed_source_commit_hashes(), blocks=(block,), population=population,
+                            source_hashes=source_prefix_hashes, blocks=(block,), population=population,
                             executions=executions, order_manager=controller._runtime.order_manager,
                             maximum_events=1000, last_sequence=len(events))
                     missing_fee = [replace(item, event={**item.event, "category": "ignored"}, detail=None)
                         if item.event["entity_type"] == "commission" else item for item in events]
                     with pytest.raises(ValueError, match="coverage is incomplete"):
                         rebuild_program_policy_events(actor, missing_fee, run_id=controller.run_id,
-                            source_hashes=runtime.typed_source_commit_hashes(), blocks=(block,), population=population,
+                            source_hashes=source_prefix_hashes, blocks=(block,), population=population,
                             executions=executions, order_manager=controller._runtime.order_manager,
                             maximum_events=1000, last_sequence=len(events))
                     entered, release_read = Event(), Event()
@@ -290,6 +304,10 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 assert batch.events[0]["causation_id"] in runtime.typed_source_commit_hashes()
                 assert not batch.signal_evidence_nodes
             from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
+            if prefetch:
+                future_row, _ = block.row_for("listing", ordinal + 3)
+                await publish_source_row(future_row)
+                assert runtime.typed_source_cursor()[2] > controller._runtime.last_event_time
             from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
             from tests.test_backtest_v4_keeper_lease import _session
             from src.trading_runtime.runtime import typed_run_config_payload
