@@ -16,9 +16,13 @@ from . import strategy_configuration_schema as schema
 
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _MODES = frozenset({"live", "paper", "replay", "backtest", "backtest_debug"})
-_FAMILIES = ("account", "mode", "mandate", "group", "group_member", "supervisor")
+_FAMILIES = ("account", "mode", "mandate", "group", "group_member", "supervisor",
+             "signal_stream", "signal_field", "signal_stream_field", "signal_stream_rule",
+             "signal_rule_set", "signal_condition")
 _KEYS = (("ordinal",), ("account_key", "ordinal"), ("ordinal",),
-         ("ordinal",), ("group_id", "ordinal"), ("mode",))
+         ("ordinal",), ("group_id", "ordinal"), ("mode",), ("ordinal",),
+         ("signal_stream_id", "column_id"), ("signal_stream_id", "ordinal"),
+         ("signal_stream_id", "ordinal"), ("ordinal",), ("rule_set_id", "ordinal"))
 
 
 def _hash(value):
@@ -107,7 +111,7 @@ def restore_configuration_selection(source):
                 or len(ordered) != header[family + "_count"]
                 or _hash(ordered) != header[family + "_hash"]):
             raise ValueError("Configuration child scope, count or hash differs")
-    accounts, modes, mandates, groups, members, supervisors = (rows[table.name] for table in schema.CHILDREN)
+    accounts, modes, mandates, groups, members, supervisors = (rows[table.name] for table in schema.CHILDREN[:6])
     for family in (accounts, mandates, groups):
         _ordinals(family)
     _ordinals(modes, "account_key")
@@ -135,6 +139,10 @@ def restore_configuration_selection(source):
             or len({(row["group_id"], row["account_key"]) for row in members}) != len(members)
             or {row["group_id"] for row in members} != group_ids):
         raise ValueError("Configuration group membership is orphaned, empty or repeated")
+    from src.backend.strategy_signal_configuration import restore_signal_configuration
+    restore_signal_configuration({table.name: rows[table.name] for table in schema.signals.TABLES},
+        configuration_id=header["configuration_id"],
+        configuration_revision="strategy-configuration:" + header["configuration_id"])
     frozen = MappingProxyType({name: tuple(MappingProxyType(row) for row in family)
                               for name, family in rows.items()})
     return StrategyConfigurationSelection(frozen[schema.SELECTION.name][0], frozen)

@@ -62,7 +62,7 @@ def test_reader_checks_pins_seals_and_closes_all_connections(monkeypatch, failur
             reader.read_configuration_selection(source.factory, **kwargs)
     else:
         assert reader.read_configuration_selection(source.factory, **kwargs) == source.packet
-        assert len(source.clients) == 7
+        assert len(source.clients) == 13
     assert source.clients and all(client.closed for client in source.clients)
 
 
@@ -82,4 +82,4 @@ def test_reader_settles_same_owned_reads_after_repeated_cancellation(monkeypatch
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, 5)
     asyncio.run(run())
-    assert len(source.clients) == 7 and all(client.closed for client in source.clients)
+    assert len(source.clients) == 13 and all(client.closed for client in source.clients)

@@ -16,7 +16,8 @@ def children():
     group = dict(configuration_id=ID, ordinal=0, group_id="shared",
                  maximum_gross_exposure=10000., maximum_ticker_exposure=2000.)
     member = dict(configuration_id=ID, group_id="shared", ordinal=0, account_key="research")
-    return {schema.ACCOUNT.name: [account], schema.MODE.name: [mode], schema.MANDATE.name: [],
+    from tests.test_strategy_signal_configuration import rows as signal_rows
+    return {**signal_rows(), schema.ACCOUNT.name: [account], schema.MODE.name: [mode], schema.MANDATE.name: [],
             schema.GROUP.name: [group], schema.GROUP_MEMBER.name: [member],
             schema.SUPERVISOR.name: [dict(configuration_id=ID, mode="backtest", enabled=1)]}
 

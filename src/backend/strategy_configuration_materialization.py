@@ -69,6 +69,15 @@ def materialize_program_configuration(selection, release, policies):
                       "mandates": mandates, "groups": groups},
         "oms": {"limit_offset_bps": header["oms_limit_offset_bps"]},
     }
+    from .strategy_signal_configuration import restore_signal_configuration
+    discovery, _ = restore_signal_configuration(
+        {table.name: selection.rows[table.name] for table in schema.signals.TABLES},
+        configuration_id=header["configuration_id"],
+        configuration_revision="strategy-configuration:" + header["configuration_id"])
+    if not discovery["signal_streams"]:
+        raise ValueError("Programme configuration requires its explicit typed Signal Stream selections")
+    payload["market_discovery"] = discovery
+    payload["run_plan"]["signal_stream_ids"] = [row["signal_stream_id"] for row in discovery["signal_streams"]]
     return {
         "revision_id": "strategy-configuration:" + header["configuration_id"],
         "revision": header["strategy_revision"], "label": header["label"],

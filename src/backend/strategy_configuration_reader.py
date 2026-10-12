@@ -43,10 +43,17 @@ def _select(client, table, identity):
         if type(row) is not dict or set(row) != {name for name, _ in table.columns}:
             raise ValueError("Configuration response columns differ from defined schema")
         for name, kind in table.columns:
-            if kind == "Float64":
+            if kind == "Nullable(Float64)" and row[name] is None:
+                continue
+            if kind in {"Float64", "Nullable(Float64)"}:
                 if type(row[name]) not in (int, float):
                     raise ValueError("Configuration response numeric type differs")
                 row[name] = float(row[name])
+            elif kind == "Nullable(Int64)" and type(row[name]) is str:
+                if (re.fullmatch(r"-?(0|[1-9][0-9]*)", row[name]) is None
+                        or row[name] != str(int(row[name]))):
+                    raise ValueError("Configuration integer wire value is not canonical")
+                row[name] = int(row[name])
             elif kind.startswith("DateTime64"):
                 if type(row[name]) is not str:
                     raise ValueError("Configuration response clock type differs")

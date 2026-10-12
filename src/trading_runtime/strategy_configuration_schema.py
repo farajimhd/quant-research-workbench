@@ -5,6 +5,7 @@ These relations own only configuration identity and ordered app selections.
 They are staged source contracts, never runtime DDL or strategy-owned tables.
 """
 from .arte_journal_schema import TableContract
+from . import strategy_signal_configuration_schema as signals
 
 
 SELECTION = TableContract(
@@ -20,6 +21,12 @@ SELECTION = TableContract(
      ("group_count", "UInt32"), ("group_hash", "FixedString(64)"),
      ("group_member_count", "UInt32"), ("group_member_hash", "FixedString(64)"),
      ("supervisor_count", "UInt32"), ("supervisor_hash", "FixedString(64)"),
+     ("signal_stream_count", "UInt32"), ("signal_stream_hash", "FixedString(64)"),
+     ("signal_field_count", "UInt32"), ("signal_field_hash", "FixedString(64)"),
+     ("signal_stream_field_count", "UInt32"), ("signal_stream_field_hash", "FixedString(64)"),
+     ("signal_stream_rule_count", "UInt32"), ("signal_stream_rule_hash", "FixedString(64)"),
+     ("signal_rule_set_count", "UInt32"), ("signal_rule_set_hash", "FixedString(64)"),
+     ("signal_condition_count", "UInt32"), ("signal_condition_hash", "FixedString(64)"),
      ("content_hash", "FixedString(64)"),
      ("published_at", "DateTime64(6, 'UTC')")),
     "tuple()", "configuration_id")
@@ -69,7 +76,7 @@ SUPERVISOR = TableContract(
      ("enabled", "UInt8")),
     "tuple()", "configuration_id,mode")
 
-CHILDREN = (ACCOUNT, MODE, MANDATE, GROUP, GROUP_MEMBER, SUPERVISOR)
+CHILDREN = (ACCOUNT, MODE, MANDATE, GROUP, GROUP_MEMBER, SUPERVISOR, *signals.TABLES)
 TABLES = (*CHILDREN, SELECTION)
 
 

@@ -39,11 +39,28 @@ def test_configuration_binds_existing_catalogue_policies_without_changing_releas
     assert groups[0].account_keys == ("research",)
     assert payload["oms"]["limit_offset_bps"] == 2.
     assert payload["strategy"]["parameters"] == {}
+    assert payload["run_plan"]["signal_stream_ids"] == ["stream-1"]
+    assert payload["market_discovery"]["signal_streams"][0]["inclusion_rule_sets"] == ["up"]
     assert actor.program_release.header["entry_cash"] == 1000
     assert actor.program_release.header["add_cash"] == 200
     assert revision["selection_hash"] == packet.header["content_hash"]
     payload["accounts"]["bindings"][0]["enabled"] = False
     assert materialize_program_configuration(packet, actor.program_release, policies)["payload"]["accounts"]["bindings"][0]["enabled"]
+
+
+def test_materialized_selection_drives_native_vectorized_signal_stream_resolution():
+    from src.backend.signal_stream_runtime_service import SignalStreamRuntime
+    from datetime import datetime, timezone
+    _, actor, packet, policies = configured()
+    revision = materialize_program_configuration(packet, actor.program_release, policies)
+    runtime = SignalStreamRuntime()
+    runtime._hydrated = True  # Empty synthetic source state; no persistence is consulted.
+    stage = runtime.stage_resolve(revision["payload"], [{"ticker": "ABC", "price": 12.,
+        "market.last_price@1s": 12., "rule_set:up": True}],
+        as_of=datetime(2026, 10, 12, 14, tzinfo=timezone.utc), data_fields_projected=True)
+    assert len(stage.occurrences) == 1
+    assert stage.occurrences[0]["signal_stream_id"] == "stream-1"
+    assert stage.occurrences[0]["ticker"] == "ABC"
 
 
 @pytest.mark.parametrize("failure", ["missing", "extra", "policy", "release"])
