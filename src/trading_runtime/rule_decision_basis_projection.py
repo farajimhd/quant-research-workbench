@@ -27,6 +27,23 @@ class RuleDecisionBasisBatch:
     basis: Mapping
     intents: tuple[Mapping, ...]
 
+    @classmethod
+    def from_pending_completion(cls, journal, record, base):
+        """Rekey retained evidence under its publisher-selected microbatch ID."""
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
+        from .arte_journal_writer import TypedJournalBatch
+        from .journal_contract import JournalRecord
+        if (type(journal) is not BacktestMemoryJournal or type(record) is not JournalRecord
+                or type(base) is not TypedJournalBatch or journal.run_id != record.run_id):
+            raise ValueError("Rule decision projection requires its pending typed journal")
+        retained = journal.rule_decision_basis_for_record(record.record_id)
+        if retained is None:
+            raise ValueError("Rule decision projection lacks retained pending evidence")
+        parent, children = retained
+        verify_rule_decision_completion_record(parent, children, record)
+        parent, children = rekey_rule_decision_basis(parent, children, batch_id=base.batch_id)
+        return cls(base, parent, children)
+
     def __post_init__(self):
         from .arte_journal_writer import TypedJournalBatch
         parent, children = verify_rule_decision_basis(self.basis, self.intents)
@@ -146,6 +163,17 @@ def project_rule_decision_basis(values, intents):
     parent = _seal(BASIS, {**values, "intent_count": len(children), "intent_hash": _digest(children)})
     verify_rule_decision_basis(parent, children)
     return parent, children
+
+
+def rekey_rule_decision_basis(parent, children, *, batch_id):
+    """Change transport identity only, resealing all dependent scalar hashes."""
+    parent, children = verify_rule_decision_basis(parent, children)
+    batch_id = str(UUID(str(batch_id)))
+    rekeyed = tuple(_seal(INTENT, {**{key: value for key, value in child.items()
+        if key != "content_hash"}, "batch_id": batch_id}) for child in children)
+    parent = _seal(BASIS, {**{key: value for key, value in parent.items()
+        if key != "content_hash"}, "batch_id": batch_id, "intent_hash": _digest(rekeyed)})
+    return verify_rule_decision_basis(parent, rekeyed)
 
 
 def verify_rule_decision_basis(parent, children):

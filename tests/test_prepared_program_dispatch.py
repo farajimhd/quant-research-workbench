@@ -166,6 +166,12 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                     batch_id=basis_parent["batch_id"], prior_batch_id="00000000-0000-0000-0000-000000000000",
                     source_cursor="prepared-source")
                 transport = RuleDecisionBasisBatch(typed_completion, basis_parent, basis_children)
+                retained_transport = RuleDecisionBasisBatch.from_pending_completion(
+                    controller._journal, completion, typed_completion)
+                assert retained_transport.basis == transport.basis
+                assert retained_transport.intents == transport.intents
+                assert dispatched_parent["batch_id"] == completion.record_id
+                assert retained_transport.basis["batch_id"] == typed_completion.batch_id
                 assert transport.base is typed_completion
                 with pytest.raises(TypeError):
                     transport.basis["source_commit_hash"] = "e" * 64

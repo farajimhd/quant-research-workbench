@@ -134,3 +134,21 @@ def test_pending_journal_retains_basis_until_fence_and_blocks_unintegrated_publi
     with pytest.raises(ValueError, match="pending journal record"):
         journal.retain_rule_decision_basis(record, parent, children)
     journal.close()
+
+
+def test_rekey_changes_only_transport_identity_and_dependent_hashes():
+    from src.trading_runtime.rule_decision_basis_projection import rekey_rule_decision_basis
+    parent, children = project_rule_decision_basis(values(),
+        [dict(stage="entry", strategy_intent_id="intent")])
+    new_id = str(uuid4())
+    updated, updated_children = rekey_rule_decision_basis(parent, children, batch_id=new_id)
+    assert updated["batch_id"] == updated_children[0]["batch_id"] == new_id
+    for key in set(parent) - {"batch_id", "content_hash", "intent_hash"}:
+        assert updated[key] == parent[key]
+    for key in set(children[0]) - {"batch_id", "content_hash"}:
+        assert updated_children[0][key] == children[0][key]
+    assert updated["content_hash"] != parent["content_hash"]
+    assert updated["intent_hash"] != parent["intent_hash"]
+    assert rekey_rule_decision_basis(updated, updated_children, batch_id=parent["batch_id"]) == (parent, children)
+    with pytest.raises(ValueError):
+        rekey_rule_decision_basis(parent, children, batch_id="invalid")
