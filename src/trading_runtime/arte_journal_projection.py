@@ -16,6 +16,7 @@ from typing import Any, Mapping
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from src.trading_runtime.arte_journal_schema import TABLES
+from src.trading_runtime.arte_order_exact_prices import ExactPriceOrderCommandBatch
 from src.trading_runtime.arte_journal_writer import (
     CommittedPrefix, V2CommittedPrefix, VerifiedPrefix, TypedJournalBatch,
     _canonical_typed_content, _committed_batch_filter, _literal, _rows,
@@ -1581,12 +1582,15 @@ def order_command_batch(
     v4_lineage_proof_record_id: str | None = None,
     v4_lineage_oms_record_id: str | None = None,
     emit_v4_lineage: bool = False,
-) -> TypedJournalBatch:
+    exact_prices: bool = False,
+) -> TypedJournalBatch | ExactPriceOrderCommandBatch:
     """Capture one broker command losslessly before external dispatch.
 
     Exact Strategy 1 lineage may be derived from its typed source intent and
     this flat order; arbitrary metadata and broker algo parameters still fail.
     """
+    if type(exact_prices) is not bool:
+        raise ValueError("Exact order price mode must be an explicit boolean")
     if (is_numbered_fixed_strategy(strategy_id, strategy_revision)
             and not request.raw):
         raise ValueError("Strategy 1 command requires exact typed intent lineage")
@@ -1708,8 +1712,8 @@ def order_command_batch(
         "time_in_force": request.tif,
         "quantity": _exact_decimal(request.quantity, field="order.quantity") if request.quantity is not None else None,
         "cash_quantity": _exact_decimal(request.cashQty, field="order.cash_quantity") if request.cashQty is not None else None,
-        "limit_price": _exact_decimal(request.price, field="order.limit_price") if request.price is not None else None,
-        "aux_price": _exact_decimal(request.auxPrice, field="order.aux_price") if request.auxPrice is not None else None,
+        "limit_price": request.price if exact_prices else _exact_decimal(request.price, field="order.limit_price") if request.price is not None else None,
+        "aux_price": request.auxPrice if exact_prices else _exact_decimal(request.auxPrice, field="order.aux_price") if request.auxPrice is not None else None,
         "outside_rth": int(request.outsideRTH),
         "parent_command_id": "", "oca_group": "",
         "strategy_id": strategy_id, "strategy_revision": strategy_revision,
@@ -1754,12 +1758,16 @@ def order_command_batch(
                                 if amended_oms_lineage else None),
         "proof_record_id": v4_lineage_proof_record_id,
     },) if emit_v4_lineage else ()
-    return TypedJournalBatch(
+    batch = TypedJournalBatch(
         run_id, run_month, attempt_id, batch_id, prior_batch_id,
         sequence, sequence, source_cursor, run_status, (event,),
-        order_commands=(detail,), order_contexts=context, intent_uses=intent_use,
+        order_commands=() if exact_prices else (detail,), order_contexts=context, intent_uses=intent_use,
         v4_command_lineages=v4_lineage,
     )
+    if exact_prices:
+        from .trading_price_rows import exact_price_row
+        return ExactPriceOrderCommandBatch(batch, exact_price_row("trading_order_command_v1", detail))
+    return batch
 
 
 def commission_revision_batch(

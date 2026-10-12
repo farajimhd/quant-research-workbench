@@ -160,6 +160,20 @@ integration gap. This source-only selection has not been enabled in the app;
 complete price-family coverage and immutable run-setting/recovery binding are
 required before main-path admission or any real session qualification.
 
+Shared `order_command_batch` now offers an explicit exact-price projection and
+returns `ExactPriceOrderCommandBatch`. Existing unknown-field, command/context,
+intent-hash and canonical-lineage checks remain in the same projector. The
+shared journal seal accepts its named exact command family and uses a decoded
+internal semantic view for the existing relationship checks; quantities and
+nonprice instructions retain their previous contracts. Projection/readback and
+tampering tests pass. This command envelope is not yet integrated into the V4
+writer, mixed-prefix compaction, cold command reader or main native prefix.
+
+One broader projection test currently fails independently: it constructs an
+uninitialized `TradingRuntime` without `strategy`, then calls unchanged
+`_record_executions`. This fixture/runtime mismatch is separate from exact-price
+projection and has not been modified as part of this change.
+
 Whichever option is selected must cover central schema definitions, projectors,
 binary insert/readback hashes, compound family seals, grants/storage audits,
 order command/modify/reprice links, broker execution attribution, OMS actor
