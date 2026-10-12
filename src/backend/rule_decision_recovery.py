@@ -11,6 +11,36 @@ from src.trading_runtime.arte_journal_reader import TypedJournalEvent, load_type
 from src.trading_runtime.journal_contract import JournalRecord
 from src.backend.signal_stream_typed_readback import _normalize
 from datetime import datetime
+from src.trading_runtime.arte_intent_projection import load_committed_strategy_intent_page
+from src.trading_runtime.rule_decision_basis_projection import verify_rule_decision_intent_records
+from src.trading_runtime.arte_journal_writer import _rows, _literal, _committed_batch_filter
+
+
+def join_decision_intents(client, prefix, rows):
+    """Resolve exact semantic intent IDs in bounded committed-event queries."""
+    wanted = [child["strategy_intent_id"] for _, children in rows for child in children]
+    if len(wanted) > 8000 or len(set(wanted)) != len(wanted):
+        raise ValueError("Rule decision page repeats intents or exceeds its bound")
+    recovered = {}
+    for start in range(0, len(wanted), 500):
+        chunk = wanted[start:start + 500]
+        events = _rows(client, "SELECT record_id,entity_id FROM arte.trading_event_v1 "
+            f"WHERE run_id={_literal(prefix.run_id)} AND sequence<={prefix.last_sequence} "
+            "AND category='strategy' AND entity_type='strategy_intent' "
+            f"AND entity_id IN ({','.join(_literal(value) for value in chunk)}) "
+            f"{_committed_batch_filter(prefix)} LIMIT {len(chunk) + 1} FORMAT JSONEachRow")
+        if (len(events) != len(chunk) or {event["entity_id"] for event in events} != set(chunk)
+                or len({event["record_id"] for event in events}) != len(events)):
+            raise ValueError("Rule decision committed intent identity coverage differs")
+        page = load_committed_strategy_intent_page(client, prefix,
+            record_ids=tuple(event["record_id"] for event in events), limit=len(chunk))
+        if len(page) != len(chunk) or {record.intent.intent_id for record in page} != set(chunk):
+            raise ValueError("Rule decision semantic intent coverage differs")
+        recovered.update((record.intent.intent_id, record) for record in page)
+    for parent, children in rows:
+        verify_rule_decision_intent_records(parent, children,
+            tuple(recovered[child["strategy_intent_id"]] for child in children))
+    return rows
 
 
 def verify_decision_completion_page(rows, events):
@@ -61,6 +91,7 @@ async def read_rule_decision_page_async(reader_factory, prefix, *, after_sequenc
                 events = load_typed_event_page(client, prefix, after_sequence=after_sequence,
                     limit=len(rows), selected_sequences=tuple(parent["decision_sequence"] for parent, _ in rows))
                 verify_decision_completion_page(rows, events)
+                join_decision_intents(client, prefix, rows)
             if load_verified_v4_prefix(client, prefix.run_id) != prefix:
                 raise ValueError("Rule decision prefix changed after readback")
             return rows

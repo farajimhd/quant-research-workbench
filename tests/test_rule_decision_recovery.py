@@ -103,3 +103,35 @@ def test_normalized_completion_join_rejects_substitutions(change):
             module.verify_decision_completion_page(rows, events)
     else:
         assert module.verify_decision_completion_page(rows, events) is rows
+
+
+@pytest.mark.parametrize("change", [None, "missing", "duplicate", "sequence", "account"])
+def test_committed_semantic_intent_join_uses_exact_records(monkeypatch, change):
+    from tests.test_rule_decision_basis_projection import values, intent_record
+    from src.trading_runtime.rule_decision_basis_projection import project_rule_decision_basis
+    parent, children = project_rule_decision_basis(values(), [dict(stage="entry", strategy_intent_id="intent")])
+    prefix = V4CommittedPrefix("run", 5, parent["batch_id"], "source", "running", (parent["batch_id"],))
+    record = intent_record()
+    if change == "sequence":
+        record = replace(record, sequence=5)
+    if change == "account":
+        record = replace(record, account_id="other")
+    events = [dict(record_id=record.record_id, entity_id="intent")]
+    if change == "missing":
+        events = []
+    if change == "duplicate":
+        events *= 2
+    def read(client, sql):
+        assert "batch_id IN" in sql and "LIMIT 2" in sql
+        return events
+    def intents(client, scope, **bounds):
+        assert scope == prefix and bounds == dict(record_ids=(record.record_id,), limit=1)
+        return (record,)
+    monkeypatch.setattr(module, "_rows", read)
+    monkeypatch.setattr(module, "load_committed_strategy_intent_page", intents)
+    rows = ((parent, children),)
+    if change:
+        with pytest.raises(ValueError):
+            module.join_decision_intents(object(), prefix, rows)
+    else:
+        assert module.join_decision_intents(object(), prefix, rows) is rows
