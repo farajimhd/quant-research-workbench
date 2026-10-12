@@ -1432,9 +1432,13 @@ class ReplayRunController:
         if self._task is not None:
             return
         if self.definition.mode == RunMode.BACKTEST:
-            blocker = _backtest_launch_blocker(self.definition)
-            if blocker:
-                raise RuntimeError(blocker)
+            if self._program_strategy is not None:
+                from .backtest_program_launch import require_bound_program_start
+                await require_bound_program_start(self)
+            else:
+                blocker = _backtest_launch_blocker(self.definition)
+                if blocker:
+                    raise RuntimeError(blocker)
         else:
             # Replay keeps its local restart contract. A Backtest admitted by
             # the typed gate must never create a parallel disk authority.
@@ -3979,6 +3983,10 @@ class ReplayRunController:
                 self.status = "warming"
             self.updated_at = datetime.now(UTC)
             await self._publish(force=True)
+            if self._program_strategy is not None:
+                from .backtest_program_launch import run_bound_program_engine
+                await run_bound_program_engine(self)
+                return
             if self.definition.mode == RunMode.BACKTEST:
                 from src.backend.backtest_market_data import (
                     EVENT_EXECUTION_BLOCKER, ExecutionInterval,
@@ -4818,6 +4826,11 @@ class ReplayRunController:
         """Schedule contiguous prepared cohorts through the native fenced lane."""
         from .backtest_program_session import run_prepared_program_session
         return await run_prepared_program_session(self, cohorts, **scope)
+
+    async def bind_prepared_program_session(self, cohorts):
+        """Bind adopted prepared coverage to this controller's normal lifecycle."""
+        from .backtest_program_launch import bind_prepared_program_launch
+        return await bind_prepared_program_launch(self, cohorts)
 
     async def finish_prepared_program_session(self, *, status):
         """Acknowledge programme broker/account terminal evidence through V4."""
@@ -8087,7 +8100,10 @@ class ReplayRunController:
         if v4_terminal:
             terminal_started = time.perf_counter()
             try:
-                await self._finish_fixed_v4(status)
+                if self._program_strategy is not None:
+                    await self.finish_prepared_program_session(status=status)
+                else:
+                    await self._finish_fixed_v4(status)
             finally:
                 self._record_stage_time("strategy_one_terminal", terminal_started)
         elif self._runtime is not None and not self._runtime_finished:

@@ -67,14 +67,48 @@ async def run_prepared_program_session(controller, cohorts, *, initial_packet=No
     financial captures and close publication still belong to the main run owner.
     """
     from .replay_run_service import ReplayRunController
-    from .backtest_program_inputs import PreparedProgramBlock, PreparedProgramScannerProjection
-    from .qmd_columnar_population import CertifiedPopulationWindow
-    from .backtest_market_data import market_day_boundary, SESSION_OPEN_OFFSET_MS
     require_program_session_owner(controller)
     if (type(controller) is not ReplayRunController or type(terminal) is not bool
             or isinstance(cohorts, (str, bytes))
             or getattr(controller, "_program_session_active", False)):
         raise ValueError("Programme session lacks its exclusive native owner")
+    work, definition, actor = validate_prepared_program_session(controller, cohorts)
+    controller._program_session_active = True
+    controller._program_session_task = asyncio.current_task()
+    controller._program_evaluated_terminal = None
+    packet, completed, liquidity, clocks, decisions = initial_packet, 0, 0, 0, 0
+    try:
+        for index, unit in enumerate(work):
+            if controller._stop_requested:
+                return ProgramSessionResult("stopped", completed, len(work), liquidity, clocks, decisions, packet)
+            if controller.definition is not definition or controller._program_strategy is not actor:
+                raise RuntimeError("Programme session ownership changed before its next cohort")
+            result = await controller.run_fenced_program_cohort(unit.blocks, unit.population, unit.projection,
+                **unit.scope, first_bucket=unit.first_bucket, stop_bucket=unit.stop_bucket,
+                initial_packet=packet, terminal=terminal and index == len(work) - 1)
+            packet = result.policy_packet
+            liquidity += result.liquidity_boundaries
+            clocks += result.source_clocks
+            decisions += result.qualified_decisions
+            if result.status not in ("completed", "stopped"):
+                raise RuntimeError("Programme cohort returned an unrecognized completion state")
+            if result.status == "stopped":
+                return ProgramSessionResult("stopped", completed, len(work), liquidity, clocks, decisions, packet)
+            completed += 1
+        if terminal:
+            controller._program_evaluated_terminal = (definition, controller._runtime, actor,
+                controller.current_time, controller._journal_publisher.fenced_sequence)
+        return ProgramSessionResult("evaluated", completed, len(work), liquidity, clocks, decisions, packet)
+    finally:
+        controller._program_session_active = False
+        controller._program_session_task = None
+
+
+def validate_prepared_program_session(controller, cohorts):
+    """Check the complete requested plan without advancing any runtime clock."""
+    from .backtest_program_inputs import PreparedProgramBlock, PreparedProgramScannerProjection
+    from .qmd_columnar_population import CertifiedPopulationWindow
+    from .backtest_market_data import market_day_boundary, SESSION_OPEN_OFFSET_MS
     work = tuple(islice(cohorts, 57601))
     if not work or len(work) > 57600 or any(type(unit) is not PreparedProgramCohortWork for unit in work):
         raise ValueError("Programme session needs bounded prepared cohort coverage")
@@ -108,32 +142,4 @@ async def run_prepared_program_session(controller, cohorts, *, initial_packet=No
         if unit.population.source_revision != revision:
             raise ValueError("Programme session changed its scanner population authority")
         prior = unit.stop_bucket
-    controller._program_session_active = True
-    controller._program_session_task = asyncio.current_task()
-    controller._program_evaluated_terminal = None
-    packet, completed, liquidity, clocks, decisions = initial_packet, 0, 0, 0, 0
-    try:
-        for index, unit in enumerate(work):
-            if controller._stop_requested:
-                return ProgramSessionResult("stopped", completed, len(work), liquidity, clocks, decisions, packet)
-            if controller.definition is not definition or controller._program_strategy is not actor:
-                raise RuntimeError("Programme session ownership changed before its next cohort")
-            result = await controller.run_fenced_program_cohort(unit.blocks, unit.population, unit.projection,
-                **unit.scope, first_bucket=unit.first_bucket, stop_bucket=unit.stop_bucket,
-                initial_packet=packet, terminal=terminal and index == len(work) - 1)
-            packet = result.policy_packet
-            liquidity += result.liquidity_boundaries
-            clocks += result.source_clocks
-            decisions += result.qualified_decisions
-            if result.status not in ("completed", "stopped"):
-                raise RuntimeError("Programme cohort returned an unrecognized completion state")
-            if result.status == "stopped":
-                return ProgramSessionResult("stopped", completed, len(work), liquidity, clocks, decisions, packet)
-            completed += 1
-        if terminal:
-            controller._program_evaluated_terminal = (definition, controller._runtime, actor,
-                controller.current_time, controller._journal_publisher.fenced_sequence)
-        return ProgramSessionResult("evaluated", completed, len(work), liquidity, clocks, decisions, packet)
-    finally:
-        controller._program_session_active = False
-        controller._program_session_task = None
+    return work, definition, actor

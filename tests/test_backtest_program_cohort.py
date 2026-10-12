@@ -47,7 +47,7 @@ def assert_multiple_entry_fill_geometry(actor, executions):
 
 @pytest.mark.parametrize("resolution", [100, 1000])
 @pytest.mark.parametrize("partial_fills", [False, True, "multiple"])
-@pytest.mark.parametrize("fenced", [False, True, "session"])
+@pytest.mark.parametrize("fenced", [False, True, "session", "launch"])
 def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepared_source, tmp_path, monkeypatch, resolution, partial_fills, fenced):
     store = Store()
     publish(store, prepared_source)
@@ -102,7 +102,7 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
             controller._journal_publisher = BacktestTypedJournalPublisher(controller._journal, writer,
                 attempt_id="00000000-0000-0000-0000-000000000001", run_month=pin.scope.session_date.replace(day=1),
                 expected_config=typed_run_config_payload(controller._runtime.config), exact_oms_prices=bool(fenced))
-            survivor_probe = fenced and not partial_fills and resolution == 1000
+            survivor_probe = fenced != "launch" and fenced and not partial_fills and resolution == 1000
             if survivor_probe:
                 from src.backend.backtest_program_inputs import publish_prepared_program_source_clock
                 early = block.row_for("listing", 0)[0]["boundary_at"]
@@ -234,7 +234,7 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                 assert controller._runtime.last_event_time == before_clock
             if fenced:
                 from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
-                if fenced == "session":
+                if fenced in ("session", "launch"):
                     from src.backend.backtest_program_session import PreparedProgramCohortWork
                     from src.backend.backtest_market_data import market_day_boundary
                     start_at = market_day_boundary(day, first_bucket * 1000 - 14400000)
@@ -251,11 +251,59 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                         return await read(*args, **kwargs)
                     monkeypatch.setattr(liquidity, "read_fixed_liquidity_cohort_async" if resolution == 100
                         else "read_liquidity_cohort_async", session_read)
-                    session = await controller.run_prepared_program_session((PreparedProgramCohortWork(
+                    work = (PreparedProgramCohortWork(
                         first_bucket, first_bucket + 3, {"assignment": block}, population, projection, unit_scope),
                         PreparedProgramCohortWork(first_bucket + 3, first_bucket + 4,
-                            {"assignment": block}, population, projection, unit_scope)),
-                        terminal=True)
+                            {"assignment": block}, population, projection, unit_scope))
+                    if fenced == "launch":
+                        from hashlib import sha256
+                        from src.trading_runtime.journal_contract import canonical_json
+                        from src.trading_runtime.backtest_broker_contract import BacktestBrokerContract, project_broker_contract
+                        from src.trading_runtime.keeper_session import ManagedKeeperSession
+                        from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
+                        from tests.test_live_signal_completion_keeper import FakeKazoo
+                        from src.trading_runtime import arte_backtest_snapshot_anchor as anchors
+                        from src.backend import bar_gpt_client
+                        revision = controller.definition.configuration_revision
+                        controller.definition = replace(controller.definition, configuration_revision={**revision,
+                            "content_hash": sha256(canonical_json(revision["payload"]).encode()).hexdigest()})
+                        kazoo = FakeKazoo()
+                        kazoo.add_listener = lambda listener: None
+                        kazoo.remove_listener = lambda listener: None
+                        kazoo.stop = lambda: None
+                        kazoo.close = lambda: None
+                        keeper = ManagedKeeperSession(kazoo)
+                        keeper._on_state("CONNECTED")
+                        controller._fixed_keeper_session = keeper
+                        controller._fixed_v4_lease = BacktestV4KeeperLease.acquire(keeper,
+                            run_id=controller.run_id, owner_id="synthetic-programme-launch")
+                        controller._program_broker_contract = BacktestBrokerContract(project_broker_contract(
+                            controller.run_id, controller._runtime.broker.config, liquidity_plan_hash="c" * 64),
+                            controller.definition.initial_cash)
+                        controller._journal_writer = queued_writer
+                        monkeypatch.setattr(writer_module, "load_typed_run_context",
+                            lambda client, run: {"mode": "backtest", "account_ids": controller.account_ids})
+                        anchored = []
+                        monkeypatch.setattr(anchors, "_publish_terminal_snapshots_after_verified_prefix",
+                            lambda client, prefix, captures, context: anchored.append((prefix, captures)))
+                        monkeypatch.setattr(bar_gpt_client, "remove_bar_gpt_scope", lambda *args: None)
+                        with pytest.raises(RuntimeError, match="prepared typed launch handoff"):
+                            await controller.start()
+                        assert controller.status == "created"
+                        assert controller.current_time is None
+                        assert controller._runtime.last_event_time == controller.definition.session_start
+                        assert not controller._runtime_finished and not controller._stop_requested
+                        await controller.bind_prepared_program_session(work)
+                        await controller.start()
+                        await asyncio.wait_for(controller._task, timeout=20)
+                        assert controller.status == "completed", controller.error
+                        assert controller._runtime_finished and controller._journal_writer is None
+                        assert controller._program_launch_plan is None
+                        prefix = load_verified_v4_prefix(persisted, controller.run_id)
+                        assert prefix.status == "completed" and len(anchored) == 1
+                        assert controller._program_dispatch_failure is None
+                        return
+                    session = await controller.run_prepared_program_session(work, terminal=True)
                     assert session.status == "evaluated" and session.completed_cohorts == 2
                     assert session.source_clocks == session.qualified_decisions == 4
                     assert session.liquidity_boundaries == (40 if resolution == 100 else 4)
