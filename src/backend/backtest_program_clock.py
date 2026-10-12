@@ -1,5 +1,6 @@
 """Complete prepared-clock dispatch on the existing controller and broker."""
 from datetime import datetime
+from collections.abc import Mapping
 
 
 async def dispatch_prepared_program_clock(controller, blocks, population, *, at,
@@ -16,7 +17,9 @@ async def dispatch_prepared_program_clock(controller, blocks, population, *, at,
     from src.trading_runtime.columnar_program_actor import AssignedProgramStrategy
     if (type(controller) is not ReplayRunController or type(population) is not CertifiedPopulationWindow
             or not isinstance(at, datetime) or at.tzinfo is None or at.utcoffset() is None
-            or type(outside_rth) is not bool or type(terminal) is not bool):
+            or type(outside_rth) is not bool or type(terminal) is not bool
+            or not isinstance(blocks, Mapping) or not isinstance(protection_profiles, Mapping)
+            or isinstance(assignment_order, (str, bytes))):
         raise ValueError("Program clock needs its native typed scope")
     actor, runtime, source = controller._program_strategy, controller._runtime, controller._program_signal_runtime
     order = tuple(assignment_order)
