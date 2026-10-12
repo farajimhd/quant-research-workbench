@@ -22,6 +22,47 @@ DAY = date(2026, 8, 18)
 AT = market_day_boundary(DAY, 300_000).astimezone(timezone.utc)
 
 
+@pytest.mark.parametrize("failure", [None, "sequence", "pending", "busy", "terminal"])
+def test_v4_buffer_handoff_preserves_fence_and_rejects_unsafe_suffix(failure):
+    old = BacktestMemoryJournal(run_id=RUN, initial_sequence=2)
+    new = BacktestMemoryJournal(run_id=RUN, initial_sequence=3 if failure == "sequence" else 2)
+    writer = FakeWriter()
+    writer.journal_profile = "backtest_v4"
+    prior = str(uuid4())
+    publisher = BacktestTypedJournalPublisher(old, writer, attempt_id=ATTEMPT,
+        run_month=DAY.replace(day=1), initial_sequence=2, prior_batch_id=prior,
+        source_cursor="fixed-prefix")
+    publisher._committed_strategy_intents["retained"] = ("source", "receipt")
+    if failure == "pending":
+        new.append(run_id=RUN, category="lifecycle", entity_type="run", entity_id=RUN,
+            event_time=AT, payload={"status": "running"})
+    async def run():
+        task = None
+        if failure in {"busy", "terminal"}:
+            task = asyncio.create_task(asyncio.Event().wait())
+            if failure == "busy":
+                publisher._task = task
+            else:
+                publisher._terminal_task = task
+        try:
+            if failure:
+                with pytest.raises(ValueError, match="idle V4 fence"):
+                    publisher.rebind_fenced_journal(new, expected_journal=old, expected_sequence=2)
+                assert publisher.journal is old
+            else:
+                publisher.rebind_fenced_journal(new, expected_journal=old, expected_sequence=2)
+                assert publisher.journal is new
+            assert publisher.fenced_sequence == 2 and publisher._batch_id == prior
+            assert publisher._source_cursor == "fixed-prefix"
+            assert publisher._committed_strategy_intents["retained"] == ("source", "receipt")
+        finally:
+            if task:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+    asyncio.run(run())
+
+
 class FakeWriter:
     run_id = RUN
     run_mode = "backtest"

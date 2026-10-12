@@ -303,6 +303,32 @@ class BacktestTypedJournalPublisher:
     def checkpoint_pending(self) -> bool:
         return bool(self._checkpoint_waiters)
 
+    def rebind_fenced_journal(self, journal, *, expected_journal, expected_sequence):
+        """Atomically exchange idle buffers; caller must prove owner/source gates.
+
+        Preserves the writer, receipts, source cursor and committed lineage
+        caches. This operation performs no publication or I/O and grants no
+        run admission. Its caller can swap controller references in the same
+        non-awaiting transaction after all cold recovery checks pass.
+        """
+        if (type(journal) is not BacktestMemoryJournal
+                or self.journal is not expected_journal or journal is expected_journal
+                or journal.run_id != self.journal.run_id
+                or self.writer.journal_profile != "backtest_v4"
+                or type(expected_sequence) is not int or expected_sequence < 1
+                or self._sequence != expected_sequence
+                or self.journal.latest_sequence(self.journal.run_id) != expected_sequence
+                or journal.latest_sequence(journal.run_id) != expected_sequence
+                or self.journal.pending_record_count or journal.pending_record_count
+                or self._error is not None or self._terminal_task is not None
+                or self.checkpoint_pending or self._task is not None and not self._task.done()):
+            raise ValueError("Typed journal handoff requires the exact idle V4 fence")
+        if self._task is not None:
+            self._task.result()
+        self.journal._require_open()
+        journal._require_open()
+        self.journal = journal
+
     def enqueue_pending(self) -> asyncio.Task[TypedBacktestReceipt]:
         """Schedule projection and persistence without hot-path work or I/O.
 
