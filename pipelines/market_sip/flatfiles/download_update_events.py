@@ -265,6 +265,8 @@ def parse_args() -> argparse.Namespace:
             "Quotes/trades are kept as flatfiles on disk and are not persisted as ClickHouse quote/trade tables."
         )
     )
+    parser.add_argument('--env-file',type=Path,action='append',default=None,
+                        help='Explicit environment file(s); replaces automatic env-file discovery.')
     parser.add_argument("--clickhouse-url", default=default_clickhouse_url_with_network_fallback())
     parser.add_argument("--user", default=default_clickhouse_user())
     parser.add_argument("--password", default=default_clickhouse_password())
@@ -4149,8 +4151,20 @@ def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, d
     )
 
 
+def load_updater_environment(argv=None):
+    # Load explicit files before parser defaults resolve endpoints/credentials.
+    # Existing invocations without this option retain automatic discovery.
+    parser=argparse.ArgumentParser(add_help=False)
+    parser.add_argument('--env-file',type=Path,action='append')
+    options,_=parser.parse_known_args(argv)
+    paths=options.env_file if options.env_file is not None else discover_clickhouse_env_files()
+    if options.env_file and any(not path.is_file() for path in paths):
+        raise ValueError('Explicit updater environment file is missing')
+    return load_env_files(paths,verbose=True)
+
+
 def main() -> None:
-    loaded_env_files = load_env_files(discover_clickhouse_env_files(), verbose=True)
+    loaded_env_files = load_updater_environment()
     args = parse_args()
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     manual_start = args.start_date

@@ -68,7 +68,8 @@ def encode(engine: StreamingLevelBook, binding: CheckpointBinding, boundary: dat
     return payload, sha256(payload).hexdigest()
 
 
-def restore(payload: bytes, payload_hash: str, binding: CheckpointBinding, *, maximum_bytes=MAX_PAYLOAD_BYTES):
+def restore(payload: bytes, payload_hash: str, binding: CheckpointBinding, *, maximum_bytes=MAX_PAYLOAD_BYTES,
+            expected_boundary_us=None):
     if (not isinstance(payload,bytes) or not 0 < len(payload) <= maximum_bytes
             or sha256(payload).hexdigest() != payload_hash):
         raise ValueError("Checkpoint payload size/hash mismatch")
@@ -78,7 +79,17 @@ def restore(payload: bytes, payload_hash: str, binding: CheckpointBinding, *, ma
     expected = dict(vars(binding),session=binding.session.isoformat())
     if value.get('codec_version') != CODEC_VERSION or value.get('binding') != expected:
         raise ValueError("Checkpoint source/policy/identity binding mismatch")
+    if expected_boundary_us is not None and value.get('boundary_us')!=expected_boundary_us:
+        raise ValueError('Checkpoint encoded boundary differs from publication header')
     engine = StreamingLevelBook.restore(value['state'])
+    # MessagePack arrays decode to lists. These two engine coordinates are
+    # typed pairs; restore their tuple representation without changing state.
+    for name in ('high','low'):
+        point=getattr(engine,name)
+        if point is not None:
+            if not isinstance(point,(list,tuple)) or len(point)!=2:
+                raise ValueError('Checkpoint has malformed turning-extreme state')
+            setattr(engine,name,tuple(point))
     if (engine.ticker != binding.ticker or engine.session != binding.session.isoformat()
             or engine.as_of*1_000_000 > value['boundary_us']
             or not engine.start <= value['boundary_us']/1_000_000 <= engine.end):

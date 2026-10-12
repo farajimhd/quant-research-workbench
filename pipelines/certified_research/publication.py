@@ -76,7 +76,7 @@ def insert_rows(query,database,table,rows,*,maximum_rows=4096,maximum_bytes=8*10
 
 
 def evidence_sql(table,source,key):
-    columns=[c.name for c in table.columns]
+    columns=[c.name for c in table.columns if not (table.name=='research_v7_checkpoint_v1' and c.name=='payload')]
     expression='SHA256(toString(tuple('+','.join(columns)+')))'
     sums=','.join(f'sum(reinterpretAsUInt64(substring(row_hash,{offset},8))) h{i}'
                   for i,offset in enumerate((1,9,17,25)))
@@ -96,6 +96,10 @@ class Publisher:
         # state. This is a multiset fingerprint plus exact key/count checks,
         # not a Merkle proof or an assertion of adversarial collision immunity.
         key='tuple(boundary)' if scope.product=='v7' else 'tuple(resolution_ms,bucket_index)'
+        if scope.product=='v7':
+            valid=self.query(f'SELECT countIf(lower(hex(SHA256(payload)))!=state_hash) bad '
+                             f'FROM {self.database}.{table.name} WHERE {scope.where(attempt)}')
+            if len(valid)!=1 or int(valid[0]['bad']):raise ValueError('Stored checkpoint payload hash mismatch')
         rows=self.query(evidence_sql(table,f'SELECT * FROM {self.database}.{table.name} '
                                    f'WHERE {scope.where(attempt)}',key))
         if len(rows)!=1:raise ValueError('Output evidence is absent or ambiguous')

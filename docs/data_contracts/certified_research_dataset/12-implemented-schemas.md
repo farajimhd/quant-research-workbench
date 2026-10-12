@@ -33,6 +33,8 @@ Live isolated SSD fixture tests covered DDL, exact bar round-trip, actual part p
 
 The next implementation slice adds attempt-scoped readback/publication, explicit empty proof, stable normalized identities, half-open membership and public-as-of fact lookup. Live tests cover receipt resume, duplicate rejection, listing/delisting boundaries, original filing values versus later revisions, and a bounded AAPL August 21 training-minute comparison against canonical events. Keeper session-loss handling has deterministic tests; live Keeper integration and full-range performance qualification remain pending.
 
+Acquisition adapters now delegate to the real updater/reporting entry points with explicit environment selection and D-SSD paths. Source planning checks importer status, reporting coverage, frozen source hashes and the mutation barrier. Parameter-derived context distinguishes compatible predecessor state from an explicitly declared rebuild prefix. The shared V7 producer emits PM/regular/AH binary checkpoints; live fixtures verify their header/payload chain and publication readback. The full campaign controller, historical reference resolution and final dataset seal are still unfinished.
+
 ## Remaining implementation
 
 Wire source acquisition/migration receipts; build dated normalized identities and membership; certify public-as-of SEC/short/float values; publish compatible causal checkpoints and dependency receipts; add complete run/resume/verify paths and measured representative performance. The launcher currently exposes schema inspection and read-only preflight/plan, and explicitly reports campaign execution disabled.

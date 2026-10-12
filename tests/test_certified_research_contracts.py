@@ -17,9 +17,88 @@ from pipelines.certified_research import market
 from pipelines.certified_research.publication import Scope,Publisher,KeeperClaim,insert_rows
 from pipelines.certified_research.identity import ListingInterval,validate_intervals,identity_key,ensure_identity,membership_at,LISTING
 from pipelines.certified_research import facts
+from pipelines.certified_research import source,acquisition
+from pipelines.certified_research import v7
+from pipelines.certified_research import context
 
 
 class Contracts(unittest.TestCase):
+    def test_context_uses_selected_windows_and_compatible_state_without_guessed_warmup(self):
+        start=date(2026,8,21)
+        def calendar(first,last):
+            from datetime import timedelta
+            return tuple(first+timedelta(days=i) for i in range((last-first).days+1)
+                         if (first+timedelta(days=i)).weekday()<5)
+        config=c.CampaignConfig(start,start,short_windows_sessions=(5,20))
+        result=context.plan(config,calendar=calendar)
+        self.assertEqual(len(result['market_context']),1)
+        self.assertEqual(len(result['short_context']),20)
+        self.assertEqual(len(result['blocked']),2)
+        seed=context.StateSeed(date(2026,8,18),'a'*64,True)
+        seeded=context.plan(config,indicator_seed=seed,v7_seed=seed,calendar=calendar)
+        self.assertFalse(seeded['blocked'])
+        self.assertEqual(seeded['market_context'],(date(2026,8,19),date(2026,8,20)))
+        with self.assertRaisesRegex(ValueError,'source bounds'):
+            context.plan(config,rebuild_origin=date(2018,1,2),calendar=calendar)
+    def test_v7_new_generation_and_session_backfill_are_identical_without_lookahead(self):
+        from tests.test_streaming_level_book import engine
+        a=engine();b=engine()
+        cuts=boundaries(date(2026,8,21))
+        times=[a.start+301,cuts['PM'].timestamp(),cuts['PM'].timestamp()+1,
+               cuts['REGULAR'].timestamp(),cuts['REGULAR'].timestamp()+1,a.end]
+        rows=[dict(t=t,open=10.,high=10.1,low=9.9,close=10.,volume=100.) for t in times]
+        binding=CheckpointBinding('a'*64,'b'*64,'c'*64,'TEST',date(2026,8,21))
+        original,state=v7.generate(a,rows,binding)
+        backfilled,state2=v7.generate(b,rows,binding,restore_each=True)
+        self.assertEqual([r['state_hash'] for r in original],[r['state_hash'] for r in backfilled])
+        self.assertEqual(state.checkpoint(),state2.checkpoint())
+        prefix,_=v7.generate(engine(),rows[:2],binding)
+        self.assertEqual(prefix[0]['state_hash'],original[0]['state_hash'])
+        next_state=v7.next_day_engine(state,date(2026,8,24),previous_checkpoint=original[-1])
+        self.assertEqual(next_state.bars_processed,0)
+        with self.assertRaisesRegex(ValueError,'AH boundary'):
+            v7.next_day_engine(state,date(2026,8,24),previous_checkpoint=original[0])
+    def test_acquisition_commands_delegate_without_downstream_or_destructive_flags(self):
+        paths=acquisition.IngestionPaths(Path('fixture.env'))
+        start=date(2026,1,2);end=date(2026,1,5)
+        cmd=acquisition.updater_command(paths,start,end)
+        self.assertIn('--skip-bars',cmd);self.assertIn('sip_raw_ssd',cmd)
+        self.assertNotIn('--force-day-delete',cmd)
+        reporting=acquisition.reporting_command(paths,start,end,hydrate=True)
+        self.assertIn('--hydrate-missing-trades',reporting)
+        self.assertEqual(acquisition.contiguous_ranges([end,start,start]),((start,start),(end,end)))
+        self.assertTrue(str(paths.cache).startswith('\\\\DESKTOP-SAAI85T\\Workstation-D'))
+        from unittest.mock import patch
+        from pipelines.market_sip.flatfiles import download_update_events as updater
+        from scripts import backfill_trade_reporting_flags as migration
+        with patch.object(sys,'argv',list(cmd[2:])):
+            parsed=updater.parse_args()
+        self.assertTrue(parsed.skip_bars);self.assertEqual(parsed.env_file,[paths.env_file])
+        self.assertTrue(migration.parse_args(list(reporting[3:])).hydrate_missing_trades)
+        with patch.object(updater,'load_env_files',return_value=['fixture.env']) as loader,patch.object(Path,'is_file',return_value=True):
+            self.assertEqual(updater.load_updater_environment(['--env-file','fixture.env']),['fixture.env'])
+            loader.assert_called_once_with([Path('fixture.env')],verbose=True)
+
+    def test_source_gate_requires_matching_receipts_and_idle_mutations(self):
+        days=(date(2026,1,2),date(2026,1,5))
+        rows=[dict(source_date=str(day),trade_event_rows=2,total_event_rows_after_filters=5,updated_at='clock') for day in days]
+        def query(sql):
+            return [dict(day=r['source_date'],statuses=['ok']) for r in rows] if 'events_build_manifest' in sql else rows
+        inv=source.inventory(query,days[0],days[-1],sessions=days)
+        receipt=[dict(source_date=str(day),revision=c.REPORTING_REVISION,source_digest=inv['source_hashes'][str(day)],
+                      status='complete',details='{"counts":{"n":2,"bad":0}}') for day in days]
+        active=[]
+        def reporting_query(sql):return active if 'system.mutations' in sql else receipt
+        reporting=source.reporting_inventory(reporting_query,inv)
+        self.assertFalse(reporting['missing']);self.assertFalse(reporting['mutating'])
+        def all_query(sql):return query(sql) if 'market_sip_compact.events_' in sql else reporting_query(sql)
+        self.assertEqual(source.require_ready(all_query,inv,reporting),c.digest(dict(source=inv['content_hash'],reporting=reporting['content_hash'])))
+        active.append(dict(mutation_id='active'))
+        with self.assertRaisesRegex(ValueError,'mutating'):source.require_ready(query,inv,source.reporting_inventory(reporting_query,inv))
+        receipt[0]['source_digest']='changed'
+        with self.assertRaisesRegex(ValueError,'mismatch'):source.reporting_inventory(reporting_query,inv)
+        rows.pop()
+        self.assertEqual(source.inventory(query,days[0],days[-1],sessions=days)['missing'],(days[-1],))
     def test_complete_app_catalog_and_fact_availability_contract(self):
         from datetime import timezone
         metrics=facts.catalog()
@@ -264,6 +343,28 @@ class ClickHouseIntegration(unittest.TestCase):
         boundary=datetime(2026,3,1,12,tzinfo=timezone.utc)
         self.assertEqual(read(boundary,True)[0]['value'],100.)
         self.assertEqual(read(boundary)[0]['value'],110.)
+
+    def test_causal_v7_binary_payload_roundtrip_in_clickhouse(self):
+        from tests.test_streaming_level_book import engine,bars
+        a=engine();binding=CheckpointBinding('a'*64,'b'*64,'c'*64,'TEST',date(2026,8,21))
+        outputs,_=v7.generate(a,bars(a),binding)
+        dataset=str(uuid.uuid4());attempt=str(uuid.uuid4())
+        self.client.query(v7.insert_sql(outputs,dataset,attempt,81,binding.session,self.database),read=False)
+        rows=self.client.query(f'SELECT boundary,state_hash,hex(payload) payload_hex '
+            f"FROM {self.database}.research_v7_checkpoint_v1 WHERE listing_key=81 ORDER BY boundary")
+        self.assertEqual(len(rows),3)
+        for row,output in zip(rows,outputs):
+            self.assertEqual(row['state_hash'],output['state_hash'])
+            state=restore(bytes.fromhex(row['payload_hex']),row['state_hash'],output['binding'])
+            self.assertEqual(state.checkpoint(),restore(output['payload'],output['state_hash'],output['binding']).checkpoint())
+        class Claim:
+            def check(self):pass
+        publisher=Publisher(self.client.query,self.database,Claim())
+        expected=self.client.query(v7.expected_evidence_sql(outputs,dataset,attempt,81,binding.session))[0]
+        scope=Scope(dataset,binding.session,81,'v7','d'*64)
+        publisher.publish(scope,attempt,expected={k:int(v) for k,v in expected.items()})
+        bad=[dict(o) for o in outputs];bad[1]['parent_hash']='e'*64
+        with self.assertRaisesRegex(ValueError,'chain'):v7.insert_sql(bad,dataset,str(uuid.uuid4()),81,binding.session,self.database)
 
     def test_real_training_minute_strict_activity_matches_canonical_events(self):
         # Bounded, public training date only. No full-day source scan or final

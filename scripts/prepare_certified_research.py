@@ -18,7 +18,7 @@ sys.dont_write_bytecode=True
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
-from pipelines.certified_research import contracts,schema
+from pipelines.certified_research import contracts,schema,source
 
 
 def parse_args(argv=None):
@@ -33,6 +33,8 @@ def parse_args(argv=None):
     p.add_argument('--query-memory-gib',type=int,default=2)
     p.add_argument('--global-memory-gib',type=int,default=16)
     p.add_argument('--format',choices=('text','json','sql'),default='text')
+    p.add_argument('--acquire-missing',action='store_true',help='Include missing-source acquisition in the frozen plan')
+    p.add_argument('--hydrate-missing-trades',action='store_true',help='Include verified G-to-D reporting migration staging')
     args=p.parse_args(argv)
     try:contracts.identifier(args.database)
     except ValueError as error:p.error(str(error))
@@ -88,10 +90,19 @@ def main(argv=None):
     try:
         # Every query in the inspection path is read-only at the server as well.
         result=inspect_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),args)
+        if args.command=='plan':
+            end=date.fromisoformat(result['config']['config']['end']) if isinstance(result['config']['config']['end'],str) else result['config']['config']['end']
+            inv=source.inventory(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.start_date,end)
+            reporting=source.reporting_inventory(lambda sql:client.query(sql+' SETTINGS readonly=1'),inv)
+            result['source_plan']=dict(missing_sources=[str(d) for d in inv['missing']],
+                incomplete_sources=[str(d) for d in inv['incomplete']],
+                missing_reporting=[str(d) for d in reporting['missing']],source_hash=inv['content_hash'],
+                reporting_hash=reporting['content_hash'],acquire_missing=args.acquire_missing,
+                hydrate_missing_trades=args.hydrate_missing_trades)
         if args.format=='json':print(json.dumps(result,indent=2,default=str))
         else:
-            source=result['source']
-            print(f"Source inspected | {source['first_day']} to {source['last_day']} | {source['sessions']} sessions")
+            summary=result['source']
+            print(f"Source inspected | {summary['first_day']} to {summary['last_day']} | {summary['sessions']} sessions")
             print(f"Storage checked | {result['storage']['tables']} existing research tables | {result['storage']['parts']} part groups")
             print(f"Status: {result['status']} | {result['reason']}")
         return 2 if result['status']=='blocked' else 0
