@@ -131,6 +131,55 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
             assert controller._journal.latest_sequence(controller.run_id) == before_sequence
             assert controller._runtime.last_event_time == before_clock
             assert controller._program_dispatch_failure is None
+            async def changed_owner_read(*args, **kwargs):
+                controller._runtime.config = replace(controller._runtime.config)
+                return {"ABC": tuple(transport_rows)}
+            original_config = controller._runtime.config
+            try:
+                with monkeypatch.context() as changed_owner:
+                    changed_owner.setattr(liquidity, "read_fixed_liquidity_cohort_async" if resolution == 100
+                        else "read_liquidity_cohort_async", changed_owner_read)
+                    with pytest.raises(ValueError, match="changed during liquidity I/O"):
+                        await controller.run_prepared_program_cohort({"assignment": block}, population, projection, **arguments)
+                assert controller._journal.latest_sequence(controller.run_id) == before_sequence
+                assert controller._runtime.last_event_time == before_clock
+                assert not controller._program_cohort_active
+            finally:
+                controller._runtime.config = original_config
+            async def failed_publisher_read(*args, **kwargs):
+                controller._journal_publisher._error = RuntimeError("synthetic writer failure during read")
+                return {"ABC": tuple(transport_rows)}
+            try:
+                with monkeypatch.context() as failed_publisher:
+                    failed_publisher.setattr(liquidity, "read_fixed_liquidity_cohort_async" if resolution == 100
+                        else "read_liquidity_cohort_async", failed_publisher_read)
+                    with pytest.raises(ValueError, match="changed during liquidity I/O"):
+                        await controller.run_prepared_program_cohort({"assignment": block}, population, projection, **arguments)
+                assert controller._runtime.last_event_time == before_clock
+                assert controller._journal.latest_sequence(controller.run_id) == before_sequence
+            finally:
+                controller._journal_publisher._error = None
+            entered, release_read = asyncio.Event(), asyncio.Event()
+            async def held_read(*args, **kwargs):
+                entered.set()
+                await release_read.wait()
+                return {"ABC": tuple(transport_rows)}
+            with monkeypatch.context() as held:
+                held.setattr(liquidity, "read_fixed_liquidity_cohort_async" if resolution == 100
+                    else "read_liquidity_cohort_async", held_read)
+                owner = asyncio.create_task(controller.run_prepared_program_cohort(
+                    {"assignment": block}, population, projection, **arguments))
+                await asyncio.wait_for(entered.wait(), timeout=2)
+                try:
+                    with pytest.raises(RuntimeError, match="already owns"):
+                        await controller.run_prepared_program_cohort({"assignment": block}, population, projection, **arguments)
+                    assert controller._program_cohort_active
+                finally:
+                    owner.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await owner
+                assert not controller._program_cohort_active
+                assert controller._runtime.last_event_time == before_clock
             result = await controller.run_prepared_program_cohort({"assignment": block}, population, projection, **arguments)
             assert result.status == "completed" and result.source_clocks == result.qualified_decisions == 3
             assert result.liquidity_boundaries == (30 if resolution == 100 else 3)

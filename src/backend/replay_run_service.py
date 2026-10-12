@@ -4817,7 +4817,13 @@ class ReplayRunController:
     async def run_prepared_program_cohort(self, blocks, population, projection, **scope):
         """Schedule one bounded prepared cohort on this owned native runtime."""
         from .backtest_program_cohort import run_prepared_program_cohort
-        return await run_prepared_program_cohort(self, blocks, population, projection, **scope)
+        if getattr(self, "_program_cohort_active", False):
+            raise RuntimeError("Program cohort already owns this controller")
+        self._program_cohort_active = True
+        try:
+            return await run_prepared_program_cohort(self, blocks, population, projection, **scope)
+        finally:
+            self._program_cohort_active = False
 
     async def dispatch_prepared_program_clock(self, blocks, population, *, at,
             assignment_order, execution_policy, protection_profiles, outside_rth: bool,

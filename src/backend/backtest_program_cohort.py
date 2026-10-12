@@ -48,7 +48,8 @@ async def run_prepared_program_cohort(controller, blocks, population, projection
         raise RuntimeError("Program cohort requires recovery after an uncertain boundary") from controller._program_dispatch_failure
     if (type(runtime) is not TradingRuntime or runtime.config.mode is not RunMode.BACKTEST
             or type(runtime.broker) is not SimulatedBrokerAdapter or type(actor) is not AssignedProgramStrategy
-            or runtime.strategy is not actor or projection.release_hash != actor.program_release.header["content_hash"]
+            or runtime.strategy is not actor or runtime.journal is not controller._journal
+            or projection.release_hash != actor.program_release.header["content_hash"]
             or projection.source_revision != population.source_revision):
         raise ValueError("Program cohort differs from its owned native runtime")
     source, journal_publisher = controller._program_signal_runtime, controller._journal_publisher
@@ -84,6 +85,14 @@ async def run_prepared_program_cohort(controller, blocks, population, projection
     if controller._stop_requested:
         return ProgramCohortResult("stopped", 0, 0, 0, initial_packet)
     resolution = runtime.broker.config.liquidity_resolution_ms
+    broker, config, manager, portfolio, journal = (runtime.broker, runtime.config,
+        runtime.order_manager, runtime.portfolio, runtime.journal)
+    definition = controller.definition
+    before_clock = runtime.last_event_time
+    before_sequence = journal.latest_sequence(controller.run_id)
+    before_source = source.typed_source_cursor()
+    before_fence = (journal_publisher.fenced_sequence, journal_publisher._batch_id,
+        journal_publisher._source_cursor)
     if resolution == 100:
         if (liquidity_certificates is not None or market_plan is None or price_plan is None
                 or set(market_plan.tickers) != tickers or market_plan.sessions != (day,)):
@@ -99,6 +108,18 @@ async def run_prepared_program_cohort(controller, blocks, population, projection
             raise ValueError("Program cohort1s market coverage differs from assignments")
         rows_by_ticker = await read_liquidity_cohort_async(reader_factory, liquidity_certificates,
             first_bucket=first_bucket, stop_bucket=stop_bucket, concurrency=concurrency)
+    if (controller._runtime is not runtime or controller._program_strategy is not actor
+            or controller._program_signal_runtime is not source or controller._journal_publisher is not journal_publisher
+            or controller.definition is not definition or runtime.broker is not broker or runtime.config is not config
+            or runtime.order_manager is not manager or runtime.portfolio is not portfolio
+            or runtime.journal is not journal or controller._journal is not journal
+            or runtime.last_event_time != before_clock or journal.latest_sequence(controller.run_id) != before_sequence
+            or source.typed_source_cursor() != before_source
+            or source_publisher._closing or source_publisher._fatal is not None
+            or journal_publisher._error is not None or journal_publisher._terminal_task is not None
+            or journal_publisher._task is not None and not journal_publisher._task.done()
+            or (journal_publisher.fenced_sequence, journal_publisher._batch_id, journal_publisher._source_cursor) != before_fence):
+        raise ValueError("Program cohort ownership changed during liquidity I/O")
     if set(rows_by_ticker) != tickers:
         raise ValueError("Program cohort read lacks exact certified ticker coverage")
     boundaries = {}
@@ -124,7 +145,10 @@ async def run_prepared_program_cohort(controller, blocks, population, projection
                 return ProgramCohortResult("stopped", liquidity_count, source_count, decision_count, packet)
             if (controller._runtime is not runtime or controller._program_strategy is not actor
                     or controller._program_signal_runtime is not source
-                    or controller._journal_publisher is not journal_publisher):
+                    or controller._journal_publisher is not journal_publisher
+                    or runtime.broker is not broker or runtime.config is not config
+                    or runtime.order_manager is not manager or runtime.portfolio is not portfolio
+                    or runtime.journal is not journal or controller._journal is not journal):
                 raise ValueError("Program cohort lost runtime ownership")
             at = market_day_boundary(day, boundary)
             started = True

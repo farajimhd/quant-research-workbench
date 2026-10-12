@@ -171,6 +171,11 @@ resolver; the scheduler creates no sizing or fill policy. Native tests cover
 three source/decision clocks, a sparse middle interval, actual fills and fees,
 and preflight/stop checks. The admitted main lifecycle still must bind cohort
 preparation, publication fences and terminal recovery to launch.
+The controller permits one active cohort owner at a time. After awaited market
+I/O, the scheduler rechecks its runtime, broker, Portfolio/OMS, configuration,
+journal sequence, source cursor and publisher fence before any clock effect.
+Native tests reject owner replacement during the read and parallel cohort
+requests, and confirm cancellation releases controller ownership.
 Main launch admission and operational full-session qualification remain unfinished.
 Native cohort publication now resolves generic program intents earlier in the
 same pending prefix only after verifying their retained native-qualified
