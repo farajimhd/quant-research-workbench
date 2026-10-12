@@ -10,6 +10,26 @@ from src.trading_runtime.strategy_one_broker_match_snapshot import verify_broker
 from src.trading_runtime.simulated_broker import SimulationConfig
 
 
+async def recover_shared_program_broker_async(reader_factory, prefix, *, broker, broker_contract,
+        expected_snapshot_hash, quotes, lineages, simulation_config, through_sequence=None):
+    """Reconstruct from centrally scoped rows, retaining all existing V4 checks.
+
+    The caller must separately prove the selected snapshot's Keeper head. This
+    stages an inert image and does not admit an executable cold restart.
+    """
+    from src.trading_runtime.arte_broker_match_snapshot import verify_shared_broker_snapshot, _codec_rows
+    from src.trading_runtime.backtest_broker_contract import BacktestBrokerContract
+    if type(prefix) is not V4CommittedPrefix or type(broker_contract) is not BacktestBrokerContract:
+        raise ValueError("Shared programme broker recovery lacks its typed run scope")
+    basis = prefix.last_sequence if through_sequence is None else through_sequence
+    parsed = verify_shared_broker_snapshot(broker, broker_contract=broker_contract,
+        run_id=prefix.run_id, checkpoint_sequence=basis, expected_content_hash=expected_snapshot_hash)
+    broker_contract.require_config(simulation_config, run_id=prefix.run_id,
+        content_hash=broker_contract.row["content_hash"], liquidity_plan_hash=broker_contract.row["liquidity_plan_hash"])
+    return await recover_program_broker_async(reader_factory, prefix, broker=_codec_rows(parsed),
+        quotes=quotes, lineages=lineages, simulation_config=simulation_config, through_sequence=through_sequence)
+
+
 async def recover_program_broker_async(reader_factory, prefix, *, broker,
         quotes, lineages, simulation_config, through_sequence=None):
     """Stage an inert broker image; caller separately proves source and OMS.
