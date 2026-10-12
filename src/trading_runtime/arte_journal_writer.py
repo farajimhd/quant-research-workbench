@@ -111,6 +111,8 @@ from src.trading_runtime.arte_entry_spread_risk_v4 import ENTRY_SPREAD_RISK
 _CONTRACTS = {table.name: table for table in TABLES}
 from src.trading_runtime.arte_broker_match_snapshot import TABLES as SHARED_BROKER_MATCH_TABLES
 _CONTRACTS.update({table.name: table for table in SHARED_BROKER_MATCH_TABLES})
+from src.trading_runtime.arte_oms_observation_snapshot import TABLES as SHARED_OMS_OBSERVATION_TABLES
+_CONTRACTS.update({table.name: table for table in SHARED_OMS_OBSERVATION_TABLES})
 from src.trading_runtime.rule_decision_basis_schema import STAGED_TABLES as RULE_DECISION_TABLES
 _CONTRACTS.update({table.name: table for table in RULE_DECISION_TABLES})
 _CONTRACTS[FAILURE.name] = FAILURE
@@ -1782,7 +1784,7 @@ def _insert(
     if (name in {table.name for table in CAMPAIGN_SNAPSHOT_TABLES}
             and dispatch_campaign_snapshot_hash is None):
         raise RuntimeError("Campaign snapshot INSERT lacks its typed snapshot fence")
-    if (name in {table.name for table in OMS_OBSERVATION_SNAPSHOT_TABLES}
+    if (name in {table.name for table in (*OMS_OBSERVATION_SNAPSHOT_TABLES, *SHARED_OMS_OBSERVATION_TABLES)}
             and dispatch_oms_observation_snapshot_hash is None):
         raise RuntimeError("OMS observation INSERT lacks its typed snapshot fence")
     if dispatch is not None:
@@ -1842,7 +1844,7 @@ def _insert(
                        for row in rows)):
             raise ValueError("Campaign snapshot dispatch identity differs from typed rows")
         if dispatch_oms_observation_snapshot_hash is not None and (
-                name not in {table.name for table in OMS_OBSERVATION_SNAPSHOT_TABLES}
+                name not in {table.name for table in (*OMS_OBSERVATION_SNAPSHOT_TABLES, *SHARED_OMS_OBSERVATION_TABLES)}
                 or any(row.get("checkpoint_sequence") != dispatch_sequence
                        or row.get("snapshot_id") != rows[0].get("snapshot_id")
                        for row in rows)):

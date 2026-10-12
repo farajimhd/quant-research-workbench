@@ -1181,7 +1181,8 @@ def test_campaign_lost_insert_response_never_selects_head():
         authority.acquire_cold_barrier("run-1")
 
 
-def test_oms_observation_rows_require_exact_compacted_cursor_and_selected_head():
+@pytest.mark.parametrize("shared", [False, True])
+def test_oms_observation_rows_require_exact_compacted_cursor_and_selected_head(shared):
     from src.trading_runtime.strategy_one_oms_observation_snapshot import (
         ManagedOmsObservationHeadReader,
     )
@@ -1189,7 +1190,7 @@ def test_oms_observation_rows_require_exact_compacted_cursor_and_selected_head()
     authority = TypedInsertDispatch(Keeper())
     authority.initialize_new_run("run-1")
     compact_running_prefix(authority)
-    table = "trading_strategy_one_oms_observation_snapshot_v2"
+    table = "trading_oms_observation_snapshot_v1" if shared else "trading_strategy_one_oms_observation_snapshot_v2"
     token = f"oms-observation:run-1:1:{MANAGER_HASH}:{table}"
     sql = (f"INSERT INTO arte.{table} (run_id) SETTINGS "
            "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
@@ -1202,17 +1203,29 @@ def test_oms_observation_rows_require_exact_compacted_cursor_and_selected_head()
         run_id="run-1", table=table, token=token,
         batch_id=BATCH_ID, batch_last_sequence=1,
         oms_observation_snapshot=True)
-    authority.compact_verified_oms_observation_snapshot(
+    compact = (authority.compact_verified_shared_oms_observation_snapshot if shared
+        else authority.compact_verified_oms_observation_snapshot)
+    other = (authority.compact_verified_oms_observation_snapshot if shared
+        else authority.compact_verified_shared_oms_observation_snapshot)
+    with pytest.raises(ValueError, match="operation inventory"):
+        other(run_id="run-1", batch_id=BATCH_ID, last_sequence=1,
+            snapshot_hash=MANAGER_HASH, operations=((table, token),), previous=None)
+    assert authority._read_gate("run-1")[0].registered == 1
+    compact(
         run_id="run-1", batch_id=BATCH_ID, last_sequence=1,
         snapshot_hash=MANAGER_HASH, operations=((table, token),),
         previous=None)
-    raw, _ = authority.keeper.get(
-        ManagedOmsObservationHeadReader.path("run-1"))
+    from src.trading_runtime.arte_oms_observation_snapshot import ManagedSharedOmsObservationHeadReader, TABLES as CENTRAL_TABLES
+    from src.trading_runtime.arte_typed_insert_dispatch import _SHARED_OMS_OBSERVATION_TABLES
+    assert _SHARED_OMS_OBSERVATION_TABLES == {contract.name for contract in CENTRAL_TABLES}
+    reader = ManagedSharedOmsObservationHeadReader if shared else ManagedOmsObservationHeadReader
+    raw, _ = authority.keeper.get(reader.path("run-1"))
     assert raw == f"1\nrun-1\n1\n{BATCH_ID}\n{MANAGER_HASH}".encode()
     assert authority._read_gate("run-1")[0].registered == 0
 
 
-def test_oms_observation_lost_insert_response_never_selects_head():
+@pytest.mark.parametrize("shared", [False, True])
+def test_oms_observation_lost_insert_response_never_selects_head(shared):
     from src.trading_runtime.strategy_one_oms_observation_snapshot import (
         ManagedOmsObservationHeadReader,
     )
@@ -1220,7 +1233,7 @@ def test_oms_observation_lost_insert_response_never_selects_head():
     authority = TypedInsertDispatch(Keeper())
     authority.initialize_new_run("run-1")
     compact_running_prefix(authority)
-    table = "trading_strategy_one_oms_observation_snapshot_v2"
+    table = "trading_oms_observation_snapshot_v1" if shared else "trading_strategy_one_oms_observation_snapshot_v2"
     token = f"oms-observation:run-1:1:{MANAGER_HASH}:{table}"
     sql = (f"INSERT INTO arte.{table} (run_id) SETTINGS "
            "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
@@ -1231,6 +1244,8 @@ def test_oms_observation_lost_insert_response_never_selects_head():
             table=table, token=token, sql=sql,
             batch_id=BATCH_ID, batch_last_sequence=1,
             oms_observation_snapshot_hash=MANAGER_HASH)
-    assert ManagedOmsObservationHeadReader.path("run-1") not in authority.keeper.rows
+    from src.trading_runtime.arte_oms_observation_snapshot import ManagedSharedOmsObservationHeadReader
+    reader = ManagedSharedOmsObservationHeadReader if shared else ManagedOmsObservationHeadReader
+    assert reader.path("run-1") not in authority.keeper.rows
     with pytest.raises(KeeperUnavailable, match="pending or ambiguous"):
         authority.acquire_cold_barrier("run-1")

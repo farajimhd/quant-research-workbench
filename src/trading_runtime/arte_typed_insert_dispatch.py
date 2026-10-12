@@ -80,6 +80,10 @@ _OMS_OBSERVATION_TABLES = frozenset({
     "trading_strategy_one_oms_observation_snapshot_v2",
     "trading_strategy_one_oms_observation_v2",
 })
+_SHARED_OMS_OBSERVATION_TABLES = frozenset({
+    "trading_oms_observation_snapshot_v1",
+    "trading_oms_observation_v1",
+})
 
 
 def _gate_path(run_id: str) -> str:
@@ -621,6 +625,8 @@ class TypedInsertDispatch:
                       else _OMS_OBSERVATION_TABLES)
             if broker_snapshot_hash is not None and table in _SHARED_BROKER_MATCH_TABLES:
                 tables = _SHARED_BROKER_MATCH_TABLES
+            if oms_observation_snapshot_hash is not None and table in _SHARED_OMS_OBSERVATION_TABLES:
+                tables = _SHARED_OMS_OBSERVATION_TABLES
             expected_token = (_manager_token if manager_snapshot_hash is not None
                               else _broker_match_token if broker_snapshot_hash is not None
                               else _evidence_token if evidence_snapshot_hash is not None
@@ -1305,6 +1311,22 @@ class TypedInsertDispatch:
             tables=_OMS_OBSERVATION_TABLES,
             root_table="trading_strategy_one_oms_observation_snapshot_v2",
             token_factory=_oms_observation_token, label="OMS observation")
+
+    def compact_verified_shared_oms_observation_snapshot(
+        self, *, run_id: str, batch_id: str, last_sequence: int,
+        snapshot_hash: str, operations: tuple[tuple[str, str], ...], previous: Any | None,
+    ) -> None:
+        """Select only read-back-verified central OMS observations."""
+        from src.trading_runtime.arte_oms_observation_snapshot import ManagedSharedOmsObservationHeadReader
+        from src.trading_runtime.strategy_one_oms_observation_snapshot import OmsObservationHead
+        self._compact_verified_checkpoint_family(
+            run_id=run_id, batch_id=batch_id, last_sequence=last_sequence,
+            snapshot_hash=snapshot_hash, operations=operations,
+            previous=previous, head_type=OmsObservationHead,
+            head_path=ManagedSharedOmsObservationHeadReader.path(run_id),
+            tables=_SHARED_OMS_OBSERVATION_TABLES,
+            root_table="trading_oms_observation_snapshot_v1",
+            token_factory=_oms_observation_token, label="Shared OMS observation")
 
     def assert_snapshot_head(self, *, run_id: str, account_id: str,
                              revision: int, fence_hash: str) -> None:

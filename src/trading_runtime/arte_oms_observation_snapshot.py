@@ -274,3 +274,85 @@ async def load_attested_shared_oms_observations(client_factory, head_reader, **s
         finally:
             client.close()
     return await _owned_worker(load)
+
+
+def publish_shared_oms_observations(client, session, rows, *, journal_batch_id):
+    """Journal-worker-only children-first publication and central Keeper CAS."""
+    from .keeper_session import ManagedKeeperSession
+    from .arte_typed_insert_dispatch import TypedInsertDispatch
+    from .arte_journal_commit_v4 import load_writer_v4_snapshot_prefix
+    from .arte_journal_projection import load_latest_backtest_cursor
+    from .arte_journal_schema import storage_preflight
+    from .arte_journal_writer import _insert
+    from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
+    from uuid import UUID
+    if (type(session) is not ManagedKeeperSession or not session.writable
+            or getattr(client, "typed_insert_strict", False) is not True
+            or type(getattr(client, "typed_insert_dispatch", None)) is not TypedInsertDispatch
+            or client.typed_insert_dispatch.keeper is not session.client):
+        raise RuntimeError("Shared OMS publication requires its strict owned writer")
+    expected = verify_shared_oms_observations(rows)
+    root = expected.root
+    run_id, sequence = root["run_id"], root["checkpoint_sequence"]
+    if type(journal_batch_id) is not str or str(UUID(journal_batch_id)) != journal_batch_id:
+        raise ValueError("Shared OMS publication batch ID is not canonical")
+    lease = getattr(client, "backtest_v4_lease", None)
+    if type(lease) is not BacktestV4KeeperLease or lease.run_id != run_id:
+        raise RuntimeError("Shared OMS publication lacks its current run lease")
+    keeper, generation, client_id = session.client, session._generation, session.client.client_id
+    def require_owner():
+        if (not session.writable or session.client is not keeper
+                or session._generation != generation or keeper.client_id != client_id
+                or getattr(client, "backtest_v4_lease", None) is not lease):
+            raise RuntimeError("Shared OMS publication changed Keeper ownership")
+        lease.assert_current()
+    require_owner()
+    storage_preflight(client, tables=TABLES)
+    prefix = load_writer_v4_snapshot_prefix(client, run_id)
+    if (prefix is None or prefix.status != "running" or prefix.last_sequence != sequence
+            or prefix.last_batch_id != journal_batch_id):
+        raise RuntimeError("Shared OMS publication lacks its exact running V4 cursor")
+    cursor = load_latest_backtest_cursor(client, prefix)
+    if (not isinstance(cursor, Mapping) or cursor.get("run_id") != run_id
+            or cursor.get("event_sequence") != sequence or cursor.get("batch_id") != journal_batch_id
+            or cursor.get("boundary_ms") != root["boundary_ms"]
+            or cursor.get("session_date") != root["session_date"]):
+        raise RuntimeError("Shared OMS publication differs from its completed market cursor")
+    reader = ManagedSharedOmsObservationHeadReader(session)
+    previous = None if keeper.exists(reader.path(run_id)) is None else reader.read_head(run_id=run_id)
+    if previous is not None:
+        if previous.checkpoint_sequence > sequence:
+            raise RuntimeError("Shared OMS publication would rewind its central head")
+        if previous.checkpoint_sequence == sequence:
+            if read_attested_shared_oms_observations(client, reader, prefix=prefix) != expected:
+                raise RuntimeError("Shared OMS repeated publication differs from selected state")
+            require_owner()
+            return previous
+    operations = []
+    for table, family in ((OBSERVATION, expected.observations), (ROOT, (root,))):
+        if not family:
+            continue
+        require_owner()
+        token = f"oms-observation:{run_id}:{sequence}:{root['content_hash']}:{table.name}"
+        _insert(client, table.name, family, token, dispatch_sequence=sequence,
+            dispatch_batch_id=journal_batch_id, dispatch_oms_observation_snapshot_hash=root["content_hash"])
+        operations.append((table.name, token))
+    observed = read_shared_oms_observations(client, run_id=run_id,
+        checkpoint_sequence=sequence, expected_content_hash=root["content_hash"])
+    if observed != expected:
+        raise RuntimeError("Shared OMS publication readback differs from captured state")
+    require_owner()
+    for table, token in operations:
+        client.typed_insert_dispatch.seal_verified_operation(run_id=run_id, table=table,
+            token=token, batch_id=journal_batch_id, batch_last_sequence=sequence,
+            oms_observation_snapshot=True)
+    require_owner()
+    client.typed_insert_dispatch.compact_verified_shared_oms_observation_snapshot(
+        run_id=run_id, batch_id=journal_batch_id, last_sequence=sequence,
+        snapshot_hash=root["content_hash"], operations=tuple(operations), previous=previous)
+    selected = reader.read_head(run_id=run_id)
+    require_owner()
+    if (selected.checkpoint_sequence != sequence or selected.journal_batch_id != journal_batch_id
+            or selected.snapshot_hash != root["content_hash"]):
+        raise RuntimeError("Shared OMS publication central head differs from captured state")
+    return selected
