@@ -4814,6 +4814,11 @@ class ReplayRunController:
         if names and not report['eligible_ticker_count']:
             raise ValueError('No strategy tickers have required V7 books; see level-book-coverage.json')
 
+    async def run_prepared_program_session(self, cohorts, **scope):
+        """Schedule contiguous prepared cohorts through the native fenced lane."""
+        from .backtest_program_session import run_prepared_program_session
+        return await run_prepared_program_session(self, cohorts, **scope)
+
     async def attach_prepared_program_journal(self, **scope):
         """Adopt a prepared programme journal through the owned async bootstrap."""
         from .backtest_program_journal_startup import attach_program_journal
@@ -4827,6 +4832,8 @@ class ReplayRunController:
     async def run_prepared_program_cohort(self, blocks, population, projection, **scope):
         """Schedule one bounded prepared cohort on this owned native runtime."""
         from .backtest_program_cohort import run_prepared_program_cohort
+        from .backtest_program_session import require_program_session_owner
+        require_program_session_owner(self)
         if getattr(self, "_program_cohort_active", False):
             raise RuntimeError("Program cohort already owns this controller")
         self._program_cohort_active = True

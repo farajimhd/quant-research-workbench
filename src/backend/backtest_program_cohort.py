@@ -20,6 +20,8 @@ async def run_fenced_program_cohort(controller, blocks, population, projection, 
     """
     from .backtest_typed_publisher import TypedBacktestReceipt
     from .program_policy_recovery import program_policy_fingerprint
+    from .backtest_program_session import require_program_session_owner
+    require_program_session_owner(controller)
     if getattr(controller, "_program_cohort_active", False):
         raise RuntimeError("Program cohort already owns this controller")
     if controller._program_dispatch_failure is not None:

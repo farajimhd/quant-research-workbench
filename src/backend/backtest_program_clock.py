@@ -12,6 +12,8 @@ async def dispatch_qualified_program_boundary(controller, block, population, *, 
     stays batched by the existing publisher; no producer or writer starts here.
     """
     from dataclasses import replace
+    from .backtest_program_session import require_program_session_owner
+    require_program_session_owner(controller)
     from .program_clock_financial_basis import capture_program_clock_financial_basis
     from .program_policy_recovery import (RecoveredProgramPolicy, _RECOVERY_PROOF,
         _ProgramPolicyContinuationSeal, program_policy_fingerprint)
@@ -148,6 +150,8 @@ async def dispatch_prepared_program_clock(controller, blocks, population, *, at,
     capital priority, broker clock, market data, fills or evaluation blocks.
     """
     from .replay_run_service import ReplayRunController
+    from .backtest_program_session import require_program_session_owner
+    require_program_session_owner(controller)
     from .backtest_program_inputs import PreparedProgramBlock
     from .qmd_columnar_population import CertifiedPopulationWindow
     from .signal_stream_runtime_service import SignalStreamRuntime
