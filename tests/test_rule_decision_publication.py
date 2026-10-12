@@ -8,10 +8,14 @@ from src.trading_runtime.rule_decision_basis_schema import STAGED_TABLES
 def test_opt_in_catalog_preserves_original_v4_and_declares_shared_tables_once():
     original = writer.v4_storage_contracts()
     combined = module.rule_decision_storage_contracts()
-    assert len(combined) == len(original) + len(STAGED_TABLES)
+    from src.trading_runtime.trading_price_contracts import exact_price_storage_contracts
+    exact = exact_price_storage_contracts()
+    assert len(combined) == len(original) + len(STAGED_TABLES) + len(exact)
     assert combined[:len(original)] == original
     assert len({table.name for table in combined}) == len(combined)
     assert {table.name for table in STAGED_TABLES}.isdisjoint(table.name for table in original)
+    assert {table.name for table in exact}.isdisjoint(table.name for table in original)
+    assert combined[-len(exact):] == exact
 
 
 @pytest.mark.parametrize("failure", [False, True])

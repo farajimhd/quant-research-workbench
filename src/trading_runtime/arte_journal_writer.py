@@ -2103,6 +2103,15 @@ def _verify_commission_links(
             raise RuntimeError("Commission revision requires one committed execution")
 
 
+def _oms_group_identity_rows(by_family):
+    """Select one price representation for shared, price-free lineage checks."""
+    legacy = by_family.get("trading_oms_group_state_v1", ())
+    exact = by_family.get("trading_oms_group_state_exact_price_v1", ())
+    if legacy and exact:
+        raise ValueError("OMS lineage cannot mix legacy and exact price families")
+    return exact if exact else legacy
+
+
 def _verify_order_context_links(
     client: Any, batch: TypedJournalBatch,
     families: tuple[tuple[str, tuple[dict[str, Any], ...]], ...],
@@ -2121,7 +2130,7 @@ def _verify_order_context_links(
         if str(UUID(str(row["parent_record_id"]))) not in exact_parents
     } | {
         (str(row["account_id"]), str(row["strategy_intent_id"]))
-        for row in by_family["trading_oms_group_state_v1"]
+        for row in _oms_group_identity_rows(by_family)
         if str(UUID(str(row["record_id"]))) not in exact_parents
     }) - same_batch
     if not required:
@@ -2167,7 +2176,7 @@ def _verify_exact_intent_uses(
     contexts = {str(UUID(str(row["parent_record_id"]))): row
                 for row in by_family["trading_order_command_context_v1"]}
     groups = {str(UUID(str(row["record_id"]))): row
-              for row in by_family["trading_oms_group_state_v1"]}
+              for row in _oms_group_identity_rows(by_family)}
     needed = {str(UUID(str(row["intent_record_id"]))) for row in uses} - set(intents)
     if needed:
         ids = ",".join(f"toUUID({_literal(value)})" for value in sorted(needed))

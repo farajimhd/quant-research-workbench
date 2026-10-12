@@ -15,7 +15,8 @@ from .rule_decision_basis_schema import BASIS, INTENT, STAGED_TABLES
 def rule_decision_storage_contracts():
     """Exact opt-in catalog; do not alter existing V4 startup or legacy tables."""
     from .arte_journal_writer import v4_storage_contracts
-    contracts = (*v4_storage_contracts(), *STAGED_TABLES)
+    from .trading_price_contracts import exact_price_storage_contracts
+    contracts = (*v4_storage_contracts(), *STAGED_TABLES, *exact_price_storage_contracts())
     by_name = {}
     for contract in contracts:
         prior = by_name.setdefault(contract.name, contract)

@@ -22,6 +22,13 @@ PRICE_FAMILIES = MappingProxyType({
     "trading_order_modify_command_v1": ("trading_order_modify_command_exact_price_v1", ("limit_price", "aux_price")),
     "trading_protection_reconciliation_action_v4": ("trading_protection_reconciliation_action_exact_price_v4", ("stop_price", "target_price")),
 })
+EXACT_PRICE_FAMILY_NAMES = frozenset(target for target, _ in PRICE_FAMILIES.values())
+
+
+def exact_price_storage_contracts():
+    """Return the registered shared schemas without installing any tables."""
+    from .arte_journal_writer import _EXACT_PRICE_CONTRACTS
+    return tuple(_EXACT_PRICE_CONTRACTS.values())
 
 
 def exact_price_contracts(base_contracts):

@@ -15,8 +15,11 @@ def test_program_plan_preserves_legacy_and_uses_central_contracts():
     tables = {table.name for table in STAGED_TABLES}
     assert plan.principal == "backtest_v4_program_runner"
     assert plan.insert_arte == rule_decision_write_tables()
-    assert plan.insert_arte - before.insert_arte == tables
-    assert plan.select_arte - before.select_arte == tables
+    from src.trading_runtime.trading_price_contracts import exact_price_storage_contracts
+    exact = {table.name for table in exact_price_storage_contracts()}
+    assert len(exact) == 11
+    assert plan.insert_arte - before.insert_arte == tables | exact
+    assert plan.select_arte - before.select_arte == tables | exact
     assert before.select_arte - plan.select_arte == {program.ENTRY_CONTEXT_TABLE.split(".")[1]}
     assert plan.select_reference == before.select_reference
     assert plan.select_system == before.select_system

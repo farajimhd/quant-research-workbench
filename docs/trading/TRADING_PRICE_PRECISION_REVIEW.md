@@ -94,8 +94,8 @@ returns an `ExactPriceOmsStateBatch` with separately hashed group/order price
 rows and the original nonprice envelope. It retains decimal quantities and
 timers, binds price children to the original event, and rejects mixed legacy
 price rows or tampered hashes. Default projection remains unchanged. This
-staged envelope is not accepted by the existing writer queue; its shared commit
-seals, admission and complete cold recovery remain to be integrated.
+staged envelope is not yet accepted by the existing writer queue. Complete cold
+recovery and main-path integration remain to be implemented.
 
 `seal_exact_oms_state_batch` now validates its new physical group/order families
 through the shared journal seal, including contiguous event sequence, parent
@@ -106,6 +106,17 @@ decimal rows or surrogate rounded prices are published. Order readback uses
 the same extracted `order_request_from_oms_row` kernel as the existing cold
 reader; hashed wire rows round-trip into the original native `OrderRequest`.
 This still confers no committed-prefix, writer or actor-restoration admission.
+
+The direct exact-OMS publisher now uses the existing V4 commit publication,
+acknowledgement, family seal, readback and idempotent retry implementation.
+Publication requires the dedicated program writer audit before reservation or
+INSERT. Its opt-in catalog and provisioning plan include all eleven exact-price
+contracts, with shared schema, SSD-placement and least-privilege grant checks;
+the existing V4 principal and legacy catalogs are unchanged. Provisioning remains
+plan-only unless explicitly applied by an approved operator. Synthetic in-memory
+commit tests prove prior-intent fencing, exact physical family readback, retry
+and corruption rejection. They mock the operational startup audit and transport;
+they do not prove database installation or full-session runtime integration.
 
 Whichever option is selected must cover central schema definitions, projectors,
 binary insert/readback hashes, compound family seals, grants/storage audits,

@@ -27,7 +27,9 @@ def _require_profile(client):
 
 def rule_decision_write_tables():
     from .arte_journal_writer import v4_journal_write_tables
-    return v4_journal_write_tables() | frozenset(table.name for table in STAGED_TABLES)
+    from .trading_price_contracts import exact_price_storage_contracts
+    return v4_journal_write_tables() | frozenset(table.name for table in
+        (*STAGED_TABLES, *exact_price_storage_contracts()))
 
 
 def preflight_rule_decision_writer(client):

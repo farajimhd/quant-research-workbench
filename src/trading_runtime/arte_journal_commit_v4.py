@@ -650,18 +650,20 @@ def _load_verified_details_v4(
                     "trading_backtest_account_snapshot_v2",
                     "trading_backtest_position_snapshot_v2",
                     "trading_oms_group_state_v1",
+                    "trading_oms_group_state_exact_price_v1",
                     "trading_oms_execution_tactic_v1",
                     "trading_oms_execution_step_v1"}:
             related_rows[name] = rows
     if ("trading_oms_execution_tactic_v1" in related_rows
             or "trading_oms_execution_step_v1" in related_rows):
         from .arte_oms_tactic_projection import seal_oms_tactic_rows
+        from .arte_journal_writer import _oms_group_identity_rows
 
         try:
             seal_oms_tactic_rows(
                 tuple(related_rows.get("trading_oms_execution_tactic_v1", ())),
                 tuple(related_rows.get("trading_oms_execution_step_v1", ())),
-                tuple(related_rows.get("trading_oms_group_state_v1", ())),
+                tuple(_oms_group_identity_rows(related_rows)),
                 tuple(related_rows.get("trading_event_v1", ())),
                 run_id=run_id, batch_id=batch_id, stored_utc=True)
         except ValueError as exc:
@@ -1465,11 +1467,12 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
                             protection_reconciliation_actions=(),
                             protection_reconciliation_replies=(),
                             broker_snapshot_rows=None,
+                            exact_oms_prices=None,
                             _prepare_only=False):
     from src.trading_runtime.arte_journal_writer import (
         TypedJournalBatch, _CONTRACTS, _identity, _insert, _literal, _rows,
         _sealed_families, _v4_family_table, _verify_commission_links, typed_row,
-        _verify_exact_intent_uses, _verify_order_context_links,
+        _verify_exact_intent_uses, _verify_order_context_links, _oms_group_identity_rows,
     )
     from src.trading_runtime.arte_journal_schema import V4_ORDER_COMMAND_LINEAGE
     from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
@@ -1479,6 +1482,12 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
             or not 1 <= len(batch.events) <= MAX_V4_COMMIT_EVENTS
             or batch.status not in {"running", "completed", "stopped", "failed"}):
         raise ValueError("V4 publication needs one bounded typed event batch")
+    if exact_oms_prices is not None:
+        from .arte_oms_exact_prices import ExactPriceOmsStateBatch
+        from .rule_decision_writer_preflight import require_rule_decision_writer_audit
+        if type(exact_oms_prices) is not ExactPriceOmsStateBatch or exact_oms_prices.base is not batch:
+            raise ValueError("Exact OMS publication requires its original typed envelope")
+        require_rule_decision_writer_audit(client)
     if (getattr(client, "typed_insert_strict", False) is not True
             or not isinstance(getattr(client, "typed_insert_dispatch", None),
                               TypedInsertDispatch)):
@@ -1791,7 +1800,9 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         v4_protection_ids=tuple(row["record_id"] for row in protection_rows),
         v4_reconciliation_ids=tuple(row["record_id"] for row in reconciliation_rows),
         v4_snapshot_account_ids=tuple(row["record_id"] for row in snapshot_accounts),
-        v4_snapshot_position_ids=tuple(row["record_id"] for row in snapshot_positions))
+        v4_snapshot_position_ids=tuple(row["record_id"] for row in snapshot_positions),
+        exact_oms_price_rows=((exact_oms_prices.group,), exact_oms_prices.orders)
+            if exact_oms_prices is not None else None)
     command_rows = dict(base_families)["trading_order_command_v1"]
     from .numbered_fixed_strategy import is_numbered_fixed_strategy
     strategy_one_commands = {
@@ -1898,7 +1909,7 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
             raise ValueError("V4 OMS tactic differs from its scalar seal")
         seal_oms_tactic_rows(
             tactic_states, tactic_steps,
-            dict(base_families)["trading_oms_group_state_v1"],
+            _oms_group_identity_rows(dict(base_families)),
             dict(base_families)["trading_event_v1"],
             run_id=batch.run_id, batch_id=batch.batch_id)
     families = tuple((_v4_family_table(name), rows)
@@ -2086,6 +2097,11 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
                              first_price_source=None, automatic_ladder_sources=(),
                              automatic_ladder_read_client=None) -> str:
     """Publish one sealed normalized family graph under a Keeper fence."""
+    from .trading_price_contracts import EXACT_PRICE_FAMILY_NAMES
+    if any(name in EXACT_PRICE_FAMILY_NAMES and rows
+           for name, rows in families):
+        from .rule_decision_writer_preflight import require_rule_decision_writer_audit
+        require_rule_decision_writer_audit(client)
     from src.trading_runtime.arte_journal_writer import (
         _CONTRACTS, _identity, _insert, _literal, _rows,
         _verify_commission_links, _verify_exact_intent_uses,

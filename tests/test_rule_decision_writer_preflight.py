@@ -9,7 +9,11 @@ from src.trading_runtime.rule_decision_basis_schema import STAGED_TABLES
 
 def test_program_write_catalog_is_exact_extension_without_legacy_mutation():
     original = writer.v4_journal_write_tables()
-    assert module.rule_decision_write_tables() == original | {table.name for table in STAGED_TABLES}
+    from src.trading_runtime.trading_price_contracts import exact_price_storage_contracts
+    exact = {table.name for table in exact_price_storage_contracts()}
+    assert len(exact) == 11
+    assert exact.isdisjoint(original)
+    assert module.rule_decision_write_tables() == original | {table.name for table in STAGED_TABLES} | exact
     assert writer.v4_journal_write_tables() == original
 
 

@@ -25,10 +25,12 @@ from scripts.clickhouse.provision_trading_journal import (
     SECRET_ROOT, _admin_client, _restrict_secret_file)
 from src.trading_runtime.arte_journal_writer import _v4_preflight, v4_storage_contracts
 from src.trading_runtime.arte_journal_schema import storage_preflight
-from src.trading_runtime.rule_decision_basis_schema import STAGED_TABLES as TABLES
+from src.trading_runtime.rule_decision_basis_schema import STAGED_TABLES
+from src.trading_runtime.trading_price_contracts import exact_price_storage_contracts
 from src.trading_runtime.rule_decision_writer_preflight import rule_decision_write_tables
 from src.backend.strategy_one_entry_context import TABLE as ENTRY_CONTEXT_TABLE
 
+TABLES = (*STAGED_TABLES, *exact_price_storage_contracts())
 PRINCIPAL = 'backtest_v4_program_runner'
 SECRET_PATH = SECRET_ROOT / (PRINCIPAL + '.env')
 STEM = 'BACKTEST_V4_PROGRAM_RUNNER_CLICKHOUSE_'

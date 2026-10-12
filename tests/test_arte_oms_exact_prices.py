@@ -95,3 +95,47 @@ def test_exact_seal_keeps_component_counts_and_parent_scope_checks():
     broken = replace(exact, base=replace(base, events=({**base.events[0], 'event_month': '2026-09-01'},)))
     with pytest.raises(ValueError, match='partition'):
         seal_exact_oms_state_batch(broken)
+
+
+def test_exact_oms_uses_v4_commit_readback_and_exact_intent_fence(monkeypatch):
+    from src.trading_runtime.arte_oms_exact_prices import publish_exact_oms_state_batch_v4
+    from src.trading_runtime.arte_journal_commit_v4 import publish_base_typed_batch_v4, load_verified_commit_v4
+    from src.trading_runtime import rule_decision_writer_preflight as audit
+    from tests.test_arte_journal_commit_v4 import attached_v4_client
+    group, kwargs, _ = prepared()
+    exact = oms_group_state_batch(group, **kwargs, exact_prices=True)
+    client = attached_v4_client()
+    calls = []
+    monkeypatch.setattr(audit, 'require_rule_decision_writer_audit', lambda actual: calls.append(actual))
+    with pytest.raises(RuntimeError, match='predecessor|prior|earlier|committed'):
+        publish_exact_oms_state_batch_v4(client, exact)
+    assert not client.inserts
+    publish_base_typed_batch_v4(client, kwargs['published_intent_batch'])
+    assert publish_exact_oms_state_batch_v4(client, exact) == exact.base.batch_id
+    commit, families = load_verified_commit_v4(client, run_id=exact.base.run_id, batch_id=exact.base.batch_id)
+    assert commit['last_sequence'] == 2
+    assert {row['family_name'] for row in families} >= {
+        'trading_oms_group_state_exact_price_v1', 'trading_oms_order_state_exact_price_v1'}
+    assert 'trading_oms_group_state_v1' not in client.tables
+    assert 'trading_oms_order_state_v1' not in client.tables
+    assert publish_exact_oms_state_batch_v4(client, exact) == exact.base.batch_id
+    assert calls and all(actual is client for actual in calls)
+    client.tables['trading_oms_order_state_exact_price_v1'][0]['limit_price_bits'] += 1
+    with pytest.raises(RuntimeError, match='row hash'):
+        load_verified_commit_v4(client, run_id=exact.base.run_id, batch_id=exact.base.batch_id)
+
+
+def test_exact_oms_publication_requires_storage_audit_before_any_write(monkeypatch):
+    from src.trading_runtime.arte_oms_exact_prices import publish_exact_oms_state_batch_v4
+    from src.trading_runtime import rule_decision_writer_preflight as audit
+    from tests.test_arte_journal_commit_v4 import attached_v4_client
+    group, kwargs, _ = prepared()
+    exact = oms_group_state_batch(group, **kwargs, exact_prices=True)
+    client = attached_v4_client()
+    def reject(actual):
+        assert actual is client
+        raise RuntimeError('missing exact-price storage approval')
+    monkeypatch.setattr(audit, 'require_rule_decision_writer_audit', reject)
+    with pytest.raises(RuntimeError, match='storage approval'):
+        publish_exact_oms_state_batch_v4(client, exact)
+    assert not client.inserts and not client.typed_insert_dispatch.reserved

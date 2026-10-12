@@ -49,6 +49,15 @@ def seal_exact_oms_state_batch(batch):
     return _sealed_families(batch.base, exact_oms_price_rows=((batch.group,), batch.orders))
 
 
+def publish_exact_oms_state_batch_v4(client, batch, *, verified_prior_prefix=None):
+    """Use the shared V4 fence after exact program-writer storage/grant audit."""
+    if type(batch) is not ExactPriceOmsStateBatch:
+        raise ValueError("Exact OMS publication requires its explicit envelope")
+    from .arte_journal_commit_v4 import _publish_typed_batch_v4
+    return _publish_typed_batch_v4(client, batch.base, exact_oms_prices=batch,
+                                  verified_prior_prefix=verified_prior_prefix)
+
+
 def decode_exact_oms_order_rows(group_row, order_rows, *, stored_utc=False):
     """Decode hashed scalar rows into native orders, without restore admission.
 
