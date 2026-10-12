@@ -178,6 +178,15 @@ def rekey_rule_decision_basis(parent, children, *, batch_id):
     return verify_rule_decision_basis(parent, rekeyed)
 
 
+def rule_decision_semantic_hash(parent, children):
+    """Bind all decision scalars while permitting transport-only batch rekeying."""
+    parent, children = verify_rule_decision_basis(parent, children)
+    return _digest(({key: value for key, value in parent.items()
+        if key not in {"batch_id", "content_hash", "intent_hash"}},
+        tuple({key: value for key, value in child.items()
+            if key not in {"batch_id", "content_hash"}} for child in children)))
+
+
 def verify_rule_decision_basis(parent, children):
     children = tuple(children)
     if len(children) > 16 or parent != _seal(BASIS, {key: value for key, value in parent.items() if key != "content_hash"}):

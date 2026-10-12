@@ -101,8 +101,11 @@ def test_shared_runtime_initializes_from_real_normalized_cold_portfolio(monkeypa
             from types import MappingProxyType
             packet = RecoveredProgramPolicy(strategy, 7, 0, 0, MappingProxyType({}), "cold-run",
                 ("a" * 64,), program_policy_fingerprint(strategy), _RECOVERY_PROOF)
-            decision_parent = dict(run_id="cold-run", basis_sequence=7,
-                boundary_at=AT.isoformat(), assignment_id="assignment")
+            from tests.test_rule_decision_basis_projection import values
+            from src.trading_runtime.rule_decision_basis_projection import project_rule_decision_basis
+            decision_parent, _ = project_rule_decision_basis({**values("wait"), "run_id": "cold-run",
+                "basis_sequence": 7, "decision_sequence": 8, "boundary_at": AT,
+                "account_id": "account-id"}, [])
             calls = []
             def selected(parent, children, records, *, packet, observation):
                 assert parent is decision_parent and children == records == ()
@@ -112,9 +115,36 @@ def test_shared_runtime_initializes_from_real_normalized_cold_portfolio(monkeypa
                 return "synthetic-selection"
             with monkeypatch.context() as join_patch:
                 join_patch.setattr(decision_join, "reselect_recovered_rule_decision", selected)
-                assert await decision_join.qualify_rule_decision_runtime(decision_parent, (), (),
+                qualification = await decision_join.qualify_rule_decision_runtime(decision_parent, (), (),
                     runtime=runtime, cold=cold, prefix=prefix, broker=broker_rows, oms_image=oms,
-                    packet=packet) == "synthetic-selection"
+                    packet=packet)
+                assert qualification.selection == "synthetic-selection"
+                assert qualification.run_id == "cold-run" and qualification.basis_sequence == 7
+                from uuid import uuid4
+                from src.trading_runtime.signals import StrategySignal
+                from src.trading_runtime.journal_contract import JournalRecord
+                from src.trading_runtime.arte_journal_projection import project_journal_record
+                from src.trading_runtime.rule_decision_basis_projection import RuleDecisionBasisBatch
+                from src.trading_runtime.rule_decision_publication import prepare_qualified_rule_decision_commit
+                signal = StrategySignal(decision_parent["decision_id"], "program_boundary_completed", "ABC", AT,
+                    "wait", "neutral", 0., 1., "program:wait", working_timeframe="1s",
+                    metadata=dict(assignment_id="assignment", reference_price=10., status="completed",
+                        reason_code="program:wait", reason_detail="wait",
+                        correlation_id=decision_parent["decision_id"], causation_id=decision_parent["source_commit_hash"]))
+                completion = JournalRecord(decision_parent["record_id"], "cold-run", 8, AT, AT,
+                    "strategy_decision", "signal", decision_parent["decision_id"], "account-id",
+                    {**signal.payload(), "strategy_id": strategy.strategy_id, "strategy_revision": strategy.revision,
+                        "correlation_id": decision_parent["decision_id"], "causation_id": decision_parent["source_commit_hash"]})
+                base = project_journal_record(completion, run_month=AT.date().replace(day=1), attempt_id=str(uuid4()),
+                    batch_id=decision_parent["batch_id"], prior_batch_id=str(uuid4()),
+                    source_cursor="source")
+                unit = RuleDecisionBasisBatch(base, decision_parent, ())
+                prepared = prepare_qualified_rule_decision_commit(unit, qualification, committed_at=AT)
+                assert prepared.commit["first_sequence"] == 8
+                for altered in (replace(qualification, semantic_hash="e" * 64),
+                        replace(qualification, _proof=object()), replace(qualification, basis_sequence=8)):
+                    with pytest.raises(ValueError, match="matching native qualification"):
+                        prepare_qualified_rule_decision_commit(unit, altered, committed_at=AT)
                 with pytest.raises(ValueError, match="historical basis"):
                     await decision_join.qualify_rule_decision_runtime({**decision_parent, "basis_sequence": 8}, (), (),
                         runtime=runtime, cold=cold, prefix=prefix, broker=broker_rows, oms_image=oms, packet=packet)

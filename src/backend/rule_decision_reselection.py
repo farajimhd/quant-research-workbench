@@ -11,6 +11,20 @@ from src.trading_runtime.rule_decision_basis_projection import (
 )
 from .qmd_columnar_population import CertifiedPopulationWindow
 from .signal_stream_runtime_service import SignalStreamRuntime
+from dataclasses import dataclass, field
+from src.trading_runtime.rule_decision_basis_projection import rule_decision_semantic_hash
+
+
+_NATIVE_DECISION_PROOF = object()
+
+
+@dataclass(frozen=True, slots=True)
+class QualifiedRuleDecision:
+    run_id: str
+    basis_sequence: int
+    semantic_hash: str
+    selection: object
+    _proof: object = field(repr=False)
 
 
 async def qualify_rule_decision_runtime(parent, children, records, *, runtime,
@@ -54,8 +68,10 @@ async def qualify_rule_decision_runtime(parent, children, records, *, runtime,
     assignment = packet.actor._by_assignment[parent["assignment_id"]]
     observation = observe_assignment_orders(runtime.order_manager, account_id=assignment.account_id,
         assignment_id=assignment.assignment_id, ticker=assignment.ticker, at=at)
-    return reselect_recovered_rule_decision(parent, children, records,
+    selection = reselect_recovered_rule_decision(parent, children, records,
         packet=packet, observation=observation, **scope)
+    return QualifiedRuleDecision(runtime.run_id, basis, rule_decision_semantic_hash(parent, children),
+        selection, _NATIVE_DECISION_PROOF)
 
 
 def reselect_recovered_rule_decision(parent, children, records, *, packet, **scope):

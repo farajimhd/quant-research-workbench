@@ -150,6 +150,13 @@ def test_rekey_changes_only_transport_identity_and_dependent_hashes():
     assert updated["content_hash"] != parent["content_hash"]
     assert updated["intent_hash"] != parent["intent_hash"]
     assert rekey_rule_decision_basis(updated, updated_children, batch_id=parent["batch_id"]) == (parent, children)
+    from src.trading_runtime.rule_decision_basis_projection import rule_decision_semantic_hash
+    assert rule_decision_semantic_hash(parent, children) == rule_decision_semantic_hash(updated, updated_children)
+    changed_values = {key: value for key, value in parent.items()
+        if key not in {"content_hash", "intent_count", "intent_hash"}}
+    changed, changed_children = project_rule_decision_basis({**changed_values, "history_input_hash": "e" * 64},
+        [dict(stage="entry", strategy_intent_id="intent")])
+    assert rule_decision_semantic_hash(changed, changed_children) != rule_decision_semantic_hash(parent, children)
     with pytest.raises(ValueError):
         rekey_rule_decision_basis(parent, children, batch_id="invalid")
 

@@ -102,6 +102,19 @@ def prepare_rule_decision_commit(unit, *, committed_at):
         tuple((name, tuple(MappingProxyType(dict(row)) for row in rows)) for name, rows in families))
 
 
+def prepare_qualified_rule_decision_commit(unit, qualified, *, committed_at):
+    """Require native financial/reselection evidence bound to the exact rows."""
+    from src.backend.rule_decision_reselection import QualifiedRuleDecision, _NATIVE_DECISION_PROOF
+    from .rule_decision_basis_projection import rule_decision_semantic_hash
+    if (type(unit) is not RuleDecisionBasisBatch or type(qualified) is not QualifiedRuleDecision
+            or qualified._proof is not _NATIVE_DECISION_PROOF
+            or qualified.run_id != unit.base.run_id
+            or qualified.basis_sequence != unit.basis["basis_sequence"]
+            or qualified.semantic_hash != rule_decision_semantic_hash(unit.basis, unit.intents)):
+        raise ValueError("Rule decision commit lacks matching native qualification")
+    return prepare_rule_decision_commit(unit, committed_at=committed_at)
+
+
 def verify_rule_decision_commit_readback(prepared, families):
     """Verify persisted UTC scalars before accepting the shared family seal."""
     from .arte_journal_reader import _verified_row
