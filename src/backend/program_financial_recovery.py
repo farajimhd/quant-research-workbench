@@ -13,7 +13,7 @@ from src.trading_runtime.portfolio import PortfolioAccountProfile
 from src.trading_runtime.arte_portfolio_snapshot import load_portfolio_snapshot
 
 
-def qualify_program_financial_runtime(runtime, cold, prefix, broker):
+def qualify_program_financial_runtime(runtime, cold, prefix, broker, *, oms_image):
     """Prove broker resynchronization preserved the exact durable cold state.
 
     Returns a detached synchronized comparison image, not a new persistence
@@ -23,12 +23,17 @@ def qualify_program_financial_runtime(runtime, cold, prefix, broker):
     from src.trading_runtime.runtime import TradingRuntime, RunMode
     from src.trading_runtime.arte_portfolio_recovery import PortfolioRecovery
     from src.trading_runtime.portfolio import PortfolioSyncState
+    from src.trading_runtime.arte_oms_actor_restore import TypedOmsActorImage
+    from src.trading_runtime.arte_oms_projection import freeze_oms_group
     from src.trading_runtime.strategy_one_broker_match_snapshot import (
         verify_broker_match_snapshot, project_broker_match_snapshot,
     )
     from src.backend.backtest_market_data import market_day_boundary
     if (type(runtime) is not TradingRuntime or type(cold) is not PortfolioRecovery
             or type(prefix) is not V4CommittedPrefix or prefix.status != "running"
+            or type(oms_image) is not TypedOmsActorImage
+            or (oms_image.run_id, oms_image.strategy_id, oms_image.strategy_revision)
+               != (runtime.run_id, runtime.config.strategy_id, runtime.config.strategy_revision)
             or runtime.config.mode is not RunMode.BACKTEST
             or runtime.run_id != cold.run_id or cold.run_id != prefix.run_id
             or not runtime._typed_oms_recovered or runtime._canonical_session is None
@@ -38,6 +43,16 @@ def qualify_program_financial_runtime(runtime, cold, prefix, broker):
             or runtime.journal.latest_sequence(runtime.run_id) != prefix.last_sequence
             or runtime.journal.pending_record_count):
         raise ValueError("Program financial qualification lacks its initialized exact prefix")
+    manager = runtime.order_manager
+    if (manager is None or set(manager._groups) != set(oms_image.groups)
+            or manager._group_by_client_id != oms_image.group_by_client_id
+            or manager._group_by_broker_id != oms_image.group_by_broker_id
+            or manager._protection_versions != oms_image.protection_versions
+            or manager._body_entry_group_ids != set(oms_image.body_entry_group_ids)
+            or any(freeze_oms_group(group) != freeze_oms_group(oms_image.groups[identity])
+                   or group.broker_order_state_fingerprints != oms_image.groups[identity].broker_order_state_fingerprints
+                   for identity, group in manager._groups.items())):
+        raise ValueError("Program financial qualification OMS image changed")
     broker = verify_broker_match_snapshot(broker)
     root = broker.snapshot
     at = market_day_boundary(root["session_date"], root["boundary_ms"])

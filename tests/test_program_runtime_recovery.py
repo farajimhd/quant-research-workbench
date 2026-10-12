@@ -72,6 +72,9 @@ def test_shared_runtime_initializes_from_real_normalized_cold_portfolio(monkeypa
         assert "staging-only" not in runtime.strategy._selection_clocks
         assert candidate.order_manager.planner is not runtime.order_manager.planner
         assert candidate.intent_planner is not runtime.intent_planner
+        candidate.strategy.assignments()[0].parameters.pop("staging-only")
+        candidate.strategy.execution_state.maximum_executions = runtime.strategy.execution_state.maximum_executions
+        candidate.strategy._selection_clocks.pop("staging-only")
         try:
             await runtime.initialize(record_lifecycle=False)
             state = runtime.portfolio.states["account-id"]
@@ -90,30 +93,39 @@ def test_shared_runtime_initializes_from_real_normalized_cold_portfolio(monkeypa
             broker_rows = project_broker_match_snapshot(run_id="cold-run", session_date=AT.date(),
                 checkpoint_sequence=7, boundary_ms=boundary_ms, state=kwargs["broker_image"])
             prefix = V4CommittedPrefix("cold-run", 7, "batch", "cursor", "running", ("batch",))
-            comparison = qualify_program_financial_runtime(runtime, cold, prefix, broker_rows)
+            comparison = qualify_program_financial_runtime(runtime, cold, prefix, broker_rows, oms_image=oms)
             assert comparison.states["account-id"].ledger == state.ledger
             assert comparison.states["account-id"] is not state
+            await candidate.initialize(record_lifecycle=False)
+            staged_comparison = await controller.qualify_program_financial_candidate(candidate,
+                cold=cold, prefix=prefix, broker=broker_rows, oms_image=oms)
+            assert staged_comparison.states["account-id"].ledger == state.ledger
+            assert controller._runtime is runtime
+            with pytest.raises(ValueError, match="idle prefix"):
+                await controller.qualify_program_financial_candidate(runtime,
+                    cold=cold, prefix=prefix, broker=broker_rows, oms_image=oms)
             prior_ledger = state.ledger
             state.ledger = replace(state.ledger, cashbalance=state.ledger.cashbalance + 1)
             try:
                 with pytest.raises(ValueError, match="synchronized broker state changed"):
-                    qualify_program_financial_runtime(runtime, cold, prefix, broker_rows)
+                    qualify_program_financial_runtime(runtime, cold, prefix, broker_rows, oms_image=oms)
             finally:
                 state.ledger = prior_ledger
             prior_peak = state.peak_net_liquidation
             state.peak_net_liquidation += 1
             try:
                 with pytest.raises(ValueError, match="durable Portfolio image changed"):
-                    qualify_program_financial_runtime(runtime, cold, prefix, broker_rows)
+                    qualify_program_financial_runtime(runtime, cold, prefix, broker_rows, oms_image=oms)
             finally:
                 state.peak_net_liquidation = prior_peak
             prior_cash = runtime.broker._cash["account-id"]
             runtime.broker._cash["account-id"] += 1
             try:
                 with pytest.raises(ValueError, match="broker image changed"):
-                    qualify_program_financial_runtime(runtime, cold, prefix, broker_rows)
+                    qualify_program_financial_runtime(runtime, cold, prefix, broker_rows, oms_image=oms)
             finally:
                 runtime.broker._cash["account-id"] = prior_cash
         finally:
+            await candidate.finish()
             await runtime.finish()
     asyncio.run(run())

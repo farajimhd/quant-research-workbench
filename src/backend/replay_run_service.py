@@ -4989,6 +4989,35 @@ class ReplayRunController:
             raise ValueError("Program financial staging clock changed during construction")
         return candidate
 
+    async def qualify_program_financial_candidate(self, candidate, *, cold,
+            prefix, broker, oms_image):
+        """Qualify detached financial actors without swapping the controller."""
+        from src.trading_runtime.runtime import TradingRuntime
+        from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+        from .program_financial_recovery import qualify_program_financial_runtime
+        from .qmd_columnar_history_transport import _owned_worker
+        runtime, actor = self._runtime, self._program_strategy
+        def require_scope():
+            if (runtime is None or actor is None or self._runtime is not runtime
+                    or type(candidate) is not TradingRuntime or candidate is runtime
+                    or type(prefix) is not V4CommittedPrefix or prefix.run_id != self.run_id
+                    or runtime.strategy is not actor or candidate.config != runtime.config
+                    or candidate.journal is self._journal
+                    or candidate.broker.config != runtime.broker.config
+                    or candidate.strategy.program_release.header != actor.program_release.header
+                    or candidate.strategy.assignments() != actor.assignments()
+                    or candidate.strategy._listings != actor._listings
+                    or candidate.strategy.execution_state._fills or candidate.strategy._selection_clocks
+                    or runtime.last_event_time != candidate.last_event_time
+                    or self._journal.latest_sequence(self.run_id) != prefix.last_sequence
+                    or self._journal.pending_record_count):
+                raise ValueError("Program financial candidate differs from the controller's idle prefix")
+        require_scope()
+        comparison = await _owned_worker(qualify_program_financial_runtime,
+            candidate, cold, prefix, broker, oms_image=oms_image)
+        require_scope()
+        return comparison
+
     async def install_recovered_program_policy(self, packet, *, portfolio_recovery, population):
         """Install only at an owned, fully fenced common financial/source clock."""
         from .program_policy_recovery import RecoveredProgramPolicy, verify_recovered_program_positions
