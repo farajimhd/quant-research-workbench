@@ -103,6 +103,23 @@ before cleanup. Context and definition publication remain sequential under
 their required claims. Synthetic barrier tests prove overlap and settlement;
 they are not operational latency or all30 wall-time measurements.
 
+Prepared clock dispatch now keeps a fresh rejected assignment outside sequential
+programme/financial qualification: it must have no prior selection clock, no
+ledger position record, no working/unobserved OMS orders or pending acquisition/
+reduction, and no eligible valid entry mask. Full prepared coverage is still
+validated, and the returned result explicitly reports `not_admitted`. Previously
+visited or state-owning assignments retain their existing lifecycle path.
+This is a conservative survivor gate, not complete historical-idle pruning.
+
+Empty candidate clocks exposed two staged Signal Stream defects. Typed staged
+resolution now omits only newly allocated empty stream buckets, preserving
+every prior ticker state. Programme source publication explicitly permits a
+clock-only commit with zero deltas; the existing cutoff and source identity
+are sealed and cold-readable, and the cutoff must advance. Default no-op
+publication remains rejected. Synthetic native tests cover an empty source
+clock followed by a rejected rule mask and later normal entry/fills. No
+operational speedup or all30 equivalence is claimed by these tests.
+
 ## Delivered components
 
 - `columnar_rule_program.py`: bounded typed DAGs evaluated with native Polars

@@ -184,17 +184,32 @@ async def dispatch_prepared_program_clock(controller, blocks, population, *, at,
             raise ValueError("Program clock block differs from its immutable release")
         ordinal = block.ordinal_for(actor._listings[identity], at)
         assignment = actor._by_assignment[identity]
-        block.boundary_for(actor.program_release, population, listing_id=actor._listings[identity],
+        candidate = block.boundary_for(actor.program_release, population, listing_id=actor._listings[identity],
             ticker=assignment.ticker, ordinal=ordinal)
-        prepared.append((identity, block, ordinal, protection_profiles[identity]))
+        # Fresh rejected assignments own no prior programme state to advance.
+        # Retain every previously visited assignment conservatively: it may
+        # still own deferred capital, OMS or policy lifecycle work.
+        fresh_rejected = (identity not in actor._selection_clocks
+            and (assignment.account_id, actor.strategy_id, identity, actor._listings[identity])
+                not in actor.execution_state.positions
+            and not actor.position_for(identity).position_open
+            and not (candidate.eligible and candidate.rules["entry"] and candidate.validity["entry"]))
+        if fresh_rejected:
+            observation = controller.program_order_observation(assignment_id=identity, at=at)
+            fresh_rejected = not (observation.working_orders or observation.unobserved_order_ids
+                or observation.pending_acquisition or observation.pending_reduction)
+        prepared.append((identity, block, ordinal, protection_profiles[identity], fresh_rejected))
     results = []
-    for identity, block, ordinal, protection in prepared:
+    for identity, block, ordinal, protection, fresh_rejected in prepared:
         if (controller._program_strategy is not actor or controller._runtime is not runtime
                 or controller._program_signal_runtime is not source or runtime.last_event_time != at
                 or source.typed_source_boundary(at) != boundary):
             error = ValueError("Program clock ownership changed during dispatch")
             controller._program_dispatch_failure = error
             raise error
+        if fresh_rejected:
+            results.append((identity, {"status": "not_admitted", "reason": "fresh_entry_mask_rejected"}))
+            continue
         if qualify:
             result = await dispatch_qualified_program_boundary(controller, block, population,
                 ordinal=ordinal, assignment_id=identity, execution_policy=execution_policy,

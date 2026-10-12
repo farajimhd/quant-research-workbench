@@ -80,6 +80,36 @@ def _batch():
     )
 
 
+def test_clock_only_commit_is_explicit_monotonic_and_cold_recoverable():
+    from dataclasses import replace
+    from datetime import datetime, timedelta
+    from src.backend.signal_stream_typed_publication import _publish_one
+    from src.backend.signal_stream_typed_readback import recover_committed_head
+    batch = replace(_batch(), before_states={}, after_states={}, before_admissions={},
+        after_admissions={}, occurrences=())
+    untouched = FakeStorage()
+    with pytest.raises(ValueError, match="no-op"):
+        _publish_one(untouched, batch)
+    assert not untouched.writes
+    storage = FakeStorage()
+    publisher = _publisher(storage, capacity=1)
+    try:
+        first = replace(batch, allow_clock_only=True)
+        head = publisher.submit(first).result(timeout=3)
+        assert storage.writes == ["signal_stream_cursor_commit_typed_v1"]
+        with pytest.raises(ValueError, match="must advance"):
+            publisher.submit(replace(first, batch_sequence=2, previous_commit_hash=head))
+        cutoff = datetime.fromisoformat(first.cutoff_at) + timedelta(seconds=1)
+        second = replace(first, batch_sequence=2, previous_commit_hash=head, cutoff_at=cutoff.isoformat())
+        publisher.submit(second).result(timeout=3)
+        recovered = recover_committed_head(storage, session_key=batch.session_key,
+            configuration_revision=batch.configuration_revision, source_revision=batch.source_revision,
+            catalogs=batch.catalogs)
+        assert recovered.sequence == 2 and recovered.states == {} and recovered.admissions == {}
+    finally:
+        publisher.close()
+
+
 def test_bounded_fake_publication_fences_last_after_exact_readback() -> None:
     storage = FakeStorage()
     publisher = _publisher(storage, capacity=1)

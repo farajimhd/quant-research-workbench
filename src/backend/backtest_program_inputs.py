@@ -105,7 +105,7 @@ async def publish_prepared_program_source_clock(controller, projection, publishe
         raise ValueError("Program source ownership changed during configured stream resolution")
     pending = source.submit_staged(stage, publisher, batch_sequence=cursor[0] + 1,
         previous_commit_hash=cursor[1], configuration_revision=revision["revision_id"],
-        source_revision=projection.source_revision, catalogs=catalogs)
+        source_revision=projection.source_revision, catalogs=catalogs, allow_clock_only=True)
     await pending.wait_async()
     if (controller._program_signal_runtime is not source or controller._program_strategy is not actor
             or controller.definition.configuration_revision is not revision):

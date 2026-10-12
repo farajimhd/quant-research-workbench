@@ -46,6 +46,7 @@ class PublicationBatch:
     after_admissions: Mapping[str, Any]
     occurrences: tuple[Mapping[str, Any], ...]
     catalogs: Mapping[str, SourceCatalog]
+    allow_clock_only: bool = False
 
 
 class TypedSignalStorage(Protocol):
@@ -74,9 +75,11 @@ _CURSOR_FAMILIES = ((STATE_DELTA, "state_delta"),
 
 
 def _publish_one(storage: TypedSignalStorage, batch: PublicationBatch) -> str:
+    if type(batch.allow_clock_only) is not bool:
+        raise ValueError("typed Signal Stream clock-only selection must be explicit")
     if len(batch.occurrences) > 256:
         raise ValueError("typed occurrence batch exceeds 256 events")
-    if (not batch.occurrences and batch.before_states == batch.after_states
+    if (not batch.allow_clock_only and not batch.occurrences and batch.before_states == batch.after_states
             and batch.before_admissions == batch.after_admissions):
         raise ValueError("empty typed Signal Stream no-op batch")
     projected = []
@@ -180,6 +183,7 @@ class TypedSignalPublicationQueue:
         self._queue: queue.Queue[tuple[PublicationBatch, Future[str]]] = queue.Queue()
         self._pending: dict[tuple[str, int], Future[str]] = {}
         self._last_completed: dict[str, tuple[int, str]] = {}
+        self._last_cutoff: dict[str, str | None] = {}
         self._bootstrapped: dict[str, tuple[str, str]] = {}
         self._bootstrapping: set[str] = set()
         self._lock = threading.Lock()
@@ -214,6 +218,7 @@ class TypedSignalPublicationQueue:
                 if self._started or self._closing or self._pending or self._fatal is not None:
                     raise RuntimeError("typed Signal Stream bootstrap raced publication")
                 self._last_completed[session_key] = (head.sequence, head.content_hash)
+                self._last_cutoff[session_key] = head.cutoff_at
                 self._bootstrapped[session_key] = (configuration_revision, source_revision)
             return head
         finally:
@@ -253,6 +258,8 @@ class TypedSignalPublicationQueue:
     def submit(self, batch: PublicationBatch) -> Future[str]:
         if not isinstance(batch, PublicationBatch):
             raise TypeError("typed Signal Stream batch is required")
+        if type(batch.allow_clock_only) is not bool:
+            raise ValueError("typed Signal Stream clock-only selection must be explicit")
         key = (batch.session_key, batch.batch_sequence)
         with self._lock:
             if self._closing or self._fatal is not None:
@@ -265,6 +272,12 @@ class TypedSignalPublicationQueue:
                                                               batch.source_revision):
                 raise ValueError("typed Signal Stream session lacks matching cold bootstrap")
             prior = self._last_completed[batch.session_key]
+            if batch.allow_clock_only:
+                from .signal_stream_typed_cursor import _time
+                cutoff = _time(batch.cutoff_at)
+                previous_cutoff = self._last_cutoff[batch.session_key]
+                if previous_cutoff is not None and cutoff <= _time(previous_cutoff):
+                    raise ValueError("typed Signal Stream clock-only cutoff must advance")
             if (batch.batch_sequence != prior[0] + 1
                     or batch.previous_commit_hash != prior[1]):
                 raise ValueError("typed Signal Stream batch sequence or prior fence differs")
@@ -321,6 +334,8 @@ class TypedSignalPublicationQueue:
             else:
                 with self._lock:
                     self._last_completed[batch.session_key] = (batch.batch_sequence, head)
+                    from .signal_stream_typed_cursor import _time
+                    self._last_cutoff[batch.session_key] = _time(batch.cutoff_at)
                     del self._pending[(batch.session_key, batch.batch_sequence)]
                 try:
                     receipt.set_result(head)

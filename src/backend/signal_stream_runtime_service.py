@@ -340,6 +340,12 @@ class SignalStreamRuntime:
         )
         if self._typed_scope is not None:
             from .signal_stream_typed_cursor import _state, _time
+            # resolve() may allocate a new stream bucket without any ticker
+            # when the complete candidate clock is empty. It owns no state
+            # row; keep the typed cursor sparse without pruning prior state.
+            clone._states = {stream: rows for stream, rows in clone._states.items()
+                if not (type(stream) is str and stream and stream not in before_states
+                    and type(rows) is dict and not rows)}
             clone._states = _state(clone._states)
             # The cursor codec owns canonical scalar timestamp formatting.
             # Evidence/causation is still independently verified by publication.
@@ -365,6 +371,7 @@ class SignalStreamRuntime:
         batch_sequence: int, previous_commit_hash: str,
         configuration_revision: str, source_revision: str,
         catalogs: Mapping[str, Any],
+        allow_clock_only: bool = False,
     ) -> PendingSignalTransition:
         """Enqueue only; no synchronous storage I/O or state promotion."""
         from src.backend.signal_stream_typed_publication import PublicationBatch
@@ -393,6 +400,7 @@ class SignalStreamRuntime:
                 after_admissions=_thaw_transition(stage.after_admissions),
                 occurrences=tuple(_thaw_transition(stage.occurrences)),
                 catalogs=dict(catalogs),
+                allow_clock_only=allow_clock_only,
             )
             receipt = publisher.submit(batch)
             pending = PendingSignalTransition(self, stage, receipt, batch_sequence=batch_sequence)

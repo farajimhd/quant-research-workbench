@@ -102,6 +102,23 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
             controller._journal_publisher = BacktestTypedJournalPublisher(controller._journal, writer,
                 attempt_id="00000000-0000-0000-0000-000000000001", run_month=pin.scope.session_date.replace(day=1),
                 expected_config=typed_run_config_payload(controller._runtime.config), exact_oms_prices=fenced)
+            survivor_probe = fenced and not partial_fills and resolution == 1000
+            if survivor_probe:
+                from src.backend.backtest_program_inputs import publish_prepared_program_source_clock
+                early = block.row_for("listing", 0)[0]["boundary_at"]
+                await controller._runtime.advance_program_session_clock(early)
+                await publish_prepared_program_source_clock(controller, projection, publisher,
+                    at=early, catalogs=scope["catalogs"])
+                before_probe = controller._journal.latest_sequence(controller.run_id)
+                rejected = await controller.dispatch_prepared_program_clock(
+                    {"assignment": block}, population, at=early, assignment_order=("assignment",),
+                    execution_policy=ExecutionPolicy(envelope=ExecutionEnvelope(deadline_ms=3000)),
+                    protection_profiles={"assignment": ProtectionProfile("unused", 1,
+                        (ProtectionSlice("one", 1., StopRule(price=1.)),))},
+                    outside_rth=False, qualify=True, policy_blocks=(block,), maximum_events=1000)
+                assert rejected == (("assignment", {"status": "not_admitted", "reason": "fresh_entry_mask_rejected"}),)
+                assert not actor._selection_clocks
+                assert controller._journal.latest_sequence(controller.run_id) == before_probe
             transport_rows = []
             for offset in ((0, 1, 2) if partial_fills else (0, 2)):
                 market, _ = block.row_for("listing", ordinal + offset)
@@ -149,7 +166,7 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                 protection_profiles_at=protection, outside_rth=False, maximum_events=1000, **authority)
             with pytest.raises(ValueError, match="assignment coverage"):
                 await controller.run_prepared_program_cohort({}, population, projection, **arguments)
-            assert not calls and controller._program_signal_runtime.typed_source_cursor()[0] == 0
+            assert not calls and controller._program_signal_runtime.typed_source_cursor()[0] == int(survivor_probe)
             controller._stop_requested = True
             stopped = await controller.run_prepared_program_cohort({"assignment": block}, population, projection, **arguments)
             assert stopped.status == "stopped" and stopped.liquidity_boundaries == 0 and not calls
@@ -249,7 +266,7 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
             result = await controller.run_prepared_program_cohort({"assignment": block}, population, projection, **arguments)
             assert result.status == "completed" and result.source_clocks == result.qualified_decisions == 3
             assert result.liquidity_boundaries == (30 if resolution == 100 else 3)
-            assert len(calls) == 1 and controller._program_signal_runtime.typed_source_cursor()[0] == 3
+            assert len(calls) == 1 and controller._program_signal_runtime.typed_source_cursor()[0] == 3 + int(survivor_probe)
             assert controller._journal_publisher.fenced_sequence == 0
             assert result.policy_packet.journal_sequence == controller._journal.latest_sequence(controller.run_id)
             executions = await controller._runtime.broker.trades()
