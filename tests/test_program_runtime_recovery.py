@@ -51,9 +51,9 @@ def test_shared_runtime_initializes_from_real_normalized_cold_portfolio(monkeypa
     async def run():
         from src.backend.replay_run_service import ReplayRunController
         controller = ReplayRunController(replace(definition, session_date=AT.date()),
-            run_id="cold-run", runtime_root=tmp_path, program_strategy=strategy,
+            run_id="cold-run", runtime_root=tmp_path, program_strategy=runtime.strategy,
             program_liquidity_resolution_ms=resolution)
-        controller._runtime, controller._journal, controller._planner = runtime, journal, planner
+        controller._runtime, controller._journal, controller._planner = runtime, journal, runtime.intent_planner
         before_stage = journal.command_checkpoint()
         candidate = await controller.stage_program_financial_runtime(portfolio_recovery=cold,
             oms_image=oms, broker_image=kwargs["broker_image"], completed_at=AT)
@@ -62,6 +62,16 @@ def test_shared_runtime_initializes_from_real_normalized_cold_portfolio(monkeypa
         assert candidate.journal is not journal
         assert journal.command_checkpoint() == before_stage
         assert candidate._canonical_session is None
+        assert candidate.strategy is not runtime.strategy
+        assert candidate.strategy.assignments()[0] is not runtime.strategy.assignments()[0]
+        candidate.strategy.assignments()[0].parameters["staging-only"] = True
+        assert "staging-only" not in runtime.strategy.assignments()[0].parameters
+        candidate.strategy.execution_state.maximum_executions = 123
+        assert runtime.strategy.execution_state.maximum_executions != 123
+        candidate.strategy._selection_clocks["staging-only"] = AT
+        assert "staging-only" not in runtime.strategy._selection_clocks
+        assert candidate.order_manager.planner is not runtime.order_manager.planner
+        assert candidate.intent_planner is not runtime.intent_planner
         try:
             await runtime.initialize(record_lifecycle=False)
             state = runtime.portfolio.states["account-id"]
