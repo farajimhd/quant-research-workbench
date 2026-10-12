@@ -29,3 +29,30 @@ def qualified_compound_rule_families(compound):
             raise ValueError("Compound rule evidence differs from its qualified source units")
     return tuple((table.name, tuple(rows)) for table, rows in
                  ((BASIS, parents), (INTENT, children)) if rows)
+
+
+def prepare_qualified_compound_families(client, compound, *, verified_prior_prefix=None,
+                                       first_price_source=None):
+    """Prepare one complete graph using the existing ordinary-family validators.
+
+    Qualified envelopes are reduced to their original typed bases only after
+    their supplements have been independently checked. No database mutation or
+    ownership advancement occurs here.
+    """
+    from dataclasses import replace
+    from .arte_journal_compound_v4 import prepare_compound_v4_families
+    supplements = qualified_compound_rule_families(compound)
+    if supplements and getattr(client, "live_v4_lease", None) is not None:
+        raise ValueError("Program decision publication requires its Backtest owner")
+    children = dict(compound.children)
+    children["rule_decision_bases"] = ()
+    children["rule_decision_intents"] = ()
+    ordinary = replace(compound, children=children, units=tuple(
+        unit.base if type(unit) is QualifiedRuleDecisionBatch else unit
+        for unit in compound.units))
+    base_families, ordinary_families = prepare_compound_v4_families(
+        client, ordinary, verified_prior_prefix=verified_prior_prefix,
+        first_price_source=first_price_source)
+    if {name for name, _ in ordinary_families} & {name for name, _ in supplements}:
+        raise ValueError("Compound preparation repeats a rule family")
+    return base_families, (*ordinary_families, *supplements)

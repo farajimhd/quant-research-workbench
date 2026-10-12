@@ -75,7 +75,7 @@ def test_compound_rekeys_mixed_scalar_children_without_mutating_sources():
     assert allocation["content_hash"] == "old-seal"
 
 
-def test_compound_retains_qualified_rule_rows_and_reseals_dependent_child_hashes():
+def test_compound_retains_qualified_rule_rows_and_reseals_dependent_child_hashes(monkeypatch):
     from tests.test_rule_decision_basis_projection import values
     from src.trading_runtime.signals import StrategySignal
     from src.trading_runtime.arte_journal_projection import project_journal_record
@@ -119,6 +119,25 @@ def test_compound_retains_qualified_rule_rows_and_reseals_dependent_child_hashes
     tampered["rule_decision_bases"] = ({**tampered["rule_decision_bases"][0], "intent_hash": "0" * 64},)
     with pytest.raises(ValueError, match="qualified source units"):
         qualified_compound_rule_families(replace(result, children=tampered))
+    from src.trading_runtime import arte_journal_compound_v4 as compound_module
+    from src.trading_runtime.rule_decision_compound import prepare_qualified_compound_families
+    calls = []
+    def prepare_ordinary(client, ordinary, **context):
+        assert not ordinary.children["rule_decision_bases"]
+        assert not ordinary.children["rule_decision_intents"]
+        assert ordinary.units == (first.base, second)
+        assert ordinary.base is result.base
+        assert context == dict(verified_prior_prefix="prefix", first_price_source="source")
+        calls.append(True)
+        return (("base", ()),), (("ordinary", ()),)
+    monkeypatch.setattr(compound_module, "prepare_compound_v4_families", prepare_ordinary)
+    assert prepare_qualified_compound_families(object(), result,
+        verified_prior_prefix="prefix", first_price_source="source") == (
+            (("base", ()),), (("ordinary", ()), (BASIS.name, (expected_parent,)),
+                             (INTENT.name, expected_children)))
+    assert calls == [True]
+    with pytest.raises(ValueError, match="Backtest owner"):
+        prepare_qualified_compound_families(type("Live", (), {"live_v4_lease": object()})(), result)
     with pytest.raises(RuntimeError, match="integrated writer hook"):
         prepare_compound_v4_families(object(), result)
 
