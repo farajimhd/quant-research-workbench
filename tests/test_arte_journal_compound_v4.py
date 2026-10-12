@@ -336,6 +336,64 @@ def test_compound_retains_qualified_rule_rows_and_reseals_dependent_child_hashes
         prepare_compound_v4_families(object(), result)
 
 
+@pytest.mark.parametrize("corrupt_readback", [False, True])
+def test_qualified_wait_decision_uses_real_v4_publication_and_cold_readback(monkeypatch, corrupt_readback):
+    from tests.test_rule_decision_basis_projection import values
+    from src.trading_runtime.signals import StrategySignal
+    from src.trading_runtime.arte_journal_projection import project_journal_record
+    from src.trading_runtime.rule_decision_basis_projection import (
+        project_rule_decision_basis, RuleDecisionBasisBatch, rule_decision_semantic_hash)
+    from src.trading_runtime.rule_decision_publication import QualifiedRuleDecisionBatch
+    from src.backend.rule_decision_reselection import QualifiedRuleDecision, _NativeDecisionEvidence, _NATIVE_DECISION_PROOF
+    from src.trading_runtime.rule_decision_single_publication import publish_qualified_rule_decision
+    from src.trading_runtime import rule_decision_writer_preflight as preflight
+    from src.trading_runtime.rule_decision_basis_schema import BASIS
+    scope = {**values("wait"), "run_id": RUN, "basis_sequence": 0, "decision_sequence": 1,
+             "batch_id": str(UUID(int=32))}
+    at = scope["boundary_at"]
+    signal = StrategySignal(scope["decision_id"], "program_boundary_completed", "ABC", at,
+        "wait", "neutral", 0., 1., "program:wait", working_timeframe="1s",
+        metadata=dict(assignment_id="assignment", reference_price=10., status="completed",
+            reason_code="program:wait", reason_detail="wait", correlation_id=scope["decision_id"],
+            causation_id=scope["source_commit_hash"]))
+    record = JournalRecord(scope["record_id"], RUN, 1, at, at, "strategy_decision", "signal",
+        scope["decision_id"], "account", {**signal.payload(), "strategy_id": "program", "strategy_revision": 1,
+            "correlation_id": scope["decision_id"], "causation_id": scope["source_commit_hash"]})
+    base = project_journal_record(record, run_month=scope["event_month"], attempt_id=ATTEMPT,
+        batch_id=scope["batch_id"], prior_batch_id=NIL, source_cursor="start")
+    parent, children = project_rule_decision_basis(scope, [])
+    digest = rule_decision_semantic_hash(parent, children)
+    # Synthetic native-proof fixture: this test qualifies transport, not trading semantics.
+    proof = QualifiedRuleDecision(RUN, 0, digest, None, _NativeDecisionEvidence(RUN, 0, digest, _NATIVE_DECISION_PROOF))
+    unit = QualifiedRuleDecisionBatch(RuleDecisionBasisBatch(base, parent, children), proof)
+    client = attached_v4_client()
+    monkeypatch.setattr(preflight, "preflight_rule_decision_writer", lambda actual: None)
+    if corrupt_readback:
+        execute = client.execute
+        def corrupt(sql):
+            result = execute(sql)
+            if client.tables.get(BASIS.name):
+                client.tables[BASIS.name][0]["selection_status"] = "selected"
+            return result
+        client.execute = corrupt
+        with pytest.raises(RuntimeError, match="row hash"):
+            publish_qualified_rule_decision(client, unit)
+        assert "trading_commit_v4" not in client.inserts
+        assert not client.typed_insert_dispatch.compacted
+        assert client.typed_insert_dispatch.operations
+        return
+    assert publish_qualified_rule_decision(client, unit) == base.batch_id
+    prefix = load_verified_v4_prefix(client, RUN)
+    assert prefix.last_sequence == 1 and prefix.last_batch_id == base.batch_id
+    assert len(client.tables[BASIS.name]) == 1
+    original_inserts = tuple(client.inserts)
+    assert publish_qualified_rule_decision(client, unit) == base.batch_id
+    assert tuple(client.inserts) == original_inserts
+    client.tables[BASIS.name][0]["selection_status"] = "selected"
+    with pytest.raises(RuntimeError, match="row hash"):
+        load_verified_v4_prefix(client, RUN)
+
+
 def test_compound_preserves_nested_normalized_parent_chain():
     first = _base(1, 11, 0)
     second = _base(2, 12, 11,
