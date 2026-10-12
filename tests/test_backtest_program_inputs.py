@@ -245,6 +245,22 @@ def test_transport_packets_preserve_full_rule_block_and_warmup(prepared_source):
     assert_frame_equal(block.masks, evaluate_rules(expected, release.programs, release.fields), check_exact=True)
     assert block.masks["entry__valid"][4096]
     assert block.history_hashes[pin.scope.listing_id] == pin.header["content_hash"]
+    from src.backend.backtest_program_feature_cache import ProgramFeatureBlockCache
+    cache = ProgramFeatureBlockCache()
+    async def cached_origin():
+        arguments = dict(first_ordinal=0, stop_ordinal=4200, evaluation_block="optimizer-block-0",
+            as_of=c.completed_clock(pin.scope, pin.scope.stop_bucket - 1), concurrency=2, history_post=post)
+        retained = await cache.load(release, {pin.scope.listing_id: pin}, **arguments)
+        assert_frame_equal(retained.market, block.market, check_exact=True)
+        assert_frame_equal(retained.masks, block.masks, check_exact=True)
+        before = len(calls)
+        assert await cache.load(release, {pin.scope.listing_id: pin}, **arguments) is retained
+        assert len(calls) == before
+        with pytest.raises(ValueError, match="beyond its as-of clock"):
+            await cache.load(release, {pin.scope.listing_id: pin}, **{**arguments,
+                "as_of": c.completed_clock(pin.scope, pin.scope.first_bucket + 4095)})
+        assert len(calls) == before
+    asyncio.run(cached_origin())
 
 
 @pytest.mark.parametrize("bad", ["future", "field_revision", "listing", "capacity"])

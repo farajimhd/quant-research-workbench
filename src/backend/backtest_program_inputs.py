@@ -217,6 +217,22 @@ def required_program_history_fields(release):
     return tuple(sorted(names))
 
 
+def preflight_program_history_packets(release, pin, *, first_ordinal, stop_ordinal, as_of):
+    """Validate one complete origin using the same bounded transport packets."""
+    if (type(pin) is not CertifiedHistoryPin or type(first_ordinal) is not int
+            or type(stop_ordinal) is not int
+            or not 0 <= first_ordinal < stop_ordinal <= pin.scope.clock_count
+            or stop_ordinal - first_ordinal > 262144):
+        raise ValueError("Programme history origin exceeds its bounded source scope")
+    fields = required_program_history_fields(release)
+    packet_size = min(4096, 65536 // max(1, len(fields)))
+    packets = tuple((first, min(first + packet_size, stop_ordinal))
+                    for first in range(first_ordinal, stop_ordinal, packet_size))
+    for first, stop in packets:
+        window_request(pin, first_ordinal=first, stop_ordinal=stop, as_of=as_of, field_names=fields)
+    return packets
+
+
 async def prepare_program_block(release: ProgramRelease, pins: Mapping[str, CertifiedHistoryPin], *,
         first_ordinal: int, stop_ordinal: int, evaluation_block: str, as_of: datetime,
         concurrency: int, history_post=None) -> PreparedProgramBlock:
@@ -251,11 +267,8 @@ async def prepare_program_block(release: ProgramRelease, pins: Mapping[str, Cert
                     or field.product != "arte.qmd_causal_history_value_v1"
                     or field.revision != pin.scope.product_revision or field.resolution_ms != 1000):
                 raise ValueError("Program field differs from its producer-owned history contract")
-        field_names = required_program_history_fields(release)
-        packet_size = min(4096, 65536 // max(1, len(field_names)))
-        for first in range(first_ordinal, stop_ordinal, packet_size):
-            stop = min(first + packet_size, stop_ordinal)
-            window_request(pin, first_ordinal=first, stop_ordinal=stop, as_of=as_of, field_names=field_names)
+        for first, stop in preflight_program_history_packets(release, pin,
+                first_ordinal=first_ordinal, stop_ordinal=stop_ordinal, as_of=as_of):
             jobs.append((listing, pin, first, stop))
     # All pins, field contracts and future-clock checks precede the first I/O.
     iterator = iter(enumerate(jobs))
@@ -339,8 +352,8 @@ def preflight_program_cohort_inputs(release, pins, population_pin, listing_by_as
                     or field.product != "arte.qmd_causal_history_value_v1"
                     or field.revision != pin.scope.product_revision or field.resolution_ms != 1000):
                 raise ValueError("Programme field differs from its certified history contract")
-        window_request(pin, first_ordinal=first_ordinal, stop_ordinal=stop_ordinal, as_of=as_of,
-                       field_names=required_program_history_fields(release))
+        preflight_program_history_packets(release, pin, first_ordinal=first_ordinal,
+                                          stop_ordinal=stop_ordinal, as_of=as_of)
     for pin in population_pin.histories.values():
         window_request(pin, first_ordinal=first_bucket - pin.scope.first_bucket,
             stop_ordinal=stop_bucket - pin.scope.first_bucket, as_of=as_of)
