@@ -251,6 +251,43 @@ def verify_rule_decision_completion_record(parent, children, record):
     return record
 
 
+def verify_rule_decision_prepared_source(parent, children, *, release, block, assignment, source):
+    """Resolve causal references using the prepared input and committed source.
+
+    This proves reference linkage, not historical filled-state reselection.
+    Callers must bootstrap the source from verified storage before cold use.
+    """
+    from src.backend.backtest_program_inputs import PreparedProgramBlock
+    from src.backend.signal_stream_runtime_service import SignalStreamRuntime, signal_stream_session
+    from .columnar_strategy_release import ProgramRelease
+    from .strategy_engine import StrategyAssignment
+    parent, children = verify_rule_decision_basis(parent, children)
+    if (type(release) is not ProgramRelease or type(block) is not PreparedProgramBlock
+            or type(assignment) is not StrategyAssignment or type(source) is not SignalStreamRuntime):
+        raise ValueError("Rule decision source requires its native typed contracts")
+    at = datetime.fromisoformat(parent["boundary_at"])
+    sequence, source_hash, cutoff = source.typed_source_boundary(at)
+    row, _ = block.row_for(parent["listing_id"], parent["observed_ordinal"])
+    expected_id = block.completion_identity(run_id=parent["run_id"],
+        assignment_id=assignment.assignment_id, source_hash=source_hash,
+        listing_id=parent["listing_id"], ordinal=parent["observed_ordinal"], terminal=bool(parent["terminal"]))
+    if (parent["source_batch_sequence"] != sequence or parent["source_commit_hash"] != source_hash
+            or cutoff != at or row["boundary_at"] != at
+            or parent["source_session_date"] != signal_stream_session(at)["session_key"]
+            or parent["release_id"] != str(release.header["release_id"])
+            or parent["release_content_hash"] != release.header["content_hash"]
+            or block.release_hash != parent["release_content_hash"]
+            or parent["history_input_hash"] != block.history_hashes[parent["listing_id"]]
+            or parent["evaluation_block"] != block.evaluation_block
+            or (parent["account_id"], parent["assignment_id"])
+               != (assignment.account_id, assignment.assignment_id)
+            or (assignment.strategy_id, assignment.strategy_revision)
+               != (release.header["strategy_id"], release.header["strategy_number"])
+            or parent["decision_id"] != expected_id):
+        raise ValueError("Rule decision references differ from their prepared committed source")
+    return parent, children
+
+
 def load_committed_rule_decision_page(client, prefix, *, after_sequence=0, limit=200):
     """Read bounded scalar references; callers still resolve source and journal proofs."""
     from .arte_journal_writer import _valid_prefix, _committed_batch_filter, _literal, _rows

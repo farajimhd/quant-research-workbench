@@ -160,6 +160,18 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 assert dispatched_parent["record_id"] == completion.record_id
                 assert dispatched_parent["basis_sequence"] == basis_sequence
                 assert dispatched_parent["source_commit_hash"] == basis_parent["source_commit_hash"]
+                from src.trading_runtime.rule_decision_basis_projection import verify_rule_decision_prepared_source, project_rule_decision_basis
+                source_scope = dict(release=actor.program_release, block=block,
+                    assignment=actor.assignments()[0], source=runtime)
+                assert verify_rule_decision_prepared_source(dispatched_parent, dispatched_children,
+                    **source_scope) == (dispatched_parent, dispatched_children)
+                substituted_values = {key: value for key, value in dispatched_parent.items()
+                    if key not in {"content_hash", "intent_count", "intent_hash"}}
+                for changed in (dict(history_input_hash="e" * 64), dict(evaluation_block="other")):
+                    substituted_parent, substituted_children = project_rule_decision_basis(
+                        {**substituted_values, **changed}, decision_intents)
+                    with pytest.raises(ValueError, match="prepared committed source"):
+                        verify_rule_decision_prepared_source(substituted_parent, substituted_children, **source_scope)
                 assert [child["strategy_intent_id"] for child in dispatched_children] == [
                     child["strategy_intent_id"] for child in basis_children]
                 with pytest.raises(TypeError):
