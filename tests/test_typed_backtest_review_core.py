@@ -26,6 +26,36 @@ def scoped(client):
     return client
 
 
+def test_exact_running_page_uses_v4_and_checks_head_after_read(monkeypatch):
+    from src.trading_runtime import arte_journal_commit_v4 as commit
+    prefix = V4CommittedPrefix(RUN, 1, V2_BATCH, "cursor", "running", (V2_BATCH,))
+    context = {"mode": "backtest", "account_ids": ("DU1",)}
+    monkeypatch.setattr(review, "load_typed_run_context", lambda *_: context)
+    monkeypatch.setattr(commit, "load_verified_v4_prefix", lambda *_: prefix)
+    monkeypatch.setattr(review, "load_committed_prefix", lambda *_args, **_kwargs: pytest.fail("legacy read"))
+    price = 10.250000000000002
+    row = SimpleNamespace(event={"sequence": 1}, detail_family="trading_execution_v1",
+                          detail={"price": price})
+    def events(_client, actual, *, after_sequence, limit, exact_prices):
+        assert actual is prefix and exact_prices is True
+        return (row,)
+    monkeypatch.setattr(review, "load_typed_event_page", events)
+    monkeypatch.setattr(review, "_head_matches", lambda *_: True)
+    from src.backend import backtest_typed_activity as activity
+    monkeypatch.setattr(activity, "project_fixed_typed_activity_rows", lambda *_args, **_kwargs:
+                        {"strategy_signal_summaries": (), "unprojected_activity_count": 0})
+    page = review.load_typed_backtest_running_page(object(), RUN, exact_prices=True)
+    assert page["schema_version"] == "typed-backtest-running-page-v4"
+    assert page["running_prefix_only"] and page["terminal_status_unknown"]
+    assert page["events"][0]["detail"]["price"].hex() == price.hex()
+    assert page["caught_up_to_prefix"]
+    monkeypatch.setattr(review, "_head_matches", lambda *_: False)
+    with pytest.raises(RuntimeError, match="changed during page read"):
+        review.load_typed_backtest_running_page(object(), RUN, exact_prices=True)
+    with pytest.raises(ValueError, match="exceeds"):
+        review.load_typed_backtest_running_page(object(), RUN, exact_prices=True, after_sequence=2)
+
+
 def test_v4_cached_head_uses_v4_commit_table(monkeypatch):
     prefix = V4CommittedPrefix(
         RUN, 2, V2_BATCH, "2026-08-18:100", "completed", (V2_BATCH,))

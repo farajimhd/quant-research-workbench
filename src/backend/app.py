@@ -6170,6 +6170,7 @@ async def trading_backtest_typed_running_page(
     run_id: str,
     after_sequence: int = Query(default=0, ge=0),
     limit: int = Query(default=500, ge=1, le=1000),
+    exact_prices: bool = False,
 ) -> dict[str, Any]:
     """Read only the committed V2 running prefix; never claim terminal review."""
     try:
@@ -6183,9 +6184,13 @@ async def trading_backtest_typed_running_page(
         from src.backend.typed_backtest_review_core import load_typed_backtest_running_page
         with closing(readonly_typed_journal_client()) as client:
             return load_typed_backtest_running_page(
-                client, normalized, after_sequence=after_sequence, limit=limit)
+                client, normalized, after_sequence=after_sequence, limit=limit,
+                **({"exact_prices": True} if exact_prices else {}))
 
     try:
+        if exact_prices:
+            from src.backend.qmd_columnar_history_transport import _owned_worker
+            return await _owned_worker(read_page)
         return await asyncio.to_thread(read_page)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

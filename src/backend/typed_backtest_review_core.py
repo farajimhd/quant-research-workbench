@@ -253,9 +253,10 @@ def load_typed_backtest_review_core_v2(
 def load_typed_backtest_running_page(
     client: Any, run_id: str, *, after_sequence: int = 0,
     limit: int = 500, cache: AuditedSessionCache | None = None,
+    exact_prices: bool = False,
 ) -> dict[str, Any]:
     """Expose only a verified V2 running prefix, never a terminal review claim."""
-    if (not isinstance(run_id, str) or not run_id
+    if (type(exact_prices) is not bool or not isinstance(run_id, str) or not run_id
             or type(after_sequence) is not int or after_sequence < 0
             or type(limit) is not int or not 1 <= limit <= 1000
             or (cache is not None and not isinstance(cache, AuditedSessionCache))):
@@ -264,6 +265,33 @@ def load_typed_backtest_running_page(
     context = load_typed_run_context(client, run_id)
     if context.get("mode") != "backtest":
         raise ValueError("Typed running page accepts Backtest runs only")
+    if exact_prices:
+        from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
+        prefix = load_verified_v4_prefix(client, run_id)
+        if prefix is None or prefix.status != "running":
+            raise ValueError("Typed running page requires a verified V4 running prefix")
+        if after_sequence > prefix.last_sequence:
+            raise ValueError("Typed running cursor exceeds its verified prefix")
+        rows = load_typed_event_page(client, prefix, after_sequence=after_sequence,
+                                     limit=limit, exact_prices=True)
+        from src.backend.backtest_typed_activity import project_fixed_typed_activity_rows
+        activity = project_fixed_typed_activity_rows(client, prefix, rows,
+                                                     after_sequence=after_sequence)
+        if (load_typed_run_context(client, run_id) != context
+                or not _head_matches(client, run_id, prefix)):
+            raise RuntimeError("Typed running authority changed during page read")
+        next_sequence = int(rows[-1].event["sequence"]) if rows else after_sequence
+        return {
+            "schema_version": "typed-backtest-running-page-v4",
+            "running_prefix_only": True, "terminal_status_unknown": True,
+            "run": context, "verified_prefix_sequence": prefix.last_sequence,
+            "events": tuple({"event": row.event, "detail_family": row.detail_family,
+                             "detail": row.detail} for row in rows),
+            "strategy_signal_summaries": activity["strategy_signal_summaries"],
+            "unprojected_activity_count": activity["unprojected_activity_count"],
+            "next_sequence": next_sequence,
+            "caught_up_to_prefix": next_sequence == prefix.last_sequence,
+        }
     prefix = None
     for key in selected_cache.candidate_keys(_client_scope(client), run_id):
         candidate = selected_cache.get(key)

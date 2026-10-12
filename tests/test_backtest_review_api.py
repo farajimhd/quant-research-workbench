@@ -96,6 +96,21 @@ class BacktestReviewAPITests(IsolatedAsyncioTestCase):
         self.assertEqual(response.json(), page)
         client.close.assert_called_once()
 
+    async def test_exact_running_http_route_forwards_v4_mode(self):
+        run_id = str(uuid4())
+        client = Mock()
+        page = {"schema_version": "typed-backtest-running-page-v4", "events": []}
+        with (patch('src.trading_runtime.arte_journal_reader.readonly_typed_journal_client', return_value=client),
+              patch('src.backend.typed_backtest_review_core.load_typed_backtest_running_page', return_value=page) as read,
+              patch.object(backtest_run_service, 'review_saved', new=AsyncMock()) as saved):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as http:
+                response = await http.get(f'/api/trading/backtest/runs/{run_id}/typed-running-page?exact_prices=true')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), page)
+        read.assert_called_once_with(client, run_id, after_sequence=0, limit=500, exact_prices=True)
+        client.close.assert_called_once()
+        saved.assert_not_called()
+
     def test_typed_financial_route_is_separate_from_saved_review(self):
         paths = {route.path: route.methods for route in app.routes if hasattr(route, 'methods')}
         self.assertIn('GET', paths['/api/trading/backtest/runs/{run_id}/typed-financial-page'])
