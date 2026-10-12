@@ -182,6 +182,13 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 from src.trading_runtime.rule_decision_publication import prepare_rule_decision_commit
                 from src.trading_runtime.arte_journal_commit_v4 import verify_commit_v4
                 prepared_commit = prepare_rule_decision_commit(retained_transport, committed_at=at)
+                from src.trading_runtime.rule_decision_publication import prepare_rule_decision_insert_requests
+                requests = prepare_rule_decision_insert_requests(prepared_commit)
+                assert requests == prepare_rule_decision_insert_requests(prepared_commit)
+                assert len(requests) == 1 + bool(dispatched_children)
+                assert all(request.batch_id == typed_completion.batch_id and request.run_id == completion.run_id
+                    and request.last_sequence == completion.sequence
+                    and b"FORMAT RowBinary\n" in request.sql for request in requests)
                 from src.trading_runtime.rule_decision_publication import verify_rule_decision_commit_readback
                 from src.trading_runtime.arte_journal_writer import _CONTRACTS, _datetime_wire
                 from src.trading_runtime.rule_decision_basis_schema import STAGED_TABLES

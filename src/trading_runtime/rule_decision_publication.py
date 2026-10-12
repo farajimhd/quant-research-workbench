@@ -37,6 +37,49 @@ class PreparedRuleDecisionCommit:
     families: tuple
 
 
+@dataclass(frozen=True, slots=True)
+class RuleDecisionInsertRequest:
+    table: str
+    run_id: str
+    batch_id: str
+    last_sequence: int
+    token: str
+    query_id: str
+    sql: bytes
+
+
+def prepare_rule_decision_insert_requests(prepared):
+    """Encode staged supplements for the existing registered binary transport.
+
+    Returns requests only. No client is opened and no INSERT is dispatched.
+    """
+    from .arte_journal_rowbinary import encode_journal_rows
+    from .arte_typed_insert_dispatch import typed_insert_query_id
+    from .arte_journal_writer import _literal
+    if type(prepared) is not PreparedRuleDecisionCommit:
+        raise ValueError("Rule decision INSERT preparation requires its commit")
+    result = []
+    for name, rows in prepared.families:
+        if name not in {BASIS.name, INTENT.name}:
+            continue
+        table = BASIS if name == BASIS.name else INTENT
+        normalized = []
+        for row in rows:
+            sealed = _seal(table, {key: value for key, value in row.items() if key != "content_hash"})
+            if sealed != row:
+                raise ValueError("Rule decision INSERT scalar integrity differs")
+            normalized.append(sealed)
+        token = f"{prepared.commit['batch_id']}:{name}"
+        header = (f"INSERT INTO arte.{name} ({','.join(column for column, _ in table.columns)}) "
+            "SETTINGS async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
+            f"precise_float_parsing=1,insert_deduplication_token={_literal(token)} FORMAT RowBinary\n")
+        result.append(RuleDecisionInsertRequest(name, prepared.commit["run_id"], prepared.commit["batch_id"],
+            prepared.commit["last_sequence"], token,
+            typed_insert_query_id(prepared.commit["run_id"], name, token),
+            header.encode("utf-8") + encode_journal_rows(table.columns, tuple(normalized))))
+    return tuple(result)
+
+
 def prepare_rule_decision_commit(unit, *, committed_at):
     """Seal the original typed completion and scalar decision children together."""
     if type(unit) is not RuleDecisionBasisBatch or unit.base.status != "running":
