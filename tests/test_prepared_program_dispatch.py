@@ -182,6 +182,26 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 from src.trading_runtime.rule_decision_publication import prepare_rule_decision_commit
                 from src.trading_runtime.arte_journal_commit_v4 import verify_commit_v4
                 prepared_commit = prepare_rule_decision_commit(retained_transport, committed_at=at)
+                from src.trading_runtime.rule_decision_publication import verify_rule_decision_commit_readback
+                from src.trading_runtime.arte_journal_writer import _CONTRACTS, _datetime_wire
+                from src.trading_runtime.rule_decision_basis_schema import STAGED_TABLES
+                contracts = {**_CONTRACTS, **{table.name: table for table in STAGED_TABLES}}
+                readback = []
+                for name, rows in prepared_commit.families:
+                    contract = contracts["trading_strategy_signal_v1" if name == "trading_strategy_signal_v2" else name]
+                    stored_rows = []
+                    for row in rows:
+                        stored = dict(row)
+                        for column, kind in contract.columns:
+                            if kind.startswith("DateTime64(") and stored[column] is not None:
+                                stored[column] = _datetime_wire(stored[column], 9 if kind.startswith("DateTime64(9") else 6)
+                        stored_rows.append(stored)
+                    readback.append((name, tuple(stored_rows)))
+                verify_rule_decision_commit_readback(prepared_commit, readback)
+                corrupt = [(name, tuple({**row, "history_input_hash": "e" * 64} for row in rows)
+                    if name == "trading_rule_decision_basis_v1" else rows) for name, rows in readback]
+                with pytest.raises(ValueError, match="scalar hash"):
+                    verify_rule_decision_commit_readback(prepared_commit, corrupt)
                 names = {name for name, _ in prepared_commit.families}
                 assert {"trading_event_v1", "trading_strategy_signal_v2",
                     "trading_rule_decision_basis_v1"} <= names

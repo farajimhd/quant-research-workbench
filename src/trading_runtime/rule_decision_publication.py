@@ -8,7 +8,7 @@ from types import MappingProxyType
 
 from .arte_journal_commit_v4 import prepare_commit_v4, verify_commit_v4
 from .arte_journal_writer import _sealed_families, _v4_family_table
-from .rule_decision_basis_projection import RuleDecisionBasisBatch
+from .rule_decision_basis_projection import RuleDecisionBasisBatch, _seal
 from .rule_decision_basis_schema import BASIS, INTENT
 
 
@@ -39,3 +39,34 @@ def prepare_rule_decision_commit(unit, *, committed_at):
     return PreparedRuleDecisionCommit(MappingProxyType(dict(commit)),
         tuple(MappingProxyType(dict(row)) for row in seals),
         tuple((name, tuple(MappingProxyType(dict(row)) for row in rows)) for name, rows in families))
+
+
+def verify_rule_decision_commit_readback(prepared, families):
+    """Verify persisted UTC scalars before accepting the shared family seal."""
+    from .arte_journal_reader import _verified_row
+    if type(prepared) is not PreparedRuleDecisionCommit:
+        raise ValueError("Rule decision readback requires its prepared commit")
+    families = tuple(families)
+    expected = {name: len(rows) for name, rows in prepared.families}
+    if len(families) != len(expected) or {name for name, _ in families} != set(expected):
+        raise ValueError("Rule decision readback family coverage differs")
+    identities = {}
+    for name, rows in families:
+        rows = tuple(rows)
+        if len(rows) != expected[name]:
+            raise ValueError("Rule decision readback row count differs")
+        verified = []
+        for row in rows:
+            if name in {BASIS.name, INTENT.name}:
+                table = BASIS if name == BASIS.name else INTENT
+                canonical = _seal(table, {key: value for key, value in row.items() if key != "content_hash"})
+                if canonical["content_hash"] != row.get("content_hash"):
+                    raise ValueError("Rule decision readback scalar hash differs")
+            else:
+                canonical = _verified_row("trading_strategy_signal_v1" if name == "trading_strategy_signal_v2" else name, row)
+            if (canonical["run_id"] != prepared.commit["run_id"]
+                    or canonical["batch_id"] != prepared.commit["batch_id"]):
+                raise ValueError("Rule decision readback committed scope differs")
+            verified.append((canonical["record_id"], row["content_hash"]))
+        identities[name] = tuple(verified)
+    verify_commit_v4(prepared.commit, prepared.family_seals, detail_identities=identities)
