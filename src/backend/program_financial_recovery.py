@@ -189,7 +189,12 @@ def reconstruct_program_oms_image(prefix, *, lineages, protection, broker,
             or not account_ids or len(set(account_ids)) != len(account_ids)):
         raise ValueError("Program OMS recovery lacks one shared committed prefix")
     broker = verify_broker_match_snapshot(broker)
-    observations = verify_oms_observation_snapshot(observations)
+    from src.trading_runtime.arte_oms_observation_snapshot import (
+        SharedOmsObservationSnapshot, verified_oms_observation_codec_rows,
+    )
+    observations = (verified_oms_observation_codec_rows(observations)
+        if type(observations) is SharedOmsObservationSnapshot
+        else verify_oms_observation_snapshot(observations))
     root = broker.snapshot
     observed = observations.root
     if (root["run_id"] != prefix.run_id

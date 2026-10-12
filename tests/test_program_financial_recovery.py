@@ -184,7 +184,8 @@ def test_program_oms_joins_native_empty_broker_and_observation_checkpoint(mismat
             module.reconstruct_program_oms_image(later_prefix, through_sequence=8, **kwargs)
 
 
-def test_program_oms_rebuilds_working_group_from_native_broker_checkpoint():
+@pytest.mark.parametrize("shared_observations", [False, True])
+def test_program_oms_rebuilds_working_group_from_native_broker_checkpoint(shared_observations):
     from src.backend.backtest_market_data import market_day_boundary
     from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
     from src.trading_runtime.domain import TradingMode
@@ -206,9 +207,16 @@ def test_program_oms_rebuilds_working_group_from_native_broker_checkpoint():
     group = {**lineage.state.group, "strategy_id": "declared-program"}
     binding = {**lineage.state.broker_bindings[0], "broker_order_id": identity}
     lineage = replace(lineage, state=replace(lineage.state, group=group, broker_bindings=(binding,)))
-    fingerprint = ("working", "Submitted", 0., 5., 0., 10., 0., "", "", "")
+    import math
+    fingerprint = ("working", "Submitted", 0., 5.,
+        math.nextafter(0.001, 1.) if shared_observations else 0., 10., 0., "", "", "")
     from types import SimpleNamespace
-    observed = project_oms_observation_snapshot(run_id=RUN, session_date=OMS_AT.date(),
+    if shared_observations:
+        from src.trading_runtime.arte_oms_observation_snapshot import project_shared_oms_observations
+        projector = project_shared_oms_observations
+    else:
+        projector = project_oms_observation_snapshot
+    observed = projector(run_id=RUN, session_date=OMS_AT.date(),
         checkpoint_sequence=7, boundary_ms=300000,
         groups={"group-1": SimpleNamespace(broker_order_ids=[identity],
             broker_order_state_fingerprints={identity: fingerprint})})
