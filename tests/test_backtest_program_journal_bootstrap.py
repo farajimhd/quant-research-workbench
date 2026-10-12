@@ -20,6 +20,7 @@ from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.backtest_broker_contract import BacktestBrokerContract, project_broker_contract
 from src.backend.replay_run_service import _simulation_config
 from dataclasses import replace
+from threading import Barrier, get_ident
 
 
 @pytest.mark.parametrize("resolution", [100, 1000])
@@ -121,7 +122,7 @@ def test_programme_publication_precedes_writer_and_preserves_same_run_on_failure
         projection_certifier=certificate, writer_factory=lambda *args, **kwargs: None)
     try:
         if failure:
-            with pytest.raises((RuntimeError, ValueError)):
+            with pytest.raises((RuntimeError, ValueError, ExceptionGroup)):
                 bootstrap.publish_and_assemble_program_v4_journal(context, reader, writer, terminal, **options)
         else:
             assert bootstrap.publish_and_assemble_program_v4_journal(context, reader, writer, terminal, **options) == "assembled"
@@ -142,3 +143,33 @@ def test_programme_publication_precedes_writer_and_preserves_same_run_on_failure
             owner_id=definition_lease["owner_id"], epoch=definition_lease["epoch"])
         owner.release()
         session.close()
+
+
+@pytest.mark.parametrize("failures", [0, 1, 2])
+def test_independent_cold_reads_overlap_and_both_settle(failures):
+    clients = (object(), object())
+    barrier = Barrier(2)
+    visited, finished, threads = [], [], []
+    caller = get_ident()
+    def operation(client):
+        ordinal = clients.index(client)
+        visited.append(ordinal)
+        threads.append(get_ident())
+        barrier.wait(timeout=2)
+        finished.append(ordinal)
+        if ordinal < failures:
+            raise ValueError(f"cold reader {ordinal} rejected")
+        return ordinal
+    if failures == 1:
+        with pytest.raises(ValueError, match="reader 0 rejected"):
+            bootstrap._read_cold_pair(*clients, operation)
+    elif failures == 2:
+        with pytest.raises(ExceptionGroup) as error:
+            bootstrap._read_cold_pair(*clients, operation)
+        assert len(error.value.exceptions) == 2
+    else:
+        assert bootstrap._read_cold_pair(*clients, operation) == (0, 1)
+    assert sorted(visited) == sorted(finished) == [0, 1]
+    assert len(set(threads)) == 2 and caller not in threads
+    with pytest.raises(ValueError, match="distinct"):
+        bootstrap._read_cold_pair(clients[0], clients[0], operation)

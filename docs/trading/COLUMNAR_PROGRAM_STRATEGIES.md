@@ -94,6 +94,15 @@ different from the controller's selected resolution, an unavailable session or
 an already-stopped controller. These failures start no publication worker and
 do not create an uncertain-publication recovery latch.
 
+Independent cold-reader preflights and immutable price/broker contract reads
+now run concurrently on the two distinct borrowed connections. The bounded
+pair settles and inspects both operations before returning, preserves input
+result order, and reports both failures when both readers reject. The owned
+startup worker keeps these calls off the event loop and drains their executor
+before cleanup. Context and definition publication remain sequential under
+their required claims. Synthetic barrier tests prove overlap and settlement;
+they are not operational latency or all30 wall-time measurements.
+
 ## Delivered components
 
 - `columnar_rule_program.py`: bounded typed DAGs evaluated with native Polars

@@ -10,6 +10,7 @@ import re
 from uuid import UUID
 from hashlib import sha256
 from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor
 
 from .backtest_v4_run_context import program_v4_context_rows
 from .backtest_fixed_market_authority import _validate_plans
@@ -39,6 +40,26 @@ def _configuration_hash(definition):
     if digest != revision.get("content_hash"):
         raise ValueError("Programme configuration differs from its immutable payload hash")
     return digest
+
+
+def _read_cold_pair(read_client, terminal_client, operation):
+    """Run one operation per distinct connection; settle and inspect both."""
+    if read_client is terminal_client or not callable(operation):
+        raise ValueError("Programme cold reads require two distinct owned connections")
+    values, failures = [], []
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="programme-cold-read") as pool:
+        futures = [pool.submit(operation, client) for client in (read_client, terminal_client)]
+        for future in futures:
+            try:
+                values.append(future.result())
+            except BaseException as exc:
+                values.append(None)
+                failures.append(exc)
+    if len(failures) == 1:
+        raise failures[0]
+    if failures:
+        raise BaseExceptionGroup("Programme cold reads failed", failures)
+    return tuple(values)
 
 
 def publish_and_assemble_program_v4_journal(context_client, read_client, writer_client,
@@ -118,9 +139,10 @@ def publish_and_assemble_program_v4_journal(context_client, read_client, writer_
     drawdown = bind_run_drawdown_authority(run_id=run_id, expected_config=config,
         configuration_hash=run["configuration_hash"], configuration_revision=definition.configuration_revision)
     fixed_backtest_v2_preflight(context_client)
-    for client in (read_client, terminal_client):
+    def preflight_cold(client):
         _v4_cold_reader_preflight(client)
         storage_preflight(client, tables=(PRICE_CONTRACT, BROKER))
+    _read_cold_pair(read_client, terminal_client, preflight_cold)
     seal = _v4_preflight(writer_client)
     certificate = projection_certifier()
     if type(certificate) is not str or re.fullmatch(r"[0-9a-f]{64}", certificate) is None:
@@ -136,12 +158,13 @@ def publish_and_assemble_program_v4_journal(context_client, read_client, writer_
         expected_journal_price_contract_hash=expected_journal_price_contract_hash,
         broker_contract=broker_contract, expected_broker_contract_hash=expected_broker_contract_hash)
     require_owners()
-    for cold_client in (read_client, terminal_client):
+    def verify_broker(cold_client):
         persisted_broker = read_broker_contract(cold_client, run_id=run_id,
             content_hash=expected_broker_contract_hash, liquidity_plan_hash=liquidity_plan_hash,
             initial_cash=definition.initial_cash)
         persisted_broker.require_config(selected_simulation, run_id=run_id,
             content_hash=expected_broker_contract_hash, liquidity_plan_hash=liquidity_plan_hash)
+    _read_cold_pair(read_client, terminal_client, verify_broker)
     require_owners()
     owner.attest_genesis(configuration_hash=run["configuration_hash"],
         market_plan_token=run["market_plan_token"], code_hash=run["code_hash"])

@@ -604,11 +604,13 @@ def assemble_fixed_v4_journal(
         journal_price_contract.require_scope(run_id=token.run_id, run_month=token.run_month,
             configuration_hash=token.configuration_hash,
             content_hash=expected_journal_price_contract_hash)
-        for cold_client in (read_client, terminal_client):
-            persisted_price_contract = read_journal_price_contract(cold_client,
+        from .backtest_program_journal_bootstrap import _read_cold_pair
+        def read_price_contract(cold_client):
+            return read_journal_price_contract(cold_client,
                 run_id=token.run_id, run_month=token.run_month,
                 configuration_hash=token.configuration_hash,
                 content_hash=expected_journal_price_contract_hash)
+        for persisted_price_contract in _read_cold_pair(read_client, terminal_client, read_price_contract):
             if persisted_price_contract.row != journal_price_contract.row:
                 raise RuntimeError("Journal price contract differs across cold readers")
     # The production writer constructor performs this exact V4 storage and

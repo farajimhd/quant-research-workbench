@@ -93,13 +93,15 @@ def test_exact_assembly_binds_normalized_contract_before_worker_creation(monkeyp
     assert not calls
     assert bootstrap.assemble_fixed_v4_journal(read, client, terminal, token, **scope, **bound) == "assembly"
     assert calls[0]["exact_oms_prices"] is True
-    assert readers == [read, terminal]
+    assert len(readers) == 2 and {id(actual) for actual in readers} == {id(read), id(terminal)}
     calls.clear()
     def absent(actual, **scope):
         raise ValueError("contract absent")
     monkeypatch.setattr(price_contract, "read_journal_price_contract", absent)
-    with pytest.raises(ValueError, match="contract absent"):
+    with pytest.raises(ExceptionGroup) as errors:
         bootstrap.assemble_fixed_v4_journal(read, client, terminal, token, **scope, **bound)
+    assert len(errors.value.exceptions) == 2
+    assert all(type(error) is ValueError and str(error) == "contract absent" for error in errors.value.exceptions)
     assert not calls
 
 
