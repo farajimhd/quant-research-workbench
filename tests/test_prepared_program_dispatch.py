@@ -135,9 +135,16 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                     raise AssertionError("Completed dispatch must not rescan journal records")
                 controller._journal.records = forbidden_rescan
                 try:
-                    result = await controller.dispatch_prepared_program_boundary(block, population,
-                        ordinal=ordinal + offset, assignment_id="assignment", execution_policy=policy,
-                        protection_profile=profile, outside_rth=False, terminal=offset == 2)
+                    from src.backend.backtest_program_clock import dispatch_prepared_program_clock
+                    with pytest.raises(ValueError, match="complete assignment/source/broker coverage"):
+                        await dispatch_prepared_program_clock(controller, {}, population, at=at,
+                            assignment_order=("assignment",), execution_policy=policy,
+                            protection_profiles={"assignment": profile}, outside_rth=False)
+                    dispatched = await dispatch_prepared_program_clock(controller, {"assignment": block}, population,
+                        at=at, assignment_order=("assignment",), execution_policy=policy,
+                        protection_profiles={"assignment": profile}, outside_rth=False, terminal=offset == 2)
+                    assert len(dispatched) == 1 and dispatched[0][0] == "assignment"
+                    result = dispatched[0][1]
                 finally:
                     controller._journal.records = original_records
                 from src.trading_runtime.rule_decision_basis_projection import project_program_completion_basis
