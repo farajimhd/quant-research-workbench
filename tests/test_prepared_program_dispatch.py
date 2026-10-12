@@ -146,6 +146,13 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                     batch_id="00000000-0000-0000-0000-000000000002")
                 assert basis_parent["source_commit_hash"] == source_prefix_hashes[-1]
                 assert basis_parent["intent_count"] == len(basis_children) == len(decision_intents)
+                from src.trading_runtime.rule_decision_basis_projection import verify_rule_decision_completion_record
+                assert verify_rule_decision_completion_record(basis_parent, basis_children, completion) is completion
+                for changed in (replace(completion, run_id="foreign-run"),
+                        replace(completion, sequence=completion.sequence + 1),
+                        replace(completion, payload={**completion.payload, "causation_id": "e" * 64})):
+                    with pytest.raises(ValueError, match="journal authority"):
+                        verify_rule_decision_completion_record(basis_parent, basis_children, changed)
                 with pytest.raises(ValueError, match="prepared source"):
                     project_program_completion_basis(completion,
                         release=actor.program_release, block=block, assignment=actor.assignments()[0],

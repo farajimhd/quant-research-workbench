@@ -143,3 +143,25 @@ def verify_rule_decision_intent_records(parent, children, records):
                 or record.intent.event_time != at or record.intent.metadata):
             raise ValueError("Rule decision intent record differs from its causal interval")
     return tuple(by_id[child["strategy_intent_id"]] for child in children)
+
+
+def verify_rule_decision_completion_record(parent, children, record):
+    """Match typed decision references to the exact journal completion event."""
+    from .journal_contract import JournalRecord
+    parent, children = verify_rule_decision_basis(parent, children)
+    if type(record) is not JournalRecord:
+        raise ValueError("Rule decision completion requires a journal record")
+    payload = record.payload
+    if ((record.category, record.entity_type, payload.get("signal_type"))
+            != ("strategy_decision", "signal", "program_boundary_completed")
+            or record.run_id != parent["run_id"]
+            or record.record_id != parent["record_id"]
+            or record.entity_id != parent["decision_id"]
+            or record.account_id != parent["account_id"]
+            or record.sequence != parent["decision_sequence"]
+            or record.event_time != datetime.fromisoformat(parent["boundary_at"])
+            or payload.get("causation_id") != parent["source_commit_hash"]
+            or payload.get("metadata", {}).get("assignment_id") != parent["assignment_id"]
+            or payload.get("metadata", {}).get("reason_detail") != parent["selection_status"]):
+        raise ValueError("Rule decision completion differs from its journal authority")
+    return record
