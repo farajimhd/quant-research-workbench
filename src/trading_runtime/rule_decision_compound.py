@@ -107,3 +107,29 @@ def prepare_qualified_compound_commit(client, compound, *, committed_at,
     return PreparedRuleDecisionCommit(MappingProxyType(dict(commit)),
         tuple(MappingProxyType(dict(row)) for row in seals),
         tuple((name, tuple(MappingProxyType(dict(row)) for row in rows)) for name, rows in families))
+
+
+def publish_qualified_compound(client, compound, *, verified_prior_prefix=None,
+                               first_price_source=None, timings_ns=None):
+    """Publish qualified families through the existing fenced V4 transport.
+
+    Operational callers require approval and the exact program writer grants.
+    The shared publisher owns detail insertion, complete readback, commit
+    publication, retry reconciliation and Keeper compaction.
+    """
+    from .rule_decision_writer_preflight import preflight_rule_decision_writer
+    from .arte_journal_commit_v4 import _publish_sealed_batch_v4
+    from .arte_journal_compound_v4 import V4StrategyOneEntryBatch, _compound_price_source
+    # Validate native evidence before touching storage, including on retries.
+    supplements = qualified_compound_rule_families(compound)
+    if not supplements:
+        raise ValueError("Qualified publication requires program decision evidence")
+    preflight_rule_decision_writer(client)
+    source = _compound_price_source(compound, first_price_source)
+    base_families, families = prepare_qualified_compound_families(client, compound,
+        verified_prior_prefix=verified_prior_prefix, first_price_source=source)
+    return _publish_sealed_batch_v4(client, compound.base, base_families, families,
+        verified_prior_prefix=verified_prior_prefix, first_price_source=source,
+        timings_ns=timings_ns, first_price_authorities=tuple(
+            authority for unit in compound.units if type(unit) is V4StrategyOneEntryBatch
+            for authority in unit.first_price_authorities))

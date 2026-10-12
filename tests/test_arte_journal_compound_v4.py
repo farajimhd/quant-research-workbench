@@ -178,6 +178,31 @@ def test_compound_retains_qualified_rule_rows_and_reseals_dependent_child_hashes
             converted.append(stored_row)
         persisted.append((name, tuple(converted)))
     verify_rule_decision_commit_readback(committed, persisted)
+    from src.trading_runtime import rule_decision_writer_preflight as preflight_module
+    from src.trading_runtime import arte_journal_commit_v4 as commit_module
+    from src.trading_runtime.rule_decision_compound import publish_qualified_compound
+    publication_calls = []
+    client = object()
+    def audit(actual):
+        assert actual is client
+        publication_calls.append("audit")
+    def publish(actual, batch, base_rows, family_rows, **context):
+        assert actual is client and batch is real_compound.base
+        assert base_rows == ordinary_families
+        assert {name for name, _ in family_rows} == {name for name, _ in committed.families}
+        assert context["verified_prior_prefix"] == "prefix"
+        publication_calls.append("publish")
+        return batch.batch_id
+    monkeypatch.setattr(preflight_module, "preflight_rule_decision_writer", audit)
+    monkeypatch.setattr(commit_module, "_publish_sealed_batch_v4", publish)
+    assert publish_qualified_compound(client, real_compound, verified_prior_prefix="prefix") == real_compound.base.batch_id
+    assert publication_calls == ["audit", "publish"]
+    def reject(actual):
+        raise RuntimeError("Grant audit rejected")
+    monkeypatch.setattr(preflight_module, "preflight_rule_decision_writer", reject)
+    with pytest.raises(RuntimeError, match="Grant audit"):
+        publish_qualified_compound(client, real_compound)
+    assert publication_calls == ["audit", "publish"]
     with pytest.raises(TypeError):
         committed.commit["batch_id"] = first.base.batch_id
     with pytest.raises(ValueError, match="Backtest owner"):
