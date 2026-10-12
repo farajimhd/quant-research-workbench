@@ -4878,7 +4878,6 @@ class ReplayRunController:
                     "strategy_revision": actor.revision, "correlation_id": identity,
                     "causation_id": source_hash})
             from src.trading_runtime.rule_decision_basis_projection import project_program_completion_basis
-            from types import MappingProxyType
             intent_references = []
             for record in self._journal.records(self.run_id, after_sequence=basis_sequence):
                 if (record.category, record.entity_type) != ("strategy", "strategy_intent"):
@@ -4894,8 +4893,7 @@ class ReplayRunController:
                 batch_id=completion.record_id)
             # Provisional microbatch identity; the fenced publisher must rekey
             # these scalar rows together with their original completion event.
-            decision_basis = (MappingProxyType(dict(parent)),
-                tuple(MappingProxyType(dict(child)) for child in children))
+            decision_basis = self._journal.retain_rule_decision_basis(completion, parent, children)
         except BaseException as exc:
             self._program_dispatch_failure = exc
             raise

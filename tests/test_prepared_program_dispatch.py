@@ -147,6 +147,9 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 assert basis_parent["source_commit_hash"] == source_prefix_hashes[-1]
                 assert basis_parent["intent_count"] == len(basis_children) == len(decision_intents)
                 dispatched_parent, dispatched_children = result["decision_basis"]
+                assert controller._journal.rule_decision_basis_for_record(completion.record_id) is result["decision_basis"]
+                with pytest.raises(ValueError, match="pending journal record"):
+                    controller._journal.retain_rule_decision_basis(completion, dispatched_parent, dispatched_children)
                 assert dispatched_parent["record_id"] == completion.record_id
                 assert dispatched_parent["basis_sequence"] == basis_sequence
                 assert dispatched_parent["source_commit_hash"] == basis_parent["source_commit_hash"]

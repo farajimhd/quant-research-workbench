@@ -191,6 +191,9 @@ def project_pending_backtest_v4_prefix(
         batch_id = str(uuid5(NAMESPACE_URL,
             f"arte-backtest-v1:{record.run_id}:{attempt}:{sequence}:{record.record_id}"))
         kind = (record.category, record.entity_type)
+        if (kind == ("strategy_decision", "signal")
+                and record.payload.get("signal_type") == "program_boundary_completed"):
+            raise RuntimeError("Rule decision publication requires its integrated fenced basis family")
         confirmation_source = (journal.confirmed_ah_exit_for_record(record.record_id)
                                if kind == ('strategy', 'strategy_intent') else None)
         liquidity_source = (journal.liquidity_fade_exit_for_record(record.record_id)

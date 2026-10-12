@@ -111,6 +111,10 @@ def project_program_completion_basis(record, *, release, block, assignment,
 
 
 def _digest(value):
+    if isinstance(value, Mapping):
+        value = dict(value)
+    elif isinstance(value, tuple):
+        value = tuple(dict(row) if isinstance(row, Mapping) else row for row in value)
     return sha256(canonical_json(value).encode()).hexdigest()
 
 

@@ -55,6 +55,7 @@ class BacktestMemoryJournal:
         self._oms_admissions: dict[str, dict[str, Any] | None] = {}
         self._order_requests: dict[str, Any] = {}
         self._backtest_progress: dict[str, dict[str, Any]] = {}
+        self._rule_decision_bases: dict[str, tuple] = {}
         # Admission evidence is the immutable creation fact, never the mutable
         # reservation state after a fill, release, or cancellation.
         self._reservation_creations: dict[tuple[str, str], dict[str, Any]] = {}
@@ -707,6 +708,25 @@ class BacktestMemoryJournal:
         with self._lock:
             return self._next_sequence - self._fenced_sequence
 
+    def retain_rule_decision_basis(self, record, parent, children) -> tuple:
+        """Retain only immutable scalar evidence for an unfenced completion."""
+        from src.trading_runtime.rule_decision_basis_projection import verify_rule_decision_completion_record
+        verify_rule_decision_completion_record(parent, children, record)
+        with self._lock:
+            self._require_open()
+            if (record.run_id != self.run_id or not self._fenced_sequence < record.sequence <= self._next_sequence
+                    or self._records[record.sequence - self._base_sequence - 1] != record
+                    or record.record_id in self._rule_decision_bases):
+                raise ValueError("Rule decision retention differs from its pending journal record")
+            retained = (MappingProxyType(dict(parent)),
+                tuple(MappingProxyType(dict(child)) for child in children))
+            self._rule_decision_bases[record.record_id] = retained
+            return retained
+
+    def rule_decision_basis_for_record(self, record_id: str):
+        with self._lock:
+            return self._rule_decision_bases.get(record_id)
+
     def mark_fenced(self, sequence: int) -> None:
         """Release pending capacity only after ClickHouse confirms its fence."""
         with self._lock:
@@ -727,6 +747,7 @@ class BacktestMemoryJournal:
                     self._oms_admissions.pop(record.record_id, None)
                     self._order_requests.pop(record.record_id, None)
                     self._backtest_progress.pop(record.record_id, None)
+                    self._rule_decision_bases.pop(record.record_id, None)
                 del self._records[:discard]
                 self._base_sequence = sequence
             self._fenced_sequence = sequence
@@ -1147,6 +1168,7 @@ class BacktestMemoryJournal:
         with self._lock:
             self._closed = True
             self._automatic_entries.clear()
+            self._rule_decision_bases.clear()
             self._strategy_one_entries.clear()
             self._strategy_one_adds.clear()
             self._profit_giveback_exits.clear()

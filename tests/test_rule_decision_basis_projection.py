@@ -111,3 +111,26 @@ def test_committed_decision_page_is_bounded_and_rejects_unfenced_or_corrupt_rows
         load_committed_rule_decision_page(object(), object())
     with pytest.raises(ValueError, match="bounded page"):
         load_committed_rule_decision_page(object(), prefix, limit=501)
+
+
+def test_pending_journal_retains_basis_until_fence_and_blocks_unintegrated_publication():
+    from src.backend.backtest_journal_memory import BacktestMemoryJournal
+    from src.backend.backtest_typed_projection import project_pending_backtest_v4_prefix
+    journal = BacktestMemoryJournal(run_id="run", max_pending_records=1)
+    record = journal.append(run_id="run", category="strategy_decision", entity_type="signal",
+        entity_id="a" * 64, account_id="account", event_time=values()["boundary_at"],
+        payload=dict(signal_type="program_boundary_completed", causation_id="c" * 64,
+            metadata=dict(assignment_id="assignment", reason_detail="wait")))
+    parent, children = project_rule_decision_basis({**values("wait"),
+        "record_id": record.record_id, "basis_sequence": 0, "decision_sequence": 1}, [])
+    retained = journal.retain_rule_decision_basis(record, parent, children)
+    assert journal.rule_decision_basis_for_record(record.record_id) is retained
+    with pytest.raises(RuntimeError, match="integrated fenced basis"):
+        project_pending_backtest_v4_prefix(journal, attempt_id=str(uuid4()),
+            run_month=date(2026, 8, 1), prior_sequence=0, through_sequence=1)
+    assert journal.pending_record_count == 1
+    journal.mark_fenced(1)
+    assert journal.rule_decision_basis_for_record(record.record_id) is None
+    with pytest.raises(ValueError, match="pending journal record"):
+        journal.retain_rule_decision_basis(record, parent, children)
+    journal.close()
