@@ -14,9 +14,14 @@ integrated before normal app launch. No legacy frame fallback is authorized.
 The shared V4 journal assembly accepts an explicit `exact_oms_prices` selection
 and requires the dedicated programme-writer audit before opening the memory
 journal or writer worker for that selection. Omitted selection preserves the
-existing legacy publisher. This source-level assembly option still needs binding
-to the immutable programme run contract and context-publication launch route;
-it is not an operational admission certificate.
+existing legacy publisher. Exact assembly additionally requires the shared
+`trading_backtest_journal_price_contract_v1` scalar content and its externally
+pinned hash, matching the verified run/month/configuration scope. The contract
+contains no JSON, strategy-owned table or broker-price policy. Its immutable
+projection/recovery validates codec and content before any worker opens.
+This table is staged, not installed or published. Valid scalar content alone
+does not prove database publication; the control-plane publication/readback and
+context-publication launch route remain required for operational admission.
 
 ## Delivered components
 

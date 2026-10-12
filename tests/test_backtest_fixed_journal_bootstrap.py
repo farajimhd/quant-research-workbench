@@ -60,6 +60,37 @@ def test_v4_writer_lane_selects_exact_prices_only_after_program_audit(monkeypatc
         bootstrap._assemble_v4_writer_lane(client, token, **{**scope, "exact_oms_prices": 1})
 
 
+def test_exact_assembly_binds_normalized_contract_before_worker_creation(monkeypatch):
+    from src.trading_runtime.backtest_journal_price_contract import (
+        BacktestJournalPriceContract, project_journal_price_contract, EXACT_PRICE_CODEC)
+    read, terminal = object(), object()
+    client = SimpleNamespace(typed_insert_strict=True,
+        typed_insert_dispatch=bootstrap.TypedInsertDispatch(object()))
+    token = bootstrap.FixedV4JournalPreflightToken(RUN, ("DU1",), date(2026, 8, 1),
+        "c" * 64, "b" * 64, "a" * 64)
+    context = dict(mode="backtest", account_ids=("DU1",), configuration_hash="c" * 64,
+        market_plan_token="b" * 64)
+    monkeypatch.setattr(bootstrap, "load_typed_run_context", lambda *args: context)
+    monkeypatch.setattr(bootstrap, "_v4_preflight", lambda client: None)
+    calls = []
+    monkeypatch.setattr(bootstrap, "_assemble_v4_writer_lane", lambda *args, **kw: calls.append(kw) or "assembly")
+    scope = dict(attempt_id=ATTEMPT, expected_config={}, fixed_market_parent_plan=object(),
+        fixed_market_execution_plan=object(), expected_market_start=datetime(2026, 8, 18, tzinfo=timezone.utc),
+        writer_factory=lambda *args, **kw: None, exact_oms_prices=True)
+    with pytest.raises(ValueError, match="normalized price contract"):
+        bootstrap.assemble_fixed_v4_journal(read, client, terminal, token, **scope)
+    row = project_journal_price_contract(run_id=RUN, run_month=token.run_month,
+        configuration_hash=token.configuration_hash, price_codec=EXACT_PRICE_CODEC)
+    bound = dict(journal_price_contract=BacktestJournalPriceContract(row),
+        expected_journal_price_contract_hash=row["content_hash"])
+    with pytest.raises(ValueError, match="pinned run"):
+        bootstrap.assemble_fixed_v4_journal(read, client, terminal, token,
+            **{**scope, **bound, "expected_journal_price_contract_hash": "d" * 64})
+    assert not calls
+    assert bootstrap.assemble_fixed_v4_journal(read, client, terminal, token, **scope, **bound) == "assembly"
+    assert calls[0]["exact_oms_prices"] is True
+
+
 def test_resumed_v4_assembly_installs_campaign_or_closes_on_failure(monkeypatch):
     from src.backend.backtest_journal_memory import BacktestMemoryJournal
     from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval

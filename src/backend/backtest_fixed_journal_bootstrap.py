@@ -554,12 +554,17 @@ def assemble_fixed_v4_journal(
     published_context_seal: _V4PublishedContextSeal | None = None,
     drawdown_authority=None,
     exact_oms_prices: bool = False,
+    journal_price_contract=None,
+    expected_journal_price_contract_hash: str | None = None,
 ) -> FixedJournalAssembly:
     """Build one bounded memory-to-Keeper writer lane; never open the gate."""
     from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
 
     if type(exact_oms_prices) is not bool:
         raise ValueError("V4 price contract selection must be explicit")
+    if not exact_oms_prices and (journal_price_contract is not None
+            or expected_journal_price_contract_hash is not None):
+        raise ValueError("Legacy journal assembly cannot consume an exact price contract")
     owner = getattr(writer_client, "backtest_v4_lease", None)
     if (not isinstance(token, FixedV4JournalPreflightToken)
             or len({id(read_client), id(writer_client), id(terminal_client)}) != 3
@@ -591,6 +596,13 @@ def assemble_fixed_v4_journal(
             or context["market_plan_token"] != token.market_plan_token
             or not same_context):
         raise RuntimeError("V4 journal context changed before assembly")
+    if exact_oms_prices:
+        from src.trading_runtime.backtest_journal_price_contract import BacktestJournalPriceContract
+        if type(journal_price_contract) is not BacktestJournalPriceContract:
+            raise ValueError("Exact journal assembly requires its normalized price contract")
+        journal_price_contract.require_scope(run_id=token.run_id, run_month=token.run_month,
+            configuration_hash=token.configuration_hash,
+            content_hash=expected_journal_price_contract_hash)
     # The production writer constructor performs this exact V4 storage and
     # grant audit before starting its thread. Keep the explicit audit for
     # injected factories, which may not enforce that constructor contract.
