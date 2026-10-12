@@ -86,3 +86,28 @@ def test_decision_rejects_missing_duplicate_or_overfull_intent_records():
     with pytest.raises(ValueError, match="sequence"):
         project_rule_decision_basis({**values(), "decision_sequence": 4},
             [dict(stage="entry", strategy_intent_id="intent")])
+
+
+def test_committed_decision_page_is_bounded_and_rejects_unfenced_or_corrupt_rows(monkeypatch):
+    from src.trading_runtime import arte_journal_writer as writer
+    from src.trading_runtime.rule_decision_basis_projection import load_committed_rule_decision_page
+    parent, children = project_rule_decision_basis(values(),
+        [dict(stage="entry", strategy_intent_id="intent")])
+    prefix = writer.CommittedPrefix("run", 5, parent["batch_id"], "source", "running", (parent["batch_id"],))
+    queries = []
+    rows = [[parent], list(children)]
+    def read(client, sql):
+        queries.append(sql)
+        return rows.pop(0)
+    monkeypatch.setattr(writer, "_rows", read)
+    recovered = load_committed_rule_decision_page(object(), prefix, limit=1)
+    assert recovered[0] == (parent, children)
+    assert all("batch_id IN" in sql and "LIMIT" in sql for sql in queries)
+    for bad_parent in ({**parent, "source_commit_hash": "e" * 64},):
+        rows[:] = [[bad_parent]]
+        with pytest.raises(ValueError, match="integrity"):
+            load_committed_rule_decision_page(object(), prefix, limit=1)
+    with pytest.raises(ValueError, match="verified prefix"):
+        load_committed_rule_decision_page(object(), object())
+    with pytest.raises(ValueError, match="bounded page"):
+        load_committed_rule_decision_page(object(), prefix, limit=501)

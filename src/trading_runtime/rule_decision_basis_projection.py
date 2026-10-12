@@ -213,3 +213,46 @@ def verify_rule_decision_completion_record(parent, children, record):
             or payload.get("metadata", {}).get("reason_detail") != parent["selection_status"]):
         raise ValueError("Rule decision completion differs from its journal authority")
     return record
+
+
+def load_committed_rule_decision_page(client, prefix, *, after_sequence=0, limit=200):
+    """Read bounded scalar references; callers still resolve source and journal proofs."""
+    from .arte_journal_writer import _valid_prefix, _committed_batch_filter, _literal, _rows
+    if (not _valid_prefix(prefix) or type(after_sequence) is not int or after_sequence < 0
+            or type(limit) is not int or not 1 <= limit <= 500):
+        raise ValueError("Rule decision readback requires a verified prefix and bounded page")
+    parents = _rows(client, f"SELECT {','.join(name for name, _ in BASIS.columns)} "
+        f"FROM arte.{BASIS.name} WHERE run_id={_literal(prefix.run_id)} "
+        f"AND decision_sequence>{after_sequence} AND decision_sequence<={prefix.last_sequence} "
+        f"{_committed_batch_filter(prefix)} ORDER BY decision_sequence LIMIT {limit} FORMAT JSONEachRow")
+    if len(parents) > limit:
+        raise ValueError("Rule decision readback exceeds page bound")
+    if not parents:
+        return ()
+    def normalize_stored(table, row):
+        normalized = _seal(table, {key: value for key, value in row.items() if key != "content_hash"})
+        if normalized["content_hash"] != row.get("content_hash"):
+            raise ValueError("Rule decision stored row integrity differs")
+        return normalized
+    parents = [normalize_stored(BASIS, row) for row in parents]
+    ids = [parent["decision_id"] for parent in parents]
+    if len(set(ids)) != len(ids):
+        raise ValueError("Rule decision readback repeats a decision")
+    children = _rows(client, f"SELECT {','.join(name for name, _ in INTENT.columns)} "
+        f"FROM arte.{INTENT.name} WHERE run_id={_literal(prefix.run_id)} "
+        f"AND decision_id IN ({','.join(_literal(value) for value in ids)}) "
+        f"{_committed_batch_filter(prefix)} ORDER BY decision_id,ordinal LIMIT {16 * limit + 1} FORMAT JSONEachRow")
+    if len(children) > 16 * limit or any(child["decision_id"] not in ids for child in children):
+        raise ValueError("Rule decision readback has orphan or excessive intents")
+    children = [normalize_stored(INTENT, row) for row in children]
+    result = []
+    previous = after_sequence
+    for parent in parents:
+        if (parent["run_id"] != prefix.run_id or parent["batch_id"] not in prefix.batch_ids
+                or not previous < int(parent["decision_sequence"]) <= prefix.last_sequence):
+            raise ValueError("Rule decision readback differs from committed scope")
+        linked = tuple(child for child in children if child["decision_id"] == parent["decision_id"])
+        parent, linked = verify_rule_decision_basis(parent, linked)
+        result.append((MappingProxyType(dict(parent)), tuple(MappingProxyType(dict(child)) for child in linked)))
+        previous = parent["decision_sequence"]
+    return tuple(result)
