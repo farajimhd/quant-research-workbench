@@ -33,6 +33,14 @@ The context-publication launch route still needs to supply and pin this content.
 Tests use synthetic transport and storage audits; no operational table or run
 has been read or written by this validation, and provisioning remains plan-only.
 
+The shared V4 cold-reader factory and bootstrap preflight now support the
+dedicated programme principal with server-enforced readonly mode and explicit,
+exclusive profile selection. Programme writer detail lanes inherit their
+programme profile, the same typed dispatch and the same Keeper lease; they do
+not borrow a startup audit from another client. Synthetic factory tests close
+every created client without issuing a network request. The default legacy
+factory and preflight behavior remains unchanged.
+
 ## Delivered components
 
 - `columnar_rule_program.py`: bounded typed DAGs evaluated with native Polars

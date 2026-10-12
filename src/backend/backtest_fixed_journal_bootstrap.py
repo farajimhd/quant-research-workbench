@@ -732,7 +732,8 @@ def _v4_cold_reader_preflight(client: Any) -> None:
     if client.execute("SELECT getSetting('readonly')").strip() != "1":
         raise RuntimeError("V4 cold reader must have ClickHouse readonly=1")
     profiles = (('automatic_ladder_profile', 'backtest_v4_ladder_runner'),
-                ('entry_spread_risk_profile', 'backtest_v4_entry_cost_runner'))
+                ('entry_spread_risk_profile', 'backtest_v4_entry_cost_runner'),
+                ('program_decision_profile', 'backtest_v4_program_runner'))
     selected = []
     for attribute, principal in profiles:
         enabled = getattr(client, attribute, False)

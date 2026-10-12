@@ -383,6 +383,8 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
         lane.typed_insert_dispatch = client.typed_insert_dispatch
         lane.typed_insert_strict = True
         lane.backtest_v4_lease = lease
+        if program_decisions:
+            lane.program_decision_profile = True
         return lane
     client.v4_insert_lane_factory = new_detail_lane
     client.v4_insert_lane_limit = 4
@@ -438,11 +440,13 @@ def _dedicated_clickhouse_credentials(prefix: str, path_key: str) -> tuple[str, 
     return inline[0].strip(), inline[1].strip(), inline[2]
 
 
-def backtest_v4_operator_client_from_env(*, automatic_ladder=False, entry_spread_risk=False) -> Any:
+def backtest_v4_operator_client_from_env(*, automatic_ladder=False, entry_spread_risk=False,
+                                       program_decisions=False) -> Any:
     """SELECT-only catalog/grant audit before any Keeper claim or run write."""
     from research.mlops.clickhouse import ClickHouseHttpClient
 
-    url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder, entry_spread_risk=entry_spread_risk)
+    url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder, entry_spread_risk=entry_spread_risk,
+        **({'program_decisions': program_decisions} if program_decisions is not False else {}))
     client = ClickHouseHttpClient(
         url, user, password, timeout_seconds=60, persistent=True,
         default_query_params={"readonly": 1, "max_threads": 2,
@@ -450,6 +454,7 @@ def backtest_v4_operator_client_from_env(*, automatic_ladder=False, entry_spread
     client.v4_batched_detail_readback = True
     client.automatic_ladder_profile = automatic_ladder
     client.entry_spread_risk_profile = entry_spread_risk
+    client.program_decision_profile = program_decisions
     return client
 
 

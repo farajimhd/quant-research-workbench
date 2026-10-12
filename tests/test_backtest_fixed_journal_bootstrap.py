@@ -747,6 +747,7 @@ class ProfileColdReader:
 @pytest.mark.parametrize('attribute,principal',[
     ('entry_spread_risk_profile','backtest_v4_entry_cost_runner'),
     ('automatic_ladder_profile','backtest_v4_ladder_runner'),
+    ('program_decision_profile','backtest_v4_program_runner'),
 ])
 def test_v4_cold_reader_matches_only_exact_selected_profile(attribute,principal):
     selected = {attribute: True}

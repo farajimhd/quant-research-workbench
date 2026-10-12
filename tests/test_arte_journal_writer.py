@@ -300,6 +300,49 @@ def test_v4_client_requires_isolated_runner_identity(monkeypatch) -> None:
     assert client.v4_insert_lane_cache == ()
 
 
+def test_program_transport_profiles_reach_cold_reader_and_each_owned_detail_lane(monkeypatch):
+    from src.trading_runtime.keeper_session import ManagedKeeperSession
+    from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
+    from tests.test_live_signal_completion_keeper import FakeKazoo
+    selected = []
+    def credentials(**profiles):
+        assert profiles.get("program_decisions") is True
+        selected.append(profiles)
+        return "http://192.168.1.218:18123", "backtest_v4_program_runner", "synthetic-only"
+    monkeypatch.setattr(writer_module, "_v4_runner_credentials", credentials)
+    keeper = FakeKazoo()
+    keeper.add_listener = lambda listener: None
+    keeper.remove_listener = lambda listener: None
+    keeper.stop = lambda: None
+    keeper.close = lambda: None
+    session = ManagedKeeperSession(keeper)
+    session._on_state("CONNECTED")
+    lease = BacktestV4KeeperLease.acquire(session,
+        run_id="62908518-9fd4-4a8e-8c90-2162ccb237e1", owner_id="program-worker")
+    reader = writer_module.backtest_v4_operator_client_from_env(program_decisions=True)
+    client = None
+    try:
+        assert reader.user == "backtest_v4_program_runner"
+        assert reader.program_decision_profile is True
+        assert reader.default_query_params["readonly"] == "1"
+        client = writer_module.backtest_v4_journal_client_from_env(
+            keeper_session=session, lease=lease, program_decisions=True)
+        assert client.program_decision_profile is True
+        assert len(client.v4_insert_lane_cache) == 4
+        for lane in client.v4_insert_lane_cache:
+            assert lane.program_decision_profile is True
+            assert lane.typed_insert_dispatch is client.typed_insert_dispatch
+            assert lane.backtest_v4_lease is lease
+            assert lane.user == client.user
+        assert len(selected) == 2
+    finally:
+        reader.close()
+        if client is not None:
+            client.close()
+        lease.release()
+        session.close()
+
+
 def test_v4_context_client_requires_keeper_and_audits_journal_grants(monkeypatch):
     from src.trading_runtime.keeper_session import ManagedKeeperSession
     from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
