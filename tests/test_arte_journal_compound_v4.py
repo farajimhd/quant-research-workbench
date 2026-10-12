@@ -163,6 +163,38 @@ def test_compound_retains_qualified_rule_rows_and_reseals_dependent_child_hashes
     assert writer._committed_units == writer._committed_event_rows == 1
     assert writer._failed_units == 0 and writer._queue.unfinished_tasks == 0
     monkeypatch.undo()
+    import asyncio
+    from concurrent.futures import Future
+    from src.backend.backtest_journal_memory import BacktestMemoryJournal
+    from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
+    async def publisher_tail():
+        journal = BacktestMemoryJournal(run_id=RUN, initial_sequence=2)
+        journal.append(run_id=RUN, category="lifecycle", entity_type="run", entity_id=RUN,
+                       event_time=at, payload={"status": "running"})
+        pending = Future()
+        seen = []
+        def submit(queued):
+            assert queued is first
+            seen.append(queued)
+            return pending
+        sink = SimpleNamespace(run_id=RUN, run_mode="backtest", journal_profile="backtest_v4",
+            coalesce_batches=False, max_events_per_commit=512, submit_qualified_rule_v4=submit)
+        publisher = BacktestTypedJournalPublisher(journal, sink, attempt_id=ATTEMPT,
+            run_month=scope["event_month"], initial_sequence=2, prior_batch_id=base.prior_batch_id)
+        publisher._prepare_batches = lambda through: (first,)
+        task = publisher.enqueue_pending()
+        for _ in range(100):
+            if seen:
+                break
+            await asyncio.sleep(.001)
+        assert seen == [first] and not task.done()
+        assert journal.pending_record_count == 1
+        pending.set_result(first.base.batch_id)
+        settled = await task
+        assert settled.last_sequence == 3 and settled.last_batch_id == first.base.batch_id
+        assert journal.pending_record_count == 0
+        journal.close()
+    asyncio.run(publisher_tail())
     from dataclasses import replace
     from src.trading_runtime.rule_decision_compound import qualified_compound_rule_families
     from src.trading_runtime.rule_decision_basis_schema import BASIS, INTENT
