@@ -81,6 +81,24 @@ def test_cohort_preparation_reuses_full_feature_origin_and_bounds_parallel_io(pr
     assert calls == [] and active == 0
     assert checked_pins[feature_pin.scope.listing_id] is feature_pin
     assert checked_assignments["first"] == checked_assignments["second"]
+    from src.backend.backtest_program_input_plan import ProgramCohortInputPlan, preflight_program_session_inputs
+    plan = ProgramCohortInputPlan({feature_pin.scope.listing_id: feature_pin}, population,
+        {"first": feature_pin.scope.listing_id, "second": feature_pin.scope.listing_id}, **kwargs)
+    assert preflight_program_session_inputs(release, (plan,), first_bucket=plan.first_bucket,
+                                             stop_bucket=plan.stop_bucket) == (plan,)
+    with pytest.raises(ValueError, match="requested session end"):
+        preflight_program_session_inputs(release, (plan,), first_bucket=plan.first_bucket,
+                                         stop_bucket=plan.stop_bucket + 1)
+    with pytest.raises(ValueError, match="gap, overlap"):
+        preflight_program_session_inputs(release, (plan, plan), first_bucket=plan.first_bucket,
+                                         stop_bucket=plan.stop_bucket)
+    next_plan = replace(plan, first_bucket=plan.stop_bucket, stop_bucket=plan.stop_bucket + 10)
+    assert preflight_program_session_inputs(release, (plan, next_plan), first_bucket=plan.first_bucket,
+                                             stop_bucket=next_plan.stop_bucket) == (plan, next_plan)
+    with pytest.raises(ValueError, match="evaluation origin"):
+        preflight_program_session_inputs(release, (plan, replace(next_plan, evaluation_block="different")),
+                                         first_bucket=plan.first_bucket, stop_bucket=next_plan.stop_bucket)
+    assert calls == []
     with pytest.raises(TypeError):
         checked_assignments["third"] = feature_pin.scope.listing_id
     result = asyncio.run(prepare_program_cohort_inputs(release,
