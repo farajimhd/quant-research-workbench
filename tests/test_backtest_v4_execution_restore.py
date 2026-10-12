@@ -69,3 +69,29 @@ def test_execution_restoration_requires_final_commission_and_gapless_ids():
             (fill,), (fee,), requests_by_coid={"co-1": request},
             coid_by_broker_id={"SIM-ORDER-1": "co-1"},
             next_execution_id=3)
+
+
+def test_historical_execution_read_preserves_prefix_and_excludes_future_fills_and_fees(monkeypatch):
+    from src.backend import backtest_v4_execution_restore as module
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    request, fill, fee = _facts()
+    prefix = V4CommittedPrefix("run", 12, "batch", "source", "running", ("batch",))
+    def fills(client, actual_prefix, **bounds):
+        assert actual_prefix is prefix and bounds == dict(after_sequence=0, limit=1000)
+        return (fill, {**fill, "sequence": 10, "execution_id": "SIM-2"})
+    def fees(client, actual_prefix, **bounds):
+        assert actual_prefix is prefix
+        return (fee, {**fee, "sequence": 11, "execution_id": "SIM-2"},
+            {**fee, "sequence": 12, "commission": "9.0"})
+    monkeypatch.setattr(module, "load_committed_execution_page", fills)
+    monkeypatch.setattr(module, "load_committed_commission_page", fees)
+    scope = dict(requests_by_coid={"co-1": request},
+        coid_by_broker_id={"SIM-ORDER-1": "co-1"}, next_execution_id=2)
+    result = module.load_v4_broker_executions(object(), prefix, through_sequence=8, **scope)
+    assert len(result) == 1 and result[0]["commission"] == .05
+    assert prefix.last_sequence == 12
+    with pytest.raises(RuntimeError, match="fee identities differ"):
+        module.load_v4_broker_executions(object(), prefix, through_sequence=7, **scope)
+    for invalid in (-1, 13, True):
+        with pytest.raises(ValueError, match="scope"):
+            module.load_v4_broker_executions(object(), prefix, through_sequence=invalid, **scope)

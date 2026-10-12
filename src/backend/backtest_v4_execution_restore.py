@@ -16,15 +16,17 @@ from src.trading_runtime.ibkr_schema import OrderRequest
 
 
 def _pages(loader: Any, client: Any, prefix: V4CommittedPrefix,
-           *, maximum: int) -> tuple[dict, ...]:
+           *, maximum: int, through_sequence: int | None = None) -> tuple[dict, ...]:
     rows: list[dict] = []
     after = 0
     while True:
         page = loader(client, prefix, after_sequence=after, limit=1000)
-        if len(rows) + len(page) > maximum:
+        selected = page if through_sequence is None else tuple(
+            row for row in page if int(row["sequence"]) <= through_sequence)
+        if len(rows) + len(selected) > maximum:
             raise RuntimeError("V4 broker trade history exceeds recovery bound")
-        rows.extend(page)
-        if len(page) < 1000:
+        rows.extend(selected)
+        if len(page) < 1000 or len(selected) != len(page):
             return tuple(rows)
         next_after = int(page[-1]["sequence"])
         if next_after <= after:
@@ -105,14 +107,17 @@ def load_v4_broker_executions(
     requests_by_coid: Mapping[str, OrderRequest],
     coid_by_broker_id: Mapping[str, str],
     next_execution_id: int, maximum: int = 100_000,
+    through_sequence: int | None = None,
 ) -> list[dict[str, Any]]:
     """SELECT committed normalized facts; never read a disk journal."""
     if (not isinstance(prefix, V4CommittedPrefix) or not prefix.batch_ids
             or type(maximum) is not int or not 1 <= maximum <= 100_000
-            or next_execution_id - 1 > maximum):
+            or next_execution_id - 1 > maximum
+            or through_sequence is not None and (type(through_sequence) is not int
+                or not 0 <= through_sequence <= prefix.last_sequence)):
         raise ValueError("V4 broker execution recovery scope is invalid")
-    fills = _pages(load_committed_execution_page, client, prefix, maximum=maximum)
-    fees = _pages(load_committed_commission_page, client, prefix, maximum=maximum * 4)
+    fills = _pages(load_committed_execution_page, client, prefix, maximum=maximum, through_sequence=through_sequence)
+    fees = _pages(load_committed_commission_page, client, prefix, maximum=maximum * 4, through_sequence=through_sequence)
     return reconstruct_broker_executions(
         fills, fees, requests_by_coid=requests_by_coid,
         coid_by_broker_id=coid_by_broker_id,
