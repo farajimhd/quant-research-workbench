@@ -10,6 +10,8 @@ import json
 from math import isfinite
 from pathlib import Path
 from typing import Mapping
+from datetime import date
+from concurrent.futures import ThreadPoolExecutor
 
 
 WINNER_SHA256 = '57c03ac8aba6e2e09df254d0ac615fce61efa63fe64754351f73c06fafde4d12'
@@ -26,32 +28,69 @@ class OptimizationReference:
     sessions: Mapping
 
 
-def read_reference(root: str | Path) -> OptimizationReference:
+def read_reference(root: str | Path, *, concurrency: int = 1) -> OptimizationReference:
     """Require every frozen session, its receipt hash and the exact winner.
 
     The immutable winner hash is the trust anchor. Reference files are not
     permissible substitutes for database bars, scanner rows or feature inputs.
     """
-    root = Path(root)
+    if type(concurrency) is not int or not 1 <= concurrency <= 32:
+        raise ValueError('Reference reads require bounded explicit concurrency')
+    root = Path(root).resolve()
     manifest = json.loads((root / 'freeze.json').read_text(encoding='utf-8-sig'))
     if (manifest['generation'] != GENERATION or manifest['training_sessions'] != 30
             or manifest['validation_opened']
             or manifest['winner_sha256'] != WINNER_SHA256):
         raise ValueError('Unexpected optimization reference identity')
     hashes = manifest['files_sha256']
-    for name, checksum in hashes.items():
+    if (type(hashes) is not dict
+            or not {'winner.json', 'complete.json', 'ranking.json'} <= set(hashes)):
+        raise ValueError('Missing frozen winner, ranking or generation seal')
+    def read(item):
+        name, checksum = item
         relative = Path(name)
-        if relative.is_absolute() or '..' in relative.parts:
+        target = (root / relative).resolve()
+        if relative.is_absolute() or '..' in relative.parts or not target.is_relative_to(root):
             raise ValueError('Unsafe reference path')
-        if sha256((root / relative).read_bytes()).hexdigest() != checksum:
+        content = target.read_bytes()
+        if sha256(content).hexdigest() != checksum:
             raise ValueError(f'Frozen reference changed: {name}')
+        return name, content
     if hashes.get('winner.json') != WINNER_SHA256:
         raise ValueError('Missing frozen winner seal')
-    seal = json.loads((root / 'complete.json').read_text())
+    _, complete = read(('complete.json', hashes['complete.json']))
+    seal = json.loads(complete)
     days = seal['training_days']
     if len(days) != 30 or len(set(days)) != 30 or seal['validation_opened']:
         raise ValueError('Expected all 30 unique training sessions')
-    ranking = json.loads((root / 'ranking.json').read_text())
+    if any(type(day) is not str or date.fromisoformat(day).isoformat() != day for day in days):
+        raise ValueError('Frozen session date is not canonical')
+    expected_files = {'winner.json', 'complete.json', 'ranking.json'} | {
+        f'{day}/receipt.json' for day in days}
+    if expected_files - set(hashes):
+        raise ValueError('Missing frozen session seal')
+    if set(hashes) - expected_files:
+        raise ValueError('Unexpected reference file outside declared training comparison')
+    items = [(name, checksum) for name, checksum in hashes.items() if name != 'complete.json']
+    # Retain the exact verified bytes, rather than reopening mutable files.
+    # The worker pool settles every submitted read before it can return.
+    if concurrency == 1:
+        contents = dict(read(item) for item in items)
+    else:
+        with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix='frozen-reference') as pool:
+            futures = [pool.submit(read, item) for item in items]
+            verified, errors = [], []
+            for future in futures:
+                try:
+                    verified.append(future.result())
+                except BaseException as failure:
+                    errors.append(failure)
+            if len(errors) == 1:
+                raise errors[0]
+            if errors:
+                raise BaseExceptionGroup('Frozen reference file reads failed', errors)
+            contents = dict(verified)
+    ranking = json.loads(contents['ranking.json'])
     candidate = ranking[0]['candidate']
     if type(candidate) is not int or candidate < 0:
         raise ValueError('Invalid winner population index')
@@ -61,7 +100,7 @@ def read_reference(root: str | Path) -> OptimizationReference:
         name = f'{day}/receipt.json'
         if name not in hashes:
             raise ValueError(f'Missing frozen session seal: {day}')
-        receipt = json.loads((root / name).read_text())
+        receipt = json.loads(contents[name])
         if (receipt['day'] != day or not receipt['full_session']
                 or receipt['validation_opened']
                 or receipt['population_sha256'] != seal['population_sha256']):
@@ -75,7 +114,13 @@ def read_reference(root: str | Path) -> OptimizationReference:
             raise ValueError('Winner index outside session metric population')
         sessions[day] = {name: values[candidate] for name, values in metrics.items()}
     return OptimizationReference(GENERATION, WINNER_SHA256, candidate,
-        json.loads((root / 'winner.json').read_text()), execution, sessions)
+        json.loads(contents['winner.json']), execution, sessions)
+
+
+async def load_reference(root, *, concurrency):
+    """Read the all-session comparison reference off-loop; never launch research."""
+    from src.backend.qmd_columnar_history_transport import _owned_worker
+    return await _owned_worker(read_reference, root, concurrency=concurrency)
 
 
 def compare_sessions(reference: OptimizationReference, app_results: Mapping) -> list[dict]:

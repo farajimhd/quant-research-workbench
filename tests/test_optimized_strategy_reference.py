@@ -1,5 +1,9 @@
 """Comparison admission and coverage invariants, without running a backtest."""
 import pytest
+import json
+import asyncio
+from hashlib import sha256
+from pathlib import Path
 
 from src.trading_runtime.optimized_strategy_reference import (
     OptimizationReference, compare_sessions,
@@ -54,3 +58,67 @@ def test_missing_metrics_remain_visible_and_nan_fails():
 def test_non_reference_session_is_rejected():
     with pytest.raises(ValueError, match='non-reference'):
         compare_sessions(reference(), {'2027-01-01': result()})
+
+
+def frozen_root(monkeypatch, tmp_path):
+    from src.trading_runtime import optimized_strategy_reference as module
+    winner = json.dumps({"program": "synthetic"}).encode()
+    digest = sha256(winner).hexdigest()
+    monkeypatch.setattr(module, "WINNER_SHA256", digest)
+    days = list(reference().sessions)
+    files = {"winner.json": winner, "ranking.json": json.dumps([{"candidate": 0}]).encode(),
+        "complete.json": json.dumps(dict(training_days=days, validation_opened=False,
+            population_sha256="synthetic-population")).encode()}
+    for day in days:
+        files[f"{day}/receipt.json"] = json.dumps(dict(day=day, full_session=True,
+            validation_opened=False, population_sha256="synthetic-population",
+            execution={"entry_cash": 1000, "add_cash": 200}, metrics={"net_pnl": [100.]})).encode()
+    for name, content in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    manifest = dict(generation=24, training_sessions=30, validation_opened=False,
+        winner_sha256=digest, files_sha256={name: sha256(content).hexdigest() for name, content in files.items()})
+    (tmp_path / "freeze.json").write_text(json.dumps(manifest))
+    return module, manifest
+
+
+@pytest.mark.parametrize("concurrency", [1, 3])
+def test_frozen_reader_uses_verified_bytes_without_reopening(monkeypatch, tmp_path, concurrency):
+    module, _ = frozen_root(monkeypatch, tmp_path)
+    original = Path.read_bytes
+    calls = []
+    def read(path):
+        content = original(path)
+        calls.append(path)
+        if path.name == "ranking.json":
+            path.write_text(json.dumps([{"candidate": 99}]))
+        return content
+    monkeypatch.setattr(Path, "read_bytes", read)
+    actual = asyncio.run(module.load_reference(tmp_path, concurrency=concurrency))
+    assert actual.candidate == 0 and len(actual.sessions) == 30
+    assert len(calls) == 33 and len(set(calls)) == 33
+    assert all(row["status"] == "not_run" for row in compare_sessions(actual, {}))
+
+
+@pytest.mark.parametrize("missing", ["ranking.json", "complete.json", "2026-08-01/receipt.json"])
+def test_every_comparison_metadata_and_session_file_requires_a_seal(monkeypatch, tmp_path, missing):
+    module, manifest = frozen_root(monkeypatch, tmp_path)
+    manifest["files_sha256"].pop(missing)
+    (tmp_path / "freeze.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="Missing frozen|Missing frozen session"):
+        module.read_reference(tmp_path)
+
+
+def test_unexpected_manifest_files_are_rejected_before_opening(monkeypatch, tmp_path):
+    module, manifest = frozen_root(monkeypatch, tmp_path)
+    manifest["files_sha256"]["validation/sealed.json"] = "a" * 64
+    (tmp_path / "freeze.json").write_text(json.dumps(manifest))
+    original, opened = Path.read_bytes, []
+    def read(path):
+        opened.append(path.name)
+        return original(path)
+    monkeypatch.setattr(Path, "read_bytes", read)
+    with pytest.raises(ValueError, match="outside declared training"):
+        asyncio.run(module.load_reference(tmp_path, concurrency=3))
+    assert opened == ["complete.json"]
