@@ -35,7 +35,7 @@ def definition_and_actor():
 
 
 @pytest.mark.parametrize("resolution", [100, 1000])
-def test_controller_builds_program_actor_on_existing_runtime_without_legacy_factory(tmp_path, resolution):
+def test_controller_builds_program_actor_on_existing_runtime_without_legacy_factory(tmp_path, resolution, monkeypatch):
     definition, actor = definition_and_actor()
     controller = ReplayRunController(definition, runtime_root=tmp_path, program_strategy=actor,
         program_liquidity_resolution_ms=resolution)
@@ -114,6 +114,38 @@ def test_controller_builds_program_actor_on_existing_runtime_without_legacy_fact
             lineage = reconstruct_program_oms_lineage(state, source, history, **lineage_kwargs)
             assert lineage.approved_intent == group.intent
             assert lineage.orders == tuple(group.orders)
+            # Reader orchestration uses normalized fixture rows; actual source
+            # reselection and order reconstruction use the same live flat
+            # position/management state that generated this initial proposal.
+            from src.backend import program_oms_recovery as cold
+            from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+            from types import SimpleNamespace
+            closed = []
+            client = SimpleNamespace(close=lambda: closed.append(True))
+            prefix = V4CommittedPrefix(controller.run_id, 2, "batch", "cursor", "running", ("batch",))
+            monkeypatch.setattr(cold, "load_verified_v4_prefix", lambda *_: prefix)
+            monkeypatch.setattr(cold, "load_latest_committed_oms_groups", lambda *a, **k: (state,))
+            monkeypatch.setattr(cold, "load_complete_typed_protection_history", lambda *a, **k: history)
+            monkeypatch.setattr(cold, "load_committed_strategy_intent_page", lambda *a, **k: (source,))
+            monkeypatch.setattr(cold, "load_committed_oms_admission_page", lambda *a, **k: {2: reservation})
+            monkeypatch.setattr(cold, "load_committed_oms_decision_page", lambda *a, **k: {2: decision})
+            def reselect(*facts):
+                assert facts == (state, source, reservation, history)
+                selected, = actor.proposals(boundary, assignment_id="assignment", management=management)
+                return selected
+            recovered_lineages = await cold.recover_program_oms_lineages_async(lambda: client, prefix,
+                release=actor.program_release, account_ids=(source.account_id,), reselect=reselect,
+                execution_policy=approved.execution_policy,
+                protection_for=lambda _: approved.protection_profile, outside_rth=approved.outside_rth)
+            assert recovered_lineages == (lineage,)
+            assert closed == [True]
+            monkeypatch.setattr(cold, "load_committed_strategy_intent_page", lambda *a, **k: ())
+            with pytest.raises(ValueError, match="source join is incomplete"):
+                await cold.recover_program_oms_lineages_async(lambda: client, prefix,
+                    release=actor.program_release, account_ids=(source.account_id,), reselect=reselect,
+                    execution_policy=approved.execution_policy,
+                    protection_for=lambda _: approved.protection_profile, outside_rth=approved.outside_rth)
+            assert closed == [True, True]
             with pytest.raises(ValueError, match="scope or flat"):
                 reconstruct_program_oms_lineage(replace(state, orders=tuple(group.orders)),
                     source, history, **lineage_kwargs)
