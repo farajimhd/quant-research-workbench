@@ -4819,6 +4819,11 @@ class ReplayRunController:
         from .backtest_program_session import run_prepared_program_session
         return await run_prepared_program_session(self, cohorts, **scope)
 
+    async def finish_prepared_program_session(self, *, status):
+        """Acknowledge programme broker/account terminal evidence through V4."""
+        from .backtest_program_terminal import finish_prepared_program_session
+        return await finish_prepared_program_session(self, status=status)
+
     async def attach_prepared_program_journal(self, **scope):
         """Adopt a prepared programme journal through the owned async bootstrap."""
         from .backtest_program_journal_startup import attach_program_journal

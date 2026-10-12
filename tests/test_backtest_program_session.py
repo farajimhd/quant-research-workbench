@@ -52,6 +52,10 @@ def test_session_carries_packet_and_rejects_gaps_before_dispatch(prepared_source
         work = tuple(PreparedProgramCohortWork(34200 + index * 2, 34202 + index * 2,
             {"assignment": block}, population, projection, scope) for index in range(2))
         calls = []
+        # The isolated scheduler fixture supplies only its receipt counter;
+        # native runtime, writer and terminal publication are covered separately.
+        from types import SimpleNamespace
+        controller._journal_publisher = SimpleNamespace(fenced_sequence=7)
         async def cohort(self, blocks, population, projection, **kwargs):
             assert self._program_session_active
             calls.append(kwargs)

@@ -255,7 +255,7 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                         first_bucket, first_bucket + 3, {"assignment": block}, population, projection, unit_scope),
                         PreparedProgramCohortWork(first_bucket + 3, first_bucket + 4,
                             {"assignment": block}, population, projection, unit_scope)),
-                        terminal=False)
+                        terminal=True)
                     assert session.status == "evaluated" and session.completed_cohorts == 2
                     assert session.source_clocks == session.qualified_decisions == 4
                     assert session.liquidity_boundaries == (40 if resolution == 100 else 4)
@@ -269,6 +269,40 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                     if partial_fills == "multiple":
                         assert_multiple_entry_fill_geometry(actor, executions)
                     assert controller._program_dispatch_failure is None
+                    # This transport fixture has no admitted run-context or
+                    # account-anchor storage. Keep that external seam explicit;
+                    # V4 commit/cold readback and broker captures remain real.
+                    from src.trading_runtime import arte_backtest_snapshot_anchor as anchors
+                    monkeypatch.setattr(writer_module, "load_typed_run_context",
+                        lambda client, run: {"mode": "backtest", "account_ids": controller.account_ids})
+                    anchored = []
+                    monkeypatch.setattr(anchors, "_publish_terminal_snapshots_after_verified_prefix",
+                        lambda client, prefix, captures, context: anchored.append((prefix, captures)))
+                    evaluated = controller._program_evaluated_terminal
+                    controller._program_evaluated_terminal = None
+                    with pytest.raises(RuntimeError, match="evaluated terminal"):
+                        await controller.finish_prepared_program_session(status="completed")
+                    assert not controller._runtime_finished and not anchored
+                    controller._program_evaluated_terminal = evaluated
+                    native_finish = controller._runtime.finish
+                    async def owned_finish(*args, **kwargs):
+                        with pytest.raises(RuntimeError, match="terminal already owns"):
+                            await controller.run_prepared_program_session(())
+                        return await native_finish(*args, **kwargs)
+                    monkeypatch.setattr(controller._runtime, "finish", owned_finish)
+                    terminal = await controller.finish_prepared_program_session(status="completed")
+                    assert terminal.status == controller.status == "completed"
+                    assert controller._runtime_finished
+                    assert terminal.last_sequence > session.policy_packet.journal_sequence
+                    assert load_verified_v4_prefix(persisted, controller.run_id).last_sequence == terminal.last_sequence
+                    assert not controller._journal.unfenced_records()
+                    assert len(anchored) == 1
+                    assert {capture.account_id for capture in anchored[0][1]} == set(controller.account_ids)
+                    assert all(capture.state_revision == terminal.last_sequence for capture in anchored[0][1])
+                    with pytest.raises(RuntimeError, match="acknowledged"):
+                        await controller.finish_prepared_program_session(status="completed")
+                    with pytest.raises(RuntimeError, match="already finished"):
+                        await controller.run_prepared_program_session(())
                     return
                 else:
                     result = await controller.run_fenced_program_cohort({"assignment": block}, population, projection, **arguments)
@@ -390,7 +424,8 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                     controller._journal_publisher._prepare_batches(result.policy_packet.journal_sequence)
             assert controller._journal_publisher.fenced_sequence == 0
         finally:
-            await controller._runtime.finish()
+            if not controller._runtime_finished:
+                await controller._runtime.finish()
             if queued_writer is not None:
                 queued_writer.close()
     try:

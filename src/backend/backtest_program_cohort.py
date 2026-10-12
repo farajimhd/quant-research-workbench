@@ -80,6 +80,8 @@ async def run_prepared_program_cohort(controller, blocks, population, projection
     fence. The admitted main lifecycle owns preparation, batch fences and close.
     """
     from .replay_run_service import ReplayRunController
+    from .backtest_program_session import require_program_session_owner
+    require_program_session_owner(controller)
     from .backtest_program_inputs import PreparedProgramBlock, PreparedProgramScannerProjection, publish_prepared_program_source_clock
     from .qmd_columnar_population import CertifiedPopulationWindow
     from .backtest_market_data import market_day_boundary, SESSION_OPEN_OFFSET_MS

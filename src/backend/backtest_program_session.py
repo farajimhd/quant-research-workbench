@@ -51,6 +51,10 @@ class ProgramSessionResult:
 
 
 def require_program_session_owner(controller):
+    if getattr(controller, "_runtime_finished", False):
+        raise RuntimeError("Programme runtime has already finished")
+    if getattr(controller, "_program_terminal_active", False):
+        raise RuntimeError("Programme terminal already owns controller dispatch")
     if (getattr(controller, "_program_session_active", False)
             and getattr(controller, "_program_session_task", None) is not asyncio.current_task()):
         raise RuntimeError("Programme session already owns controller dispatch")
@@ -66,6 +70,7 @@ async def run_prepared_program_session(controller, cohorts, *, initial_packet=No
     from .backtest_program_inputs import PreparedProgramBlock, PreparedProgramScannerProjection
     from .qmd_columnar_population import CertifiedPopulationWindow
     from .backtest_market_data import market_day_boundary, SESSION_OPEN_OFFSET_MS
+    require_program_session_owner(controller)
     if (type(controller) is not ReplayRunController or type(terminal) is not bool
             or isinstance(cohorts, (str, bytes))
             or getattr(controller, "_program_session_active", False)):
@@ -105,6 +110,7 @@ async def run_prepared_program_session(controller, cohorts, *, initial_packet=No
         prior = unit.stop_bucket
     controller._program_session_active = True
     controller._program_session_task = asyncio.current_task()
+    controller._program_evaluated_terminal = None
     packet, completed, liquidity, clocks, decisions = initial_packet, 0, 0, 0, 0
     try:
         for index, unit in enumerate(work):
@@ -124,6 +130,9 @@ async def run_prepared_program_session(controller, cohorts, *, initial_packet=No
             if result.status == "stopped":
                 return ProgramSessionResult("stopped", completed, len(work), liquidity, clocks, decisions, packet)
             completed += 1
+        if terminal:
+            controller._program_evaluated_terminal = (definition, controller._runtime, actor,
+                controller.current_time, controller._journal_publisher.fenced_sequence)
         return ProgramSessionResult("evaluated", completed, len(work), liquidity, clocks, decisions, packet)
     finally:
         controller._program_session_active = False
