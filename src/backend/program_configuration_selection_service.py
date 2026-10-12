@@ -56,6 +56,28 @@ class ProgramConfigurationSelectionService:
         return tuple([await self.snapshot("strategy-configuration:" + identity)
                       for identity in sorted(self.pins)])
 
+    async def prepare_controller(self, run_service, definition, *, assignments,
+            listing_by_assignment, liquidity_resolution_ms):
+        """Use installed app authorities for native certified preparation only."""
+        from .replay_run_service import ReplayRunService, ReplayRunDefinition
+        if (program_configuration_selection_service() is not self
+                or type(run_service) is not ReplayRunService
+                or type(definition) is not ReplayRunDefinition):
+            raise ValueError("Programme preparation requires its installed app authority")
+        revision = definition.configuration_revision
+        candidate = revision.get("revision_id")
+        if type(candidate) is not str or not candidate.startswith("strategy-configuration:"):
+            raise ValueError("Programme preparation requires its reviewed central selection")
+        digest = self.pins.get(candidate.removeprefix("strategy-configuration:"))
+        if digest is None or revision.get("selection_hash") != digest:
+            raise ValueError("Programme preparation selection is not approved for this app")
+        controller = await run_service.prepare_certified_program_controller(definition,
+            assignments=assignments, listing_by_assignment=listing_by_assignment,
+            liquidity_resolution_ms=liquidity_resolution_ms, **self.authorities)
+        if program_configuration_selection_service() is not self:
+            raise RuntimeError("Programme preparation lost its installed app authority")
+        return controller
+
 
 def install_program_configuration_selection_service(service):
     """Operator-authorized startup hook; no public HTTP installation endpoint."""

@@ -39,6 +39,7 @@ def test_certified_selection_prepares_native_service_controller_without_starting
         return SimpleNamespace(revision=current, selection=packet, release=release)
     monkeypatch.setattr(admission, "load_certified_program_configuration", load)
     service = ReplayRunService(runtime_root=tmp_path)
+    from src.backend import program_configuration_selection_service as app_selection
     clients = []
     def factory():
         client = Reader(release_rows)
@@ -49,14 +50,26 @@ def test_certified_selection_prepares_native_service_controller_without_starting
             liquidity_resolution_ms=100, selection_client_factory=lambda: None,
             release_client_factory=factory, policy_client_factory=lambda: None,
             policy_dispatch=object(), concurrency=2)
+        selector = app_selection.ProgramConfigurationSelectionService(
+            approved_selections={packet.header["configuration_id"]: packet.header["content_hash"]},
+            **{key: kwargs[key] for key in ("selection_client_factory", "release_client_factory",
+                "policy_client_factory", "policy_dispatch", "concurrency")})
+        monkeypatch.setattr(app_selection, "_SERVICE", selector)
+        preparation = dict(assignments=kwargs["assignments"], listing_by_assignment=kwargs["listing_by_assignment"],
+            liquidity_resolution_ms=kwargs["liquidity_resolution_ms"])
         if failure:
             with pytest.raises(ValueError, match="changed since UI review"):
-                await service.prepare_certified_program_controller(definition, **kwargs)
+                await selector.prepare_controller(service, definition, **preparation)
         else:
-            controller = await service.prepare_certified_program_controller(definition, **kwargs)
+            controller = await selector.prepare_controller(service, definition, **preparation)
             assert controller._program_configuration_selection is packet
             assert controller._program_strategy.program_release.header["content_hash"] == registration.expected_content_hash
             assert controller._runtime is None and controller._task is None and controller.status == "created"
+            revision["selection_hash"] = "f" * 64
+            before = len(clients)
+            with pytest.raises(ValueError, match="not approved"):
+                await selector.prepare_controller(service, definition, **preparation)
+            assert len(clients) == before
     asyncio.run(run())
     assert not service._runs and not list(tmp_path.iterdir())
     assert all(client.closed for client in clients)
