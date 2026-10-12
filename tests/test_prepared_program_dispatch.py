@@ -315,7 +315,7 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 from src.trading_runtime.arte_journal_projection import project_journal_record
                 from src.trading_runtime.arte_journal_reader import TypedJournalEvent
                 from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
-                from src.backend.program_policy_recovery import rebuild_program_policy_events
+                from src.backend.program_policy_recovery import rebuild_program_policy_events, program_policy_fingerprint
                 await controller._runtime.order_manager.reconcile()
                 await controller._runtime._refresh_portfolio_from_broker()
                 from unittest.mock import patch
@@ -345,6 +345,21 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                         else:
                             family, detail = "trading_strategy_signal_v2", dict(batch.signals[0])
                     events.append(TypedJournalEvent(event, family, detail))
+                from src.backend.rule_decision_reselection import reselect_recovered_rule_decision
+                basis_packet = rebuild_program_policy_events(actor, events[:basis_sequence],
+                    run_id=controller.run_id, source_hashes=source_prefix_hashes, blocks=(block,),
+                    population=population, executions=executions,
+                    order_manager=controller._runtime.order_manager, maximum_events=1000,
+                    last_sequence=basis_sequence)
+                recovered_selection_scope = {key: value for key, value in reselection_scope.items()
+                    if key != "basis_sequence"}
+                packet_selection = reselect_recovered_rule_decision(dispatched_parent, dispatched_children,
+                    recovered_intents, packet=basis_packet, **recovered_selection_scope)
+                assert packet_selection == selected_again
+                assert program_policy_fingerprint(basis_packet.actor) == basis_packet.state_hash
+                with pytest.raises(ValueError, match="recovery packet differs"):
+                    reselect_recovered_rule_decision(dispatched_parent, dispatched_children, recovered_intents,
+                        packet=replace(basis_packet, journal_sequence=basis_sequence + 1), **recovered_selection_scope)
                 prefix = V4CommittedPrefix(controller.run_id, len(events),
                     "00000000-0000-0000-0000-000000000002", "synthetic", "running",
                     ("00000000-0000-0000-0000-000000000002",))

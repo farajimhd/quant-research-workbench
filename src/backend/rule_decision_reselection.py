@@ -13,6 +13,35 @@ from .qmd_columnar_population import CertifiedPopulationWindow
 from .signal_stream_runtime_service import SignalStreamRuntime
 
 
+def reselect_recovered_rule_decision(parent, children, records, *, packet, **scope):
+    """Use a verified journal replay packet without mutating its derived policy.
+
+    This is an offline verifier. Actual historical OMS observations and native
+    financial-image qualification remain required independent caller proofs.
+    """
+    from copy import deepcopy
+    from .program_policy_recovery import RecoveredProgramPolicy, _RECOVERY_PROOF, program_policy_fingerprint
+    if (type(packet) is not RecoveredProgramPolicy or packet._proof is not _RECOVERY_PROOF
+            or packet.run_id != parent["run_id"] or packet.journal_sequence != parent["basis_sequence"]
+            or not 1 <= parent["source_batch_sequence"] <= len(packet.source_commit_hashes)
+            or packet.source_commit_hashes[parent["source_batch_sequence"] - 1] != parent["source_commit_hash"]
+            or program_policy_fingerprint(packet.actor) != packet.state_hash):
+        raise ValueError("Rule reselection recovery packet differs from historical basis")
+    original = packet.actor
+    actor = AssignedProgramStrategy(original.program_release, original.assignments(), original._listings)
+    # Selection only reads fills and target policy. Copy the two caches it
+    # advances, avoiding a duplicate of the entire historical execution ledger.
+    actor.execution_state = original.execution_state
+    actor.target_state = original.target_state
+    actor.trail_state = deepcopy(original.trail_state)
+    actor._selection_clocks = dict(original._selection_clocks)
+    selected = reselect_rule_decision(parent, children, records, actor=actor,
+        basis_sequence=packet.journal_sequence, **scope)
+    if program_policy_fingerprint(original) != packet.state_hash:
+        raise ValueError("Rule reselection recovery packet changed during verification")
+    return selected
+
+
 def reselect_rule_decision(parent, children, records, *, actor, basis_sequence,
         block, population, source, observation, execution_policy, protection_profile, outside_rth):
     """Reselect and compare exact semantic intents from historical actual facts."""
