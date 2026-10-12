@@ -56,6 +56,14 @@ _BROKER_MATCH_TABLES = frozenset({
     "trading_strategy_one_broker_match_ticker_v5",
     "trading_strategy_one_broker_match_performance_mark_v5",
 })
+_SHARED_BROKER_MATCH_TABLES = frozenset({
+    "trading_simulated_broker_match_snapshot_v1",
+    "trading_simulated_broker_match_account_v1",
+    "trading_simulated_broker_match_position_v1",
+    "trading_simulated_broker_match_open_order_v1",
+    "trading_simulated_broker_match_ticker_v1",
+    "trading_simulated_broker_match_performance_mark_v1",
+})
 _EVIDENCE_TABLES = frozenset({
     "trading_strategy_one_evidence_snapshot_v1",
     "trading_strategy_one_evidence_resistance_v1",
@@ -611,6 +619,8 @@ class TypedInsertDispatch:
                       else _EVIDENCE_TABLES if evidence_snapshot_hash is not None
                       else _CAMPAIGN_TABLES if campaign_snapshot_hash is not None
                       else _OMS_OBSERVATION_TABLES)
+            if broker_snapshot_hash is not None and table in _SHARED_BROKER_MATCH_TABLES:
+                tables = _SHARED_BROKER_MATCH_TABLES
             expected_token = (_manager_token if manager_snapshot_hash is not None
                               else _broker_match_token if broker_snapshot_hash is not None
                               else _evidence_token if evidence_snapshot_hash is not None
@@ -1245,6 +1255,21 @@ class TypedInsertDispatch:
             head_path=_broker_match_head_path(run_id), tables=_BROKER_MATCH_TABLES,
             root_table="trading_strategy_one_broker_match_snapshot_v5",
             token_factory=_broker_match_token, label="Broker match")
+
+    def compact_verified_shared_broker_match_snapshot(
+        self, *, run_id: str, batch_id: str, last_sequence: int,
+        snapshot_hash: str, operations: tuple[tuple[str, str], ...], previous: Any | None,
+    ) -> None:
+        """Select central scalar rows with the existing exact checkpoint CAS."""
+        from src.trading_runtime.arte_broker_match_snapshot import ManagedSharedBrokerMatchHeadReader
+        from src.trading_runtime.strategy_one_broker_match_snapshot import BrokerMatchHead
+        self._compact_verified_checkpoint_family(
+            run_id=run_id, batch_id=batch_id, last_sequence=last_sequence,
+            snapshot_hash=snapshot_hash, operations=operations,
+            previous=previous, head_type=BrokerMatchHead,
+            head_path=ManagedSharedBrokerMatchHeadReader.path(run_id), tables=_SHARED_BROKER_MATCH_TABLES,
+            root_table="trading_simulated_broker_match_snapshot_v1",
+            token_factory=_broker_match_token, label="Shared broker match")
 
     def compact_verified_campaign_snapshot(
         self, *, run_id: str, batch_id: str, last_sequence: int,
