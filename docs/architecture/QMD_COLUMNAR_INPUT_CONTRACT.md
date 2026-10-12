@@ -371,3 +371,13 @@ exercise agreement, unfenced rejection, lost ownership, altered cash and
 post-recovery policy mutation. Their storage receipt is a fixture, not an
 operational ClickHouse qualification. Common cold-image gathering and app run
 admission still require integration before a real backtest.
+
+Program financial cold reads additionally require every account snapshot's
+timestamp to equal the completed source clock, not merely precede it. The
+shared Portfolio recovery reader restores policy, reservations, allocations
+and reconciliation state; it intentionally leaves broker balances and
+positions for resynchronization. An in-memory copy of a synchronized Portfolio
+is therefore not an operational cold-read fixture. Final program installation
+must qualify financial geometry against the independently verified broker
+image and retain the durable Portfolio prefix through synchronization. The
+synthetic installation tests do not yet prove that complete cold-start path.

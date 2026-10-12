@@ -68,6 +68,22 @@ def test_cancelled_program_financial_read_drains_owned_client(monkeypatch):
     asyncio.run(run())
 
 
+def test_program_portfolio_rejects_earlier_snapshot_at_same_revision(monkeypatch):
+    from datetime import timedelta
+    client, profile = _client(monkeypatch)
+    profile = replace(profile, mode="backtest")
+    prefix = V4CommittedPrefix("live-run", 7, "batch", "cursor", "running", ("batch",))
+    closed = []
+    monkeypatch.setattr(client, "close", lambda: closed.append(True), raising=False)
+    monkeypatch.setattr(module, "load_verified_v4_prefix", lambda *_: prefix)
+    async def run():
+        return await module.recover_program_portfolio_async(lambda: client, prefix,
+            profiles=(profile,), cutoff_at=AT + timedelta(seconds=1))
+    with pytest.raises(ValueError, match="completed source clock"):
+        asyncio.run(run())
+    assert closed == [True]
+
+
 @pytest.mark.parametrize("mismatch", [None, "clock", "accounts", "prefix"])
 def test_program_oms_joins_native_empty_broker_and_observation_checkpoint(mismatch):
     from datetime import date, timedelta
