@@ -36,6 +36,7 @@ def test_partial_comparison_keeps_every_reference_session():
 
 @pytest.mark.parametrize('field,value', [
     ('winner_sha256', 'another-winner'), ('full_session', False),
+    ('full_session', 'true'), ('market_cursor_verified', 1),
     ('market_cursor_verified', False), ('verified_sequence', 0),
     ('run_id', ''), ('strategy_digest', ''),
 ])
@@ -58,6 +59,14 @@ def test_missing_metrics_remain_visible_and_nan_fails():
 def test_non_reference_session_is_rejected():
     with pytest.raises(ValueError, match='non-reference'):
         compare_sessions(reference(), {'2027-01-01': result()})
+
+
+@pytest.mark.parametrize('terminal', [False, 0, 1, 'true'])
+def test_invalid_terminal_accounting_is_never_a_completed_comparison(terminal):
+    actual = result()
+    actual['metrics']['terminal_valid'] = terminal
+    with pytest.raises(ValueError, match='terminal accounting|Non-finite'):
+        compare_sessions(reference(), {'2026-08-01': actual})
 
 
 def frozen_root(monkeypatch, tmp_path):

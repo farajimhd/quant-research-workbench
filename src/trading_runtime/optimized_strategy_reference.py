@@ -150,8 +150,8 @@ def compare_sessions(reference: OptimizationReference, app_results: Mapping) -> 
         if actual is not None:
             if (actual.get('winner_sha256') != reference.winner_sha256
                     or not actual.get('run_id') or not actual.get('strategy_digest')
-                    or not actual.get('full_session')
-                    or not actual.get('market_cursor_verified')
+                    or actual.get('full_session') is not True
+                    or actual.get('market_cursor_verified') is not True
                     or type(actual.get('verified_sequence')) is not int
                     or actual['verified_sequence'] < 1):
                 raise ValueError(f'Unverified or mismatched app comparison: {day}')
@@ -159,6 +159,8 @@ def compare_sessions(reference: OptimizationReference, app_results: Mapping) -> 
             if any(type(value) not in (int, float, bool) or not isfinite(value)
                    for value in metrics.values()):
                 raise ValueError(f'Non-finite or non-numeric app metrics: {day}')
+            if ('terminal_valid' in metrics and metrics['terminal_valid'] is not True):
+                raise ValueError(f'App result lacks valid terminal accounting: {day}')
             missing = set(expected) - set(metrics)
             row.update(app=actual, status='incomplete_metrics' if missing else 'compared',
                        missing_metrics=sorted(missing),
