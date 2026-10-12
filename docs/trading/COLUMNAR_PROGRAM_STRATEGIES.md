@@ -77,6 +77,49 @@ numbered releases and their certification gates remain intact.
   delay and participation. Recovery rejects changed settings and verifies an
   exact round-trip into the existing broker. Run-journal wiring remains open.
 
+## Current typed publication path
+
+The shared V4 worker now accepts native-qualified program completion envelopes,
+including a one-event tail and mixed normalized batches. This is implemented
+source; it has not been installed or qualified on operational sessions.
+
+- `rule_decision_basis_schema.py` owns the two shared typed reference tables.
+  No strategy defines a table, JSON column, journal or disk authority.
+- `backtest_program_publication.py` joins a pending completion to its retained
+  causal basis, delegates qualification to the controller's isolated native
+  financial/source checks, and retains the matching proof. Ownership changes
+  during qualification reject admission. The actual projector receives only
+  the proofs for its bounded prefix; acknowledgements release fenced proofs.
+- `rule_decision_compound.py` and `rule_decision_single_publication.py` use
+  ordinary V4 preparation and the existing fenced publisher. Mixed batches
+  rekey child hashes and the dependent parent digest together. The shared
+  writer owns insertion, complete readback, retries and Keeper compaction.
+- `rule_decision_commit_graph.py` verifies parent/child coverage and exact
+  normalized completion-event correspondence during shared cold readback.
+  Independent prepared-source, intent and financial reselection checks remain
+  required; a valid row hash alone does not establish trading correctness.
+- Program writers use the dedicated `backtest_v4_program_runner` principal,
+  selected with `program_decisions=True` in the existing client factory.
+  Startup audits schema, grants and actual storage placement. Publication
+  reuses that audit only for the same client, endpoint, principal, dispatch,
+  lease and contracts. Each new startup audits again.
+- `scripts/clickhouse/provision_backtest_v4_program_runner.py` defaults to a
+  local plan without connections or secret access. Applying the reviewed plan
+  requires operational approval and its explicit confirmation flag. No grants,
+  credentials or schema have been provisioned by these source changes.
+
+Synthetic tests exercise actual shared INSERT/commit/cold-readback code using
+in-memory transport. They verify retry deduplication and failure before commit
+or compaction when detail readback is corrupt. Qualification-proof fixtures in
+transport tests do not qualify the strategy's financial or causal behavior.
+
+The app launch boundary remains closed: `_backtest_launch_blocker` admits only
+the certified numbered 100ms path. `ReplayRunController` can construct a program
+actor and explicitly dispatch prepared boundaries, but the main launch/compute
+funnel does not yet orchestrate the full program source, qualification and
+publication lifecycle. The frozen winner is not selectable or launchable in
+the app. Do not weaken that gate to expose partially integrated components.
+
 ## Frozen source behavior
 
 The verified optimization market-producer contract uses a30-second elapsed
@@ -103,9 +146,11 @@ fills are comparison expectations, not an app execution policy.
 2. Integrate the central release publisher/reader with the concrete operator
    Keeper/ClickHouse transport, normalized approval and least-privilege grants.
    Pure readback/publication contracts alone provide no installed authority.
-3. Add the shared chronological program coordinator, actual position/age
-   projection, pending-order handling, semantic intents and normalized
-   lifecycle recovery through Portfolio/OMS. No assumed-position updates.
+3. Connect the implemented chronological coordinator, execution-derived
+   position/age, pending-order handling, semantic intents, historical native
+   recovery and qualified decision publication to the main compute funnel.
+   The controller must orchestrate qualifications and receipts, not require
+   manual helper calls for every decision. Keep Portfolio/OMS/fills authoritative.
 4. Install and qualify the reusable1s liquidity producer/read plan on real
    sessions and wire typed broker-setting publication/recovery. Thread the chosen resolution
    through the current Backtest configuration, preflight, launch and UI.
