@@ -31,6 +31,14 @@ async def run_fenced_program_cohort(controller, blocks, population, projection, 
         if not result.source_clocks and not result.liquidity_boundaries:
             return result
         publishing = True
+        from .backtest_program_cursor import append_completed_program_cursor
+        from .program_policy_recovery import rebuild_owned_pending_program_policy
+        from dataclasses import replace
+        append_completed_program_cursor(controller)
+        packet = await rebuild_owned_pending_program_policy(controller,
+            tuple({id(block): block for block in blocks.values()}.values()), population,
+            maximum_events=scope["maximum_events"], initial_packet=result.policy_packet)
+        result = replace(result, policy_packet=packet)
         await fence_owned_program_suffix(controller)
         return result
     except BaseException as exc:
@@ -86,6 +94,8 @@ async def fence_program_pause(controller, blocks, population, *, maximum_events,
         if controller._journal.unfenced_records():
             raise RuntimeError("Initial programme pause has unfenced preparation facts")
         return initial_packet
+    from .backtest_program_cursor import append_completed_program_cursor
+    append_completed_program_cursor(controller)
     packet = await rebuild_owned_pending_program_policy(controller, blocks, population,
         maximum_events=maximum_events, initial_packet=initial_packet)
     await fence_owned_program_suffix(controller)

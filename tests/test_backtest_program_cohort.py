@@ -339,6 +339,29 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                     assert session.source_clocks == session.qualified_decisions == 4
                     assert session.liquidity_boundaries == (40 if resolution == 100 else 4)
                     assert not controller._program_session_active
+                    from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
+                    # Extend this in-memory SQL fixture with the cursor/event
+                    # join used by the real cold reader; its hash and prefix
+                    # validation below remain the production implementation.
+                    import json
+                    native_execute = persisted.execute
+                    def cursor_read(query):
+                        if isinstance(query, str) and query.startswith("SELECT c.*"):
+                            rows = []
+                            for item in persisted.tables["trading_backtest_cursor_v1"]:
+                                for event in persisted.tables["trading_event_v1"]:
+                                    if all(item[key] == event[key] for key in ("run_id", "batch_id", "record_id")):
+                                        rows.append({**item, "event_sequence": event["sequence"],
+                                            "event_category": event["category"], "event_entity_type": event["entity_type"],
+                                            "event_entity_id": event["entity_id"]})
+                            return "\n".join(json.dumps(row) for row in sorted(rows,
+                                key=lambda row: row["event_sequence"], reverse=True)[:2])
+                        return native_execute(query)
+                    monkeypatch.setattr(persisted, "execute", cursor_read)
+                    cursor = load_latest_backtest_cursor(persisted, load_verified_v4_prefix(persisted, controller.run_id))
+                    assert controller._journal_publisher._source_cursor == f"{cursor['session_date']}:{cursor['boundary_ms']}"
+                    assert cursor["boundary_ms"] == (first_bucket + 4) * 1000 - 14400000
+                    assert cursor["market_sequence"] == cursor["boundary_ms"] // resolution
                     assert len(calls) == 2
                     assert controller._journal_publisher.fenced_sequence == session.policy_packet.journal_sequence
                     assert load_verified_v4_prefix(persisted, controller.run_id).last_sequence == session.policy_packet.journal_sequence
