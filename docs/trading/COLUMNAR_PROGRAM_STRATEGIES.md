@@ -126,6 +126,14 @@ per-assignment dispatch captures the journal's latest sequence, so a later
 assignment in one clock can include earlier uncommitted decisions in its basis.
 It cannot acquire that historical proof until its predecessor is committed.
 Pending qualification now rejects this mismatch before any qualification reads.
+The source-level `qualify_captured_rule_decision_runtime` provides a separate
+pending-suffix qualification without claiming a committed prefix: it verifies
+controller custody and capture content, independently reconstructed native
+broker/Portfolio/OMS finances, sealed replay metadata, exact pre-decision policy
+content, actual filled-position geometry, and prepared-source intent reselection.
+Synthetic controller tests cover this qualification at100ms and1s, including
+fee-decimal restoration and rejection of shared runtime or altered replay metadata.
+The main controller/publisher lifecycle does not yet invoke this route automatically.
 The main clock lifecycle must resolve this dependency while preserving actual
 filled-state/OMS semantics; per-decision cold database replay is not established
 as an efficient production execution path.

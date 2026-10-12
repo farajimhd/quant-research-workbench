@@ -83,6 +83,85 @@ async def qualify_rule_decision_runtime(parent, children, records, *, runtime,
     return QualifiedRuleDecision(runtime.run_id, basis, digest, selection, evidence)
 
 
+async def qualify_captured_rule_decision_runtime(parent, children, records, *,
+        controller, runtime, cold, capture, packet, **scope):
+    """Qualify a pending clock from owned native finances and replayed policy.
+
+    No committed-prefix claim is made for the pending journal suffix. The
+    original cold-prefix qualification remains available for durable recovery.
+    """
+    import asyncio
+    from datetime import datetime
+    from dataclasses import replace
+    from .program_clock_financial_basis import verify_owned_program_clock_financial_basis
+    from .program_financial_recovery import compare_captured_program_financial_runtime
+    from .program_policy_recovery import (RecoveredProgramPolicy, _RECOVERY_PROOF,
+        _ProgramPolicyContinuationSeal, program_policy_fingerprint, verify_program_filled_geometry)
+    from .qmd_columnar_history_transport import _owned_worker
+    from src.trading_runtime.runtime import TradingRuntime, RunMode
+    from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
+    from src.trading_runtime.oms_assignment_observation import observe_assignment_orders
+    at = datetime.fromisoformat(parent["boundary_at"])
+    basis = parent["basis_sequence"]
+    owned = controller._runtime
+    digest = rule_decision_semantic_hash(parent, children)
+    records = tuple(verify_rule_decision_intent_records(parent, children, records))
+    intent_content = tuple(project_strategy_intent(record.intent) for record in records)
+    def require_scope():
+        seal = getattr(packet, "_continuation_seal", None)
+        if (type(runtime) is not TradingRuntime or runtime.config.mode is not RunMode.BACKTEST
+                or type(runtime.broker) is not SimulatedBrokerAdapter
+                or type(runtime.strategy) is not AssignedProgramStrategy
+                or type(packet) is not RecoveredProgramPolicy or packet._proof is not _RECOVERY_PROOF
+                or type(seal) is not _ProgramPolicyContinuationSeal or seal.token is not _RECOVERY_PROOF
+                or (packet.run_id, packet.journal_sequence, packet.execution_count,
+                    packet.completion_count, tuple(sorted(packet.completed_source_sequences.items())),
+                    packet.source_commit_hashes, packet.state_hash) !=
+                   (seal.run_id, seal.journal_sequence, seal.execution_count, seal.completion_count,
+                    seal.completed, seal.source_hashes, seal.state_hash)
+                or controller._runtime is not owned or runtime is owned
+                or runtime.journal is owned.journal or runtime.broker is owned.broker
+                or runtime.portfolio is owned.portfolio or runtime.order_manager is owned.order_manager
+                or runtime.config != replace(owned.config, write_progress_checkpoints=False)
+                or runtime.run_id != capture.run_id or runtime.run_id != parent["run_id"]
+                or packet.run_id != runtime.run_id or packet.journal_sequence != basis
+                or capture.journal_sequence != basis or capture.boundary_at != at
+                or capture.source_boundary != (parent["source_batch_sequence"], parent["source_commit_hash"], at)
+                or scope.get("source") is not controller._program_signal_runtime
+                or runtime.last_event_time != at or runtime.journal.latest_sequence(runtime.run_id) != basis
+                or runtime.journal.pending_record_count or runtime.order_manager is None
+                or runtime.strategy.program_release.header != packet.actor.program_release.header
+                or runtime.strategy.assignments() != packet.actor.assignments()
+                or runtime.strategy.program_release.header["content_hash"] != capture.release_hash
+                or packet.state_hash != capture.policy_hash
+                or program_policy_fingerprint(packet.actor) != packet.state_hash
+                or rule_decision_semantic_hash(parent, children) != digest
+                or tuple(project_strategy_intent(record.intent) for record in records) != intent_content):
+            raise ValueError("Pending rule decision differs from its owned native basis")
+        verify_rule_decision_intent_records(parent, children, records)
+    require_scope()
+    await _owned_worker(verify_owned_program_clock_financial_basis, controller, capture)
+    await _owned_worker(compare_captured_program_financial_runtime, runtime, cold, capture)
+    require_scope()
+    capacity = asyncio.Semaphore(4)
+    async def positions(account):
+        async with capacity:
+            return account, await runtime.broker.positions(account)
+    broker_positions = dict(await asyncio.gather(*(positions(account) for account in runtime.config.account_ids)))
+    require_scope()
+    verify_program_filled_geometry(packet.actor, broker_positions, runtime.portfolio)
+    assignment = packet.actor._by_assignment[parent["assignment_id"]]
+    observation = observe_assignment_orders(runtime.order_manager, account_id=assignment.account_id,
+        assignment_id=assignment.assignment_id, ticker=assignment.ticker, at=at)
+    selection = reselect_recovered_rule_decision(parent, children, records,
+        packet=packet, observation=observation, **scope)
+    await _owned_worker(verify_owned_program_clock_financial_basis, controller, capture)
+    await _owned_worker(compare_captured_program_financial_runtime, runtime, cold, capture)
+    require_scope()
+    evidence = _NativeDecisionEvidence(runtime.run_id, basis, digest, _NATIVE_DECISION_PROOF)
+    return QualifiedRuleDecision(runtime.run_id, basis, digest, selection, evidence)
+
+
 def reselect_recovered_rule_decision(parent, children, records, *, packet, **scope):
     """Use a verified journal replay packet without mutating its derived policy.
 

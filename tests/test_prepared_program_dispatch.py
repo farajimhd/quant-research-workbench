@@ -189,10 +189,11 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 from src.backend.program_runtime_recovery import build_recovered_program_runtime
                 from src.backend.program_financial_recovery import compare_captured_program_financial_runtime
                 candidate_journal = BacktestMemoryJournal(run_id=controller.run_id, initial_sequence=basis_sequence)
+                captured_broker_image = controller._runtime.broker.checkpoint_state()
                 financial_candidate = build_recovered_program_runtime(
                     replace(controller._runtime.config, write_progress_checkpoints=False), actor, candidate_journal,
                     portfolio_recovery=cold, oms_image=captured.oms,
-                    broker_image=controller._runtime.broker.checkpoint_state(),
+                    broker_image=captured_broker_image,
                     simulation_config=controller._runtime.broker.config, completed_at=at,
                     intent_planner=controller._planner,
                     strategy_configuration=dict(controller.definition.configuration_revision["payload"].get("strategy") or {}),
@@ -499,6 +500,39 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                     basis_packet.actor._selection_clocks)
                 assert captured_policy_json == canonical_json(_program_policy_fingerprint_value(basis_packet.actor))
                 assert captured.policy_hash == basis_packet.state_hash
+                from src.backend.rule_decision_reselection import qualify_captured_rule_decision_runtime
+                qualifier_candidate = build_recovered_program_runtime(
+                    replace(controller._runtime.config, write_progress_checkpoints=False), actor,
+                    BacktestMemoryJournal(run_id=controller.run_id, initial_sequence=basis_sequence),
+                    portfolio_recovery=cold, oms_image=captured.oms, broker_image=captured_broker_image,
+                    simulation_config=controller._runtime.broker.config, completed_at=at,
+                    intent_planner=controller._planner,
+                    strategy_configuration=dict(controller.definition.configuration_revision["payload"].get("strategy") or {}),
+                    groups=tuple(controller._runtime.portfolio.groups.values()),
+                    drawdown_measure_policy=controller._runtime.portfolio.drawdown_measure_policy)
+                qualification_scope = {key: value for key, value in reselection_scope.items()
+                    if key not in {"basis_sequence", "observation"}}
+                try:
+                    await qualifier_candidate.initialize(record_lifecycle=False)
+                    qualification = await qualify_captured_rule_decision_runtime(
+                        dispatched_parent, dispatched_children, recovered_intents, controller=controller,
+                        runtime=qualifier_candidate, cold=cold, capture=captured, packet=basis_packet,
+                        **qualification_scope)
+                    assert qualification.selection == selected_again
+                    assert qualification.basis_sequence == basis_sequence
+                    with pytest.raises(ValueError, match="owned native basis"):
+                        await qualify_captured_rule_decision_runtime(
+                            dispatched_parent, dispatched_children, recovered_intents, controller=controller,
+                            runtime=controller._runtime, cold=cold, capture=captured, packet=basis_packet,
+                            **qualification_scope)
+                    with pytest.raises(ValueError, match="owned native basis"):
+                        await qualify_captured_rule_decision_runtime(
+                            dispatched_parent, dispatched_children, recovered_intents, controller=controller,
+                            runtime=qualifier_candidate, cold=cold, capture=captured,
+                            packet=replace(basis_packet, completion_count=basis_packet.completion_count + 1),
+                            **qualification_scope)
+                finally:
+                    await qualifier_candidate.finish()
                 empty_packet = rebuild_program_policy_events(actor, (), run_id=controller.run_id,
                     source_hashes=(), blocks=(block,), population=population, executions=(),
                     order_manager=controller._runtime.order_manager, maximum_events=1000, last_sequence=0)
