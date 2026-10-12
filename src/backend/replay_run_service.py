@@ -12733,6 +12733,10 @@ def backtest_preflight(
             "Backtest period must stay within 04:00-20:00 New York with start before end"
         )
     approved = configuration_revision or backtest_configuration_snapshot()
+    if str(approved.get("revision_id") or "").startswith("strategy-configuration:"):
+        raise ValueError(
+            "Programme Backtest requires its certified QMD/Signal Stream preparation and "
+            "bound native launch; generic legacy preflight cannot certify this selection")
     configuration = dict(approved.get("payload") or {})
     if _saved_review_authority is not None:
         from src.backend.backtest_saved_source_authority import validate_saved_review_source

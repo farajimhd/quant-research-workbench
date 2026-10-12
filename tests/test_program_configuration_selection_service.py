@@ -68,3 +68,15 @@ def test_uninstalled_programme_selection_fails_before_any_legacy_read(monkeypatc
     monkeypatch.setattr(legacy, "certified_configuration_options", lambda *_: pytest.fail("legacy read"))
     with pytest.raises(ValueError, match="not installed"):
         configuration.backtest_configuration_options("strategy-configuration:missing")
+
+
+def test_programme_selection_never_enters_legacy_market_preflight(monkeypatch):
+    from datetime import date
+    from src.backend.replay_run_service import backtest_preflight
+    from src.backend import backtest_market_data
+    _, revision, _ = installed(monkeypatch)
+    monkeypatch.setattr(backtest_market_data, "effective_execution_interval",
+        lambda *_: pytest.fail("Programme inferred a legacy execution clock"))
+    with pytest.raises(ValueError, match="bound native launch"):
+        backtest_preflight(anchor_date=date(2026, 10, 12), session_count=1,
+            configuration_revision=revision)
