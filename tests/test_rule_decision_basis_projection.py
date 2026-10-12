@@ -182,13 +182,12 @@ def test_multiple_intents_have_distinct_stable_child_ids_accepted_by_shared_comm
         (row["record_id"], row["content_hash"]) for row in rows) for name, rows in families})
 
 
-def test_staged_scalar_hashes_match_shared_journal_typed_codec(monkeypatch):
+def test_staged_scalar_hashes_match_shared_journal_typed_codec():
     from src.trading_runtime import arte_journal_writer as writer
     from src.trading_runtime.rule_decision_basis_schema import BASIS, INTENT
     parent, children = project_rule_decision_basis(values(), [dict(stage="entry", strategy_intent_id="intent")])
-    # Register only in this synthetic test; active startup/catalogs stay unchanged.
     for table, rows in ((BASIS, (parent,)), (INTENT, children)):
-        monkeypatch.setitem(writer._CONTRACTS, table.name, table)
+        assert writer._CONTRACTS[table.name] == table
         for row in rows:
             projected = writer.typed_row(table.name, {key: value for key, value in row.items() if key != "content_hash"})
             assert projected["content_hash"] == row["content_hash"]

@@ -109,6 +109,8 @@ from src.trading_runtime.arte_entry_activity_v4 import ENTRY_ACTIVITY
 from src.trading_runtime.arte_entry_spread_risk_v4 import ENTRY_SPREAD_RISK
 
 _CONTRACTS = {table.name: table for table in TABLES}
+from src.trading_runtime.rule_decision_basis_schema import STAGED_TABLES as RULE_DECISION_TABLES
+_CONTRACTS.update({table.name: table for table in RULE_DECISION_TABLES})
 _CONTRACTS[FAILURE.name] = FAILURE
 _CONTRACTS[PROFIT_GIVEBACK.name] = PROFIT_GIVEBACK
 _CONTRACTS[CONFIRMED_AH_FAILURE.name] = CONFIRMED_AH_FAILURE
