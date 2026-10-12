@@ -78,6 +78,35 @@ class ProgramConfigurationSelectionService:
             raise RuntimeError("Programme preparation lost its installed app authority")
         return controller
 
+    async def launch_controller(self, run_service, controller):
+        """Recheck app approval, then use the existing fully bound native gate.
+
+        Operational authorization and complete typed preparation belong to the
+        caller. This adds no alternative engine, journal or publication path.
+        """
+        from .replay_run_service import ReplayRunService, ReplayRunController
+        from .backtest_program_journal_bootstrap import _configuration_hash
+        from src.trading_runtime.strategy_configuration_selection import StrategyConfigurationSelection
+        if (program_configuration_selection_service() is not self
+                or type(run_service) is not ReplayRunService or type(controller) is not ReplayRunController):
+            raise ValueError("Programme launch requires its installed app authority")
+        definition = controller.definition
+        revision = definition.configuration_revision
+        candidate = revision.get("revision_id")
+        selection = getattr(controller, "_program_configuration_selection", None)
+        if (type(selection) is not StrategyConfigurationSelection or type(candidate) is not str
+                or candidate != "strategy-configuration:" + selection.header["configuration_id"]
+                or self.pins.get(selection.header["configuration_id"]) != selection.header["content_hash"]
+                or revision.get("selection_hash") != selection.header["content_hash"]):
+            raise ValueError("Programme launch selection is not approved for this app")
+        reviewed_hash = _configuration_hash(definition)
+        current = await self.snapshot(candidate)
+        if (program_configuration_selection_service() is not self or controller.definition is not definition
+                or current["content_hash"] != reviewed_hash or _configuration_hash(definition) != reviewed_hash
+                or current["selection_hash"] != selection.header["content_hash"]):
+            raise RuntimeError("Programme launch changed its reviewed central selection")
+        return await run_service.launch_prepared_program_controller(controller)
+
 
 def install_program_configuration_selection_service(service):
     """Operator-authorized startup hook; no public HTTP installation endpoint."""

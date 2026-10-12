@@ -55,6 +55,7 @@ def test_certified_selection_prepares_native_service_controller_without_starting
             **{key: kwargs[key] for key in ("selection_client_factory", "release_client_factory",
                 "policy_client_factory", "policy_dispatch", "concurrency")})
         monkeypatch.setattr(app_selection, "_SERVICE", selector)
+        monkeypatch.setattr(app_selection, "load_certified_program_configuration", load)
         preparation = dict(assignments=kwargs["assignments"], listing_by_assignment=kwargs["listing_by_assignment"],
             liquidity_resolution_ms=kwargs["liquidity_resolution_ms"])
         if failure:
@@ -65,11 +66,16 @@ def test_certified_selection_prepares_native_service_controller_without_starting
             assert controller._program_configuration_selection is packet
             assert controller._program_strategy.program_release.header["content_hash"] == registration.expected_content_hash
             assert controller._runtime is None and controller._task is None and controller.status == "created"
+            with pytest.raises(RuntimeError, match="prepared typed launch handoff"):
+                await selector.launch_controller(service, controller)
+            assert not service._runs and controller._task is None
             revision["selection_hash"] = "f" * 64
             before = len(clients)
             with pytest.raises(ValueError, match="not approved"):
                 await selector.prepare_controller(service, definition, **preparation)
             assert len(clients) == before
+            with pytest.raises(ValueError, match="not approved"):
+                await selector.launch_controller(service, controller)
     asyncio.run(run())
     assert not service._runs and not list(tmp_path.iterdir())
     assert all(client.closed for client in clients)
