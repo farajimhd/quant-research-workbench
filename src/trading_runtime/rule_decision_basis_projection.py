@@ -8,10 +8,45 @@ from hashlib import sha256
 from uuid import UUID
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
 
 from src.backend.signal_stream_typed_readback import _normalize
 from .journal_contract import canonical_json
 from .rule_decision_basis_schema import BASIS, INTENT
+
+
+@dataclass(frozen=True, slots=True)
+class RuleDecisionBasisBatch:
+    """Staged scalar supplement retaining the original typed journal batch.
+
+    Active writers must explicitly support this family before it can be sent.
+    Constructing a transport does not prove source or financial-prefix authority.
+    """
+    base: object
+    basis: Mapping
+    intents: tuple[Mapping, ...]
+
+    def __post_init__(self):
+        from .arte_journal_writer import TypedJournalBatch
+        parent, children = verify_rule_decision_basis(self.basis, self.intents)
+        base = self.base
+        if (type(base) is not TypedJournalBatch or len(base.events) != 1
+                or base.run_id != parent["run_id"] or base.batch_id != parent["batch_id"]
+                or base.first_sequence != parent["decision_sequence"]
+                or base.last_sequence != parent["decision_sequence"]):
+            raise ValueError("Rule decision transport differs from its typed batch")
+        event = base.events[0]
+        if (any(event.get(key) != parent[key] for key in
+                ("run_id", "batch_id", "record_id", "account_id", "event_month"))
+                or event.get("sequence") != parent["decision_sequence"]
+                or event.get("entity_id") != parent["decision_id"]
+                or (event.get("category"), event.get("entity_type")) != ("strategy_decision", "signal")
+                or _normalize(event.get("event_time"), "DateTime64(6, 'UTC')", occurrence=False) != parent["boundary_at"]
+                or event.get("causation_id") != parent["source_commit_hash"]):
+            raise ValueError("Rule decision transport differs from its event envelope")
+        object.__setattr__(self, "basis", MappingProxyType(dict(parent)))
+        object.__setattr__(self, "intents", tuple(MappingProxyType(dict(child)) for child in children))
 
 
 def project_program_completion_basis(record, *, release, block, assignment,

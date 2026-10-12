@@ -148,6 +148,21 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 assert basis_parent["intent_count"] == len(basis_children) == len(decision_intents)
                 from src.trading_runtime.rule_decision_basis_projection import verify_rule_decision_completion_record
                 assert verify_rule_decision_completion_record(basis_parent, basis_children, completion) is completion
+                from src.trading_runtime.arte_journal_projection import project_journal_record
+                from src.trading_runtime.rule_decision_basis_projection import RuleDecisionBasisBatch
+                typed_completion = project_journal_record(completion, run_month=at.date().replace(day=1),
+                    attempt_id="00000000-0000-0000-0000-000000000001",
+                    batch_id=basis_parent["batch_id"], prior_batch_id="00000000-0000-0000-0000-000000000000",
+                    source_cursor="prepared-source")
+                transport = RuleDecisionBasisBatch(typed_completion, basis_parent, basis_children)
+                assert transport.base is typed_completion
+                with pytest.raises(TypeError):
+                    transport.basis["source_commit_hash"] = "e" * 64
+                with pytest.raises(ValueError, match="typed batch"):
+                    RuleDecisionBasisBatch(replace(typed_completion, run_id="other"), basis_parent, basis_children)
+                with pytest.raises(ValueError, match="event envelope"):
+                    RuleDecisionBasisBatch(replace(typed_completion, events=({**typed_completion.events[0],
+                        "causation_id": "e" * 64},)), basis_parent, basis_children)
                 for changed in (replace(completion, run_id="foreign-run"),
                         replace(completion, sequence=completion.sequence + 1),
                         replace(completion, payload={**completion.payload, "causation_id": "e" * 64})):
