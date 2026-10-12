@@ -110,6 +110,15 @@ def test_compound_retains_qualified_rule_rows_and_reseals_dependent_child_hashes
         for row in expected_children)
     assert result.units[0] is first and first.unit.basis["batch_id"] == base.batch_id
     assert expected_parent["intent_hash"] != parent["intent_hash"]
+    from dataclasses import replace
+    from src.trading_runtime.rule_decision_compound import qualified_compound_rule_families
+    from src.trading_runtime.rule_decision_basis_schema import BASIS, INTENT
+    assert qualified_compound_rule_families(result) == (
+        (BASIS.name, (expected_parent,)), (INTENT.name, expected_children))
+    tampered = dict(result.children)
+    tampered["rule_decision_bases"] = ({**tampered["rule_decision_bases"][0], "intent_hash": "0" * 64},)
+    with pytest.raises(ValueError, match="qualified source units"):
+        qualified_compound_rule_families(replace(result, children=tampered))
     with pytest.raises(RuntimeError, match="integrated writer hook"):
         prepare_compound_v4_families(object(), result)
 
