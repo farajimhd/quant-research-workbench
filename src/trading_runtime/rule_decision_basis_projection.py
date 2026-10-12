@@ -106,6 +106,7 @@ def verify_rule_decision_basis(parent, children):
     if (parent["source_batch_sequence"] < 1 or parent["terminal"] not in (0, 1)
             or not parent["event_month"].endswith("-01")
             or not 0 <= parent["basis_sequence"] < parent["decision_sequence"]
+            or len(children) >= parent["decision_sequence"] - parent["basis_sequence"]
             or parent["intent_count"] != len(children) or parent["intent_hash"] != _digest(children)
             or not all(parent[key] for key in ("run_id", "account_id", "assignment_id", "listing_id", "evaluation_block"))):
         raise ValueError("Rule decision scope, sequence or intent coverage differs")
@@ -121,3 +122,24 @@ def verify_rule_decision_basis(parent, children):
             raise ValueError("Rule decision intent linkage differs")
         seen.add(child["strategy_intent_id"])
     return parent, children
+
+
+def verify_rule_decision_intent_records(parent, children, records):
+    """Join exact normalized semantic intent records inside the basis interval."""
+    from .arte_intent_projection import RecoveredIntent
+    parent, children = verify_rule_decision_basis(parent, children)
+    records = tuple(records)
+    if (len(records) != len(children) or any(type(record) is not RecoveredIntent for record in records)
+            or len({record.intent.intent_id for record in records}) != len(records)
+            or len({record.record_id for record in records}) != len(records)
+            or len({record.sequence for record in records}) != len(records)):
+        raise ValueError("Rule decision intent records are missing or duplicate")
+    by_id = {record.intent.intent_id: record for record in records}
+    at = datetime.fromisoformat(parent["boundary_at"])
+    for child in children:
+        record = by_id.get(child["strategy_intent_id"])
+        if (record is None or record.account_id != parent["account_id"]
+                or not parent["basis_sequence"] < record.sequence < parent["decision_sequence"]
+                or record.intent.event_time != at or record.intent.metadata):
+            raise ValueError("Rule decision intent record differs from its causal interval")
+    return tuple(by_id[child["strategy_intent_id"]] for child in children)

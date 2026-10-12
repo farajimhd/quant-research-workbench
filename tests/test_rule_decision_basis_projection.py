@@ -1,9 +1,13 @@
 from datetime import datetime, UTC, date
 from uuid import uuid4
+from dataclasses import replace
 
 import pytest
 
 from src.trading_runtime.rule_decision_basis_projection import project_rule_decision_basis, verify_rule_decision_basis
+from src.trading_runtime.rule_decision_basis_projection import verify_rule_decision_intent_records
+from src.trading_runtime.arte_intent_projection import RecoveredIntent
+from src.trading_runtime.signals import StrategyIntent
 
 
 def values(status="selected"):
@@ -12,7 +16,7 @@ def values(status="selected"):
         release_id=str(uuid4()), release_content_hash="b" * 64, source_session_date=date(2026, 8, 18),
         source_batch_sequence=1, source_commit_hash="c" * 64, history_input_hash="d" * 64,
         evaluation_block="full-session", observed_ordinal=10, boundary_at=datetime(2026, 8, 18, 12, tzinfo=UTC),
-        basis_sequence=3, decision_sequence=4, terminal=0, selection_status=status)
+        basis_sequence=3, decision_sequence=5, terminal=0, selection_status=status)
 
 
 @pytest.mark.parametrize("selected", [False, True])
@@ -27,7 +31,7 @@ def test_normalized_decision_projection_roundtrip_and_corrupt_links(selected):
             verify_rule_decision_basis(parent, ())
 
 
-@pytest.mark.parametrize("change", [dict(basis_sequence=4), dict(source_batch_sequence=0),
+@pytest.mark.parametrize("change", [dict(basis_sequence=5), dict(source_batch_sequence=0),
     dict(terminal=2), dict(selection_status="already_consumed"), dict(payload="opaque")])
 def test_invalid_scope_or_unmodeled_data_is_rejected(change):
     with pytest.raises(ValueError):
@@ -37,3 +41,48 @@ def test_invalid_scope_or_unmodeled_data_is_rejected(change):
 def test_intent_extra_columns_are_not_silently_dropped():
     with pytest.raises(ValueError, match="unmodeled columns"):
         project_rule_decision_basis(values(), [dict(stage="entry", strategy_intent_id="intent", payload="opaque")])
+
+
+def intent_record():
+    return RecoveredIntent(4, "account", str(uuid4()), str(uuid4()),
+        StrategyIntent("intent", "ABC", values()["boundary_at"], "buy", 1, 10))
+
+
+def test_decision_joins_actual_semantic_intent_record():
+    parent, children = project_rule_decision_basis(values(),
+        [dict(stage="entry", strategy_intent_id="intent")])
+    record = intent_record()
+    assert verify_rule_decision_intent_records(parent, children, [record]) == (record,)
+    wait, empty = project_rule_decision_basis(values("wait"), [])
+    assert verify_rule_decision_intent_records(wait, empty, []) == ()
+
+
+@pytest.mark.parametrize("change", [dict(sequence=3), dict(sequence=5), dict(account_id="other")])
+def test_decision_rejects_intent_outside_financial_interval(change):
+    parent, children = project_rule_decision_basis(values(),
+        [dict(stage="entry", strategy_intent_id="intent")])
+    with pytest.raises(ValueError, match="causal interval"):
+        verify_rule_decision_intent_records(parent, children, [replace(intent_record(), **change)])
+
+
+@pytest.mark.parametrize("change", [dict(intent_id="other"),
+    dict(event_time=datetime(2026, 8, 18, 13, tzinfo=UTC)), dict(metadata={"opaque": True})])
+def test_decision_rejects_foreign_or_unmodeled_intent(change):
+    parent, children = project_rule_decision_basis(values(),
+        [dict(stage="entry", strategy_intent_id="intent")])
+    record = intent_record()
+    with pytest.raises(ValueError, match="causal interval"):
+        verify_rule_decision_intent_records(parent, children,
+            [replace(record, intent=replace(record.intent, **change))])
+
+
+def test_decision_rejects_missing_duplicate_or_overfull_intent_records():
+    parent, children = project_rule_decision_basis(values(),
+        [dict(stage="entry", strategy_intent_id="intent")])
+    record = intent_record()
+    for records in ([], [record, record], [object()]):
+        with pytest.raises(ValueError, match="missing or duplicate"):
+            verify_rule_decision_intent_records(parent, children, records)
+    with pytest.raises(ValueError, match="sequence"):
+        project_rule_decision_basis({**values(), "decision_sequence": 4},
+            [dict(stage="entry", strategy_intent_id="intent")])
