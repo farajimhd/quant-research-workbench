@@ -32,7 +32,8 @@ from src.trading_runtime.execution_policies import ExecutionPolicy, ExecutionEnv
 
 @pytest.mark.parametrize("resolution", [100, 1000])
 @pytest.mark.parametrize("partial_fills", [False, True])
-def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepared_source, tmp_path, monkeypatch, resolution, partial_fills):
+@pytest.mark.parametrize("fenced", [False, True])
+def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepared_source, tmp_path, monkeypatch, resolution, partial_fills, fenced):
     store = Store()
     publish(store, prepared_source)
     certificate = consume(store, prepared_source)
@@ -52,6 +53,7 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
     def post(path, request, timeout):
         return response_for(certificate, request["first_ordinal"], request["stop_ordinal"])
     async def run_test():
+        queued_writer = None
         await controller._initialize_runtime(record_configuration=False, record_lifecycle=False)
         try:
             block = await controller.prepare_program_inputs({"listing": pin}, first_ordinal=0, stop_ordinal=200,
@@ -69,9 +71,21 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
             await controller.bootstrap_program_signals(publisher, **scope)
             writer = SimpleNamespace(run_id=controller.run_id, run_mode="backtest", coalesce_batches=False,
                 journal_profile="backtest_v4", max_events_per_commit=512)
+            if fenced:
+                from tests.test_arte_journal_commit_v4 import attached_v4_client
+                from src.trading_runtime import arte_journal_writer as writer_module
+                from src.trading_runtime import rule_decision_writer_preflight as audit
+                persisted = attached_v4_client()
+                monkeypatch.setattr(writer_module, "_v4_preflight", lambda client: None)
+                monkeypatch.setattr(writer_module, "_verify_run_identity", lambda client, run: {
+                    "mode": "backtest", "account_ids": controller._runtime.config.account_ids})
+                monkeypatch.setattr(audit, "require_rule_decision_writer_audit", lambda client: None)
+                queued_writer = writer_module.ArteJournalWriter(persisted, run_id=controller.run_id,
+                    journal_profile="backtest_v4", capacity=1, coalesce_batches=False)
+                writer = queued_writer
             controller._journal_publisher = BacktestTypedJournalPublisher(controller._journal, writer,
                 attempt_id="00000000-0000-0000-0000-000000000001", run_month=pin.scope.session_date.replace(day=1),
-                expected_config=typed_run_config_payload(controller._runtime.config))
+                expected_config=typed_run_config_payload(controller._runtime.config), exact_oms_prices=fenced)
             transport_rows = []
             for offset in ((0, 1, 2) if partial_fills else (0, 2)):
                 market, _ = block.row_for("listing", ordinal + offset)
@@ -185,6 +199,36 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                         await owner
                 assert not controller._program_cohort_active
                 assert controller._runtime.last_event_time == before_clock
+            if fenced:
+                from src.backend.backtest_program_cohort import run_fenced_program_cohort
+                from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
+                result = await run_fenced_program_cohort(controller, {"assignment": block}, population, projection, **arguments)
+                assert result.status == "completed" and result.qualified_decisions == 3
+                first_sequence = result.policy_packet.journal_sequence
+                assert controller._journal_publisher.fenced_sequence == first_sequence
+                assert not controller._journal.unfenced_records()
+                assert load_verified_v4_prefix(persisted, controller.run_id).last_sequence == first_sequence
+                executions = await controller._runtime.broker.trades()
+                assert executions and sum(row.commission for row in executions) >= 1.
+                if partial_fills:
+                    assert any(row.size == 2 for row in executions)
+                    assert persisted.tables["trading_oms_entry_acquisition_freeze_v1"]
+                # The exact same owners continue after pending records and
+                # decision sidecars have been released by the acknowledged fence.
+                async def empty_next(*args, **kwargs):
+                    return {"ABC": ()}
+                monkeypatch.setattr(liquidity, "read_fixed_liquidity_cohort_async" if resolution == 100
+                    else "read_liquidity_cohort_async", empty_next)
+                continued = await run_fenced_program_cohort(controller, {"assignment": block}, population, projection,
+                    **{**arguments, "first_bucket": first_bucket + 3, "stop_bucket": first_bucket + 4,
+                       "initial_packet": result.policy_packet})
+                assert continued.qualified_decisions == continued.source_clocks == 1
+                assert continued.policy_packet.journal_sequence > first_sequence
+                assert controller._journal_publisher.fenced_sequence == continued.policy_packet.journal_sequence
+                assert load_verified_v4_prefix(persisted, controller.run_id).last_sequence == continued.policy_packet.journal_sequence
+                assert not controller._journal.unfenced_records()
+                assert controller._program_dispatch_failure is None
+                return
             result = await controller.run_prepared_program_cohort({"assignment": block}, population, projection, **arguments)
             assert result.status == "completed" and result.source_clocks == result.qualified_decisions == 3
             assert result.liquidity_boundaries == (30 if resolution == 100 else 3)
@@ -269,6 +313,8 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
             assert controller._journal_publisher.fenced_sequence == 0
         finally:
             await controller._runtime.finish()
+            if queued_writer is not None:
+                queued_writer.close()
     try:
         asyncio.run(run_test())
     finally:

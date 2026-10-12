@@ -253,6 +253,13 @@ journal, actor and source ownership. Publication uncertainty or cancellation
 latches the controller recovery requirement; it does not cancel the publisher's
 shielded task or authorize a replacement run. Empty stopped cohorts do not
 publish. The returned policy packet is preserved for the next cohort.
-Lifecycle tests use controlled publisher doubles; the existing native synthetic
-cohort tests run separately. Real-publisher fence integration, policy continuation
-after compaction, main app launch and full-session qualification remain pending.
+Lifecycle fault tests use controlled publisher doubles. Native synthetic cohorts
+also exercise the actual ArteJournalWriter worker and BacktestTypedJournalPublisher
+against an in-memory V4 transport, for both liquidity resolutions and complete or
+partial fills. Two consecutive cohorts verify publication, released pending
+records, preserved policy packets and cold verified-prefix sequence extension.
+This exposed and corrected a post-commit OMS cache assumption: exact-price OMS
+envelopes keep strategy identity in their exact group row, while their legacy
+decimal rows are empty. The existing legacy accessor remains unchanged.
+Storage audits and market transports are synthetic; main app launch, actual
+ClickHouse publication, full-session recovery and all30 qualification remain pending.

@@ -657,8 +657,12 @@ class BacktestTypedJournalPublisher:
                                 source_record)
                             for key, lineage in committed_oms_order_lineage(
                                     group, run_id=source_batch.run_id,
-                                    strategy_id=source_batch.oms_group_states[0]["strategy_id"],
-                                    strategy_revision=source_batch.oms_group_states[0]["strategy_revision"],
+                                    strategy_id=(source_unit.group["strategy_id"]
+                                        if isinstance(source_unit, ExactPriceOmsStateBatch)
+                                        else source_batch.oms_group_states[0]["strategy_id"]),
+                                    strategy_revision=(source_unit.group["strategy_revision"]
+                                        if isinstance(source_unit, ExactPriceOmsStateBatch)
+                                        else source_batch.oms_group_states[0]["strategy_revision"]),
                                     authorized_protection=protection_proof).items():
                                 if (key in self._committed_order_lineage
                                         and self._committed_order_lineage[key] != lineage
