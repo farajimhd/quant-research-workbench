@@ -142,6 +142,15 @@ and rejection of further writes after failure. Mixed-prefix compaction and
 main-path projection still need exact-family support before this route can be
 enabled in the app. No full-session throughput result is implied.
 
+Mixed V4 compaction now accepts exact OMS envelopes alongside ordinary source
+events. It rekeys and hashes their named group/order/tactic children, reuses the
+shared merged OMS seal, emits each price family once and preserves source rows.
+The Backtest receipt dispatcher recognizes exact single tails as well as their
+compounds. Synthetic tests commit a source intent plus exact OMS state under one
+fence, cold-read the state/tactic, retry it and reject altered children before
+reservation. Main-path selection of the exact price contract remains unfinished;
+these transport tests are not a full native session or speed qualification.
+
 Whichever option is selected must cover central schema definitions, projectors,
 binary insert/readback hashes, compound family seals, grants/storage audits,
 order command/modify/reprice links, broker execution attribution, OMS actor

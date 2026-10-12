@@ -24,6 +24,7 @@ from .arte_protection_reconciliation_v4 import V4ProtectionReconciliationBatch
 from .arte_reservation_reason_v4 import V4ReservationReasonBatch
 from .arte_risk_action_v4 import V4RiskActionBatch
 from .rule_decision_publication import QualifiedRuleDecisionBatch, _check_rule_decision_qualification
+from .arte_oms_exact_prices import ExactPriceOmsStateBatch
 from .arte_oms_tactic_projection import (
     V4OmsTacticBatch, PARENT_TABLE, STEP_TABLE, seal_oms_tactic_rows,
 )
@@ -42,6 +43,7 @@ from .arte_entry_activity_v4 import ENTRY_ACTIVITY, seal_certified_entry_activit
 from .arte_entry_spread_risk_v4 import ENTRY_SPREAD_RISK, seal_certified_entry_spread_risk_rows
 
 _CHILD_KEYS = (
+    "exact_oms_groups", "exact_oms_orders",
     "rule_decision_bases", "rule_decision_intents",
     "followthrough_failures", "profit_givebacks", "confirmed_ah_failures", "liquidity_fade_failures", "command_lineages",
     "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "first_price_evidence", "entry_activity_evidence", "entry_spread_risk_evidence", "add_evidence", "allocations", "reservation_reasons",
@@ -51,6 +53,7 @@ _CHILD_KEYS = (
     "reconciliation_replies", "oms_tactics", "oms_tactic_steps",
 )
 _EVENT_PARENT_KEYS = frozenset({
+    "exact_oms_groups", "exact_oms_orders",
     "rule_decision_bases",
     "followthrough_failures", "profit_givebacks", "confirmed_ah_failures", "liquidity_fade_failures", "command_lineages",
     "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "first_price_evidence", "entry_activity_evidence", "entry_spread_risk_evidence", "add_evidence", "allocations", "reservation_reasons",
@@ -85,6 +88,10 @@ class V4CompoundBatch:
 
 
 def _unit_children(unit: Any) -> tuple[tuple[str, Mapping[str, Any]], ...]:
+    if type(unit) is ExactPriceOmsStateBatch:
+        return (("exact_oms_groups", unit.group), ("oms_tactics", unit.tactic_state)) + tuple(
+            ("exact_oms_orders", row) for row in unit.orders) + tuple(
+            ("oms_tactic_steps", row) for row in unit.tactic_steps)
     if type(unit) is QualifiedRuleDecisionBatch:
         _check_rule_decision_qualification(unit.unit, unit.qualification)
         return (("rule_decision_bases", unit.unit.basis),) + tuple(
@@ -216,6 +223,9 @@ def coalesce_v4_units(
 
 
 def _publication_kwargs(unit: Any) -> dict[str, Any]:
+    if type(unit) is ExactPriceOmsStateBatch:
+        return {"exact_oms_prices": unit,
+                "oms_tactic_rows": (unit.tactic_state, unit.tactic_steps)}
     if type(unit) is V4LiquidityFadeFailureBatch:
         return {"liquidity_fade_rows": (unit.failure,)}
     if type(unit) is V4ConfirmedAhFailureBatch:
@@ -315,6 +325,8 @@ def prepare_compound_v4_families(
     if getattr(client, "live_v4_lease", None) is not None and compound.children['profit_givebacks']:
         raise ValueError('Live V4 compound cannot publish profit-protection witnesses')
     table_for_key = {
+        "exact_oms_groups": "trading_oms_group_state_exact_price_v1",
+        "exact_oms_orders": "trading_oms_order_state_exact_price_v1",
         "followthrough_failures": FAILURE.name,
         "profit_givebacks": PROFIT_GIVEBACK.name,
         "confirmed_ah_failures": CONFIRMED_AH_FAILURE.name,
@@ -396,6 +408,9 @@ def prepare_compound_v4_families(
         v4_risk_action_ids=ids(RISK_ACTION.name),
         v4_protection_ids=ids(PROTECTION_CHANGE.name),
         v4_reconciliation_ids=ids(PROTECTION_RECONCILIATION.name),
+        exact_oms_price_rows=(tuple(extra["trading_oms_group_state_exact_price_v1"]),
+                              tuple(extra["trading_oms_order_state_exact_price_v1"]))
+            if compound.children["exact_oms_groups"] or compound.children["exact_oms_orders"] else None,
     )
     if tuple(extra[ENTRY_EVIDENCE.name]) != _sealed_strategy_one_entry_rows(
             compound.base, base_families, tuple(
@@ -456,9 +471,10 @@ def prepare_compound_v4_families(
         compound.base.events, run_id=compound.base.run_id,
         batch_id=compound.base.batch_id)
     if extra[PARENT_TABLE] or extra[STEP_TABLE]:
+        from .arte_journal_writer import _oms_group_identity_rows
         seal_oms_tactic_rows(
             tuple(extra[PARENT_TABLE]), tuple(extra[STEP_TABLE]),
-            dict(base_families)["trading_oms_group_state_v1"],
+            _oms_group_identity_rows(dict(base_families)),
             dict(base_families)["trading_event_v1"],
             run_id=compound.base.run_id, batch_id=compound.base.batch_id)
     seal_followthrough_rows(client, extra[FAILURE.name],
@@ -480,7 +496,8 @@ def prepare_compound_v4_families(
     families = tuple((_v4_family_table(name), rows)
                      for name, rows in base_families) + tuple(
         (table_for_key[key], tuple(extra[table_for_key[key]]))
-        for key in _CHILD_KEYS if compound.children[key] and extra[table_for_key[key]])
+        for key in _CHILD_KEYS if compound.children[key] and extra[table_for_key[key]]
+        and key not in {"exact_oms_groups", "exact_oms_orders"})
     return base_families, families
 
 
