@@ -13,7 +13,8 @@ from src.trading_runtime.program_oms_lineage import reconstruct_program_oms_line
 
 async def recover_program_oms_lineages_async(reader_factory, prefix, *, release,
         account_ids, reselect, execution_policy, protection_for, outside_rth,
-        maximum_groups=2000, maximum_transitions=20000, maximum_events=100000):
+        maximum_groups=2000, maximum_transitions=20000, maximum_events=100000,
+        through_sequence=None):
     """Cold join and close the owned reader before cancellation can return.
 
     `reselect` must replay the exact historical filled/observed state and
@@ -31,6 +32,9 @@ async def recover_program_oms_lineages_async(reader_factory, prefix, *, release,
             or type(maximum_transitions) is not int or not 500 <= maximum_transitions <= 100000
             or type(maximum_events) is not int or not 1 <= maximum_events <= 1000000):
         raise ValueError("Program OMS cold join requires bounded declared authority")
+    if through_sequence is not None and (type(through_sequence) is not int
+            or not 0 <= through_sequence <= prefix.last_sequence):
+        raise ValueError("Program OMS historical cutoff differs from its verified prefix")
 
     def read():
         client = reader_factory()
@@ -40,7 +44,8 @@ async def recover_program_oms_lineages_async(reader_factory, prefix, *, release,
             groups = load_latest_committed_oms_groups(client, prefix,
                 allowed_accounts=accounts,
                 strategy_identity=(release.header["strategy_id"], release.header["strategy_number"]),
-                require_tactic=True, max_transitions=maximum_transitions)
+                require_tactic=True, max_transitions=maximum_transitions,
+                **({"through_sequence": through_sequence} if through_sequence is not None else {}))
             if len(groups) > maximum_groups:
                 raise ValueError("Program OMS group inventory exceeds its bound")
             history = load_complete_typed_protection_history(client, prefix,
@@ -48,6 +53,10 @@ async def recover_program_oms_lineages_async(reader_factory, prefix, *, release,
             if (history.run_id != prefix.run_id or history.through_sequence != prefix.last_sequence
                     or history.committed_batch_ids != prefix.batch_ids):
                 raise ValueError("Program OMS protection prefix differs")
+            if through_sequence is not None:
+                from dataclasses import replace
+                history = replace(history, through_sequence=through_sequence,
+                    records=tuple(record for record in history.records if record.sequence <= through_sequence))
             result = []
             if groups:
                 wanted = {group.intent_record_id for group in groups}

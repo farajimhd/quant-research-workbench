@@ -173,6 +173,26 @@ def test_controller_builds_program_actor_on_existing_runtime_without_legacy_fact
                     execution_policy=approved.execution_policy,
                     protection_for=lambda _: approved.protection_profile, outside_rth=approved.outside_rth)
             assert closed == [True, True, True]
+            later_prefix = replace(prefix, last_sequence=5)
+            future_change = replace(controller._journal.records(controller.run_id)[0], sequence=4,
+                category="protection", entity_type="protection_change",
+                payload={"order_group_id": state.group["group_id"]})
+            later_history = replace(history, through_sequence=5, records=(future_change,))
+            monkeypatch.setattr(cold, "load_verified_v4_prefix", lambda *_: later_prefix)
+            def historical_groups(client, actual_prefix, **scope):
+                assert actual_prefix is later_prefix and scope["through_sequence"] == 2
+                return (state,)
+            monkeypatch.setattr(cold, "load_latest_committed_oms_groups", historical_groups)
+            monkeypatch.setattr(cold, "load_complete_typed_protection_history", lambda *a, **k: later_history)
+            monkeypatch.setattr(cold, "load_committed_strategy_intent_page", lambda *a, **k: (source,))
+            historical_lineages = await cold.recover_program_oms_lineages_async(lambda: client, later_prefix,
+                release=actor.program_release, account_ids=(source.account_id,), reselect=reselect,
+                execution_policy=approved.execution_policy,
+                protection_for=lambda _: approved.protection_profile, outside_rth=approved.outside_rth,
+                through_sequence=2)
+            assert historical_lineages == (lineage,)
+            assert later_history.records == (future_change,) and later_prefix.last_sequence == 5
+            assert closed == [True, True, True, True]
             with pytest.raises(ValueError, match="scope or flat"):
                 reconstruct_program_oms_lineage(replace(state, orders=tuple(group.orders)),
                     source, history, **lineage_kwargs)
