@@ -136,13 +136,16 @@ def _digest(value):
 
 
 def _seal(table, values):
+    from .arte_journal_writer import _datetime_wire
     names = {name for name, _ in table.columns} - {"content_hash"}
     if set(values) != names:
         raise ValueError("Rule decision row columns differ from the shared contract")
     row = {name: str(UUID(str(values[name]))) if kind == "UUID" else
         _normalize(values[name], kind, occurrence=False)
         for name, kind in table.columns if name != "content_hash"}
-    return {**row, "content_hash": _digest(row)}
+    content = {name: _datetime_wire(row[name], 6) if kind.startswith("DateTime64(6") else row[name]
+        for name, kind in table.columns if name != "content_hash"}
+    return {**row, "content_hash": _digest(content)}
 
 
 def project_rule_decision_basis(values, intents):
