@@ -163,6 +163,12 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 with pytest.raises(ValueError, match="event envelope"):
                     RuleDecisionBasisBatch(replace(typed_completion, events=({**typed_completion.events[0],
                         "causation_id": "e" * 64},)), basis_parent, basis_children)
+                for changed_signals in ((), ({**typed_completion.signals[0], "signal_type": "other"},),
+                        ({**typed_completion.signals[0], "decision_assignment_id": "other"},),
+                        ({**typed_completion.signals[0], "decision_reason_detail": "other"},)):
+                    with pytest.raises(ValueError, match="completion detail"):
+                        RuleDecisionBasisBatch(replace(typed_completion, signals=changed_signals),
+                            basis_parent, basis_children)
                 for changed in (replace(completion, run_id="foreign-run"),
                         replace(completion, sequence=completion.sequence + 1),
                         replace(completion, payload={**completion.payload, "causation_id": "e" * 64})):

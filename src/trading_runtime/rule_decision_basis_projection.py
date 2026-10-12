@@ -45,6 +45,19 @@ class RuleDecisionBasisBatch:
                 or _normalize(event.get("event_time"), "DateTime64(6, 'UTC')", occurrence=False) != parent["boundary_at"]
                 or event.get("causation_id") != parent["source_commit_hash"]):
             raise ValueError("Rule decision transport differs from its event envelope")
+        if len(base.signals) != 1:
+            raise ValueError("Rule decision transport lacks its completion detail")
+        detail = base.signals[0]
+        if (any(detail.get(key) != parent[key] for key in
+                ("run_id", "batch_id", "record_id", "account_id", "event_month"))
+                or detail.get("signal_id") != parent["decision_id"]
+                or detail.get("signal_type") != "program_boundary_completed"
+                or detail.get("decision_assignment_id") != parent["assignment_id"]
+                or detail.get("decision_status") != "completed"
+                or detail.get("decision_reason_detail") != parent["selection_status"]
+                or _normalize(detail.get("source_event_time"), "DateTime64(6, 'UTC')", occurrence=False)
+                   != parent["boundary_at"]):
+            raise ValueError("Rule decision transport differs from its completion detail")
         object.__setattr__(self, "basis", MappingProxyType(dict(parent)))
         object.__setattr__(self, "intents", tuple(MappingProxyType(dict(child)) for child in children))
 
