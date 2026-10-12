@@ -1,5 +1,6 @@
 """One normalized run identity is shared before V4 Keeper publication."""
 from datetime import date, datetime, timezone
+from dataclasses import replace
 
 import pytest
 
@@ -7,6 +8,7 @@ from src.backend.backtest_v4_run_context import (
     fixed_v4_context_rows, historical_runtime_config,
     historical_simulated_account_ids,
     historical_strategy_one_portfolio_profiles,
+    program_v4_context_rows,
 )
 from src.trading_runtime.runtime import RunMode, typed_run_config_payload
 
@@ -43,6 +45,30 @@ def test_v4_context_uses_same_runtime_scalars_and_uint32_checkpoint_field():
     assert set(runtime) == {"strategy_id", "strategy_revision", "anchor_date",
                             "run_plan_id", "safety_supervisor_enabled",
                             "checkpoint_interval_events", "write_progress_checkpoints"}
+
+
+@pytest.mark.parametrize("interval", ["100ms", "1s"])
+def test_program_context_binds_release_without_changing_its_evaluation_clock(interval):
+    from tests.test_columnar_program_coordinator import inputs
+    release, _, _, _ = inputs(entry=True)
+    config = replace(_config(), strategy_id=release.header["strategy_id"],
+        strategy_revision=release.header["strategy_number"])
+    scope = dict(release=release, expected_release_hash=release.header["content_hash"],
+        execution_interval=interval, configuration_hash="a" * 64,
+        code_hash=release.header["code_hash"], market_plan_token="c" * 64,
+        started_at=datetime(2026, 8, 18, 8, tzinfo=timezone.utc))
+    run, runtime = program_v4_context_rows(config, **scope)
+    assert run["evaluation_interval_ms"] == (100 if interval == "100ms" else 1000)
+    assert release.header["evaluation_interval_ms"] == 1000
+    assert runtime == typed_run_config_payload(config)
+    for field in ("expected_release_hash", "code_hash"):
+        changed = "0" * 64 if scope[field] != "0" * 64 else "1" * 64
+        with pytest.raises(ValueError, match="pinned executable release"):
+            program_v4_context_rows(config, **{**scope, field: changed})
+    with pytest.raises(ValueError, match="pinned executable release"):
+        program_v4_context_rows(replace(config, strategy_revision=config.strategy_revision + 1), **scope)
+    with pytest.raises(ValueError, match="event interval"):
+        program_v4_context_rows(config, **{**scope, "execution_interval": "200ms"})
 
 
 def test_v4_context_pins_selected_fixed_interval_and_rejects_events():

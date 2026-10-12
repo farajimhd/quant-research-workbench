@@ -128,6 +128,42 @@ def fixed_v4_context_rows(config: RunConfig, *, execution_interval: Any,
                    for value in (configuration_hash, code_hash,
                                  market_plan_token))):
         raise ValueError("V4 run context needs pinned Strategy 1 and source hashes")
+    return _fixed_context_rows(config, execution_interval=execution_interval,
+        configuration_hash=configuration_hash, code_hash=code_hash,
+        market_plan_token=market_plan_token, started_at=started_at)
+
+
+def program_v4_context_rows(config: RunConfig, *, release, expected_release_hash: str,
+        execution_interval: Any, configuration_hash: str, code_hash: str,
+        market_plan_token: str, started_at: datetime):
+    """Prepare programme context from pinned release and native event interval.
+
+    The release owns the programme's 1s evaluation cadence. The run interval
+    owns native event-clock stepping; neither changes the broker fill contract.
+    This pure projection does not prove release publication or admit a run.
+    """
+    from src.trading_runtime.columnar_strategy_release import ProgramRelease
+    if (type(config) is not RunConfig or config.mode is not RunMode.BACKTEST
+            or type(release) is not ProgramRelease
+            or config.strategy_id != release.header["strategy_id"]
+            or config.strategy_revision != release.header["strategy_number"]
+            or release.header["evaluation_interval_ms"] != 1000
+            or release.header["content_hash"] != expected_release_hash
+            or release.header["code_hash"] != code_hash
+            or started_at.tzinfo is None
+            or any(re.fullmatch(r"[0-9a-f]{64}", value or "") is None
+                for value in (expected_release_hash, configuration_hash, code_hash, market_plan_token))):
+        raise ValueError("Programme context differs from its pinned executable release")
+    interval = ExecutionInterval.parse(execution_interval)
+    if interval.kind != "fixed" or interval.milliseconds not in (100, 1000):
+        raise ValueError("Programme native event interval must be 100ms or 1s")
+    return _fixed_context_rows(config, execution_interval=execution_interval,
+        configuration_hash=configuration_hash, code_hash=code_hash,
+        market_plan_token=market_plan_token, started_at=started_at)
+
+
+def _fixed_context_rows(config, *, execution_interval, configuration_hash,
+        code_hash, market_plan_token, started_at):
     interval = ExecutionInterval.parse(execution_interval)
     if interval.kind != "fixed" or interval.milliseconds is None:
         raise ValueError("V4 run context requires a fixed evaluation interval")

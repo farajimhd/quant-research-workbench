@@ -41,6 +41,14 @@ not borrow a startup audit from another client. Synthetic factory tests close
 every created client without issuing a network request. The default legacy
 factory and preflight behavior remains unchanged.
 
+`program_v4_context_rows` prepares run context for a pinned normalized programme
+release and its executable code hash. Its 100ms/1s native event interval does
+not change the release's 1s programme cadence or supply broker-fill settings.
+Both numbered and programme context builders use the same typed run-row
+construction and validation. Existing numbered admission remains intact.
+This is a source projection, not release-publication proof or a selectable
+main app launch route; broker-contract and full launch binding remain required.
+
 ## Delivered components
 
 - `columnar_rule_program.py`: bounded typed DAGs evaluated with native Polars
