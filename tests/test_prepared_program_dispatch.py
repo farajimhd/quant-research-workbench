@@ -124,6 +124,12 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                         if record.payload.get("signal_type") == "program_boundary_completed"]
                     return
                 basis_sequence = controller._journal.latest_sequence(controller.run_id)
+                historical_actor = AssignedProgramStrategy(actor.program_release, actor.assignments(), actor._listings)
+                historical_actor.execution_state = deepcopy(actor.execution_state)
+                historical_actor.target_state = deepcopy(actor.target_state)
+                historical_actor.trail_state = deepcopy(actor.trail_state)
+                historical_actor._selection_clocks = dict(actor._selection_clocks)
+                historical_observation = controller.program_order_observation(assignment_id="assignment", at=at)
                 original_records = controller._journal.records
                 def forbidden_rescan(*args, **kwargs):
                     raise AssertionError("Completed dispatch must not rescan journal records")
@@ -191,6 +197,46 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 assert retained_transport.intents == transport.intents
                 assert dispatched_parent["batch_id"] == completion.record_id
                 assert retained_transport.basis["batch_id"] == typed_completion.batch_id
+                from src.backend.rule_decision_reselection import reselect_rule_decision
+                from src.trading_runtime.arte_intent_projection import ProjectedIntent, RecoveredIntent, restore_strategy_intent
+                recovered_intents = []
+                for intent_record in basis_records:
+                    if not basis_sequence < intent_record.sequence < completion.sequence or (
+                            intent_record.category, intent_record.entity_type) != ("strategy", "strategy_intent"):
+                        continue
+                    intent_batch = project_journal_record(intent_record, run_month=at.date().replace(day=1),
+                        attempt_id=typed_completion.attempt_id, batch_id=typed_completion.batch_id,
+                        prior_batch_id=typed_completion.prior_batch_id, source_cursor="source",
+                        expected_config=dict(strategy_id=actor.strategy_id, strategy_revision=actor.revision))
+                    core = {key: value for key, value in intent_batch.intents[0].items()
+                        if key not in {"record_id", "run_id", "event_month", "batch_id", "account_id", "content_hash"}}
+                    core["event_time"] = intent_record.event_time.isoformat()
+                    slices = tuple({"intent_id": core["intent_id"], **{key: value for key, value in child.items()
+                        if key not in {"record_id", "parent_record_id", "run_id", "event_month", "batch_id", "account_id", "content_hash"}}}
+                        for child in intent_batch.intent_slices)
+                    recovered_intents.append(RecoveredIntent(intent_record.sequence, intent_record.account_id,
+                        intent_record.record_id, intent_batch.batch_id, restore_strategy_intent(ProjectedIntent(core, slices))))
+                reselection_scope = dict(basis_sequence=basis_sequence, block=block, population=population,
+                    source=runtime, observation=historical_observation, execution_policy=policy,
+                    protection_profile=profile, outside_rth=False)
+                with pytest.raises(ValueError, match="historical policy basis"):
+                    reselect_rule_decision(dispatched_parent, dispatched_children, recovered_intents,
+                        actor=historical_actor, **{**reselection_scope, "basis_sequence": basis_sequence + 1})
+                if recovered_intents:
+                    corrupt_actor = AssignedProgramStrategy(actor.program_release, actor.assignments(), actor._listings)
+                    corrupt_actor.execution_state = deepcopy(historical_actor.execution_state)
+                    corrupt_actor.target_state = deepcopy(historical_actor.target_state)
+                    corrupt_actor.trail_state = deepcopy(historical_actor.trail_state)
+                    corrupt_actor._selection_clocks = dict(historical_actor._selection_clocks)
+                    corrupt_records = [replace(recovered_intents[0],
+                        intent=replace(recovered_intents[0].intent, quantity=recovered_intents[0].intent.quantity + 1)),
+                        *recovered_intents[1:]]
+                    with pytest.raises(ValueError, match="semantic intent"):
+                        reselect_rule_decision(dispatched_parent, dispatched_children, corrupt_records,
+                            actor=corrupt_actor, **reselection_scope)
+                selected_again = reselect_rule_decision(dispatched_parent, dispatched_children, recovered_intents,
+                    actor=historical_actor, **reselection_scope)
+                assert selected_again.status == result["status"]
                 from src.trading_runtime.rule_decision_publication import prepare_rule_decision_commit
                 from src.trading_runtime.arte_journal_commit_v4 import verify_commit_v4
                 prepared_commit = prepare_rule_decision_commit(retained_transport, committed_at=at)
