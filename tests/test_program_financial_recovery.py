@@ -68,6 +68,31 @@ def test_cancelled_program_financial_read_drains_owned_client(monkeypatch):
     asyncio.run(run())
 
 
+def test_historical_portfolio_revision_is_exact_inside_full_verified_prefix(monkeypatch):
+    client, profile = _client(monkeypatch)
+    profile = replace(profile, mode="backtest")
+    prefix = V4CommittedPrefix("live-run", 9, "batch", "source", "running", ("batch",))
+    closed, reads = [], []
+    monkeypatch.setattr(client, "close", lambda: closed.append(True), raising=False)
+    def head(actual, run_id):
+        assert actual is client and run_id == prefix.run_id
+        reads.append(prefix.last_sequence)
+        return prefix
+    monkeypatch.setattr(module, "load_verified_v4_prefix", head)
+    async def run():
+        return await module.recover_program_portfolio_async(lambda: client, prefix,
+            profiles=(profile,), cutoff_at=AT, through_sequence=7)
+    image = asyncio.run(run())
+    assert image.revisions == {"account-id": 7}
+    assert image.states["account-id"].sync_state is PortfolioSyncState.ENTRIES_BLOCKED
+    assert prefix.last_sequence == 9 and reads == [9, 9] and closed == [True]
+    for invalid in (0, 10, True):
+        with pytest.raises(ValueError, match="historical revision"):
+            asyncio.run(module.recover_program_portfolio_async(lambda: client, prefix,
+                profiles=(profile,), cutoff_at=AT, through_sequence=invalid))
+    assert closed == [True]
+
+
 def test_program_portfolio_rejects_earlier_snapshot_at_same_revision(monkeypatch):
     from datetime import timedelta
     client, profile = _client(monkeypatch)

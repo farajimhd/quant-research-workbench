@@ -177,7 +177,8 @@ def reconstruct_program_oms_image(prefix, *, lineages, protection, broker,
     return image
 
 
-async def recover_program_portfolio_async(reader_factory, prefix, *, profiles, cutoff_at):
+async def recover_program_portfolio_async(reader_factory, prefix, *, profiles, cutoff_at,
+        through_sequence=None):
     """Read exact account revisions off-loop and reject movement of the fence."""
     profiles = tuple(profiles)
     if (type(prefix) is not V4CommittedPrefix or prefix.status != "running"
@@ -187,6 +188,10 @@ async def recover_program_portfolio_async(reader_factory, prefix, *, profiles, c
             or any(row.mode != "backtest" for row in profiles)
             or len({row.account_id for row in profiles}) != len(profiles)):
         raise ValueError("Program financial recovery requires a running typed backtest prefix")
+    if through_sequence is not None and (type(through_sequence) is not int
+            or not 1 <= through_sequence <= prefix.last_sequence):
+        raise ValueError("Program financial historical revision differs from verified prefix")
+    basis_sequence = prefix.last_sequence if through_sequence is None else through_sequence
 
     def read():
         client = reader_factory()
@@ -195,13 +200,13 @@ async def recover_program_portfolio_async(reader_factory, prefix, *, profiles, c
                 raise ValueError("Program financial prefix changed before cold read")
             for profile in profiles:
                 snapshot = load_portfolio_snapshot(client, run_id=prefix.run_id,
-                    account_id=profile.account_id, state_revision=prefix.last_sequence)
-                if (snapshot is None or snapshot.get("state_revision") != prefix.last_sequence
+                    account_id=profile.account_id, state_revision=basis_sequence)
+                if (snapshot is None or snapshot.get("state_revision") != basis_sequence
                         or snapshot.get("snapshot_at") != cutoff_at.astimezone(timezone.utc).isoformat()):
                     raise ValueError("Program financial snapshot differs from its completed source clock")
             image = recover_portfolio_engine_state(client, run_id=prefix.run_id,
                 profiles=profiles,
-                state_revisions={row.account_id: prefix.last_sequence for row in profiles},
+                state_revisions={row.account_id: basis_sequence for row in profiles},
                 cutoff_at=cutoff_at)
             if load_verified_v4_prefix(client, prefix.run_id) != prefix:
                 raise ValueError("Program financial prefix changed during cold read")
