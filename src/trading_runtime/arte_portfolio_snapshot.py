@@ -536,6 +536,28 @@ def prepare_portfolio_snapshot(
                                      sealed, policy)
 
 
+def decode_prepared_portfolio_snapshot(prepared: PreparedPortfolioSnapshot) -> dict[str, Any]:
+    """Decode staged normalized rows with the same kernel as cold readback.
+
+    This returns domain state only. It is not a commit, ownership receipt or
+    permission to restore an executable Portfolio.
+    """
+    if type(prepared) is not PreparedPortfolioSnapshot:
+        raise TypeError("Portfolio row decoding requires its immutable preparation")
+    from dataclasses import asdict
+    families = _snapshot_rows(prepared.run_id, prepared.account_id,
+        prepared.state_revision, prepared.snapshot_month, prepared.rows, wire=True)
+    policy = ({**asdict(prepared.selected_policy), "identity": prepared.selected_policy.identity}
+              if prepared.selected_policy is not None else None)
+    state = _restore_state(families, policy)
+    reproduced = prepare_portfolio_snapshot(run_id=prepared.run_id, account_id=prepared.account_id,
+        state_revision=prepared.state_revision,
+        snapshot_at=datetime.fromisoformat(prepared.rows.account["snapshot_at"]), state=state)
+    if reproduced != prepared:
+        raise ValueError("Portfolio row decoding differs from its normalized preparation")
+    return state
+
+
 def publish_portfolio_snapshot(
     client: Any, *, run_id: str, account_id: str, state_revision: int,
     snapshot_at: datetime, state: Mapping[str, Any],

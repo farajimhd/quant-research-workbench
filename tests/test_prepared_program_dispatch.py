@@ -136,6 +136,17 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 prepared_finances = prepare_program_clock_financial_basis(captured)
                 assert prepared_finances.broker == captured.broker
                 assert all(snapshot.state_revision == basis_sequence for snapshot in prepared_finances.portfolio)
+                from src.trading_runtime.arte_portfolio_snapshot import (
+                    decode_prepared_portfolio_snapshot, prepare_portfolio_snapshot)
+                for snapshot in prepared_finances.portfolio:
+                    decoded = decode_prepared_portfolio_snapshot(snapshot)
+                    assert prepare_portfolio_snapshot(run_id=snapshot.run_id, account_id=snapshot.account_id,
+                        state_revision=snapshot.state_revision, snapshot_at=at, state=decoded) == snapshot
+                    from types import MappingProxyType
+                    invalid = replace(snapshot, rows=replace(snapshot.rows, account=MappingProxyType({
+                        **snapshot.rows.account, "control_mode": "invalid-control-mode"})))
+                    with pytest.raises(ValueError):
+                        decode_prepared_portfolio_snapshot(invalid)
                 with pytest.raises(ValueError, match="Portfolio coverage"):
                     prepare_program_clock_financial_basis(replace(captured, portfolio=()))
                 if offset == 0:
