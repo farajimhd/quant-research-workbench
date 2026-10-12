@@ -168,6 +168,15 @@ reads through `read_liquidity_cohort_async`. It validates all requests before
 opening clients, preserves sparse/empty windows and closes every owned client
 before cancellation returns. It consumes existing sealed ARTE products only;
 it neither builds missing coverage nor changes the100ms reader or broker clocks.
+`prepare_program_scanner_projection` joins certified population ranking to the
+prepared history once per block, checks the immutable volume-universe rule and
+ranked listing/clock coverage, and exposes constant-offset per-clock scanner
+frames with the app's canonical price/volume/reference aliases. Held listings
+outside top10 remain in the separate prepared management blocks.
+`publish_prepared_program_source_clock` feeds those rows through the configured
+Signal Stream resolver, data-field plan and typed publication queue, promoting
+source state only after acknowledgement. Synthetic native controller tests now
+use this shared bridge instead of assembling scanner candidates manually.
 The main clock lifecycle must resolve this dependency while preserving actual
 filled-state/OMS semantics; per-decision cold database replay is not established
 as an efficient production execution path.

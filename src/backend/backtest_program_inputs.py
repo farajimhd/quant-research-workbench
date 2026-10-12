@@ -22,6 +22,98 @@ from src.trading_runtime.columnar_strategy_release import ProgramRelease
 
 
 @dataclass(frozen=True)
+class PreparedProgramScannerProjection:
+    release_hash: str
+    source_revision: str
+    frame: pl.DataFrame
+    clock_offsets: Mapping[datetime, tuple[int, int]]
+
+    def frame_for(self, at):
+        if at not in self.clock_offsets:
+            raise ValueError("Program scanner clock is outside its prepared cohort")
+        offset, count = self.clock_offsets[at]
+        return self.frame.slice(offset, count)
+
+
+def prepare_program_scanner_projection(block, population, release):
+    """Join certified ranking and prepared history once per evaluation block."""
+    from .qmd_columnar_population import CertifiedPopulationWindow
+    from src.market_engine.volume_rank_rules import select_volume_universe
+    if (type(block) is not PreparedProgramBlock or type(population) is not CertifiedPopulationWindow
+            or type(release) is not ProgramRelease or block.release_hash != release.header["content_hash"]):
+        raise ValueError("Program scanner projection lacks its prepared release/population")
+    ranked = select_volume_universe(population.rows, release.universe)
+    if not ranked.equals(population.ranked):
+        raise ValueError("Program scanner ranking differs from its immutable universe rule")
+    clocks = block.market.select("boundary_at").unique().sort("boundary_at")
+    if population.price_eligible_count > 0 and clocks.join(
+            population.rows.select("boundary_at").unique(), on="boundary_at", how="anti").height:
+        raise ValueError("Program scanner lacks population coverage for a prepared clock")
+    ranked = ranked.join(clocks, on="boundary_at", how="semi")
+    if ranked.select(pl.struct("boundary_at", "ticker").is_duplicated().any()).item():
+        raise ValueError("Program scanner repeats a ticker at one completed clock")
+    keys = ["boundary_at", "listing_id"]
+    if ranked.join(block.market.select(keys), on=keys, how="anti").height:
+        raise ValueError("Program scanner lacks prepared history for a ranked listing")
+    selected = ranked.select(*keys, "ticker", "rank", "prior_close_available_at", "adjusted_prior_close",
+        pl.col("rolling_volume").alias("_scanner_rolling_volume"))
+    frame = block.market.join(selected, on=keys, how="inner", validate="1:1")
+    if ("rolling_volume" in frame.columns
+            and frame.select((pl.col("rolling_volume") != pl.col("_scanner_rolling_volume")).any()).item()):
+        raise ValueError("Program scanner and prepared history volume differ")
+    frame = frame.with_columns(pl.col("reference_close").alias("last_price"),
+        pl.col("available_at").alias("last_price_available_at"),
+        pl.col("_scanner_rolling_volume").alias("rolling_share_volume"),
+        pl.col("available_at").alias("rolling_share_volume_available_at"),
+        pl.col("adjusted_prior_close").alias("opening_prior_regular_close"),
+        pl.col("prior_close_available_at").alias("opening_prior_regular_close_available_at"),
+        pl.col("rank").alias("liquidity_rank")).drop("_scanner_rolling_volume").sort(["boundary_at", "rank"])
+    offsets = {at: (0, 0) for at in clocks["boundary_at"]}
+    offset = 0
+    for at, count in frame.group_by("boundary_at", maintain_order=True).len().iter_rows():
+        offsets[at] = (offset, count)
+        offset += count
+    return PreparedProgramScannerProjection(block.release_hash, population.source_revision,
+        frame, MappingProxyType(offsets))
+
+
+async def publish_prepared_program_source_clock(controller, projection, publisher, *,
+        at, catalogs, watchlist_runtime=None):
+    """Use the app's configured stream resolver and typed publication queue."""
+    from .replay_run_service import ReplayRunController
+    from .signal_stream_runtime_service import SignalStreamRuntime
+    from .signal_stream_typed_publication import TypedSignalPublicationQueue
+    if (type(controller) is not ReplayRunController
+            or type(projection) is not PreparedProgramScannerProjection
+            or type(publisher) is not TypedSignalPublicationQueue):
+        raise ValueError("Program source publication requires its native prepared scope")
+    source, actor = controller._program_signal_runtime, controller._program_strategy
+    revision = controller.definition.configuration_revision
+    if (type(source) is not SignalStreamRuntime or actor is None
+            or projection.release_hash != actor.program_release.header["content_hash"]
+            or source._typed_scope != (revision["revision_id"], projection.source_revision)):
+        raise ValueError("Program source projection differs from its owned configuration")
+    candidates = projection.frame_for(at).to_dicts()
+    assigned = {actor._listings[row.assignment_id]: row.ticker for row in actor.assignments()}
+    if any(assigned.get(row["listing_id"]) != row["ticker"] for row in candidates):
+        raise ValueError("Program source listing/ticker identity differs from controller assignments")
+    cursor = source.typed_source_cursor()
+    stage = await _owned_worker(source.stage_resolve, revision["payload"], candidates,
+        as_of=at, watchlist_runtime=watchlist_runtime, data_fields_projected=False)
+    if (controller._program_signal_runtime is not source or controller._program_strategy is not actor
+            or controller.definition.configuration_revision is not revision or source.typed_source_cursor() != cursor):
+        raise ValueError("Program source ownership changed during configured stream resolution")
+    pending = source.submit_staged(stage, publisher, batch_sequence=cursor[0] + 1,
+        previous_commit_hash=cursor[1], configuration_revision=revision["revision_id"],
+        source_revision=projection.source_revision, catalogs=catalogs)
+    await pending.wait_async()
+    if (controller._program_signal_runtime is not source or controller._program_strategy is not actor
+            or controller.definition.configuration_revision is not revision):
+        raise ValueError("Program source ownership changed before acknowledged promotion")
+    return source.promote_staged(pending)
+
+
+@dataclass(frozen=True)
 class PreparedProgramBlock:
     release_hash: str
     evaluation_block: str

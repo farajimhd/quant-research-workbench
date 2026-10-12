@@ -29,6 +29,62 @@ def release_for(pin):
         {field.name: contract}, **kwargs))
 
 
+def test_prepared_scanner_bridge_keeps_exact_top10_and_rejects_missing_history(prepared_source):
+    from datetime import timedelta
+    from src.backend.backtest_program_inputs import PreparedProgramBlock, prepare_program_scanner_projection
+    from src.backend.qmd_columnar_population import CertifiedPopulationWindow
+    from src.market_engine.volume_rank_rules import select_volume_universe
+    store = Store()
+    publish(store, prepared_source)
+    pin = consume(store, prepared_source).pin()
+    release = release_for(pin)
+    def post(path, request, timeout):
+        return response_for(consume(store, prepared_source), request["first_ordinal"], request["stop_ordinal"])
+    block = asyncio.run(prepare_program_block(release, {pin.scope.listing_id: pin},
+        first_ordinal=0, stop_ordinal=200, evaluation_block="origin",
+        as_of=c.completed_clock(pin.scope, pin.scope.stop_bucket - 1), concurrency=1, history_post=post))
+    names = tuple(f"L{index:02}" for index in range(12))
+    market = pl.concat([block.market.with_columns(pl.lit(name).alias("listing_id"),
+        pl.lit(100.).alias("rolling_volume")) for name in names])
+    masks = pl.concat([block.masks.with_columns(pl.lit(name).alias("listing_id")) for name in names])
+    expanded = PreparedProgramBlock(block.release_hash, block.evaluation_block, 0, 200,
+        {name: "a" * 64 for name in names}, market, masks)
+    rows = market.select("listing_id", "boundary_at", "available_at", "rolling_volume").with_columns(
+        pl.col("listing_id").alias("ticker"),
+        (pl.col("boundary_at") - pl.duration(days=1)).alias("prior_close_available_at"),
+        pl.when(pl.col("listing_id") == "L00").then(release.universe.maximum_prior_close + 1.)
+            .otherwise((release.universe.minimum_prior_close + release.universe.maximum_prior_close) / 2.)
+            .alias("adjusted_prior_close"), pl.lit(release.universe.window_seconds).alias("volume_window_seconds"))
+    ranked = select_volume_universe(rows, release.universe)
+    population = CertifiedPopulationWindow("source", rows, ranked, 12, 11, 0, 0, 1)
+    prepared = prepare_program_scanner_projection(expanded, population, release)
+    at = market["boundary_at"][0]
+    candidates = prepared.frame_for(at)
+    assert candidates["listing_id"].to_list() == list(names[1:11])
+    assert candidates["rank"].to_list() == list(range(1, 11))
+    assert candidates["last_price"].to_list() == candidates["reference_close"].to_list()
+    assert candidates["rolling_share_volume"].to_list() == [100.] * 10
+    for field in release.fields:
+        assert candidates.schema[field] == expanded.market.schema[field]
+    with pytest.raises(ValueError, match="outside its prepared cohort"):
+        prepared.frame_for(at - timedelta(seconds=1))
+    with pytest.raises(ValueError, match="immutable universe rule"):
+        prepare_program_scanner_projection(expanded, replace(population, ranked=ranked.head(0)), release)
+    without_clock = rows.filter(pl.col("boundary_at") != at)
+    with pytest.raises(ValueError, match="population coverage"):
+        prepare_program_scanner_projection(expanded, replace(population, rows=without_clock,
+            ranked=select_volume_universe(without_clock, release.universe)), release)
+    ambiguous = rows.with_columns(pl.lit("DUPLICATE").alias("ticker"))
+    with pytest.raises(ValueError, match="repeats a ticker"):
+        prepare_program_scanner_projection(expanded, replace(population, rows=ambiguous,
+            ranked=select_volume_universe(ambiguous, release.universe)), release)
+    missing = PreparedProgramBlock(block.release_hash, block.evaluation_block, 0, 200,
+        {name: "a" * 64 for name in names if name != "L01"},
+        market.filter(pl.col("listing_id") != "L01"), masks.filter(pl.col("listing_id") != "L01"))
+    with pytest.raises(ValueError, match="history for a ranked listing"):
+        prepare_program_scanner_projection(missing, population, release)
+
+
 def test_transport_packets_preserve_full_rule_block_and_warmup(prepared_source):
     src = source(4200)
     store = Store(4200)

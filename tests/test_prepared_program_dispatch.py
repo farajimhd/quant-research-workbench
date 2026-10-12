@@ -60,21 +60,25 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 pl.lit(10.).alias("adjusted_prior_close"), pl.lit(30).alias("volume_window_seconds"))
             population = CertifiedPopulationWindow(scope["source_revision"], scanner,
                 select_volume_universe(scanner, release.universe), 1, 1, 0, 0, 0)
+            from src.backend.backtest_program_inputs import (
+                prepare_program_scanner_projection, publish_prepared_program_source_clock)
+            scanner_projection = prepare_program_scanner_projection(block, population, release)
             candidates = block.masks.with_columns(block.market["history.swing_low.2.1__valid"])
             ordinal = candidates.filter(pl.col("entry") & pl.col("history.swing_low.2.1__valid"))["observed_ordinal"][0]
             await controller.bootstrap_program_signals(publisher, **scope)
             policy = ExecutionPolicy(envelope=ExecutionEnvelope(deadline_ms=2000))
             runtime = controller._program_signal_runtime
+            first_source_at = block.row_for("listing", ordinal)[0]["boundary_at"]
+            with pytest.raises(ValueError, match="listing/ticker identity"):
+                await publish_prepared_program_source_clock(controller,
+                    replace(scanner_projection, frame=scanner_projection.frame.with_columns(
+                        pl.lit("WRONG").alias("ticker"))), publisher,
+                    at=first_source_at, catalogs=scope["catalogs"])
+            assert runtime.typed_source_cursor()[0] == 0
             async def publish_source_row(row):
                 source_at = row["boundary_at"]
-                candidate.update(last_price=row["reference_close"], rolling_share_volume=row["rolling_volume"])
-                stage = runtime.stage_resolve(revision["payload"], [candidate], as_of=source_at, data_fields_projected=True)
-                sequence, prior, _ = runtime.typed_source_cursor()
-                pending = runtime.submit_staged(stage, publisher, batch_sequence=sequence + 1,
-                    previous_commit_hash=prior, configuration_revision=scope["configuration_revision"],
-                    source_revision=scope["source_revision"], catalogs=scope["catalogs"])
-                await pending.wait_async()
-                runtime.promote_staged(pending)
+                await publish_prepared_program_source_clock(controller, scanner_projection, publisher,
+                    at=source_at, catalogs=scope["catalogs"])
             if prefetch:
                 for source_offset in range(3):
                     source_row, _ = block.row_for("listing", ordinal + source_offset)
