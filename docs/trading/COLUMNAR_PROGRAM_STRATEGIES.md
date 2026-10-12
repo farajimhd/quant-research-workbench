@@ -186,6 +186,10 @@ column losslessly. Publication currently fails closed and leaves the fence
 unchanged. Exact program outputs must be preserved; a versioned central price
 contract or an explicit approved order-price policy is still required before
 operational publication. No implicit rounding or schema installation occurred.
+The bounded central-field inventory and exactness probe are recorded in
+[TRADING_PRICE_PRECISION_REVIEW.md](TRADING_PRICE_PRECISION_REVIEW.md). They
+identify11 affected families and explain why merely switching to scale18 is
+not a general lossless solution.
 The existing certified1s liquidity consumer now offers bounded concurrent cohort
 reads through `read_liquidity_cohort_async`. It validates all requests before
 opening clients, preserves sparse/empty windows and closes every owned client
