@@ -21,7 +21,7 @@ class ProgramListingFeatureCache:
 
     async def load(self, release, pins, *, first_ordinal, stop_ordinal, evaluation_block,
                    as_of, concurrency, history_post=None):
-        from .backtest_program_inputs import preflight_program_history_packets
+        from .backtest_program_inputs import preflight_program_history_packets, preflight_program_feature_catalog
         from .qmd_columnar_history import CertifiedHistoryPin
         from src.trading_runtime.columnar_strategy_release import ProgramRelease
         owned = dict(pins)
@@ -33,6 +33,7 @@ class ProgramListingFeatureCache:
                        for listing, pin in owned.items())):
             raise ValueError("Listing preparation lacks its bounded certified scope")
         # Validate every complete origin before the first read, including hits.
+        preflight_program_feature_catalog(release, owned)
         for pin in owned.values():
             preflight_program_history_packets(release, pin, first_ordinal=first_ordinal,
                 stop_ordinal=stop_ordinal, as_of=as_of)

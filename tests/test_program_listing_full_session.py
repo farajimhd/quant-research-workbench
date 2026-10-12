@@ -62,6 +62,18 @@ def test_ten_complete_listing_origins_exceed_aggregate_envelope_without_reset(pr
         with pytest.raises(ValueError, match="preparation bounds"):
             await prepare_program_block(release, pins, **kwargs)
         assert not calls
+        late = pins["L09"]
+        other_scope = replace(late.scope, build_id="different-build")
+        other_header = {**late.header, **other_scope.prefix()}
+        other_header["field_content_hash"] = c.records_hash(c.FIELD, ({**other_scope.prefix(),
+            "field_id": field.field_id, "field_name": field.name, "unit": field.unit} for field in late.fields))
+        other_header["content_hash"] = c.content_hash({key: value for key, value in other_header.items()
+            if key not in {"content_hash", "certified_at"}})
+        other = CertifiedHistoryPin(other_scope, late.fields, late.parents, other_header)
+        with pytest.raises(ValueError, match="certified session or clock origin"):
+            await ProgramListingFeatureCache(maximum_retained_bytes=128 * 1024 * 1024).load(
+                release, {**pins, "L09": other}, **kwargs)
+        assert not calls
         # Explicit synthetic test memory budget; never a production default.
         cache = ProgramListingFeatureCache(maximum_retained_bytes=128 * 1024 * 1024)
         blocks = await cache.load(release, pins, **kwargs)

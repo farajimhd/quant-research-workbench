@@ -233,6 +233,28 @@ def preflight_program_history_packets(release, pin, *, first_ordinal, stop_ordin
     return packets
 
 
+def preflight_program_feature_catalog(release, pins):
+    """Preserve shared session/origin and every declared field before any I/O."""
+    if type(release) is not ProgramRelease or not isinstance(pins, Mapping) or not pins:
+        raise ValueError("Program inputs require their complete certified feature population")
+    session = None
+    for listing, pin in sorted(pins.items()):
+        if type(pin) is not CertifiedHistoryPin or listing != pin.scope.listing_id:
+            raise ValueError("Program input listing differs from its cold history pin")
+        identity = (pin.scope.build_id, pin.scope.session_date, pin.parents.market_plan_hash,
+                    pin.parents.opening_reference_hash, pin.scope.first_bucket,
+                    pin.scope.product_revision)
+        if session is not None and session != identity:
+            raise ValueError("Program inputs differ in their certified session or clock origin")
+        session = identity
+        catalog = {field.name: field for field in pin.fields}
+        for name, field in release.fields.items():
+            if (name not in catalog or field.unit != catalog[name].unit
+                    or field.product != "arte.qmd_causal_history_value_v1"
+                    or field.revision != pin.scope.product_revision or field.resolution_ms != 1000):
+                raise ValueError("Program field differs from its producer-owned history contract")
+
+
 async def prepare_program_block(release: ProgramRelease, pins: Mapping[str, CertifiedHistoryPin], *,
         first_ordinal: int, stop_ordinal: int, evaluation_block: str, as_of: datetime,
         concurrency: int, history_post=None) -> PreparedProgramBlock:
@@ -251,22 +273,8 @@ async def prepare_program_block(release: ProgramRelease, pins: Mapping[str, Cert
         raise ValueError("Program input block exceeds its explicit preparation bounds")
     owned = dict(pins)
     jobs = []
-    session = None
+    preflight_program_feature_catalog(release, owned)
     for listing, pin in sorted(owned.items()):
-        if type(pin) is not CertifiedHistoryPin or listing != pin.scope.listing_id:
-            raise ValueError("Program input listing differs from its cold history pin")
-        identity = (pin.scope.build_id, pin.scope.session_date, pin.parents.market_plan_hash,
-                    pin.parents.opening_reference_hash, pin.scope.first_bucket,
-                    pin.scope.product_revision)
-        if session is not None and session != identity:
-            raise ValueError("Program inputs differ in their certified session or clock origin")
-        session = identity
-        catalog = {field.name: field for field in pin.fields}
-        for name, field in release.fields.items():
-            if (name not in catalog or field.unit != catalog[name].unit
-                    or field.product != "arte.qmd_causal_history_value_v1"
-                    or field.revision != pin.scope.product_revision or field.resolution_ms != 1000):
-                raise ValueError("Program field differs from its producer-owned history contract")
         for first, stop in preflight_program_history_packets(release, pin,
                 first_ordinal=first_ordinal, stop_ordinal=stop_ordinal, as_of=as_of):
             jobs.append((listing, pin, first, stop))
@@ -337,6 +345,7 @@ def preflight_program_cohort_inputs(release, pins, population_pin, listing_by_as
             or history_post is not None and not callable(history_post)):
         raise ValueError("Programme preparation lacks its exact bounded source/block scope")
     owned, assignments = dict(pins), dict(listing_by_assignment)
+    preflight_program_feature_catalog(release, owned)
     # Volume-only and feature products have independent catalog revisions and
     # attempts. Their clocks and certified causal parents must agree exactly.
     identity = ("build_id", "session_date", "listing_id", "ticker", "first_bucket", "stop_bucket")
