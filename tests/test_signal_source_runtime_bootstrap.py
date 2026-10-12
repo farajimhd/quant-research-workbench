@@ -65,6 +65,7 @@ def test_cold_bootstrap_publication_and_recovery_use_the_same_prefix(route):
         head = publisher.bootstrap_runtime_session(recovered, **scope)
         assert recovered.typed_source_cursor() == first
         assert recovered.typed_source_commit_hashes() == (first[1],)
+        assert recovered.typed_source_boundary(AT) == first
         assert recovered._admissions == runtime._admissions
         with pytest.raises(ValueError, match="advance"):
             recovered.stage_resolve(configuration, [row], as_of=AT, data_fields_projected=True)
@@ -82,6 +83,27 @@ def test_cold_bootstrap_publication_and_recovery_use_the_same_prefix(route):
         assert len(recovered.promote_staged(pending)) == 1
         assert recovered.typed_source_cursor()[0] == 2
         assert recovered.typed_source_commit_hashes() == (first[1], pending.result())
+        assert recovered.typed_source_boundary(AT) == first
+        assert recovered.typed_source_boundary(AT + timedelta(seconds=1)) == recovered.typed_source_cursor()
+        second = recovered.typed_source_cursor()
+        cold_again = SignalStreamRuntime()
+        publisher.close()
+        cold_publisher = TypedSignalPublicationQueue(storage, capacity=1)
+        try:
+            cold_head = cold_publisher.bootstrap_runtime_session(cold_again, **scope)
+        finally:
+            cold_publisher.close()
+        assert cold_again.typed_source_boundary(AT) == first
+        assert cold_again.typed_source_boundary(AT + timedelta(seconds=1)) == second
+        invalid = SignalStreamRuntime()
+        with pytest.raises(ValueError, match="ambiguous or foreign"):
+            invalid._install_committed_source(replace(cold_head,
+                commit_cutoffs=(cold_head.cutoff_at, cold_head.cutoff_at)),
+                configuration_revision=scope["configuration_revision"], source_revision=scope["source_revision"])
+        with pytest.raises(ValueError, match="not committed"):
+            recovered.typed_source_boundary(AT + timedelta(seconds=2))
+        with pytest.raises(ValueError, match="timezone-aware"):
+            recovered.typed_source_boundary(AT.replace(tzinfo=None))
     finally:
         publisher.close()
 

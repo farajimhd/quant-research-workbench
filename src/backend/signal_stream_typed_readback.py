@@ -137,6 +137,7 @@ class CommittedCursorHead:
     occurrence_count: int
     cutoff_at: str | None = None
     commit_hashes: tuple[str, ...] = ()
+    commit_cutoffs: tuple[str, ...] = ()
 
 
 def recover_committed_head(
@@ -188,4 +189,5 @@ def recover_committed_head(
     return CommittedCursorHead(session_key, len(listed), head,
                                states, admissions, len(seen),
                                listed[-1]["cutoff_at"] if listed else None,
-                               tuple(row["content_hash"] for row in listed))
+                               tuple(row["content_hash"] for row in listed),
+                               tuple(row["cutoff_at"] for row in listed))

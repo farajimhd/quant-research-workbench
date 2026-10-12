@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from bisect import bisect_left
 import hashlib
 import json
 import threading
@@ -206,6 +207,7 @@ class SignalStreamRuntime:
         self._typed_scope: tuple[str, str] | None = None
         self._typed_cursor: tuple[int, str, datetime | None] | None = None
         self._typed_prefix: list[str] = []
+        self._typed_cutoffs: list[datetime] = []
 
     def _install_committed_source(self, head, *, configuration_revision: str,
                                   source_revision: str) -> None:
@@ -225,12 +227,27 @@ class SignalStreamRuntime:
                 or any(type(value) is not str or len(value) != 64
                     or any(c not in "0123456789abcdef" for c in value) for value in head.commit_hashes)
                 or head.commit_hashes and head.commit_hashes[-1] != head.content_hash
+                or type(head.commit_cutoffs) is not tuple or len(head.commit_cutoffs) != head.sequence
                 or not configuration_revision or not source_revision):
             raise ValueError("Typed Signal Stream cold source cursor head is invalid")
         cutoff = datetime.fromisoformat(head.cutoff_at.replace("Z", "+00:00")) if head.cutoff_at is not None else None
         if cutoff is not None and (cutoff.tzinfo is None or cutoff.utcoffset() is None):
             raise ValueError("Typed Signal Stream cold source cutoff must be timezone-aware")
         cutoff = cutoff.astimezone(UTC) if cutoff is not None else None
+        cutoffs = []
+        for value in head.commit_cutoffs:
+            if type(value) is not str:
+                raise ValueError("Typed source boundary clock is not a timestamp")
+            clock = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if clock.tzinfo is None or clock.utcoffset() is None:
+                raise ValueError("Typed source boundary clock must be timezone-aware")
+            clock = clock.astimezone(UTC)
+            if (cutoffs and clock <= cutoffs[-1]
+                    or signal_stream_session(clock)["session_key"] != head.session_key):
+                raise ValueError("Typed source boundary clocks are ambiguous or foreign")
+            cutoffs.append(clock)
+        if cutoffs and cutoffs[-1] != cutoff:
+            raise ValueError("Typed source boundary clocks differ from the committed head")
         if (head.sequence == 0 and (head.content_hash != "0" * 64 or head.states
                 or head.admissions or head.occurrence_count or cutoff is not None)
                 or head.sequence > 0 and (head.content_hash == "0" * 64 or cutoff is None)
@@ -250,6 +267,7 @@ class SignalStreamRuntime:
             self._typed_scope = (configuration_revision, source_revision)
             self._typed_cursor = (head.sequence, head.content_hash, cutoff)
             self._typed_prefix = list(head.commit_hashes)
+            self._typed_cutoffs = cutoffs
             self._hydrated = True
 
     def typed_source_cursor(self):
@@ -263,6 +281,23 @@ class SignalStreamRuntime:
             if self._typed_cursor is None:
                 raise RuntimeError("Signal Stream runtime lacks a cold typed source cursor")
             return tuple(self._typed_prefix)
+
+    def typed_source_boundary(self, at: datetime):
+        """Return only an exact committed historical clock, never latest state."""
+        if not isinstance(at, datetime) or at.tzinfo is None or at.utcoffset() is None:
+            raise ValueError("Typed source boundary requires a timezone-aware clock")
+        at = at.astimezone(UTC)
+        with self._lock:
+            if self._typed_cursor is None:
+                raise RuntimeError("Signal Stream runtime lacks a cold typed source cursor")
+            if (len(self._typed_cutoffs) != len(self._typed_prefix)
+                    or len(self._typed_prefix) != self._typed_cursor[0]
+                    or self._typed_cutoffs and self._typed_cutoffs[-1] != self._typed_cursor[2]):
+                raise ValueError("Typed source boundary index differs from its verified prefix")
+            index = bisect_left(self._typed_cutoffs, at)
+            if index == len(self._typed_cutoffs) or self._typed_cutoffs[index] != at:
+                raise ValueError("Typed source boundary is not committed")
+            return index + 1, self._typed_prefix[index], self._typed_cutoffs[index]
 
     def stage_resolve(
         self, configuration: dict[str, Any], candidates: list[dict[str, Any]],
@@ -389,6 +424,7 @@ class SignalStreamRuntime:
             if self._typed_cursor is not None:
                 self._typed_cursor = (pending._batch_sequence, head, _parse_datetime(stage.cutoff_at))
                 self._typed_prefix.append(head)
+                self._typed_cutoffs.append(_parse_datetime(stage.cutoff_at))
             pending._promoted = True
             self._typed_pending = None
             with self._snapshot_lock:
