@@ -25,6 +25,13 @@ def _require_profile(client):
         raise RuntimeError("Program writer requires its dedicated principal")
 
 
+def program_checkpoint_storage_contracts():
+    """One shared inventory for checkpoint schema, grants and cold admission."""
+    from .arte_broker_match_snapshot import TABLES as BROKER_TABLES
+    from .arte_oms_observation_snapshot import TABLES as OBSERVATION_TABLES
+    return (*BROKER_TABLES, *OBSERVATION_TABLES)
+
+
 def rule_decision_write_tables():
     from .arte_journal_writer import v4_journal_write_tables
     from .trading_price_contracts import exact_price_storage_contracts
@@ -32,7 +39,8 @@ def rule_decision_write_tables():
     from .backtest_journal_price_contract import PRICE_CONTRACT
     from .columnar_strategy_schema import BROKER
     return v4_journal_write_tables() | frozenset(table.name for table in
-        (*STAGED_TABLES, *exact_price_storage_contracts(), *ENTRY_FREEZE_TABLES, PRICE_CONTRACT, BROKER))
+        (*STAGED_TABLES, *exact_price_storage_contracts(), *ENTRY_FREEZE_TABLES, PRICE_CONTRACT, BROKER,
+         *program_checkpoint_storage_contracts()))
 
 
 def preflight_rule_decision_writer(client):

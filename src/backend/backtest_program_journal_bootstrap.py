@@ -140,8 +140,9 @@ def publish_and_assemble_program_v4_journal(context_client, read_client, writer_
         configuration_hash=run["configuration_hash"], configuration_revision=definition.configuration_revision)
     fixed_backtest_v2_preflight(context_client)
     def preflight_cold(client):
+        from src.trading_runtime.rule_decision_writer_preflight import program_checkpoint_storage_contracts
         _v4_cold_reader_preflight(client)
-        storage_preflight(client, tables=(PRICE_CONTRACT, BROKER))
+        storage_preflight(client, tables=(PRICE_CONTRACT, BROKER, *program_checkpoint_storage_contracts()))
     _read_cold_pair(read_client, terminal_client, preflight_cold)
     seal = _v4_preflight(writer_client)
     certificate = projection_certifier()

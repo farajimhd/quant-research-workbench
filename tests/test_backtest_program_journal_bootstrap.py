@@ -24,7 +24,7 @@ from threading import Barrier, get_ident
 
 
 @pytest.mark.parametrize("resolution", [100, 1000])
-@pytest.mark.parametrize("failure", [None, "certificate", "context", "definition", "assembly", "context_mutation", "claim_lost", "broker_readback"])
+@pytest.mark.parametrize("failure", [None, "storage", "certificate", "context", "definition", "assembly", "context_mutation", "claim_lost", "broker_readback"])
 def test_programme_publication_precedes_writer_and_preserves_same_run_on_failure(monkeypatch, failure, resolution):
     run_id = "00000000-0000-0000-0000-000000000001"
     release, _, _, _ = inputs(entry=True)
@@ -64,7 +64,16 @@ def test_programme_publication_precedes_writer_and_preserves_same_run_on_failure
     phases, published = [], {}
     monkeypatch.setattr(bootstrap, "fixed_backtest_v2_preflight", lambda client: phases.append("context-preflight"))
     monkeypatch.setattr(bootstrap, "_v4_cold_reader_preflight", lambda client: phases.append("reader-preflight"))
-    monkeypatch.setattr(bootstrap, "storage_preflight", lambda *args, **kw: phases.append("price-preflight"))
+    def storage(client, *, tables):
+        from src.trading_runtime.rule_decision_writer_preflight import program_checkpoint_storage_contracts
+        assert {table.name for table in tables} == {PRICE_CONTRACT.name, BROKER.name} | {
+            table.name for table in program_checkpoint_storage_contracts()}
+        phases.append("price-preflight")
+        if failure == "storage":
+            raise ValueError("synthetic missing checkpoint storage")
+    from src.trading_runtime.backtest_journal_price_contract import PRICE_CONTRACT
+    from src.trading_runtime.columnar_strategy_schema import BROKER
+    monkeypatch.setattr(bootstrap, "storage_preflight", storage)
     monkeypatch.setattr(bootstrap, "_v4_preflight", lambda client: phases.append("writer-preflight"))
 
     def certificate():
@@ -128,7 +137,7 @@ def test_programme_publication_precedes_writer_and_preserves_same_run_on_failure
             assert bootstrap.publish_and_assemble_program_v4_journal(context, reader, writer, terminal, **options) == "assembled"
         publication = [phase for phase in phases if phase in ("context", "definition", "assembly")]
         expected = ["context", "definition", "assembly"]
-        if failure == "certificate":
+        if failure in ("certificate", "storage"):
             expected = []
         elif failure in ("context", "definition"):
             expected = expected[:expected.index(failure) + 1]

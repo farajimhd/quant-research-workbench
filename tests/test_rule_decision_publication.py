@@ -13,14 +13,18 @@ def test_opt_in_catalog_preserves_original_v4_and_declares_shared_tables_once():
     from src.trading_runtime.arte_entry_acquisition_freeze import TABLES as freeze
     from src.trading_runtime.backtest_journal_price_contract import PRICE_CONTRACT
     from src.trading_runtime.columnar_strategy_schema import BROKER
-    assert len(combined) == len(original) + len(STAGED_TABLES) + len(exact) + len(freeze) + 2
+    from src.trading_runtime.rule_decision_writer_preflight import program_checkpoint_storage_contracts
+    checkpoints = program_checkpoint_storage_contracts()
+    assert len(checkpoints) == 8
+    assert len(combined) == len(original) + len(STAGED_TABLES) + len(exact) + len(freeze) + 2 + len(checkpoints)
     assert combined[:len(original)] == original
     assert len({table.name for table in combined}) == len(combined)
     assert {table.name for table in STAGED_TABLES}.isdisjoint(table.name for table in original)
     assert {table.name for table in exact}.isdisjoint(table.name for table in original)
-    assert combined[-len(exact)-len(freeze)-2:-len(freeze)-2] == exact
-    assert combined[-len(freeze)-2:-2] == freeze
-    assert combined[-2:] == (PRICE_CONTRACT, BROKER)
+    assert combined[-len(exact)-len(freeze)-2-len(checkpoints):-len(freeze)-2-len(checkpoints)] == exact
+    assert combined[-len(freeze)-2-len(checkpoints):-2-len(checkpoints)] == freeze
+    assert combined[-2-len(checkpoints):-len(checkpoints)] == (PRICE_CONTRACT, BROKER)
+    assert combined[-len(checkpoints):] == checkpoints
 
 
 @pytest.mark.parametrize("failure", [False, True])

@@ -19,7 +19,9 @@ def rule_decision_storage_contracts():
     from .arte_entry_acquisition_freeze import TABLES as ENTRY_FREEZE_TABLES
     from .backtest_journal_price_contract import PRICE_CONTRACT
     from .columnar_strategy_schema import BROKER
-    contracts = (*v4_storage_contracts(), *STAGED_TABLES, *exact_price_storage_contracts(), *ENTRY_FREEZE_TABLES, PRICE_CONTRACT, BROKER)
+    from .rule_decision_writer_preflight import program_checkpoint_storage_contracts
+    contracts = (*v4_storage_contracts(), *STAGED_TABLES, *exact_price_storage_contracts(), *ENTRY_FREEZE_TABLES,
+        PRICE_CONTRACT, BROKER, *program_checkpoint_storage_contracts())
     by_name = {}
     for contract in contracts:
         prior = by_name.setdefault(contract.name, contract)
