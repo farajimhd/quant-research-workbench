@@ -94,7 +94,9 @@ def compile_frozen_winner(reference: OptimizationReference,
     numbers = [execution[key] for key in ("entry_dollars", "add_dollars", "fee_per_share", "minimum_order_fee")]
     if any(type(v) not in (float, int) or not isfinite(v) or v < 0 for v in numbers):
         raise ValueError("Invalid frozen sizing or commission")
-    if min(numbers[:2]) <= 0 or execution.get("cost_bps") != 0:
+    if (numbers != [1000., 200., .005, 1.]
+            or type(execution.get("cost_bps")) not in (int, float)
+            or execution["cost_bps"] != 0):
         raise ValueError("Frozen comparison execution contract changed")
     from .columnar_strategy_release import POLICY
     policy = dict(reference.program["policy"])

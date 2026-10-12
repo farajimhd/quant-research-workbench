@@ -50,6 +50,21 @@ def test_winner_compiles_open_rules_and_elapsed_cooldown_into_shared_release(mon
     assert release.header["cooldown_seconds"] == 175
     assert release.minimum_age_seconds["exit"] == 10
     assert specification.commission_per_share == .005 and specification.minimum_commission == 1.
+    changed = restore_release(project_release(specification, fields,
+        **{**kwargs, "strategy_number": 63, "release_id": "00000000-0000-0000-0000-000000000063"},
+        entry_cash=1500, add_cash=300))
+    assert changed.header["content_hash"] != release.header["content_hash"]
+    assert changed.header["entry_cash"] == 1500 and changed.header["add_cash"] == 300
+    assert changed.programs == release.programs
+
+
+@pytest.mark.parametrize("field,value", [("entry_dollars", 1500), ("add_dollars", 300),
+    ("fee_per_share", 0.), ("minimum_order_fee", 0.), ("cost_bps", 1.), ("cost_bps", False)])
+def test_initial_frozen_release_cannot_drift_from_approved_execution(monkeypatch, field, value):
+    reference, fields, universe, _ = source(monkeypatch)
+    with pytest.raises(ValueError, match="execution contract changed"):
+        compiler.compile_frozen_winner(replace(reference, execution={**reference.execution, field: value}),
+            fields, universe_identity=universe)
 
 
 def test_unknown_or_ambiguous_policy_fields_fail_before_release(monkeypatch):
