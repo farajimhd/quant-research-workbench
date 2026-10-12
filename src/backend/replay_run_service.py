@@ -10263,6 +10263,42 @@ class ReplayRunService:
         self._review_tasks: dict[str, asyncio.Task[ReplayRunController]] = {}
         self._lock = asyncio.Lock()
 
+    async def prepare_program_controller(self, definition: ReplayRunDefinition, *, assignments,
+            listing_by_assignment, liquidity_resolution_ms, release_client_factory) -> ReplayRunController:
+        """Prepare the installed central programme on this service's native lane.
+
+        This performs SELECT-only release verification. It neither admits nor
+        starts a run; shared typed bootstrap and certified preparation must
+        finish before operational launch is enabled.
+        """
+        from src.trading_runtime.strategy_registry import program_strategy_executor
+        from .backtest_program_journal_bootstrap import _configuration_hash
+        if (type(definition) is not ReplayRunDefinition or definition.mode is not RunMode.BACKTEST
+                or definition.execution_mode != "strategy" or type(liquidity_resolution_ms) is not int
+                or liquidity_resolution_ms not in (100, 1000)
+                or definition.assignment_ids or definition.tickers
+                or definition.execution_interval != {100: "100ms", 1000: "1s"}[liquidity_resolution_ms]):
+            raise ValueError("Programme preparation requires its explicit Backtest liquidity clock")
+        revision_id = definition.configuration_revision.get("revision_id")
+        if type(revision_id) is not str or not revision_id:
+            raise ValueError("Programme preparation lacks its pinned configuration revision")
+        configuration_hash = _configuration_hash(definition)
+        strategy = dict(definition.configuration_revision["payload"].get("strategy") or {})
+        registration = program_strategy_executor(strategy.get("strategy_id"), strategy.get("revision"))
+        actor = await registration.build(assignments, listing_by_assignment, mode="backtest",
+            client_factory=release_client_factory)
+        if (definition.configuration_revision.get("revision_id") != revision_id
+                or _configuration_hash(definition) != configuration_hash
+                or program_strategy_executor(*registration.key) is not registration):
+            raise RuntimeError("Programme configuration or installed pins changed during preparation")
+        from .backtest_v4_run_context import historical_simulated_account_ids
+        accounts = historical_simulated_account_ids(mode=definition.mode,
+            configuration=definition.configuration_revision["payload"])
+        if {row.account_id for row in actor.assignments()} - set(accounts):
+            raise ValueError("Programme assignments differ from configured Backtest accounts")
+        return ReplayRunController(definition, runtime_root=self.runtime_root, program_strategy=actor,
+            program_liquidity_resolution_ms=liquidity_resolution_ms)
+
     async def create(self, definition: ReplayRunDefinition) -> ReplayRunController:
         controller = ReplayRunController(definition, runtime_root=self.runtime_root)
         if definition.mode == RunMode.BACKTEST:
