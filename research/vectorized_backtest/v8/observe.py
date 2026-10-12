@@ -9,16 +9,38 @@ from .terminal import render, ranking_page_size
 from research.vectorized_backtest.v6.torch_backtest.staged_dashboard import navigate
 
 
+def maximize_window():
+    """Target this observer's visible host, including Windows Terminal hosts."""
+    import ctypes
+    from ctypes import wintypes
+    kernel=ctypes.windll.kernel32;user=ctypes.windll.user32
+    title=f'V8 optimization observer [{os.getpid()}]'
+    kernel.SetConsoleTitleW(title)
+    kernel.GetConsoleWindow.restype=wintypes.HWND
+    user.ShowWindow.argtypes=[wintypes.HWND,ctypes.c_int]
+    user.GetWindowTextW.argtypes=[wintypes.HWND,wintypes.LPWSTR,ctypes.c_int]
+    user.IsWindowVisible.argtypes=[wintypes.HWND]
+    callback_type=ctypes.WINFUNCTYPE(wintypes.BOOL,wintypes.HWND,wintypes.LPARAM)
+    @callback_type
+    def visit(window,param):
+        text=ctypes.create_unicode_buffer(1024)
+        user.GetWindowTextW(window,text,len(text))
+        if title in text.value and user.IsWindowVisible(window):user.ShowWindow(window,3)
+        return True
+    window=kernel.GetConsoleWindow()
+    if window:user.ShowWindow(window,3)
+    # The host applies console titles asynchronously.
+    for _ in range(5):
+        user.EnumWindows(visit,0);time.sleep(.1)
+
+
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output',type=Path,required=True);p.add_argument('--once',action='store_true')
     p.add_argument('--view',choices=('financial','objective','positions','performance','validation'),default='financial')
     args=p.parse_args(argv);console=Console(no_color=bool(os.environ.get('NO_COLOR')))
     if console.is_terminal and not args.once and os.name=='nt':
-        import ctypes
-        ctypes.windll.kernel32.GetConsoleWindow.restype=ctypes.c_void_p
-        window=ctypes.windll.kernel32.GetConsoleWindow()
-        if window:ctypes.windll.user32.ShowWindow(ctypes.c_void_p(window),3)
+        maximize_window()
     last={};rank=1;page=0;rank_page=0
     def read(width=None,height=None):
         nonlocal last

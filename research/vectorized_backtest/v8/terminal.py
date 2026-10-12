@@ -31,13 +31,13 @@ def render(status, *, width=110, height=38, now=None, view='financial'):
         f"V8 {status.get('status','starting').upper()} | Validation display only: NO selection feedback\n"
         f"Generation {status.get('generation',0)} | {status.get('evaluation_split','training')} | "
         f"{status.get('stage','Preparing')} | {status.get('validation_status','pending')}",style='cyan'))
-    table=Table(expand=True,padding=(0,1),show_edge=False)
+    table=Table(expand=True,padding=(0,0),show_edge=False)
     columns=[('Rank',5),('Candidate ID',29),('Training\nrank',8)] if validation else [('Rank',5),('Candidate ID',29)]
     columns += [('Objective\nscore $',10),('Net profit\n$',10),('Trimmed\nprofit $',10)]
-    if width>=150:columns += [('Worst-trade\ntail loss $',11),('Profitable\nsessions %',10),('Active\nsessions',8),('Complexity\nnodes',10)]
-    if width>=200:columns += [('Worst-session\nmean profit $',13),('Completed\npositions',10),('Profitable\npositions %',10)]
-    if width>=250:columns += [('Zero-trade\nsessions',10),('Best session\nprofit $',12),('Best ticker\nprofit $',12)]
-    if width>=300:columns += [('Turnover\n$',12),('Worst position\nprofit $',14),('Profitable active\nsessions %',17)]
+    if width>=125:columns += [('Worst-trade\ntail loss $',11),('Profitable\nsessions %',10),('Active\nsessions',8),('Complexity\nnodes',10)]
+    if width>=175:columns += [('Worst-session\nmean profit $',13),('Completed\npositions',10),('Profitable\npositions %',10)]
+    if width>=215:columns += [('Zero-trade\nsessions',10),('Best session\nprofit $',12),('Best ticker\nprofit $',12)]
+    if width>=265:columns += [('Turnover\n$',12),('Worst position\nprofit $',14),('Profitable active\nsessions %',17)]
     for label,w in columns:
         if label=='Candidate ID':w=min(w,max(16,width-68))
         table.add_column(label,justify='left' if label=='Candidate ID' else 'right',no_wrap=True,width=w,min_width=w)
@@ -47,11 +47,11 @@ def render(status, *, width=110, height=38, now=None, view='financial'):
         m=row['metrics'];values=[str(row['rank']),row.get('candidate_id',str(row['candidate']))]
         if validation:values.append(str(row.get('training_rank','—')))
         values += [f"{row['score']:,.1f}",f"{m.get('total_pnl',0):,.1f}",f"{m.get('trimmed_profit',0):,.1f}"]
-        if width>=150:values += [f"{m.get('trade_tail_loss',0):,.2f}",f"{100*m.get('profitable_day_fraction',0):.1f}",str(int(m.get('active_sessions',0))),str(int(m.get('complexity',0)))]
-        if width>=200:values += [f"{m.get('session_tail_mean_pnl',0):,.2f}",str(int(m.get('closed_positions',0))),
+        if width>=125:values += [f"{m.get('trade_tail_loss',0):,.2f}",f"{100*m.get('profitable_day_fraction',0):.1f}",str(int(m.get('active_sessions',0))),str(int(m.get('complexity',0)))]
+        if width>=175:values += [f"{m.get('session_tail_mean_pnl',0):,.2f}",str(int(m.get('closed_positions',0))),
             '—' if m.get('position_win_rate') is None else f"{100*m['position_win_rate']:.1f}"]
-        if width>=250:values += [str(int(m.get('zero_trade_sessions',0))),f"{m.get('best_day_pnl',0):,.2f}",f"{m.get('best_ticker_pnl',0):,.2f}"]
-        if width>=300:values += [f"{m.get('turnover',0):,.2f}",f"{m.get('worst_position_pnl',0):,.2f}",f"{100*m.get('profitable_active_fraction',0):.1f}"]
+        if width>=215:values += [str(int(m.get('zero_trade_sessions',0))),f"{m.get('best_day_pnl',0):,.2f}",f"{m.get('best_ticker_pnl',0):,.2f}"]
+        if width>=265:values += [f"{m.get('turnover',0):,.2f}",f"{m.get('worst_position_pnl',0):,.2f}",f"{100*m.get('profitable_active_fraction',0):.1f}"]
         table.add_row(*values)
     label=f"Validation ranking — generation {status.get('validation_generation','pending')} — display only" if validation else 'Training ranking — selection authority'
     if not rows:label+=' | awaiting complete panel'
