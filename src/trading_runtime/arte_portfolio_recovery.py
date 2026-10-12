@@ -50,6 +50,43 @@ def recover_portfolio_engine_state(
     The cutoff bounds domain timestamps. The revision map is the authoritative
     point-in-time selection; it must come from the caller's verified event fence.
     """
+    return _recover_portfolio_engine_image(run_id=run_id, profiles=profiles,
+        state_revisions=state_revisions, cutoff_at=cutoff_at,
+        load_context=lambda: load_typed_run_context(client, run_id),
+        load_snapshot=lambda account, revision: load_portfolio_snapshot(client,
+            run_id=run_id, account_id=account, state_revision=revision))
+
+
+def recover_prepared_portfolio_engine_state(*, run_id, profiles, run_account_ids,
+        prepared, cutoff_at):
+    """Reconstruct a blocked staged image, never a committed recovery receipt."""
+    from .arte_portfolio_snapshot import (
+        PreparedPortfolioSnapshot, decode_prepared_portfolio_snapshot, _snapshot_rows)
+    prepared = tuple(prepared)
+    run_account_ids = tuple(run_account_ids)
+    if (not prepared or any(type(row) is not PreparedPortfolioSnapshot for row in prepared)
+            or len({row.account_id for row in prepared}) != len(prepared)
+            or len(set(run_account_ids)) != len(run_account_ids)
+            or {row.account_id for row in prepared} != set(run_account_ids)
+            or any(row.run_id != run_id for row in prepared)):
+        raise ValueError("Staged Portfolio recovery needs exact normalized account coverage")
+    by_account = {row.account_id: row for row in prepared}
+    revisions = {row.account_id: row.state_revision for row in prepared}
+    def snapshot(account, revision):
+        row = by_account[account]
+        if row.state_revision != revision:
+            raise ValueError("Staged Portfolio recovery revision differs")
+        return {"state_revision": revision, "snapshot_at": row.rows.account["snapshot_at"],
+                "state": decode_prepared_portfolio_snapshot(row),
+                "families": _snapshot_rows(run_id, account, revision, row.snapshot_month, row.rows)}
+    return _recover_portfolio_engine_image(run_id=run_id, profiles=profiles,
+        state_revisions=revisions, cutoff_at=cutoff_at,
+        load_context=lambda: {"account_ids": run_account_ids}, load_snapshot=snapshot)
+
+
+def _recover_portfolio_engine_image(*, run_id, profiles, state_revisions, cutoff_at,
+                                    load_context, load_snapshot):
+    """Common domain reconstruction; provider identity is checked by callers."""
     if (not isinstance(run_id, str) or not run_id
             or not isinstance(cutoff_at, datetime) or cutoff_at.tzinfo is None
             or not profiles or any(type(profile) is not PortfolioAccountProfile for profile in profiles)):
@@ -60,7 +97,7 @@ def recover_portfolio_engine_state(
     if (set(state_revisions) != set(by_id)
             or any(type(revision) is not int or revision < 1 for revision in state_revisions.values())):
         raise ValueError("Portfolio recovery needs one positive revision per account")
-    context = load_typed_run_context(client, run_id)
+    context = load_context()
     if set(context["account_ids"]) != set(by_id) or len(context["account_ids"]) != len(by_id):
         raise RuntimeError("Portfolio recovery profiles differ from pinned run accounts")
 
@@ -71,8 +108,7 @@ def recover_portfolio_engine_state(
     last_filled: dict[str, float] = {}
     for account_id, profile in by_id.items():
         revision = state_revisions[account_id]
-        snapshot = load_portfolio_snapshot(client, run_id=run_id, account_id=account_id,
-                                           state_revision=revision)
+        snapshot = load_snapshot(account_id, revision)
         if snapshot is None or snapshot["state_revision"] != revision:
             raise RuntimeError(f"Portfolio recovery lacks account revision: {account_id}")
         _time(snapshot["snapshot_at"], cutoff_at=cutoff_at)

@@ -147,6 +147,29 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                         **snapshot.rows.account, "control_mode": "invalid-control-mode"})))
                     with pytest.raises(ValueError):
                         decode_prepared_portfolio_snapshot(invalid)
+                from src.trading_runtime import arte_portfolio_recovery as portfolio_recovery
+                from src.trading_runtime.portfolio import PortfolioSyncState
+                profiles = tuple(state.profile for state in controller._runtime.portfolio.states.values())
+                with monkeypatch.context() as no_database:
+                    def forbidden_read(*args, **kwargs):
+                        raise AssertionError("Staged Portfolio reconstruction opened a database reader")
+                    no_database.setattr(portfolio_recovery, "load_typed_run_context", forbidden_read)
+                    no_database.setattr(portfolio_recovery, "load_portfolio_snapshot", forbidden_read)
+                    cold = portfolio_recovery.recover_prepared_portfolio_engine_state(
+                        run_id=controller.run_id, profiles=profiles, run_account_ids=controller._runtime.config.account_ids,
+                        prepared=prepared_finances.portfolio, cutoff_at=at)
+                assert all(state.sync_state is PortfolioSyncState.ENTRIES_BLOCKED for state in cold.states.values())
+                assert all(state.summary is None and state.ledger is None and not state.positions for state in cold.states.values())
+                assert set(cold.reservations) == set(controller._runtime.portfolio.reservations)
+                assert set(cold.allocations) == set(controller._runtime.portfolio.allocations)
+                with pytest.raises(ValueError, match="exact normalized account coverage"):
+                    portfolio_recovery.recover_prepared_portfolio_engine_state(
+                        run_id=controller.run_id, profiles=profiles, run_account_ids=controller._runtime.config.account_ids,
+                        prepared=prepared_finances.portfolio * 2, cutoff_at=at)
+                with pytest.raises(ValueError, match="beyond its cutoff"):
+                    portfolio_recovery.recover_prepared_portfolio_engine_state(
+                        run_id=controller.run_id, profiles=profiles, run_account_ids=controller._runtime.config.account_ids,
+                        prepared=prepared_finances.portfolio, cutoff_at=at - timedelta(seconds=1))
                 with pytest.raises(ValueError, match="Portfolio coverage"):
                     prepare_program_clock_financial_basis(replace(captured, portfolio=()))
                 if offset == 0:
