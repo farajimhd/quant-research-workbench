@@ -77,6 +77,19 @@ Broker contract readback does not certify the liquidity product itself: the
 normal input-admission funnel must still verify that product's coverage and
 lineage. These checks are synthetic; no operational publication has run.
 
+The controller's `attach_prepared_program_journal` now runs that handoff on
+an owned worker and adopts only unchanged fresh controller, definition and
+programme-policy state. Successful adoption transfers the writer, journal,
+run lease and Keeper session to the existing close lifecycle. Cancellation
+drains the same bootstrap task, including repeated cancellation, then closes
+an unadopted writer off the event loop. Changed ownership closes the returned
+assembly and requires recovery rather than launching a replacement. Native
+runtime initialization checks the adopted broker contract before constructing
+the filling broker. Synthetic startup tests verify worker ownership, cleanup,
+concurrent-start rejection, policy/definition mutation rejection and actual
+native broker settings. Normal launch/input admission and full-session
+qualification remain unfinished; this API does not grant operational approval.
+
 ## Delivered components
 
 - `columnar_rule_program.py`: bounded typed DAGs evaluated with native Polars

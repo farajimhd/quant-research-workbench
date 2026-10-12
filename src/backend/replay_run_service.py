@@ -4814,6 +4814,11 @@ class ReplayRunController:
         if names and not report['eligible_ticker_count']:
             raise ValueError('No strategy tickers have required V7 books; see level-book-coverage.json')
 
+    async def attach_prepared_program_journal(self, **scope):
+        """Adopt a prepared programme journal through the owned async bootstrap."""
+        from .backtest_program_journal_startup import attach_program_journal
+        return await attach_program_journal(self, **scope)
+
     async def run_fenced_program_cohort(self, blocks, population, projection, **scope):
         """Run a bounded native cohort and retain ownership until its receipt."""
         from .backtest_program_cohort import run_fenced_program_cohort
@@ -5518,6 +5523,10 @@ class ReplayRunController:
         if self._program_strategy is not None:
             simulation = replace(simulation,
                 liquidity_resolution_ms=self._program_liquidity_resolution_ms)
+            if getattr(self, "_program_broker_contract", None) is not None:
+                self._program_broker_contract.require_config(simulation, run_id=self.run_id,
+                    content_hash=self._program_broker_contract.row["content_hash"],
+                    liquidity_plan_hash=self._program_broker_contract.row["liquidity_plan_hash"])
         broker = SimulatedBrokerAdapter(
             list(self.account_ids),
             simulation,
