@@ -29,13 +29,16 @@ _RECOVERY_PROOF = object()
 
 
 def project_pending_program_policy_events(records, *, executions, run_month,
-        attempt_id, batch_id, prior_batch_id, source_cursor):
+        attempt_id, batch_id, prior_batch_id, source_cursor, exact_prices=False):
     """Normalize an owned pending suffix using the shared journal projector.
 
     These rows carry no durable receipt; caller custody and independent native
     financial comparison remain required before pending decision qualification.
     """
     from src.trading_runtime.arte_journal_projection import project_journal_record
+    from src.trading_runtime.arte_execution_exact_prices import ExactPriceExecutionBatch
+    if type(exact_prices) is not bool:
+        raise ValueError("Pending policy price mode must be an explicit boolean")
     raw_keys = ("strategy_id", "canonical_strategy_revision", "canonical_run_id", "canonical_metadata")
     lineages = {execution.order_ref: ({key: execution.raw.get(key) for key in raw_keys},
         execution.account, execution.symbol, execution.conid) for execution in executions}
@@ -48,12 +51,22 @@ def project_pending_program_policy_events(records, *, executions, run_month,
             correlation_id=record.payload.get("correlation_id", ""),
             causation_id=record.payload.get("causation_id", ""))
         if record.category == "execution" or record.payload.get("signal_type") == "program_boundary_completed":
-            batch = project_journal_record(record, run_month=run_month, attempt_id=attempt_id,
+            unit = project_journal_record(record, run_month=run_month, attempt_id=attempt_id,
                 batch_id=batch_id, prior_batch_id=prior_batch_id, source_cursor=source_cursor,
-                committed_order_lineage=lineages)
+                committed_order_lineage=lineages,
+                **({"expected_mode": "backtest", "exact_execution_prices": True} if exact_prices else {}))
+            batch = unit.base if type(unit) is ExactPriceExecutionBatch else unit
             event = dict(batch.events[0])
             if record.entity_type == "fill":
-                family, detail = "trading_execution_v1", dict(batch.executions[0])
+                family = "trading_execution_v1"
+                if type(unit) is ExactPriceExecutionBatch:
+                    from src.trading_runtime.trading_price_contracts import transform_price_fields
+                    from src.trading_runtime.arte_journal_writer import _CONTRACTS
+                    detail = transform_price_fields(family,
+                        {key: value for key, value in unit.execution.items() if key != "content_hash"},
+                        _CONTRACTS, restore=True)
+                else:
+                    detail = dict(batch.executions[0])
             elif record.entity_type == "commission":
                 family, detail = "trading_commission_v1", dict(batch.commissions[0])
             else:
@@ -118,7 +131,8 @@ async def rebuild_owned_pending_program_policy(controller, blocks, population, *
     def rebuild():
         events = project_pending_program_policy_events(journal.records(controller.run_id, after_sequence=after),
             executions=executions, run_month=publisher.run_month, attempt_id=publisher.attempt_id,
-            batch_id=publisher.attempt_id, prior_batch_id=fence[1], source_cursor=fence[2])
+            batch_id=publisher.attempt_id, prior_batch_id=fence[1], source_cursor=fence[2],
+            exact_prices=publisher.exact_oms_prices)
         return rebuild_program_policy_events(actor, events, run_id=controller.run_id,
             source_hashes=source_hashes, blocks=blocks, population=population,
             executions=executions, order_manager=manager, maximum_events=maximum_events,

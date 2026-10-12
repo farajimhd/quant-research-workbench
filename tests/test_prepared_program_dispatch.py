@@ -715,7 +715,8 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                         self.closed = True
                 reader = Reader()
                 monkeypatch.setattr("src.backend.program_policy_recovery.load_verified_v4_prefix", lambda *_: prefix)
-                def page(client, selected_prefix, *, after_sequence, limit):
+                def page(client, selected_prefix, *, after_sequence, limit, exact_prices=False):
+                    assert exact_prices is True
                     assert client is reader and selected_prefix is prefix
                     return tuple(events[after_sequence:after_sequence + limit])
                 with patch("src.backend.program_policy_recovery.load_typed_event_page", page):
@@ -846,7 +847,8 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                             maximum_events=1000, last_sequence=len(events))
                     entered, release_read = Event(), Event()
                     cancelled_reader = Reader()
-                    def blocked_page(client, selected_prefix, *, after_sequence, limit):
+                    def blocked_page(client, selected_prefix, *, after_sequence, limit, exact_prices=False):
+                        assert exact_prices is True
                         assert client is cancelled_reader and selected_prefix is prefix
                         entered.set()
                         assert release_read.wait(5)

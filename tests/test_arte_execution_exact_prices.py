@@ -183,3 +183,24 @@ def test_later_money_fee_links_only_to_committed_exact_execution(monkeypatch):
         publish_base_typed_batch_v4(client, fee)
     assert publish_exact_execution_batch_v4(client, ExactPriceExecutionBatch(fee, None)) == fee.batch_id
     assert load_verified_v4_prefix(client, unit.base.run_id).last_sequence == 2
+
+
+def test_pending_policy_projection_keeps_native_fill_price():
+    from src.backend.program_policy_recovery import project_pending_program_policy_events
+    from src.trading_runtime.journal_contract import JournalRecord
+    payload = source(price=math.nextafter(10.25, 11.))
+    execution = _execution(payload)
+    record = JournalRecord(record_id="00000000-0000-0000-0000-000000000002",
+        run_id="backtest:exact-fill", sequence=1, category="execution", entity_type="fill",
+        entity_id=execution.execution_id, event_time=execution.trade_time, recorded_at=AT,
+        account_id=execution.account, payload=payload)
+    scope = dict(executions=(execution,), run_month=date(2026, 8, 1),
+        attempt_id="00000000-0000-0000-0000-000000000004",
+        batch_id="00000000-0000-0000-0000-000000000001",
+        prior_batch_id="00000000-0000-0000-0000-000000000000", source_cursor="cursor")
+    with pytest.raises(ValueError, match="losslessly"):
+        project_pending_program_policy_events((record,), **scope)
+    event, = project_pending_program_policy_events((record,), **scope, exact_prices=True)
+    assert event.detail_family == "trading_execution_v1"
+    assert event.detail["price"].hex() == execution.price.hex()
+    assert event.detail["quantity"] == "1.0000000000"
