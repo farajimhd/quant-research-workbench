@@ -11,6 +11,7 @@ from types import MappingProxyType, SimpleNamespace
 from collections.abc import Mapping
 from datetime import date
 from uuid import NAMESPACE_URL, uuid5
+from hashlib import sha256
 import json
 import re
 
@@ -24,6 +25,14 @@ OBSERVATION = replace(codec.OBSERVATION, name="trading_oms_observation_v1",
     columns=tuple((name + "_bits", "UInt64") if name in _NUMBERS else (name, kind)
                   for name, kind in codec.OBSERVATION.columns))
 TABLES = (ROOT, OBSERVATION)
+
+
+class ManagedSharedOmsObservationHeadReader(codec.ManagedOmsObservationHeadReader):
+    """Existing managed scalar head decoder in the central OMS namespace."""
+    @staticmethod
+    def path(run_id):
+        codec.ManagedOmsObservationHeadReader.path(run_id)
+        return "/trading/oms-observation/v1/" + sha256(run_id.encode()).hexdigest() + "/head"
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,6 +218,59 @@ async def load_shared_oms_observations(client_factory, **scope):
         client = client_factory()
         try:
             return read_shared_oms_observations(client, **scope)
+        finally:
+            client.close()
+    return await _owned_worker(load)
+
+
+def read_attested_shared_oms_observations(client, head_reader, *, prefix,
+        maximum_rows=100000, maximum_bytes=16 * 1024 * 1024):
+    """Prove central selection at an unchanged running V4 market boundary.
+
+    This proves only the observation checkpoint. Full programme restart also
+    requires matching broker, financial, policy and source reconstruction.
+    """
+    from .arte_journal_commit_v4 import V4CommittedPrefix, load_verified_v4_prefix
+    from .arte_journal_projection import load_latest_backtest_cursor
+    if (type(prefix) is not V4CommittedPrefix or prefix.status != "running"
+            or type(head_reader) is not ManagedSharedOmsObservationHeadReader):
+        raise ValueError("Shared OMS attestation needs its running prefix and managed central head")
+    session = head_reader._session
+    keeper, generation, client_id = session.client, session._generation, session.client.client_id
+    head = head_reader.read_head(run_id=prefix.run_id)
+    if (head.checkpoint_sequence != prefix.last_sequence
+            or head.journal_batch_id != prefix.last_batch_id
+            or load_verified_v4_prefix(client, prefix.run_id) != prefix):
+        raise ValueError("Shared OMS head differs from its running V4 cursor")
+    rows = read_shared_oms_observations(client, run_id=prefix.run_id,
+        checkpoint_sequence=prefix.last_sequence, expected_content_hash=head.snapshot_hash,
+        maximum_rows=maximum_rows, maximum_bytes=maximum_bytes)
+    cursor = load_latest_backtest_cursor(client, prefix)
+    if (not isinstance(cursor, Mapping) or cursor.get("run_id") != prefix.run_id
+            or cursor.get("event_sequence") != head.checkpoint_sequence
+            or cursor.get("batch_id") != head.journal_batch_id
+            or cursor.get("boundary_ms") != rows.root["boundary_ms"]
+            or cursor.get("session_date") != rows.root["session_date"]):
+        raise ValueError("Shared OMS observation differs from its completed market cursor")
+    if (load_verified_v4_prefix(client, prefix.run_id) != prefix
+            or head_reader.read_head(run_id=prefix.run_id) != head):
+        raise ValueError("Shared OMS selection moved during attested readback")
+    if (head_reader._session is not session or session.client is not keeper
+            or not session.writable or session._generation != generation
+            or keeper.client_id != client_id):
+        raise RuntimeError("Shared OMS Keeper session changed during attested readback")
+    return rows
+
+
+async def load_attested_shared_oms_observations(client_factory, head_reader, **scope):
+    """Own attestation off-loop, retaining the client until cancellation settles."""
+    from src.backend.qmd_columnar_history_transport import _owned_worker
+    if not callable(client_factory):
+        raise ValueError("Shared OMS attestation requires an owned reader factory")
+    def load():
+        client = client_factory()
+        try:
+            return read_attested_shared_oms_observations(client, head_reader, **scope)
         finally:
             client.close()
     return await _owned_worker(load)

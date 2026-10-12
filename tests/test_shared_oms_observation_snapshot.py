@@ -169,3 +169,48 @@ def test_owned_reader_drains_repeated_cancellation_and_closes(monkeypatch):
             await task
         assert client.closed
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("movement", [None, "head", "cursor", "prefix", "session", "wrong_head"])
+def test_attestation_requires_unchanged_central_selection(monkeypatch, movement):
+    from src.trading_runtime.keeper_session import ManagedKeeperSession
+    from src.trading_runtime import arte_journal_commit_v4 as commits, arte_journal_projection as projection
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    from tests.test_live_signal_completion_keeper import FakeKazoo
+    client, rows, _, _ = reader(monkeypatch)
+    batch = "00000000-0000-0000-0000-000000000007"
+    prefix = V4CommittedPrefix("shared-run", 42, batch, "cursor", "running", (batch,))
+    kazoo = FakeKazoo()
+    kazoo.add_listener = lambda listener: None
+    session = ManagedKeeperSession(kazoo)
+    session._on_state("CONNECTED")
+    heads = module.ManagedSharedOmsObservationHeadReader(session)
+    path = heads.path("shared-run")
+    assert path != module.codec.ManagedOmsObservationHeadReader.path("shared-run")
+    value = "\n".join(("1", "shared-run", "41" if movement == "wrong_head" else "42",
+                       batch, rows.root["content_hash"]))
+    kazoo.create(path, value.encode())
+    reads = []
+    def read_prefix(*args):
+        reads.append(True)
+        return replace(prefix, last_sequence=43) if movement == "prefix" and len(reads) == 2 else prefix
+    def cursor(*args):
+        if movement == "session":
+            session._on_state("SUSPENDED")
+            session._on_state("CONNECTED")
+        if movement == "head":
+            raw, version, owner = kazoo.nodes[path]
+            kazoo.nodes[path] = (raw, version + 1, owner)
+        return dict(run_id="shared-run", event_sequence=42, batch_id=batch,
+            boundary_ms=rows.root["boundary_ms"] + (100 if movement == "cursor" else 0),
+            session_date=rows.root["session_date"])
+    monkeypatch.setattr(commits, "load_verified_v4_prefix", read_prefix)
+    monkeypatch.setattr(projection, "load_latest_backtest_cursor", cursor)
+    async def load():
+        return await module.load_attested_shared_oms_observations(lambda: client, heads, prefix=prefix)
+    if movement:
+        with pytest.raises((ValueError, RuntimeError), match="cursor|moved|Keeper session changed"):
+            asyncio.run(load())
+    else:
+        assert asyncio.run(load()) == rows and len(reads) == 2
+    assert client.closed
