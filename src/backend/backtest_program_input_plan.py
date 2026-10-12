@@ -18,6 +18,7 @@ class ProgramCohortInputPlan:
     stop_bucket: int
     as_of: datetime
     concurrency: int
+    maximum_retained_feature_bytes: int | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "pins", MappingProxyType(dict(self.pins)))
@@ -38,15 +39,19 @@ def preflight_program_session_inputs(release, cohorts, *, first_bucket, stop_buc
     for cohort in cohorts:
         if type(cohort) is not ProgramCohortInputPlan or cohort.first_bucket != expected:
             raise ValueError("Programme input plan has a gap, overlap or unordered cohort")
+        if (cohort.maximum_retained_feature_bytes is not None and
+                (type(cohort.maximum_retained_feature_bytes) is not int or cohort.maximum_retained_feature_bytes < 1)):
+            raise ValueError("Programme input plan requires its explicit retained-byte budget")
         pins, assignments = preflight_program_cohort_inputs(release, cohort.pins, cohort.population_pin,
             cohort.listing_by_assignment, first_ordinal=cohort.first_ordinal,
             stop_ordinal=cohort.stop_ordinal, evaluation_block=cohort.evaluation_block,
             first_bucket=cohort.first_bucket, stop_bucket=cohort.stop_bucket,
-            as_of=cohort.as_of, concurrency=cohort.concurrency)
+            as_of=cohort.as_of, concurrency=cohort.concurrency,
+            listing_partitioned=cohort.maximum_retained_feature_bytes is not None)
         identity = (cohort.population_pin.opening.scope.session_date,
             cohort.population_pin.source_revision, tuple(sorted(assignments.items())),
             tuple(sorted((listing, pin.header["content_hash"]) for listing, pin in pins.items())),
-            cohort.first_ordinal, cohort.evaluation_block)
+            cohort.first_ordinal, cohort.evaluation_block, cohort.maximum_retained_feature_bytes)
         if common is not None and identity != common:
             raise ValueError("Programme input plan changed its source, assignments or evaluation origin")
         common, expected = identity, cohort.stop_bucket
@@ -93,7 +98,7 @@ async def prepare_program_session_input_plan(controller, cohorts, *, scopes, his
             scope=prototype.scope, first_ordinal=plan.first_ordinal, stop_ordinal=plan.stop_ordinal,
             evaluation_block=plan.evaluation_block, first_bucket=plan.first_bucket,
             stop_bucket=plan.stop_bucket, as_of=plan.as_of, concurrency=plan.concurrency,
-            history_post=history_post)
+            history_post=history_post, maximum_retained_feature_bytes=plan.maximum_retained_feature_bytes)
         if (controller.definition is not definition or controller._program_strategy is not actor
                 or actor.program_release is not release):
             raise RuntimeError("Programme input-plan controller ownership changed")

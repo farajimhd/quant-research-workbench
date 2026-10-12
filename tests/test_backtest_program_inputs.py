@@ -218,6 +218,22 @@ def test_cohort_preparation_reuses_full_feature_origin_and_bounds_parallel_io(pr
             {feature_pin.scope.listing_id: feature_pin}, population,
             {"first": feature_pin.scope.listing_id}, **{**kwargs, "first_ordinal": 81}, history_post=post))
     assert len(calls) == 6
+    from src.backend.backtest_program_listing_cache import ProgramListingFeatureCache
+    retained_bytes = block.market.estimated_size() + block.masks.estimated_size()
+    partitioned = asyncio.run(prepare_program_cohort_inputs(release, checked_pins, population,
+        checked_assignments, **kwargs, history_post=post,
+        feature_cache=ProgramListingFeatureCache(maximum_retained_bytes=retained_bytes)))
+    assert_frame_equal(partitioned.blocks["first"].market, block.market, check_exact=True)
+    assert_frame_equal(partitioned.blocks["first"].masks, block.masks, check_exact=True)
+    assert_frame_equal(partitioned.projection.frame, result.projection.frame, check_exact=True)
+    partition_controller = ReplayRunController(replace(controller.definition,
+        session_date=feature_pin.scope.session_date), program_strategy=actor, program_liquidity_resolution_ms=100)
+    partition_plan = replace(session_plan, maximum_retained_feature_bytes=retained_bytes)
+    partition_work = asyncio.run(prepare_program_session_input_plan(partition_controller, (partition_plan,),
+        scopes=(session_scope,), history_post=post))
+    assert type(partition_controller._program_feature_cache) is ProgramListingFeatureCache
+    assert_frame_equal(partition_work[0].blocks["first"].masks, block.masks, check_exact=True)
+    assert_frame_equal(partition_work[0].projection.frame, result.projection.frame, check_exact=True)
 
 
 def test_prepared_scanner_bridge_keeps_exact_top10_and_rejects_missing_history(prepared_source):

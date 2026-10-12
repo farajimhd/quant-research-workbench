@@ -311,7 +311,7 @@ class PreparedProgramCohortInputs:
 
 def preflight_program_cohort_inputs(release, pins, population_pin, listing_by_assignment, *,
         first_ordinal, stop_ordinal, evaluation_block, first_bucket, stop_bucket,
-        as_of, concurrency, history_post=None):
+        as_of, concurrency, history_post=None, listing_partitioned=False):
     """Check existing QMD source/block scope without transport or evaluation.
 
     The supplied feature origin includes its full warm-up. Only the supplied
@@ -329,7 +329,9 @@ def preflight_program_cohort_inputs(release, pins, population_pin, listing_by_as
             or not 14400 <= first_bucket < stop_bucket <= 72000 or stop_bucket - first_bucket > 256
             or type(first_ordinal) is not int or type(stop_ordinal) is not int
             or not 0 <= first_ordinal < stop_ordinal
-            or len(pins) * (stop_ordinal - first_ordinal) > 262144
+            or type(listing_partitioned) is not bool
+            or (1 if listing_partitioned else len(pins)) * (stop_ordinal - first_ordinal) > 262144
+            or len(pins) * (stop_bucket - first_bucket) > 262144
             or len(population_pin.histories) * (stop_bucket - first_bucket) > 262144
             or type(evaluation_block) is not str or not 1 <= len(evaluation_block) <= 128
             or history_post is not None and not callable(history_post)):
@@ -368,12 +370,14 @@ async def prepare_program_cohort_inputs(release, pins, population_pin, listing_b
     from .qmd_gateway_client import qmd_history_post_json
     from .backtest_market_data import market_day_boundary
     from .backtest_program_feature_cache import ProgramFeatureBlockCache
-    if feature_cache is not None and type(feature_cache) is not ProgramFeatureBlockCache:
+    from .backtest_program_listing_cache import ProgramListingFeatureCache
+    partitioned = type(feature_cache) is ProgramListingFeatureCache
+    if feature_cache is not None and type(feature_cache) not in (ProgramFeatureBlockCache, ProgramListingFeatureCache):
         raise ValueError("Programme preparation requires its built-in feature cache")
     owned, assignments = preflight_program_cohort_inputs(release, pins, population_pin,
         listing_by_assignment, first_ordinal=first_ordinal, stop_ordinal=stop_ordinal,
         evaluation_block=evaluation_block, first_bucket=first_bucket, stop_bucket=stop_bucket,
-        as_of=as_of, concurrency=concurrency, history_post=history_post)
+        as_of=as_of, concurrency=concurrency, history_post=history_post, listing_partitioned=partitioned)
     # Both existing worker pools share this budget. Waiting occurs in owned
     # transport threads, never on the event loop or while holding a connection.
     budget = BoundedSemaphore(concurrency)
@@ -390,15 +394,33 @@ async def prepare_program_cohort_inputs(release, pins, population_pin, listing_b
             as_of=as_of, concurrency=concurrency, history_post=post))
     block, population = features.result(), population.result()
     day = population_pin.opening.scope.session_date
+    start_at = market_day_boundary(day, (first_bucket - 14400) * 1000)
+    stop_at = market_day_boundary(day, (stop_bucket - 14400) * 1000)
+    if partitioned:
+        listing_blocks = block
+        def scanner_block():
+            interval = ((pl.col("boundary_at") > start_at.astimezone(timezone.utc))
+                & (pl.col("boundary_at") <= stop_at.astimezone(timezone.utc)))
+            market = pl.concat([listing_blocks[listing].market.filter(interval) for listing in sorted(owned)])
+            masks = pl.concat([listing_blocks[listing].masks.filter(interval) for listing in sorted(owned)])
+            if market.is_empty():
+                raise ValueError("Partitioned scanner lacks its complete cohort rows")
+            first = market["observed_ordinal"].min()
+            stop = market["observed_ordinal"].max() + 1
+            if stop - first != stop_bucket - first_bucket:
+                raise ValueError("Partitioned scanner differs from its complete cohort ordinals")
+            return PreparedProgramBlock(release.header["content_hash"], evaluation_block, first, stop,
+                MappingProxyType({listing: pin.header["content_hash"] for listing, pin in owned.items()}), market, masks)
+        block = await _owned_worker(scanner_block)
     projection = await _owned_worker(prepare_program_scanner_projection, block, population, release,
-        start_at=market_day_boundary(day, (first_bucket - 14400) * 1000),
-        stop_at=market_day_boundary(day, (stop_bucket - 14400) * 1000))
-    return PreparedProgramCohortInputs({identity: block for identity in assignments}, population, projection)
+        start_at=start_at, stop_at=stop_at)
+    return PreparedProgramCohortInputs({identity: listing_blocks[listing] if partitioned else block
+        for identity, listing in assignments.items()}, population, projection)
 
 
 async def prepare_program_cohort_work(controller, pins, population_pin, *, scope,
         first_ordinal, stop_ordinal, evaluation_block, first_bucket, stop_bucket,
-        as_of, concurrency, history_post=None):
+        as_of, concurrency, history_post=None, maximum_retained_feature_bytes=None):
     """Prepare native scheduler work without changing policy or execution state."""
     from .replay_run_service import ReplayRunController
     from .backtest_program_session import PreparedProgramCohortWork
@@ -423,11 +445,17 @@ async def prepare_program_cohort_work(controller, pins, population_pin, *, scope
             raise RuntimeError("Programme preparation authority changed during QMD reads")
     require_owner()
     from .backtest_program_feature_cache import ProgramFeatureBlockCache
+    from .backtest_program_listing_cache import ProgramListingFeatureCache
     cache = getattr(controller, "_program_feature_cache", None)
     if cache is None:
-        cache = controller._program_feature_cache = ProgramFeatureBlockCache()
-    elif type(cache) is not ProgramFeatureBlockCache:
+        cache = controller._program_feature_cache = (ProgramFeatureBlockCache()
+            if maximum_retained_feature_bytes is None else
+            ProgramListingFeatureCache(maximum_retained_bytes=maximum_retained_feature_bytes))
+    elif type(cache) not in (ProgramFeatureBlockCache, ProgramListingFeatureCache):
         raise ValueError("Controller programme preparation has a foreign feature cache")
+    if maximum_retained_feature_bytes is not None and (type(cache) is not ProgramListingFeatureCache
+            or cache.maximum_retained_bytes != maximum_retained_feature_bytes):
+        raise ValueError("Controller programme preparation changed its retained-byte budget")
     prepared = await prepare_program_cohort_inputs(release, pins, population_pin, listings,
         first_ordinal=first_ordinal, stop_ordinal=stop_ordinal, evaluation_block=evaluation_block,
         first_bucket=first_bucket, stop_bucket=stop_bucket, as_of=as_of,
