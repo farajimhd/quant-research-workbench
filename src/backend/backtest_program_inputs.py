@@ -340,11 +340,14 @@ def preflight_program_cohort_inputs(release, pins, population_pin, listing_by_as
 
 async def prepare_program_cohort_inputs(release, pins, population_pin, listing_by_assignment, *,
         first_ordinal, stop_ordinal, evaluation_block, first_bucket, stop_bucket,
-        as_of, concurrency, history_post=None):
+        as_of, concurrency, history_post=None, feature_cache=None):
     """Use the same read-only preflight before bounded QMD/scanner preparation."""
     from .qmd_columnar_population import read_population_window
     from .qmd_gateway_client import qmd_history_post_json
     from .backtest_market_data import market_day_boundary
+    from .backtest_program_feature_cache import ProgramFeatureBlockCache
+    if feature_cache is not None and type(feature_cache) is not ProgramFeatureBlockCache:
+        raise ValueError("Programme preparation requires its built-in feature cache")
     owned, assignments = preflight_program_cohort_inputs(release, pins, population_pin,
         listing_by_assignment, first_ordinal=first_ordinal, stop_ordinal=stop_ordinal,
         evaluation_block=evaluation_block, first_bucket=first_bucket, stop_bucket=stop_bucket,
@@ -356,7 +359,8 @@ async def prepare_program_cohort_inputs(release, pins, population_pin, listing_b
         with budget:
             return (history_post or qmd_history_post_json)(*args, **kwargs)
     async with asyncio.TaskGroup() as group:
-        features = group.create_task(prepare_program_block(release, owned,
+        prepare_features = prepare_program_block if feature_cache is None else feature_cache.load
+        features = group.create_task(prepare_features(release, owned,
             first_ordinal=first_ordinal, stop_ordinal=stop_ordinal,
             evaluation_block=evaluation_block, as_of=as_of, concurrency=concurrency, history_post=post))
         population = group.create_task(read_population_window(population_pin,
@@ -396,10 +400,16 @@ async def prepare_program_cohort_work(controller, pins, population_pin, *, scope
                 or controller._runtime_finished or controller._program_dispatch_failure is not None):
             raise RuntimeError("Programme preparation authority changed during QMD reads")
     require_owner()
+    from .backtest_program_feature_cache import ProgramFeatureBlockCache
+    cache = getattr(controller, "_program_feature_cache", None)
+    if cache is None:
+        cache = controller._program_feature_cache = ProgramFeatureBlockCache()
+    elif type(cache) is not ProgramFeatureBlockCache:
+        raise ValueError("Controller programme preparation has a foreign feature cache")
     prepared = await prepare_program_cohort_inputs(release, pins, population_pin, listings,
         first_ordinal=first_ordinal, stop_ordinal=stop_ordinal, evaluation_block=evaluation_block,
         first_bucket=first_bucket, stop_bucket=stop_bucket, as_of=as_of,
-        concurrency=concurrency, history_post=history_post)
+        concurrency=concurrency, history_post=history_post, feature_cache=cache)
     require_owner()
     return PreparedProgramCohortWork(first_bucket, stop_bucket, prepared.blocks,
         prepared.population, prepared.projection, prototype.scope)

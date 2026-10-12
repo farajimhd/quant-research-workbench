@@ -53,6 +53,7 @@ def test_cohort_preparation_reuses_full_feature_origin_and_bounds_parallel_io(pr
     population = CertifiedPopulationPin(opening,
         {volume_pin.scope.listing_id: volume_pin}, release.universe)
     active, peak, calls = 0, 0, []
+    overlap_required = True
     lock, overlap = Lock(), Barrier(2)
     def post(path, request, timeout):
         nonlocal active, peak
@@ -61,7 +62,7 @@ def test_cohort_preparation_reuses_full_feature_origin_and_bounds_parallel_io(pr
             peak = max(peak, active)
             calls.append((bool(request["field_ids"]), request["first_ordinal"], request["stop_ordinal"]))
         try:
-            if concurrency == 2:
+            if concurrency == 2 and overlap_required:
                 overlap.wait(timeout=5)
             sleep(.01)
             certificate = features if request["field_ids"] else volume
@@ -115,6 +116,14 @@ def test_cohort_preparation_reuses_full_feature_origin_and_bounds_parallel_io(pr
     assert tuple(native.blocks) == ("first",)
     assert native.scope == scope and native.first_bucket == kwargs["first_bucket"]
     assert_frame_equal(native.projection.frame, result.projection.frame, check_exact=True)
+    before_repeat = len(calls)
+    overlap_required = False  # A cache hit has only the population transport.
+    repeated = asyncio.run(controller.prepare_program_cohort_work(
+        {feature_pin.scope.listing_id: feature_pin}, population, scope=scope,
+        **kwargs, history_post=post))
+    assert repeated.blocks["first"] is native.blocks["first"]
+    assert calls[before_repeat:] == [(False, 80, 90)]
+    assert_frame_equal(repeated.projection.frame, native.projection.frame, check_exact=True)
     from datetime import timedelta
     controller.definition = replace(controller.definition,
         session_date=controller.definition.session_date + timedelta(days=1))
@@ -126,7 +135,7 @@ def test_cohort_preparation_reuses_full_feature_origin_and_bounds_parallel_io(pr
         asyncio.run(prepare_program_cohort_inputs(release,
             {feature_pin.scope.listing_id: feature_pin}, population,
             {"first": feature_pin.scope.listing_id}, **{**kwargs, "first_ordinal": 81}, history_post=post))
-    assert len(calls) == 4
+    assert len(calls) == 5
 
 
 def test_prepared_scanner_bridge_keeps_exact_top10_and_rejects_missing_history(prepared_source):
