@@ -100,7 +100,11 @@ def main():
         train_sha256=pp['train_sha256'],joint_updates=args.joint_updates,head_updates=args.head_updates,
         supervised_exposure=128*(args.joint_updates+args.head_updates),warmup=8,feedback_detached=True,
         gpu_duty=.5,microbatch=8,cpu_threads=2,seed=17,sealed_labels_read=False,validation_exploratory=True,
-        candidates=a['candidates'],wandb_project='rl-v6-transformer-search')
+        candidates=a['candidates'],wandb_project='rl-v6-transformer-search',
+        optimizer=dict(name='AdamW',joint_lr=.001,head_lr=.003,weight_decay=.0001,clip_norm=1.),
+        vram_reserve_bytes=4*1024**3,host_reserve_bytes=8*1024**3,
+        parameters_include_additional_feedback_fuse=True,
+        computational_exposure='nine inference decisions per supervised target;128 supervised rows per update')
     out.mkdir(exist_ok=args.resume)
     if args.resume and json.loads((out/'manifest.json').read_text())!=plan:raise ValueError('Resume source/data/budget changed')
     if not args.resume:write(out/'manifest.json',plan)
