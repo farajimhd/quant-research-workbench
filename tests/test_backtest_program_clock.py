@@ -16,7 +16,8 @@ from tests.test_program_controller_runtime import definition_and_actor
 
 
 @pytest.mark.parametrize("failure", [None, "coverage", "block", "first_owner", "last_owner"])
-def test_complete_clock_preserves_explicit_order_and_checks_before_side_effects(failure):
+@pytest.mark.parametrize("qualified", [False, True])
+def test_complete_clock_preserves_explicit_order_and_checks_before_side_effects(failure, qualified, monkeypatch):
     _, original = definition_and_actor()
     first, = original.assignments()
     second = replace(first, assignment_id="second", account_id="other-account")
@@ -52,6 +53,17 @@ def test_complete_clock_preserves_explicit_order_and_checks_before_side_effects(
             controller._runtime = object()
         return {"status": "wait"}
     controller.dispatch_prepared_program_boundary = dispatch
+    packets = [object(), object(), object()]
+    if qualified:
+        from src.backend import backtest_program_clock as module
+        async def qualified_dispatch(actual_controller, actual_block, actual_population, **kwargs):
+            assert actual_controller is controller
+            assert kwargs.pop("initial_packet") is packets[len(calls)]
+            assert kwargs.pop("policy_blocks") == (block,)
+            assert kwargs.pop("maximum_events") == 1000
+            result = await dispatch(actual_block, actual_population, **kwargs)
+            return {**result, "policy_packet": packets[len(calls)]}
+        monkeypatch.setattr(module, "dispatch_qualified_program_boundary", qualified_dispatch)
     blocks = {"assignment": block, "second": block}
     if failure == "coverage":
         del blocks["assignment"]
@@ -60,7 +72,9 @@ def test_complete_clock_preserves_explicit_order_and_checks_before_side_effects(
     async def run():
         request = controller.dispatch_prepared_program_clock(blocks, population, at=at,
             assignment_order=("second", "assignment"), execution_policy=None,
-            protection_profiles={"assignment": None, "second": None}, outside_rth=False)
+            protection_profiles={"assignment": None, "second": None}, outside_rth=False,
+            **(dict(qualify=True, policy_blocks=(block,), maximum_events=1000,
+                    initial_packet=packets[0]) if qualified else {}))
         if failure:
             with pytest.raises(ValueError):
                 await request

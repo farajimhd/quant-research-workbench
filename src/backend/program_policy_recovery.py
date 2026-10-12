@@ -62,6 +62,74 @@ def project_pending_program_policy_events(records, *, executions, run_month,
     return tuple(result)
 
 
+async def rebuild_owned_pending_program_policy(controller, blocks, population, *,
+        maximum_events, initial_packet=None):
+    """Replay the bounded retained suffix and verify its owned pre-decision state.
+
+    A cold restored prefix must be supplied when journal compaction has removed
+    earlier records. This never substitutes memory for a durable cold receipt.
+    """
+    from .replay_run_service import ReplayRunController
+    from .backtest_typed_publisher import BacktestTypedJournalPublisher
+    from .signal_stream_runtime_service import SignalStreamRuntime
+    from src.trading_runtime.runtime import TradingRuntime, RunMode
+    from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
+    if (type(controller) is not ReplayRunController or type(maximum_events) is not int
+            or not 1 <= maximum_events <= 1_000_000
+            or type(population) is not CertifiedPopulationWindow):
+        raise ValueError("Owned policy replay requires its bounded native scope")
+    runtime, journal, actor, source, publisher = (controller._runtime, controller._journal,
+        controller._program_strategy, controller._program_signal_runtime, controller._journal_publisher)
+    if (type(runtime) is not TradingRuntime or runtime.config.mode is not RunMode.BACKTEST
+            or type(runtime.broker) is not SimulatedBrokerAdapter or runtime.journal is not journal
+            or type(actor) is not AssignedProgramStrategy or runtime.strategy is not actor
+            or type(source) is not SignalStreamRuntime or source._typed_scope is None
+            or type(publisher) is not BacktestTypedJournalPublisher or publisher.journal is not journal
+            or population.source_revision != source._typed_scope[1]):
+        raise ValueError("Owned policy replay lacks its controller actors")
+    sequence = journal.latest_sequence(controller.run_id)
+    at = runtime.last_event_time
+    boundary = source.typed_source_boundary(at)
+    source_hashes = source.typed_source_commit_hashes()[:boundary[0]]
+    fence = (publisher.fenced_sequence, publisher._batch_id, publisher._source_cursor)
+    state_hash = program_policy_fingerprint(actor)
+    manager, broker, config = runtime.order_manager, runtime.broker, runtime.config
+    if initial_packet is not None and type(initial_packet) is not RecoveredProgramPolicy:
+        raise ValueError("Owned policy replay requires a sealed continuation packet")
+    after = 0 if initial_packet is None else initial_packet.journal_sequence
+    if not 0 <= after <= sequence <= maximum_events:
+        raise ValueError("Owned policy replay exceeds its declared journal bound")
+    blocks = tuple(blocks)
+    def require_scope():
+        if (controller._runtime is not runtime or controller._journal is not journal
+                or controller._program_strategy is not actor or controller._program_signal_runtime is not source
+                or controller._journal_publisher is not publisher or runtime.order_manager is not manager
+                or runtime.broker is not broker or runtime.config is not config or runtime.last_event_time != at
+                or journal.latest_sequence(controller.run_id) != sequence
+                or source.typed_source_boundary(at) != boundary
+                or (publisher.fenced_sequence, publisher._batch_id, publisher._source_cursor) != fence
+                or publisher._error is not None or publisher._terminal_task is not None
+                or publisher._task is not None and not publisher._task.done()
+                or program_policy_fingerprint(actor) != state_hash):
+            raise ValueError("Owned policy replay changed during reconstruction")
+    require_scope()
+    executions = tuple(await broker.trades())
+    require_scope()
+    def rebuild():
+        events = project_pending_program_policy_events(journal.records(controller.run_id, after_sequence=after),
+            executions=executions, run_month=publisher.run_month, attempt_id=publisher.attempt_id,
+            batch_id=publisher.attempt_id, prior_batch_id=fence[1], source_cursor=fence[2])
+        return rebuild_program_policy_events(actor, events, run_id=controller.run_id,
+            source_hashes=source_hashes, blocks=blocks, population=population,
+            executions=executions, order_manager=manager, maximum_events=maximum_events,
+            last_sequence=sequence, initial_packet=initial_packet)
+    packet = await _owned_worker(rebuild)
+    require_scope()
+    if packet.state_hash != state_hash:
+        raise ValueError("Owned policy replay differs from the actual pre-decision actor")
+    return packet
+
+
 def _position_geometry(rows, account):
     from src.trading_runtime.ibkr_schema import PortfolioPosition
     from decimal import localcontext

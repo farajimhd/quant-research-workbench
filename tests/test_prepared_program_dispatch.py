@@ -275,6 +275,10 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 historical_observation = controller.program_order_observation(assignment_id="assignment", at=at)
                 original_records = controller._journal.records
                 def forbidden_rescan(*args, **kwargs):
+                    if automatic:
+                        assert kwargs.get("after_sequence") == (
+                            0 if previous_basis_packet is None else previous_basis_packet.journal_sequence)
+                        return original_records(*args, **kwargs)
                     raise AssertionError("Completed dispatch must not rescan journal records")
                 controller._journal.records = forbidden_rescan
                 try:
@@ -291,11 +295,15 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                                 protection_profile=profile, outside_rth=False, terminal=offset == 2)
                         assert controller._journal.latest_sequence(controller.run_id) == basis_sequence
                         assert controller._program_dispatch_failure is None
-                        auto_result = await dispatch_qualified_program_boundary(controller, block, population,
-                            packet=pre_packet, ordinal=ordinal + offset, assignment_id="assignment",
-                            execution_policy=policy, protection_profile=profile, outside_rth=False, terminal=offset == 2)
+                        dispatched = await controller.dispatch_prepared_program_clock({"assignment": block}, population,
+                            at=at, assignment_order=("assignment",), execution_policy=policy,
+                            protection_profiles={"assignment": profile}, outside_rth=False, terminal=offset == 2,
+                            qualify=True, policy_blocks=(block,), maximum_events=1000,
+                            initial_packet=previous_basis_packet)
+                        auto_result = dispatched[0][1]
                         assert auto_result["qualification"].selection.status == auto_result["status"]
-                        dispatched = (("assignment", auto_result),)
+                        assert auto_result["policy_packet"].state_hash == pre_packet.state_hash
+                        assert auto_result["policy_packet"].journal_sequence == basis_sequence
                     else:
                         dispatched = await controller.dispatch_prepared_program_clock({"assignment": block}, population,
                             at=at, assignment_order=("assignment",), execution_policy=policy,

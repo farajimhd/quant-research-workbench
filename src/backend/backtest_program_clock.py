@@ -3,11 +3,12 @@ from datetime import datetime
 from collections.abc import Mapping
 
 
-async def dispatch_qualified_program_boundary(controller, block, population, *, packet,
-        ordinal, assignment_id, execution_policy, protection_profile, outside_rth, terminal=False):
+async def dispatch_qualified_program_boundary(controller, block, population, *, packet=None,
+        ordinal, assignment_id, execution_policy, protection_profile, outside_rth, terminal=False,
+        policy_blocks=None, maximum_events=None, initial_packet=None):
     """Capture, dispatch, independently qualify and retain one native boundary.
 
-    The caller supplies the independently replayed policy prefix. Publication
+    The policy prefix is independently replayed or explicitly supplied. Publication
     stays batched by the existing publisher; no producer or writer starts here.
     """
     from dataclasses import replace
@@ -49,6 +50,14 @@ async def dispatch_qualified_program_boundary(controller, block, population, *, 
     at = row["boundary_at"]
     if controller.program_order_observation(assignment_id=assignment_id, at=at).unobserved_order_ids:
         await runtime.order_manager.reconcile()
+    if packet is None:
+        from .program_policy_recovery import rebuild_owned_pending_program_policy
+        if policy_blocks is None:
+            raise ValueError("Automatic policy replay requires explicit prepared-block coverage")
+        packet = await rebuild_owned_pending_program_policy(controller, policy_blocks, population,
+            maximum_events=maximum_events, initial_packet=initial_packet)
+    elif initial_packet is not None or policy_blocks is not None or maximum_events is not None:
+        raise ValueError("Qualified dispatch cannot mix explicit and automatic policy bases")
     capture = await capture_program_clock_financial_basis(controller, at=at)
     seal = getattr(packet, "_continuation_seal", None)
     if (type(packet) is not RecoveredProgramPolicy or packet._proof is not _RECOVERY_PROOF
@@ -115,7 +124,7 @@ async def dispatch_qualified_program_boundary(controller, block, population, *, 
         envelope = await qualify_captured_pending_program_decision(controller, candidate, parent["record_id"],
             records, cold=cold, capture=capture, packet=packet, block=block, population=population,
             execution_policy=execution_policy, protection_profile=protection_profile, outside_rth=outside_rth)
-        return {**result, "qualification": envelope.qualification}
+        return {**result, "qualification": envelope.qualification, "policy_packet": packet}
     except BaseException as exc:
         if dispatched:
             controller._program_dispatch_failure = exc
@@ -125,7 +134,8 @@ async def dispatch_qualified_program_boundary(controller, block, population, *, 
 
 
 async def dispatch_prepared_program_clock(controller, blocks, population, *, at,
-        assignment_order, execution_policy, protection_profiles, outside_rth, terminal=False):
+        assignment_order, execution_policy, protection_profiles, outside_rth, terminal=False,
+        qualify=False, policy_blocks=None, maximum_events=None, initial_packet=None):
     """Validate full coverage before dispatching the caller's explicit order.
 
     The native compute funnel supplies the order; this adapter invents no
@@ -138,10 +148,16 @@ async def dispatch_prepared_program_clock(controller, blocks, population, *, at,
     from src.trading_runtime.columnar_program_actor import AssignedProgramStrategy
     if (type(controller) is not ReplayRunController or type(population) is not CertifiedPopulationWindow
             or not isinstance(at, datetime) or at.tzinfo is None or at.utcoffset() is None
-            or type(outside_rth) is not bool or type(terminal) is not bool
+            or type(outside_rth) is not bool or type(terminal) is not bool or type(qualify) is not bool
             or not isinstance(blocks, Mapping) or not isinstance(protection_profiles, Mapping)
             or isinstance(assignment_order, (str, bytes))):
         raise ValueError("Program clock needs its native typed scope")
+    if qualify:
+        if policy_blocks is None or type(maximum_events) is not int:
+            raise ValueError("Qualified program clock requires explicit replay coverage and bounds")
+        policy_blocks = tuple(policy_blocks)
+    elif policy_blocks is not None or maximum_events is not None or initial_packet is not None:
+        raise ValueError("Unqualified program clock cannot accept policy replay inputs")
     actor, runtime, source = controller._program_strategy, controller._runtime, controller._program_signal_runtime
     order = tuple(assignment_order)
     if (type(actor) is not AssignedProgramStrategy or runtime is None or runtime.strategy is not actor
@@ -173,9 +189,16 @@ async def dispatch_prepared_program_clock(controller, blocks, population, *, at,
             error = ValueError("Program clock ownership changed during dispatch")
             controller._program_dispatch_failure = error
             raise error
-        result = await controller.dispatch_prepared_program_boundary(block, population,
-            ordinal=ordinal, assignment_id=identity, execution_policy=execution_policy,
-            protection_profile=protection, outside_rth=outside_rth, terminal=terminal)
+        if qualify:
+            result = await dispatch_qualified_program_boundary(controller, block, population,
+                ordinal=ordinal, assignment_id=identity, execution_policy=execution_policy,
+                protection_profile=protection, outside_rth=outside_rth, terminal=terminal,
+                policy_blocks=policy_blocks, maximum_events=maximum_events, initial_packet=initial_packet)
+            initial_packet = result.get("policy_packet", initial_packet)
+        else:
+            result = await controller.dispatch_prepared_program_boundary(block, population,
+                ordinal=ordinal, assignment_id=identity, execution_policy=execution_policy,
+                protection_profile=protection, outside_rth=outside_rth, terminal=terminal)
         results.append((identity, result))
     if (controller._program_strategy is not actor or controller._runtime is not runtime
             or controller._program_signal_runtime is not source or runtime.last_event_time != at

@@ -138,17 +138,26 @@ completion and retains its qualified envelope for the existing V4 publisher.
 It checks the publisher fence remains unchanged across qualification and does
 not write or advance that fence. Synthetic controller tests retain all three
 clock decisions before any publication, without per-decision predecessor commits.
-The main compute lifecycle does not yet invoke this route automatically.
+The main launch lifecycle does not yet invoke this route automatically.
 The source-level `dispatch_qualified_program_boundary` now coordinates capture,
 native financial reconstruction, existing controller dispatch, normalized intent
 reconstruction, qualification and proof retention, and always closes its detached
 comparison runtime. It requires an independently replayed policy prefix from the
-caller. Synthetic tests exercise this automatic lifecycle alongside explicit
+caller, or is reconstructed by `rebuild_owned_pending_program_policy` from the
+bounded retained journal suffix and an optional verified continuation packet.
+The reconstruction checks the current owned actor content before returning;
+compacted earlier records require an explicit cold-restored packet and never
+fall back to an unfenced memory history. Synthetic tests exercise this automatic lifecycle alongside explicit
 dispatch at100ms and1s, including prefetch and rejection of altered replay
 metadata before order submission. The fixture also retains the existing native
 dispatch uncertainty-latch checks.
-Main launch admission, automatic policy-prefix orchestration across prepared
-cohorts, and operational full-session qualification remain unfinished.
+`ReplayRunController.dispatch_prepared_program_clock(qualify=True, ...)` now
+coordinates this route for the complete assignment order and carries each
+verified packet into the following assignment. The caller supplies explicit
+prepared replay-block coverage and event bounds and retains the returned packet
+across clocks. The default unqualified prepared-dispatch behavior is unchanged.
+Main launch admission, prepared-cohort scheduling, and operational full-session
+qualification remain unfinished.
 The main clock lifecycle must resolve this dependency while preserving actual
 filled-state/OMS semantics; per-decision cold database replay is not established
 as an efficient production execution path.
