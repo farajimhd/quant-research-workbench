@@ -11,6 +11,12 @@ this controller API for consecutive cohorts after journal compaction. The
 standard `_run_engine` bootstrap and `_backtest_launch_blocker` still require
 numbered releases; programme release admission and journal assembly must be
 integrated before normal app launch. No legacy frame fallback is authorized.
+The shared V4 journal assembly accepts an explicit `exact_oms_prices` selection
+and requires the dedicated programme-writer audit before opening the memory
+journal or writer worker for that selection. Omitted selection preserves the
+existing legacy publisher. This source-level assembly option still needs binding
+to the immutable programme run contract and context-publication launch route;
+it is not an operational admission certificate.
 
 ## Delivered components
 

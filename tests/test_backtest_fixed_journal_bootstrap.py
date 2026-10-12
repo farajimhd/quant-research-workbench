@@ -14,6 +14,52 @@ RUN = "00000000-0000-0000-0000-000000000a01"
 ATTEMPT = "00000000-0000-0000-0000-000000000a02"
 
 
+@pytest.mark.parametrize("exact", [False, True])
+def test_v4_writer_lane_selects_exact_prices_only_after_program_audit(monkeypatch, exact):
+    from src.trading_runtime import rule_decision_writer_preflight as audit
+    client = object()
+    calls = []
+    monkeypatch.setattr(audit, "require_rule_decision_writer_audit",
+        lambda actual: calls.append(("audit", actual)))
+
+    class Writer:
+        run_id = RUN
+        run_mode = "backtest"
+        journal_profile = "backtest_v4"
+        coalesce_batches = False
+        max_events_per_commit = 1024
+        def close(self):
+            calls.append(("close", client))
+
+    def factory(actual, **kwargs):
+        calls.append(("writer", actual))
+        return Writer()
+
+    token = bootstrap.FixedV4JournalPreflightToken(RUN, ("DU1",), date(2026, 8, 1),
+        "c" * 64, "b" * 64, "a" * 64)
+    scope = dict(attempt_id=ATTEMPT, expected_config={"mode": "backtest"},
+        fixed_market_parent_plan=object(), fixed_market_execution_plan=object(),
+        expected_market_start=datetime(2026, 8, 18, tzinfo=timezone.utc),
+        writer_factory=factory, batch_size=1024, queue_capacity=1,
+        exact_oms_prices=exact)
+    assembly = bootstrap._assemble_v4_writer_lane(client, token, **scope)
+    try:
+        assert assembly.publisher.exact_oms_prices is exact
+        assert calls == ([("audit", client)] if exact else []) + [("writer", client)]
+    finally:
+        assembly.writer.close()
+        assembly.journal.close()
+    calls.clear()
+    def denied(actual):
+        raise RuntimeError("program audit rejected")
+    monkeypatch.setattr(audit, "require_rule_decision_writer_audit", denied)
+    with pytest.raises(RuntimeError, match="audit rejected"):
+        bootstrap._assemble_v4_writer_lane(client, token, **{**scope, "exact_oms_prices": True})
+    assert not calls  # No worker or journal is opened after a rejected audit.
+    with pytest.raises(ValueError, match="selection must be explicit"):
+        bootstrap._assemble_v4_writer_lane(client, token, **{**scope, "exact_oms_prices": 1})
+
+
 def test_resumed_v4_assembly_installs_campaign_or_closes_on_failure(monkeypatch):
     from src.backend.backtest_journal_memory import BacktestMemoryJournal
     from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval

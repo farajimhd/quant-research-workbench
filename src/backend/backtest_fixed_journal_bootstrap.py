@@ -343,7 +343,13 @@ def _assemble_v4_writer_lane(
     prior_batch_id: str = "00000000-0000-0000-0000-000000000000",
     source_cursor: str = "start",
     drawdown_authority=None,
+    exact_oms_prices: bool = False,
 ) -> FixedJournalAssembly:
+    if type(exact_oms_prices) is not bool:
+        raise ValueError("V4 price contract selection must be explicit")
+    if exact_oms_prices:
+        from src.trading_runtime.rule_decision_writer_preflight import require_rule_decision_writer_audit
+        require_rule_decision_writer_audit(writer_client)
     from src.trading_runtime.drawdown_measure_authority import projection_drawdown_policy
     projection_drawdown_policy(drawdown_authority, run_id=token.run_id,
                               expected_config=expected_config)
@@ -368,7 +374,8 @@ def _assemble_v4_writer_lane(
             fixed_market_execution_plan=fixed_market_execution_plan,
             expected_market_start=expected_market_start,
             initial_sequence=initial_sequence, prior_batch_id=prior_batch_id,
-            source_cursor=source_cursor)
+            source_cursor=source_cursor,
+            **({"exact_oms_prices": True} if exact_oms_prices else {}))
         return FixedJournalAssembly(token, journal, writer, publisher, None)
     except BaseException:
         if "writer" in locals():
@@ -546,10 +553,13 @@ def assemble_fixed_v4_journal(
     v4_preflight_seal: _V4PreflightSeal | None = None,
     published_context_seal: _V4PublishedContextSeal | None = None,
     drawdown_authority=None,
+    exact_oms_prices: bool = False,
 ) -> FixedJournalAssembly:
     """Build one bounded memory-to-Keeper writer lane; never open the gate."""
     from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
 
+    if type(exact_oms_prices) is not bool:
+        raise ValueError("V4 price contract selection must be explicit")
     owner = getattr(writer_client, "backtest_v4_lease", None)
     if (not isinstance(token, FixedV4JournalPreflightToken)
             or len({id(read_client), id(writer_client), id(terminal_client)}) != 3
@@ -598,7 +608,8 @@ def assemble_fixed_v4_journal(
         fixed_market_execution_plan=fixed_market_execution_plan,
         expected_market_start=expected_market_start,
         writer_factory=writer_factory, batch_size=batch_size,
-        queue_capacity=queue_capacity, v4_preflight_seal=v4_preflight_seal)
+        queue_capacity=queue_capacity, v4_preflight_seal=v4_preflight_seal,
+        **({"exact_oms_prices": True} if exact_oms_prices else {}))
 
 
 def publish_and_assemble_fixed_v4_journal(
