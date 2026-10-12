@@ -4827,10 +4827,11 @@ class ReplayRunController:
         from .backtest_program_session import run_prepared_program_session
         return await run_prepared_program_session(self, cohorts, **scope)
 
-    async def bind_prepared_program_session(self, cohorts):
+    async def bind_prepared_program_session(self, cohorts, *, checkpoint_connection_factory, checkpoint_concurrency):
         """Bind adopted prepared coverage to this controller's normal lifecycle."""
         from .backtest_program_launch import bind_prepared_program_launch
-        return await bind_prepared_program_launch(self, cohorts)
+        return await bind_prepared_program_launch(self, cohorts,
+            checkpoint_connection_factory=checkpoint_connection_factory, checkpoint_concurrency=checkpoint_concurrency)
 
     async def publish_program_broker_checkpoint(self, *, connection_factory, concurrency):
         """Publish central broker state at this controller's acknowledged cursor."""

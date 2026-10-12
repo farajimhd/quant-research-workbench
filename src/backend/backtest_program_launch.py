@@ -23,25 +23,31 @@ class _PreparedProgramLaunch:
     source_cursor: tuple
     journal_sequence: int
     policy_hash: str
+    checkpoint_connection_factory: object
+    checkpoint_concurrency: int
 
-    def require_current(self, controller):
+    def require_execution_owner(self, controller):
         from .backtest_program_journal_bootstrap import _configuration_hash
-        from .program_policy_recovery import program_policy_fingerprint
         if (self.proof is not _PLAN_SECRET
                 or any(before is not after for before, after in zip(self.owners, _owners(controller)))
                 or _configuration_hash(controller.definition) != self.configuration_hash
                 or controller._runtime_finished or controller._program_dispatch_failure is not None
                 or not controller._fixed_keeper_session.writable
                 or controller._journal_publisher._error is not None
-                or controller._journal_publisher._terminal_task is not None
-                or controller._runtime.last_event_time != self.clock
+                or controller._journal_publisher._terminal_task is not None):
+            raise RuntimeError("Prepared programme launch lost its admitted ownership")
+
+    def require_current(self, controller):
+        self.require_execution_owner(controller)
+        from .program_policy_recovery import program_policy_fingerprint
+        if (controller._runtime.last_event_time != self.clock
                 or controller._program_signal_runtime.typed_source_cursor() != self.source_cursor
                 or controller._journal.latest_sequence(controller.run_id) != self.journal_sequence
                 or program_policy_fingerprint(controller._program_strategy) != self.policy_hash):
             raise RuntimeError("Prepared programme launch lost its admitted ownership")
 
 
-async def bind_prepared_program_launch(controller, cohorts):
+async def bind_prepared_program_launch(controller, cohorts, *, checkpoint_connection_factory, checkpoint_concurrency):
     """Bind complete producer-prepared coverage only after typed adoption.
 
     No schema publication, producer, feature build, broker or run starts here.
@@ -57,7 +63,9 @@ async def bind_prepared_program_launch(controller, cohorts):
     from .program_policy_recovery import program_policy_fingerprint
     from .backtest_typed_publisher import BacktestTypedJournalPublisher
     from .backtest_journal_memory import BacktestMemoryJournal
-    if (type(controller) is not ReplayRunController or controller._program_strategy is None
+    if (not callable(checkpoint_connection_factory) or type(checkpoint_concurrency) is not int
+            or not 1 <= checkpoint_concurrency <= 8
+            or type(controller) is not ReplayRunController or controller._program_strategy is None
             or controller._task is not None or controller.status != "created"
             or getattr(controller, "_program_launch_plan", None) is not None
             or controller._runtime is None or controller._program_signal_runtime is None
@@ -87,7 +95,8 @@ async def bind_prepared_program_launch(controller, cohorts):
         liquidity_plan_hash=controller._program_broker_contract.row["liquidity_plan_hash"])
     plan = _PreparedProgramLaunch(work, _owners(controller), _configuration_hash(controller.definition), _PLAN_SECRET,
         controller._runtime.last_event_time, controller._program_signal_runtime.typed_source_cursor(),
-        controller._journal.latest_sequence(controller.run_id), program_policy_fingerprint(controller._program_strategy))
+        controller._journal.latest_sequence(controller.run_id), program_policy_fingerprint(controller._program_strategy),
+        checkpoint_connection_factory, checkpoint_concurrency)
     plan.require_current(controller)
     await _owned_worker(controller._fixed_v4_lease.assert_current)
     plan.require_current(controller)
@@ -117,3 +126,15 @@ async def run_bound_program_engine(controller):
     finally:
         # Session features belong to prepared execution, not retained UI state.
         controller._program_launch_plan = None
+
+
+async def checkpoint_bound_program_cursor(controller):
+    """Publish only for a bound normal run; staged cohort APIs remain separate."""
+    plan = getattr(controller, "_program_launch_plan", None)
+    if plan is None:
+        return None
+    if type(plan) is not _PreparedProgramLaunch:
+        raise RuntimeError("Programme checkpoint lacks its typed launch plan")
+    plan.require_execution_owner(controller)
+    return await controller.publish_program_broker_checkpoint(
+        connection_factory=plan.checkpoint_connection_factory, concurrency=plan.checkpoint_concurrency)

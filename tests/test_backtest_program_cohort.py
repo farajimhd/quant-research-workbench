@@ -293,7 +293,13 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                         assert controller.current_time is None
                         assert controller._runtime.last_event_time == controller.definition.session_start
                         assert not controller._runtime_finished and not controller._stop_requested
-                        await controller.bind_prepared_program_session(work)
+                        from src.trading_runtime import arte_broker_match_snapshot as shared_broker
+                        broker_checkpoints = []
+                        monkeypatch.setattr(persisted, "manager_keeper_session", keeper, raising=False)
+                        monkeypatch.setattr(shared_broker, "publish_shared_broker_snapshot",
+                            lambda client, session, rows, **kwargs: broker_checkpoints.append(rows))
+                        await controller.bind_prepared_program_session(work,
+                            checkpoint_connection_factory=lambda: None, checkpoint_concurrency=2)
                         player = None
                         if resolution in (100, 1000):
                             from src.backend import backtest_program_cohort as cohort_module
@@ -333,6 +339,9 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                         prefix = load_verified_v4_prefix(persisted, controller.run_id)
                         assert prefix.status == "completed" and len(anchored) == 1
                         assert controller._program_dispatch_failure is None
+                        assert len(broker_checkpoints) == 3
+                        assert [item.snapshot["boundary_ms"] for item in broker_checkpoints] == [
+                            (first_bucket + offset) * 1000 - 14400000 for offset in (2, 3, 4)]
                         return
                     session = await controller.run_prepared_program_session(work, terminal=True)
                     assert session.status == "evaluated" and session.completed_cohorts == 2
