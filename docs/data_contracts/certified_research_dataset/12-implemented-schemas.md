@@ -41,6 +41,8 @@ Wire source acquisition/migration receipts; build dated normalized identities an
 
 ## Runnable producer slices
 
+### Market and SEC facts
+
 `producer.run_market` aggregates strict events once, publishes normalized bars and liquidity, then runs indicators and causal session checkpoints as dependent consumers. Every product has independent readback evidence. Verified resume performs no new inserts. The controller must still provide certified predecessor states, source guards and ownership; this is not yet a complete campaign launch path.
 
 `reference_producer.run_sec` scans selected issuer fundamentals into compressed ClickHouse staging once, then publishes normalized facts and deduplicated provenance. Retained `sec_core` context supplies duration start/end dates; unmatched canonical records retain an explicit unknown-context marker. Original acceptance time is preferred; authoritative filing dates use a conservative following New York day. Conflicting clocks or values produce null conflict facts. Native currencies have distinct unit keys, without implied FX conversion.
@@ -48,3 +50,15 @@ Wire source acquisition/migration receipts; build dated normalized identities an
 Fact attempts become readable only through verified reference receipts. As-of lookup orders by period end and original public availability, and deterministically prefers a known context and the longest reported duration when these tie. Raw facts preserve all durations and currencies. Derived calculations must select compatible periods, units and share bases explicitly; they must not use the generic tie preference as a formula definition.
 
 Bounded live tests cover these producer paths and exact resume behavior. Full-universe throughput, SEC source-gap admission, float/short producers, historical membership and the final dataset seal remain to be implemented and qualified.
+
+### Short volume and interest
+
+The short-data producer now has a runnable ClickHouse-only slice: CNMS short/exempt/non-exempt/total volume and matching daily ratio; reported short interest, provider ADV and days to cover. It binds provider tickers to dated dataset membership and checks source hashes, original public clocks, count consistency and exact output readback. Unknown clocks block publication before inserts. Interest records with an authoritative publication date use the following New York day as a conservative bound. Measurement dates and ingestion clocks never substitute for release evidence. Certified receipts support resume without inserts. Reported zero volume remains valid; a zero denominator makes the ratio unavailable. Counts exceeding exact Float64 integer representation are rejected, with original values retained in provenance.
+
+**Current data prerequisite (October 12 audit):** January 1–October 2, 2026 contains 3,143,402 short-volume rows with no public timestamps and 142,612 short-interest rows with neither public timestamps nor publication dates. `plan` now exposes these missing-clock counts. Existing values require source-version timing repair; calendar dates alone do not prove which value revision was public. Rolling short windows and qualified float ratios remain unfinished, as do the full controller and final seal.
+
+### Historical universe
+
+The historical universe reader now builds the 2026-onward conid anchor pool from current listing records and retained Gateway universe observations. It resolves the requested context through canonical ticker intervals, listing/delisting dates, completed ticker-history coverage, issuer rules and mapping issues. Known non-US/non-stock/OTC entries are counted outside scope; missing evidence is quarantined. It checks a frozen source fingerprint across bounded metadata shards. Provenance bodies remain server-side.
+
+A live read for January 2025–October 2, 2026 with October 12 conid anchors resolved 4,711 intervals; unresolved inputs included 2,509 missing dated symbol mappings, 61 missing listing starts, seven historical identity mismatches, six open mapping issues and 19 conflicting conid anchors. This is an input-resolution audit, not a published membership certificate. Repair orchestration and membership publication still need wiring into the campaign controller.

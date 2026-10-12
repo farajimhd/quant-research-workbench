@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from uuid import uuid4
-from . import schema,reference_sql
+from . import schema,reference_sql,short_sql
 from .contracts import identifier,literal
 from .reference_publication import ReferencePublisher
 from .publication import evidence_sql
@@ -23,22 +23,49 @@ def run_sec(scope,cik,metrics,query,claim,source_guard,*,database='arte'):
     schema.verify_auxiliary_storage(query,database,(STAGING,))
     schema.verify_auxiliary_storage(query,'q_live',('sec_filing_v3','sec_xbrl_company_fact_v3'))
     schema.verify_auxiliary_storage(query,'sec_core',('sec_bulk_mirror_xbrl_fact_v3',))
+    if scope.entity_kind!=1 or scope.family!='fundamentals':raise ValueError('SEC scope must be issuer fundamentals')
+    return _materialize(scope,query,claim,source_guard,database,
+        lambda attempt:reference_sql.sec_projection(scope.dataset_id,attempt,scope.entity_key,cik,scope.start,scope.end,
+                                                   metrics=metrics,wide=True))
+
+
+def run_short(scope,query,claim,source_guard,*,database='arte',source_database='q_live'):
+    identifier(database);claim.check();source_guard()
+    if scope.entity_kind!=2 or scope.family not in ('short_volume','short_interest'):
+        raise ValueError('Short scope must be security short_volume or short_interest')
+    if source_database!='q_live' and database!=source_database:
+        raise ValueError('Fixture source must be the output isolated namespace')
+    schema.verify_storage(query,database,require_tables=True)
+    schema.verify_auxiliary_storage(query,database,(STAGING,))
+    schema.verify_auxiliary_storage(query,source_database,('market_'+scope.family+'_v1',))
+    audit=query(short_sql.short_audit(database,scope.dataset_id,scope.entity_key,scope.start,scope.end,
+                                    scope.family,source_database=source_database))[0]
+    if (int(audit['n'])!=int(audit['unique_events']) or any(int(audit[k]) for k in
+        ('unknown_public_time','invalid_public_time','missing_evidence'))):
+        raise ValueError('Short source is not certifiable: '+str(audit))
+    # The immutable scope is bound to the measured values and original clocks.
+    if scope.parent_hash!=audit['source_hash']:
+        raise ValueError('Short source differs from the frozen audited dependency')
+    return _materialize(scope,query,claim,source_guard,database,
+        lambda attempt:short_sql.short_projection(database,scope.dataset_id,attempt,scope.entity_key,
+            scope.start,scope.end,scope.family,source_database=source_database,wide=True))
+
+
+def _materialize(scope,query,claim,source_guard,database,projection_factory):
     publisher=ReferencePublisher(query,database,claim)
     previous=publisher.receipt(scope)
     if previous:return previous
-    if scope.entity_kind!=1 or scope.family!='fundamentals':raise ValueError('SEC scope must be issuer fundamentals')
-    attempt=str(uuid4());stage=staging_table()
+    attempt=str(uuid4())
     # Controller installs this DDL during storage preflight, not during a read.
     where=scope.rows_where(attempt)
-    projection=reference_sql.sec_projection(scope.dataset_id,attempt,scope.entity_key,cik,scope.start,scope.end,
-                                           metrics=metrics,wide=True)
+    projection=projection_factory(attempt)
     query(f'INSERT INTO {database}.{STAGING} '+projection,read=False)
     fact_table=next(t for t in schema.TABLES if t.name=='research_facts_v1')
     names=','.join(c.name for c in fact_table.columns)
     normalized=f'SELECT {names} FROM {database}.{STAGING} WHERE {where}'
     expected={k:int(v) for k,v in query(evidence_sql(fact_table,normalized,
                 'tuple(metric_key,unit_key,period_start,period_end,available_at,revision)'))[0].items()}
-    if expected['n']!=expected['unique_keys']:raise ValueError('SEC normalization produced ambiguous fact keys')
+    if expected['n']!=expected['unique_keys']:raise ValueError('Reference normalization produced ambiguous fact keys')
     proof_columns='evidence_hash,source_system,source_record,source_hash,proof'
     proof=(f'SELECT DISTINCT {proof_columns} FROM {database}.{STAGING} WHERE {where}')
     # Deduplicate only identical evidence; conflicting contents fail on readback.

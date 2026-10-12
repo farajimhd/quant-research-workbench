@@ -54,6 +54,14 @@ Short-volume daily ratio is short volume / matching FINRA total volume. The exis
 
 ## Read the three share-pressure concepts separately
 
+### Implementation and current timing gate
+
+The compact producer now supports CNMS daily volume components/ratio and reported interest/ADV/days-to-cover, using dated dataset membership and verified reference receipts. Its source audit rejects unknown publication clocks, invalid date ordering, missing hashes and ambiguous events before writing facts. Public-date-only interest evidence receives a conservative following New York day; trade, settlement and ingestion dates are not availability substitutes.
+
+A read-only October 12 inspection of January 1–October 2, 2026 found 3,143,402 volume rows without public timestamps and 142,612 interest rows without either timestamps or publication dates. These are blocked inputs until timing is repaired with evidence tied to the source version. The launcher's `plan` reports this prerequisite separately from market-source readiness. An official release calendar may establish a date bound only after verifying the applicable publication and source vintage; a scheduled release does not by itself certify an arbitrary later revision. [FINRA reporting schedule](https://www.finra.org/filing-reporting/regulatory-filing-systems/short-interest).
+
+Rolling windows, float ratios and the full reference execution controller remain under implementation. The passing bounded fixture proves admission, publication, denominator and resume behavior; it does not certify the current production rows or full-market performance.
+
 | Concept | Plain meaning | Common misuse to avoid |
 | --- | --- | --- |
 | Float | Estimated or reported shares available for public trading | Treating total outstanding shares or an upper bound as exact float |

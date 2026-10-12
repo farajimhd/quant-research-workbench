@@ -18,7 +18,7 @@ sys.dont_write_bytecode=True
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
-from pipelines.certified_research import contracts,schema,source
+from pipelines.certified_research import contracts,schema,source,short_sql
 
 
 def parse_args(argv=None):
@@ -92,6 +92,8 @@ def main(argv=None):
         result=inspect_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),args)
         if args.command=='plan':
             end=date.fromisoformat(result['config']['config']['end']) if isinstance(result['config']['config']['end'],str) else result['config']['config']['end']
+            result['short_publication_preflight']=short_sql.clock_inventory(
+                lambda sql:client.query(sql+' SETTINGS readonly=1'),args.start_date,end)
             inv=source.inventory(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.start_date,end)
             reporting=source.reporting_inventory(lambda sql:client.query(sql+' SETTINGS readonly=1'),inv)
             result['source_plan']=dict(missing_sources=[str(d) for d in inv['missing']],

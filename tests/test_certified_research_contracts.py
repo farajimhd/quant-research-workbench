@@ -21,11 +21,48 @@ from pipelines.certified_research import source,acquisition
 from pipelines.certified_research import v7
 from pipelines.certified_research import context
 from pipelines.certified_research import producer
-from pipelines.certified_research import reference_producer,reference_sql
+from pipelines.certified_research import reference_producer,reference_sql,short_sql,universe
 from pipelines.certified_research.reference_publication import ReferenceScope,ReferencePublisher
 
 
 class Contracts(unittest.TestCase):
+    def test_historical_universe_preserves_renames_and_delisting_and_reports_unresolved_dates(self):
+        base=dict(listing_id='listing:1',security_id='security:1',issuer_id='issuer:1',conids=['91'],
+            exchange_code='XNYS',currency_code='USD',listing_status='inactive',list_date='2024-01-01',
+            delisted_date='2026-05-01',product_type='STK',security_status='inactive',exchange_country='US',
+            symbol_interval_id='interval:1',ticker='OLD',valid_from_date='2024-01-01',
+            valid_to_date_exclusive='2026-03-01',interval_mapping='mapped',history_status='completed',
+            history_mapping='mapped',interval_security_id='security:1',history_security_id='security:1',
+            history_listing_id='listing:1',durable_issuer=1,duplicate_issuer=0,mapping_issue=0,
+            source_hashes_valid=1,evidence_hash='a'*64)
+        new=dict(base,symbol_interval_id='interval:2',ticker='NEW',valid_from_date='2026-03-01',
+                 valid_to_date_exclusive=None,evidence_hash='b'*64)
+        result=universe.resolve([base,new],date(2026,1,1),date(2026,6,30))
+        self.assertTrue(result['ready']);old,renamed=result['intervals']
+        self.assertEqual(old.valid_to,renamed.valid_from)
+        self.assertEqual(renamed.valid_to.date(),date(2026,5,1))
+        self.assertEqual(old.conid,renamed.conid);self.assertFalse(old.reason)
+        for change,reason in [(dict(list_date=None),'missing_listing_start'),
+                (dict(delisted_date=None),'missing_listing_end'),
+                (dict(conids=['91','92']),'conflicting_or_invalid_conid_anchor'),
+                (dict(history_security_id='other'),'historical_identity_mismatch')]:
+            rejected=universe.resolve([dict(base,**change)],date(2026,1,1),date(2026,6,30))
+            self.assertFalse(rejected['ready']);self.assertEqual(rejected['rejection_counts'],{reason:1})
+        with self.assertRaisesRegex(ValueError,'Overlapping'):
+            universe.resolve([base,base],date(2026,1,1),date(2026,6,30))
+
+    def test_short_publication_preflight_exposes_missing_clocks_without_claiming_certification(self):
+        queries=[]
+        def query(sql):
+            queries.append(sql)
+            if 'short_volume_v1' in sql:return [dict(rows=10,unknown_public_time=10,exact_times=0)]
+            return [dict(rows=4,unknown_public_time=1,exact_times=2,conservative_dates=1)]
+        result=short_sql.clock_inventory(query,date(2026,1,1),date(2026,10,2))
+        self.assertTrue(result['inspection_only'])
+        self.assertTrue(all(r['repair_required'] for r in result['families'].values()))
+        self.assertEqual(len(queries),2)
+        self.assertTrue(all('PREWHERE' in sql and 'inserted_at' not in sql for sql in queries))
+
     def test_context_uses_selected_windows_and_compatible_state_without_guessed_warmup(self):
         start=date(2026,8,21)
         def calendar(first,last):
@@ -243,6 +280,78 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_gateway_historical_universe_read_path_is_bounded_and_preserves_diagnostics(self):
+        result=universe.load(lambda sql:self.client.query(sql+' SETTINGS readonly=1'),
+            date(2025,1,1),date(2026,10,2),date(2026,10,12))
+        self.assertGreater(len(result['intervals']),0)
+        self.assertLessEqual(len(result['source_rows']),100000)
+        self.assertEqual(result['ready'],not result['rejected'])
+        self.assertEqual(sum(result['rejection_counts'].values()),len(result['rejected']))
+        self.assertTrue(all('source_proof' not in r and 'security_id' in r and 'issuer_id' in r for r in result['source_rows']))
+        for interval in result['intervals']:
+            self.assertLess(interval.valid_from,interval.valid_to)
+            self.assertGreater(interval.conid,0)
+            self.assertEqual(interval.exchange_country,'US')
+
+    def test_short_producer_uses_public_clock_matching_denominator_and_verified_resume(self):
+        from datetime import timezone
+        dataset=str(uuid.uuid4());key=997
+        class Claim:
+            def check(self):pass
+        for family in ('short_volume','short_interest'):
+            self.client.query(f'CREATE TABLE IF NOT EXISTS {self.database}.market_{family}_v1 '
+                f'AS q_live.market_{family}_v1 ENGINE=ReplacingMergeTree(inserted_at) ORDER BY {family}_id '
+                "SETTINGS storage_policy='live_market_ssd',default_compression_codec='ZSTD(1)'",read=False)
+        insert_rows(self.client.query,self.database,'research_membership_v1',[
+            dict(dataset_id=dataset,listing_key=999,security_key=key,issuer_key=998,ticker='TEST',conid=91,
+                 valid_from='2026-01-01 00:00:00.000000',valid_to='2027-01-01 00:00:00.000000',
+                 eligible=1,reason='',evidence_hash='a'*64)])
+        row=dict(short_volume_id='short-test',symbol_id='',listing_id='',security_id='',source_system='finra',
+                 source_venue='CNMS',provider_ticker='TEST',trade_date='2026-01-05',published_at_utc='2026-01-05 23:00:00.000',
+                 short_volume=20,total_volume=100,exempt_volume=2,non_exempt_volume=18,short_volume_ratio=.2,
+                 source_event_key='test',source_evidence_ref='https://example.test/finra',source_run_id='',
+                 source_content_sha256='a'*64,inserted_at='2026-02-01 00:00:00.000')
+        zero=dict(row,short_volume_id='short-zero',trade_date='2026-01-07',published_at_utc='2026-01-07 23:00:00.000',
+                  short_volume=0,total_volume=0,exempt_volume=0,non_exempt_volume=0,short_volume_ratio=None)
+        insert_rows(self.client.query,self.database,'market_short_volume_v1',[row,zero])
+        def scope(family):
+            audit=self.client.query(short_sql.short_audit(self.database,dataset,key,date(2026,1,1),
+                date(2026,1,31),family,source_database=self.database))[0]
+            return ReferenceScope(dataset,2,key,family,date(2026,1,1),date(2026,1,31),audit['source_hash'],facts.catalog_hash())
+        volume_scope=scope('short_volume');logs=[]
+        def query(sql,*args,**kw):logs.append(sql);return self.client.query(sql,*args,**kw)
+        receipt=reference_producer.run_short(volume_scope,query,Claim(),lambda:None,database=self.database,source_database=self.database)
+        self.assertEqual(int(receipt['output_rows']),10)
+        metric=next(m.key for m in facts.catalog() if m.name=='short.volume_ratio')
+        def at(hour):return self.client.query(facts.lookup_sql(self.database,dataset,[(2,key)],[metric],datetime(2026,1,5,hour,tzinfo=timezone.utc)))
+        self.assertFalse(at(22));self.assertEqual(at(23)[0]['value'],.2)
+        zero_ratio=self.client.query(facts.lookup_sql(self.database,dataset,[(2,key)],[metric],datetime(2026,1,8,tzinfo=timezone.utc)))[0]
+        self.assertIsNone(zero_ratio['value']);self.assertEqual(int(zero_ratio['status']),2)
+        self.assertEqual(zero_ratio['reason'],'zero_source_denominator')
+        volume_metric=next(m.key for m in facts.catalog() if m.name=='short.volume')
+        zero_volume=self.client.query(facts.lookup_sql(self.database,dataset,[(2,key)],[volume_metric],datetime(2026,1,8,tzinfo=timezone.utc)))[0]
+        self.assertEqual(zero_volume['value'],0.);self.assertEqual(int(zero_volume['status']),1)
+        logs.clear()
+        self.assertEqual(reference_producer.run_short(volume_scope,query,Claim(),lambda:None,
+            database=self.database,source_database=self.database),receipt)
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+        interest=dict(short_interest_id='interest-test',symbol_id='',listing_id='',security_id='',source_system='massive',
+            source_venue=None,provider_ticker='TEST',settlement_date='2026-01-05',publication_date='2026-01-15',
+            published_at_utc=None,short_interest=30,avg_daily_volume=10,days_to_cover=3.,source_event_key='test',
+            source_evidence_ref='https://example.test/interest',source_run_id='',source_content_sha256='b'*64,
+            inserted_at='2026-02-01 00:00:00.000')
+        insert_rows(self.client.query,self.database,'market_short_interest_v1',[interest])
+        interest_receipt=reference_producer.run_short(scope('short_interest'),query,Claim(),lambda:None,
+            database=self.database,source_database=self.database)
+        self.assertEqual(int(interest_receipt['output_rows']),3)
+        missing=dict(row,short_volume_id='missing-time',trade_date='2026-01-06',published_at_utc=None)
+        insert_rows(self.client.query,self.database,'market_short_volume_v1',[missing])
+        logs.clear()
+        with self.assertRaisesRegex(ValueError,'unknown_public_time'):
+            reference_producer.run_short(scope('short_volume'),query,Claim(),lambda:None,
+                database=self.database,source_database=self.database)
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+
     def test_real_sec_producer_normalizes_once_and_certifies_public_vintages(self):
         dataset=str(uuid.uuid4());selected=tuple(m for m in facts.catalog() if m.name=='fundamental.cash')
         scope=ReferenceScope(dataset,1,991,'fundamentals',date(2026,1,1),date(2026,8,21),'a'*64,facts.catalog_hash())
