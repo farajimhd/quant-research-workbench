@@ -110,6 +110,21 @@ def test_compound_retains_qualified_rule_rows_and_reseals_dependent_child_hashes
         for row in expected_children)
     assert result.units[0] is first and first.unit.basis["batch_id"] == base.batch_id
     assert expected_parent["intent_hash"] != parent["intent_hash"]
+    from queue import Queue
+    from threading import Lock
+    from src.trading_runtime.arte_journal_writer import ArteJournalWriter, JournalQueueFull
+    writer = object.__new__(ArteJournalWriter)
+    writer._journal_profile, writer._run_id = "backtest_v4", RUN
+    writer._submission_lock, writer._queue = Lock(), Queue(maxsize=1)
+    writer._closed, writer._error, writer._accepted_writes = False, None, False
+    receipt = writer.submit_compound_v4(result)
+    assert not receipt.done() and writer._accepted_writes
+    assert writer._queue.queue[0] == (result, receipt)
+    with pytest.raises(JournalQueueFull):
+        writer.submit_compound_v4(result)
+    writer._journal_profile = "live_v4"
+    with pytest.raises(ValueError, match="Backtest writer"):
+        writer.submit_compound_v4(result)
     from dataclasses import replace
     from src.trading_runtime.rule_decision_compound import qualified_compound_rule_families
     from src.trading_runtime.rule_decision_basis_schema import BASIS, INTENT
@@ -197,12 +212,14 @@ def test_compound_retains_qualified_rule_rows_and_reseals_dependent_child_hashes
     monkeypatch.setattr(commit_module, "_publish_sealed_batch_v4", publish)
     assert publish_qualified_compound(client, real_compound, verified_prior_prefix="prefix") == real_compound.base.batch_id
     assert publication_calls == ["audit", "publish"]
+    assert publish_compound_v4(client, real_compound, verified_prior_prefix="prefix") == real_compound.base.batch_id
+    assert publication_calls == ["audit", "publish", "audit", "publish"]
     def reject(actual):
         raise RuntimeError("Grant audit rejected")
     monkeypatch.setattr(preflight_module, "preflight_rule_decision_writer", reject)
     with pytest.raises(RuntimeError, match="Grant audit"):
         publish_qualified_compound(client, real_compound)
-    assert publication_calls == ["audit", "publish"]
+    assert publication_calls == ["audit", "publish", "audit", "publish"]
     with pytest.raises(TypeError):
         committed.commit["batch_id"] = first.base.batch_id
     with pytest.raises(ValueError, match="Backtest owner"):

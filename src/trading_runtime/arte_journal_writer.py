@@ -4063,6 +4063,11 @@ class ArteJournalWriter:
                 or type(unit) is not V4CompoundBatch
                 or unit.base.run_id != self._run_id):
             raise ValueError("V4 compound requires its pinned writer")
+        if unit.children['rule_decision_bases'] or unit.children['rule_decision_intents']:
+            from .rule_decision_compound import qualified_compound_rule_families
+            if self._journal_profile != 'backtest_v4':
+                raise ValueError('Qualified program decisions require the Backtest writer')
+            qualified_compound_rule_families(unit)
         if unit.children['profit_givebacks'] or unit.children['confirmed_ah_failures'] or unit.children['liquidity_fade_failures']:
             return self._submit_profit_publication(unit, first_price_source=first_price_source)
         if first_price_source is not None:

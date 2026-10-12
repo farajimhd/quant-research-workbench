@@ -491,6 +491,11 @@ def publish_compound_v4(
     first_price_source=None,
 ) -> str:
     """Commit a mixed normalized prefix only after its full family graph seals."""
+    if compound.children['rule_decision_bases'] or compound.children['rule_decision_intents']:
+        from .rule_decision_compound import publish_qualified_compound
+        return publish_qualified_compound(client, compound,
+            verified_prior_prefix=verified_prior_prefix, first_price_source=first_price_source,
+            timings_ns=timings_ns)
     from .arte_journal_commit_v4 import _publish_sealed_batch_v4
 
     started_ns = perf_counter_ns()
