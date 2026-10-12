@@ -124,7 +124,8 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                         if record.payload.get("signal_type") == "program_boundary_completed"]
                     return
                 basis_sequence = controller._journal.latest_sequence(controller.run_id)
-                from src.backend.program_clock_financial_basis import capture_program_clock_financial_basis
+                from src.backend.program_clock_financial_basis import (
+                    capture_program_clock_financial_basis, prepare_program_clock_financial_basis)
                 captured = await capture_program_clock_financial_basis(controller, at=at)
                 assert captured.journal_sequence == basis_sequence
                 assert captured.source_boundary == runtime.typed_source_boundary(at)
@@ -132,6 +133,25 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 assert {snapshot.account_id for snapshot in captured.portfolio} == set(controller._runtime.config.account_ids)
                 with pytest.raises(TypeError):
                     captured.broker.snapshot["checkpoint_sequence"] = 0
+                prepared_finances = prepare_program_clock_financial_basis(captured)
+                assert prepared_finances.broker == captured.broker
+                assert all(snapshot.state_revision == basis_sequence for snapshot in prepared_finances.portfolio)
+                with pytest.raises(ValueError, match="Portfolio coverage"):
+                    prepare_program_clock_financial_basis(replace(captured, portfolio=()))
+                if offset == 0:
+                    from src.backend import qmd_columnar_history_transport as transport
+                    original_worker = transport._owned_worker
+                    async def moving_worker(*args, **kwargs):
+                        value = await original_worker(*args, **kwargs)
+                        controller._runtime.last_event_time = at + timedelta(seconds=1)
+                        return value
+                    try:
+                        with monkeypatch.context() as changed_scope:
+                            changed_scope.setattr(transport, "_owned_worker", moving_worker)
+                            with pytest.raises(ValueError, match="changed during projection"):
+                                await capture_program_clock_financial_basis(controller, at=at)
+                    finally:
+                        controller._runtime.last_event_time = at
                 historical_actor = AssignedProgramStrategy(actor.program_release, actor.assignments(), actor._listings)
                 historical_actor.execution_state = deepcopy(actor.execution_state)
                 historical_actor.target_state = deepcopy(actor.target_state)
