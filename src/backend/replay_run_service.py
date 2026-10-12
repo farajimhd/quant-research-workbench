@@ -4814,6 +4814,11 @@ class ReplayRunController:
         if names and not report['eligible_ticker_count']:
             raise ValueError('No strategy tickers have required V7 books; see level-book-coverage.json')
 
+    async def run_prepared_program_cohort(self, blocks, population, projection, **scope):
+        """Schedule one bounded prepared cohort on this owned native runtime."""
+        from .backtest_program_cohort import run_prepared_program_cohort
+        return await run_prepared_program_cohort(self, blocks, population, projection, **scope)
+
     async def dispatch_prepared_program_clock(self, blocks, population, *, at,
             assignment_order, execution_policy, protection_profiles, outside_rth: bool,
             terminal: bool = False, qualify: bool = False, policy_blocks=None,

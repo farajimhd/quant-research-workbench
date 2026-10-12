@@ -161,8 +161,17 @@ its pre-decision basis. This allows the next clock to replay after a publisher
 fence has compacted that suffix. Synthetic tests verify continuation with an
 empty compacted journal and reject a stale pre-decision packet that would need
 removed records; no memory fallback or operational receipt is invented.
-Main launch admission, prepared-cohort scheduling, and operational full-session
-qualification remain unfinished.
+`ReplayRunController.run_prepared_program_cohort` now schedules a bounded
+prepared window through these APIs. It reads the chosen certified100ms/1s
+liquidity lane, advances sparse clocks through native OMS timers, publishes
+one-second source boundaries and retains qualified decisions in the caller's
+explicit assignment order. Prepared masks and held listings remain available
+across every clock. The caller supplies the configured protection-profile
+resolver; the scheduler creates no sizing or fill policy. Native tests cover
+three source/decision clocks, a sparse middle interval, actual fills and fees,
+and preflight/stop checks. The admitted main lifecycle still must bind cohort
+preparation, publication fences and terminal recovery to launch.
+Main launch admission and operational full-session qualification remain unfinished.
 The existing certified1s liquidity consumer now offers bounded concurrent cohort
 reads through `read_liquidity_cohort_async`. It validates all requests before
 opening clients, preserves sparse/empty windows and closes every owned client
