@@ -4832,6 +4832,11 @@ class ReplayRunController:
         from .backtest_program_launch import bind_prepared_program_launch
         return await bind_prepared_program_launch(self, cohorts)
 
+    async def publish_program_broker_checkpoint(self, *, connection_factory, concurrency):
+        """Publish central broker state at this controller's acknowledged cursor."""
+        from .backtest_program_checkpoint import publish_program_broker_checkpoint
+        return await publish_program_broker_checkpoint(self, connection_factory=connection_factory, concurrency=concurrency)
+
     async def finish_prepared_program_session(self, *, status):
         """Acknowledge programme broker/account terminal evidence through V4."""
         from .backtest_program_terminal import finish_prepared_program_session

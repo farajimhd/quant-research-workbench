@@ -51,6 +51,9 @@ class ProgramSessionResult:
 
 
 def require_program_session_owner(controller):
+    if (getattr(controller, "_program_checkpoint_active", False)
+            and getattr(controller, "_program_checkpoint_task", None) is not asyncio.current_task()):
+        raise RuntimeError("Programme checkpoint already owns controller dispatch")
     if getattr(controller, "_runtime_finished", False):
         raise RuntimeError("Programme runtime has already finished")
     if getattr(controller, "_program_terminal_active", False):

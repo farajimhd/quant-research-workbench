@@ -371,6 +371,36 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                     if partial_fills == "multiple":
                         assert_multiple_entry_fill_geometry(actor, executions)
                     assert controller._program_dispatch_failure is None
+                    from src.trading_runtime import arte_broker_match_snapshot as shared_broker
+                    from src.trading_runtime.backtest_broker_contract import BacktestBrokerContract, project_broker_contract
+                    from threading import Event
+                    controller._journal_writer = queued_writer
+                    controller._program_broker_contract = BacktestBrokerContract(project_broker_contract(
+                        controller.run_id, controller._runtime.broker.config, liquidity_plan_hash="c" * 64),
+                        controller.definition.initial_cash)
+                    checkpoint_entered, checkpoint_release = Event(), Event()
+                    checkpoint_rows = []
+                    def controlled_checkpoint(client, session, rows, **kwargs):
+                        checkpoint_rows.append(rows)
+                        checkpoint_entered.set()
+                        assert checkpoint_release.wait(timeout=5)
+                    monkeypatch.setattr(shared_broker, "publish_shared_broker_snapshot", controlled_checkpoint)
+                    monkeypatch.setattr(persisted, "manager_keeper_session", None, raising=False)
+                    checkpoint = asyncio.create_task(controller.publish_program_broker_checkpoint(
+                        connection_factory=lambda: None, concurrency=2))
+                    try:
+                        assert await asyncio.to_thread(checkpoint_entered.wait, 2)
+                        with pytest.raises(RuntimeError, match="checkpoint already owns"):
+                            await controller.run_prepared_program_session(())
+                        with pytest.raises(RuntimeError, match="exclusive native"):
+                            await controller.finish_prepared_program_session(status="completed")
+                    finally:
+                        checkpoint_release.set()
+                    published = await checkpoint
+                    assert checkpoint_rows == [published]
+                    assert published.snapshot["checkpoint_sequence"] == session.policy_packet.journal_sequence
+                    assert published.snapshot["boundary_ms"] == cursor["boundary_ms"]
+                    assert not controller._program_checkpoint_active and controller._checkpoint_io_task is None
                     # This transport fixture has no admitted run-context or
                     # account-anchor storage. Keep that external seam explicit;
                     # V4 commit/cold readback and broker captures remain real.

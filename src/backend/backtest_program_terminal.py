@@ -26,7 +26,8 @@ async def finish_prepared_program_session(controller, *, status):
             or status not in ("completed", "stopped", "failed")
             or getattr(controller, "_program_terminal_active", False)
             or getattr(controller, "_program_session_active", False)
-            or getattr(controller, "_program_cohort_active", False)):
+            or getattr(controller, "_program_cohort_active", False)
+            or getattr(controller, "_program_checkpoint_active", False)):
         raise RuntimeError("Programme terminal lacks exclusive native ownership")
     runtime, actor = controller._runtime, controller._program_strategy
     publisher, journal = controller._journal_publisher, controller._journal
