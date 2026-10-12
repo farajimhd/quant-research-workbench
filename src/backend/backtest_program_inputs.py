@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from types import MappingProxyType
 from typing import Mapping
+from threading import BoundedSemaphore
 
 import polars as pl
 
@@ -59,6 +60,7 @@ def prepare_program_scanner_projection(block, population, release, *, start_at=N
             raise ValueError("Program scanner execution window lacks its complete prepared clocks")
         # Select execution clocks without trimming or reevaluating the feature
         # block. Warm-up remains part of the original market-only rule origin.
+        start_at, stop_at = start_at.astimezone(timezone.utc), stop_at.astimezone(timezone.utc)
         clocks = clocks.filter((pl.col("boundary_at") > start_at) & (pl.col("boundary_at") <= stop_at))
         if clocks.height != (stop_at - start_at) // timedelta(seconds=1):
             raise ValueError("Program scanner execution window has missing prepared clocks")
@@ -274,3 +276,83 @@ async def prepare_program_block(release: ProgramRelease, pins: Mapping[str, Cert
         first_ordinal, stop_ordinal,
         MappingProxyType({listing: pin.header["content_hash"] for listing, pin in owned.items()}),
         market, masks)
+
+
+@dataclass(frozen=True)
+class PreparedProgramCohortInputs:
+    blocks: Mapping
+    population: object
+    projection: PreparedProgramScannerProjection
+
+    def __post_init__(self):
+        object.__setattr__(self, "blocks", MappingProxyType(dict(self.blocks)))
+
+
+async def prepare_program_cohort_inputs(release, pins, population_pin, listing_by_assignment, *,
+        first_ordinal, stop_ordinal, evaluation_block, first_bucket, stop_bucket,
+        as_of, concurrency, history_post=None):
+    """Join existing QMD preparation lanes under one explicit transport budget.
+
+    The supplied feature origin includes its full warm-up. Only the supplied
+    execution clocks require scanner rows. No producer, broker or run starts.
+    """
+    from .qmd_columnar_population import CertifiedPopulationPin, read_population_window
+    from .qmd_gateway_client import qmd_history_post_json
+    from .backtest_market_data import market_day_boundary
+    if (type(release) is not ProgramRelease or type(population_pin) is not CertifiedPopulationPin
+            or population_pin.rule != release.universe or not isinstance(pins, Mapping)
+            or not isinstance(listing_by_assignment, Mapping) or not listing_by_assignment
+            or any(type(key) is not str or not key or type(value) is not str or not value
+                   for key, value in listing_by_assignment.items())
+            or set(pins) != set(listing_by_assignment.values())
+            or type(concurrency) is not int or not 1 <= concurrency <= 32
+            or type(first_bucket) is not int or type(stop_bucket) is not int
+            or not 14400 <= first_bucket < stop_bucket <= 72000 or stop_bucket - first_bucket > 256
+            or type(first_ordinal) is not int or type(stop_ordinal) is not int
+            or not 0 <= first_ordinal < stop_ordinal
+            or len(pins) * (stop_ordinal - first_ordinal) > 262144
+            or len(population_pin.histories) * (stop_bucket - first_bucket) > 262144
+            or type(evaluation_block) is not str or not 1 <= len(evaluation_block) <= 128
+            or history_post is not None and not callable(history_post)):
+        raise ValueError("Programme preparation lacks its exact bounded source/block scope")
+    owned, assignments = dict(pins), dict(listing_by_assignment)
+    # Volume-only and feature products have independent catalog revisions and
+    # attempts. Their clocks and certified causal parents must agree exactly.
+    identity = ("build_id", "session_date", "listing_id", "ticker", "first_bucket", "stop_bucket")
+    for listing, pin in owned.items():
+        volume = population_pin.histories.get(listing)
+        if (type(pin) is not CertifiedHistoryPin or volume is None
+                or any(getattr(pin.scope, name) != getattr(volume.scope, name) for name in identity)
+                or pin.parents != volume.parents
+                or first_ordinal > first_bucket - pin.scope.first_bucket
+                or stop_ordinal < stop_bucket - pin.scope.first_bucket):
+            raise ValueError("Programme feature origin differs from its complete scanner lineage")
+        catalog = {field.name: field for field in pin.fields}
+        for name, field in release.fields.items():
+            if (name not in catalog or field.unit != catalog[name].unit
+                    or field.product != "arte.qmd_causal_history_value_v1"
+                    or field.revision != pin.scope.product_revision or field.resolution_ms != 1000):
+                raise ValueError("Programme field differs from its certified history contract")
+        window_request(pin, first_ordinal=first_ordinal, stop_ordinal=stop_ordinal, as_of=as_of)
+    for pin in population_pin.histories.values():
+        window_request(pin, first_ordinal=first_bucket - pin.scope.first_bucket,
+            stop_ordinal=stop_bucket - pin.scope.first_bucket, as_of=as_of)
+    # Both existing worker pools share this budget. Waiting occurs in owned
+    # transport threads, never on the event loop or while holding a connection.
+    budget = BoundedSemaphore(concurrency)
+    def post(*args, **kwargs):
+        with budget:
+            return (history_post or qmd_history_post_json)(*args, **kwargs)
+    async with asyncio.TaskGroup() as group:
+        features = group.create_task(prepare_program_block(release, owned,
+            first_ordinal=first_ordinal, stop_ordinal=stop_ordinal,
+            evaluation_block=evaluation_block, as_of=as_of, concurrency=concurrency, history_post=post))
+        population = group.create_task(read_population_window(population_pin,
+            first_bucket=first_bucket, stop_bucket=stop_bucket,
+            as_of=as_of, concurrency=concurrency, history_post=post))
+    block, population = features.result(), population.result()
+    day = population_pin.opening.scope.session_date
+    projection = await _owned_worker(prepare_program_scanner_projection, block, population, release,
+        start_at=market_day_boundary(day, (first_bucket - 14400) * 1000),
+        stop_at=market_day_boundary(day, (stop_bucket - 14400) * 1000))
+    return PreparedProgramCohortInputs({identity: block for identity in assignments}, population, projection)

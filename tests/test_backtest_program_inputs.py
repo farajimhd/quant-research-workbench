@@ -30,6 +30,67 @@ def release_for(pin, *, minimum_age_seconds=None):
         {field.name: contract}, **kwargs))
 
 
+@pytest.mark.parametrize("concurrency", [1, 2])
+def test_cohort_preparation_reuses_full_feature_origin_and_bounds_parallel_io(prepared_source, concurrency):
+    from threading import Lock, Barrier
+    from time import sleep
+    from src.backend.backtest_program_inputs import prepare_program_cohort_inputs
+    from src.backend.qmd_columnar_population import CertifiedPopulationPin
+    feature_store, volume_store = Store(), Store()
+    publish(feature_store, prepared_source)
+    volume_source = replace(prepared_source, fields=())
+    publish(volume_store, volume_source)
+    features, volume = consume(feature_store, prepared_source), consume(volume_store, volume_source)
+    feature_pin, volume_pin = features.pin(), volume.pin()
+    release = release_for(feature_pin)
+    from types import MappingProxyType
+    from datetime import datetime, UTC
+    opening = replace(prepared_source.opening_reference, rows_by_listing=MappingProxyType({
+        identity: MappingProxyType({**row, "status": "resolved", "ticker": feature_pin.scope.ticker,
+            "listing_id": identity, "adjusted_prior_close": 10.,
+            "available_at": datetime(2026, 8, 3, 8, tzinfo=UTC)})
+        for identity, row in prepared_source.opening_reference.rows_by_listing.items()}))
+    population = CertifiedPopulationPin(opening,
+        {volume_pin.scope.listing_id: volume_pin}, release.universe)
+    active, peak, calls = 0, 0, []
+    lock, overlap = Lock(), Barrier(2)
+    def post(path, request, timeout):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            calls.append((bool(request["field_ids"]), request["first_ordinal"], request["stop_ordinal"]))
+        try:
+            if concurrency == 2:
+                overlap.wait(timeout=5)
+            sleep(.01)
+            certificate = features if request["field_ids"] else volume
+            return response_for(certificate, request["first_ordinal"], request["stop_ordinal"])
+        finally:
+            with lock:
+                active -= 1
+    kwargs = dict(first_ordinal=0, stop_ordinal=200, evaluation_block="optimizer-origin",
+        first_bucket=feature_pin.scope.first_bucket + 80,
+        stop_bucket=feature_pin.scope.first_bucket + 90,
+        as_of=c.completed_clock(feature_pin.scope, feature_pin.scope.stop_bucket - 1), concurrency=concurrency)
+    result = asyncio.run(prepare_program_cohort_inputs(release,
+        {feature_pin.scope.listing_id: feature_pin}, population,
+        {"first": feature_pin.scope.listing_id, "second": feature_pin.scope.listing_id},
+        **kwargs, history_post=post))
+    assert peak == concurrency and active == 0
+    assert sorted(calls) == [(False, 80, 90), (True, 0, 200)]
+    assert result.blocks["first"] is result.blocks["second"]
+    block = result.blocks["first"]
+    assert block.first_ordinal == 0 and block.stop_ordinal == 200
+    assert block.evaluation_block == "optimizer-origin" and len(result.projection.clock_offsets) == 10
+    assert_frame_equal(block.masks, evaluate_rules(block.market, release.programs, release.fields), check_exact=True)
+    with pytest.raises(ValueError, match="feature origin"):
+        asyncio.run(prepare_program_cohort_inputs(release,
+            {feature_pin.scope.listing_id: feature_pin}, population,
+            {"first": feature_pin.scope.listing_id}, **{**kwargs, "first_ordinal": 81}, history_post=post))
+    assert len(calls) == 2
+
+
 def test_prepared_scanner_bridge_keeps_exact_top10_and_rejects_missing_history(prepared_source):
     from datetime import timedelta
     from src.backend.backtest_program_inputs import PreparedProgramBlock, prepare_program_scanner_projection
