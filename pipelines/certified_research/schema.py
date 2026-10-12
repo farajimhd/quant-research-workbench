@@ -1,0 +1,139 @@
+"""Exact normalized v1 persistence DDL and fail-closed physical placement audit.
+
+All large payloads live in ClickHouse. Header/provenance dictionaries avoid
+repeating JSON, issuer strings or source proofs on every market observation.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from .contracts import STORAGE_POLICY, digest, identifier, literal
+
+
+@dataclass(frozen=True)
+class Column:
+    name: str
+    type: str
+    codec: str = "ZSTD(1)"
+
+    def __post_init__(self):
+        if self.codec.startswith('Delta,'):
+            width=4 if self.type=='UInt32' else 8 if self.type in ('UInt64',"DateTime64(6,'UTC')") else None
+            if width is None:raise ValueError('Delta codec needs an explicit supported numeric width')
+            object.__setattr__(self,'codec',f'Delta({width}),'+self.codec.removeprefix('Delta,'))
+
+    def sql(self):
+        return f"{identifier(self.name)} {self.type} CODEC({self.codec})"
+
+
+@dataclass(frozen=True)
+class Table:
+    name: str
+    columns: tuple[Column, ...]
+    order: tuple[str, ...]
+    partition: str = "tuple()"
+
+    def __post_init__(self):
+        identifier(self.name)
+        names = [c.name for c in self.columns]
+        if len(names) != len(set(names)) or not set(self.order) <= set(names):
+            raise ValueError("Duplicate columns or invalid sorting key")
+
+    def ddl(self, database):
+        cols = ",\n    ".join(c.sql() for c in self.columns)
+        return (f"CREATE TABLE IF NOT EXISTS {identifier(database)}.{self.name} (\n    {cols}\n) "
+                f"ENGINE=MergeTree PARTITION BY {self.partition} ORDER BY ({','.join(self.order)}) "
+                f"SETTINGS storage_policy='{STORAGE_POLICY}', default_compression_codec='ZSTD(1)'")
+
+
+def c(name, type, codec="ZSTD(1)"):
+    return Column(name, type, codec)
+
+
+UNIT = (c("dataset_id", "UUID"), c("session_date", "Date"), c("listing_key", "UInt64", "T64,ZSTD(1)"),
+        c("attempt_id", "UUID"))
+BUCKET = UNIT + (c("resolution_ms", "UInt32", "T64,ZSTD(1)"), c("bucket_index", "UInt32", "Delta,ZSTD(1)"))
+PRICES = tuple(c(n, "UInt64", "T64,ZSTD(1)") for n in ("open_int","high_int","low_int","close_int"))
+ACTIVITY = (c("volume", "Float64"), c("trade_count", "UInt64", "T64,ZSTD(1)"), c("notional", "Float64"),
+            c("execution_volume", "Float64"), c("execution_notional", "Float64"))
+ORDER = ("dataset_id", "listing_key", "session_date", "attempt_id", "resolution_ms", "bucket_index")
+MONTH = "toYYYYMM(session_date)"
+
+TABLES = (
+    Table("research_dataset_v1", (c("dataset_id","UUID"),c("contract_hash","FixedString(64)"),
+          c("schema_hash","FixedString(64)"),c("start_date","Date"),c("end_date","Date"),
+          c("definition","String"),c("created_at","DateTime64(6,'UTC')")), ("dataset_id",)),
+    Table("research_identity_v1", (c("entity_kind","UInt8"),c("entity_key","UInt64","T64,ZSTD(1)"),
+          c("source_id","String")), ("entity_kind","entity_key")),
+    Table("research_provenance_v1", (c("evidence_hash","FixedString(64)"),c("source_system","LowCardinality(String)"),
+          c("source_record","String"),c("source_hash","FixedString(64)"),c("proof","String")), ("evidence_hash",)),
+    Table("research_membership_v1", (c("dataset_id","UUID"),c("listing_key","UInt64","T64,ZSTD(1)"),
+          c("security_key","UInt64","T64,ZSTD(1)"),c("issuer_key","UInt64","T64,ZSTD(1)"),
+          c("ticker","LowCardinality(String)"),c("conid","UInt64","T64,ZSTD(1)"),
+          c("valid_from","DateTime64(6,'UTC')","Delta,ZSTD(1)"),c("valid_to","DateTime64(6,'UTC')","Delta,ZSTD(1)"),
+          c("eligible","UInt8"),c("reason","LowCardinality(String)"),c("evidence_hash","FixedString(64)")),
+          ("dataset_id","listing_key","valid_from"), "toYear(valid_from)"),
+    Table("research_bars_v1", BUCKET + PRICES + ACTIVITY + (c("price_valid","UInt8"),c("extremes_valid","UInt8")), ORDER, MONTH),
+    Table("research_indicators_v1", BUCKET + tuple(c("ema_"+str(p),"Float64") for p in (7,9,12,15,20,26,50)) +
+          tuple(c(n,"Float64") for n in ("macd_line","macd_signal","macd_histogram","rsi_14","atr_14","previous_close","avg_gain","avg_loss")) +
+          (c("rsi_ready","UInt8"),c("atr_ready","UInt8"),c("sample_count","UInt64","T64,ZSTD(1)")), ORDER, MONTH),
+    Table("research_liquidity_v1", BUCKET + PRICES + ACTIVITY +
+          tuple(c(n,"UInt64","Delta,ZSTD(1)") for n in ("first_event_us","last_event_us","quote_timestamp_us")) +
+          tuple(c(n,"UInt64","T64,ZSTD(1)") for n in ("event_count","source_trade_count","quote_event_count","reporting_delayed_trades","reporting_unknown_trades","reporting_invalid_trades","volume_ineligible_trades","price_ineligible_trades","execution_ineligible_trades","pre_0405_trades","pre_0405_volume_eligible_trades","invalid_trade_values","bid_int","ask_int")) +
+          tuple(c(n,"Float64") for n in ("bid_size","ask_size","cumulative_volume","cumulative_notional","cumulative_execution_volume","cumulative_execution_notional")) +
+          tuple(c(n,"UInt8") for n in ("price_valid","extremes_valid","volume_valid","quote_valid")), ORDER, MONTH),
+    Table("research_facts_v1", (c("dataset_id","UUID"),c("entity_kind","UInt8"),c("entity_key","UInt64","T64,ZSTD(1)"),
+          c("metric_key","UInt32","T64,ZSTD(1)"),c("period_start","Date"),c("period_end","Date"),
+          c("available_at","DateTime64(6,'UTC')","Delta,ZSTD(1)"),c("revision","UInt32","T64,ZSTD(1)"),
+          c("value","Nullable(Float64)"),c("unit_key","UInt16"),c("status","UInt8"),c("precision","UInt8"),
+          c("confidence","UInt8"),c("reason","LowCardinality(String)"),c("evidence_hash","FixedString(64)")),
+          ("dataset_id","entity_kind","entity_key","metric_key","available_at","period_end","revision"),"toYYYYMM(available_at)"),
+    Table("research_metric_v1", (c("catalog_hash","FixedString(64)"),c("metric_key","UInt32"),c("name","LowCardinality(String)"),
+          c("unit_key","UInt16"),c("formula","String")), ("catalog_hash","metric_key")),
+    Table("research_v7_checkpoint_v1", UNIT + (c("boundary","UInt8"),c("boundary_us","UInt64","DoubleDelta,ZSTD(1)"),
+          c("last_input_us","UInt64","Delta,ZSTD(1)"),c("parent_hash","FixedString(64)"),c("state_hash","FixedString(64)"),
+          c("codec_version","UInt8"),c("payload","String")),
+          ("dataset_id","listing_key","session_date","boundary","attempt_id"),MONTH),
+    Table("research_unit_receipt_v1", UNIT + (c("product","LowCardinality(String)"),c("status","UInt8"),
+          c("output_rows","UInt64","T64,ZSTD(1)"),c("output_hash","FixedString(64)"),c("parent_hash","FixedString(64)"),
+          c("reason","LowCardinality(String)"),c("published_at","DateTime64(6,'UTC')")),
+          ("dataset_id","listing_key","session_date","product","attempt_id"),MONTH),
+)
+
+
+def schema_hash():
+    return digest([dict(name=t.name, columns=[vars(c) for c in t.columns], order=t.order,
+                        partition=t.partition) for t in TABLES])
+
+
+def ddl(database="arte"):
+    return tuple(t.ddl(database) for t in TABLES)
+
+
+def verify_storage(query, database="arte", *, require_tables=False):
+    """Read both policy routes and actual parts; never silently fix placement."""
+    identifier(database)
+    policy = query("SELECT policy_name,disk_name FROM system.storage_policies "
+                   f"ARRAY JOIN disks AS disk_name WHERE policy_name={literal(STORAGE_POLICY)}")
+    if not policy or any(r["disk_name"] != STORAGE_POLICY for r in policy):
+        raise ValueError("live_market_ssd policy is absent or routes outside live_market_ssd")
+    names = ",".join(literal(t.name) for t in TABLES)
+    rows = query(f"SELECT name,storage_policy FROM system.tables WHERE database={literal(database)} AND name IN ({names})")
+    if require_tables and {r["name"] for r in rows} != {t.name for t in TABLES}:
+        raise ValueError("Required research tables are missing")
+    if any(r["storage_policy"] != STORAGE_POLICY for r in rows):
+        raise ValueError("Research table has incorrect storage policy")
+    parts = query(f"SELECT table,disk_name FROM system.parts WHERE active AND database={literal(database)} AND table IN ({names}) GROUP BY table,disk_name")
+    if any(r["disk_name"] != STORAGE_POLICY for r in parts):
+        raise ValueError("Research parts are outside live_market_ssd")
+    if rows:
+        columns = query(f"SELECT table,name,type,compression_codec FROM system.columns "
+                        f"WHERE database={literal(database)} AND table IN ({names})")
+        actual={(r['table'],r['name']):(r['type'].replace(' ',''),r['compression_codec'].replace(' ','')) for r in columns}
+        present={r['name'] for r in rows}
+        expected={(t.name,col.name):(col.type.replace(' ',''),'CODEC('+col.codec.replace(' ','')+')')
+                  for t in TABLES if t.name in present for col in t.columns}
+        if actual != expected:
+            differences=[(key,expected.get(key),actual.get(key)) for key in sorted(set(actual)|set(expected))
+                         if expected.get(key)!=actual.get(key)]
+            raise ValueError(f'Existing research schema/type/codec differs; explicit migration required: {differences[:3]}')
+    return dict(tables=len(rows), parts=len(parts), schema_hash=schema_hash())

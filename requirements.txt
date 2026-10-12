@@ -8,6 +8,7 @@ websockets
 pandas
 pandas-market-calendars
 pyarrow
+msgpack>=1.0,<2
 duckdb==1.5.5
 pypdf
 PyMuPDF

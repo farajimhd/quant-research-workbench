@@ -28,9 +28,9 @@ def identifier(value):
     return value
 
 
-def table(db, name):
-    names = {'bars':'bars_v1','technical':'indicators_v1','broker_100ms':'liquidity_100ms_v1'}
-    return f"{identifier(db)}.{names[name]}"
+def table(db, name, names=None):
+    names = names or {'bars':'bars_v1','technical':'indicators_v1','broker_100ms':'liquidity_100ms_v1'}
+    return f"{identifier(db)}.{identifier(names[name])}"
 
 
 def ddl(db):
@@ -106,11 +106,20 @@ def condition_expressions(rules):
     return form_ok, eligible(last), eligible(high), eligible(volume)
 
 
-def broker_sql(db, build, day, ticker, attempt, rules, source=None):
+def broker_sql(db, build, day, ticker, attempt, rules, source=None, *, verified_timely=False,
+               table_names=None, reporting_audit=False):
+    if type(verified_timely) is not bool:
+        raise ValueError("verified_timely must be a boolean")
+    # Existing V5 artifacts retain their original meaning. The new certified
+    # research producer binds this strict choice into a distinct source policy.
+    reporting_gate = "bitAnd(event_meta,192)=64" if verified_timely else f"bitAnd(event_meta,{DELAYED})=0"
+    extra_counts = ("toUInt32(countIf(kind=1 AND bitAnd(event_meta,192)=0)),"
+                    "toUInt32(countIf(kind=1 AND bitAnd(event_meta,192)=128)),") if reporting_audit else ""
+    delayed_gate = "bitAnd(event_meta,192)=192" if reporting_audit else f"bitAnd(event_meta,{DELAYED})!=0"
     form, last, high, volume = condition_expressions(rules)
     source = source or canonical_source(day, ticker)
     window = "ORDER BY sip_timestamp_us,ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
-    return f"""INSERT INTO {table(db,'broker_100ms')}
+    return f"""INSERT INTO {table(db,'broker_100ms',table_names)}
     WITH decoded AS (
       SELECT *,bitAnd(event_meta,1) AS kind,
         toUInt64(price_primary_int)*if(bitAnd(event_meta,2)!=0,1,100) AS price_int,
@@ -121,7 +130,7 @@ def broker_sql(db, build, day, ticker, attempt, rules, source=None):
         arrayFilter(t->t>0,[toUInt16(condition_token_1),toUInt16(condition_token_2),
           toUInt16(condition_token_3),toUInt16(condition_token_4),toUInt16(condition_token_5)]) AS tokens,
         ({form}) AS form_ok,
-        kind=1 AND bitAnd(event_meta,{DELAYED})=0 AND price_int>0 AND size>0 AND isFinite(size) AS usable,
+        kind=1 AND {reporting_gate} AND price_int>0 AND size>0 AND isFinite(size) AS usable,
         toUInt8(usable AND {last}) AS price_valid,
         toUInt8(usable AND {high}) AS extremes_valid,
         toUInt8(usable AND {volume}) AS volume_valid,
@@ -149,7 +158,8 @@ def broker_sql(db, build, day, ticker, attempt, rules, source=None):
       toUInt32(100),toUInt32(intDiv(sip_timestamp_us-{bounds(day)},100000)) AS bucket,
       min(sip_timestamp_us),max(sip_timestamp_us),
       toUInt32(count()),toUInt32(countIf(kind=1)),toUInt32(countIf(kind=0)),
-      toUInt32(countIf(kind=1 AND bitAnd(event_meta,{DELAYED})!=0)),
+      toUInt32(countIf(kind=1 AND {delayed_gate})),
+      {extra_counts}
       toUInt32(countIf(kind=1 AND NOT volume_valid)),
       toUInt32(countIf(kind=1 AND NOT price_valid)),
       toUInt32(countIf(kind=1 AND volume_valid AND NOT execution_valid)),
@@ -182,26 +192,26 @@ def broker_sql(db, build, day, ticker, attempt, rules, source=None):
       FROM cumulative GROUP BY bucket"""
 
 
-def base_sql(db, build, day, ticker, attempt):
-    return f"""INSERT INTO {table(db,'bars')}
+def base_sql(db, build, day, ticker, attempt, *, table_names=None):
+    return f"""INSERT INTO {table(db,'bars',table_names)}
     SELECT build_id,session_date,ticker,attempt_id,resolution_ms,bucket_index,
       open_int,high_int,low_int,close_int,volume,trade_count,notional,
       execution_volume,execution_notional,price_valid,extremes_valid
-    FROM {table(db,'broker_100ms')} WHERE {selection(build,day,ticker,attempt)}
+    FROM {table(db,'broker_100ms',table_names)} WHERE {selection(build,day,ticker,attempt)}
       AND (price_valid OR extremes_valid OR volume_valid)"""
 
 
-def rollup_sql(db, build, day, ticker, attempt, parent, targets):
+def rollup_sql(db, build, day, ticker, attempt, parent, targets, *, table_names=None):
     if any(target % parent for target in targets):
         raise ValueError("Unaligned parent resolution")
-    return f"""INSERT INTO {table(db,'bars')}
+    return f"""INSERT INTO {table(db,'bars',table_names)}
     SELECT build_id,session_date,ticker,attempt_id,toUInt32(target),
       toUInt32(intDiv(toUInt64(bucket_index)*{parent},target)) AS bucket,
       argMinIf(open_int,bucket_index,price_valid),maxIf(high_int,extremes_valid),
       minIf(low_int,extremes_valid),argMaxIf(close_int,bucket_index,price_valid),
       sum(volume),sum(trade_count),sum(notional),sum(execution_volume),sum(execution_notional),
       max(price_valid),max(extremes_valid)
-    FROM {table(db,'bars')} ARRAY JOIN {list(targets)} AS target
+    FROM {table(db,'bars',table_names)} ARRAY JOIN {list(targets)} AS target
     WHERE {selection(build,day,ticker,attempt)} AND resolution_ms={parent}
     GROUP BY build_id,session_date,ticker,attempt_id,target,bucket"""
 
@@ -224,16 +234,16 @@ def split_factor(splits, day, ticker, date_column='b.session_date'):
     return '*'.join(terms) or '1.'
 
 
-def technical_sql(db, build, day, ticker, attempt, bar_attempt, prior=None):
+def technical_sql(db, build, day, ticker, attempt, bar_attempt, prior=None, *, table_names=None):
     source = f"""SELECT b.session_date,b.resolution_ms,b.bucket_index,
       b.close_int,b.high_int,b.low_int
-      FROM {table(db,'bars')} b
+      FROM {table(db,'bars',table_names)} b
       WHERE {selection(build,day,ticker,bar_attempt)}
         AND b.price_valid=1 AND b.extremes_valid=1"""
-    return technical_from_source(db, build, day, ticker, attempt, source, prior)
+    return technical_from_source(db, build, day, ticker, attempt, source, prior, table_names=table_names)
 
 
-def technical_from_source(db, build, day, ticker, attempt, source, prior=None):
+def technical_from_source(db, build, day, ticker, attempt, source, prior=None, *, table_names=None):
     prior=prior or {}
     frames=','.join(str(frame) for frame in FRAMES)
     has_prior=f"has([{frames}],resolution_ms)" if prior else '0'
@@ -256,7 +266,7 @@ def technical_from_source(db, build, day, ticker, attempt, source, prior=None):
         seed = f"sumIf({value},{counter}<=14) OVER s / 14."
         tail = f"exponentialMovingAverage({half:.17g})(if({counter}>14,{value},0.),k) OVER s"
         return f"if({counter}>=14,({seed})*pow({decay:.17g},greatest(toInt64({counter})-14,0))+({tail}),0.)"
-    return f"""INSERT INTO {table(db,'technical')}
+    return f"""INSERT INTO {table(db,'technical',table_names)}
     WITH numbered AS (
       SELECT *,close_int/10000. AS close,high_int/10000. AS high,low_int/10000. AS low,
         row_number() OVER ({ordered}) AS n,

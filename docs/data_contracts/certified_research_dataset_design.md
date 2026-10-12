@@ -7,6 +7,8 @@ Design date: 2026-10-11. Status: proposed implementation contract; no campaign i
 
 Prepare one certified historical market/reference dataset for RL trading and strategy optimization. Reuse shared calculations, retain causal timing and expose consumer-ready forms. Implementation and campaigns remain separate steps.
 
+**Scope update, October 12:** implementation publishes compact, normalized, compressed common data to ClickHouse only. Training shards, hindsight labels, RL banks and optimizer exports are excluded. Consumer pages explain input requirements, not tasks to execute. See the [implemented schema foundations](certified_research_dataset/12-implemented-schemas.md) for exact columns and current implementation status.
+
 ## Page guide
 
 | Page | What you will find |
