@@ -27,18 +27,19 @@ async def recover_shared_program_broker_async(reader_factory, prefix, *, broker,
     broker_contract.require_config(simulation_config, run_id=prefix.run_id,
         content_hash=broker_contract.row["content_hash"], liquidity_plan_hash=broker_contract.row["liquidity_plan_hash"])
     return await recover_program_broker_async(reader_factory, prefix, broker=_codec_rows(parsed),
-        quotes=quotes, lineages=lineages, simulation_config=simulation_config, through_sequence=through_sequence)
+        quotes=quotes, lineages=lineages, simulation_config=simulation_config, through_sequence=through_sequence,
+        exact_execution_prices=True)
 
 
 async def recover_program_broker_async(reader_factory, prefix, *, broker,
-        quotes, lineages, simulation_config, through_sequence=None):
+        quotes, lineages, simulation_config, through_sequence=None, exact_execution_prices=False):
     """Stage an inert broker image; caller separately proves source and OMS.
 
     Quote values must come from the pinned certified liquidity product. Shared
     restoration verifies their exact persisted clocks. No broker is started.
     Historical snapshots remain inside the full verified commit prefix.
     """
-    if (type(prefix) is not V4CommittedPrefix or prefix.status != "running"
+    if (type(exact_execution_prices) is not bool or type(prefix) is not V4CommittedPrefix or prefix.status != "running"
             or type(simulation_config) is not SimulationConfig):
         raise ValueError("Program broker recovery requires its declared typed scope")
     if through_sequence is not None and (type(through_sequence) is not int
@@ -94,6 +95,7 @@ async def recover_program_broker_async(reader_factory, prefix, *, broker,
             state["executions"] = load_v4_broker_executions(client, prefix,
                 requests_by_coid=by_client, coid_by_broker_id=client_by_broker,
                 next_execution_id=state["next_execution_id"],
+                **({"exact_execution_prices": True} if exact_execution_prices else {}),
                 **({"through_sequence": basis_sequence} if through_sequence is not None else {}))
             if any(datetime.fromisoformat(row["trade_time"]).tzinfo is None
                    or datetime.fromisoformat(row["trade_time"]) > cutoff

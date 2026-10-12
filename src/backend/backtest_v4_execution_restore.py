@@ -108,15 +108,20 @@ def load_v4_broker_executions(
     coid_by_broker_id: Mapping[str, str],
     next_execution_id: int, maximum: int = 100_000,
     through_sequence: int | None = None,
+    exact_execution_prices: bool = False,
 ) -> list[dict[str, Any]]:
     """SELECT committed normalized facts; never read a disk journal."""
-    if (not isinstance(prefix, V4CommittedPrefix) or not prefix.batch_ids
+    if (type(exact_execution_prices) is not bool or not isinstance(prefix, V4CommittedPrefix) or not prefix.batch_ids
             or type(maximum) is not int or not 1 <= maximum <= 100_000
             or next_execution_id - 1 > maximum
             or through_sequence is not None and (type(through_sequence) is not int
                 or not 0 <= through_sequence <= prefix.last_sequence)):
         raise ValueError("V4 broker execution recovery scope is invalid")
-    fills = _pages(load_committed_execution_page, client, prefix, maximum=maximum, through_sequence=through_sequence)
+    loader = load_committed_execution_page
+    if exact_execution_prices:
+        def loader(client, prefix, **page):
+            return load_committed_execution_page(client, prefix, **page, exact_prices=True)
+    fills = _pages(loader, client, prefix, maximum=maximum, through_sequence=through_sequence)
     fees = _pages(load_committed_commission_page, client, prefix, maximum=maximum * 4, through_sequence=through_sequence)
     return reconstruct_broker_executions(
         fills, fees, requests_by_coid=requests_by_coid,

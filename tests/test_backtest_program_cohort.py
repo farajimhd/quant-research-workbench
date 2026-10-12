@@ -353,6 +353,8 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                             await player
                             assert dispatch_count == 4 and paused.is_set()
                         assert controller.status == "completed", controller.error
+                        assert persisted.tables.get("trading_execution_exact_price_v1")
+                        assert not persisted.tables.get("trading_execution_v1")
                         listed = service.list()
                         assert len(listed) == 1 and listed[0]["run_id"] == controller.run_id
                         assert listed[0]["status"] == "completed"
@@ -371,6 +373,8 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                         return
                     session = await controller.run_prepared_program_session(work, terminal=True)
                     assert session.status == "evaluated" and session.completed_cohorts == 2
+                    assert persisted.tables.get("trading_execution_exact_price_v1")
+                    assert not persisted.tables.get("trading_execution_v1")
                     assert session.source_clocks == session.qualified_decisions == 4
                     assert session.liquidity_boundaries == (40 if resolution == 100 else 4)
                     assert not controller._program_session_active

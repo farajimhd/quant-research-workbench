@@ -17,6 +17,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from src.trading_runtime.arte_journal_schema import TABLES
 from src.trading_runtime.arte_order_exact_prices import ExactPriceOrderCommandBatch
+from src.trading_runtime.arte_execution_exact_prices import ExactPriceExecutionBatch
 from src.trading_runtime.arte_journal_writer import (
     CommittedPrefix, V2CommittedPrefix, VerifiedPrefix, TypedJournalBatch,
     _canonical_typed_content, _committed_batch_filter, _literal, _rows,
@@ -247,7 +248,8 @@ def project_journal_record(
     allow_v3_reservation_reasons: bool = False,
     committed_order_lineage: Mapping[str, tuple] | None = None,
     exact_order_prices: bool = False,
-) -> TypedJournalBatch | ExactPriceOrderCommandBatch:
+    exact_execution_prices: bool = False,
+) -> TypedJournalBatch | ExactPriceOrderCommandBatch | ExactPriceExecutionBatch:
     """Strict shared entry point for existing live/Backtest journal records.
 
     Domain-object projections (orders, fills, signals, intents) must receive
@@ -256,6 +258,8 @@ def project_journal_record(
     """
     if type(exact_order_prices) is not bool or exact_order_prices and expected_mode != "backtest":
         raise ValueError("Exact order journal projection requires the explicit Backtest mode")
+    if type(exact_execution_prices) is not bool or exact_execution_prices and expected_mode != "backtest":
+        raise ValueError("Exact execution projection requires the explicit Backtest mode")
     identity = dict(run_month=run_month, attempt_id=attempt_id,
                     batch_id=batch_id, prior_batch_id=prior_batch_id,
                     source_cursor=source_cursor)
@@ -683,6 +687,7 @@ def project_journal_record(
                          if fill_lineage else ""),
             signal_price=(fill_lineage["canonical_metadata"].get("signal_price")
                           if fill_lineage else None),
+            exact_prices=exact_execution_prices,
         )
         event = {
             "run_id": record.run_id, "event_month": month,
@@ -695,11 +700,15 @@ def project_journal_record(
             "correlation_id": str(record.payload.get("correlation_id") or ""),
             "causation_id": str(record.payload.get("causation_id") or ""),
         }
-        return TypedJournalBatch(
+        batch = TypedJournalBatch(
             record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
             record.sequence, record.sequence, source_cursor, "running", (event,),
-            executions=(details.execution,),
+            executions=() if exact_execution_prices else (details.execution,),
         )
+        if exact_execution_prices:
+            from .arte_execution_exact_prices import ExactPriceExecutionBatch
+            return ExactPriceExecutionBatch(batch, details.execution)
+        return batch
     if kind == ("execution", "commission"):
         payload = record.payload
         allowed = {"execution_id", "commission", "currency", "status",
@@ -740,11 +749,15 @@ def project_journal_record(
             "source_event_time": event["event_time"],
             "received_at": event["recorded_at"],
         }
-        return TypedJournalBatch(
+        batch = TypedJournalBatch(
             record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
             record.sequence, record.sequence, source_cursor, "running", (event,),
             commissions=(detail,),
         )
+        if exact_execution_prices:
+            from .arte_execution_exact_prices import ExactPriceExecutionBatch
+            return ExactPriceExecutionBatch(batch, None)
+        return batch
     raise ValueError(
         f"Journal record {record.category}/{record.entity_type} lacks a typed projection"
     )

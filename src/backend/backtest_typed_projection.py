@@ -434,7 +434,7 @@ def project_pending_backtest_v4_prefix(
                 fixed_market_execution_plan=fixed_market_execution_plan,
                 expected_market_start=expected_market_start,
                 committed_order_lineage=order_lineage,
-                **({"exact_order_prices": True} if exact_oms_prices else {}))
+                **({"exact_order_prices": True, "exact_execution_prices": True} if exact_oms_prices else {}))
             if progress_state is not None:
                 from src.backend.typed_backtest_progress import project_backtest_progress
                 typed_progress = project_backtest_progress(
