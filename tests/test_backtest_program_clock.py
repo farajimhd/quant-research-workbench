@@ -34,8 +34,10 @@ def test_complete_clock_preserves_explicit_order_and_checks_before_side_effects(
         mask[stage], mask[stage + "__valid"] = True, True
     block = PreparedProgramBlock(header["content_hash"], "origin", 0, 1,
         {"listing": "a" * 64}, pl.DataFrame([row]), pl.DataFrame([mask]))
+    # Exercise admitted dispatch order. Fresh ineligible assignments take the
+    # separate OMS-aware rejection path covered by native cohort integration.
     population = CertifiedPopulationWindow("source", pl.DataFrame(),
-        pl.DataFrame(schema={"boundary_at": pl.Datetime("us", "UTC"), "listing_id": pl.String}),
+        pl.DataFrame({"boundary_at": [at], "listing_id": ["listing"]}),
         1, 1, 0, 0, 0)
     source = object.__new__(SignalStreamRuntime)
     source._typed_scope = (None, "source")
