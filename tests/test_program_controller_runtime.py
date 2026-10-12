@@ -95,6 +95,28 @@ def test_controller_builds_program_actor_on_existing_runtime_without_legacy_fact
                 protection_profile=approved.protection_profile, outside_rth=approved.outside_rth)
             restored = restore_program_admitted_intent(actor.program_release, proposal, source, **kwargs)
             assert restored == approved
+            from src.trading_runtime.program_oms_lineage import reconstruct_program_oms_lineage
+            from src.trading_runtime.arte_oms_projection import RecoveredOmsGroupState
+            from src.trading_runtime.arte_journal_reader import CompleteProtectionHistory
+            flat_orders = tuple(replace(order, raw={}) for order in group.orders)
+            state = RecoveredOmsGroupState(2, source.record_id,
+                dict(run_id=controller.run_id, group_id=group.group_id, batch_id="batch",
+                    strategy_id=actor.strategy_id, strategy_revision=actor.revision,
+                    account_id=source.account_id, strategy_intent_id=source_intent.intent_id),
+                flat_orders, tuple(0 for _ in flat_orders), tuple("" for _ in flat_orders),
+                tuple(dict(broker_order_id=identity, request_index=index, terminal=False)
+                    for identity, index in group.broker_order_request_indexes.items()), (), ())
+            history = CompleteProtectionHistory(controller.run_id, 2, ("batch",), ())
+            lineage_kwargs = dict(release=actor.program_release, proposal=proposal,
+                assignment_id="assignment", reservation=reservation, decision=decision,
+                execution_policy=approved.execution_policy,
+                protection_profile=approved.protection_profile, outside_rth=approved.outside_rth)
+            lineage = reconstruct_program_oms_lineage(state, source, history, **lineage_kwargs)
+            assert lineage.approved_intent == group.intent
+            assert lineage.orders == tuple(group.orders)
+            with pytest.raises(ValueError, match="scope or flat"):
+                reconstruct_program_oms_lineage(replace(state, orders=tuple(group.orders)),
+                    source, history, **lineage_kwargs)
             with pytest.raises(ValueError, match="source or normalized"):
                 restore_program_admitted_intent(actor.program_release, proposal,
                     replace(source, intent=replace(source_intent, reference_price=999.)), **kwargs)
