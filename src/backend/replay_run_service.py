@@ -10295,6 +10295,51 @@ class ReplayRunService:
         self._review_tasks: dict[str, asyncio.Task[ReplayRunController]] = {}
         self._lock = asyncio.Lock()
 
+    async def prepare_certified_program_controller(self, definition: ReplayRunDefinition, *, assignments,
+            listing_by_assignment, liquidity_resolution_ms, selection_client_factory,
+            release_client_factory, policy_client_factory, policy_dispatch, concurrency):
+        """Prepare the normal programme lane from the exact UI-reviewed selection.
+
+        Only central read authorities are consulted. This neither publishes a
+        journal nor admits or starts the prepared controller.
+        """
+        from .certified_program_configuration import load_certified_program_configuration
+        from .backtest_program_journal_bootstrap import _configuration_hash
+        from src.trading_runtime.journal_contract import canonical_json
+        if type(definition) is not ReplayRunDefinition or definition.mode is not RunMode.BACKTEST:
+            raise ValueError("Certified programme preparation requires its Backtest definition")
+        revision = definition.configuration_revision
+        revision_id = revision.get("revision_id")
+        selection_hash = revision.get("selection_hash")
+        if (type(revision_id) is not str or not revision_id.startswith("strategy-configuration:")
+                or type(selection_hash) is not str):
+            raise ValueError("Programme configuration lacks its reviewed central selection")
+        reviewed_hash = _configuration_hash(definition)
+        reviewed_payload = canonical_json(revision["payload"])
+        certified = await load_certified_program_configuration(
+            selection_client_factory=selection_client_factory,
+            release_client_factory=release_client_factory, policy_client_factory=policy_client_factory,
+            policy_dispatch=policy_dispatch,
+            configuration_id=revision_id.removeprefix("strategy-configuration:"),
+            expected_content_hash=selection_hash, concurrency=concurrency)
+        current = certified.revision
+        if (definition.configuration_revision.get("revision_id") != revision_id
+                or definition.configuration_revision.get("selection_hash") != selection_hash
+                or _configuration_hash(definition) != reviewed_hash
+                or current["revision_id"] != revision_id or current["selection_hash"] != selection_hash
+                or current["content_hash"] != reviewed_hash
+                or canonical_json(current["payload"]) != reviewed_payload):
+            raise ValueError("Programme configuration changed since UI review")
+        controller = await self.prepare_program_controller(definition, assignments=assignments,
+            listing_by_assignment=listing_by_assignment, liquidity_resolution_ms=liquidity_resolution_ms,
+            release_client_factory=release_client_factory)
+        if (_configuration_hash(definition) != reviewed_hash
+                or definition.configuration_revision.get("revision_id") != revision_id
+                or definition.configuration_revision.get("selection_hash") != selection_hash):
+            raise ValueError("Programme reviewed selection changed during actor preparation")
+        controller._program_configuration_selection = certified.selection
+        return controller
+
     async def prepare_program_controller(self, definition: ReplayRunDefinition, *, assignments,
             listing_by_assignment, liquidity_resolution_ms, release_client_factory) -> ReplayRunController:
         """Prepare the installed central programme on this service's native lane.
