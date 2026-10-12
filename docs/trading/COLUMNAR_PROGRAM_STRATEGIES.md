@@ -24,9 +24,14 @@ contract through both distinct cold-reader connections before opening a worker.
 Each requires server-enforced readonly mode, the shared schema/SSD part-placement
 audit, a bounded single named row, its content hash and exact run scope. Missing
 or duplicated content fails closed. Valid scalar content alone is insufficient.
-Control-plane publication and the context-publication launch route remain required
-for operational admission. Tests use synthetic SELECT responses and storage audits;
-no operational table or run has been read or written by this validation.
+The existing Keeper-fenced Backtest definition publisher can now publish the
+contract before the definition commit, with exact bounded readback and immutable
+retry checks. A committed definition missing the required contract is rejected
+without appending a repair. The dedicated programme provisioning plan and writer
+catalog include the shared table; existing principal plans remain unchanged.
+The context-publication launch route still needs to supply and pin this content.
+Tests use synthetic transport and storage audits; no operational table or run
+has been read or written by this validation, and provisioning remains plan-only.
 
 ## Delivered components
 

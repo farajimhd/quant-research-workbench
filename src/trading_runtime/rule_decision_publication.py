@@ -17,7 +17,8 @@ def rule_decision_storage_contracts():
     from .arte_journal_writer import v4_storage_contracts
     from .trading_price_contracts import exact_price_storage_contracts
     from .arte_entry_acquisition_freeze import TABLES as ENTRY_FREEZE_TABLES
-    contracts = (*v4_storage_contracts(), *STAGED_TABLES, *exact_price_storage_contracts(), *ENTRY_FREEZE_TABLES)
+    from .backtest_journal_price_contract import PRICE_CONTRACT
+    contracts = (*v4_storage_contracts(), *STAGED_TABLES, *exact_price_storage_contracts(), *ENTRY_FREEZE_TABLES, PRICE_CONTRACT)
     by_name = {}
     for contract in contracts:
         prior = by_name.setdefault(contract.name, contract)

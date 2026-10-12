@@ -19,8 +19,9 @@ def test_program_plan_preserves_legacy_and_uses_central_contracts():
     exact = {table.name for table in exact_price_storage_contracts()}
     assert len(exact) == 11
     from src.trading_runtime.arte_entry_acquisition_freeze import FAMILY_NAMES
-    assert plan.insert_arte - before.insert_arte == tables | exact | FAMILY_NAMES
-    assert plan.select_arte - before.select_arte == tables | exact | FAMILY_NAMES
+    from src.trading_runtime.backtest_journal_price_contract import PRICE_CONTRACT
+    assert plan.insert_arte - before.insert_arte == tables | exact | FAMILY_NAMES | {PRICE_CONTRACT.name}
+    assert plan.select_arte - before.select_arte == tables | exact | FAMILY_NAMES | {PRICE_CONTRACT.name}
     assert before.select_arte - plan.select_arte == {program.ENTRY_CONTEXT_TABLE.split(".")[1]}
     assert plan.select_reference == before.select_reference
     assert plan.select_system == before.select_system

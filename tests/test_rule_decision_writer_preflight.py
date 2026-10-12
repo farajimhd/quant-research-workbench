@@ -14,7 +14,8 @@ def test_program_write_catalog_is_exact_extension_without_legacy_mutation():
     assert len(exact) == 11
     assert exact.isdisjoint(original)
     from src.trading_runtime.arte_entry_acquisition_freeze import FAMILY_NAMES
-    assert module.rule_decision_write_tables() == original | {table.name for table in STAGED_TABLES} | exact | FAMILY_NAMES
+    from src.trading_runtime.backtest_journal_price_contract import PRICE_CONTRACT
+    assert module.rule_decision_write_tables() == original | {table.name for table in STAGED_TABLES} | exact | FAMILY_NAMES | {PRICE_CONTRACT.name}
     assert writer.v4_journal_write_tables() == original
 
 

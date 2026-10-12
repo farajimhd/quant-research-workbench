@@ -359,11 +359,27 @@ def test_saved_cash_projection_reads_only_hashed_parent_and_matching_commit():
         load_committed_initial_cash(client, "run-1", run_context=context)
 
 
-def test_definition_publisher_is_commit_last_idempotent_and_keeper_fenced(monkeypatch):
+@pytest.mark.parametrize("with_price_contract", [False, True])
+def test_definition_publisher_is_commit_last_idempotent_and_keeper_fenced(monkeypatch, with_price_contract):
+    run_id = "00000000-0000-0000-0000-000000000001"
+    price_options = {}
+    price_tables = []
+    if with_price_contract:
+        from src.trading_runtime import arte_journal_schema as schema
+        from src.trading_runtime import rule_decision_writer_preflight as audit
+        from src.trading_runtime.backtest_journal_price_contract import (
+            PRICE_CONTRACT, EXACT_PRICE_CODEC, BacktestJournalPriceContract, project_journal_price_contract)
+        row = project_journal_price_contract(run_id=run_id, run_month=RUN_MONTH,
+            configuration_hash="a" * 64, price_codec=EXACT_PRICE_CODEC)
+        price_options = dict(journal_price_contract=BacktestJournalPriceContract(row),
+            expected_journal_price_contract_hash=row["content_hash"])
+        price_tables = [PRICE_CONTRACT]
+        monkeypatch.setattr(schema, "storage_preflight", lambda *args, **kwargs: None)
+        monkeypatch.setattr(audit, "require_rule_decision_writer_audit", lambda client: None)
     monkeypatch.setattr(journal_writer, "_v4_preflight",
                         lambda _client: None)
     context = {
-        "run_id": "run-1", "run_month": RUN_MONTH.isoformat(),
+        "run_id": run_id, "run_month": RUN_MONTH.isoformat(),
         "mode": "backtest", "session_date": "2026-08-18",
         "evaluation_interval_ms": 100,
         "market_plan_token": "c" * 64,
@@ -374,7 +390,7 @@ def test_definition_publisher_is_commit_last_idempotent_and_keeper_fenced(monkey
 
     class Client:
         def __init__(self):
-            self.tables = {table.name: [] for table in TABLES}
+            self.tables = {table.name: [] for table in (*TABLES, *price_tables)}
             self.inserts = []
 
         def execute(self, sql):
@@ -392,25 +408,32 @@ def test_definition_publisher_is_commit_last_idempotent_and_keeper_fenced(monkey
     current = {"value": True, "calls": 0}
     def is_current(resource, *, owner_id, epoch):
         assert (resource, owner_id, epoch) == (
-            "backtest-definition:run-1", "owner-1", 1)
+            f"backtest-definition:{run_id}", "owner-1", 1)
         current["calls"] += 1
         return current["value"]
     keeper.portfolio_admission_lease_is_current = is_current
-    lease = {"resource_id": "backtest-definition:run-1",
+    lease = {"resource_id": f"backtest-definition:{run_id}",
              "owner_id": "owner-1", "epoch": 1}
-    expected = prepare_backtest_definition("run-1", _definition(), run_month=RUN_MONTH)
+    expected = prepare_backtest_definition(run_id, _definition(), run_month=RUN_MONTH)
     digest = publish_backtest_definition(
-        client, "run-1", _definition(), keeper=keeper, lease=lease)
+        client, run_id, _definition(), keeper=keeper, lease=lease, **price_options)
     assert digest == expected["commit"]["definition_hash"]
-    assert client.inserts == [table.name for table in TABLES]
+    assert client.inserts == [table.name for table in (*TABLES[:-1], *price_tables, TABLES[-1])]
     assert current["calls"] >= 2 * len(TABLES)
     assert publish_backtest_definition(
-        client, "run-1", _definition(), keeper=keeper, lease=lease) == digest
-    assert client.inserts == [table.name for table in TABLES]
+        client, run_id, _definition(), keeper=keeper, lease=lease, **price_options) == digest
+    assert client.inserts == [table.name for table in (*TABLES[:-1], *price_tables, TABLES[-1])]
+    if with_price_contract:
+        inserts_before = list(client.inserts)
+        client.tables[PRICE_CONTRACT.name] = []
+        with pytest.raises(RuntimeError, match="missing or conflicting journal price contract"):
+            publish_backtest_definition(client, run_id, _definition(),
+                keeper=keeper, lease=lease, **price_options)
+        assert client.inserts == inserts_before
     current["value"] = False
     with pytest.raises(KeeperUnavailable, match="no longer current"):
         publish_backtest_definition(
-            client, "run-1", _definition(), keeper=keeper, lease=lease)
+            client, run_id, _definition(), keeper=keeper, lease=lease, **price_options)
 
 
 def test_definition_publisher_resumes_exact_partial_rows_without_duplication(monkeypatch):

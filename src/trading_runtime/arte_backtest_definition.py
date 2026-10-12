@@ -498,7 +498,9 @@ def _reconstruct_backtest_definition(
 
 def publish_backtest_definition(client: Any, run_id: str,
                                 definition: Any, *, keeper: Any,
-                                lease: Mapping[str, Any]) -> str:
+                                lease: Mapping[str, Any],
+                                journal_price_contract=None,
+                                expected_journal_price_contract_hash: str | None = None) -> str:
     """Operator-fenced, retry-safe typed publication with the commit last.
 
     The caller must already own the run's exclusive launch claim. This
@@ -543,9 +545,32 @@ def publish_backtest_definition(client: Any, run_id: str,
         raise RuntimeError("Backtest definition differs from the shared run context")
     run_month = date.fromisoformat(str(context["run_month"]))
     prepared = prepare_backtest_definition(run_id, definition, run_month=run_month)
+    if journal_price_contract is not None:
+        from .backtest_journal_price_contract import BacktestJournalPriceContract, PRICE_CONTRACT
+        from .arte_journal_schema import storage_preflight
+        from .rule_decision_writer_preflight import require_rule_decision_writer_audit
+        if type(journal_price_contract) is not BacktestJournalPriceContract:
+            raise ValueError("Definition publication requires its normalized journal price contract")
+        journal_price_contract.require_scope(run_id=run_id, run_month=run_month,
+            configuration_hash=context["configuration_hash"],
+            content_hash=expected_journal_price_contract_hash)
+        require_rule_decision_writer_audit(client)
+        storage_preflight(client, tables=(PRICE_CONTRACT,))
+    elif expected_journal_price_contract_hash is not None:
+        raise ValueError("Definition publication has no journal price contract")
 
     def stored(table: TableContract) -> tuple[dict[str, Any], ...]:
         columns = ",".join(name for name, _ in table.columns)
+        if journal_price_contract is not None and table is PRICE_CONTRACT:
+            import json
+            response = client.execute(f"SELECT {columns} FROM arte.{table.name} "
+                f"WHERE run_id={_literal(run_id)} LIMIT 2 FORMAT JSONEachRow")
+            if type(response) is not str or len(response.encode("utf-8")) > 16_384:
+                raise ValueError("Journal price contract publication readback exceeds its bound")
+            rows = [json.loads(line) for line in response.splitlines() if line.strip()]
+            if len(rows) > 1:
+                raise ValueError("Journal price contract publication found duplicate rows")
+            return tuple(_canonical_stored_row(table, row) for row in rows)
         rows = _rows(client,
             f"SELECT {columns} FROM arte.{table.name} "
             f"WHERE run_id={_literal(run_id)} FORMAT JSONEachRow")
@@ -559,6 +584,9 @@ def publish_backtest_definition(client: Any, run_id: str,
         require_claim()
         if verified != prepared:
             raise RuntimeError("Backtest definition commit conflicts with source")
+        if journal_price_contract is not None:
+            if stored(PRICE_CONTRACT) != (_canonical_stored_row(PRICE_CONTRACT, journal_price_contract.row),):
+                raise RuntimeError("Committed definition has missing or conflicting journal price contract")
         return prepared["commit"]["definition_hash"]
 
     family_plan = []
@@ -567,6 +595,7 @@ def publish_backtest_definition(client: Any, run_id: str,
         (TICKER, prepared["tickers"]),
         (ASSIGNMENT, prepared["assignments"]),
         (PRICE_PLAN, (prepared["price_plan"],) if prepared["price_plan"] else ()),
+        *(((PRICE_CONTRACT, (journal_price_contract.row,)),) if journal_price_contract is not None else ()),
         (COMMIT, (prepared["commit"],)),
     ):
         identity = (lambda row: row["ordinal"]) if table in (TICKER, ASSIGNMENT) else (
