@@ -214,12 +214,31 @@ def test_compound_retains_qualified_rule_rows_and_reseals_dependent_child_hashes
     assert publication_calls == ["audit", "publish"]
     assert publish_compound_v4(client, real_compound, verified_prior_prefix="prefix") == real_compound.base.batch_id
     assert publication_calls == ["audit", "publish", "audit", "publish"]
+    from src.trading_runtime.rule_decision_single_publication import publish_qualified_rule_decision
+    single_calls = []
+    def prepare_single(actual, actual_base, **context):
+        assert actual is client and actual_base is first.base
+        assert context == dict(_prepare_only=True, verified_prior_prefix="prefix")
+        single_calls.append("prepare")
+        return (), ()
+    def publish_single(actual, actual_base, base_rows, family_rows, **context):
+        assert actual is client and actual_base is first.base
+        assert family_rows == ((BASIS.name, (first.unit.basis,)), (INTENT.name, first.unit.intents))
+        single_calls.append("publish")
+        return actual_base.batch_id
+    monkeypatch.setattr(commit_module, "_publish_typed_batch_v4", prepare_single)
+    monkeypatch.setattr(commit_module, "_publish_sealed_batch_v4", publish_single)
+    assert publish_qualified_rule_decision(client, first, verified_prior_prefix="prefix") == first.base.batch_id
+    assert single_calls == ["prepare", "publish"]
     def reject(actual):
         raise RuntimeError("Grant audit rejected")
     monkeypatch.setattr(preflight_module, "preflight_rule_decision_writer", reject)
     with pytest.raises(RuntimeError, match="Grant audit"):
         publish_qualified_compound(client, real_compound)
-    assert publication_calls == ["audit", "publish", "audit", "publish"]
+    assert publication_calls == ["audit", "publish", "audit", "publish", "audit"]
+    with pytest.raises(RuntimeError, match="Grant audit"):
+        publish_qualified_rule_decision(client, first)
+    assert single_calls == ["prepare", "publish"]
     with pytest.raises(TypeError):
         committed.commit["batch_id"] = first.base.batch_id
     with pytest.raises(ValueError, match="Backtest owner"):
