@@ -82,6 +82,8 @@ async def prepare_program_session_input_plan(controller, cohorts, *, scopes, his
                        for plan, scope in zip(plans, scopes, strict=True))
     if any(dict(plan.listing_by_assignment) != actor._listings for plan in plans):
         raise ValueError("Programme input plan differs from controller assignment coverage")
+    for prototype in prototypes:
+        preflight_program_liquidity_scope(controller, prototype)
     prepared = []
     for plan, prototype in zip(plans, prototypes, strict=True):
         if (controller.definition is not definition or controller._program_strategy is not actor
@@ -98,3 +100,44 @@ async def prepare_program_session_input_plan(controller, cohorts, *, scopes, his
         prepared.append(work)
     work, _, _ = validate_prepared_program_session(controller, tuple(prepared))
     return work
+
+
+def preflight_program_liquidity_scope(controller, work):
+    """Prove native liquidity requests without opening a reader or producing data."""
+    from .backtest_market_data import (CertifiedMarketDayPlan, project_market_day_plan,
+        market_day_source_sqls, SESSION_OPEN_OFFSET_MS)
+    from .backtest_liquidity_price import PriceLevelPlan
+    from .backtest_liquidity_resolution import CertifiedLiquidityResolution, liquidity_window_sql
+    scope = work.scope
+    concurrency = scope["concurrency"]
+    if (not callable(scope["reader_factory"]) or type(concurrency) is not int
+            or not 1 <= concurrency <= 32):
+        raise ValueError("Programme liquidity scope lacks its bounded native reader")
+    tickers = {assignment.ticker for assignment in controller._program_strategy.assignments()}
+    day = controller.definition.session_date
+    market, prices = scope.get("market_plan"), scope.get("price_plan")
+    certificates = scope.get("liquidity_certificates")
+    if controller._program_liquidity_resolution_ms == 100:
+        if (certificates is not None or type(market) is not CertifiedMarketDayPlan
+                or type(prices) is not PriceLevelPlan or market.sessions != (day.isoformat(),)
+                or set(market.tickers) != tickers or len(market.tickers) != len(tickers)
+                or market.required_resolutions_ms != (100,)
+                or len(tickers) * (work.stop_bucket - work.first_bucket) * 10 > 262144):
+            raise ValueError("Programme liquidity scope differs from certified100ms assignments")
+        for ticker in market.tickers:
+            projected = project_market_day_plan(market, (ticker,))
+            market_day_source_sqls(projected,
+                after_boundary_ms=work.first_bucket * 1000 - SESSION_OPEN_OFFSET_MS,
+                through_boundary_ms=work.stop_bucket * 1000 - SESSION_OPEN_OFFSET_MS,
+                price_plan=prices.projected(projected))
+    else:
+        if (controller._program_liquidity_resolution_ms != 1000 or market is not None
+                or prices is not None or not isinstance(certificates, (tuple, list))
+                or any(type(row) is not CertifiedLiquidityResolution for row in certificates)
+                or len(certificates) != len(tickers)
+                or {row.source.ticker for row in certificates} != tickers
+                or any(row.source.session_date != day for row in certificates)
+                or len(tickers) * (work.stop_bucket - work.first_bucket) > 262144):
+            raise ValueError("Programme liquidity scope differs from certified1s assignments")
+        for certificate in certificates:
+            liquidity_window_sql(certificate, first_bucket=work.first_bucket, stop_bucket=work.stop_bucket)

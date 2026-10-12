@@ -160,11 +160,48 @@ def test_cohort_preparation_reuses_full_feature_origin_and_bounds_parallel_io(pr
     from src.backend.backtest_program_input_plan import prepare_program_session_input_plan
     controller.definition = replace(controller.definition, start_time=time(9, 31, 20), end_time=time(9, 31, 30))
     session_plan = replace(plan, listing_by_assignment=dict(controller._program_strategy._listings))
+    from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit
+    from src.backend.backtest_liquidity_price import PriceLevelPlan, PriceLevelUnit
+    day = controller.definition.session_date.isoformat()
+    ticker = actor.assignments()[0].ticker
+    attempt = "00000000-0000-0000-0000-000000000002"
+    market = CertifiedMarketDayPlan(ExecutionInterval.fixed(100), "a" * 64, "b" * 64,
+        (day,), (ticker,), tuple(MarketDayUnit("a" * 64, day, ticker, stage,
+            attempt, "c" * 64, 2, "d" * 64) for stage in ("bars", "technical", "broker_100ms")),
+        (100,), "e" * 64)
+    prices = PriceLevelPlan(market.build_id, (PriceLevelUnit(day, ticker, attempt,
+        "00000000-0000-0000-0000-000000000003", 2, 2, 0., "f" * 64),), "0" * 64)
+    session_scope = dict(scope, reader_factory=lambda: pytest.fail("Preparation opened a liquidity reader"),
+        market_plan=market, price_plan=prices)
     before_session = len(calls)
+    with pytest.raises(ValueError, match="bounded native reader"):
+        asyncio.run(prepare_program_session_input_plan(controller, (session_plan,),
+            scopes=(scope,), history_post=post))
+    assert len(calls) == before_session
     session_work = asyncio.run(prepare_program_session_input_plan(controller, (session_plan,),
-        scopes=(scope,), history_post=post))
+        scopes=(session_scope,), history_post=post))
     assert len(session_work) == 1 and session_work[0].blocks["first"] is native.blocks["first"]
     assert calls[before_session:] == [(False, 80, 90)]
+    from src.backend.backtest_program_input_plan import preflight_program_liquidity_scope
+    from src.backend.backtest_liquidity_resolution import CertifiedLiquidityResolution
+    from tests.test_liquidity_resolution_producer import source as liquidity_source
+    unit = replace(liquidity_source().unit, session_date=controller.definition.session_date, ticker=ticker)
+    certificate = CertifiedLiquidityResolution(unit,
+        "00000000-0000-0000-0000-000000000003", "f" * 64, "e" * 64, 2, 0, 0.)
+    one_second_scope = dict(scope, reader_factory=session_scope["reader_factory"],
+        liquidity_certificates=(certificate,))
+    controller._program_liquidity_resolution_ms = 1000
+    preflight_program_liquidity_scope(controller, replace(session_work[0], scope=one_second_scope))
+    for invalid in ((certificate, certificate), (replace(certificate,
+            source=replace(unit, ticker="WRONG")),), ()):
+        with pytest.raises(ValueError, match="certified1s assignments"):
+            preflight_program_liquidity_scope(controller, replace(session_work[0],
+                scope=dict(one_second_scope, liquidity_certificates=invalid)))
+    controller._program_liquidity_resolution_ms = 100
+    with pytest.raises(ValueError, match="certified100ms assignments"):
+        asyncio.run(prepare_program_session_input_plan(controller, (session_plan,),
+            scopes=(dict(session_scope, market_plan=replace(market, tickers=("WRONG",))),), history_post=post))
+    assert len(calls) == before_session + 1
     with pytest.raises(ValueError, match="gap, overlap"):
         asyncio.run(prepare_program_session_input_plan(controller, (replace(session_plan,
             first_bucket=session_plan.first_bucket + 1),), scopes=(scope,), history_post=post))
