@@ -107,4 +107,21 @@ async def load_program_release(client_factory, **identity) -> ProgramRelease:
             return read_program_release(client, **identity)
         finally:
             client.close()
-    return await asyncio.to_thread(read)
+    task = asyncio.create_task(asyncio.to_thread(read))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError as cancelled:
+        # The reader belongs to the worker until its finally block closes it.
+        # Settle that same read before allowing this owner to disappear.
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except BaseException as failure:
+                raise cancelled from failure
+        try:
+            task.result()
+        except BaseException as failure:
+            raise cancelled from failure
+        raise

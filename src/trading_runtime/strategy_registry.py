@@ -154,6 +154,91 @@ _FIXED_REGISTRY: dict[tuple[str, int], FixedStrategyExecutorRegistration] = {}
 _NUMBERED_FIXED_REGISTERED = False
 
 
+@dataclass(frozen=True, slots=True)
+class ProgramStrategyExecutorRegistration:
+    """Installed programme pins; central typed readback owns its rule data.
+
+    Registration is a code catalog operation, not database publication or run
+    admission. Cash parameters are read from the immutable programme release.
+    """
+    strategy_id: str
+    revision: int
+    expected_content_hash: str
+    expected_code_hash: str
+    expected_winner_hash: str
+    evaluation_interval: str = "1000ms"
+    mode: str = "backtest"
+
+    @property
+    def key(self) -> tuple[str, int]:
+        return self.strategy_id, self.revision
+
+    def verify(self) -> None:
+        from .columnar_strategy_release import _identity
+        if (type(self.strategy_id) is not str or not self.strategy_id
+                or self.strategy_id.strip() != self.strategy_id or len(self.strategy_id) > 128
+                or type(self.revision) is not int or not 1 <= self.revision < 2**32
+                or self.mode != "backtest" or self.evaluation_interval != "1000ms"):
+            raise ValueError("Programme executor requires an immutable Backtest-only identity")
+        for value in (self.expected_content_hash, self.expected_code_hash, self.expected_winner_hash):
+            _identity(value)
+
+    async def build(self, assignments, listing_by_assignment, *, mode, client_factory):
+        from .columnar_strategy_reader import load_program_release
+        from .columnar_program_actor import AssignedProgramStrategy
+        from .strategy_engine import StrategyAssignment
+        from collections.abc import Mapping
+        from itertools import islice
+        self.verify()
+        if mode != self.mode:
+            raise ValueError("Programme executor is Backtest-only")
+        selected = tuple(islice(assignments, 10001))
+        if (not callable(client_factory) or not 1 <= len(selected) <= 10000
+                or any(type(row) is not StrategyAssignment or (row.strategy_id, row.strategy_revision) != self.key
+                    for row in selected)
+                or not isinstance(listing_by_assignment, Mapping)):
+            raise ValueError("Programme assignments differ from the installed identity")
+        listings = dict(listing_by_assignment)
+        if (set(listings) != {row.assignment_id for row in selected}
+                or any(type(value) is not str or not value for value in listings.values())
+                or len({row.assignment_id for row in selected}) != len(selected)
+                or len({(row.account_id, row.ticker) for row in selected}) != len(selected)):
+            raise ValueError("Programme assignments require exact unique listing attribution")
+        release = await load_program_release(client_factory, strategy_number=self.revision,
+            expected_content_hash=self.expected_content_hash, expected_code_hash=self.expected_code_hash,
+            expected_winner_hash=self.expected_winner_hash)
+        if (release.header["strategy_id"], release.header["strategy_number"], release.header["evaluation_interval_ms"]) != (
+                self.strategy_id, self.revision, 1000):
+            raise ValueError("Central programme release differs from its installed executor")
+        return AssignedProgramStrategy(release, selected, listings)
+
+
+_PROGRAM_REGISTRY: dict[tuple[str, int], ProgramStrategyExecutorRegistration] = {}
+
+
+def register_program_strategy_executor(registration: ProgramStrategyExecutorRegistration) -> None:
+    """Install once in the shared catalog; never manufacture legacy callbacks."""
+    if type(registration) is not ProgramStrategyExecutorRegistration:
+        raise ValueError("Programme registration requires its typed installed pins")
+    registration.verify()
+    with _LOCK:
+        if registration.key in _REGISTRY or registration.key in _FIXED_REGISTRY:
+            raise ValueError("Programme executor collides with an installed executor")
+        prior = _PROGRAM_REGISTRY.get(registration.key)
+        if prior is not None and prior != registration:
+            raise ValueError("Installed programme executor cannot be replaced")
+        _PROGRAM_REGISTRY[registration.key] = registration
+
+
+def program_strategy_executor(strategy_id: str, revision: int) -> ProgramStrategyExecutorRegistration:
+    with _LOCK:
+        registration = _PROGRAM_REGISTRY.get((strategy_id, revision))
+    if registration is None:
+        raise ValueError("No installed programme executor matches the selected identity")
+    registration.verify()
+    return registration
+
+
 def register_numbered_strategy(release: NumberedStrategyRelease) -> None:
     """Publish once; there is deliberately no replace or mutable edit API.
 
@@ -165,8 +250,13 @@ def register_numbered_strategy(release: NumberedStrategyRelease) -> None:
     _ensure_builtin_executors()
     with _LOCK:
         key = (release.executor_strategy_id.strip(), release.executor_revision)
-        if key not in _REGISTRY and key not in _FIXED_REGISTRY:
+        if key not in _REGISTRY and key not in _FIXED_REGISTRY and key not in _PROGRAM_REGISTRY:
             raise ValueError("Numbered Strategy release lacks an installed executor")
+        if key in _PROGRAM_REGISTRY:
+            programme = _PROGRAM_REGISTRY[key]
+            programme.verify()
+            if programme.evaluation_interval != release.evaluation_interval or release.number != programme.revision:
+                raise ValueError("Numbered release differs from installed programme identity or clock")
         if key in _FIXED_REGISTRY:
             fixed = _FIXED_REGISTRY[key]
             fixed.verify()
@@ -220,6 +310,8 @@ def register_fixed_strategy_executor(registration: FixedStrategyExecutorRegistra
     """Install once without a replace API or any legacy callback fabrication."""
     registration.verify()
     with _LOCK:
+        if registration.key in _PROGRAM_REGISTRY:
+            raise ValueError("Installed programme executor cannot be replaced by a fixed executor")
         if registration.key in _REGISTRY:
             raise ValueError("Fixed executor identity collides with a legacy executor")
         prior = _FIXED_REGISTRY.get(registration.key)
@@ -894,6 +986,8 @@ def register_strategy_executor(
     if not registration.implementation:
         raise ValueError("Strategy executor implementation identity is required")
     with _LOCK:
+        if registration.key in _PROGRAM_REGISTRY:
+            raise ValueError("Installed programme executor cannot be replaced by a legacy executor")
         if registration.key in _FIXED_REGISTRY:
             raise ValueError("Installed fixed executor cannot be replaced by a legacy executor")
         existing = _REGISTRY.get(registration.key)
