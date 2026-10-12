@@ -139,13 +139,40 @@ def test_controller_builds_program_actor_on_existing_runtime_without_legacy_fact
                 protection_for=lambda _: approved.protection_profile, outside_rth=approved.outside_rth)
             assert recovered_lineages == (lineage,)
             assert closed == [True]
+            from src.backend import program_broker_recovery as broker_cold
+            from src.backend.backtest_market_data import market_day_boundary
+            from src.backend.backtest_v4_broker_quote_restore import CompletedBrokerQuote
+            from src.trading_runtime.strategy_one_broker_match_snapshot import project_broker_match_snapshot
+            native_state = runtime.broker.checkpoint_state()
+            boundary_ms = int((at - market_day_boundary(at.date(), 0)).total_seconds() * 1000)
+            broker_rows = project_broker_match_snapshot(run_id=controller.run_id, session_date=at.date(),
+                checkpoint_sequence=2, boundary_ms=boundary_ms, state=native_state)
+            quote = native_state["quotes_by_ticker"]["ABC"]
+            pinned_quotes = {"ABC": CompletedBrokerQuote("ABC", boundary_ms,
+                quote["raw"]["quote_timestamp_us"], quote["bid_price"], quote["ask_price"],
+                quote["bid_size"], quote["ask_size"])}
+            monkeypatch.setattr(broker_cold, "load_verified_v4_prefix", lambda *_: prefix)
+            monkeypatch.setattr(broker_cold, "load_v4_broker_executions", lambda *a, **k: [])
+            broker_image = await broker_cold.recover_program_broker_async(lambda: client, prefix,
+                broker=broker_rows, quotes=pinned_quotes, lineages=recovered_lineages,
+                simulation_config=runtime.broker.config)
+            from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
+            restored_broker = SimulatedBrokerAdapter(list(runtime.config.account_ids),
+                config=runtime.broker.config, mode=runtime.broker.mode,
+                initial_time=runtime.broker.initial_time, fixed_bar_mode=True)
+            restored_broker.restore_checkpoint_state(broker_image)
+            actual_broker_image = restored_broker.checkpoint_state()
+            assert actual_broker_image["orders"] == native_state["orders"]
+            assert actual_broker_image["cash"] == native_state["cash"]
+            assert actual_broker_image["quotes_by_ticker"]["ABC"]["source"] == runtime.broker.config.liquidity_source
+            assert closed == [True, True]
             monkeypatch.setattr(cold, "load_committed_strategy_intent_page", lambda *a, **k: ())
             with pytest.raises(ValueError, match="source join is incomplete"):
                 await cold.recover_program_oms_lineages_async(lambda: client, prefix,
                     release=actor.program_release, account_ids=(source.account_id,), reselect=reselect,
                     execution_policy=approved.execution_policy,
                     protection_for=lambda _: approved.protection_profile, outside_rth=approved.outside_rth)
-            assert closed == [True, True]
+            assert closed == [True, True, True]
             with pytest.raises(ValueError, match="scope or flat"):
                 reconstruct_program_oms_lineage(replace(state, orders=tuple(group.orders)),
                     source, history, **lineage_kwargs)
