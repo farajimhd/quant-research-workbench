@@ -124,6 +124,14 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                         if record.payload.get("signal_type") == "program_boundary_completed"]
                     return
                 basis_sequence = controller._journal.latest_sequence(controller.run_id)
+                from src.backend.program_clock_financial_basis import capture_program_clock_financial_basis
+                captured = await capture_program_clock_financial_basis(controller, at=at)
+                assert captured.journal_sequence == basis_sequence
+                assert captured.source_boundary == runtime.typed_source_boundary(at)
+                assert captured.broker.snapshot["checkpoint_sequence"] == basis_sequence
+                assert {snapshot.account_id for snapshot in captured.portfolio} == set(controller._runtime.config.account_ids)
+                with pytest.raises(TypeError):
+                    captured.broker.snapshot["checkpoint_sequence"] = 0
                 historical_actor = AssignedProgramStrategy(actor.program_release, actor.assignments(), actor._listings)
                 historical_actor.execution_state = deepcopy(actor.execution_state)
                 historical_actor.target_state = deepcopy(actor.target_state)
