@@ -34,7 +34,7 @@ def release_for(pin, *, minimum_age_seconds=None):
 def test_cohort_preparation_reuses_full_feature_origin_and_bounds_parallel_io(prepared_source, concurrency):
     from threading import Lock, Barrier
     from time import sleep
-    from src.backend.backtest_program_inputs import prepare_program_cohort_inputs
+    from src.backend.backtest_program_inputs import prepare_program_cohort_inputs, preflight_program_cohort_inputs
     from src.backend.qmd_columnar_population import CertifiedPopulationPin
     feature_store, volume_store = Store(), Store()
     publish(feature_store, prepared_source)
@@ -73,6 +73,15 @@ def test_cohort_preparation_reuses_full_feature_origin_and_bounds_parallel_io(pr
         first_bucket=feature_pin.scope.first_bucket + 80,
         stop_bucket=feature_pin.scope.first_bucket + 90,
         as_of=c.completed_clock(feature_pin.scope, feature_pin.scope.stop_bucket - 1), concurrency=concurrency)
+    checked_pins, checked_assignments = preflight_program_cohort_inputs(release,
+        {feature_pin.scope.listing_id: feature_pin}, population,
+        {"first": feature_pin.scope.listing_id, "second": feature_pin.scope.listing_id},
+        **kwargs, history_post=post)
+    assert calls == [] and active == 0
+    assert checked_pins[feature_pin.scope.listing_id] is feature_pin
+    assert checked_assignments["first"] == checked_assignments["second"]
+    with pytest.raises(TypeError):
+        checked_assignments["third"] = feature_pin.scope.listing_id
     result = asyncio.run(prepare_program_cohort_inputs(release,
         {feature_pin.scope.listing_id: feature_pin}, population,
         {"first": feature_pin.scope.listing_id, "second": feature_pin.scope.listing_id},

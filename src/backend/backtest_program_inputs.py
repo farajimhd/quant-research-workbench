@@ -288,17 +288,15 @@ class PreparedProgramCohortInputs:
         object.__setattr__(self, "blocks", MappingProxyType(dict(self.blocks)))
 
 
-async def prepare_program_cohort_inputs(release, pins, population_pin, listing_by_assignment, *,
+def preflight_program_cohort_inputs(release, pins, population_pin, listing_by_assignment, *,
         first_ordinal, stop_ordinal, evaluation_block, first_bucket, stop_bucket,
         as_of, concurrency, history_post=None):
-    """Join existing QMD preparation lanes under one explicit transport budget.
+    """Check existing QMD source/block scope without transport or evaluation.
 
     The supplied feature origin includes its full warm-up. Only the supplied
     execution clocks require scanner rows. No producer, broker or run starts.
     """
-    from .qmd_columnar_population import CertifiedPopulationPin, read_population_window
-    from .qmd_gateway_client import qmd_history_post_json
-    from .backtest_market_data import market_day_boundary
+    from .qmd_columnar_population import CertifiedPopulationPin
     if (type(release) is not ProgramRelease or type(population_pin) is not CertifiedPopulationPin
             or population_pin.rule != release.universe or not isinstance(pins, Mapping)
             or not isinstance(listing_by_assignment, Mapping) or not listing_by_assignment
@@ -337,6 +335,20 @@ async def prepare_program_cohort_inputs(release, pins, population_pin, listing_b
     for pin in population_pin.histories.values():
         window_request(pin, first_ordinal=first_bucket - pin.scope.first_bucket,
             stop_ordinal=stop_bucket - pin.scope.first_bucket, as_of=as_of)
+    return MappingProxyType(owned), MappingProxyType(assignments)
+
+
+async def prepare_program_cohort_inputs(release, pins, population_pin, listing_by_assignment, *,
+        first_ordinal, stop_ordinal, evaluation_block, first_bucket, stop_bucket,
+        as_of, concurrency, history_post=None):
+    """Use the same read-only preflight before bounded QMD/scanner preparation."""
+    from .qmd_columnar_population import read_population_window
+    from .qmd_gateway_client import qmd_history_post_json
+    from .backtest_market_data import market_day_boundary
+    owned, assignments = preflight_program_cohort_inputs(release, pins, population_pin,
+        listing_by_assignment, first_ordinal=first_ordinal, stop_ordinal=stop_ordinal,
+        evaluation_block=evaluation_block, first_bucket=first_bucket, stop_bucket=stop_bucket,
+        as_of=as_of, concurrency=concurrency, history_post=history_post)
     # Both existing worker pools share this budget. Waiting occurs in owned
     # transport threads, never on the event loop or while holding a connection.
     budget = BoundedSemaphore(concurrency)
