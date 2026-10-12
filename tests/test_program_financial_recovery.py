@@ -176,6 +176,12 @@ def test_program_oms_joins_native_empty_broker_and_observation_checkpoint(mismat
         image = module.reconstruct_program_oms_image(prefix, **kwargs)
         assert image.strategy_id == "declared-program"
         assert image.groups == {} and image.group_by_broker_id == {}
+        later_prefix = replace(prefix, last_sequence=9)
+        historical = module.reconstruct_program_oms_image(later_prefix, through_sequence=7, **kwargs)
+        assert historical == image
+        assert later_prefix.last_sequence == 9
+        with pytest.raises(ValueError, match="shared committed prefix"):
+            module.reconstruct_program_oms_image(later_prefix, through_sequence=8, **kwargs)
 
 
 def test_program_oms_rebuilds_working_group_from_native_broker_checkpoint():
@@ -212,3 +218,12 @@ def test_program_oms_rebuilds_working_group_from_native_broker_checkpoint():
         cutoff_at=OMS_AT, account_ids=("DU1",))
     assert image.group_by_broker_id == {identity: "group-1"}
     assert image.groups["group-1"].broker_order_state_fingerprints[identity] == fingerprint
+    historical = module.reconstruct_program_oms_image(replace(prefix, last_sequence=9),
+        lineages=(lineage,), protection=history, broker=rows, observations=observed,
+        strategy_id="declared-program", strategy_revision=1, cutoff_at=OMS_AT,
+        account_ids=("DU1",), through_sequence=7)
+    from src.trading_runtime.arte_oms_projection import freeze_oms_group
+    assert freeze_oms_group(historical.groups["group-1"]) == freeze_oms_group(image.groups["group-1"])
+    assert historical.group_by_broker_id == image.group_by_broker_id
+    assert historical.group_by_client_id == image.group_by_client_id
+    assert historical.groups["group-1"].broker_order_state_fingerprints == image.groups["group-1"].broker_order_state_fingerprints

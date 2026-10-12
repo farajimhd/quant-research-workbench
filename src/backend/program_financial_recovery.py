@@ -130,7 +130,8 @@ def build_program_portfolio_engine(recovery, *, journal, strategy_id,
 
 
 def reconstruct_program_oms_image(prefix, *, lineages, protection, broker,
-        observations, strategy_id, strategy_revision, cutoff_at, account_ids):
+        observations, strategy_id, strategy_revision, cutoff_at, account_ids,
+        through_sequence=None):
     """Join verified shared OMS families; never infer source intent authority.
 
     Lineages must already have their causal source and Portfolio admission
@@ -151,10 +152,14 @@ def reconstruct_program_oms_image(prefix, *, lineages, protection, broker,
     )
     lineages = tuple(lineages)
     account_ids = tuple(account_ids)
+    if (type(prefix) is not V4CommittedPrefix or through_sequence is not None and (
+            type(through_sequence) is not int or not 1 <= through_sequence <= prefix.last_sequence)):
+        raise ValueError("Program OMS recovery historical basis differs from verified prefix")
+    basis_sequence = prefix.last_sequence if through_sequence is None else through_sequence
     if (type(prefix) is not V4CommittedPrefix or prefix.status != "running"
             or type(protection) is not CompleteProtectionHistory
             or protection.run_id != prefix.run_id
-            or protection.through_sequence != prefix.last_sequence
+            or protection.through_sequence != basis_sequence
             or protection.committed_batch_ids != prefix.batch_ids
             or not isinstance(cutoff_at, datetime) or cutoff_at.tzinfo is None
             or not account_ids or len(set(account_ids)) != len(account_ids)):
@@ -164,7 +169,7 @@ def reconstruct_program_oms_image(prefix, *, lineages, protection, broker,
     root = broker.snapshot
     observed = observations.root
     if (root["run_id"] != prefix.run_id
-            or root["checkpoint_sequence"] != prefix.last_sequence
+            or root["checkpoint_sequence"] != basis_sequence
             or {row["account_id"] for row in broker.accounts} != set(account_ids)
             or len(broker.accounts) != len(account_ids)
             or any(observed[key] != root[key] for key in
@@ -175,9 +180,9 @@ def reconstruct_program_oms_image(prefix, *, lineages, protection, broker,
         raise ValueError("Program OMS lineage contains a foreign account")
     image = reconstruct_typed_oms_actor_image(tuple(lineages), protection,
         run_id=prefix.run_id, strategy_id=strategy_id, strategy_revision=strategy_revision,
-        through_sequence=prefix.last_sequence, cutoff_at=cutoff_at)
+        through_sequence=basis_sequence, cutoff_at=cutoff_at)
     image = attach_typed_oms_observations(image, observations,
-        through_sequence=prefix.last_sequence)
+        through_sequence=basis_sequence)
     verify_typed_oms_broker_open_orders(image, broker)
     return image
 
