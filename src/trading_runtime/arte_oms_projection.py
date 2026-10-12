@@ -990,11 +990,14 @@ def load_latest_committed_oms_groups(
     allowed_accounts: frozenset[str] | None = None,
     strategy_identity: tuple[str, int] | None = None,
     require_tactic: bool = False,
+    through_sequence: int | None = None,
 ) -> tuple[RecoveredOmsGroupState, ...]:
     """Cold-read one latest normalized state per OMS group, with a hard bound.
 
     This is not broker reconciliation or permission to resubmit an order. Every
     page is checked by the typed family reader against the committed prefix.
+    An optional historical cutoff selects earlier state inside that same fully
+    verified prefix; it never manufactures a partial committed prefix.
     """
     if (not _valid_prefix(prefix) or type(page_size) is not int
             or not 1 <= page_size <= 500
@@ -1009,8 +1012,12 @@ def load_latest_committed_oms_groups(
                 or type(strategy_identity[0]) is not str
                 or not strategy_identity[0]
                 or type(strategy_identity[1]) is not int
-                or strategy_identity[1] < 1)):
+                or strategy_identity[1] < 1)
+            or through_sequence is not None and (
+                type(through_sequence) is not int or not 0 <= through_sequence <= prefix.last_sequence)):
         raise ValueError("OMS cold inventory needs a verified bounded prefix")
+    if through_sequence == 0:
+        return ()
     latest: dict[tuple[str, str], RecoveredOmsGroupState] = {}
     first_sequences: dict[tuple[str, str], int] = {}
     after = 0
@@ -1040,6 +1047,8 @@ def load_latest_committed_oms_groups(
             if (item.sequence <= after or item.sequence > prefix.last_sequence
                     or not account_id or not group_id):
                 raise RuntimeError("OMS cold inventory has invalid transition order")
+            if through_sequence is not None and item.sequence > through_sequence:
+                return tuple(sorted(latest.values(), key=lambda row: row.sequence))
             if (allowed_accounts is not None
                     and account_id not in allowed_accounts
                     or strategy_identity is not None

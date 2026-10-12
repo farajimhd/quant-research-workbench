@@ -254,6 +254,15 @@ def test_latest_oms_cold_inventory_selects_latest_revision_and_bounds_history(mo
     assert [(row.sequence, row.group["group_id"]) for row in latest] == [
         (2, "B"), (3, "A"), (4, "C")]
     assert [row.first_sequence for row in latest] == [2, 1, 4]
+    earlier = load_latest_committed_oms_groups(object(), prefix, page_size=2,
+        max_transitions=4, through_sequence=2)
+    assert [(row.sequence, row.group["group_id"]) for row in earlier] == [(1, "A"), (2, "B")]
+    assert [row.first_sequence for row in earlier] == [1, 2]
+    assert load_latest_committed_oms_groups(object(), prefix, through_sequence=0) == ()
+    assert prefix.last_sequence == 4
+    for invalid in (-1, 5, True):
+        with pytest.raises(ValueError, match="verified bounded prefix"):
+            load_latest_committed_oms_groups(object(), prefix, through_sequence=invalid)
     with pytest.raises(RuntimeError, match="transition bound"):
         load_latest_committed_oms_groups(
             object(), prefix, page_size=2, max_transitions=3)
