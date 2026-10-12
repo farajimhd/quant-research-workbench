@@ -73,6 +73,9 @@ def read_reference(root: str | Path, *, concurrency: int = 1) -> OptimizationRef
         f'{day}/timings.json' for day in days}
     if expected_files - set(hashes):
         raise ValueError('Missing frozen session seal')
+    if (seal.get('selection_allowed') is not True
+            or seal.get('session_receipts') != {day: hashes[f'{day}/receipt.json'] for day in days}):
+        raise ValueError('Generation seal does not authorize the exact session receipts')
     if set(hashes) - expected_files - optional_diagnostics:
         raise ValueError('Unexpected reference file outside declared training comparison')
     items = [(name, checksum) for name, checksum in hashes.items() if name != 'complete.json']
@@ -116,6 +119,8 @@ def read_reference(root: str | Path, *, concurrency: int = 1) -> OptimizationRef
         metrics = receipt['metrics']
         if not metrics or any(candidate >= len(values) for values in metrics.values()):
             raise ValueError('Winner index outside session metric population')
+        if ('terminal_valid' not in metrics or metrics['terminal_valid'][candidate] is not True):
+            raise ValueError(f'Winner lacks valid terminal accounting: {day}')
         sessions[day] = {name: values[candidate] for name, values in metrics.items()}
     return OptimizationReference(GENERATION, WINNER_SHA256, candidate,
         json.loads(contents['winner.json']), execution, sessions)

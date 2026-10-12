@@ -72,7 +72,12 @@ def frozen_root(monkeypatch, tmp_path):
     for day in days:
         files[f"{day}/receipt.json"] = json.dumps(dict(day=day, full_session=True,
             validation_opened=False, population_sha256="synthetic-population",
-            execution={"entry_cash": 1000, "add_cash": 200}, metrics={"net_pnl": [100.]})).encode()
+            execution={"entry_cash": 1000, "add_cash": 200},
+            metrics={"net_pnl": [100.], "terminal_valid": [True]})).encode()
+    complete = json.loads(files["complete.json"])
+    complete.update(selection_allowed=True, session_receipts={day:
+        sha256(files[f"{day}/receipt.json"]).hexdigest() for day in days})
+    files["complete.json"] = json.dumps(complete).encode()
     for name, content in files.items():
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -122,6 +127,29 @@ def test_unexpected_manifest_files_are_rejected_before_opening(monkeypatch, tmp_
     with pytest.raises(ValueError, match="outside declared training"):
         asyncio.run(module.load_reference(tmp_path, concurrency=3))
     assert opened == ["complete.json"]
+
+
+@pytest.mark.parametrize("failure", ["selection", "receipt", "terminal"])
+def test_generation_authorization_and_winner_terminal_accounting_are_required(monkeypatch, tmp_path, failure):
+    module, manifest = frozen_root(monkeypatch, tmp_path)
+    seal = json.loads((tmp_path / "complete.json").read_bytes())
+    if failure == "selection":
+        seal["selection_allowed"] = False
+    elif failure == "receipt":
+        seal["session_receipts"]["2026-08-01"] = "a" * 64
+    else:
+        receipt_path = tmp_path / "2026-08-01/receipt.json"
+        receipt = json.loads(receipt_path.read_bytes())
+        receipt["metrics"]["terminal_valid"] = [False]
+        receipt_path.write_text(json.dumps(receipt))
+        digest = sha256(receipt_path.read_bytes()).hexdigest()
+        manifest["files_sha256"]["2026-08-01/receipt.json"] = digest
+        seal["session_receipts"]["2026-08-01"] = digest
+    (tmp_path / "complete.json").write_text(json.dumps(seal))
+    manifest["files_sha256"]["complete.json"] = sha256((tmp_path / "complete.json").read_bytes()).hexdigest()
+    (tmp_path / "freeze.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="authorize|terminal accounting"):
+        module.read_reference(tmp_path, concurrency=3)
 
 
 @pytest.mark.parametrize("tamper", [False, True])
