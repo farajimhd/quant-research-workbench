@@ -139,6 +139,16 @@ It checks the publisher fence remains unchanged across qualification and does
 not write or advance that fence. Synthetic controller tests retain all three
 clock decisions before any publication, without per-decision predecessor commits.
 The main compute lifecycle does not yet invoke this route automatically.
+The source-level `dispatch_qualified_program_boundary` now coordinates capture,
+native financial reconstruction, existing controller dispatch, normalized intent
+reconstruction, qualification and proof retention, and always closes its detached
+comparison runtime. It requires an independently replayed policy prefix from the
+caller. Synthetic tests exercise this automatic lifecycle alongside explicit
+dispatch at100ms and1s, including prefetch and rejection of altered replay
+metadata before order submission. The fixture also retains the existing native
+dispatch uncertainty-latch checks.
+Main launch admission, automatic policy-prefix orchestration across prepared
+cohorts, and operational full-session qualification remain unfinished.
 The main clock lifecycle must resolve this dependency while preserving actual
 filled-state/OMS semantics; per-decision cold database replay is not established
 as an efficient production execution path.

@@ -28,7 +28,8 @@ from tests.test_broker_liquidity_resolution import second_bar
 @pytest.mark.parametrize("resolution", [100, 1000])
 @pytest.mark.parametrize("failure", [None, "submission", "completion_record"])
 @pytest.mark.parametrize("prefetch", [False, True])
-def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(prepared_source, tmp_path, resolution, failure, prefetch, monkeypatch):
+@pytest.mark.parametrize("automatic", [False, True])
+def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(prepared_source, tmp_path, resolution, failure, prefetch, automatic, monkeypatch):
     storage = Store()
     publish(storage, prepared_source)
     certificate = consume(storage, prepared_source)
@@ -252,6 +253,25 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 from src.backend.program_policy_recovery import _program_policy_fingerprint_value
                 from src.trading_runtime.journal_contract import canonical_json
                 captured_policy_json = canonical_json(_program_policy_fingerprint_value(actor))
+                if automatic:
+                    from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
+                    from types import SimpleNamespace
+                    if controller._journal_publisher is None:
+                        controller._journal_publisher = BacktestTypedJournalPublisher(controller._journal,
+                            SimpleNamespace(run_id=controller.run_id, run_mode="backtest", coalesce_batches=False,
+                                journal_profile="backtest_v4", max_events_per_commit=512),
+                            attempt_id="00000000-0000-0000-0000-000000000001", run_month=at.date().replace(day=1))
+                    from src.backend.program_policy_recovery import project_pending_program_policy_events, rebuild_program_policy_events
+                    prior_executions = await controller._runtime.broker.trades()
+                    pre_events = project_pending_program_policy_events(controller._journal.records(controller.run_id),
+                        executions=prior_executions, run_month=at.date().replace(day=1),
+                        attempt_id=controller._journal_publisher.attempt_id,
+                        batch_id="00000000-0000-0000-0000-000000000002",
+                        prior_batch_id=controller._journal_publisher._batch_id, source_cursor="synthetic")
+                    pre_packet = rebuild_program_policy_events(actor, pre_events, run_id=controller.run_id,
+                        source_hashes=source_prefix_hashes, blocks=(block,), population=population,
+                        executions=prior_executions, order_manager=controller._runtime.order_manager,
+                        maximum_events=1000, last_sequence=basis_sequence)
                 historical_observation = controller.program_order_observation(assignment_id="assignment", at=at)
                 original_records = controller._journal.records
                 def forbidden_rescan(*args, **kwargs):
@@ -262,9 +282,24 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                         await controller.dispatch_prepared_program_clock({}, population, at=at,
                             assignment_order=("assignment",), execution_policy=policy,
                             protection_profiles={"assignment": profile}, outside_rth=False)
-                    dispatched = await controller.dispatch_prepared_program_clock({"assignment": block}, population,
-                        at=at, assignment_order=("assignment",), execution_policy=policy,
-                        protection_profiles={"assignment": profile}, outside_rth=False, terminal=offset == 2)
+                    if automatic:
+                        from src.backend.backtest_program_clock import dispatch_qualified_program_boundary
+                        with pytest.raises(ValueError, match="captured basis"):
+                            await dispatch_qualified_program_boundary(controller, block, population,
+                                packet=replace(pre_packet, completion_count=pre_packet.completion_count + 1),
+                                ordinal=ordinal + offset, assignment_id="assignment", execution_policy=policy,
+                                protection_profile=profile, outside_rth=False, terminal=offset == 2)
+                        assert controller._journal.latest_sequence(controller.run_id) == basis_sequence
+                        assert controller._program_dispatch_failure is None
+                        auto_result = await dispatch_qualified_program_boundary(controller, block, population,
+                            packet=pre_packet, ordinal=ordinal + offset, assignment_id="assignment",
+                            execution_policy=policy, protection_profile=profile, outside_rth=False, terminal=offset == 2)
+                        assert auto_result["qualification"].selection.status == auto_result["status"]
+                        dispatched = (("assignment", auto_result),)
+                    else:
+                        dispatched = await controller.dispatch_prepared_program_clock({"assignment": block}, population,
+                            at=at, assignment_order=("assignment",), execution_policy=policy,
+                            protection_profiles={"assignment": profile}, outside_rth=False, terminal=offset == 2)
                     assert len(dispatched) == 1 and dispatched[0][0] == "assignment"
                     result = dispatched[0][1]
                 finally:
@@ -530,7 +565,7 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                         controller._journal_publisher = BacktestTypedJournalPublisher(controller._journal,
                             synthetic_writer, attempt_id="00000000-0000-0000-0000-000000000001",
                             run_month=at.date().replace(day=1))
-                    if offset == 0:
+                    if offset == 0 and not automatic:
                         from src.backend import qmd_columnar_history_transport as transport
                         original_worker = transport._owned_worker
                         owned_publisher = controller._journal_publisher
@@ -550,14 +585,18 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                             assert program_decision_projection_arguments(owned_publisher, completion.sequence) == {}
                         finally:
                             owned_publisher._source_cursor = original_cursor
-                    envelope = await qualify_captured_pending_program_decision(controller, qualifier_candidate,
-                        completion.record_id, recovered_intents, cold=cold, capture=captured, packet=basis_packet,
-                        block=block, population=population, execution_policy=policy,
-                        protection_profile=profile, outside_rth=False)
-                    assert envelope.qualification.selection == selected_again
+                    if not automatic:
+                        envelope = await qualify_captured_pending_program_decision(controller, qualifier_candidate,
+                            completion.record_id, recovered_intents, cold=cold, capture=captured, packet=basis_packet,
+                            block=block, population=population, execution_policy=policy,
+                            protection_profile=profile, outside_rth=False)
+                        retained_qualification = envelope.qualification
+                    else:
+                        retained_qualification = auto_result["qualification"]
+                    assert retained_qualification.selection == selected_again
                     projected = program_decision_projection_arguments(controller._journal_publisher,
                         completion.sequence)["rule_decision_qualifications"]
-                    assert projected[completion.record_id] is envelope.qualification
+                    assert projected[completion.record_id] is retained_qualification
                     assert controller._journal_publisher.fenced_sequence == 0
                     with pytest.raises(ValueError, match="cannot be replaced"):
                         await qualify_captured_pending_program_decision(controller, qualifier_candidate,

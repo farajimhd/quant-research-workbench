@@ -28,6 +28,40 @@ from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix, load_v
 _RECOVERY_PROOF = object()
 
 
+def project_pending_program_policy_events(records, *, executions, run_month,
+        attempt_id, batch_id, prior_batch_id, source_cursor):
+    """Normalize an owned pending suffix using the shared journal projector.
+
+    These rows carry no durable receipt; caller custody and independent native
+    financial comparison remain required before pending decision qualification.
+    """
+    from src.trading_runtime.arte_journal_projection import project_journal_record
+    raw_keys = ("strategy_id", "canonical_strategy_revision", "canonical_run_id", "canonical_metadata")
+    lineages = {execution.order_ref: ({key: execution.raw.get(key) for key in raw_keys},
+        execution.account, execution.symbol, execution.conid) for execution in executions}
+    result = []
+    for record in records:
+        detail, family = None, None
+        event = dict(run_id=record.run_id, sequence=record.sequence,
+            category=record.category, entity_type=record.entity_type, entity_id=record.entity_id,
+            event_time=record.event_time, account_id=record.account_id,
+            correlation_id=record.payload.get("correlation_id", ""),
+            causation_id=record.payload.get("causation_id", ""))
+        if record.category == "execution" or record.payload.get("signal_type") == "program_boundary_completed":
+            batch = project_journal_record(record, run_month=run_month, attempt_id=attempt_id,
+                batch_id=batch_id, prior_batch_id=prior_batch_id, source_cursor=source_cursor,
+                committed_order_lineage=lineages)
+            event = dict(batch.events[0])
+            if record.entity_type == "fill":
+                family, detail = "trading_execution_v1", dict(batch.executions[0])
+            elif record.entity_type == "commission":
+                family, detail = "trading_commission_v1", dict(batch.commissions[0])
+            else:
+                family, detail = "trading_strategy_signal_v2", dict(batch.signals[0])
+        result.append(TypedJournalEvent(event, family, detail))
+    return tuple(result)
+
+
 def _position_geometry(rows, account):
     from src.trading_runtime.ibkr_schema import PortfolioPosition
     from decimal import localcontext

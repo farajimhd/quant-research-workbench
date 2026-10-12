@@ -3,6 +3,127 @@ from datetime import datetime
 from collections.abc import Mapping
 
 
+async def dispatch_qualified_program_boundary(controller, block, population, *, packet,
+        ordinal, assignment_id, execution_policy, protection_profile, outside_rth, terminal=False):
+    """Capture, dispatch, independently qualify and retain one native boundary.
+
+    The caller supplies the independently replayed policy prefix. Publication
+    stays batched by the existing publisher; no producer or writer starts here.
+    """
+    from dataclasses import replace
+    from .program_clock_financial_basis import capture_program_clock_financial_basis
+    from .program_policy_recovery import (RecoveredProgramPolicy, _RECOVERY_PROOF,
+        _ProgramPolicyContinuationSeal, program_policy_fingerprint)
+    from .program_runtime_recovery import build_recovered_program_runtime
+    from .program_financial_recovery import compare_captured_program_financial_runtime
+    from .backtest_program_publication import qualify_captured_pending_program_decision
+    from .backtest_typed_publisher import BacktestTypedJournalPublisher
+    from .backtest_journal_memory import BacktestMemoryJournal
+    from .qmd_columnar_history_transport import _owned_worker
+    from src.trading_runtime.arte_portfolio_recovery import recover_prepared_portfolio_engine_state
+    from .program_clock_financial_basis import prepare_program_clock_financial_basis
+    from .replay_run_service import ReplayRunController
+    from .backtest_program_inputs import PreparedProgramBlock
+    from .qmd_columnar_population import CertifiedPopulationWindow
+    if (type(controller) is not ReplayRunController or type(block) is not PreparedProgramBlock
+            or type(population) is not CertifiedPopulationWindow or type(ordinal) is not int
+            or type(outside_rth) is not bool or type(terminal) is not bool):
+        raise ValueError("Qualified dispatch requires its native prepared scope")
+    if controller._program_dispatch_failure is not None:
+        raise RuntimeError("Program dispatch requires recovery after an uncertain boundary") from controller._program_dispatch_failure
+    if type(controller._journal_publisher) is not BacktestTypedJournalPublisher:
+        raise ValueError("Qualified dispatch requires its owned typed publisher")
+    publisher = controller._journal_publisher
+    fence = (publisher.fenced_sequence, publisher._batch_id, publisher._source_cursor)
+    def require_publisher():
+        if (controller._journal_publisher is not publisher or publisher.journal is not controller._journal
+                or publisher.writer.journal_profile != "backtest_v4" or publisher._error is not None
+                or publisher._terminal_task is not None
+                or publisher._task is not None and not publisher._task.done()
+                or (publisher.fenced_sequence, publisher._batch_id, publisher._source_cursor) != fence):
+            raise ValueError("Qualified dispatch lost its idle owned publisher")
+    require_publisher()
+    actor, runtime, journal = controller._program_strategy, controller._runtime, controller._journal
+    listing = actor._listings[assignment_id]
+    row, _ = block.row_for(listing, ordinal)
+    at = row["boundary_at"]
+    if controller.program_order_observation(assignment_id=assignment_id, at=at).unobserved_order_ids:
+        await runtime.order_manager.reconcile()
+    capture = await capture_program_clock_financial_basis(controller, at=at)
+    seal = getattr(packet, "_continuation_seal", None)
+    if (type(packet) is not RecoveredProgramPolicy or packet._proof is not _RECOVERY_PROOF
+            or type(seal) is not _ProgramPolicyContinuationSeal or seal.token is not _RECOVERY_PROOF
+            or (packet.run_id, packet.journal_sequence, packet.execution_count, packet.completion_count,
+                tuple(sorted(packet.completed_source_sequences.items())), packet.source_commit_hashes, packet.state_hash)
+               != (seal.run_id, seal.journal_sequence, seal.execution_count, seal.completion_count,
+                   seal.completed, seal.source_hashes, seal.state_hash)
+            or packet.run_id != controller.run_id or packet.journal_sequence != capture.journal_sequence
+            or packet.state_hash != capture.policy_hash or program_policy_fingerprint(packet.actor) != packet.state_hash):
+        raise ValueError("Qualified dispatch policy differs from its captured basis")
+    prepared = await _owned_worker(prepare_program_clock_financial_basis, capture)
+    cold = await _owned_worker(recover_prepared_portfolio_engine_state,
+        run_id=controller.run_id, profiles=tuple(state.profile for state in runtime.portfolio.states.values()),
+        run_account_ids=runtime.config.account_ids, prepared=prepared.portfolio, cutoff_at=at)
+    candidate = build_recovered_program_runtime(replace(runtime.config, write_progress_checkpoints=False),
+        actor, BacktestMemoryJournal(run_id=controller.run_id, initial_sequence=capture.journal_sequence),
+        portfolio_recovery=cold, oms_image=capture.oms, broker_image=runtime.broker.checkpoint_state(),
+        simulation_config=runtime.broker.config, completed_at=at, intent_planner=controller._planner,
+        strategy_configuration=dict(controller.definition.configuration_revision["payload"].get("strategy") or {}),
+        groups=tuple(runtime.portfolio.groups.values()), drawdown_measure_policy=runtime.portfolio.drawdown_measure_policy)
+    dispatched = False
+    try:
+        await candidate.initialize(record_lifecycle=False)
+        await _owned_worker(compare_captured_program_financial_runtime, candidate, cold, capture)
+        from .program_clock_financial_basis import verify_owned_program_clock_financial_basis
+        await _owned_worker(verify_owned_program_clock_financial_basis, controller, capture)
+        require_publisher()
+        if journal.latest_sequence(controller.run_id) != capture.journal_sequence:
+            raise ValueError("Qualified dispatch journal changed before selection")
+        dispatched = True
+        result = await controller.dispatch_prepared_program_boundary(block, population,
+            ordinal=ordinal, assignment_id=assignment_id, execution_policy=execution_policy,
+            protection_profile=protection_profile, outside_rth=outside_rth, terminal=terminal)
+        if "decision_basis" not in result:
+            return result
+        parent, children = result["decision_basis"]
+        def intents():
+            from src.trading_runtime.arte_journal_projection import project_journal_record
+            from src.trading_runtime.arte_intent_projection import ProjectedIntent, RecoveredIntent, restore_strategy_intent
+            wanted = {child["strategy_intent_id"] for child in children}
+            recovered = {}
+            for record in journal.unfenced_records(after_sequence=capture.journal_sequence,
+                    through_sequence=parent["decision_sequence"]):
+                if (record.category, record.entity_type) != ("strategy", "strategy_intent"):
+                    continue
+                batch = project_journal_record(record, run_month=publisher.run_month,
+                    attempt_id=publisher.attempt_id, batch_id=parent["batch_id"],
+                    prior_batch_id=publisher._batch_id, source_cursor=publisher._source_cursor,
+                    expected_config=dict(strategy_id=actor.strategy_id, strategy_revision=actor.revision))
+                excluded = {"record_id", "parent_record_id", "run_id", "event_month", "batch_id", "account_id", "content_hash"}
+                core = {key: value for key, value in batch.intents[0].items() if key not in excluded}
+                core["event_time"] = record.event_time.isoformat()
+                slices = tuple({"intent_id": core["intent_id"], **{key: value for key, value in child.items()
+                    if key not in excluded}} for child in batch.intent_slices)
+                if core["intent_id"] in recovered:
+                    raise ValueError("Qualified dispatch repeats a pending intent")
+                recovered[core["intent_id"]] = RecoveredIntent(record.sequence, record.account_id,
+                    record.record_id, batch.batch_id, restore_strategy_intent(ProjectedIntent(core, slices)))
+            if set(recovered) != wanted:
+                raise ValueError("Qualified dispatch pending intent coverage differs")
+            return tuple(recovered[child["strategy_intent_id"]] for child in children)
+        records = await _owned_worker(intents)
+        envelope = await qualify_captured_pending_program_decision(controller, candidate, parent["record_id"],
+            records, cold=cold, capture=capture, packet=packet, block=block, population=population,
+            execution_policy=execution_policy, protection_profile=protection_profile, outside_rth=outside_rth)
+        return {**result, "qualification": envelope.qualification}
+    except BaseException as exc:
+        if dispatched:
+            controller._program_dispatch_failure = exc
+        raise
+    finally:
+        await candidate.finish()
+
+
 async def dispatch_prepared_program_clock(controller, blocks, population, *, at,
         assignment_order, execution_policy, protection_profiles, outside_rth, terminal=False):
     """Validate full coverage before dispatching the caller's explicit order.
