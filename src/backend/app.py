@@ -5861,18 +5861,28 @@ async def trading_backtest_typed_financial_page(
     after_commission_sequence: int = Query(default=0, ge=0),
     limit: int = Query(default=500, ge=1, le=1000),
     exact_prices: bool = False,
+    complete_evidence: bool = False,
+    maximum_rows: int | None = Query(default=None, ge=1, le=1_000_000),
 ) -> dict[str, Any]:
     """Read only committed typed financial facts; this does not open saved review."""
     try:
         normalized = str(uuid.UUID(run_id))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid Backtest run id") from exc
+    if complete_evidence and (not exact_prices or maximum_rows is None
+            or after_fill_sequence != 0 or after_commission_sequence != 0):
+        raise HTTPException(status_code=400,
+            detail="Complete financial evidence requires exact prices, an explicit row bound and zero cursors")
 
     def read_page() -> dict[str, Any]:
         from contextlib import closing
         from src.trading_runtime.arte_journal_reader import readonly_typed_journal_client
         from src.backend.typed_backtest_financial_review import load_typed_backtest_financial_page
         with closing(readonly_typed_journal_client()) as client:
+            if complete_evidence:
+                from src.backend.typed_backtest_financial_review import load_typed_backtest_financial_evidence
+                return load_typed_backtest_financial_evidence(client, normalized,
+                    page_size=limit, maximum_rows=maximum_rows)
             return load_typed_backtest_financial_page(
                 client, normalized, after_fill_sequence=after_fill_sequence,
                 after_commission_sequence=after_commission_sequence, limit=limit,

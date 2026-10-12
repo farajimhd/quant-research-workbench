@@ -149,3 +149,28 @@ class BacktestReviewAPITests(IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), page)
         client.close.assert_called_once()
+
+    async def test_complete_financial_http_evidence_uses_owned_exact_reader(self):
+        run_id = str(uuid4())
+        client = Mock()
+        page = {"complete": True, "fills": [], "commissions": []}
+        with (patch('src.trading_runtime.arte_journal_reader.readonly_typed_journal_client', return_value=client),
+              patch('src.backend.typed_backtest_financial_review.load_typed_backtest_financial_evidence', return_value=page) as read):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as http:
+                response = await http.get(f'/api/trading/backtest/runs/{run_id}/typed-financial-page'
+                    '?exact_prices=true&complete_evidence=true&maximum_rows=5000&limit=100')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), page)
+        read.assert_called_once_with(client, run_id, page_size=100, maximum_rows=5000)
+        client.close.assert_called_once()
+
+    async def test_complete_financial_http_evidence_rejects_partial_scope_before_io(self):
+        run_id = str(uuid4())
+        with patch('src.trading_runtime.arte_journal_reader.readonly_typed_journal_client') as factory:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as http:
+                for query in ('complete_evidence=true',
+                    'complete_evidence=true&exact_prices=true',
+                    'complete_evidence=true&exact_prices=true&maximum_rows=50&after_fill_sequence=1'):
+                    response = await http.get(f'/api/trading/backtest/runs/{run_id}/typed-financial-page?{query}')
+                    self.assertEqual(response.status_code, 400)
+        factory.assert_not_called()
