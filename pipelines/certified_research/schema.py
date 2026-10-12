@@ -83,14 +83,17 @@ TABLES = (
           tuple(c(n,"UInt64","T64,ZSTD(1)") for n in ("event_count","source_trade_count","quote_event_count","reporting_delayed_trades","reporting_unknown_trades","reporting_invalid_trades","volume_ineligible_trades","price_ineligible_trades","execution_ineligible_trades","pre_0405_trades","pre_0405_volume_eligible_trades","invalid_trade_values","bid_int","ask_int")) +
           tuple(c(n,"Float64") for n in ("bid_size","ask_size","cumulative_volume","cumulative_notional","cumulative_execution_volume","cumulative_execution_notional")) +
           tuple(c(n,"UInt8") for n in ("price_valid","extremes_valid","volume_valid","quote_valid")), ORDER, MONTH),
-    Table("research_facts_v1", (c("dataset_id","UUID"),c("entity_kind","UInt8"),c("entity_key","UInt64","T64,ZSTD(1)"),
+    Table("research_facts_v1", (c("dataset_id","UUID"),c("attempt_id","UUID"),c("entity_kind","UInt8"),c("entity_key","UInt64","T64,ZSTD(1)"),
           c("metric_key","UInt32","T64,ZSTD(1)"),c("period_start","Nullable(Date)"),c("period_end","Nullable(Date)"),
+          c("context_kind","UInt8"),
           c("available_at","DateTime64(6,'UTC')","Delta,ZSTD(1)"),c("revision","UInt32","T64,ZSTD(1)"),
           c("value","Nullable(Float64)"),c("unit_key","UInt16"),c("status","UInt8"),c("precision","UInt8"),
           c("confidence","UInt8"),c("reason","LowCardinality(String)"),c("evidence_hash","FixedString(64)")),
-          ("dataset_id","entity_kind","entity_key","metric_key","available_at","period_end","revision"),"toYYYYMM(available_at)"),
+          ("dataset_id","entity_kind","entity_key","attempt_id","metric_key","available_at","period_end","revision"),"toYYYYMM(available_at)"),
     Table("research_metric_v1", (c("catalog_hash","FixedString(64)"),c("metric_key","UInt32"),c("name","LowCardinality(String)"),
           c("unit_key","UInt16"),c("formula","String")), ("catalog_hash","metric_key")),
+    Table("research_unit_v1", (c("unit_key","UInt16"),c("symbol","LowCardinality(String)"),
+          c("kind","UInt8")), ("unit_key",)),
     Table("research_v7_checkpoint_v1", UNIT + (c("boundary","UInt8"),c("boundary_us","UInt64","DoubleDelta,ZSTD(1)"),
           c("last_input_us","UInt64","Delta,ZSTD(1)"),c("parent_hash","FixedString(64)"),c("state_hash","FixedString(64)"),
           c("codec_version","UInt8"),c("payload","String")),
@@ -99,6 +102,13 @@ TABLES = (
           c("output_rows","UInt64","T64,ZSTD(1)"),c("output_hash","FixedString(64)"),c("parent_hash","FixedString(64)"),
           c("reason","LowCardinality(String)"),c("published_at","DateTime64(6,'UTC')")),
           ("dataset_id","listing_key","session_date","product","attempt_id"),MONTH),
+    Table("research_reference_receipt_v1", (c("dataset_id","UUID"),c("entity_kind","UInt8"),
+          c("entity_key","UInt64","T64,ZSTD(1)"),c("family","LowCardinality(String)"),
+          c("range_start","Date"),c("range_end","Date"),c("attempt_id","UUID"),c("status","UInt8"),
+          c("output_rows","UInt64","T64,ZSTD(1)"),c("output_hash","FixedString(64)"),
+          c("parent_hash","FixedString(64)"),c("catalog_hash","FixedString(64)"),
+          c("published_at","DateTime64(6,'UTC')")),
+          ("dataset_id","entity_kind","entity_key","family","range_start","range_end","attempt_id"),"toYYYYMM(range_end)"),
 )
 
 
@@ -119,7 +129,7 @@ def verify_storage(query, database="arte", *, require_tables=False):
     if not policy or any(r["disk_name"] != STORAGE_POLICY for r in policy):
         raise ValueError("live_market_ssd policy is absent or routes outside live_market_ssd")
     names = ",".join(literal(t.name) for t in TABLES)
-    rows = query(f"SELECT name,storage_policy FROM system.tables WHERE database={literal(database)} AND name IN ({names})")
+    rows = query(f"SELECT name,storage_policy,engine,sorting_key,partition_key FROM system.tables WHERE database={literal(database)} AND name IN ({names})")
     if require_tables and {r["name"] for r in rows} != {t.name for t in TABLES}:
         raise ValueError("Required research tables are missing")
     if any(r["storage_policy"] != STORAGE_POLICY for r in rows):
@@ -128,6 +138,13 @@ def verify_storage(query, database="arte", *, require_tables=False):
     if any(r["disk_name"] != STORAGE_POLICY for r in parts):
         raise ValueError("Research parts are outside live_market_ssd")
     if rows:
+        definitions={t.name:t for t in TABLES}
+        for row in rows:
+            table=definitions[row['name']]
+            compact=lambda value:value.replace(' ','').replace('`','')
+            if (row['engine']!='MergeTree' or compact(row['sorting_key'])!=','.join(table.order)
+                    or compact(row['partition_key'])!=compact(table.partition)):
+                raise ValueError('Existing research engine/sorting/partition differs; explicit migration required')
         columns = query(f"SELECT table,name,type,compression_codec FROM system.columns "
                         f"WHERE database={literal(database)} AND table IN ({names})")
         actual={(r['table'],r['name']):(r['type'].replace(' ',''),r['compression_codec'].replace(' ','')) for r in columns}
@@ -139,3 +156,19 @@ def verify_storage(query, database="arte", *, require_tables=False):
                          if expected.get(key)!=actual.get(key)]
             raise ValueError(f'Existing research schema/type/codec differs; explicit migration required: {differences[:3]}')
     return dict(tables=len(rows), parts=len(parts), schema_hash=schema_hash())
+
+
+def verify_auxiliary_storage(query,database,names):
+    """Staging is operational data too; existing misplaced parts block writers."""
+    identifier(database)
+    for name in names:identifier(name)
+    if not names:raise ValueError('Auxiliary table inventory is empty')
+    selected=','.join(literal(name) for name in names)
+    rows=query(f'SELECT name,storage_policy FROM system.tables WHERE database={literal(database)} '
+               f'AND name IN ({selected})')
+    if {r['name'] for r in rows}!=set(names) or any(r['storage_policy']!=STORAGE_POLICY for r in rows):
+        raise ValueError('Required staging tables are absent or misplaced')
+    parts=query(f'SELECT table,disk_name FROM system.parts WHERE active AND database={literal(database)} '
+                f'AND table IN ({selected}) GROUP BY table,disk_name')
+    if any(r['disk_name']!=STORAGE_POLICY for r in parts):
+        raise ValueError('Staging parts are outside live_market_ssd')

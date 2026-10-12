@@ -44,6 +44,40 @@ def ensure_identity(query,database,claim,kind,source_id):
     return key
 
 
+def ensure_identities(query,database,claim,identities,*,maximum_batch=4096):
+    """Bounded metadata batch; caller holds global dictionary ownership.
+
+    One lookup and one insert/readback per batch replaces per-listing round
+    trips. Collision checks run before any insert and again on exact readback.
+    """
+    from .contracts import identifier
+    identifier(database);claim.check()
+    values=tuple(sorted(set(identities)))
+    if len(values)>maximum_batch:raise ValueError('Identity batch exceeds its bound')
+    if not values:return {}
+    desired={(kind,identity_key(kind,source_id)):source_id for kind,source_id in values}
+    if len(desired)!=len(values):raise ValueError('Identity collision inside batch')
+    keys=','.join(f'({kind},{key})' for kind,key in desired)
+    ids=','.join(f'({kind},{literal(source_id)})' for kind,source_id in values)
+    sql=(f'SELECT entity_kind,entity_key,source_id FROM {database}.research_identity_v1 '
+         f'WHERE (entity_kind,entity_key) IN ({keys}) OR (entity_kind,source_id) IN ({ids})')
+    rows=query(sql);found={}
+    for row in rows:
+        pair=(int(row['entity_kind']),int(row['entity_key']))
+        if pair in found or desired.get(pair)!=row['source_id']:
+            raise ValueError('Identity batch has collisions, duplicates or unstable mappings')
+        found[pair]=row['source_id']
+    missing=[dict(entity_kind=kind,entity_key=key,source_id=value)
+             for (kind,key),value in desired.items() if (kind,key) not in found]
+    if missing:
+        claim.check();insert_rows(query,database,'research_identity_v1',missing,maximum_rows=maximum_batch)
+        claim.check();rows=query(sql)
+        actual={(int(r['entity_kind']),int(r['entity_key'])):r['source_id'] for r in rows}
+        if len(actual)!=len(rows) or actual!=desired:
+            raise ValueError('Identity batch readback is uncertain or duplicated')
+    return {(kind,source_id):identity_key(kind,source_id) for kind,source_id in values}
+
+
 @dataclass(frozen=True)
 class ListingInterval:
     listing_id: str

@@ -22,6 +22,10 @@ CONFLICT=3
 EXACT_TIME=1
 CONSERVATIVE_TIME=2
 UNITS={'USD':1,'shares':2,'ratio':3,'days':4,'USD/share':5,'percent':6,'shares/day':7}
+CURRENCY_UNITS={'USD':1,'EUR':8,'CAD':9,'GBP':10,'CNY':11,'JPY':12,'AUD':13,'CHF':14,
+                'HKD':15,'INR':16,'SEK':17,'NOK':18,'DKK':19,'KRW':20,'BRL':21,'SGD':22,'TWD':23}
+UNITS.update(CURRENCY_UNITS)
+UNITS.update({currency+'/share':100+key for currency,key in CURRENCY_UNITS.items() if currency!='USD'})
 
 
 @dataclass(frozen=True)
@@ -113,8 +117,14 @@ def lookup_sql(database,dataset_id,entities,metrics,cutoff,*,strict_prior=False)
     metric_list=','.join(str(m) for m in sorted(set(metrics)))
     stamp=literal(cutoff.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f'))
     comparator='<' if strict_prior else '<='
+    # A pending/failed attempt must never be visible to a downstream lookup.
+    admitted=(f'SELECT attempt_id FROM {database}.research_reference_receipt_v1 '
+              f'WHERE dataset_id=toUUID({literal(dataset_id)}) AND status IN (1,2) '
+              'GROUP BY attempt_id HAVING count()=1')
     return (f'SELECT * FROM {database}.research_facts_v1 WHERE dataset_id=toUUID({literal(dataset_id)}) '
+            f'AND attempt_id IN ({admitted}) '
             f'AND (entity_kind,entity_key) IN ({entity_list}) AND metric_key IN ({metric_list}) '
             f'AND available_at{comparator}toDateTime64({stamp},6,\'UTC\') '
-            'ORDER BY entity_kind,entity_key,metric_key,period_end DESC NULLS LAST,available_at DESC,revision DESC '
+            'ORDER BY entity_kind,entity_key,metric_key,period_end DESC NULLS LAST,available_at DESC,revision DESC, '
+            'context_kind DESC,period_start ASC NULLS LAST,unit_key,evidence_hash '
             'LIMIT 1 BY entity_kind,entity_key,metric_key')

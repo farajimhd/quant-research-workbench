@@ -6,16 +6,18 @@ All tables use `MergeTree`, `live_market_ssd` and lossless per-column compressio
 
 ## research_facts_v1
 
-**Order:** `dataset_id, entity_kind, entity_key, metric_key, available_at, period_end, revision`. **Partition:** `toYYYYMM(available_at)`.
+**Order:** `dataset_id, entity_kind, entity_key, attempt_id, metric_key, available_at, period_end, revision`. **Partition:** `toYYYYMM(available_at)`.
 
 | Column | Type | Codec |
 | --- | --- | --- |
 | `dataset_id` | `UUID` | `ZSTD(1)` |
+| `attempt_id` | `UUID` | `ZSTD(1)` |
 | `entity_kind` | `UInt8` | `ZSTD(1)` |
 | `entity_key` | `UInt64` | `T64,ZSTD(1)` |
 | `metric_key` | `UInt32` | `T64,ZSTD(1)` |
 | `period_start` | `Nullable(Date)` | `ZSTD(1)` |
 | `period_end` | `Nullable(Date)` | `ZSTD(1)` |
+| `context_kind` | `UInt8` | `ZSTD(1)` |
 | `available_at` | `DateTime64(6,'UTC')` | `Delta(8),ZSTD(1)` |
 | `revision` | `UInt32` | `T64,ZSTD(1)` |
 | `value` | `Nullable(Float64)` | `ZSTD(1)` |
@@ -37,6 +39,16 @@ All tables use `MergeTree`, `live_market_ssd` and lossless per-column compressio
 | `name` | `LowCardinality(String)` | `ZSTD(1)` |
 | `unit_key` | `UInt16` | `ZSTD(1)` |
 | `formula` | `String` | `ZSTD(1)` |
+
+## research_unit_v1
+
+**Order:** `unit_key`. **Partition:** `tuple()`.
+
+| Column | Type | Codec |
+| --- | --- | --- |
+| `unit_key` | `UInt16` | `ZSTD(1)` |
+| `symbol` | `LowCardinality(String)` | `ZSTD(1)` |
+| `kind` | `UInt8` | `ZSTD(1)` |
 
 ## research_v7_checkpoint_v1
 
@@ -72,4 +84,24 @@ All tables use `MergeTree`, `live_market_ssd` and lossless per-column compressio
 | `output_hash` | `FixedString(64)` | `ZSTD(1)` |
 | `parent_hash` | `FixedString(64)` | `ZSTD(1)` |
 | `reason` | `LowCardinality(String)` | `ZSTD(1)` |
+| `published_at` | `DateTime64(6,'UTC')` | `ZSTD(1)` |
+
+## research_reference_receipt_v1
+
+**Order:** `dataset_id, entity_kind, entity_key, family, range_start, range_end, attempt_id`. **Partition:** `toYYYYMM(range_end)`.
+
+| Column | Type | Codec |
+| --- | --- | --- |
+| `dataset_id` | `UUID` | `ZSTD(1)` |
+| `entity_kind` | `UInt8` | `ZSTD(1)` |
+| `entity_key` | `UInt64` | `T64,ZSTD(1)` |
+| `family` | `LowCardinality(String)` | `ZSTD(1)` |
+| `range_start` | `Date` | `ZSTD(1)` |
+| `range_end` | `Date` | `ZSTD(1)` |
+| `attempt_id` | `UUID` | `ZSTD(1)` |
+| `status` | `UInt8` | `ZSTD(1)` |
+| `output_rows` | `UInt64` | `T64,ZSTD(1)` |
+| `output_hash` | `FixedString(64)` | `ZSTD(1)` |
+| `parent_hash` | `FixedString(64)` | `ZSTD(1)` |
+| `catalog_hash` | `FixedString(64)` | `ZSTD(1)` |
 | `published_at` | `DateTime64(6,'UTC')` | `ZSTD(1)` |

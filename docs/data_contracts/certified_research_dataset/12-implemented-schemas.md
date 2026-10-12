@@ -38,3 +38,13 @@ Acquisition adapters now delegate to the real updater/reporting entry points wit
 ## Remaining implementation
 
 Wire source acquisition/migration receipts; build dated normalized identities and membership; certify public-as-of SEC/short/float values; publish compatible causal checkpoints and dependency receipts; add complete run/resume/verify paths and measured representative performance. The launcher currently exposes schema inspection and read-only preflight/plan, and explicitly reports campaign execution disabled.
+
+## Runnable producer slices
+
+`producer.run_market` aggregates strict events once, publishes normalized bars and liquidity, then runs indicators and causal session checkpoints as dependent consumers. Every product has independent readback evidence. Verified resume performs no new inserts. The controller must still provide certified predecessor states, source guards and ownership; this is not yet a complete campaign launch path.
+
+`reference_producer.run_sec` scans selected issuer fundamentals into compressed ClickHouse staging once, then publishes normalized facts and deduplicated provenance. Retained `sec_core` context supplies duration start/end dates; unmatched canonical records retain an explicit unknown-context marker. Original acceptance time is preferred; authoritative filing dates use a conservative following New York day. Conflicting clocks or values produce null conflict facts. Native currencies have distinct unit keys, without implied FX conversion.
+
+Fact attempts become readable only through verified reference receipts. As-of lookup orders by period end and original public availability, and deterministically prefers a known context and the longest reported duration when these tie. Raw facts preserve all durations and currencies. Derived calculations must select compatible periods, units and share bases explicitly; they must not use the generic tie preference as a formula definition.
+
+Bounded live tests cover these producer paths and exact resume behavior. Full-universe throughput, SEC source-gap admission, float/short producers, historical membership and the final dataset seal remain to be implemented and qualified.

@@ -15,11 +15,14 @@ from pipelines.market_sip.events import market_day_sql
 from pipelines.certified_research.execution import Unit,execute
 from pipelines.certified_research import market
 from pipelines.certified_research.publication import Scope,Publisher,KeeperClaim,insert_rows
-from pipelines.certified_research.identity import ListingInterval,validate_intervals,identity_key,ensure_identity,membership_at,LISTING
+from pipelines.certified_research.identity import ListingInterval,validate_intervals,identity_key,ensure_identity,ensure_identities,membership_at,LISTING
 from pipelines.certified_research import facts
 from pipelines.certified_research import source,acquisition
 from pipelines.certified_research import v7
 from pipelines.certified_research import context
+from pipelines.certified_research import producer
+from pipelines.certified_research import reference_producer,reference_sql
+from pipelines.certified_research.reference_publication import ReferenceScope,ReferencePublisher
 
 
 class Contracts(unittest.TestCase):
@@ -240,6 +243,55 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_real_sec_producer_normalizes_once_and_certifies_public_vintages(self):
+        dataset=str(uuid.uuid4());selected=tuple(m for m in facts.catalog() if m.name=='fundamental.cash')
+        scope=ReferenceScope(dataset,1,991,'fundamentals',date(2026,1,1),date(2026,8,21),'a'*64,facts.catalog_hash())
+        class Claim:
+            def check(self):pass
+        logs=[]
+        def query(sql,*args,**kwargs):logs.append(sql);return self.client.query(sql,*args,**kwargs)
+        receipt=reference_producer.run_sec(scope,'320193',selected,query,Claim(),lambda:None,database=self.database)
+        self.assertGreater(int(receipt['output_rows']),0)
+        rows=self.client.query(facts.lookup_sql(self.database,dataset,[(1,991)],[selected[0].key],
+            datetime(2026,8,21,12,tzinfo=boundaries(date(2026,8,21))['PM'].tzinfo)))
+        self.assertEqual(len(rows),1);self.assertEqual(int(rows[0]['status']),1)
+        proof=self.client.query(f"SELECT count() n FROM {self.database}.research_provenance_v1")
+        self.assertGreater(int(proof[0]['n']),0)
+        logs.clear()
+        self.assertEqual(reference_producer.run_sec(scope,'320193',selected,query,Claim(),lambda:None,database=self.database),receipt)
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+    def test_executable_market_dag_shared_aggregate_and_verified_resume(self):
+        from tests.test_streaming_level_book import engine
+        from threading import Lock
+        rules=({'token_id':1,'modifier_int':0,'update_last':1,'update_high_low':1,'update_volume':1},)
+        day=date(2026,8,21);unit=market.MarketUnit(str(uuid.uuid4()),day,'TEST',91,str(uuid.uuid4()))
+        source_sql=(f"SELECT toUInt64({market_day_sql.bounds(day,'04:05:00')}+number*100000) sip_timestamp_us,"
+            'toUInt64(number) ordinal,toUInt8(if(number=0,6,71)) event_meta,toUInt32(if(number=0,10200,10000)) price_primary_int,'
+            'toUInt32(if(number=0,9800,0)) price_secondary_int,toFloat32(5) size_primary,toFloat32(20) size_secondary,'
+            +','.join(f'toUInt8(0) condition_token_{i}' for i in range(1,6))+' FROM numbers(3)')
+        request=producer.MarketRequest(unit,'a'*64,'b'*64,rules,{},'c'*64,'d'*64,boundaries(day)['REGULAR'],True)
+        class Claim:
+            def check(self):pass
+        logs=[];lock=Lock()
+        def factory():
+            real=self.builder.Client(self.args,persistent=False)
+            class Client:
+                def query(self,sql,*args,**kw):
+                    with lock:logs.append(sql[:100])
+                    return real.query(sql,*args,**kw)
+                def close(self):real.close()
+            return Client()
+        result=producer.run_market(request,factory,Claim(),lambda:None,engine,
+                                   database=self.database,fixture_source=source_sql)
+        self.assertEqual(result['status'],'complete',str(result['errors']))
+        self.assertEqual(sum(s.startswith(f'INSERT INTO {self.database}.research_stage_liquidity_v1') for s in logs),1)
+        bar=result['results']['bars'];technical=result['results']['technical']
+        state=producer.indicator_state(self.client.query,self.database,unit,technical['attempt_id'],{},bar_attempt=bar['attempt_id'])
+        self.assertEqual(set(state),set(market_day_sql.FRAMES));self.assertTrue(all(s['close']==1 for s in state.values()))
+        logs.clear()
+        resumed=producer.run_market(request,factory,Claim(),lambda:None,engine,database=self.database,fixture_source=source_sql)
+        self.assertEqual(resumed['status'],'complete')
+        self.assertFalse(any(s.startswith('INSERT INTO') for s in logs))
     @classmethod
     def setUpClass(cls):
         sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
@@ -247,6 +299,7 @@ class ClickHouseIntegration(unittest.TestCase):
         cls.builder=builder
         args=builder.parse_args(['--date','2026-01-02','--max-threads','2',
                                 '--env-file',str(builder.ROOT/'.env')])
+        cls.args=args
         cls.client=builder.Client(args,persistent=False)
         cls.database='certified_research_test_'+uuid.uuid4().hex
         cls.created=False
@@ -254,7 +307,8 @@ class ClickHouseIntegration(unittest.TestCase):
             s.verify_storage(cls.client.query,cls.database)
             cls.client.query('CREATE DATABASE '+cls.database,read=False)
             cls.created=True
-            for ddl in (*s.ddl(cls.database),*market_day_sql.ddl(cls.database),*market.staging_ddl(cls.database)):
+            for ddl in (*s.ddl(cls.database),*market_day_sql.ddl(cls.database),*market.staging_ddl(cls.database),
+                        reference_producer.staging_table().ddl(cls.database)):
                 cls.client.query(ddl,read=False)
         except BaseException:
             cls.tearDownClass()
@@ -318,6 +372,8 @@ class ClickHouseIntegration(unittest.TestCase):
         claim=Claim();dataset=str(uuid.uuid4())
         key=ensure_identity(self.client.query,self.database,claim,LISTING,'listing:fixture')
         self.assertEqual(ensure_identity(self.client.query,self.database,claim,LISTING,'listing:fixture'),key)
+        bulk=ensure_identities(self.client.query,self.database,claim,((LISTING,'listing:fixture'),(LISTING,'listing:second')))
+        self.assertEqual(bulk[(LISTING,'listing:fixture')],key)
         start=datetime(2026,1,2,9,tzinfo=timezone.utc);end=start+timedelta(days=3)
         active=ListingInterval('listing:fixture','security:fixture','issuer:fixture','IPO',321,start,end,
                                'US','NASDAQ','USD','STK',True,True,False,False,'a'*64)
@@ -327,15 +383,31 @@ class ClickHouseIntegration(unittest.TestCase):
         self.assertEqual(len(membership_at(self.client.query,self.database,dataset,start)),1)
         self.assertFalse(membership_at(self.client.query,self.database,dataset,end))
 
+    def test_sec_duration_context_recovered_from_retained_mirror_without_files(self):
+        selected=tuple(m for m in facts.catalog() if m.name=='fundamental.operating_cash_flow')
+        sql=reference_sql.sec_projection(str(uuid.uuid4()),str(uuid.uuid4()),992,'320193',
+                                        date(2026,1,1),date(2026,8,21),metrics=selected)
+        rows=self.client.query(f'SELECT * FROM ({sql}) WHERE context_kind=2 LIMIT 3')
+        self.assertTrue(rows)
+        self.assertTrue(all(r['period_start'] is not None and r['period_start']<=r['period_end'] for r in rows))
+        self.assertTrue(all(r['reason']=='' for r in rows))
+
     def test_public_asof_facts_preserve_original_vintage_until_revision(self):
         from datetime import timezone
-        dataset=str(uuid.uuid4());metric=facts.catalog()[0].key
-        base=dict(dataset_id=dataset,entity_kind=1,entity_key=19,metric_key=metric,period_start=None,
-                  period_end='2025-12-31',unit_key=1,status=1,precision=1,confidence=100,
+        dataset=str(uuid.uuid4());metric=facts.catalog()[0].key;attempt=str(uuid.uuid4())
+        base=dict(dataset_id=dataset,attempt_id=attempt,entity_kind=1,entity_key=19,metric_key=metric,period_start=None,
+                  period_end='2025-12-31',context_kind=0,unit_key=1,status=1,precision=1,confidence=100,
                   reason='',evidence_hash='a'*64)
         rows=[dict(base,available_at='2026-02-10 12:00:00.000000',revision=0,value=100.),
               dict(base,available_at='2026-03-01 12:00:00.000000',revision=1,value=110.)]
         insert_rows(self.client.query,self.database,'research_facts_v1',rows)
+        class Claim:
+            def check(self):pass
+        scope=ReferenceScope(dataset,1,19,'fundamentals',date(2026,1,1),date(2026,3,2),'a'*64,facts.catalog_hash())
+        pub=ReferencePublisher(self.client.query,self.database,Claim())
+        sql=facts.lookup_sql(self.database,dataset,[(1,19)],[metric],datetime(2026,2,11,tzinfo=timezone.utc))
+        self.assertFalse(self.client.query(sql)) # Rows alone do not establish authority.
+        pub.publish(scope,attempt,pub.evidence(scope,attempt))
         def read(at,strict=False):
             return self.client.query(facts.lookup_sql(self.database,dataset,[(1,19)],[metric],at,strict_prior=strict))
         self.assertFalse(read(datetime(2026,1,15,tzinfo=timezone.utc)))
