@@ -93,6 +93,18 @@ def program_policy_fingerprint(actor):
     return sha256(canonical_json(value).encode()).hexdigest()
 
 
+@dataclass(frozen=True, slots=True)
+class _ProgramPolicyContinuationSeal:
+    run_id: str
+    journal_sequence: int
+    execution_count: int
+    completion_count: int
+    completed: tuple
+    source_hashes: tuple
+    state_hash: str
+    token: object = field(repr=False)
+
+
 @dataclass(frozen=True)
 class RecoveredProgramPolicy:
     actor: AssignedProgramStrategy
@@ -104,6 +116,7 @@ class RecoveredProgramPolicy:
     source_commit_hashes: tuple[str, ...]
     state_hash: str
     _proof: object = field(repr=False)
+    _continuation_seal: object = field(default=None, repr=False)
 
 
 def _clock(value):
@@ -114,7 +127,8 @@ def _clock(value):
 
 
 def rebuild_program_policy_events(template, events, *, run_id, source_hashes,
-        blocks, population, executions, order_manager, maximum_events, last_sequence):
+        blocks, population, executions, order_manager, maximum_events, last_sequence,
+        initial_packet=None):
     """Consume verified journal order, never guessed timestamp sorting or signals as fills."""
     if (type(template) is not AssignedProgramStrategy
             or type(population) is not CertifiedPopulationWindow
@@ -153,6 +167,42 @@ def rebuild_program_policy_events(template, events, *, run_id, source_hashes,
     actor = AssignedProgramStrategy(template.program_release, template.assignments(), template._listings)
     seen, fees, completed = set(), set(), {}
     sequence = completions = 0
+    if initial_packet is not None:
+        from copy import deepcopy
+        seal = getattr(initial_packet, "_continuation_seal", None)
+        if (type(initial_packet) is not RecoveredProgramPolicy or initial_packet._proof is not _RECOVERY_PROOF
+                or type(seal) is not _ProgramPolicyContinuationSeal or seal.token is not _RECOVERY_PROOF
+                or (initial_packet.run_id, initial_packet.journal_sequence, initial_packet.execution_count,
+                    initial_packet.completion_count, tuple(sorted(initial_packet.completed_source_sequences.items())),
+                    initial_packet.source_commit_hashes, initial_packet.state_hash)
+                   != (seal.run_id, seal.journal_sequence, seal.execution_count, seal.completion_count,
+                       seal.completed, seal.source_hashes, seal.state_hash)
+                or initial_packet.run_id != run_id or not 0 <= initial_packet.journal_sequence <= last_sequence
+                or source_hashes[:len(initial_packet.source_commit_hashes)] != initial_packet.source_commit_hashes
+                or initial_packet.actor.program_release.header != template.program_release.header
+                or initial_packet.actor.assignments() != template.assignments()
+                or initial_packet.actor._listings != template._listings
+                or program_policy_fingerprint(initial_packet.actor) != initial_packet.state_hash):
+            raise ValueError("Program policy continuation differs from its verified packet")
+        actor.execution_state = deepcopy(initial_packet.actor.execution_state)
+        actor.target_state = deepcopy(initial_packet.actor.target_state)
+        actor.trail_state = deepcopy(initial_packet.actor.trail_state)
+        actor._selection_clocks = dict(initial_packet.actor._selection_clocks)
+        seen, fees = set(actor.execution_state._fills), set(actor.execution_state._fees)
+        completed = dict(initial_packet.completed_source_sequences)
+        sequence, completions = initial_packet.journal_sequence, initial_packet.completion_count
+        if (seen != fees or len(seen) != initial_packet.execution_count or not seen <= set(cached)
+                or any(type(value) is not int or not 1 <= value <= len(initial_packet.source_commit_hashes)
+                       for value in completed.values())):
+            raise ValueError("Program policy continuation ledger coverage differs")
+        before = program_policy_fingerprint(actor)
+        for identity in sorted(seen):
+            execution = cached[identity]
+            if execution.commission is None:
+                raise ValueError("Program policy continuation execution fee is missing")
+            actor.on_broker_executions((execution,), order_manager)
+        if program_policy_fingerprint(actor) != before:
+            raise ValueError("Program policy continuation changed its prior ledger")
     for item in events:
         sequence += 1
         if (sequence > maximum_events or type(item) is not TypedJournalEvent
@@ -244,8 +294,13 @@ def rebuild_program_policy_events(template, events, *, run_id, source_hashes,
             completions += 1
     if sequence != last_sequence or seen != set(cached) or fees != seen:
         raise ValueError("Program policy recovery prefix/cache coverage is incomplete")
+    if initial_packet is not None and program_policy_fingerprint(initial_packet.actor) != initial_packet.state_hash:
+        raise ValueError("Program policy packet changed during continuation")
+    state_hash = program_policy_fingerprint(actor)
+    seal = _ProgramPolicyContinuationSeal(run_id, sequence, len(seen), completions,
+        tuple(sorted(completed.items())), source_hashes, state_hash, _RECOVERY_PROOF)
     return RecoveredProgramPolicy(actor, sequence, len(seen), completions, MappingProxyType(completed),
-        run_id, source_hashes, program_policy_fingerprint(actor), _RECOVERY_PROOF)
+        run_id, source_hashes, state_hash, _RECOVERY_PROOF, seal)
 
 
 def verify_recovered_program_positions(packet, template, *, run_id, source_hashes,

@@ -78,6 +78,7 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 for source_offset in range(3):
                     source_row, _ = block.row_for("listing", ordinal + source_offset)
                     await publish_source_row(source_row)
+            previous_basis_packet = None
             for offset in range(3):
                 row, _ = block.row_for("listing", ordinal + offset)
                 at = row["boundary_at"]
@@ -481,6 +482,45 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                     population=population, executions=executions,
                     order_manager=controller._runtime.order_manager, maximum_events=1000,
                     last_sequence=basis_sequence)
+                empty_packet = rebuild_program_policy_events(actor, (), run_id=controller.run_id,
+                    source_hashes=(), blocks=(block,), population=population, executions=(),
+                    order_manager=controller._runtime.order_manager, maximum_events=1000, last_sequence=0)
+                continued = rebuild_program_policy_events(actor, events[:basis_sequence],
+                    run_id=controller.run_id, source_hashes=source_prefix_hashes, blocks=(block,),
+                    population=population, executions=executions, order_manager=controller._runtime.order_manager,
+                    maximum_events=1000, last_sequence=basis_sequence, initial_packet=empty_packet)
+                assert continued.state_hash == basis_packet.state_hash
+                assert continued.journal_sequence == basis_packet.journal_sequence
+                assert program_policy_fingerprint(empty_packet.actor) == empty_packet.state_hash
+                unchanged = rebuild_program_policy_events(actor, (), run_id=controller.run_id,
+                    source_hashes=source_prefix_hashes, blocks=(block,), population=population,
+                    executions=executions, order_manager=controller._runtime.order_manager,
+                    maximum_events=1000, last_sequence=basis_sequence, initial_packet=continued)
+                assert unchanged.state_hash == continued.state_hash
+                if previous_basis_packet is not None:
+                    advanced = rebuild_program_policy_events(actor,
+                        events[previous_basis_packet.journal_sequence:basis_sequence],
+                        run_id=controller.run_id, source_hashes=source_prefix_hashes, blocks=(block,),
+                        population=population, executions=executions, order_manager=controller._runtime.order_manager,
+                        maximum_events=1000, last_sequence=basis_sequence, initial_packet=previous_basis_packet)
+                    assert advanced.state_hash == basis_packet.state_hash
+                    assert advanced.execution_count == basis_packet.execution_count
+                    assert advanced.completion_count == basis_packet.completion_count
+                    assert program_policy_fingerprint(previous_basis_packet.actor) == previous_basis_packet.state_hash
+                    with pytest.raises(ValueError, match="verified packet"):
+                        rebuild_program_policy_events(actor, (), run_id=controller.run_id,
+                            source_hashes=source_prefix_hashes, blocks=(block,), population=population,
+                            executions=executions, order_manager=controller._runtime.order_manager,
+                            maximum_events=1000, last_sequence=basis_sequence,
+                            initial_packet=replace(previous_basis_packet, state_hash="0" * 64))
+                    with pytest.raises(ValueError, match="verified packet"):
+                        rebuild_program_policy_events(actor, (), run_id=controller.run_id,
+                            source_hashes=source_prefix_hashes, blocks=(block,), population=population,
+                            executions=executions, order_manager=controller._runtime.order_manager,
+                            maximum_events=1000, last_sequence=basis_sequence,
+                            initial_packet=replace(previous_basis_packet,
+                                completion_count=previous_basis_packet.completion_count + 1))
+                previous_basis_packet = basis_packet
                 recovered_selection_scope = {key: value for key, value in reselection_scope.items()
                     if key != "basis_sequence"}
                 packet_selection = reselect_recovered_rule_decision(dispatched_parent, dispatched_children,
