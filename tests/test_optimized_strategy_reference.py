@@ -122,3 +122,21 @@ def test_unexpected_manifest_files_are_rejected_before_opening(monkeypatch, tmp_
     with pytest.raises(ValueError, match="outside declared training"):
         asyncio.run(module.load_reference(tmp_path, concurrency=3))
     assert opened == ["complete.json"]
+
+
+@pytest.mark.parametrize("tamper", [False, True])
+def test_actual_campaign_diagnostic_inventory_is_hash_verified(monkeypatch, tmp_path, tamper):
+    module, manifest = frozen_root(monkeypatch, tmp_path)
+    names = ["timings.json", "diversity.json"] + [f"{day}/timings.json" for day in reference().sessions]
+    for name in names:
+        content = b'{"diagnostic":true}'
+        (tmp_path / name).write_bytes(content)
+        manifest["files_sha256"][name] = sha256(content).hexdigest()
+    (tmp_path / "freeze.json").write_text(json.dumps(manifest))
+    if tamper:
+        (tmp_path / names[-1]).write_bytes(b'{"diagnostic":false}')
+        with pytest.raises(ValueError, match="Frozen reference changed"):
+            module.read_reference(tmp_path, concurrency=3)
+    else:
+        actual = module.read_reference(tmp_path, concurrency=3)
+        assert actual.candidate == 0 and len(actual.sessions) == 30

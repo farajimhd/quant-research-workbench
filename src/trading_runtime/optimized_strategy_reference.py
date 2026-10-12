@@ -67,9 +67,13 @@ def read_reference(root: str | Path, *, concurrency: int = 1) -> OptimizationRef
         raise ValueError('Frozen session date is not canonical')
     expected_files = {'winner.json', 'complete.json', 'ranking.json'} | {
         f'{day}/receipt.json' for day in days}
+    # The actual frozen campaign also seals these diagnostic companions.
+    # They are verified below, but never supply strategy or market inputs.
+    optional_diagnostics = {'diversity.json', 'timings.json'} | {
+        f'{day}/timings.json' for day in days}
     if expected_files - set(hashes):
         raise ValueError('Missing frozen session seal')
-    if set(hashes) - expected_files:
+    if set(hashes) - expected_files - optional_diagnostics:
         raise ValueError('Unexpected reference file outside declared training comparison')
     items = [(name, checksum) for name, checksum in hashes.items() if name != 'complete.json']
     # Retain the exact verified bytes, rather than reopening mutable files.
