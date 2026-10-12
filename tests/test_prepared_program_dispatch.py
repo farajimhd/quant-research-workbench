@@ -27,7 +27,7 @@ from tests.test_broker_liquidity_resolution import second_bar
 
 @pytest.mark.parametrize("resolution", [100, 1000])
 @pytest.mark.parametrize("failure", [None, "submission", "completion_record"])
-def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(prepared_source, tmp_path, resolution, failure):
+def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(prepared_source, tmp_path, resolution, failure, monkeypatch):
     storage = Store()
     publish(storage, prepared_source)
     certificate = consume(storage, prepared_source)
@@ -326,6 +326,76 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                     portfolio_recovery=portfolio_image, population=population)
                 assert controller._runtime.strategy is recovered.actor
                 assert controller._program_strategy is recovered.actor
+                # Financial cold rows are normalized via the existing reader.
+                # OMS/broker rows below are synthetic, exact captures of the
+                # executed three-clock fixture, not operational storage seals.
+                from tests.test_arte_portfolio_snapshot_persistence import SnapshotClient
+                from src.trading_runtime import arte_portfolio_recovery as portfolio_reader
+                from src.trading_runtime.arte_portfolio_snapshot import publish_portfolio_snapshot
+                from src.trading_runtime.arte_oms_actor_restore import TypedOmsActorImage
+                from src.trading_runtime.strategy_one_broker_match_snapshot import project_broker_match_snapshot
+                from src.backend.backtest_market_data import market_day_boundary
+                snapshot_client = SnapshotClient()
+                old_runtime = controller._runtime
+                for account, raw in controller._journal.portfolio_states().items():
+                    publish_portfolio_snapshot(snapshot_client, run_id=controller.run_id,
+                        account_id=account, state_revision=recovered.journal_sequence,
+                        snapshot_at=at, state=raw)
+                monkeypatch.setattr(portfolio_reader, "load_typed_run_context",
+                    lambda *_: {"account_ids": accounts})
+                cold = portfolio_reader.recover_portfolio_engine_state(snapshot_client,
+                    run_id=controller.run_id, profiles=tuple(state.profile for state in old_runtime.portfolio.states.values()),
+                    state_revisions={account: recovered.journal_sequence for account in accounts}, cutoff_at=at)
+                manager = old_runtime.order_manager
+                groups = {}
+                for identity, group in manager._groups.items():
+                    assert all(task is None or task.done() for task in (group.reprice_task, group.protection_task))
+                    tactic = group.tactic
+                    groups[identity] = deepcopy(replace(group, reprice_task=None,
+                        protection_task=None, reprice_event=asyncio.Event(), tactic=tactic))
+                oms_image = TypedOmsActorImage(controller.run_id, recovered.actor.strategy_id,
+                    recovered.actor.revision, groups, dict(manager._group_by_client_id),
+                    dict(manager._group_by_broker_id), dict(manager._protection_versions),
+                    frozenset(manager._body_entry_group_ids))
+                broker_image = old_runtime.broker.checkpoint_state()
+                boundary_ms = int((at - market_day_boundary(at.date(), 0)).total_seconds() * 1000)
+                broker_rows = project_broker_match_snapshot(run_id=controller.run_id,
+                    session_date=at.date(), checkpoint_sequence=recovered.journal_sequence,
+                    boundary_ms=boundary_ms, state=broker_image)
+                financial_candidate = await controller.stage_program_financial_runtime(portfolio_recovery=cold,
+                    oms_image=oms_image, broker_image=broker_image, completed_at=at)
+                await financial_candidate.initialize(record_lifecycle=False)
+                try:
+                    assert lease.release()
+                    with pytest.raises(RuntimeError, match="lease lost"):
+                        await controller.install_program_runtime_candidate(financial_candidate, recovered,
+                            cold=cold, prefix=prefix, broker=broker_rows, oms_image=oms_image, population=population)
+                    assert controller._runtime is old_runtime
+                    assert controller._journal_publisher.journal is old_runtime.journal
+                    lease = BacktestV4KeeperLease.acquire(lease_session, run_id=controller.run_id,
+                        owner_id="synthetic-program-financial-successor")
+                    controller._fixed_v4_lease = lease
+                    writer._client.backtest_v4_lease = lease
+                    with pytest.raises(ValueError, match="idle financial fence"):
+                        await controller.install_program_runtime_candidate(financial_candidate, recovered,
+                            cold=cold, prefix=replace(prefix, last_batch_id="foreign-batch"),
+                            broker=broker_rows, oms_image=oms_image, population=population)
+                    assert controller._runtime is old_runtime
+                    await controller.install_program_runtime_candidate(financial_candidate, recovered,
+                        cold=cold, prefix=prefix, broker=broker_rows, oms_image=oms_image, population=population)
+                    assert controller._runtime is financial_candidate
+                    assert controller._journal is financial_candidate.journal
+                    assert controller._journal_publisher.journal is financial_candidate.journal
+                    assert financial_candidate.strategy is recovered.actor
+                    assert old_runtime.order_manager._closed and not old_runtime.broker._initialized
+                    repeated = await controller.dispatch_prepared_program_boundary(block, population,
+                        ordinal=ordinal + 2, assignment_id="assignment", execution_policy=policy,
+                        protection_profile=profile, outside_rth=False, terminal=True)
+                    assert repeated == {"status": "already_consumed", "results": []}
+                    assert financial_candidate.journal.pending_record_count == 0
+                finally:
+                    if controller._runtime is not financial_candidate:
+                        await financial_candidate.finish()
             finally:
                 lease.release()
                 controller._fixed_v4_lease = None

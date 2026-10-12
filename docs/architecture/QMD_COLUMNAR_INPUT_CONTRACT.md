@@ -381,3 +381,15 @@ is therefore not an operational cold-read fixture. Final program installation
 must qualify financial geometry against the independently verified broker
 image and retain the durable Portfolio prefix through synchronization. The
 synthetic installation tests do not yet prove that complete cold-start path.
+
+The controller can now stage detached financial actors, qualify broker and OMS
+checkpoint equality plus native Portfolio resynchronization, and install a
+replayed program policy at one owned, idle source/financial prefix. Publisher
+and controller journal references switch without an intervening await. Retired
+in-memory actors do not emit a terminal event for the continuing run. Existing
+dispatch uncertainty remains latched until its separate recovery gate resolves.
+Synthetic three-clock tests exercise the swap for both liquidity resolutions,
+reject lost ownership and foreign financial batch identities, and prove the
+last completed decision remains idempotent afterward. Portfolio rows use the
+normalized reader; OMS/broker and storage receipts in these tests are fixtures.
+This does not enable app launch or qualify full-session operational cold reads.
