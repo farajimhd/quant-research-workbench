@@ -25,6 +25,7 @@ from .arte_reservation_reason_v4 import V4ReservationReasonBatch
 from .arte_risk_action_v4 import V4RiskActionBatch
 from .rule_decision_publication import QualifiedRuleDecisionBatch, _check_rule_decision_qualification
 from .arte_oms_exact_prices import ExactPriceOmsStateBatch
+from .arte_order_exact_prices import ExactPriceOrderCommandBatch
 from .arte_oms_tactic_projection import (
     V4OmsTacticBatch, PARENT_TABLE, STEP_TABLE, seal_oms_tactic_rows,
 )
@@ -43,6 +44,7 @@ from .arte_entry_activity_v4 import ENTRY_ACTIVITY, seal_certified_entry_activit
 from .arte_entry_spread_risk_v4 import ENTRY_SPREAD_RISK, seal_certified_entry_spread_risk_rows
 
 _CHILD_KEYS = (
+    "exact_order_commands",
     "exact_oms_groups", "exact_oms_orders",
     "rule_decision_bases", "rule_decision_intents",
     "followthrough_failures", "profit_givebacks", "confirmed_ah_failures", "liquidity_fade_failures", "command_lineages",
@@ -53,6 +55,7 @@ _CHILD_KEYS = (
     "reconciliation_replies", "oms_tactics", "oms_tactic_steps",
 )
 _EVENT_PARENT_KEYS = frozenset({
+    "exact_order_commands",
     "exact_oms_groups", "exact_oms_orders",
     "rule_decision_bases",
     "followthrough_failures", "profit_givebacks", "confirmed_ah_failures", "liquidity_fade_failures", "command_lineages",
@@ -88,6 +91,9 @@ class V4CompoundBatch:
 
 
 def _unit_children(unit: Any) -> tuple[tuple[str, Mapping[str, Any]], ...]:
+    if type(unit) is ExactPriceOrderCommandBatch:
+        return (("exact_order_commands", unit.command),) + tuple(
+            ("command_lineages", row) for row in unit.base.v4_command_lineages)
     if type(unit) is ExactPriceOmsStateBatch:
         return (("exact_oms_groups", unit.group), ("oms_tactics", unit.tactic_state)) + tuple(
             ("exact_oms_orders", row) for row in unit.orders) + tuple(
@@ -223,6 +229,8 @@ def coalesce_v4_units(
 
 
 def _publication_kwargs(unit: Any) -> dict[str, Any]:
+    if type(unit) is ExactPriceOrderCommandBatch:
+        return {"exact_order_prices": unit}
     if type(unit) is ExactPriceOmsStateBatch:
         return {"exact_oms_prices": unit,
                 "oms_tactic_rows": (unit.tactic_state, unit.tactic_steps)}
@@ -325,6 +333,7 @@ def prepare_compound_v4_families(
     if getattr(client, "live_v4_lease", None) is not None and compound.children['profit_givebacks']:
         raise ValueError('Live V4 compound cannot publish profit-protection witnesses')
     table_for_key = {
+        "exact_order_commands": "trading_order_command_exact_price_v1",
         "exact_oms_groups": "trading_oms_group_state_exact_price_v1",
         "exact_oms_orders": "trading_oms_order_state_exact_price_v1",
         "followthrough_failures": FAILURE.name,
@@ -411,6 +420,8 @@ def prepare_compound_v4_families(
         exact_oms_price_rows=(tuple(extra["trading_oms_group_state_exact_price_v1"]),
                               tuple(extra["trading_oms_order_state_exact_price_v1"]))
             if compound.children["exact_oms_groups"] or compound.children["exact_oms_orders"] else None,
+        exact_order_command_rows=tuple(extra["trading_order_command_exact_price_v1"])
+            if compound.children["exact_order_commands"] else None,
     )
     if tuple(extra[ENTRY_EVIDENCE.name]) != _sealed_strategy_one_entry_rows(
             compound.base, base_families, tuple(
@@ -497,7 +508,7 @@ def prepare_compound_v4_families(
                      for name, rows in base_families) + tuple(
         (table_for_key[key], tuple(extra[table_for_key[key]]))
         for key in _CHILD_KEYS if compound.children[key] and extra[table_for_key[key]]
-        and key not in {"exact_oms_groups", "exact_oms_orders"})
+        and key not in {"exact_oms_groups", "exact_oms_orders", "exact_order_commands"})
     return base_families, families
 
 

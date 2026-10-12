@@ -38,6 +38,7 @@ from src.trading_runtime.arte_journal_compound_v4 import (
 )
 from src.trading_runtime.arte_oms_tactic_projection import V4OmsTacticBatch
 from src.trading_runtime.arte_oms_exact_prices import ExactPriceOmsStateBatch
+from src.trading_runtime.arte_order_exact_prices import ExactPriceOrderCommandBatch
 from src.trading_runtime.automatic_ladder_transport import V4AutomaticLadderBatch
 from src.trading_runtime.rule_decision_publication import QualifiedRuleDecisionBatch
 
@@ -475,7 +476,7 @@ class BacktestTypedJournalPublisher:
                     raise RuntimeError("Typed Backtest projector changed the bounded prefix")
                 for unit in batches:
                     batch = unit.base if isinstance(
-                        unit, (ExactPriceOmsStateBatch, QualifiedRuleDecisionBatch, V3SqueezeBatch, V4CompoundBatch, V4AutomaticLadderBatch,
+                        unit, (ExactPriceOrderCommandBatch, ExactPriceOmsStateBatch, QualifiedRuleDecisionBatch, V3SqueezeBatch, V4CompoundBatch, V4AutomaticLadderBatch,
                                V4StrategyOneEntryBatch, V4FollowThroughFailureBatch, V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch, V4LiquidityFadeFailureBatch,
                                V4OmsTacticBatch,
                                V4PortfolioAllocationBatch, V4ReservationReasonBatch,
@@ -487,7 +488,9 @@ class BacktestTypedJournalPublisher:
                     if (batch.first_sequence != self._sequence + 1
                             or batch.prior_batch_id != self._batch_id):
                         raise RuntimeError("Typed Backtest batch chain is not contiguous")
-                    receipt = (self.writer.submit_exact_oms_v4(unit)
+                    receipt = (self.writer.submit_exact_order_v4(unit)
+                               if isinstance(unit, ExactPriceOrderCommandBatch)
+                               else self.writer.submit_exact_oms_v4(unit)
                                if isinstance(unit, ExactPriceOmsStateBatch)
                                else self.writer.submit_qualified_rule_v4(unit)
                                if isinstance(unit, QualifiedRuleDecisionBatch)

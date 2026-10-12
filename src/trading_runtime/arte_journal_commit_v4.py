@@ -1468,11 +1468,13 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
                             protection_reconciliation_replies=(),
                             broker_snapshot_rows=None,
                             exact_oms_prices=None,
+                            exact_order_prices=None,
                             _prepare_only=False):
     from src.trading_runtime.arte_journal_writer import (
         TypedJournalBatch, _CONTRACTS, _identity, _insert, _literal, _rows,
         _sealed_families, _v4_family_table, _verify_commission_links, typed_row,
         _verify_exact_intent_uses, _verify_order_context_links, _oms_group_identity_rows,
+        _order_command_identity_rows,
     )
     from src.trading_runtime.arte_journal_schema import V4_ORDER_COMMAND_LINEAGE
     from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
@@ -1487,6 +1489,12 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         from .rule_decision_writer_preflight import require_rule_decision_writer_audit
         if type(exact_oms_prices) is not ExactPriceOmsStateBatch or exact_oms_prices.base is not batch:
             raise ValueError("Exact OMS publication requires its original typed envelope")
+        require_rule_decision_writer_audit(client)
+    if exact_order_prices is not None:
+        from .arte_order_exact_prices import ExactPriceOrderCommandBatch
+        from .rule_decision_writer_preflight import require_rule_decision_writer_audit
+        if type(exact_order_prices) is not ExactPriceOrderCommandBatch or exact_order_prices.base is not batch:
+            raise ValueError("Exact order publication requires its original typed envelope")
         require_rule_decision_writer_audit(client)
     if (getattr(client, "typed_insert_strict", False) is not True
             or not isinstance(getattr(client, "typed_insert_dispatch", None),
@@ -1802,8 +1810,9 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         v4_snapshot_account_ids=tuple(row["record_id"] for row in snapshot_accounts),
         v4_snapshot_position_ids=tuple(row["record_id"] for row in snapshot_positions),
         exact_oms_price_rows=((exact_oms_prices.group,), exact_oms_prices.orders)
-            if exact_oms_prices is not None else None)
-    command_rows = dict(base_families)["trading_order_command_v1"]
+            if exact_oms_prices is not None else None,
+        exact_order_command_rows=(exact_order_prices.command,) if exact_order_prices is not None else None)
+    command_rows = _order_command_identity_rows(dict(base_families))
     from .numbered_fixed_strategy import is_numbered_fixed_strategy
     strategy_one_commands = {
         str(UUID(str(row["record_id"]))) for row in command_rows

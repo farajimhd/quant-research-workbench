@@ -12,11 +12,24 @@ from tests.test_arte_journal_commit_v4 import attached_v4_client
 
 
 @pytest.mark.parametrize('failure', [False, True])
-def test_exact_oms_queue_is_nonblocking_bounded_and_worker_owned(monkeypatch, failure):
-    group, kwargs, _ = prepared()
-    unit = oms_group_state_batch(group, **kwargs, exact_prices=True)
-    client = attached_v4_client()
-    publish_base_typed_batch_v4(client, kwargs['published_intent_batch'])
+@pytest.mark.parametrize('kind', ['oms', 'order'])
+def test_exact_price_queue_is_nonblocking_bounded_and_worker_owned(monkeypatch, failure, kind):
+    if kind == 'oms':
+        group, kwargs, _ = prepared()
+        unit = oms_group_state_batch(group, **kwargs, exact_prices=True)
+        client = attached_v4_client()
+        publish_base_typed_batch_v4(client, kwargs['published_intent_batch'])
+        publication_module, function = exact_module, 'publish_exact_oms_state_batch_v4'
+        submit_method, table = 'submit_exact_oms_v4', 'trading_oms_group_state_exact_price_v1'
+    else:
+        from src.trading_runtime import arte_order_exact_prices
+        from src.trading_runtime.arte_journal_projection import order_command_batch
+        from tests.test_arte_order_exact_prices import request_and_scope
+        request, kwargs = request_and_scope()
+        unit = order_command_batch(request, **kwargs, exact_prices=True)
+        client = attached_v4_client()
+        publication_module, function = arte_order_exact_prices, 'publish_exact_order_command_batch_v4'
+        submit_method, table = 'submit_exact_order_v4', 'trading_order_command_exact_price_v1'
     monkeypatch.setattr(writer_module, '_v4_preflight', lambda actual: None)
     monkeypatch.setattr(writer_module, '_verify_run_identity', lambda actual, run: {
         'mode': 'backtest', 'account_ids': ('DU1',)})
@@ -24,7 +37,7 @@ def test_exact_oms_queue_is_nonblocking_bounded_and_worker_owned(monkeypatch, fa
     entered, release = Event(), Event()
     owner = get_ident()
     workers = []
-    publish = exact_module.publish_exact_oms_state_batch_v4
+    publish = getattr(publication_module, function)
     def gated(actual, queued):
         workers.append(get_ident())
         entered.set()
@@ -32,18 +45,19 @@ def test_exact_oms_queue_is_nonblocking_bounded_and_worker_owned(monkeypatch, fa
         if failure:
             raise RuntimeError('synthetic exact OMS writer failure')
         return publish(actual, queued)
-    monkeypatch.setattr(exact_module, 'publish_exact_oms_state_batch_v4', gated)
+    monkeypatch.setattr(publication_module, function, gated)
     writer = writer_module.ArteJournalWriter(client, run_id=unit.base.run_id,
         journal_profile='backtest_v4', capacity=1, coalesce_batches=False)
     try:
-        receipt = writer.submit_exact_oms_v4(unit)
+        submit = getattr(writer, submit_method)
+        receipt = submit(unit)
         assert entered.wait(2)
         assert not receipt.done()
-        pending = writer.submit_exact_oms_v4(unit)
+        pending = submit(unit)
         with pytest.raises(writer_module.JournalQueueFull):
-            writer.submit_exact_oms_v4(unit)
+            submit(unit)
         assert not pending.done()
-        assert 'trading_oms_group_state_exact_price_v1' not in client.tables
+        assert table not in client.tables
         release.set()
         if failure:
             with pytest.raises(RuntimeError, match='synthetic exact OMS'):
@@ -51,8 +65,8 @@ def test_exact_oms_queue_is_nonblocking_bounded_and_worker_owned(monkeypatch, fa
             with pytest.raises(RuntimeError, match='failed earlier'):
                 pending.result(timeout=5)
             with pytest.raises(RuntimeError, match='closed or failed'):
-                writer.submit_exact_oms_v4(unit)
-            assert 'trading_oms_group_state_exact_price_v1' not in client.tables
+                submit(unit)
+            assert table not in client.tables
         else:
             assert receipt.result(timeout=5) == unit.base.batch_id
             assert pending.result(timeout=5) == unit.base.batch_id

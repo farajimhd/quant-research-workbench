@@ -166,8 +166,16 @@ intent-hash and canonical-lineage checks remain in the same projector. The
 shared journal seal accepts its named exact command family and uses a decoded
 internal semantic view for the existing relationship checks; quantities and
 nonprice instructions retain their previous contracts. Projection/readback and
-tampering tests pass. This command envelope is not yet integrated into the V4
-writer, mixed-prefix compaction, cold command reader or main native prefix.
+tampering tests pass. Main native-prefix selection remains unfinished.
+
+The exact command envelope now uses the shared audited V4 publisher and bounded
+writer worker, and can enter mixed-prefix compaction. Its context and exact
+intent-use rows rekey with the source intent under one commit. The existing
+committed command reader has an explicit `exact_prices=True` mode requiring a
+V4 prefix, selecting only the new table and verifying row hashes before decoding
+native prices. Synthetic tests cover direct and mixed publication, cold price
+and context readback, retry, corruption, nonblocking queued submission, overflow
+and worker failure. No schema installation or real broker run has occurred.
 
 One broader projection test currently fails independently: it constructs an
 uninitialized `TradingRuntime` without `strategy`, then calls unchanged

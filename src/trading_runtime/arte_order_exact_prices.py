@@ -36,3 +36,12 @@ def seal_exact_order_command_batch(unit):
         raise ValueError("Exact command sealing requires its explicit envelope")
     from .arte_journal_writer import _sealed_families
     return _sealed_families(unit.base, exact_order_command_rows=(unit.command,))
+
+
+def publish_exact_order_command_batch_v4(client, unit, *, verified_prior_prefix=None):
+    """Publish through the existing V4 fence after the program writer audit."""
+    if type(unit) is not ExactPriceOrderCommandBatch:
+        raise ValueError("Exact command publication requires its explicit envelope")
+    from .arte_journal_commit_v4 import _publish_typed_batch_v4
+    return _publish_typed_batch_v4(client, unit.base, exact_order_prices=unit,
+                                  verified_prior_prefix=verified_prior_prefix)

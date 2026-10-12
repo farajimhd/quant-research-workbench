@@ -2108,6 +2108,15 @@ def _verify_commission_links(
             raise RuntimeError("Commission revision requires one committed execution")
 
 
+def _order_command_identity_rows(by_family):
+    """Select one price representation for shared command identity checks."""
+    legacy = by_family.get("trading_order_command_v1", ())
+    exact = by_family.get("trading_order_command_exact_price_v1", ())
+    if legacy and exact:
+        raise ValueError("Order lineage cannot mix legacy and exact price families")
+    return exact if exact else legacy
+
+
 def _oms_group_identity_rows(by_family):
     """Select one price representation for shared, price-free lineage checks."""
     legacy = by_family.get("trading_oms_group_state_v1", ())
@@ -3244,12 +3253,19 @@ def _committed_batch_filter(
 def load_committed_order_command_page(
     client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 500,
+    exact_prices: bool = False,
 ) -> tuple[dict[str, Any], ...]:
     """Read one bounded page of commands from an already verified prefix.
 
     A durable command is an intent, not evidence of external delivery. A cold
     dispatcher must reconcile the client ID with the broker before any resend.
     """
+    if type(exact_prices) is not bool:
+        raise ValueError("Exact order recovery mode must be an explicit boolean")
+    if exact_prices:
+        from .arte_journal_commit_v4 import V4CommittedPrefix
+        if type(prefix) is not V4CommittedPrefix:
+            raise ValueError("Exact order recovery requires its verified V4 prefix")
     if not _valid_prefix(prefix):
         raise ValueError("Order recovery requires a verified committed prefix")
     if after_sequence < 0 or not 1 <= limit <= 1000:
@@ -3272,9 +3288,10 @@ def load_committed_order_command_page(
     allowed_batches = set(prefix.batch_ids)
     if any(str(UUID(str(row["batch_id"]))) not in allowed_batches for row in events):
         raise RuntimeError("Order page contains an unfenced event")
-    names = ",".join(column for column, _ in _CONTRACTS["trading_order_command_v1"].columns)
+    command_table = "trading_order_command_exact_price_v1" if exact_prices else "trading_order_command_v1"
+    names = ",".join(column for column, _ in _CONTRACTS[command_table].columns)
     ids_sql = ",".join(f"toUUID({_literal(value)})" for value in ids)
-    details = _rows(client, f"SELECT {names} FROM arte.trading_order_command_v1 "
+    details = _rows(client, f"SELECT {names} FROM arte.{command_table} "
                     f"WHERE run_id={_literal(prefix.run_id)} "
                     f"AND record_id IN ({ids_sql}) "
                     f"{_committed_batch_filter(prefix)}FORMAT JSONEachRow")
@@ -3307,10 +3324,14 @@ def load_committed_order_command_page(
             raise RuntimeError("Strategy 1 command differs from its event envelope")
         content = {key: value for key, value in detail.items() if key != "content_hash"}
         digest = sha256(canonical_json(_canonical_typed_content(
-            "trading_order_command_v1", content, stored_utc=True,
+            command_table, content, stored_utc=True,
         )).encode("utf-8")).hexdigest()
         if digest != str(detail["content_hash"]):
             raise RuntimeError("Committed order command differs from its row hash")
+        if exact_prices:
+            from .trading_price_rows import restore_exact_price_row
+            detail = {**restore_exact_price_row("trading_order_command_v1", detail, stored_utc=True),
+                      "content_hash": detail["content_hash"]}
         prior = sequence
         result.append({"sequence": sequence, "event_time": event["event_time"],
                        **detail})
@@ -4306,6 +4327,24 @@ class ArteJournalWriter:
             raise ValueError('Liquidity fade requires its exact typed envelope')
         return self._submit_profit_publication(unit, first_price_source=first_price_source)
 
+    def submit_exact_order_v4(self, unit) -> Future[str]:
+        """Queue exact-price commands without caller-side network I/O."""
+        from .arte_order_exact_prices import ExactPriceOrderCommandBatch
+        if (self._journal_profile != "backtest_v4"
+                or type(unit) is not ExactPriceOrderCommandBatch
+                or unit.base.run_id != self._run_id):
+            raise ValueError("Exact order prices require the pinned Backtest writer")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("V4 writer is closed or failed")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull("V4 journal queue is full; stop admission") from exc
+            self._accepted_writes = True
+            return receipt
+
     def submit_exact_oms_v4(self, unit) -> Future[str]:
         """Queue exact-price OMS persistence without caller-side network I/O."""
         from .arte_oms_exact_prices import ExactPriceOmsStateBatch
@@ -4974,6 +5013,7 @@ class ArteJournalWriter:
 
         from .arte_oms_exact_prices import ExactPriceOmsStateBatch
 
+        from .arte_order_exact_prices import ExactPriceOrderCommandBatch
         held: tuple[
             TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
             | _DurabilityBarrier | _AdmissionUnit | _PortfolioSyncUnit
@@ -5022,7 +5062,7 @@ class ArteJournalWriter:
                 from .automatic_ladder_transport import V4AutomaticLadderBatch
                 if (self._journal_profile in {"backtest_v2", "backtest_v3", *self._V4_PROFILES}
                         and not isinstance(group[0][0],
-                                           (ExactPriceOmsStateBatch, QualifiedRuleDecisionBatch, TypedJournalBatch, V3SqueezeBatch, V4AutomaticLadderBatch,
+                                           (ExactPriceOrderCommandBatch, ExactPriceOmsStateBatch, QualifiedRuleDecisionBatch, TypedJournalBatch, V3SqueezeBatch, V4AutomaticLadderBatch,
                                             V4CompoundBatch,
                                             V4StrategyOneEntryBatch, V4FollowThroughFailureBatch,
                                             V4OmsTacticBatch,
@@ -5170,6 +5210,9 @@ class ArteJournalWriter:
                         entry_activity_evidence=unit.entry_activity_evidence,
                         entry_spread_risk_evidence=unit.entry_spread_risk_evidence,
                         first_price_source=unit.first_price_source)
+                elif isinstance(group[0][0], ExactPriceOrderCommandBatch):
+                    from .arte_order_exact_prices import publish_exact_order_command_batch_v4
+                    committed_id = publish_exact_order_command_batch_v4(self._client, group[0][0])
                 elif isinstance(group[0][0], ExactPriceOmsStateBatch):
                     from .arte_oms_exact_prices import publish_exact_oms_state_batch_v4
                     committed_id = publish_exact_oms_state_batch_v4(self._client, group[0][0])
