@@ -193,6 +193,20 @@ def test_controller_builds_program_actor_on_existing_runtime_without_legacy_fact
             assert historical_lineages == (lineage,)
             assert later_history.records == (future_change,) and later_prefix.last_sequence == 5
             assert closed == [True, True, True, True]
+            monkeypatch.setattr(broker_cold, "load_verified_v4_prefix", lambda *_: later_prefix)
+            def historical_executions(client, actual_prefix, **scope):
+                assert actual_prefix is later_prefix and scope["through_sequence"] == 2
+                return []
+            monkeypatch.setattr(broker_cold, "load_v4_broker_executions", historical_executions)
+            historical_broker_image = await broker_cold.recover_program_broker_async(lambda: client, later_prefix,
+                broker=broker_rows, quotes=pinned_quotes, lineages=historical_lineages,
+                simulation_config=runtime.broker.config, through_sequence=2)
+            assert historical_broker_image == broker_image
+            assert closed == [True, True, True, True, True]
+            with pytest.raises(ValueError, match="snapshot differs"):
+                await broker_cold.recover_program_broker_async(lambda: client, later_prefix,
+                    broker=broker_rows, quotes=pinned_quotes, lineages=historical_lineages,
+                    simulation_config=runtime.broker.config, through_sequence=3)
             with pytest.raises(ValueError, match="scope or flat"):
                 reconstruct_program_oms_lineage(replace(state, orders=tuple(group.orders)),
                     source, history, **lineage_kwargs)

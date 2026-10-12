@@ -11,18 +11,23 @@ from src.trading_runtime.simulated_broker import SimulationConfig
 
 
 async def recover_program_broker_async(reader_factory, prefix, *, broker,
-        quotes, lineages, simulation_config):
+        quotes, lineages, simulation_config, through_sequence=None):
     """Stage an inert broker image; caller separately proves source and OMS.
 
     Quote values must come from the pinned certified liquidity product. Shared
     restoration verifies their exact persisted clocks. No broker is started.
+    Historical snapshots remain inside the full verified commit prefix.
     """
     if (type(prefix) is not V4CommittedPrefix or prefix.status != "running"
             or type(simulation_config) is not SimulationConfig):
         raise ValueError("Program broker recovery requires its declared typed scope")
+    if through_sequence is not None and (type(through_sequence) is not int
+            or not 0 <= through_sequence <= prefix.last_sequence):
+        raise ValueError("Program broker historical cutoff differs from verified prefix")
+    basis_sequence = prefix.last_sequence if through_sequence is None else through_sequence
     broker = verify_broker_match_snapshot(broker)
     root = broker.snapshot
-    if root["run_id"] != prefix.run_id or root["checkpoint_sequence"] != prefix.last_sequence:
+    if root["run_id"] != prefix.run_id or root["checkpoint_sequence"] != basis_sequence:
         raise ValueError("Program broker snapshot differs from financial prefix")
     resolution = simulation_config.liquidity_resolution_ms
     if root["boundary_ms"] % resolution or any(
@@ -31,7 +36,7 @@ async def recover_program_broker_async(reader_factory, prefix, *, broker,
     lineages = tuple(lineages)
     requests, by_client, client_by_broker = {}, {}, {}
     for lineage in lineages:
-        if (lineage.through_sequence != prefix.last_sequence
+        if (lineage.through_sequence != basis_sequence
                 or lineage.state.group["run_id"] != prefix.run_id):
             raise ValueError("Program broker OMS lineage differs from financial prefix")
         for order in lineage.orders:
@@ -68,7 +73,8 @@ async def recover_program_broker_async(reader_factory, prefix, *, broker,
                 raise ValueError("Program broker prefix moved before execution read")
             state["executions"] = load_v4_broker_executions(client, prefix,
                 requests_by_coid=by_client, coid_by_broker_id=client_by_broker,
-                next_execution_id=state["next_execution_id"])
+                next_execution_id=state["next_execution_id"],
+                **({"through_sequence": basis_sequence} if through_sequence is not None else {}))
             if any(datetime.fromisoformat(row["trade_time"]).tzinfo is None
                    or datetime.fromisoformat(row["trade_time"]) > cutoff
                    for row in state["executions"]):
