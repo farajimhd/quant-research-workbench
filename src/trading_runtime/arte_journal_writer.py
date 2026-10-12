@@ -810,6 +810,7 @@ def _sealed_families(
     v4_snapshot_position_ids: tuple[str, ...] = (),
     exact_oms_price_rows: tuple[tuple[Mapping[str, Any], ...], tuple[Mapping[str, Any], ...]] | None = None,
     exact_order_command_rows: tuple[Mapping[str, Any], ...] | None = None,
+    exact_execution_rows: tuple[Mapping[str, Any], ...] | None = None,
     v4_entry_freeze_ids: tuple[str, ...] = (),
 ) -> tuple[tuple[str, tuple[dict[str, Any], ...]], ...]:
     """Validate and hash the immutable snapshot on the persistence lane."""
@@ -835,6 +836,10 @@ def _sealed_families(
         if type(exact_order_command_rows) is not tuple or batch.order_commands:
             raise ValueError("Exact order seal requires unmixed explicit command rows")
         exact_price_rows["trading_order_command_v1"] = exact_order_command_rows
+    if exact_execution_rows is not None:
+        if type(exact_execution_rows) is not tuple or batch.executions:
+            raise ValueError("Exact execution seal requires unmixed explicit fill rows")
+        exact_price_rows["trading_execution_v1"] = exact_execution_rows
     for name, rows in batch.families():
         physical_name = name
         if name in exact_price_rows:

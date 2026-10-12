@@ -1457,8 +1457,11 @@ def broker_fill_details(
     received_at: datetime, strategy_id: str = "", strategy_revision: int = 0,
     setup: str = "", exit_reason: str = "",
     signal_price: float | None = None,
+    exact_prices: bool = False,
 ) -> FillDetails:
     """Project a broker fill without dropping an unmodeled source attribute."""
+    if type(exact_prices) is not bool:
+        raise ValueError("Execution price mode must be an explicit boolean")
     if not run_id or not execution.execution_id or not execution.account or not execution.symbol:
         raise ValueError("Broker execution identity is incomplete")
     if execution.trade_time.tzinfo is None or received_at.tzinfo is None:
@@ -1503,12 +1506,12 @@ def broker_fill_details(
         "client_order_id": execution.order_ref, "conid": execution.conid,
         "ticker": execution.symbol.upper(), "side": execution.side,
         "quantity": _exact_decimal(execution.size, field="fill.quantity"),
-        "price": _exact_decimal(execution.price, field="fill.price"),
+        "price": (execution.price if exact_prices else _exact_decimal(execution.price, field="fill.price")),
         "exchange": str(execution.raw.get("exchange") or ""),
         "currency": execution.currency, "net_amount": None,
         "cumulative_quantity": None, "average_price": None, "liquidity": "",
         "liquidation_trade": 0,
-        "signal_price": (_exact_decimal(signal_price, field="fill.signal_price")
+        "signal_price": ((signal_price if exact_prices else _exact_decimal(signal_price, field="fill.signal_price"))
                          if signal_price is not None else None),
         "arrival_midpoint": None,
         "planned_risk": None, "source_event_time": at, "received_at": received,
@@ -1525,6 +1528,9 @@ def broker_fill_details(
             "time_authority": "execution",
             "realized_pnl": None, "source_event_time": at, "received_at": received,
         }
+    if exact_prices:
+        from .trading_price_rows import exact_price_row
+        fill = exact_price_row("trading_execution_v1", fill)
     return FillDetails(fill, commission)
 
 
