@@ -339,12 +339,23 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                                 await asyncio.wait_for(paused.wait(), timeout=20)
                                 await controller.command("play")
                             player = asyncio.create_task(play_after_pause())
-                        await controller.start()
+                        from src.backend.replay_run_service import ReplayRunService, ReplayRunCapacityError
+                        service = ReplayRunService(runtime_root=controller.runtime_root)
+                        service._runs[controller.run_id] = controller
+                        with pytest.raises(ReplayRunCapacityError, match="duplicate launch rejected"):
+                            await service.launch_prepared_program_controller(controller)
+                        assert controller._task is None and controller.status == "created"
+                        service._runs.pop(controller.run_id)
+                        assert await service.launch_prepared_program_controller(controller) is controller
+                        assert service.get(controller.run_id) is controller
                         await asyncio.wait_for(controller._task, timeout=20)
                         if player is not None:
                             await player
                             assert dispatch_count == 4 and paused.is_set()
                         assert controller.status == "completed", controller.error
+                        listed = service.list()
+                        assert len(listed) == 1 and listed[0]["run_id"] == controller.run_id
+                        assert listed[0]["status"] == "completed"
                         assert controller._runtime_finished and controller._journal_writer is None
                         assert controller._program_launch_plan is None
                         prefix = load_verified_v4_prefix(persisted, controller.run_id)

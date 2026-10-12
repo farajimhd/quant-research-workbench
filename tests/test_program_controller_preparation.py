@@ -35,6 +35,9 @@ def test_service_prepares_unstarted_programme_with_explicit_liquidity(monkeypatc
     assert controller.status == "created" and controller._runtime is None
     assert controller._journal is None and controller._journal_writer is None
     assert not service._runs and not list(tmp_path.iterdir()) and reader.closed
+    with pytest.raises(RuntimeError, match="prepared typed launch handoff"):
+        asyncio.run(service.launch_prepared_program_controller(controller))
+    assert not service._runs and controller._task is None
     foreign = Reader(rows)
     with pytest.raises(ValueError, match="configured Backtest accounts"):
         asyncio.run(service.prepare_program_controller(definition,

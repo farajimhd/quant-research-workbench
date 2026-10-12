@@ -10325,6 +10325,28 @@ class ReplayRunService:
         return ReplayRunController(definition, runtime_root=self.runtime_root, program_strategy=actor,
             program_liquidity_resolution_ms=liquidity_resolution_ms)
 
+    async def launch_prepared_program_controller(self, controller: ReplayRunController) -> ReplayRunController:
+        """Admit a fully bound central programme to the existing app run controls.
+
+        Preparation, typed publication and launch authorization belong to the
+        caller. This handoff requires the completed owned launch proof again.
+        """
+        from .backtest_program_launch import require_bound_program_start
+        if (type(controller) is not ReplayRunController or controller._program_strategy is None
+                or controller.runtime_root != self.runtime_root or controller.status != "created"
+                or controller._task is not None):
+            raise ValueError("Programme service launch requires its fresh prepared controller")
+        await require_bound_program_start(controller)
+        await self._admit(controller, exclusive=True)
+        try:
+            await controller.start()
+        except BaseException:
+            async with self._lock:
+                if self._runs.get(controller.run_id) is controller and controller._task is None:
+                    self._runs.pop(controller.run_id)
+            raise
+        return controller
+
     async def create(self, definition: ReplayRunDefinition) -> ReplayRunController:
         controller = ReplayRunController(definition, runtime_root=self.runtime_root)
         if definition.mode == RunMode.BACKTEST:
@@ -10774,8 +10796,10 @@ class ReplayRunService:
             raise
         return controller
 
-    async def _admit(self, controller: ReplayRunController) -> None:
+    async def _admit(self, controller: ReplayRunController, *, exclusive: bool = False) -> None:
         async with self._lock:
+            if exclusive and controller.run_id in self._runs:
+                raise ReplayRunCapacityError("Programme run is already resident; duplicate launch rejected")
             terminal = sorted(
                 (
                     resident
