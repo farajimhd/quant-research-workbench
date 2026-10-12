@@ -65,6 +65,7 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
             for offset in range(3):
                 row, _ = block.row_for("listing", ordinal + offset)
                 at = row["boundary_at"]
+                controller.current_time = at
                 price = round(row["reference_close"] * 10000)
                 liquidity = second_bar(at)
                 liquidity.update(ticker="ABC", ask_int=price, bid_int=price - 1,
@@ -127,6 +128,8 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 from src.trading_runtime.arte_journal_reader import TypedJournalEvent
                 from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
                 from src.backend.program_policy_recovery import rebuild_program_policy_events
+                await controller._runtime.order_manager.reconcile()
+                await controller._runtime._refresh_portfolio_from_broker()
                 from unittest.mock import patch
                 executions = await controller._runtime.broker.trades()
                 raw_keys = ("strategy_id", "canonical_strategy_revision", "canonical_run_id", "canonical_metadata")
@@ -177,9 +180,51 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 assert recovered.actor._selection_clocks == actor._selection_clocks
                 assert recovered.completion_count == offset + 1
                 assert recovered.completed_source_sequences == {"assignment": offset + 1}
+                from src.backend.program_policy_recovery import verify_recovered_program_positions, program_policy_fingerprint
+                from src.trading_runtime.arte_portfolio_recovery import PortfolioRecovery
+                portfolio = controller._runtime.portfolio
+                accounts = tuple(controller._runtime.config.account_ids)
+                portfolio_image = PortfolioRecovery(controller.run_id,
+                    {account: recovered.journal_sequence for account in accounts},
+                    deepcopy(portfolio.states), deepcopy(portfolio.reservations),
+                    deepcopy(portfolio.allocations), deepcopy(portfolio.differences),
+                    deepcopy(portfolio._last_filled_by_reservation))
+                broker_positions = {account: await controller._runtime.broker.positions(account) for account in accounts}
+                broker_ledgers = {account: await controller._runtime.broker.account_ledger(account) for account in accounts}
+                broker_orders = await controller._runtime.broker.canonical_orders()
+                observations = {"assignment": controller.program_order_observation(assignment_id="assignment", at=at)}
+                verify_recovered_program_positions(recovered, actor, run_id=controller.run_id,
+                    source_hashes=runtime.typed_source_commit_hashes(), at=at,
+                    broker_positions=broker_positions, broker_ledgers=broker_ledgers, broker_executions=executions,
+                    broker_orders=broker_orders,
+                    order_manager=controller._runtime.order_manager, portfolio=portfolio,
+                    portfolio_recovery=portfolio_image, observations=observations, population=population)
+                assert program_policy_fingerprint(recovered.actor) == recovered.state_hash
+                changed_ledgers = {account: replace(ledger, cashbalance=ledger.cashbalance + 1)
+                    for account, ledger in broker_ledgers.items()}
+                with pytest.raises(ValueError, match="cash ledger differs"):
+                    verify_recovered_program_positions(recovered, actor, run_id=controller.run_id,
+                        source_hashes=runtime.typed_source_commit_hashes(), at=at,
+                        broker_positions=broker_positions, broker_ledgers=changed_ledgers, broker_executions=executions,
+                        broker_orders=broker_orders, order_manager=controller._runtime.order_manager,
+                        portfolio=portfolio, portfolio_recovery=portfolio_image,
+                        observations=observations, population=population)
+                fraction = recovered.actor.target_state.fraction
+                recovered.actor.target_state.fraction = fraction + 1
+                with pytest.raises(ValueError, match="policy changed"):
+                    verify_recovered_program_positions(recovered, actor, run_id=controller.run_id,
+                        source_hashes=runtime.typed_source_commit_hashes(), at=at,
+                        broker_positions=broker_positions, broker_ledgers=broker_ledgers, broker_executions=executions,
+                        broker_orders=broker_orders, order_manager=controller._runtime.order_manager,
+                        portfolio=portfolio, portfolio_recovery=portfolio_image,
+                        observations=observations, population=population)
+                recovered.actor.target_state.fraction = fraction
                 if offset == 2:
                     bad = list(events)
-                    bad[-1] = replace(bad[-1], detail={**bad[-1].detail, "decision_reference_price": 999.})
+                    last_completion = max(index for index, item in enumerate(events)
+                        if item.detail and item.detail.get("signal_type") == "program_boundary_completed")
+                    bad[last_completion] = replace(bad[last_completion],
+                        detail={**bad[last_completion].detail, "decision_reference_price": 999.})
                     with pytest.raises(ValueError, match="reference mark changed"):
                         rebuild_program_policy_events(actor, bad, run_id=controller.run_id,
                             source_hashes=runtime.typed_source_commit_hashes(), blocks=(block,), population=population,
@@ -244,6 +289,47 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 assert batch.signals[0]["decision_assignment_id"] == "assignment"
                 assert batch.events[0]["causation_id"] in runtime.typed_source_commit_hashes()
                 assert not batch.signal_evidence_nodes
+            from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
+            from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
+            from tests.test_backtest_v4_keeper_lease import _session
+            from src.trading_runtime.runtime import typed_run_config_payload
+            from types import SimpleNamespace
+            lease_session = _session()
+            lease = BacktestV4KeeperLease.acquire(lease_session, run_id=controller.run_id,
+                owner_id="synthetic-program-recovery")
+            writer = SimpleNamespace(run_id=controller.run_id, run_mode="backtest", coalesce_batches=False,
+                journal_profile="backtest_v4", max_events_per_commit=512,
+                _client=SimpleNamespace(backtest_v4_lease=lease))
+            controller._fixed_v4_lease = lease
+            controller._journal_publisher = BacktestTypedJournalPublisher(controller._journal, writer,
+                attempt_id="00000000-0000-0000-0000-000000000001", run_month=at.date().replace(day=1),
+                initial_sequence=recovered.journal_sequence, prior_batch_id=prefix.last_batch_id,
+                source_cursor=prefix.source_cursor, expected_config=typed_run_config_payload(controller._runtime.config))
+            try:
+                with pytest.raises(ValueError, match="fully fenced"):
+                    await controller.install_recovered_program_policy(recovered,
+                        portfolio_recovery=portfolio_image, population=population)
+                assert controller._runtime.strategy is actor
+                # Synthetic storage receipt: the normalized event projection and
+                # fake readback above stand in for ClickHouse; no operational write.
+                controller._journal.mark_fenced(recovered.journal_sequence)
+                assert lease.release()
+                with pytest.raises(RuntimeError, match="lease lost"):
+                    await controller.install_recovered_program_policy(recovered,
+                        portfolio_recovery=portfolio_image, population=population)
+                assert controller._runtime.strategy is actor
+                lease = BacktestV4KeeperLease.acquire(lease_session, run_id=controller.run_id,
+                    owner_id="synthetic-program-recovery-successor")
+                controller._fixed_v4_lease = lease
+                writer._client.backtest_v4_lease = lease
+                await controller.install_recovered_program_policy(recovered,
+                    portfolio_recovery=portfolio_image, population=population)
+                assert controller._runtime.strategy is recovered.actor
+                assert controller._program_strategy is recovered.actor
+            finally:
+                lease.release()
+                controller._fixed_v4_lease = None
+                controller._journal_publisher = None
         finally:
             await controller._runtime.finish()
     try:

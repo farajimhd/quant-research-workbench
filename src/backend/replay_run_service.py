@@ -4953,6 +4953,63 @@ class ReplayRunController:
             raise ValueError("Program policy recovery source advanced during cold readback")
         return recovered
 
+    async def install_recovered_program_policy(self, packet, *, portfolio_recovery, population):
+        """Install only at an owned, fully fenced common financial/source clock."""
+        from .program_policy_recovery import RecoveredProgramPolicy, verify_recovered_program_positions
+        from .backtest_typed_publisher import BacktestTypedJournalPublisher
+        from .backtest_v4_keeper_lease import BacktestV4KeeperLease
+        from .qmd_columnar_history_transport import _owned_worker
+        from .qmd_columnar_population import CertifiedPopulationWindow
+        from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
+        from src.trading_runtime.runtime import typed_run_config_payload
+        runtime, source = self._runtime, self._program_signal_runtime
+        publisher, lease = self._journal_publisher, self._fixed_v4_lease
+        def require_fence():
+            if (type(packet) is not RecoveredProgramPolicy
+                    or runtime is None or source is None or runtime.strategy is not self._program_strategy
+                    or type(population) is not CertifiedPopulationWindow
+                    or population.source_revision != source._typed_scope[1]
+                    or type(runtime.broker) is not SimulatedBrokerAdapter or runtime.config.mode is not RunMode.BACKTEST
+                    or type(publisher) is not BacktestTypedJournalPublisher
+                    or publisher.journal is not self._journal or runtime.journal is not self._journal
+                    or publisher.expected_config != typed_run_config_payload(runtime.config)
+                    or publisher.writer.journal_profile != "backtest_v4"
+                    or type(lease) is not BacktestV4KeeperLease or lease.run_id != self.run_id
+                    or getattr(getattr(publisher.writer, "_client", None), "backtest_v4_lease", None) is not lease
+                    or publisher.checkpoint_pending or publisher.fenced_sequence != packet.journal_sequence
+                    or self._journal.latest_sequence(self.run_id) != packet.journal_sequence
+                    or self._journal.pending_record_count != 0):
+                raise ValueError("Program installation lacks its owned fully fenced financial prefix")
+        require_fence()
+        hashes = source.typed_source_commit_hashes()
+        sequence, _, at = source.typed_source_cursor()
+        if sequence < 1 or runtime.last_event_time != at:
+            raise ValueError("Program installation lacks its completed source/broker clock")
+        await _owned_worker(lease.assert_current)
+        accounts = tuple(runtime.config.account_ids)
+        results = await asyncio.gather(
+            *(runtime.broker.positions(account) for account in accounts),
+            *(runtime.broker.account_ledger(account) for account in accounts),
+            runtime.broker.trades(), runtime.broker.canonical_orders(), return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        observations = {assignment.assignment_id: self.program_order_observation(
+            assignment_id=assignment.assignment_id, at=at) for assignment in self._program_strategy.assignments()}
+        await _owned_worker(verify_recovered_program_positions, packet, self._program_strategy,
+            run_id=self.run_id, source_hashes=hashes, at=at,
+            broker_positions=dict(zip(accounts, results[:len(accounts)], strict=True)),
+            broker_ledgers=dict(zip(accounts, results[len(accounts):-2], strict=True)),
+            broker_executions=results[-2], broker_orders=results[-1], order_manager=runtime.order_manager,
+            portfolio=runtime.portfolio, portfolio_recovery=portfolio_recovery,
+            observations=observations, population=population)
+        await _owned_worker(lease.assert_current)
+        require_fence()
+        if source.typed_source_commit_hashes() != hashes or runtime.last_event_time != at:
+            raise ValueError("Program installation cursor advanced during qualification")
+        runtime.strategy = self._strategy = self._program_strategy = packet.actor
+        self._program_dispatch_failure = None
+
     async def prepare_program_inputs(self, pins, *, first_ordinal: int,
             stop_ordinal: int, evaluation_block: str, as_of: datetime,
             concurrency: int, history_post=None):

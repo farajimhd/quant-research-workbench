@@ -6,7 +6,8 @@ Portfolio, OMS, broker and source cursor admission remain separate authorities.
 from __future__ import annotations
 
 from bisect import bisect_right
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from hashlib import sha256
 from datetime import datetime
 from decimal import Decimal
 from types import MappingProxyType
@@ -20,6 +21,28 @@ from src.trading_runtime.arte_journal_reader import TypedJournalEvent, load_type
 from src.trading_runtime.columnar_program_actor import AssignedProgramStrategy
 from src.trading_runtime.ibkr_schema import Execution
 from src.trading_runtime.filled_position_state import FeeFact
+from src.trading_runtime.journal_contract import canonical_json
+
+
+_RECOVERY_PROOF = object()
+
+
+def program_policy_fingerprint(actor):
+    """Seal the complete derived ledger and policy caches in memory only."""
+    def pairs(mapping, *, sets=False):
+        return [(key, sorted(value) if sets else value) for key, value in sorted(mapping.items())]
+    ledger = actor.execution_state
+    value = dict(release_hash=actor.program_release.header["content_hash"],
+        assignments=actor.assignments(), listings=pairs(actor._listings),
+        fills=pairs(ledger._fills), fees=pairs(ledger._fees), positions=pairs(ledger._positions),
+        last_at=ledger._last_at, maximum_executions=ledger.maximum_executions,
+        target_fraction=actor.target_state.fraction, adds=pairs(ledger._add_intents, sets=True),
+        episode_executions=pairs(ledger._episode_executions, sets=True),
+        closed_executions=pairs(ledger._closed_episode_by_execution), closed_net=pairs(ledger._closed_net),
+        targets=pairs(actor.target_state._targets), entry_intents=pairs(actor.target_state._entry_intents),
+        advanced_intents=pairs(actor.target_state._advanced_intents, sets=True),
+        trail=pairs(actor.trail_state._water), clocks=pairs(actor._selection_clocks))
+    return sha256(canonical_json(value).encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -29,6 +52,10 @@ class RecoveredProgramPolicy:
     execution_count: int
     completion_count: int
     completed_source_sequences: Mapping[str, int]
+    run_id: str
+    source_commit_hashes: tuple[str, ...]
+    state_hash: str
+    _proof: object = field(repr=False)
 
 
 def _clock(value):
@@ -169,7 +196,135 @@ def rebuild_program_policy_events(template, events, *, run_id, source_hashes,
             completions += 1
     if sequence != last_sequence or seen != set(cached) or fees != seen:
         raise ValueError("Program policy recovery prefix/cache coverage is incomplete")
-    return RecoveredProgramPolicy(actor, sequence, len(seen), completions, MappingProxyType(completed))
+    return RecoveredProgramPolicy(actor, sequence, len(seen), completions, MappingProxyType(completed),
+        run_id, source_hashes, program_policy_fingerprint(actor), _RECOVERY_PROOF)
+
+
+def verify_recovered_program_positions(packet, template, *, run_id, source_hashes,
+        at, broker_positions, broker_ledgers, broker_executions, broker_orders, order_manager,
+        portfolio, portfolio_recovery, observations, population):
+    """Verify common filled geometry without executing a strategy or OMS command."""
+    from src.trading_runtime.ibkr_schema import PortfolioPosition
+    from src.trading_runtime.domain import OrderState
+    from src.trading_runtime.oms_assignment_observation import AssignmentOrderObservation
+    from src.trading_runtime.arte_portfolio_recovery import PortfolioRecovery
+    from src.trading_runtime.arte_portfolio_snapshot import capture_portfolio_snapshot
+    from decimal import localcontext
+    if (type(packet) is not RecoveredProgramPolicy or packet._proof is not _RECOVERY_PROOF
+            or packet.run_id != run_id or packet.source_commit_hashes != tuple(source_hashes)
+            or packet.actor.program_release.header != template.program_release.header
+            or packet.actor.assignments() != template.assignments()
+            or packet.actor._listings != template._listings
+            or packet.actor.execution_state.pending_fee_count
+            or type(portfolio_recovery) is not PortfolioRecovery
+            or type(population) is not CertifiedPopulationWindow
+            or portfolio_recovery.run_id != run_id
+            or set(portfolio_recovery.states) != set(broker_positions)
+            or set(portfolio.states) != set(broker_positions)
+            or set(broker_ledgers) != set(broker_positions)
+            or any(value != packet.journal_sequence for value in portfolio_recovery.revisions.values())
+            or set(portfolio_recovery.revisions) != set(broker_positions)
+            or portfolio._last_filled_by_reservation != portfolio_recovery.last_filled_by_reservation):
+        raise ValueError("Recovered program installation scope or fee coverage differs")
+    if program_policy_fingerprint(packet.actor) != packet.state_hash:
+        raise ValueError("Recovered program policy changed after cold qualification")
+    executions = tuple(broker_executions)
+    if (len(executions) != packet.execution_count
+            or any(type(execution) is not Execution for execution in executions)
+            or {execution.execution_id for execution in executions} != set(packet.actor.execution_state._fills)):
+        raise ValueError("Recovered program broker execution cache differs")
+    for first in range(0, len(executions), 4096):
+        # Every ID is already present. Exact dedup checks also verify actual OMS
+        # role attribution and final fees; these calls cannot create a fill.
+        packet.actor.on_broker_executions(executions[first:first + 4096], order_manager)
+    at = _clock(at)
+    expected = {}
+    expected_orders = {}
+    required = set()
+    for assignment in packet.actor.assignments():
+        position = packet.actor.position_for(assignment.assignment_id)
+        observation = observations.get(assignment.assignment_id)
+        if (type(observation) is not AssignmentOrderObservation
+                or (observation.account_id, observation.assignment_id, observation.ticker, observation.observed_at)
+                   != (assignment.account_id, assignment.assignment_id, assignment.ticker, at)
+                or observation.unobserved_order_ids):
+            raise ValueError("Recovered program installation lacks completed OMS observations")
+        if position.position_open:
+            expected[(assignment.account_id, assignment.conid, assignment.ticker)] = (
+                position.quantity, position.average_price)
+        for order in observation.working_orders:
+            if order.broker_order_id in expected_orders:
+                raise ValueError("Recovered program OMS order ownership is duplicate")
+            expected_orders[order.broker_order_id] = (assignment.account_id, assignment.conid,
+                assignment.ticker, "BUY" if order.role == "entry" else "SELL",
+                Decimal(str(order.remaining_quantity)), Decimal(str(order.limit_price)), Decimal(str(order.stop_price)))
+        if (position.position_open or observation.pending_acquisition or observation.pending_reduction
+                or population.is_ranked(position.listing_id, at)):
+            required.add(assignment.assignment_id)
+    if any(packet.completed_source_sequences.get(identity) != len(source_hashes) for identity in required):
+        raise ValueError("Recovered program installation has incomplete current source decisions")
+    actual_orders = {}
+    for order in broker_orders:
+        if type(order) is not OrderState:
+            raise ValueError("Recovered program broker order inventory is untyped")
+        if order.terminal or order.remaining_quantity <= 0:
+            continue
+        if order.broker_order_id in actual_orders:
+            raise ValueError("Recovered program broker order inventory is duplicate")
+        actual_orders[order.broker_order_id] = (order.account_id, order.instrument.conid,
+            order.instrument.symbol, order.side.upper(), order.remaining_quantity,
+            order.limit_price or Decimal(0), order.stop_price or Decimal(0))
+    if actual_orders != expected_orders:
+        raise ValueError("Recovered program OMS orders differ from current broker inventory")
+
+    def geometry(rows, account):
+        result = {}
+        with localcontext() as context:
+            context.prec = 80
+            for row in rows:
+                if type(row) is not PortfolioPosition or row.acctId != account:
+                    raise ValueError("Recovered program financial position identity differs")
+                quantity = Decimal(str(row.position)).quantize(Decimal("0.0000000001"))
+                average = Decimal(str(row.avgPrice)).quantize(Decimal("0.0000000001"))
+                if not quantity.is_finite() or not average.is_finite() or quantity < 0:
+                    raise ValueError("Recovered program financial position is invalid")
+                if quantity:
+                    key = (account, row.conid, row.contractDesc.upper())
+                    if key in result:
+                        raise ValueError("Recovered program financial position is duplicate")
+                    result[key] = (quantity, average)
+        return result
+    actual_broker, actual_portfolio = {}, {}
+    for account, rows in broker_positions.items():
+        state = portfolio.states.get(account)
+        # Historical execution/order update times can predate the common
+        # snapshot; the current broker order inventory was verified above.
+        if (state is None or state.observed_at is None or state.observed_at > at
+                or any(state.component_watermarks.get(component) != at for component in ("summary", "ledger", "positions"))
+                or state.component_watermarks.get("orders") is None or state.component_watermarks["orders"] > at):
+            raise ValueError(f"Recovered program Portfolio snapshot differs from the source clock: "
+                f"source={at.isoformat()} observed={getattr(state, 'observed_at', None)} "
+                f"components={getattr(state, 'component_watermarks', {})}")
+        expected_state = portfolio_recovery.states[account]
+        if broker_ledgers[account] != expected_state.ledger or state.ledger != expected_state.ledger:
+            raise ValueError("Recovered program broker or Portfolio cash ledger differs")
+        actual_capture = portfolio.capture_recovery_snapshot(account,
+            state_revision=packet.journal_sequence, snapshot_at=at)
+        expected_capture = capture_portfolio_snapshot(run_id=run_id,
+            state_revision=packet.journal_sequence, snapshot_at=at, state=expected_state,
+            reservations=portfolio_recovery.reservations.values(),
+            allocations=portfolio_recovery.allocations.values(),
+            reconciliation=portfolio_recovery.differences.values())
+        if actual_capture != expected_capture:
+            raise ValueError("Recovered program full Portfolio image differs")
+        actual_broker.update(geometry(rows, account))
+        actual_portfolio.update(geometry(state.positions.values(), account))
+    with localcontext() as context:
+        context.prec = 80
+        expected = {key: tuple(value.quantize(Decimal("0.0000000001")) for value in values)
+                    for key, values in expected.items()}
+    if actual_broker != expected or actual_portfolio != expected:
+        raise ValueError("Recovered program positions differ from broker or Portfolio")
 
 
 async def recover_program_policy_async(reader_factory, prefix, template, **scope):

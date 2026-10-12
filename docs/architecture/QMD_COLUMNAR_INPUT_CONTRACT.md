@@ -355,3 +355,19 @@ missing fees and ambiguous prepared clocks fail closed. Synthetic 100ms/1s
 tests compare state at flat, held and closed prefixes. A common certified
 Portfolio/OMS/broker/source installation and app admission remain necessary;
 this policy packet alone cannot authorize resuming a backtest.
+
+The controller's guarded installation API requires the exact V4 publisher,
+idle financial fence, matching typed run configuration and current Keeper
+owner. It checks the staged policy fingerprint, complete broker execution/fee
+cache, actual filled quantities/cost basis, current broker order inventory
+against OMS observations, cash ledgers and full recovered Portfolio image.
+Held, pending and currently ranked assignments must have completed the current
+source decision. Persistent order-update timestamps may predate the snapshot;
+freshness is established by current inventory agreement and common summary,
+ledger and position clocks, with future watermarks rejected. Ownership and
+source/financial cursors are checked again after off-loop qualification, then
+actor references change together without an intervening await. Synthetic tests
+exercise agreement, unfenced rejection, lost ownership, altered cash and
+post-recovery policy mutation. Their storage receipt is a fixture, not an
+operational ClickHouse qualification. Common cold-image gathering and app run
+admission still require integration before a real backtest.
