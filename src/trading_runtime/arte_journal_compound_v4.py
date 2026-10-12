@@ -23,6 +23,7 @@ from .arte_portfolio_allocation_v4 import V4PortfolioAllocationBatch
 from .arte_protection_reconciliation_v4 import V4ProtectionReconciliationBatch
 from .arte_reservation_reason_v4 import V4ReservationReasonBatch
 from .arte_risk_action_v4 import V4RiskActionBatch
+from .rule_decision_publication import QualifiedRuleDecisionBatch, _check_rule_decision_qualification
 from .arte_oms_tactic_projection import (
     V4OmsTacticBatch, PARENT_TABLE, STEP_TABLE, seal_oms_tactic_rows,
 )
@@ -41,6 +42,7 @@ from .arte_entry_activity_v4 import ENTRY_ACTIVITY, seal_certified_entry_activit
 from .arte_entry_spread_risk_v4 import ENTRY_SPREAD_RISK, seal_certified_entry_spread_risk_rows
 
 _CHILD_KEYS = (
+    "rule_decision_bases", "rule_decision_intents",
     "followthrough_failures", "profit_givebacks", "confirmed_ah_failures", "liquidity_fade_failures", "command_lineages",
     "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "first_price_evidence", "entry_activity_evidence", "entry_spread_risk_evidence", "add_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
@@ -49,6 +51,7 @@ _CHILD_KEYS = (
     "reconciliation_replies", "oms_tactics", "oms_tactic_steps",
 )
 _EVENT_PARENT_KEYS = frozenset({
+    "rule_decision_bases",
     "followthrough_failures", "profit_givebacks", "confirmed_ah_failures", "liquidity_fade_failures", "command_lineages",
     "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "first_price_evidence", "entry_activity_evidence", "entry_spread_risk_evidence", "add_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
@@ -82,6 +85,10 @@ class V4CompoundBatch:
 
 
 def _unit_children(unit: Any) -> tuple[tuple[str, Mapping[str, Any]], ...]:
+    if type(unit) is QualifiedRuleDecisionBatch:
+        _check_rule_decision_qualification(unit.unit, unit.qualification)
+        return (("rule_decision_bases", unit.unit.basis),) + tuple(
+            ("rule_decision_intents", row) for row in unit.unit.intents)
     if type(unit) is V4LiquidityFadeFailureBatch:
         return (("liquidity_fade_failures", unit.failure),)
     if type(unit) is V4ConfirmedAhFailureBatch:
@@ -191,6 +198,16 @@ def coalesce_v4_units(
                 for row in ordered)
             children["protection_changes"][-1]["entry_order_hash"] = sha256(
                 canonical_json(list(child_hashes)).encode()).hexdigest()
+    if children["rule_decision_bases"]:
+        from .rule_decision_basis_projection import rekey_rule_decision_basis
+        bases_by_id = {}
+        for unit in units:
+            if type(unit) is QualifiedRuleDecisionBatch:
+                parent, _ = rekey_rule_decision_basis(unit.unit.basis, unit.unit.intents,
+                    batch_id=combined.batch_id)
+                bases_by_id[parent["record_id"]] = parent
+        children["rule_decision_bases"] = [{key: value for key, value in bases_by_id[row["record_id"]].items()
+            if key != "content_hash"} for row in children["rule_decision_bases"]]
     all_ids = event_ids | set().union(*child_ids.values())
     if any(parent == identity or parent not in all_ids
            for parent, identity in nested_parents):
@@ -281,6 +298,8 @@ def prepare_compound_v4_families(
 
     if type(compound) is not V4CompoundBatch:
         raise TypeError("V4 mixed preparation requires a compound batch")
+    if compound.children["rule_decision_bases"] or compound.children["rule_decision_intents"]:
+        raise RuntimeError("Qualified rule compound publication requires its integrated writer hook")
     first_price_source = _compound_price_source(compound, first_price_source)
     if getattr(client, 'live_v4_lease', None) is not None and compound.children['entry_activity_evidence']:
         raise ValueError('Live V4 compound cannot publish entry activity witnesses')
@@ -461,7 +480,7 @@ def prepare_compound_v4_families(
     families = tuple((_v4_family_table(name), rows)
                      for name, rows in base_families) + tuple(
         (table_for_key[key], tuple(extra[table_for_key[key]]))
-        for key in _CHILD_KEYS if extra[table_for_key[key]])
+        for key in _CHILD_KEYS if compound.children[key] and extra[table_for_key[key]])
     return base_families, families
 
 

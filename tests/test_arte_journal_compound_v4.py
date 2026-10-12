@@ -75,6 +75,45 @@ def test_compound_rekeys_mixed_scalar_children_without_mutating_sources():
     assert allocation["content_hash"] == "old-seal"
 
 
+def test_compound_retains_qualified_rule_rows_and_reseals_dependent_child_hashes():
+    from tests.test_rule_decision_basis_projection import values
+    from src.trading_runtime.signals import StrategySignal
+    from src.trading_runtime.arte_journal_projection import project_journal_record
+    from src.trading_runtime.rule_decision_basis_projection import (
+        project_rule_decision_basis, RuleDecisionBasisBatch, rule_decision_semantic_hash, rekey_rule_decision_basis)
+    from src.trading_runtime.rule_decision_publication import QualifiedRuleDecisionBatch
+    from src.backend.rule_decision_reselection import QualifiedRuleDecision, _NativeDecisionEvidence, _NATIVE_DECISION_PROOF
+    scope = {**values(), "run_id": RUN, "basis_sequence": 1, "decision_sequence": 3,
+        "batch_id": str(UUID(int=32))}
+    at = scope["boundary_at"]
+    signal = StrategySignal(scope["decision_id"], "program_boundary_completed", "ABC", at,
+        "wait", "neutral", 0., 1., "program:selected", working_timeframe="1s",
+        metadata=dict(assignment_id="assignment", reference_price=10., status="completed",
+            reason_code="program:selected", reason_detail="selected",
+            correlation_id=scope["decision_id"], causation_id=scope["source_commit_hash"]))
+    record = JournalRecord(scope["record_id"], RUN, 3, at, at, "strategy_decision", "signal",
+        scope["decision_id"], "account", {**signal.payload(), "strategy_id": "program", "strategy_revision": 1,
+            "correlation_id": scope["decision_id"], "causation_id": scope["source_commit_hash"]})
+    base = project_journal_record(record, run_month=scope["event_month"], attempt_id=ATTEMPT,
+        batch_id=scope["batch_id"], prior_batch_id=str(UUID(int=31)), source_cursor="start")
+    parent, children = project_rule_decision_basis(scope, [dict(stage="entry", strategy_intent_id="intent")])
+    digest = rule_decision_semantic_hash(parent, children)
+    # Transport fixture only: native policy qualification is tested separately.
+    evidence = _NativeDecisionEvidence(RUN, 1, digest, _NATIVE_DECISION_PROOF)
+    qualified = QualifiedRuleDecision(RUN, 1, digest, None, evidence)
+    first = QualifiedRuleDecisionBatch(RuleDecisionBasisBatch(base, parent, children), qualified)
+    second = _base(4, 33, 32)
+    result = coalesce_v4_units((first, second), max_events=2)
+    expected_parent, expected_children = rekey_rule_decision_basis(parent, children, batch_id=second.batch_id)
+    assert result.children["rule_decision_bases"] == ({key: value for key, value in expected_parent.items() if key != "content_hash"},)
+    assert result.children["rule_decision_intents"] == tuple({key: value for key, value in row.items() if key != "content_hash"}
+        for row in expected_children)
+    assert result.units[0] is first and first.unit.basis["batch_id"] == base.batch_id
+    assert expected_parent["intent_hash"] != parent["intent_hash"]
+    with pytest.raises(RuntimeError, match="integrated writer hook"):
+        prepare_compound_v4_families(object(), result)
+
+
 def test_compound_preserves_nested_normalized_parent_chain():
     first = _base(1, 11, 0)
     second = _base(2, 12, 11,
