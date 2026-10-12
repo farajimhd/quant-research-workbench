@@ -12,10 +12,28 @@ from pathlib import Path
 from typing import Mapping
 from datetime import date
 from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal, localcontext
 
 
 WINNER_SHA256 = '57c03ac8aba6e2e09df254d0ac615fce61efa63fe64754351f73c06fafde4d12'
 GENERATION = 24
+
+
+def _finite_metric(value):
+    return (value.is_finite() if type(value) is Decimal else
+            type(value) in (int, float, bool) and isfinite(value))
+
+
+def _metric_difference(actual, expected):
+    if type(actual) is Decimal or type(expected) is Decimal:
+        left, right = Decimal(str(actual)), Decimal(str(expected))
+        with localcontext() as context:
+            # Preserve the native decimal, including differences below Float64
+            # resolution. Search floats retain their recorded decimal value.
+            context.prec = max(80, max(left.adjusted(), right.adjusted())
+                - min(left.as_tuple().exponent, right.as_tuple().exponent) + 2)
+            return left - right
+    return actual - expected
 
 
 @dataclass(frozen=True)
@@ -144,6 +162,8 @@ def compare_sessions(reference: OptimizationReference, app_results: Mapping) -> 
         raise ValueError('App comparison contains non-reference sessions')
     rows = []
     for day, expected in reference.sessions.items():
+        if any(not _finite_metric(value) for value in expected.values()):
+            raise ValueError(f'Non-finite or non-numeric reference metrics: {day}')
         actual = app_results.get(day)
         row = dict(day=day, optimization=expected, app=None, differences=None,
                    status='not_run')
@@ -156,15 +176,14 @@ def compare_sessions(reference: OptimizationReference, app_results: Mapping) -> 
                     or actual['verified_sequence'] < 1):
                 raise ValueError(f'Unverified or mismatched app comparison: {day}')
             metrics = actual['metrics']
-            if any(type(value) not in (int, float, bool) or not isfinite(value)
-                   for value in metrics.values()):
+            if any(not _finite_metric(value) for value in metrics.values()):
                 raise ValueError(f'Non-finite or non-numeric app metrics: {day}')
             if ('terminal_valid' in metrics and metrics['terminal_valid'] is not True):
                 raise ValueError(f'App result lacks valid terminal accounting: {day}')
             missing = set(expected) - set(metrics)
             row.update(app=actual, status='incomplete_metrics' if missing else 'compared',
                        missing_metrics=sorted(missing),
-                       differences={name: metrics[name] - value for name, value in expected.items()
+                       differences={name: _metric_difference(metrics[name], value) for name, value in expected.items()
                                     if name in metrics and name != 'terminal_valid'})
         rows.append(row)
     return rows

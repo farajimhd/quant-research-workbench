@@ -4,6 +4,7 @@ import json
 import asyncio
 from hashlib import sha256
 from pathlib import Path
+from decimal import Decimal
 
 from src.trading_runtime.optimized_strategy_reference import (
     OptimizationReference, compare_sessions,
@@ -32,6 +33,19 @@ def test_partial_comparison_keeps_every_reference_session():
     assert rows[0]['differences'] == {'net_pnl': -8., 'closed_positions': 0}
     assert rows[0]['status'] == 'compared'
     assert all(row['status'] == 'not_run' and row['app'] is None for row in rows[1:])
+
+
+def test_native_decimal_money_is_compared_without_float_rounding():
+    actual = result()
+    amount = Decimal('100.000000000000000000000000000001')
+    actual['metrics']['net_pnl'] = amount
+    row = compare_sessions(reference(), {'2026-08-01': actual})[0]
+    assert row['app']['metrics']['net_pnl'] is amount
+    assert row['differences']['net_pnl'] == Decimal('1e-30')
+    for invalid in (Decimal('NaN'), Decimal('Infinity')):
+        actual['metrics']['net_pnl'] = invalid
+        with pytest.raises(ValueError, match='Non-finite'):
+            compare_sessions(reference(), {'2026-08-01': actual})
 
 
 @pytest.mark.parametrize('field,value', [
