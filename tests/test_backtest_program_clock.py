@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import polars as pl
 import pytest
 
-from src.backend.backtest_program_clock import dispatch_prepared_program_clock
 from src.backend.backtest_program_inputs import PreparedProgramBlock
 from src.backend.qmd_columnar_population import CertifiedPopulationWindow
 from src.backend.replay_run_service import ReplayRunController
@@ -59,7 +58,7 @@ def test_complete_clock_preserves_explicit_order_and_checks_before_side_effects(
     if failure == "block":
         blocks["assignment"] = replace(block, release_hash="0" * 64)
     async def run():
-        request = dispatch_prepared_program_clock(controller, blocks, population, at=at,
+        request = controller.dispatch_prepared_program_clock(blocks, population, at=at,
             assignment_order=("second", "assignment"), execution_policy=None,
             protection_profiles={"assignment": None, "second": None}, outside_rth=False)
         if failure:

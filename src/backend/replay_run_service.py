@@ -4814,6 +4814,15 @@ class ReplayRunController:
         if names and not report['eligible_ticker_count']:
             raise ValueError('No strategy tickers have required V7 books; see level-book-coverage.json')
 
+    async def dispatch_prepared_program_clock(self, blocks, population, *, at,
+            assignment_order, execution_policy, protection_profiles, outside_rth: bool,
+            terminal: bool = False):
+        """Coordinate a complete prepared clock through this owned native runtime."""
+        from .backtest_program_clock import dispatch_prepared_program_clock
+        return await dispatch_prepared_program_clock(self, blocks, population, at=at,
+            assignment_order=assignment_order, execution_policy=execution_policy,
+            protection_profiles=protection_profiles, outside_rth=outside_rth, terminal=terminal)
+
     async def dispatch_prepared_program_boundary(self, block, population, *, ordinal: int,
             assignment_id: str, execution_policy, protection_profile, outside_rth: bool,
             terminal: bool = False):
