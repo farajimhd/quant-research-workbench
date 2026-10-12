@@ -100,6 +100,22 @@ class BacktestReviewAPITests(IsolatedAsyncioTestCase):
         paths = {route.path: route.methods for route in app.routes if hasattr(route, 'methods')}
         self.assertIn('GET', paths['/api/trading/backtest/runs/{run_id}/typed-financial-page'])
 
+    async def test_exact_financial_http_route_forwards_mode_and_closes_client(self):
+        run_id = str(uuid4())
+        client = Mock()
+        page = {"fills": [{"price": 10.250000000000002}]}
+        with (patch('src.trading_runtime.arte_journal_reader.readonly_typed_journal_client', return_value=client),
+              patch('src.backend.typed_backtest_financial_review.load_typed_backtest_financial_page', return_value=page) as read,
+              patch.object(backtest_run_service, 'review_saved', new=AsyncMock()) as saved):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as http:
+                response = await http.get(f'/api/trading/backtest/runs/{run_id}/typed-financial-page?exact_prices=true')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), page)
+        read.assert_called_once_with(client, run_id, after_fill_sequence=0,
+                                     after_commission_sequence=0, limit=500, exact_prices=True)
+        client.close.assert_called_once()
+        saved.assert_not_called()
+
     async def test_typed_financial_http_route_serializes_page(self):
         run_id = str(uuid4())
         client = Mock()

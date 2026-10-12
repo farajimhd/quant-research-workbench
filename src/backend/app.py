@@ -5860,6 +5860,7 @@ async def trading_backtest_typed_financial_page(
     after_fill_sequence: int = Query(default=0, ge=0),
     after_commission_sequence: int = Query(default=0, ge=0),
     limit: int = Query(default=500, ge=1, le=1000),
+    exact_prices: bool = False,
 ) -> dict[str, Any]:
     """Read only committed typed financial facts; this does not open saved review."""
     try:
@@ -5874,9 +5875,13 @@ async def trading_backtest_typed_financial_page(
         with closing(readonly_typed_journal_client()) as client:
             return load_typed_backtest_financial_page(
                 client, normalized, after_fill_sequence=after_fill_sequence,
-                after_commission_sequence=after_commission_sequence, limit=limit)
+                after_commission_sequence=after_commission_sequence, limit=limit,
+                **({"exact_prices": True} if exact_prices else {}))
 
     try:
+        if exact_prices:
+            from src.backend.qmd_columnar_history_transport import _owned_worker
+            return await _owned_worker(read_page)
         return await asyncio.to_thread(read_page)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

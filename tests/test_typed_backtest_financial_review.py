@@ -57,6 +57,30 @@ def test_typed_financial_review_rejects_wrong_mode(monkeypatch) -> None:
         review.load_typed_backtest_financial_page(object(), "run-1")
 
 
+def test_exact_financial_review_requires_verified_v4_and_exact_fills(monkeypatch):
+    _stub(monkeypatch)
+    prefix = SimpleNamespace(status="completed", last_sequence=120)
+    monkeypatch.setattr(review, "load_committed_prefix", lambda *_: pytest.fail("legacy prefix"))
+    monkeypatch.setattr(review, "load_verified_v4_prefix", lambda *_: prefix)
+    price = 10.250000000000002
+
+    def fills(_client, received_prefix, *, after_sequence, limit, exact_prices):
+        assert received_prefix is prefix
+        assert exact_prices is True
+        return ({"sequence": 10, "price": price},)
+
+    monkeypatch.setattr(review, "load_committed_execution_page", fills)
+    monkeypatch.setattr(review, "load_committed_commission_page", lambda *_args, **_kwargs: ())
+    page = review.load_typed_backtest_financial_page(object(), "run-1", exact_prices=True)
+    assert page["fills"][0]["price"].hex() == price.hex()
+
+
+@pytest.mark.parametrize("flag", [1, None, "true"])
+def test_financial_review_rejects_nonboolean_price_mode(flag):
+    with pytest.raises(ValueError, match="invalid bounds"):
+        review.load_typed_backtest_financial_page(object(), "run-1", exact_prices=flag)
+
+
 def test_typed_financial_review_rejects_nonterminal_or_out_of_range(monkeypatch) -> None:
     _stub(monkeypatch, status="running")
     with pytest.raises(ValueError, match="terminal committed"):
