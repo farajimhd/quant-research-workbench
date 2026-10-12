@@ -61,6 +61,14 @@ lossless Float32 solution. Any decimal contract needs explicit supported
 domain/precision bounds and rejection behavior. The existing broker-match
 snapshot's UInt64 binary64 codec provides another already-used exact scalar
 representation to evaluate for a versioned central contract.
+`src/trading_runtime/trading_price_codec.py` now exposes that shared scalar
+representation for staged future contracts. It validates positive/nonnegative
+and nullable domains explicitly, rejects inexact integer conversions, and
+reuses the broker-match canonical-zero convention. Eight synthetic checks
+verify bit-exact Float32 round trips (including representation stress cases),
+nullable values and rejection of malformed/nonfinite/out-of-domain inputs.
+This codec creates no table and does not select an order-price policy or change
+existing decimal writers. It can retain raw thresholds under either option.
 
 ## Required source and qualification scope
 
