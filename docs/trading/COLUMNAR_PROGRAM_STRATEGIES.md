@@ -168,6 +168,12 @@ reads through `read_liquidity_cohort_async`. It validates all requests before
 opening clients, preserves sparse/empty windows and closes every owned client
 before cancellation returns. It consumes existing sealed ARTE products only;
 it neither builds missing coverage nor changes the100ms reader or broker clocks.
+`read_fixed_liquidity_cohort_async` adds the corresponding bounded100ms adapter
+using the existing certified market-day and eligible-price plans, SQL compiler,
+row iterator and completed-boundary validator. It rejects duplicate/out-of-window
+boundaries and mismatched price parents, and closes stream/client ownership on
+failure. Both resolution adapters use the same bounded worker pool; neither
+selects sizing or supplies strategy market features from liquidity bars.
 `TradingRuntime.advance_program_session_clock` handles a completed sparse
 program clock after the admitted liquidity window has been scanned. It advances
 the runtime clock and shared OMS trigger/reprice/deadline operations without

@@ -166,3 +166,52 @@ def test_liquidity_cohort_bounds_concurrent_clients_and_closes_every_reader(monk
                 first_bucket=50400, stop_bucket=50402, concurrency=2)
         assert opened == before
     asyncio.run(run_test())
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_fixed_liquidity_cohort_uses_native_pinned_query_and_closes_stream(duplicate):
+    import asyncio
+    from tests.test_backtest_market_data import BacktestMarketDataTests
+    from src.backend.backtest_liquidity_price import PriceLevelPlan, PriceLevelUnit
+    from src.backend.backtest_liquidity_resolution import read_fixed_liquidity_cohort_async
+    plan = replace(BacktestMarketDataTests()._plan(), required_resolutions_ms=(100,))
+    source = next(unit for unit in plan.units if unit.stage == "broker_100ms")
+    prices = PriceLevelPlan(plan.build_id, (PriceLevelUnit(source.session_date, source.ticker,
+        source.attempt_id, "00000000-0000-0000-0000-000000000002", 1, 1, 0., "a" * 64),), "b" * 64)
+    row = dict(session_date=source.session_date, ticker=source.ticker, boundary_ms=300100,
+        resolution_ms=100, bucket_index=147000, price_valid=0, execution_price_levels=[])
+    clients = []
+    class Reader:
+        def __init__(self):
+            self.closed = self.stream_closed = False
+            clients.append(self)
+        def iter_json_each_row(self, query):
+            assert query.startswith("SELECT") and "execution_price_levels" in query
+            assert source.attempt_id in query and prices.units[0].derivation_attempt_id in query
+            try:
+                yield dict(row)
+                if duplicate:
+                    yield dict(row)
+            finally:
+                self.stream_closed = True
+        def close(self):
+            self.closed = True
+    async def run_test():
+        request = read_fixed_liquidity_cohort_async(Reader, plan, prices,
+            after_boundary_ms=300000, through_boundary_ms=300200, concurrency=2)
+        if duplicate:
+            with pytest.raises(ExceptionGroup, match="TaskGroup"):
+                await request
+        else:
+            result = await request
+            assert tuple(result) == (source.ticker,)
+            assert len(result[source.ticker]) == 1
+            assert result[source.ticker][0]["execution_price_levels"] == ()
+        assert len(clients) == 1 and clients[0].closed and clients[0].stream_closed
+        wrong_prices = replace(prices, units=(replace(prices.units[0], source_attempt_id=
+            "00000000-0000-0000-0000-000000000003"),))
+        with pytest.raises(ValueError, match="liquidity attempts"):
+            await read_fixed_liquidity_cohort_async(Reader, plan, wrong_prices,
+                after_boundary_ms=300000, through_boundary_ms=300200, concurrency=2)
+        assert len(clients) == 1
+    asyncio.run(run_test())

@@ -1,4 +1,4 @@
-"""SELECT-only consumption of sealed broker liquidity at one-second resolution.
+"""SELECT-only consumption of sealed broker liquidity at100ms or1s resolution.
 
 This lane consumes producer coverage. It cannot build missing coverage, install
 tables, or substitute higher-resolution price bars for executable liquidity.
@@ -240,7 +240,6 @@ async def read_liquidity_cohort_async(reader_factory, certificates, *,
     Every request is validated before opening any client. Sparse or empty rows
     stay explicit; no price bar or fill is fabricated for a missing bucket.
     """
-    from types import MappingProxyType
     if (not callable(reader_factory) or not isinstance(certificates, (tuple, list))
             or not certificates or type(concurrency) is not int or not 1 <= concurrency <= 32
             or type(first_bucket) is not int or type(stop_bucket) is not int
@@ -253,16 +252,73 @@ async def read_liquidity_cohort_async(reader_factory, certificates, *,
         raise ValueError("Liquidity cohort needs unique tickers from one certified session")
     for certificate in certificates:
         liquidity_window_sql(certificate, first_bucket=first_bucket, stop_bucket=stop_bucket)
-    pending = iter(sorted(certificates, key=lambda row: row.source.ticker))
+    async def read(certificate):
+        return await read_liquidity_window_async(reader_factory, certificate,
+            first_bucket=first_bucket, stop_bucket=stop_bucket)
+    return await _read_liquidity_pool({row.source.ticker: row for row in certificates}, concurrency, read)
+
+
+async def _read_liquidity_pool(scopes, concurrency, read):
+    from types import MappingProxyType
+    pending = iter(sorted(scopes.items()))
     results = {}
     async def worker():
         while True:
-            certificate = next(pending, None)
-            if certificate is None:
+            item = next(pending, None)
+            if item is None:
                 return
-            results[certificate.source.ticker] = await read_liquidity_window_async(
-                reader_factory, certificate, first_bucket=first_bucket, stop_bucket=stop_bucket)
+            ticker, scope = item
+            results[ticker] = await read(scope)
     async with asyncio.TaskGroup() as group:
-        for _ in range(min(concurrency, len(certificates))):
+        for _ in range(min(concurrency, len(scopes))):
             group.create_task(worker())
     return MappingProxyType({ticker: results[ticker] for ticker in sorted(results)})
+
+
+async def read_fixed_liquidity_cohort_async(reader_factory, market_plan, price_plan, *,
+        after_boundary_ms, through_boundary_ms, concurrency):
+    """Bounded100ms windows from the existing certified market/price readers."""
+    from .backtest_market_data import (CertifiedMarketDayPlan, project_market_day_plan,
+        market_day_source_sqls, iter_market_day_rows, CompletedBoundaryValidator)
+    from .backtest_liquidity_price import PriceLevelPlan
+    if (not callable(reader_factory) or type(market_plan) is not CertifiedMarketDayPlan
+            or type(price_plan) is not PriceLevelPlan or len(market_plan.sessions) != 1
+            or not market_plan.tickers or len(set(market_plan.tickers)) != len(market_plan.tickers)
+            or market_plan.required_resolutions_ms != (100,)
+            or type(concurrency) is not int or not 1 <= concurrency <= 32
+            or type(after_boundary_ms) is not int or type(through_boundary_ms) is not int
+            or not 0 < through_boundary_ms - after_boundary_ms <= 256000
+            or len(market_plan.tickers) * ((through_boundary_ms - after_boundary_ms) // 100) > 262144):
+        raise ValueError("Fixed liquidity cohort exceeds its certified100ms scope or reader bounds")
+    scopes = {}
+    for ticker in market_plan.tickers:
+        plan = project_market_day_plan(market_plan, (ticker,))
+        prices = price_plan.projected(plan)
+        market_day_source_sqls(plan, after_boundary_ms=after_boundary_ms,
+            through_boundary_ms=through_boundary_ms, price_plan=prices)
+        scopes[ticker] = (plan, prices)
+    async def read(scope):
+        def run():
+            plan, prices = scope
+            reader = reader_factory()
+            stream = iter_market_day_rows(plan, reader, after_boundary_ms=after_boundary_ms,
+                through_boundary_ms=through_boundary_ms, price_plan=prices)
+            try:
+                rows = []
+                previous = after_boundary_ms
+                validator = CompletedBoundaryValidator(plan)
+                for row in stream:
+                    boundary = row["boundary_ms"]
+                    if not previous < boundary <= through_boundary_ms:
+                        raise ValueError("Fixed liquidity cohort ordering or window differs")
+                    validator.validate(row["session_date"], boundary, [(row["ticker"], {100: row})])
+                    rows.append(row)
+                    previous = boundary
+                    if len(rows) > (through_boundary_ms - after_boundary_ms) // 100:
+                        raise ValueError("Fixed liquidity cohort exceeds its completed-bucket bound")
+                return tuple(rows)
+            finally:
+                stream.close()
+                reader.close()
+        return await _owned_worker(run)
+    return await _read_liquidity_pool(scopes, concurrency, read)
