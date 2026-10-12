@@ -4858,6 +4858,8 @@ class ReplayRunController:
                 observation=observation, terminal=terminal)
             if selection.status == "already_consumed":
                 return {"status": selection.status, "results": results}
+            intent_references = tuple(dict(stage=proposal.stage, strategy_intent_id=proposal.intent_id)
+                for proposal in selection.proposals)
             for proposal in selection.proposals:
                 results.extend(await self._runtime.submit_program_proposal(proposal,
                     account_id=assignment.account_id, assignment_id=assignment_id,
@@ -4878,14 +4880,6 @@ class ReplayRunController:
                     "strategy_revision": actor.revision, "correlation_id": identity,
                     "causation_id": source_hash})
             from src.trading_runtime.rule_decision_basis_projection import project_program_completion_basis
-            intent_references = []
-            for record in self._journal.records(self.run_id, after_sequence=basis_sequence):
-                if (record.category, record.entity_type) != ("strategy", "strategy_intent"):
-                    continue
-                stage = record.payload["reason"].split(":", 1)[1]
-                stage = {"target": "reduce", "terminal": "exit",
-                    "cancel_pending_acquisition": "exit"}.get(stage, stage)
-                intent_references.append(dict(stage=stage, strategy_intent_id=record.entity_id))
             parent, children = project_program_completion_basis(completion,
                 release=actor.program_release, block=block, assignment=assignment,
                 listing_id=listing, ordinal=ordinal, source_boundary=(sequence, source_hash, cutoff),

@@ -124,9 +124,16 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                         if record.payload.get("signal_type") == "program_boundary_completed"]
                     return
                 basis_sequence = controller._journal.latest_sequence(controller.run_id)
-                result = await controller.dispatch_prepared_program_boundary(block, population,
-                    ordinal=ordinal + offset, assignment_id="assignment", execution_policy=policy,
-                    protection_profile=profile, outside_rth=False, terminal=offset == 2)
+                original_records = controller._journal.records
+                def forbidden_rescan(*args, **kwargs):
+                    raise AssertionError("Completed dispatch must not rescan journal records")
+                controller._journal.records = forbidden_rescan
+                try:
+                    result = await controller.dispatch_prepared_program_boundary(block, population,
+                        ordinal=ordinal + offset, assignment_id="assignment", execution_policy=policy,
+                        protection_profile=profile, outside_rth=False, terminal=offset == 2)
+                finally:
+                    controller._journal.records = original_records
                 from src.trading_runtime.rule_decision_basis_projection import project_program_completion_basis
                 basis_records = controller._journal.records(controller.run_id)
                 completion = next(record for record in reversed(basis_records)
