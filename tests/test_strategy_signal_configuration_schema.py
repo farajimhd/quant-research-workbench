@@ -5,7 +5,7 @@ from src.backend.signal_stream_typed_catalog import FieldBinding
 
 
 def test_shared_signal_field_relation_covers_existing_native_catalogue_contract():
-    assert {name for name, _ in schema.FIELD.columns} - {"configuration_id"} == {
+    assert {name for name, _ in schema.FIELD.columns} - {"configuration_id", "signal_stream_id"} == {
         field.name for field in fields(FieldBinding)}
     assert {name for name, _ in schema.STREAM_FIELD.columns} == {
         "configuration_id", "signal_stream_id", "ordinal", "column_id"}

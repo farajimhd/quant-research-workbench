@@ -18,13 +18,13 @@ STREAM = TableContract(
 
 FIELD = TableContract(
     "trading_strategy_configuration_signal_field_v1",
-    (("configuration_id", "UUID"), ("column_id", "String"),
+    (("configuration_id", "UUID"), ("signal_stream_id", "String"), ("column_id", "String"),
      ("source_kind", "String"), ("source_id", "String"), ("source_path", "String"),
      ("provenance", "String"), ("query_plan_id", "String"),
      ("available_at_contract", "String"), ("field_ref", "String"),
      ("instance_ref", "String"), ("value_type", "String"),
      ("interval", "String"), ("aggregation", "String")),
-    "tuple()", "configuration_id,column_id")
+    "tuple()", "configuration_id,signal_stream_id,column_id")
 
 STREAM_FIELD = TableContract(
     "trading_strategy_configuration_signal_stream_field_v1",

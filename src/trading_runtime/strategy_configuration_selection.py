@@ -34,6 +34,17 @@ def _row(table, source):
         if kind == "UUID":
             if type(value) is not str or str(UUID(value)) != value:
                 raise ValueError("Configuration UUID is not canonical")
+        elif kind.startswith("Nullable("):
+            if value is None:
+                continue
+            base = kind[9:-1]
+            valid = (
+                base == "Float64" and type(value) is float and isfinite(value)
+                or base == "Int64" and type(value) is int and -(2 ** 63) <= value < 2 ** 63
+                or base == "UInt8" and type(value) is int and value in (0, 1)
+                or base == "String" and type(value) is str and len(value) <= 256)
+            if not valid:
+                raise ValueError("Configuration nullable literal exceeds its typed domain")
         elif kind.startswith("UInt"):
             if type(value) is not int or not 0 <= value < 2 ** int(kind[4:]):
                 raise ValueError("Configuration integer exceeds its typed domain")
