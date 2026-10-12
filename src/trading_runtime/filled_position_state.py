@@ -138,6 +138,23 @@ class FilledPositionState:
         return self.positions
 
     @_exact_math
+    def terminal_financial_metrics(self) -> Mapping:
+        """Project completed episodes from the same actual-fill/fee ledger.
+
+        This proves ledger closure only, not a committed run or full session.
+        Those independent authorities remain mandatory at comparison admission.
+        """
+        positions = self.finalized_positions()
+        if any(position.position_open for position in positions.values()):
+            raise ValueError("Terminal financial metrics require all positions closed")
+        return MappingProxyType(dict(
+            net_pnl=sum((position.net_realized_pnl for position in positions.values()), Decimal(0)),
+            closed_positions=sum(position.closed_positions for position in positions.values()),
+            winning_positions=sum(position.winning_positions for position in positions.values()),
+            worst_position_pnl=min(self._closed_net.values(), default=Decimal(0)),
+            terminal_valid=True))
+
+    @_exact_math
     def apply_fill(self, fact: FillFact) -> FilledPosition:
         if type(fact) is not FillFact:
             raise TypeError("Execution projection accepts only typed fill facts")

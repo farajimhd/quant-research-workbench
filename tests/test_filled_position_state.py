@@ -46,6 +46,22 @@ def test_fees_determine_net_pnl_and_late_fees_correct_win_rate():
     assert pos.net_realized_pnl == D("-.50") and pos.winning_positions == 0
     assert state.apply_fee(FeeFact("e2", D("1"), "USD")) == pos
     assert state.pending_fee_count == 0 and state.finalized_positions()[fill().key] == pos
+    metrics = state.terminal_financial_metrics()
+    assert metrics == dict(net_pnl=D("-.50"), closed_positions=1, winning_positions=0,
+        worst_position_pnl=D("-.50"), terminal_valid=True)
+    with pytest.raises(TypeError):
+        metrics["net_pnl"] = D("100")
+
+
+def test_terminal_metrics_reject_open_positions_and_pending_fees():
+    state = FilledPositionState()
+    assert state.terminal_financial_metrics()["closed_positions"] == 0
+    state.apply_fill(fill())
+    with pytest.raises(ValueError, match="pending execution commissions"):
+        state.terminal_financial_metrics()
+    state.apply_fee(FeeFact("e1", D("1"), "USD"))
+    with pytest.raises(ValueError, match="all positions closed"):
+        state.terminal_financial_metrics()
 
 
 def test_old_episode_late_fee_does_not_charge_new_position_episode():
