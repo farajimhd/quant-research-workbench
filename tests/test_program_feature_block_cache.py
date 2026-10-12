@@ -52,3 +52,35 @@ def test_cache_does_not_retain_failed_preparation(prepared_source):
             await cache.load(release_for(pin), {pin.scope.listing_id: pin}, **kwargs, history_post=failed)
         assert cache._block is None and cache._key is None
     asyncio.run(run())
+
+
+def test_listing_cache_preserves_native_origin_and_enforces_retained_bytes(prepared_source):
+    from src.backend.backtest_program_listing_cache import ProgramListingFeatureCache
+    store = Store()
+    publish(store, prepared_source)
+    certificate = consume(store, prepared_source)
+    pin = certificate.pin()
+    release = release_for(pin)
+    calls = []
+    def post(path, request, timeout):
+        calls.append(request)
+        return response_for(certificate, request["first_ordinal"], request["stop_ordinal"], request["field_ids"])
+    kwargs = dict(first_ordinal=0, stop_ordinal=200, evaluation_block="optimizer-origin",
+        as_of=c.completed_clock(pin.scope, pin.scope.stop_bucket - 1), concurrency=2, history_post=post)
+    async def run():
+        pins = {pin.scope.listing_id: pin}
+        native = await ProgramFeatureBlockCache().load(release, pins, **kwargs)
+        size = native.market.estimated_size() + native.masks.estimated_size()
+        cache = ProgramListingFeatureCache(maximum_retained_bytes=size)
+        blocks = await cache.load(release, pins, **kwargs)
+        assert blocks[pin.scope.listing_id].market.equals(native.market)
+        assert blocks[pin.scope.listing_id].masks.equals(native.masks)
+        assert cache.retained_bytes == size
+        before = len(calls)
+        assert await cache.load(release, pins, **kwargs) is blocks
+        assert len(calls) == before
+        limited = ProgramListingFeatureCache(maximum_retained_bytes=size - 1)
+        with pytest.raises(ValueError, match="retained-byte budget"):
+            await limited.load(release, pins, **kwargs)
+        assert limited._blocks is None and limited.retained_bytes == 0
+    asyncio.run(run())
