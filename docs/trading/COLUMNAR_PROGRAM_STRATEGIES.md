@@ -49,6 +49,21 @@ construction and validation. Existing numbered admission remains intact.
 This is a source projection, not release-publication proof or a selectable
 main app launch route; broker-contract and full launch binding remain required.
 
+`backtest_program_journal_bootstrap.py` provides the source-level programme
+handoff through the existing V4 context, definition and journal assemblers.
+It requires four distinct connections, dedicated programme profiles, a shared
+Keeper session, the current run and definition claims, pinned release/code,
+certified market-plan relationship, and an exact normalized price contract.
+All preflight and pure definition checks precede context creation. Definition
+and price-contract publication precede writer creation. Repeated ownership and
+immutable-definition checks reject changed content or lost claims during the
+handoff. Failures after publication retain the same run for cold recovery;
+the caller owns cleanup and may not create a replacement run automatically.
+Tests use real in-memory Keeper ownership and controlled publication callbacks;
+they prove handoff ordering and fault boundaries, not operational ClickHouse
+qualification. The normal controller launch still needs to call this handoff
+after complete programme release/input admission and broker-contract binding.
+
 ## Delivered components
 
 - `columnar_rule_program.py`: bounded typed DAGs evaluated with native Polars
