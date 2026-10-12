@@ -19,9 +19,14 @@ existing legacy publisher. Exact assembly additionally requires the shared
 pinned hash, matching the verified run/month/configuration scope. The contract
 contains no JSON, strategy-owned table or broker-price policy. Its immutable
 projection/recovery validates codec and content before any worker opens.
-This table is staged, not installed or published. Valid scalar content alone
-does not prove database publication; the control-plane publication/readback and
-context-publication launch route remain required for operational admission.
+This table is staged, not installed or published. Exact assembly verifies the
+contract through both distinct cold-reader connections before opening a worker.
+Each requires server-enforced readonly mode, the shared schema/SSD part-placement
+audit, a bounded single named row, its content hash and exact run scope. Missing
+or duplicated content fails closed. Valid scalar content alone is insufficient.
+Control-plane publication and the context-publication launch route remain required
+for operational admission. Tests use synthetic SELECT responses and storage audits;
+no operational table or run has been read or written by this validation.
 
 ## Delivered components
 

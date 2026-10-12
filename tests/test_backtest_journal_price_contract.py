@@ -1,4 +1,5 @@
 from datetime import date
+import json
 
 import pytest
 
@@ -48,3 +49,47 @@ def test_valid_rehashed_other_run_cannot_replace_pinned_contract():
         **{**SCOPE, "configuration_hash": "b" * 64}, price_codec=EXACT_PRICE_CODEC))
     with pytest.raises(ValueError, match="pinned run"):
         other.require_scope(**SCOPE, content_hash=row["content_hash"])
+
+
+@pytest.mark.parametrize("case", ["valid", "absent", "duplicate", "changed", "oversize", "writable", "storage", "array", "duplicate_field"])
+def test_cold_readback_is_bounded_and_fail_closed(monkeypatch, case):
+    from src.trading_runtime.backtest_journal_price_contract import read_journal_price_contract
+    from src.trading_runtime import arte_journal_schema as schema
+    row = project_journal_price_contract(**SCOPE, price_codec=EXACT_PRICE_CODEC)
+    response = json.dumps(row)
+    if case == "absent":
+        response = ""
+    elif case == "duplicate":
+        response += "\n" + response
+    elif case == "changed":
+        response = json.dumps({**row, "configuration_hash": "b" * 64})
+    elif case == "oversize":
+        response = " " * 16_385
+    elif case == "array":
+        response = json.dumps(list(row.items()))
+    elif case == "duplicate_field":
+        response = response[:-1] + ',"price_codec":"binary64-v1"}'
+    calls = []
+    def storage(client, *, tables):
+        assert tables == (PRICE_CONTRACT,)
+        calls.append("storage")
+        if case == "storage":
+            raise ValueError("misplaced parts")
+    monkeypatch.setattr(schema, "storage_preflight", storage)
+    class Client:
+        def execute(self, sql):
+            calls.append(sql)
+            assert sql.startswith("SELECT ")
+            if "getSetting" in sql:
+                return "0" if case == "writable" else "1"
+            assert "LIMIT 2 FORMAT JSONEachRow" in sql
+            assert f"WHERE run_id='{RUN}'" in sql
+            return response
+    if case == "valid":
+        actual = read_journal_price_contract(Client(), **SCOPE, content_hash=row["content_hash"])
+        assert dict(actual.row) == row and "storage" in calls
+    else:
+        with pytest.raises((ValueError, RuntimeError)):
+            read_journal_price_contract(Client(), **SCOPE, content_hash=row["content_hash"])
+    if case in ("storage", "writable"):
+        assert not any("FROM arte." in sql for sql in calls)

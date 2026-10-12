@@ -9,6 +9,8 @@ from hashlib import sha256
 from hmac import compare_digest
 from types import MappingProxyType
 import re
+import json
+from collections.abc import Mapping
 from uuid import UUID
 
 from .arte_journal_schema import TableContract
@@ -49,6 +51,8 @@ class BacktestJournalPriceContract:
     row: object
 
     def __post_init__(self):
+        if not isinstance(self.row, Mapping):
+            raise ValueError("Journal price contract must be a named scalar row")
         row = dict(self.row)
         if set(row) != {name for name, _ in PRICE_CONTRACT.columns}:
             raise ValueError("Journal price contract columns differ")
@@ -70,3 +74,33 @@ class BacktestJournalPriceContract:
                 or not compare_digest(self.row["content_hash"], content_hash)):
             raise ValueError("Journal price contract differs from pinned run settings")
         return True
+
+
+def read_journal_price_contract(client, *, run_id, run_month, configuration_hash, content_hash):
+    """Bounded SELECT-only readback; caller owns this synchronous connection."""
+    from .arte_journal_schema import storage_preflight
+    _scope(run_id, run_month, configuration_hash)
+    if type(content_hash) is not str or re.fullmatch(r"[0-9a-f]{64}", content_hash) is None:
+        raise ValueError("Journal price contract needs an externally pinned hash")
+    if client.execute("SELECT getSetting('readonly')").strip() != "1":
+        raise RuntimeError("Journal price contract requires a server-enforced cold reader")
+    storage_preflight(client, tables=(PRICE_CONTRACT,))
+    columns = ",".join(name for name, _ in PRICE_CONTRACT.columns)
+    response = client.execute(f"SELECT {columns} FROM arte.{PRICE_CONTRACT.name} "
+        f"WHERE run_id='{run_id}' ORDER BY run_id LIMIT 2 FORMAT JSONEachRow")
+    if type(response) is not str or len(response.encode("utf-8")) > 16_384:
+        raise ValueError("Journal price contract readback exceeds its bounded response")
+    lines = [line for line in response.splitlines() if line.strip()]
+    if len(lines) != 1:
+        raise ValueError("Journal price contract is absent or duplicated")
+    def unique_fields(pairs):
+        row = {}
+        for name, value in pairs:
+            if name in row:
+                raise ValueError("Journal price contract has duplicate named fields")
+            row[name] = value
+        return row
+    contract = BacktestJournalPriceContract(json.loads(lines[0], object_pairs_hook=unique_fields))
+    contract.require_scope(run_id=run_id, run_month=run_month,
+        configuration_hash=configuration_hash, content_hash=content_hash)
+    return contract

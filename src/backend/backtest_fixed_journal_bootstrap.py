@@ -597,12 +597,20 @@ def assemble_fixed_v4_journal(
             or not same_context):
         raise RuntimeError("V4 journal context changed before assembly")
     if exact_oms_prices:
-        from src.trading_runtime.backtest_journal_price_contract import BacktestJournalPriceContract
+        from src.trading_runtime.backtest_journal_price_contract import (
+            BacktestJournalPriceContract, read_journal_price_contract)
         if type(journal_price_contract) is not BacktestJournalPriceContract:
             raise ValueError("Exact journal assembly requires its normalized price contract")
         journal_price_contract.require_scope(run_id=token.run_id, run_month=token.run_month,
             configuration_hash=token.configuration_hash,
             content_hash=expected_journal_price_contract_hash)
+        for cold_client in (read_client, terminal_client):
+            persisted_price_contract = read_journal_price_contract(cold_client,
+                run_id=token.run_id, run_month=token.run_month,
+                configuration_hash=token.configuration_hash,
+                content_hash=expected_journal_price_contract_hash)
+            if persisted_price_contract.row != journal_price_contract.row:
+                raise RuntimeError("Journal price contract differs across cold readers")
     # The production writer constructor performs this exact V4 storage and
     # grant audit before starting its thread. Keep the explicit audit for
     # injected factories, which may not enforce that constructor contract.

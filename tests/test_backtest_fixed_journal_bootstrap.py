@@ -61,6 +61,7 @@ def test_v4_writer_lane_selects_exact_prices_only_after_program_audit(monkeypatc
 
 
 def test_exact_assembly_binds_normalized_contract_before_worker_creation(monkeypatch):
+    from src.trading_runtime import backtest_journal_price_contract as price_contract
     from src.trading_runtime.backtest_journal_price_contract import (
         BacktestJournalPriceContract, project_journal_price_contract, EXACT_PRICE_CODEC)
     read, terminal = object(), object()
@@ -83,12 +84,23 @@ def test_exact_assembly_binds_normalized_contract_before_worker_creation(monkeyp
         configuration_hash=token.configuration_hash, price_codec=EXACT_PRICE_CODEC)
     bound = dict(journal_price_contract=BacktestJournalPriceContract(row),
         expected_journal_price_contract_hash=row["content_hash"])
+    readers = []
+    monkeypatch.setattr(price_contract, "read_journal_price_contract",
+        lambda actual, **scope: readers.append(actual) or bound["journal_price_contract"])
     with pytest.raises(ValueError, match="pinned run"):
         bootstrap.assemble_fixed_v4_journal(read, client, terminal, token,
             **{**scope, **bound, "expected_journal_price_contract_hash": "d" * 64})
     assert not calls
     assert bootstrap.assemble_fixed_v4_journal(read, client, terminal, token, **scope, **bound) == "assembly"
     assert calls[0]["exact_oms_prices"] is True
+    assert readers == [read, terminal]
+    calls.clear()
+    def absent(actual, **scope):
+        raise ValueError("contract absent")
+    monkeypatch.setattr(price_contract, "read_journal_price_contract", absent)
+    with pytest.raises(ValueError, match="contract absent"):
+        bootstrap.assemble_fixed_v4_journal(read, client, terminal, token, **scope, **bound)
+    assert not calls
 
 
 def test_resumed_v4_assembly_installs_campaign_or_closes_on_failure(monkeypatch):
