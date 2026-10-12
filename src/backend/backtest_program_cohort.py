@@ -12,6 +12,61 @@ class ProgramCohortResult:
     policy_packet: object
 
 
+async def run_fenced_program_cohort(controller, blocks, population, projection, **scope):
+    """Retain cohort ownership through verified publication, without terminal close.
+
+    Cancellation does not cancel the shielded publisher. An uncertain fence
+    requires recovery before another cohort may use this controller.
+    """
+    from .backtest_typed_publisher import TypedBacktestReceipt
+    from .program_policy_recovery import program_policy_fingerprint
+    if getattr(controller, "_program_cohort_active", False):
+        raise RuntimeError("Program cohort already owns this controller")
+    if controller._program_dispatch_failure is not None:
+        raise RuntimeError("Program cohort requires recovery after an uncertain boundary") from controller._program_dispatch_failure
+    controller._program_cohort_active = True
+    publishing = False
+    try:
+        result = await run_prepared_program_cohort(controller, blocks, population, projection, **scope)
+        if not result.source_clocks and not result.liquidity_boundaries:
+            return result
+        publishing = True
+        runtime, actor = controller._runtime, controller._program_strategy
+        publisher, source = controller._journal_publisher, controller._program_signal_runtime
+        journal, writer = runtime.journal, publisher.writer
+        owners = (controller.definition, runtime, actor, publisher, source, journal,
+            writer, runtime.broker, runtime.config, runtime.order_manager, runtime.portfolio)
+        target = journal.latest_sequence(controller.run_id)
+        clock, cursor = runtime.last_event_time, source.typed_source_cursor()
+        policy_hash = program_policy_fingerprint(actor)
+        publisher.enqueue_pending()
+        receipt = await publisher.await_fence()
+        current = (controller.definition, controller._runtime, controller._program_strategy,
+            controller._journal_publisher, controller._program_signal_runtime,
+            controller._journal, publisher.writer, runtime.broker, runtime.config,
+            runtime.order_manager, runtime.portfolio)
+        if (any(before is not after for before, after in zip(owners, current))
+                or runtime.journal is not journal or publisher.journal is not journal
+                or runtime.last_event_time != clock
+                or journal.latest_sequence(controller.run_id) != target
+                or source.typed_source_cursor() != cursor
+                or program_policy_fingerprint(actor) != policy_hash
+                or type(receipt) is not TypedBacktestReceipt
+                or receipt.last_sequence != target
+                or publisher.fenced_sequence != target
+                or receipt.last_batch_id != publisher._batch_id
+                or receipt.source_cursor != publisher._source_cursor
+                or publisher._error is not None):
+            raise RuntimeError("Program cohort publication differs from its owned exact fence")
+        return result
+    except BaseException as exc:
+        if publishing:
+            controller._program_dispatch_failure = exc
+        raise
+    finally:
+        controller._program_cohort_active = False
+
+
 async def run_prepared_program_cohort(controller, blocks, population, projection, *,
         source_publisher, catalogs, reader_factory, first_bucket, stop_bucket, concurrency,
         assignment_order, execution_policy, protection_profiles_at, outside_rth,

@@ -245,3 +245,14 @@ does not establish real-session parity or throughput.
 
 DDL, storage/grants changes, deployment, producers and actual session runs
 remain subject to the user's operational approval boundary.
+
+The prepared programme module now provides `run_fenced_program_cohort`.
+It holds controller cohort ownership through publication and checks the exact
+sequence, batch ID and source-cursor receipt against the publisher, plus runtime,
+journal, actor and source ownership. Publication uncertainty or cancellation
+latches the controller recovery requirement; it does not cancel the publisher's
+shielded task or authorize a replacement run. Empty stopped cohorts do not
+publish. The returned policy packet is preserved for the next cohort.
+Lifecycle tests use controlled publisher doubles; the existing native synthetic
+cohort tests run separately. Real-publisher fence integration, policy continuation
+after compaction, main app launch and full-session qualification remain pending.
