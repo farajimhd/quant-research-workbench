@@ -22,6 +22,7 @@ from src.trading_runtime.columnar_program_actor import AssignedProgramStrategy
 from src.trading_runtime.ibkr_schema import Execution
 from src.trading_runtime.filled_position_state import FeeFact
 from src.trading_runtime.journal_contract import canonical_json
+from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix, load_verified_v4_prefix
 
 
 _RECOVERY_PROOF = object()
@@ -327,21 +328,36 @@ def verify_recovered_program_positions(packet, template, *, run_id, source_hashe
         raise ValueError("Recovered program positions differ from broker or Portfolio")
 
 
-async def recover_program_policy_async(reader_factory, prefix, template, **scope):
+async def recover_program_policy_async(reader_factory, prefix, template, *, through_sequence=None, **scope):
     """Read exact committed pages on an owned worker and close its SELECT client."""
+    if (type(prefix) is not V4CommittedPrefix or not prefix.batch_ids
+            or through_sequence is not None and (type(through_sequence) is not int
+                or not 0 <= through_sequence <= prefix.last_sequence)):
+        raise ValueError("Program policy recovery requires an exact bounded historical prefix")
+    basis_sequence = prefix.last_sequence if through_sequence is None else through_sequence
     def run():
         client = reader_factory()
         try:
+            if client.execute("SELECT getSetting('readonly')").strip() != "1":
+                raise ValueError("Program policy recovery requires a SELECT-only reader")
+            if load_verified_v4_prefix(client, prefix.run_id) != prefix:
+                raise ValueError("Program policy prefix moved before readback")
             def events():
                 after = 0
-                while after < prefix.last_sequence:
-                    page = load_typed_event_page(client, prefix, after_sequence=after, limit=1000)
+                while after < basis_sequence:
+                    page = load_typed_event_page(client, prefix, after_sequence=after,
+                        limit=min(1000, basis_sequence - after))
                     if not page:
                         raise ValueError("Program policy recovery page did not advance")
+                    if int(page[-1].event["sequence"]) > basis_sequence:
+                        raise ValueError("Program policy recovery page exceeds historical basis")
                     yield from page
                     after = int(page[-1].event["sequence"])
-            return rebuild_program_policy_events(template, events(), run_id=prefix.run_id,
-                last_sequence=prefix.last_sequence, **scope)
+            result = rebuild_program_policy_events(template, events(), run_id=prefix.run_id,
+                last_sequence=basis_sequence, **scope)
+            if load_verified_v4_prefix(client, prefix.run_id) != prefix:
+                raise ValueError("Program policy prefix moved during readback")
+            return result
         finally:
             client.close()
     return await _owned_worker(run)

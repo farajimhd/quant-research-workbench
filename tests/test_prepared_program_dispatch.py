@@ -350,9 +350,13 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                     ("00000000-0000-0000-0000-000000000002",))
                 class Reader:
                     closed = False
+                    def execute(self, sql):
+                        assert sql == "SELECT getSetting('readonly')"
+                        return "1"
                     def close(self):
                         self.closed = True
                 reader = Reader()
+                monkeypatch.setattr("src.backend.program_policy_recovery.load_verified_v4_prefix", lambda *_: prefix)
                 def page(client, selected_prefix, *, after_sequence, limit):
                     assert client is reader and selected_prefix is prefix
                     return tuple(events[after_sequence:after_sequence + limit])
@@ -360,6 +364,34 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                     recovered = await controller.recover_program_policy(lambda: reader, prefix,
                         blocks=(block,), population=population, executions=executions, maximum_events=1000)
                 assert reader.closed and recovered.actor is not actor and controller._runtime.strategy is actor
+                from src.backend.program_policy_recovery import recover_program_policy_async
+                later_prefix = replace(prefix, last_sequence=prefix.last_sequence + 1)
+                historical_reader = Reader()
+                def historical_page(client, selected_prefix, *, after_sequence, limit):
+                    assert client is historical_reader and selected_prefix is later_prefix
+                    assert after_sequence + limit <= prefix.last_sequence
+                    return tuple(events[after_sequence:after_sequence + limit])
+                with patch("src.backend.program_policy_recovery.load_verified_v4_prefix", lambda *_: later_prefix), patch(
+                        "src.backend.program_policy_recovery.load_typed_event_page", historical_page):
+                    historical_policy = await recover_program_policy_async(lambda: historical_reader,
+                        later_prefix, actor, through_sequence=prefix.last_sequence,
+                        source_hashes=source_prefix_hashes, blocks=(block,), population=population,
+                        executions=executions, order_manager=controller._runtime.order_manager, maximum_events=1000)
+                assert historical_reader.closed and historical_policy.state_hash == recovered.state_hash
+                assert historical_policy.journal_sequence == prefix.last_sequence
+                moved_reader = Reader()
+                head_reads = []
+                def moving_head(*args):
+                    head_reads.append(True)
+                    return prefix if len(head_reads) == 1 else later_prefix
+                with patch("src.backend.program_policy_recovery.load_verified_v4_prefix", moving_head), patch(
+                        "src.backend.program_policy_recovery.load_typed_event_page",
+                        lambda client, selected_prefix, *, after_sequence, limit: tuple(events[after_sequence:after_sequence + limit])):
+                    with pytest.raises(ValueError, match="prefix moved during"):
+                        await recover_program_policy_async(lambda: moved_reader, prefix, actor,
+                            source_hashes=source_prefix_hashes, blocks=(block,), population=population,
+                            executions=executions, order_manager=controller._runtime.order_manager, maximum_events=1000)
+                assert moved_reader.closed and controller._runtime.strategy is actor
                 assert recovered.actor.execution_state.positions == actor.execution_state.positions
                 assert recovered.actor.target_state._targets == actor.target_state._targets
                 assert recovered.actor.target_state._entry_intents == actor.target_state._entry_intents
