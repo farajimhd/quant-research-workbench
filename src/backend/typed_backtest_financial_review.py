@@ -7,6 +7,7 @@ the snapshot hash to the exact committed event prefix.
 from __future__ import annotations
 
 from typing import Any
+from copy import deepcopy
 from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
 
 from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
@@ -61,3 +62,44 @@ def load_typed_backtest_financial_page(
             int(fees[-1]["sequence"]) if fees else after_commission_sequence),
         "complete": len(fills) < limit and len(fees) < limit,
     }
+
+
+def load_typed_backtest_financial_evidence(client, run_id, *, page_size, maximum_rows):
+    """Collect complete exact-price evidence for comparison through native pages.
+
+    This synchronous SELECT-only operation belongs in the existing owned worker.
+    It neither computes alternative fills nor treats a partial page as a run.
+    The caller supplies explicit memory bounds; exceeding them fails closed.
+    """
+    if (type(page_size) is not int or not 1 <= page_size <= 1000
+            or type(maximum_rows) is not int or not 1 <= maximum_rows <= 1_000_000):
+        raise ValueError("Financial comparison requires bounded page and row counts")
+    fills, fees = [], []
+    fill_cursor = fee_cursor = 0
+    identity = None
+    while True:
+        page = load_typed_backtest_financial_page(client, run_id,
+            after_fill_sequence=fill_cursor, after_commission_sequence=fee_cursor,
+            limit=page_size, exact_prices=True)
+        current = (page["run"], page["status"], page["committed_sequence"],
+                   page["cursor"], page["accounts"])
+        if page["status"] != "completed" or page["cursor"] is None:
+            raise ValueError("Financial comparison requires completed market-cursor evidence")
+        if identity is not None and current != identity:
+            raise RuntimeError("Financial comparison changed its committed run evidence")
+        identity = deepcopy(current)
+        for rows, previous in ((page["fills"], fill_cursor), (page["commissions"], fee_cursor)):
+            for row in rows:
+                sequence = row["sequence"]
+                if (type(sequence) is not int or not previous < sequence <= page["committed_sequence"]):
+                    raise RuntimeError("Financial comparison page is unordered or overlaps prior evidence")
+                previous = sequence
+        if len(fills) + len(fees) + len(page["fills"]) + len(page["commissions"]) > maximum_rows:
+            raise ValueError("Financial comparison exceeds its explicit evidence row bound")
+        fills.extend(page["fills"])
+        fees.extend(page["commissions"])
+        fill_cursor, fee_cursor = page["next_fill_sequence"], page["next_commission_sequence"]
+        if page["complete"]:
+            return {**page, "fills": tuple(fills), "commissions": tuple(fees)}
+        if not page["fills"] and not page["commissions"]:
+            raise RuntimeError("Financial comparison pagination made no progress")

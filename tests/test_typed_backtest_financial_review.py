@@ -57,6 +57,32 @@ def test_typed_financial_review_rejects_wrong_mode(monkeypatch) -> None:
         review.load_typed_backtest_financial_page(object(), "run-1")
 
 
+def test_comparison_collects_exact_native_pages_without_skipping_fees(monkeypatch):
+    _stub(monkeypatch)
+    prefix = SimpleNamespace(status="completed", last_sequence=120)
+    monkeypatch.setattr(review, "load_verified_v4_prefix", lambda *_: prefix)
+    monkeypatch.setattr(review, "load_committed_execution_page", lambda _client, _prefix,
+        *, after_sequence, limit, exact_prices:
+        tuple({"sequence": n} for n in (10, 11) if n > after_sequence)[:limit])
+    monkeypatch.setattr(review, "load_committed_commission_page", lambda _client, _prefix,
+        *, after_sequence, limit:
+        tuple({"sequence": n} for n in (100, 101, 102) if n > after_sequence)[:limit])
+    evidence = review.load_typed_backtest_financial_evidence(object(), "run-1", page_size=2, maximum_rows=5)
+    assert [row["sequence"] for row in evidence["fills"]] == [10, 11]
+    assert [row["sequence"] for row in evidence["commissions"]] == [100, 101, 102]
+    assert evidence["complete"] is True
+    with pytest.raises(ValueError, match="row bound"):
+        review.load_typed_backtest_financial_evidence(object(), "run-1", page_size=2, maximum_rows=4)
+    prefixes = iter((prefix, SimpleNamespace(status="completed", last_sequence=121)))
+    monkeypatch.setattr(review, "load_verified_v4_prefix", lambda *_: next(prefixes))
+    with pytest.raises(RuntimeError, match="changed its committed"):
+        review.load_typed_backtest_financial_evidence(object(), "run-1", page_size=2, maximum_rows=5)
+    monkeypatch.setattr(review, "load_verified_v4_prefix", lambda *_:
+        SimpleNamespace(status="stopped", last_sequence=120))
+    with pytest.raises(ValueError, match="completed market-cursor"):
+        review.load_typed_backtest_financial_evidence(object(), "run-1", page_size=2, maximum_rows=5)
+
+
 def test_exact_financial_review_requires_verified_v4_and_exact_fills(monkeypatch):
     _stub(monkeypatch)
     prefix = SimpleNamespace(status="completed", last_sequence=120)
