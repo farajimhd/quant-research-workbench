@@ -19,6 +19,14 @@ _NATIVE_DECISION_PROOF = object()
 
 
 @dataclass(frozen=True, slots=True)
+class _NativeDecisionEvidence:
+    run_id: str
+    basis_sequence: int
+    semantic_hash: str
+    token: object = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
 class QualifiedRuleDecision:
     run_id: str
     basis_sequence: int
@@ -70,8 +78,9 @@ async def qualify_rule_decision_runtime(parent, children, records, *, runtime,
         assignment_id=assignment.assignment_id, ticker=assignment.ticker, at=at)
     selection = reselect_recovered_rule_decision(parent, children, records,
         packet=packet, observation=observation, **scope)
-    return QualifiedRuleDecision(runtime.run_id, basis, rule_decision_semantic_hash(parent, children),
-        selection, _NATIVE_DECISION_PROOF)
+    digest = rule_decision_semantic_hash(parent, children)
+    evidence = _NativeDecisionEvidence(runtime.run_id, basis, digest, _NATIVE_DECISION_PROOF)
+    return QualifiedRuleDecision(runtime.run_id, basis, digest, selection, evidence)
 
 
 def reselect_recovered_rule_decision(parent, children, records, *, packet, **scope):

@@ -122,6 +122,7 @@ def project_pending_backtest_v4_prefix(
     first_price_source: object | None = None,
     expected_market_start: datetime | None = None,
     published_sources: Mapping[str, tuple[TypedJournalBatch, object]] | None = None,
+    rule_decision_qualifications: Mapping[str, object] | None = None,
     committed_order_lineage: Mapping[str, tuple] | None = None,
     committed_order_lineage_proofs: Mapping[str, str] | None = None,
     committed_order_lineage_oms_records: Mapping[str, str] | None = None,
@@ -176,6 +177,13 @@ def project_pending_backtest_v4_prefix(
         after_sequence=prior_sequence, through_sequence=through_sequence)
     if len(records) != through_sequence - prior_sequence:
         raise ValueError("V4 projection prefix is not contiguous")
+    rule_ids = {record.record_id for record in records
+        if (record.category, record.entity_type) == ("strategy_decision", "signal")
+        and record.payload.get("signal_type") == "program_boundary_completed"}
+    if rule_decision_qualifications is not None and (
+            not isinstance(rule_decision_qualifications, Mapping)
+            or set(rule_decision_qualifications) != rule_ids):
+        raise ValueError("Rule decision qualification coverage differs from projected prefix")
     units = []
     ordinary: list[TypedJournalBatch] = []
     sources = dict(published_sources or {})
@@ -191,8 +199,8 @@ def project_pending_backtest_v4_prefix(
         batch_id = str(uuid5(NAMESPACE_URL,
             f"arte-backtest-v1:{record.run_id}:{attempt}:{sequence}:{record.record_id}"))
         kind = (record.category, record.entity_type)
-        if (kind == ("strategy_decision", "signal")
-                and record.payload.get("signal_type") == "program_boundary_completed"):
+        rule_completion = record.record_id in rule_ids
+        if rule_completion and rule_decision_qualifications is None:
             raise RuntimeError("Rule decision publication requires its integrated fenced basis family")
         confirmation_source = (journal.confirmed_ah_exit_for_record(record.record_id)
                                if kind == ('strategy', 'strategy_intent') else None)
@@ -688,6 +696,13 @@ def project_pending_backtest_v4_prefix(
                 strategy_number=record.payload['strategy_revision'], **observation_source)
             unit = V4LiquidityFadeFailureBatch(batch, failure)
             sources[intent.intent_id] = (batch, intent)
+        if rule_completion:
+            from src.trading_runtime.rule_decision_basis_projection import RuleDecisionBasisBatch
+            from src.trading_runtime.rule_decision_publication import QualifiedRuleDecisionBatch
+            if type(unit) is not TypedJournalBatch:
+                raise ValueError("Rule decision completion has conflicting source companions")
+            unit = QualifiedRuleDecisionBatch(RuleDecisionBasisBatch.from_pending_completion(journal, record, unit),
+                rule_decision_qualifications[record.record_id])
         base = unit.base if not isinstance(unit, TypedJournalBatch) else unit
         if (base.first_sequence != sequence or base.last_sequence != sequence
                 or len(base.events) != 1 or base.batch_id != batch_id

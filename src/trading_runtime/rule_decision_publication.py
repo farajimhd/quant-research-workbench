@@ -38,6 +38,19 @@ class PreparedRuleDecisionCommit:
 
 
 @dataclass(frozen=True, slots=True)
+class QualifiedRuleDecisionBatch:
+    unit: RuleDecisionBasisBatch
+    qualification: object
+
+    def __post_init__(self):
+        _check_rule_decision_qualification(self.unit, self.qualification)
+
+    @property
+    def base(self):
+        return self.unit.base
+
+
+@dataclass(frozen=True, slots=True)
 class RuleDecisionInsertRequest:
     table: str
     run_id: str
@@ -102,16 +115,23 @@ def prepare_rule_decision_commit(unit, *, committed_at):
         tuple((name, tuple(MappingProxyType(dict(row)) for row in rows)) for name, rows in families))
 
 
-def prepare_qualified_rule_decision_commit(unit, qualified, *, committed_at):
-    """Require native financial/reselection evidence bound to the exact rows."""
-    from src.backend.rule_decision_reselection import QualifiedRuleDecision, _NATIVE_DECISION_PROOF
+def _check_rule_decision_qualification(unit, qualified):
+    from src.backend.rule_decision_reselection import QualifiedRuleDecision, _NativeDecisionEvidence, _NATIVE_DECISION_PROOF
     from .rule_decision_basis_projection import rule_decision_semantic_hash
+    evidence = getattr(qualified, "_proof", None)
     if (type(unit) is not RuleDecisionBasisBatch or type(qualified) is not QualifiedRuleDecision
-            or qualified._proof is not _NATIVE_DECISION_PROOF
+            or type(evidence) is not _NativeDecisionEvidence or evidence.token is not _NATIVE_DECISION_PROOF
+            or (qualified.run_id, qualified.basis_sequence, qualified.semantic_hash)
+               != (evidence.run_id, evidence.basis_sequence, evidence.semantic_hash)
             or qualified.run_id != unit.base.run_id
             or qualified.basis_sequence != unit.basis["basis_sequence"]
             or qualified.semantic_hash != rule_decision_semantic_hash(unit.basis, unit.intents)):
         raise ValueError("Rule decision commit lacks matching native qualification")
+
+
+def prepare_qualified_rule_decision_commit(unit, qualified, *, committed_at):
+    """Require native financial/reselection evidence bound to the exact rows."""
+    _check_rule_decision_qualification(unit, qualified)
     return prepare_rule_decision_commit(unit, committed_at=committed_at)
 
 

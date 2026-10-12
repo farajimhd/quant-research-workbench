@@ -145,10 +145,43 @@ def test_shared_runtime_initializes_from_real_normalized_cold_portfolio(monkeypa
                         replace(qualification, _proof=object()), replace(qualification, basis_sequence=8)):
                     with pytest.raises(ValueError, match="matching native qualification"):
                         prepare_qualified_rule_decision_commit(unit, altered, committed_at=AT)
+                from src.trading_runtime.rule_decision_basis_projection import rule_decision_semantic_hash
+                substituted_values = {key: value for key, value in decision_parent.items()
+                    if key not in {"content_hash", "intent_hash", "intent_count"}}
+                substituted_parent, substituted_children = project_rule_decision_basis(
+                    {**substituted_values, "history_input_hash": "e" * 64}, [])
+                substituted_unit = RuleDecisionBasisBatch(base, substituted_parent, substituted_children)
+                rebound = replace(qualification,
+                    semantic_hash=rule_decision_semantic_hash(substituted_parent, substituted_children))
+                with pytest.raises(ValueError, match="matching native qualification"):
+                    prepare_qualified_rule_decision_commit(substituted_unit, rebound, committed_at=AT)
+                from src.backend.backtest_typed_projection import project_pending_backtest_v4_prefix
+                from src.trading_runtime.rule_decision_publication import QualifiedRuleDecisionBatch
+                pending = BacktestMemoryJournal(run_id="cold-run", initial_sequence=7)
+                pending_record = pending.append(run_id="cold-run", category="strategy_decision", entity_type="signal",
+                    entity_id=completion.entity_id, account_id=completion.account_id,
+                    event_time=AT, payload=completion.payload)
+                basis_values = {key: value for key, value in decision_parent.items()
+                    if key not in {"content_hash", "intent_hash", "intent_count"}}
+                decision_parent, decision_children = project_rule_decision_basis(
+                    {**basis_values, "record_id": pending_record.record_id, "batch_id": pending_record.record_id}, [])
+                pending.retain_rule_decision_basis(pending_record, decision_parent, decision_children)
+                pending_qualification = await decision_join.qualify_rule_decision_runtime(decision_parent, (), (),
+                    runtime=runtime, cold=cold, prefix=prefix, broker=broker_rows, oms_image=oms, packet=packet)
+                projection_scope = dict(attempt_id=str(uuid4()), run_month=AT.date().replace(day=1),
+                    prior_sequence=7, prior_batch_id=str(uuid4()), through_sequence=8)
+                projected = project_pending_backtest_v4_prefix(pending, **projection_scope,
+                    rule_decision_qualifications={pending_record.record_id: pending_qualification})
+                assert len(projected) == 1 and type(projected[0]) is QualifiedRuleDecisionBatch
+                assert projected[0].unit.basis["record_id"] == pending_record.record_id
+                assert projected[0].qualification is pending_qualification
+                with pytest.raises(ValueError, match="qualification coverage"):
+                    project_pending_backtest_v4_prefix(pending, **projection_scope, rule_decision_qualifications={})
+                assert pending.pending_record_count == 1
                 with pytest.raises(ValueError, match="historical basis"):
                     await decision_join.qualify_rule_decision_runtime({**decision_parent, "basis_sequence": 8}, (), (),
                         runtime=runtime, cold=cold, prefix=prefix, broker=broker_rows, oms_image=oms, packet=packet)
-            assert calls == [packet] and runtime.journal.pending_record_count == 0
+            assert calls == [packet, packet] and runtime.journal.pending_record_count == 0
             later_prefix = replace(prefix, last_sequence=9)
             historical_comparison = qualify_program_financial_runtime(runtime, cold, later_prefix,
                 broker_rows, oms_image=oms, through_sequence=7)
