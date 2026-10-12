@@ -47,7 +47,7 @@ not change the release's 1s programme cadence or supply broker-fill settings.
 Both numbered and programme context builders use the same typed run-row
 construction and validation. Existing numbered admission remains intact.
 This is a source projection, not release-publication proof or a selectable
-main app launch route; broker-contract and full launch binding remain required.
+main app launch route; full launch binding remains required.
 
 `backtest_program_journal_bootstrap.py` provides the source-level programme
 handoff through the existing V4 context, definition and journal assemblers.
@@ -62,7 +62,20 @@ the caller owns cleanup and may not create a replacement run automatically.
 Tests use real in-memory Keeper ownership and controlled publication callbacks;
 they prove handoff ordering and fault boundaries, not operational ClickHouse
 qualification. The normal controller launch still needs to call this handoff
-after complete programme release/input admission and broker-contract binding.
+after complete programme release/input admission.
+
+The programme handoff also requires the immutable normalized broker contract.
+It verifies the selected 100ms/1s liquidity resolution against the current app
+simulation profile, including $0.005/share, $1 minimum, actual slippage, delay
+and participation. Definition publication stores both contracts before its
+commit; the handoff cold-verifies broker settings through both readers before
+opening a writer. Starting cash remains owned by the run definition. A changed
+fee, slippage, cash, resolution or pinned liquidity-plan hash is rejected.
+The shared broker table is included in the dedicated programme provisioning
+plan and audited catalog only; no legacy schema or principal plan changes.
+Broker contract readback does not certify the liquidity product itself: the
+normal input-admission funnel must still verify that product's coverage and
+lineage. These checks are synthetic; no operational publication has run.
 
 ## Delivered components
 
@@ -135,7 +148,9 @@ after complete programme release/input admission and broker-contract binding.
 - `backtest_broker_contract.py`: exact normalized projection/recovery of the
   selected broker resolution, plan identity, commissions, slippage, activation
   delay and participation. Recovery rejects changed settings and verifies an
-  exact round-trip into the existing broker. Run-journal wiring remains open.
+  exact round-trip into the existing broker. Immutable settings and bounded
+  cold readback now feed the programme definition/bootstrap publication path;
+  main controller launch and operational recovery qualification remain open.
 
 ## Current typed publication path
 

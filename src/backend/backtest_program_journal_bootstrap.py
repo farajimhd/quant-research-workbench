@@ -9,6 +9,7 @@ from datetime import date
 import re
 from uuid import UUID
 from hashlib import sha256
+from dataclasses import replace
 
 from .backtest_v4_run_context import program_v4_context_rows
 from .backtest_fixed_market_authority import _validate_plans
@@ -28,6 +29,8 @@ from src.trading_runtime.keeper_ownership import KeeperOwnershipCoordinator, Kee
 from src.trading_runtime.drawdown_measure_authority import bind_run_drawdown_authority
 from src.trading_runtime.runtime import RunMode
 from src.trading_runtime.journal_contract import canonical_json
+from src.trading_runtime.backtest_broker_contract import BacktestBrokerContract, read_broker_contract
+from src.trading_runtime.columnar_strategy_schema import BROKER
 
 
 def _configuration_hash(definition):
@@ -42,6 +45,7 @@ def publish_and_assemble_program_v4_journal(context_client, read_client, writer_
         terminal_client, *, runtime_config, definition, release, expected_release_hash,
         code_hash, started_at, fixed_market_parent_plan, fixed_market_execution_plan,
         journal_price_contract, expected_journal_price_contract_hash, keeper,
+        broker_contract, expected_broker_contract_hash, liquidity_plan_hash,
         definition_lease, attempt_id, projection_certifier, writer_factory=ArteJournalWriter,
         batch_size=1024, queue_capacity=8):
     """Preflight before creation; publish context and definition before worker.
@@ -88,6 +92,13 @@ def publish_and_assemble_program_v4_journal(context_client, read_client, writer_
         raise ValueError("Programme launch requires its normalized journal price contract")
     journal_price_contract.require_scope(run_id=run_id, run_month=month,
         configuration_hash=run["configuration_hash"], content_hash=expected_journal_price_contract_hash)
+    from .replay_run_service import _simulation_config
+    if type(broker_contract) is not BacktestBrokerContract:
+        raise ValueError("Programme launch requires its normalized broker contract")
+    selected_simulation = replace(_simulation_config(definition),
+        liquidity_resolution_ms=broker_contract.config.liquidity_resolution_ms)
+    broker_contract.require_config(selected_simulation, run_id=run_id,
+        content_hash=expected_broker_contract_hash, liquidity_plan_hash=liquidity_plan_hash)
     resource = f"backtest-definition:{run_id}"
     if (not isinstance(definition_lease, Mapping) or definition_lease.get("resource_id") != resource
             or type(definition_lease.get("owner_id")) is not str or not definition_lease["owner_id"]
@@ -109,7 +120,7 @@ def publish_and_assemble_program_v4_journal(context_client, read_client, writer_
     fixed_backtest_v2_preflight(context_client)
     for client in (read_client, terminal_client):
         _v4_cold_reader_preflight(client)
-        storage_preflight(client, tables=(PRICE_CONTRACT,))
+        storage_preflight(client, tables=(PRICE_CONTRACT, BROKER))
     seal = _v4_preflight(writer_client)
     certificate = projection_certifier()
     if type(certificate) is not str or re.fullmatch(r"[0-9a-f]{64}", certificate) is None:
@@ -122,7 +133,15 @@ def publish_and_assemble_program_v4_journal(context_client, read_client, writer_
         raise RuntimeError("Programme writer observes a different published context")
     publish_backtest_definition(writer_client, run_id, definition, keeper=keeper,
         lease=definition_lease, journal_price_contract=journal_price_contract,
-        expected_journal_price_contract_hash=expected_journal_price_contract_hash)
+        expected_journal_price_contract_hash=expected_journal_price_contract_hash,
+        broker_contract=broker_contract, expected_broker_contract_hash=expected_broker_contract_hash)
+    require_owners()
+    for cold_client in (read_client, terminal_client):
+        persisted_broker = read_broker_contract(cold_client, run_id=run_id,
+            content_hash=expected_broker_contract_hash, liquidity_plan_hash=liquidity_plan_hash,
+            initial_cash=definition.initial_cash)
+        persisted_broker.require_config(selected_simulation, run_id=run_id,
+            content_hash=expected_broker_contract_hash, liquidity_plan_hash=liquidity_plan_hash)
     require_owners()
     owner.attest_genesis(configuration_hash=run["configuration_hash"],
         market_plan_token=run["market_plan_token"], code_hash=run["code_hash"])

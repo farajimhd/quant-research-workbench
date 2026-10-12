@@ -374,6 +374,13 @@ def test_definition_publisher_is_commit_last_idempotent_and_keeper_fenced(monkey
         price_options = dict(journal_price_contract=BacktestJournalPriceContract(row),
             expected_journal_price_contract_hash=row["content_hash"])
         price_tables = [PRICE_CONTRACT]
+        from src.trading_runtime.backtest_broker_contract import BacktestBrokerContract, project_broker_contract
+        from src.trading_runtime.columnar_strategy_schema import BROKER
+        from src.backend.replay_run_service import _simulation_config
+        broker_row = project_broker_contract(run_id, _simulation_config(_definition()), liquidity_plan_hash="c" * 64)
+        price_options.update(broker_contract=BacktestBrokerContract(broker_row, _definition().initial_cash),
+            expected_broker_contract_hash=broker_row["content_hash"])
+        price_tables.append(BROKER)
         monkeypatch.setattr(schema, "storage_preflight", lambda *args, **kwargs: None)
         monkeypatch.setattr(audit, "require_rule_decision_writer_audit", lambda client: None)
     monkeypatch.setattr(journal_writer, "_v4_preflight",
@@ -427,6 +434,12 @@ def test_definition_publisher_is_commit_last_idempotent_and_keeper_fenced(monkey
         inserts_before = list(client.inserts)
         client.tables[PRICE_CONTRACT.name] = []
         with pytest.raises(RuntimeError, match="missing or conflicting journal price contract"):
+            publish_backtest_definition(client, run_id, _definition(),
+                keeper=keeper, lease=lease, **price_options)
+        assert client.inserts == inserts_before
+        client.tables[PRICE_CONTRACT.name] = [row]
+        client.tables[BROKER.name] = []
+        with pytest.raises(RuntimeError, match="missing or conflicting broker contract"):
             publish_backtest_definition(client, run_id, _definition(),
                 keeper=keeper, lease=lease, **price_options)
         assert client.inserts == inserts_before

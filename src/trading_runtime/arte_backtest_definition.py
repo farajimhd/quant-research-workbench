@@ -500,7 +500,9 @@ def publish_backtest_definition(client: Any, run_id: str,
                                 definition: Any, *, keeper: Any,
                                 lease: Mapping[str, Any],
                                 journal_price_contract=None,
-                                expected_journal_price_contract_hash: str | None = None) -> str:
+                                expected_journal_price_contract_hash: str | None = None,
+                                broker_contract=None,
+                                expected_broker_contract_hash: str | None = None) -> str:
     """Operator-fenced, retry-safe typed publication with the commit last.
 
     The caller must already own the run's exclusive launch claim. This
@@ -558,9 +560,39 @@ def publish_backtest_definition(client: Any, run_id: str,
         storage_preflight(client, tables=(PRICE_CONTRACT,))
     elif expected_journal_price_contract_hash is not None:
         raise ValueError("Definition publication has no journal price contract")
+    canonical_contract_row = _canonical_stored_row
+    if broker_contract is not None:
+        from .backtest_broker_contract import BacktestBrokerContract
+        from .columnar_strategy_schema import BROKER
+        from .arte_journal_schema import storage_preflight
+        from .rule_decision_writer_preflight import require_rule_decision_writer_audit
+        if type(broker_contract) is not BacktestBrokerContract:
+            raise ValueError("Definition publication requires its normalized broker contract")
+        if broker_contract.initial_cash != definition.initial_cash:
+            raise ValueError("Broker starting cash differs from the run definition")
+        broker_contract.require_config(broker_contract.config, run_id=run_id,
+            content_hash=expected_broker_contract_hash, liquidity_plan_hash=broker_contract.row["liquidity_plan_hash"])
+        require_rule_decision_writer_audit(client)
+        storage_preflight(client, tables=(BROKER,))
+        def canonical_contract_row(table, row):
+            if table is BROKER:
+                return BacktestBrokerContract(row, definition.initial_cash).wire_row()
+            return _canonical_stored_row(table, row)
+    elif expected_broker_contract_hash is not None:
+        raise ValueError("Definition publication has no broker contract")
 
     def stored(table: TableContract) -> tuple[dict[str, Any], ...]:
         columns = ",".join(name for name, _ in table.columns)
+        if broker_contract is not None and table is BROKER:
+            import json
+            response = client.execute(f"SELECT {columns} FROM arte.{table.name} "
+                f"WHERE run_id={_literal(run_id)} LIMIT 2 FORMAT JSONEachRow")
+            if type(response) is not str or len(response.encode("utf-8")) > 16_384:
+                raise ValueError("Broker contract publication readback exceeds its bound")
+            rows = [json.loads(line) for line in response.splitlines() if line.strip()]
+            if len(rows) > 1:
+                raise ValueError("Broker contract publication found duplicate rows")
+            return tuple(canonical_contract_row(table, row) for row in rows)
         if journal_price_contract is not None and table is PRICE_CONTRACT:
             import json
             response = client.execute(f"SELECT {columns} FROM arte.{table.name} "
@@ -570,11 +602,11 @@ def publish_backtest_definition(client: Any, run_id: str,
             rows = [json.loads(line) for line in response.splitlines() if line.strip()]
             if len(rows) > 1:
                 raise ValueError("Journal price contract publication found duplicate rows")
-            return tuple(_canonical_stored_row(table, row) for row in rows)
+            return tuple(canonical_contract_row(table, row) for row in rows)
         rows = _rows(client,
             f"SELECT {columns} FROM arte.{table.name} "
             f"WHERE run_id={_literal(run_id)} FORMAT JSONEachRow")
-        return tuple(_canonical_stored_row(table, row) for row in rows)
+        return tuple(canonical_contract_row(table, row) for row in rows)
 
     # A published commit is immutable authority. Never "repair" a missing
     # child after it exists; that would make a previously incomplete run look
@@ -585,8 +617,11 @@ def publish_backtest_definition(client: Any, run_id: str,
         if verified != prepared:
             raise RuntimeError("Backtest definition commit conflicts with source")
         if journal_price_contract is not None:
-            if stored(PRICE_CONTRACT) != (_canonical_stored_row(PRICE_CONTRACT, journal_price_contract.row),):
+            if stored(PRICE_CONTRACT) != (canonical_contract_row(PRICE_CONTRACT, journal_price_contract.row),):
                 raise RuntimeError("Committed definition has missing or conflicting journal price contract")
+        if broker_contract is not None:
+            if stored(BROKER) != (broker_contract.wire_row(),):
+                raise RuntimeError("Committed definition has missing or conflicting broker contract")
         return prepared["commit"]["definition_hash"]
 
     family_plan = []
@@ -596,11 +631,12 @@ def publish_backtest_definition(client: Any, run_id: str,
         (ASSIGNMENT, prepared["assignments"]),
         (PRICE_PLAN, (prepared["price_plan"],) if prepared["price_plan"] else ()),
         *(((PRICE_CONTRACT, (journal_price_contract.row,)),) if journal_price_contract is not None else ()),
+        *(((BROKER, (broker_contract.row,)),) if broker_contract is not None else ()),
         (COMMIT, (prepared["commit"],)),
     ):
         identity = (lambda row: row["ordinal"]) if table in (TICKER, ASSIGNMENT) else (
             lambda row: row["run_id"])
-        expected_rows = {identity(row): _canonical_stored_row(table, row)
+        expected_rows = {identity(row): canonical_contract_row(table, row)
                          for row in expected}
         actual = stored(table)
         actual_rows: dict[Any, dict[str, Any]] = {}
