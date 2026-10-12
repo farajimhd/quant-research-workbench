@@ -79,6 +79,12 @@ def test_listing_cache_preserves_native_origin_and_enforces_retained_bytes(prepa
         before = len(calls)
         assert await cache.load(release, pins, **kwargs) is blocks
         assert len(calls) == before
+        with pytest.raises(AttributeError):
+            cache.maximum_retained_bytes = size - 1
+        with pytest.raises(ValueError, match="beyond its as-of clock"):
+            await cache.load(release, pins, **{**kwargs,
+                "as_of": c.completed_clock(pin.scope, pin.scope.first_bucket)})
+        assert len(calls) == before and cache.maximum_retained_bytes == size
         limited = ProgramListingFeatureCache(maximum_retained_bytes=size - 1)
         with pytest.raises(ValueError, match="retained-byte budget"):
             await limited.load(release, pins, **kwargs)

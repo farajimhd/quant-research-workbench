@@ -9,10 +9,15 @@ class ProgramListingFeatureCache:
     def __init__(self, *, maximum_retained_bytes):
         if type(maximum_retained_bytes) is not int or maximum_retained_bytes < 1:
             raise ValueError("Listing preparation requires an explicit retained-byte budget")
-        self.maximum_retained_bytes = maximum_retained_bytes
+        self._maximum_retained_bytes = maximum_retained_bytes
         self._lock = asyncio.Lock()
         self._key = self._blocks = None
         self.retained_bytes = 0
+
+    @property
+    def maximum_retained_bytes(self):
+        """The admitted memory budget cannot change across cache generations."""
+        return self._maximum_retained_bytes
 
     async def load(self, release, pins, *, first_ordinal, stop_ordinal, evaluation_block,
                    as_of, concurrency, history_post=None):
