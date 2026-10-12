@@ -126,8 +126,14 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                     return
                 basis_sequence = controller._journal.latest_sequence(controller.run_id)
                 from src.backend.program_clock_financial_basis import (
-                    capture_program_clock_financial_basis, prepare_program_clock_financial_basis)
+                    capture_program_clock_financial_basis, prepare_program_clock_financial_basis,
+                    verify_owned_program_clock_financial_basis)
                 captured = await capture_program_clock_financial_basis(controller, at=at)
+                assert verify_owned_program_clock_financial_basis(controller, captured).capture is captured
+                with pytest.raises(ValueError, match="controller custody"):
+                    verify_owned_program_clock_financial_basis(controller, replace(captured, policy_hash="0" * 64))
+                with pytest.raises(ValueError, match="controller custody"):
+                    verify_owned_program_clock_financial_basis(controller, replace(captured, _evidence=None))
                 assert captured.journal_sequence == basis_sequence
                 assert captured.source_boundary == runtime.typed_source_boundary(at)
                 assert captured.broker.snapshot["checkpoint_sequence"] == basis_sequence
@@ -240,6 +246,11 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 historical_actor.target_state = deepcopy(actor.target_state)
                 historical_actor.trail_state = deepcopy(actor.trail_state)
                 historical_actor._selection_clocks = dict(actor._selection_clocks)
+                captured_policy_state = (*deepcopy((vars(actor.execution_state), vars(actor.target_state),
+                    vars(actor.trail_state))), dict(actor._selection_clocks))
+                from src.backend.program_policy_recovery import _program_policy_fingerprint_value
+                from src.trading_runtime.journal_contract import canonical_json
+                captured_policy_json = canonical_json(_program_policy_fingerprint_value(actor))
                 historical_observation = controller.program_order_observation(assignment_id="assignment", at=at)
                 original_records = controller._journal.records
                 def forbidden_rescan(*args, **kwargs):
@@ -482,6 +493,12 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                     population=population, executions=executions,
                     order_manager=controller._runtime.order_manager, maximum_events=1000,
                     last_sequence=basis_sequence)
+                assert captured.journal_sequence == basis_packet.journal_sequence
+                assert captured_policy_state == (vars(basis_packet.actor.execution_state),
+                    vars(basis_packet.actor.target_state), vars(basis_packet.actor.trail_state),
+                    basis_packet.actor._selection_clocks)
+                assert captured_policy_json == canonical_json(_program_policy_fingerprint_value(basis_packet.actor))
+                assert captured.policy_hash == basis_packet.state_hash
                 empty_packet = rebuild_program_policy_events(actor, (), run_id=controller.run_id,
                     source_hashes=(), blocks=(block,), population=population, executions=(),
                     order_manager=controller._runtime.order_manager, maximum_events=1000, last_sequence=0)

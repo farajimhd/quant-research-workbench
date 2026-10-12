@@ -77,6 +77,25 @@ def verify_program_filled_geometry(actor, broker_positions, portfolio):
 
 def program_policy_fingerprint(actor):
     """Seal the complete derived ledger and policy caches in memory only."""
+    return sha256(canonical_json(_program_policy_fingerprint_value(actor)).encode()).hexdigest()
+
+
+def _program_policy_fingerprint_value(actor):
+    from dataclasses import fields, is_dataclass
+    def scalar(value):
+        if isinstance(value, Decimal):
+            if not value.is_finite():
+                raise ValueError("Program policy contains a non-finite financial value")
+            text = format(value, "f")
+            text = text.rstrip("0").rstrip(".") if "." in text else text
+            return "0" if value == 0 else text
+        if is_dataclass(value):
+            return {item.name: scalar(getattr(value, item.name)) for item in fields(value)}
+        if isinstance(value, Mapping):
+            return {key: scalar(item) for key, item in value.items()}
+        if isinstance(value, (tuple, list)):
+            return [scalar(item) for item in value]
+        return value
     def pairs(mapping, *, sets=False):
         return [(key, sorted(value) if sets else value) for key, value in sorted(mapping.items())]
     ledger = actor.execution_state
@@ -90,7 +109,7 @@ def program_policy_fingerprint(actor):
         targets=pairs(actor.target_state._targets), entry_intents=pairs(actor.target_state._entry_intents),
         advanced_intents=pairs(actor.target_state._advanced_intents, sets=True),
         trail=pairs(actor.trail_state._water), clocks=pairs(actor._selection_clocks))
-    return sha256(canonical_json(value).encode()).hexdigest()
+    return scalar(value)
 
 
 @dataclass(frozen=True, slots=True)

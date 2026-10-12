@@ -4,11 +4,29 @@ A capture is not a committed prefix or publication permission. The existing
 qualification gate continues to require its independent financial proof.
 """
 from __future__ import annotations
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, replace, field
 from types import MappingProxyType
 from datetime import datetime
 from typing import TYPE_CHECKING
 import re
+from hashlib import sha256
+
+_CAPTURE_TOKEN = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _OwnedClockCapture:
+    controller: object = field(repr=False)
+    runtime: object = field(repr=False)
+    journal: object = field(repr=False)
+    actor: object = field(repr=False)
+    source: object = field(repr=False)
+    manager: object = field(repr=False)
+    portfolio: object = field(repr=False)
+    broker: object = field(repr=False)
+    config: object = field(repr=False)
+    digest: str
+    token: object = field(repr=False)
 
 if TYPE_CHECKING:
     from src.trading_runtime.strategy_one_broker_match_snapshot import BrokerMatchSnapshotRows
@@ -26,6 +44,8 @@ class ProgramClockFinancialBasis:
     broker: BrokerMatchSnapshotRows
     portfolio: tuple[CapturedPortfolioSnapshot, ...]
     oms: TypedOmsActorImage
+    policy_hash: str = ""
+    _evidence: object = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +53,44 @@ class PreparedProgramClockFinancialBasis:
     capture: ProgramClockFinancialBasis
     broker: BrokerMatchSnapshotRows
     portfolio: tuple[PreparedPortfolioSnapshot, ...]
+
+
+def _clock_capture_digest(capture):
+    from src.trading_runtime.journal_contract import canonical_json
+    from src.trading_runtime.arte_oms_projection import freeze_oms_group
+    from src.trading_runtime.arte_portfolio_snapshot import _snapshot_rows, _state_hash
+    prepared = prepare_program_clock_financial_basis(capture)
+    value = dict(run_id=capture.run_id, sequence=capture.journal_sequence,
+        at=capture.boundary_at, source=capture.source_boundary, release=capture.release_hash,
+        policy=capture.policy_hash, broker=prepared.broker.snapshot["content_hash"],
+        portfolio=[(row.account_id, _state_hash(_snapshot_rows(row.run_id, row.account_id,
+            row.state_revision, row.snapshot_month, row.rows))) for row in prepared.portfolio],
+        oms=(capture.oms.run_id, capture.oms.strategy_id, capture.oms.strategy_revision,
+            [(identity, freeze_oms_group(group), group.broker_order_state_fingerprints)
+             for identity, group in sorted(capture.oms.groups.items())],
+            capture.oms.group_by_client_id, capture.oms.group_by_broker_id,
+            sorted(capture.oms.protection_versions.items()), sorted(capture.oms.body_entry_group_ids)))
+    return sha256(canonical_json(value).encode()).hexdigest()
+
+
+def verify_owned_program_clock_financial_basis(controller, capture):
+    """Check capture custody/content without claiming a committed prefix."""
+    if type(capture) is not ProgramClockFinancialBasis:
+        raise TypeError("Owned clock verification requires its native capture")
+    evidence = capture._evidence
+    if (type(evidence) is not _OwnedClockCapture or evidence.token is not _CAPTURE_TOKEN
+            or evidence.controller is not controller or controller._runtime is not evidence.runtime
+            or controller._journal is not evidence.journal or controller._program_strategy is not evidence.actor
+            or controller._program_signal_runtime is not evidence.source
+            or evidence.runtime.order_manager is not evidence.manager
+            or evidence.runtime.portfolio is not evidence.portfolio or evidence.runtime.broker is not evidence.broker
+            or evidence.runtime.config is not evidence.config
+            or evidence.runtime.last_event_time != capture.boundary_at
+            or evidence.source.typed_source_boundary(capture.boundary_at) != capture.source_boundary
+            or re.fullmatch(r"[0-9a-f]{64}", capture.policy_hash) is None
+            or _clock_capture_digest(capture) != evidence.digest):
+        raise ValueError("Owned financial clock capture changed or lost controller custody")
+    return prepare_program_clock_financial_basis(capture)
 
 
 def prepare_program_clock_financial_basis(capture):
@@ -81,6 +139,7 @@ async def capture_program_clock_financial_basis(controller, *, at):
     from src.trading_runtime.columnar_program_actor import AssignedProgramStrategy
     from src.trading_runtime.strategy_one_broker_match_snapshot import project_broker_match_snapshot
     from src.trading_runtime.arte_oms_actor_restore import capture_typed_oms_actor_image
+    from .program_policy_recovery import program_policy_fingerprint
     if type(controller) is not ReplayRunController:
         raise TypeError("Financial clock capture requires the native controller")
     if not isinstance(at, datetime) or at.tzinfo is None or at.utcoffset() is None:
@@ -106,10 +165,12 @@ async def capture_program_clock_financial_basis(controller, *, at):
     if elapsed != int(elapsed):
         raise ValueError("Financial clock capture has a fractional broker clock")
     manager, portfolio_engine, native_broker = runtime.order_manager, runtime.portfolio, runtime.broker
+    config = runtime.config
     state = native_broker.broker_match_snapshot_state()
     portfolio = tuple(portfolio_engine.capture_recovery_snapshot(account,
         state_revision=sequence, snapshot_at=at) for account in runtime.config.account_ids)
     oms = capture_typed_oms_actor_image(manager)
+    policy_hash = program_policy_fingerprint(actor)
     if (oms.run_id, oms.strategy_id, oms.strategy_revision) != (
             runtime.run_id, runtime.config.strategy_id, runtime.config.strategy_revision):
         raise ValueError("Financial clock OMS identity differs from runtime")
@@ -118,12 +179,23 @@ async def capture_program_clock_financial_basis(controller, *, at):
     if (controller._runtime is not runtime or controller._journal is not journal
             or controller._program_strategy is not actor or controller._program_signal_runtime is not source
             or runtime.order_manager is not manager or runtime.portfolio is not portfolio_engine
-            or runtime.broker is not native_broker
+            or runtime.broker is not native_broker or runtime.config is not config
             or runtime.last_event_time != at or journal.latest_sequence(controller.run_id) != sequence
             or source.typed_source_boundary(at) != boundary):
         raise ValueError("Financial clock capture changed during projection")
     broker = replace(broker, snapshot=MappingProxyType(dict(broker.snapshot)), **{
         name: tuple(MappingProxyType(dict(row)) for row in getattr(broker, name))
         for name in ("accounts", "positions", "open_orders", "tickers", "marks")})
-    return ProgramClockFinancialBasis(controller.run_id, sequence, at, boundary,
-        actor.program_release.header["content_hash"], broker, portfolio, oms)
+    capture = ProgramClockFinancialBasis(controller.run_id, sequence, at, boundary,
+        actor.program_release.header["content_hash"], broker, portfolio, oms, policy_hash)
+    digest = await _owned_worker(_clock_capture_digest, capture)
+    if (controller._runtime is not runtime or controller._journal is not journal
+            or controller._program_strategy is not actor or controller._program_signal_runtime is not source
+            or runtime.order_manager is not manager or runtime.portfolio is not portfolio_engine
+            or runtime.broker is not native_broker or runtime.config is not config
+            or source.typed_source_boundary(at) != boundary
+            or runtime.last_event_time != at or journal.latest_sequence(controller.run_id) != sequence
+            or program_policy_fingerprint(actor) != policy_hash):
+        raise ValueError("Financial clock capture changed during sealing")
+    return replace(capture, _evidence=_OwnedClockCapture(controller, runtime, journal,
+        actor, source, manager, portfolio_engine, native_broker, config, digest, _CAPTURE_TOKEN))
