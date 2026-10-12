@@ -25,6 +25,7 @@ def prepare(rows=None, **changes):
     kwargs = dict(configuration_id=ID, label="Frozen programme", run_plan_id="research",
         strategy_id="columnar", strategy_revision=62, program_release_id=ID,
         program_release_hash="b" * 64,
+        oms_limit_offset_bps=1.,
         published_at=datetime(2026, 10, 12, tzinfo=timezone(timedelta(hours=2))),
         children=children() if rows is None else rows)
     return selection.prepare_configuration_selection(**{**kwargs, **changes})

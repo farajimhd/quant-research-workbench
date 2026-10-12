@@ -13,6 +13,7 @@ SELECTION = TableContract(
      ("run_plan_id", "String"), ("strategy_id", "String"),
      ("strategy_revision", "UInt32"), ("program_release_id", "UUID"),
      ("program_release_hash", "FixedString(64)"),
+     ("oms_limit_offset_bps", "Float64"),
      ("account_count", "UInt32"), ("account_hash", "FixedString(64)"),
      ("mode_count", "UInt32"), ("mode_hash", "FixedString(64)"),
      ("mandate_count", "UInt32"), ("mandate_hash", "FixedString(64)"),

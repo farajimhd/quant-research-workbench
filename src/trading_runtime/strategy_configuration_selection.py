@@ -131,13 +131,14 @@ def restore_configuration_selection(source):
 
 def prepare_configuration_selection(*, configuration_id, label, run_plan_id,
         strategy_id, strategy_revision, program_release_id, program_release_hash,
-        published_at, children):
+        oms_limit_offset_bps, published_at, children):
     """Seal explicitly supplied typed selections without choosing any settings."""
     if set(children) != {table.name for table in schema.CHILDREN}:
         raise ValueError("Configuration projection needs every child family")
     header = dict(configuration_id=configuration_id, label=label, run_plan_id=run_plan_id,
         strategy_id=strategy_id, strategy_revision=strategy_revision,
         program_release_id=program_release_id, program_release_hash=program_release_hash,
+        oms_limit_offset_bps=oms_limit_offset_bps,
         published_at=published_at)
     rows = {}
     for family, table, keys in zip(_FAMILIES, schema.CHILDREN, _KEYS, strict=True):
