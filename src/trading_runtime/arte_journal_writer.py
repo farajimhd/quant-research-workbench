@@ -3908,6 +3908,12 @@ class _SharedBrokerMatchSnapshotUnit:
 
 
 @dataclass(frozen=True, slots=True)
+class _SharedOmsObservationSnapshotUnit:
+    rows: Any
+    journal_batch_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class _OmsObservationSnapshotUnit:
     session_date: date
     checkpoint_sequence: int
@@ -4939,6 +4945,24 @@ class ArteJournalWriter:
             self._accepted_writes = True
         return receipt
 
+    def submit_shared_oms_observation_snapshot(self, rows, *, journal_batch_id) -> Future[str]:
+        """Queue immutable central observations; receipt follows head selection."""
+        from src.trading_runtime.arte_oms_observation_snapshot import SharedOmsObservationSnapshot
+        if (self._journal_profile != "backtest_v4" or type(rows) is not SharedOmsObservationSnapshot
+                or rows.root.get("run_id") != self._run_id
+                or type(journal_batch_id) is not str or str(UUID(journal_batch_id)) != journal_batch_id):
+            raise ValueError("Central OMS submission requires its typed V4 run scope")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("Central OMS writer is closed or failed") from self._error
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((_SharedOmsObservationSnapshotUnit(rows, journal_batch_id), receipt))
+            except Full as exc:
+                raise JournalQueueFull("Central OMS snapshot queue is full") from exc
+            self._accepted_writes = True
+        return receipt
+
     def submit_oms_observation_snapshot(
         self, *, session_date: date, checkpoint_sequence: int,
         boundary_ms: int, journal_batch_id: str,
@@ -5155,7 +5179,7 @@ class ArteJournalWriter:
                                  and isinstance(group[0][0], (
                                      _TerminalBacktestUnit, _ManagerSnapshotUnit,
                                      _BrokerMatchSnapshotUnit, _SharedBrokerMatchSnapshotUnit, _EvidenceSnapshotUnit,
-                                     _OmsObservationSnapshotUnit,
+                                     _OmsObservationSnapshotUnit, _SharedOmsObservationSnapshotUnit,
                                      _CampaignSnapshotUnit,
                                      _RunningPortfolioSnapshotUnit, _ProfitPublicationUnit)))):
                     raise RuntimeError("Versioned journal cannot route legacy snapshot or admission units")
@@ -5438,6 +5462,14 @@ class ArteJournalWriter:
                         journal_batch_id=unit.journal_batch_id,
                         **({} if unit.first_price_source is None else
                            {'first_price_source': unit.first_price_source}))
+                    committed_id = unit.journal_batch_id
+                elif isinstance(group[0][0], _SharedOmsObservationSnapshotUnit):
+                    from src.trading_runtime.arte_oms_observation_snapshot import publish_shared_oms_observations
+                    unit = group[0][0]
+                    if self._last_commit_id != unit.journal_batch_id:
+                        raise RuntimeError("Central OMS snapshot has no preceding ordered V4 commit")
+                    publish_shared_oms_observations(self._client, self._client.manager_keeper_session,
+                        unit.rows, journal_batch_id=unit.journal_batch_id)
                     committed_id = unit.journal_batch_id
                 elif isinstance(group[0][0], _OmsObservationSnapshotUnit):
                     from src.trading_runtime.strategy_one_oms_observation_snapshot import (

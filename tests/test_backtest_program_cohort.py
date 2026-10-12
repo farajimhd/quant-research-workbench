@@ -295,6 +295,10 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                         assert not controller._runtime_finished and not controller._stop_requested
                         from src.trading_runtime import arte_broker_match_snapshot as shared_broker
                         broker_checkpoints = []
+                        from src.trading_runtime import arte_oms_observation_snapshot as shared_observations
+                        observation_checkpoints = []
+                        monkeypatch.setattr(shared_observations, "publish_shared_oms_observations",
+                            lambda client, session, rows, **kwargs: observation_checkpoints.append(rows))
                         from src.trading_runtime import arte_portfolio_snapshot as portfolio_snapshot
                         account_checkpoints = []
                         def controlled_account(client, prepared):
@@ -347,6 +351,9 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                         assert prefix.status == "completed" and len(anchored) == 1
                         assert controller._program_dispatch_failure is None
                         assert len(broker_checkpoints) == 3
+                        assert len(observation_checkpoints) == 3
+                        assert [row.root["checkpoint_sequence"] for row in observation_checkpoints] == [
+                            row.snapshot["checkpoint_sequence"] for row in broker_checkpoints]
                         assert len(account_checkpoints) == 3
                         assert [item.snapshot["boundary_ms"] for item in broker_checkpoints] == [
                             (first_bucket + offset) * 1000 - 14400000 for offset in (2, 3, 4)]
@@ -397,6 +404,10 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                         controller.definition.initial_cash)
                     checkpoint_entered, checkpoint_release = Event(), Event()
                     checkpoint_rows = []
+                    from src.trading_runtime import arte_oms_observation_snapshot as shared_observations
+                    observation_rows = []
+                    monkeypatch.setattr(shared_observations, "publish_shared_oms_observations",
+                        lambda client, session, rows, **kwargs: observation_rows.append(rows))
                     from src.trading_runtime import arte_portfolio_snapshot as portfolio_snapshot
                     account_rows = []
                     def controlled_account(client, prepared):
@@ -421,6 +432,8 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                         checkpoint_release.set()
                     published = await checkpoint
                     assert checkpoint_rows == [published]
+                    assert len(observation_rows) == 1
+                    assert observation_rows[0].root["checkpoint_sequence"] == published.snapshot["checkpoint_sequence"]
                     assert len(account_rows) == 1
                     assert account_rows[0].state_revision == published.snapshot["checkpoint_sequence"]
                     assert published.snapshot["checkpoint_sequence"] == session.policy_packet.journal_sequence

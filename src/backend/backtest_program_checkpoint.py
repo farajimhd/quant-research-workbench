@@ -17,6 +17,7 @@ async def publish_program_broker_checkpoint(controller, *, connection_factory, c
     from .backtest_program_journal_startup import _settle_owned_task
     from .backtest_market_data import market_day_boundary
     from src.trading_runtime.arte_broker_match_snapshot import project_shared_broker_snapshot
+    from src.trading_runtime.arte_oms_observation_snapshot import project_shared_oms_observations
     from src.trading_runtime.backtest_broker_contract import BacktestBrokerContract
     from .signal_stream_runtime_service import SignalStreamRuntime
     if type(controller) is not ReplayRunController:
@@ -56,6 +57,7 @@ async def publish_program_broker_checkpoint(controller, *, connection_factory, c
     sequence, batch, source_cursor = publisher.fenced_sequence, publisher._batch_id, source.typed_source_cursor()
     policy_hash = program_policy_fingerprint(actor)
     captured = broker.checkpoint_state()
+    observed = runtime.order_manager.capture_observed_broker_states()
     accounts = tuple(runtime.config.account_ids)
     if not accounts or len(set(accounts)) != len(accounts) or set(accounts) != set(controller.account_ids):
         raise ValueError("Programme checkpoint account population differs from its run")
@@ -94,6 +96,20 @@ async def publish_program_broker_checkpoint(controller, *, connection_factory, c
         require_owner()
         if receipt != batch:
             raise RuntimeError("Programme broker checkpoint changed its V4 batch receipt")
+        observations = await _owned_worker(project_shared_oms_observations,
+            run_id=controller.run_id, session_date=day, checkpoint_sequence=sequence,
+            boundary_ms=boundary, groups=observed)
+        require_owner()
+        future = writer.submit_shared_oms_observation_snapshot(observations, journal_batch_id=batch)
+        job = asyncio.ensure_future(asyncio.wrap_future(future))
+        try:
+            receipt = await asyncio.shield(job)
+        except asyncio.CancelledError:
+            await _settle_owned_task(job)
+            raise
+        require_owner()
+        if receipt != batch:
+            raise RuntimeError("Programme OMS checkpoint changed its V4 batch receipt")
         for capture in portfolio_captures:
             require_owner()
             financial = writer.submit_running_portfolio_snapshot(journal_batch_id=batch, captured=capture)
