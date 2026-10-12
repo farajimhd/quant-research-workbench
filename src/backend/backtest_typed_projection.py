@@ -187,6 +187,23 @@ def project_pending_backtest_v4_prefix(
     units = []
     ordinary: list[TypedJournalBatch] = []
     sources = dict(published_sources or {})
+    program_intent_ids = set()
+    if rule_decision_qualifications is not None:
+        from src.trading_runtime.rule_decision_basis_projection import RuleDecisionBasisBatch
+        from src.trading_runtime.rule_decision_publication import _check_rule_decision_qualification
+        for completion in records:
+            if completion.record_id not in rule_ids:
+                continue
+            completion_base = project_journal_record(completion, run_month=run_month,
+                attempt_id=attempt, batch_id=completion.record_id, prior_batch_id=prior_batch_id,
+                source_cursor=source_cursor, expected_config=expected_config, expected_mode="backtest")
+            completed = RuleDecisionBasisBatch.from_pending_completion(journal, completion, completion_base)
+            _check_rule_decision_qualification(completed, rule_decision_qualifications[completion.record_id])
+            for child in completed.intents:
+                identity = child["strategy_intent_id"]
+                if identity in program_intent_ids:
+                    raise ValueError("Qualified program prefix repeats a semantic intent")
+                program_intent_ids.add(identity)
     order_lineage = dict(committed_order_lineage or {})
     order_lineage_proofs = dict(committed_order_lineage_proofs or {})
     order_lineage_oms_records = dict(committed_order_lineage_oms_records or {})
@@ -465,6 +482,13 @@ def project_pending_backtest_v4_prefix(
                         and protection_source is None):
                     raise RuntimeError("Strategy 1 protection intent lacks typed source")
                 unit = batch
+                if kind == ("strategy", "strategy_intent") and record.entity_id in program_intent_ids:
+                    from src.trading_runtime.order_management import _intent_from_payload
+                    intent = _intent_from_payload({key: value for key, value in record.payload.items()
+                        if key not in {"strategy_id", "strategy_revision", "correlation_id", "causation_id"}})
+                    if intent.intent_id in sources:
+                        raise ValueError("Qualified program intent identity was reused")
+                    sources[intent.intent_id] = (batch, intent)
                 if automatic_source is not None:
                     from src.trading_runtime.automatic_ladder_transport import V4AutomaticLadderBatch
                     if (kind != ('strategy', 'strategy_intent')

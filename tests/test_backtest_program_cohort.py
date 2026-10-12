@@ -26,6 +26,7 @@ from src.backend.backtest_liquidity_price import PriceLevelPlan, PriceLevelUnit
 from src.market_engine.volume_rank_rules import select_volume_universe
 from src.market_engine import columnar_history_product as history
 from src.trading_runtime.columnar_program_actor import AssignedProgramStrategy
+from src.trading_runtime.runtime import typed_run_config_payload
 from src.trading_runtime.execution_policies import ExecutionPolicy, ExecutionEnvelope, ProtectionProfile, ProtectionSlice, StopRule
 
 
@@ -68,7 +69,8 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
             writer = SimpleNamespace(run_id=controller.run_id, run_mode="backtest", coalesce_batches=False,
                 journal_profile="backtest_v4", max_events_per_commit=512)
             controller._journal_publisher = BacktestTypedJournalPublisher(controller._journal, writer,
-                attempt_id="00000000-0000-0000-0000-000000000001", run_month=pin.scope.session_date.replace(day=1))
+                attempt_id="00000000-0000-0000-0000-000000000001", run_month=pin.scope.session_date.replace(day=1),
+                expected_config=typed_run_config_payload(controller._runtime.config))
             transport_rows = []
             for offset in (0, 2):  # The middle certified window has no liquidity row.
                 market, _ = block.row_for("listing", ordinal + offset)
@@ -137,6 +139,24 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
             assert result.policy_packet.journal_sequence == controller._journal.latest_sequence(controller.run_id)
             executions = await controller._runtime.broker.trades()
             assert executions and sum(row.commission for row in executions) >= 1.
+            # Exact Float32 stop prices currently exceed the V1 OMS decimal
+            # scale. Projection must fail closed until the shared precision
+            # contract is versioned; it must not silently round the program.
+            with pytest.raises(ValueError, match="Number cannot fit typed Decimal"):
+                controller._journal_publisher._prepare_batches(result.policy_packet.journal_sequence)
+            assert controller._journal_publisher.fenced_sequence == 0
+            from src.backend import backtest_program_publication as publication
+            proofs = publication.program_decision_projection_arguments(controller._journal_publisher,
+                result.policy_packet.journal_sequence)["rule_decision_qualifications"]
+            corrupt = dict(proofs)
+            first = next(iter(corrupt))
+            corrupt[first] = replace(corrupt[first], semantic_hash="0" * 64)
+            with monkeypatch.context() as rejected_proof:
+                rejected_proof.setattr(publication, "program_decision_projection_arguments",
+                    lambda *_: {"rule_decision_qualifications": corrupt})
+                with pytest.raises(ValueError, match="matching native qualification"):
+                    controller._journal_publisher._prepare_batches(result.policy_packet.journal_sequence)
+            assert controller._journal_publisher.fenced_sequence == 0
         finally:
             await controller._runtime.finish()
     try:

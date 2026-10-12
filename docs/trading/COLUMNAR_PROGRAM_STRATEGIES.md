@@ -172,6 +172,15 @@ three source/decision clocks, a sparse middle interval, actual fills and fees,
 and preflight/stop checks. The admitted main lifecycle still must bind cohort
 preparation, publication fences and terminal recovery to launch.
 Main launch admission and operational full-session qualification remain unfinished.
+Native cohort publication now resolves generic program intents earlier in the
+same pending prefix only after verifying their retained native-qualified
+completion proofs. Default legacy projection remains unchanged.
+The full native prefix test exposed a persistence boundary: Float32-derived
+stop9.989999771118164 does not fit the existing OMS `Decimal(38,10)` price
+column losslessly. Publication currently fails closed and leaves the fence
+unchanged. Exact program outputs must be preserved; a versioned central price
+contract or an explicit approved order-price policy is still required before
+operational publication. No implicit rounding or schema installation occurred.
 The existing certified1s liquidity consumer now offers bounded concurrent cohort
 reads through `read_liquidity_cohort_async`. It validates all requests before
 opening clients, preserves sparse/empty windows and closes every owned client
