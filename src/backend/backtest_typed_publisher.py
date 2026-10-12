@@ -400,6 +400,7 @@ class BacktestTypedJournalPublisher:
         if not self._sequence < through_sequence <= self._sequence + self.batch_size:
             raise ValueError("Typed Backtest projection exceeds one commit budget")
         if self.writer.journal_profile == "backtest_v4":
+            from .backtest_program_publication import program_decision_projection_arguments
             units = project_pending_backtest_v4_prefix(
                 self.journal, attempt_id=self.attempt_id,
                 run_month=self.run_month, prior_sequence=self._sequence,
@@ -415,7 +416,8 @@ class BacktestTypedJournalPublisher:
                 committed_order_lineage_proofs=dict(self._committed_order_lineage_proofs),
                 committed_order_lineage_oms_records=dict(
                     self._committed_order_lineage_oms_records),
-                through_sequence=through_sequence)
+                through_sequence=through_sequence,
+                **program_decision_projection_arguments(self, through_sequence))
             return _coalesce_v4_units(units, max_events=self.batch_size)
         if self.writer.journal_profile == "backtest_v3":
             from src.backend.backtest_squeeze_episode_v3 import coalesce_squeeze_units_v3
@@ -663,6 +665,8 @@ class BacktestTypedJournalPublisher:
                                     self._committed_order_lineage_proofs.pop(key, None)
                     self.journal.mark_fenced(batch.last_sequence)
                     self._sequence = batch.last_sequence
+                    from .backtest_program_publication import release_fenced_rule_decisions
+                    release_fenced_rule_decisions(self, batch)
                     self._batch_id = batch.batch_id
                     self._source_cursor = batch.source_cursor
                     current = TypedBacktestReceipt(self._sequence, self._batch_id,

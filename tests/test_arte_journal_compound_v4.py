@@ -169,30 +169,49 @@ def test_compound_retains_qualified_rule_rows_and_reseals_dependent_child_hashes
     from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
     async def publisher_tail():
         journal = BacktestMemoryJournal(run_id=RUN, initial_sequence=2)
-        journal.append(run_id=RUN, category="lifecycle", entity_type="run", entity_id=RUN,
-                       event_time=at, payload={"status": "running"})
+        actual_record = journal.append(run_id=RUN, category=record.category,
+            entity_type=record.entity_type, entity_id=record.entity_id, account_id=record.account_id,
+            event_time=at, payload=record.payload)
+        actual_parent, actual_children = project_rule_decision_basis(
+            {**scope, "record_id": actual_record.record_id}, [dict(stage="entry", strategy_intent_id="intent")])
+        journal.retain_rule_decision_basis(actual_record, actual_parent, actual_children)
+        actual_base = project_journal_record(actual_record, run_month=scope["event_month"], attempt_id=ATTEMPT,
+            batch_id=base.batch_id, prior_batch_id=base.prior_batch_id, source_cursor="start")
+        actual_digest = rule_decision_semantic_hash(actual_parent, actual_children)
+        actual_proof = QualifiedRuleDecision(RUN, 1, actual_digest, None,
+            _NativeDecisionEvidence(RUN, 1, actual_digest, _NATIVE_DECISION_PROOF))
+        actual_unit = QualifiedRuleDecisionBatch(RuleDecisionBasisBatch(actual_base, actual_parent, actual_children), actual_proof)
         pending = Future()
         seen = []
         def submit(queued):
-            assert queued is first
+            assert queued.unit.basis["record_id"] == actual_record.record_id
             seen.append(queued)
             return pending
         sink = SimpleNamespace(run_id=RUN, run_mode="backtest", journal_profile="backtest_v4",
             coalesce_batches=False, max_events_per_commit=512, submit_qualified_rule_v4=submit)
         publisher = BacktestTypedJournalPublisher(journal, sink, attempt_id=ATTEMPT,
             run_month=scope["event_month"], initial_sequence=2, prior_batch_id=base.prior_batch_id)
-        publisher._prepare_batches = lambda through: (first,)
+        from src.backend.backtest_program_publication import (
+            retain_qualified_rule_decision, program_decision_projection_arguments, release_fenced_rule_decisions)
+        retain_qualified_rule_decision(publisher, actual_unit)
+        assert program_decision_projection_arguments(publisher, 3) == {
+            "rule_decision_qualifications": {actual_record.record_id: actual_proof}}
+        with pytest.raises(ValueError, match="replaced"):
+            retain_qualified_rule_decision(publisher, actual_unit)
+        with pytest.raises(ValueError, match="before publisher acknowledgement"):
+            release_fenced_rule_decisions(publisher, actual_base)
         task = publisher.enqueue_pending()
         for _ in range(100):
             if seen:
                 break
             await asyncio.sleep(.001)
-        assert seen == [first] and not task.done()
+        assert len(seen) == 1 and not task.done()
         assert journal.pending_record_count == 1
-        pending.set_result(first.base.batch_id)
+        pending.set_result(seen[0].base.batch_id)
         settled = await task
-        assert settled.last_sequence == 3 and settled.last_batch_id == first.base.batch_id
+        assert settled.last_sequence == 3 and settled.last_batch_id == seen[0].base.batch_id
         assert journal.pending_record_count == 0
+        assert program_decision_projection_arguments(publisher, 3) == {}
         journal.close()
     asyncio.run(publisher_tail())
     from dataclasses import replace
