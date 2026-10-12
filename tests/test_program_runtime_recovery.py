@@ -20,8 +20,8 @@ from tests.test_program_controller_runtime import definition_and_actor
 
 
 @pytest.mark.parametrize("resolution", [100, 1000])
-def test_shared_runtime_initializes_from_real_normalized_cold_portfolio(monkeypatch, resolution):
-    _, template = definition_and_actor()
+def test_shared_runtime_initializes_from_real_normalized_cold_portfolio(monkeypatch, resolution, tmp_path):
+    definition, template = definition_and_actor()
     assignment = replace(template.assignments()[0], account_id="account-id")
     strategy = AssignedProgramStrategy(template.program_release, (assignment,), {"assignment": "listing"})
     profile = replace(profiles_for_runtime(("account-id",), mode="backtest")[0], account_key="account-key")
@@ -49,6 +49,19 @@ def test_shared_runtime_initializes_from_real_normalized_cold_portfolio(monkeypa
         build_recovered_program_runtime(replace(config, run_id="foreign"), strategy, journal, **kwargs)
     runtime = build_recovered_program_runtime(config, strategy, journal, **kwargs)
     async def run():
+        from src.backend.replay_run_service import ReplayRunController
+        controller = ReplayRunController(replace(definition, session_date=AT.date()),
+            run_id="cold-run", runtime_root=tmp_path, program_strategy=strategy,
+            program_liquidity_resolution_ms=resolution)
+        controller._runtime, controller._journal, controller._planner = runtime, journal, planner
+        before_stage = journal.command_checkpoint()
+        candidate = await controller.stage_program_financial_runtime(portfolio_recovery=cold,
+            oms_image=oms, broker_image=kwargs["broker_image"], completed_at=AT)
+        assert candidate is not runtime and candidate.portfolio is not runtime.portfolio
+        assert controller._runtime is runtime
+        assert candidate.journal is not journal
+        assert journal.command_checkpoint() == before_stage
+        assert candidate._canonical_session is None
         try:
             await runtime.initialize(record_lifecycle=False)
             state = runtime.portfolio.states["account-id"]

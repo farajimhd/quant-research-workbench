@@ -4953,6 +4953,42 @@ class ReplayRunController:
             raise ValueError("Program policy recovery source advanced during cold readback")
         return recovered
 
+    async def stage_program_financial_runtime(self, *, portfolio_recovery, oms_image,
+            broker_image, completed_at):
+        """Construct a detached cold candidate using this controller's run config.
+
+        This neither initializes nor swaps the candidate, and cannot authorize
+        launch. Source/policy and final owner/fence admission remain separate.
+        """
+        from .program_runtime_recovery import build_recovered_program_runtime
+        from .qmd_columnar_history_transport import _owned_worker
+        from .backtest_journal_memory import BacktestMemoryJournal
+        runtime, actor = self._runtime, self._program_strategy
+        if (runtime is None or actor is None or runtime.strategy is not actor
+                or runtime.config.mode is not RunMode.BACKTEST
+                or runtime.run_id != self.run_id or runtime.journal is not self._journal
+                or runtime.order_manager is None or self._planner is None
+                or completed_at != runtime.last_event_time):
+            raise ValueError("Program financial staging differs from the controller's completed runtime")
+        journal_sequence = self._journal.latest_sequence(self.run_id)
+        if self._journal.pending_record_count:
+            raise ValueError("Program financial staging requires an idle financial fence")
+        staged_journal = BacktestMemoryJournal(run_id=self.run_id,
+            initial_sequence=journal_sequence, max_pending_records=self._journal.max_pending_records)
+        candidate = await _owned_worker(build_recovered_program_runtime,
+            runtime.config, actor, staged_journal, portfolio_recovery=portfolio_recovery,
+            oms_image=oms_image, broker_image=broker_image,
+            simulation_config=runtime.broker.config, completed_at=completed_at,
+            intent_planner=self._planner,
+            strategy_configuration=dict(self.definition.configuration_revision["payload"].get("strategy") or {}),
+            groups=tuple(runtime.portfolio.groups.values()),
+            drawdown_measure_policy=runtime.portfolio.drawdown_measure_policy)
+        if (self._runtime is not runtime or runtime.last_event_time != completed_at
+                or self._journal.latest_sequence(self.run_id) != journal_sequence
+                or self._journal.pending_record_count):
+            raise ValueError("Program financial staging clock changed during construction")
+        return candidate
+
     async def install_recovered_program_policy(self, packet, *, portfolio_recovery, population):
         """Install only at an owned, fully fenced common financial/source clock."""
         from .program_policy_recovery import RecoveredProgramPolicy, verify_recovered_program_positions
