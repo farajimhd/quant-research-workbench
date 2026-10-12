@@ -146,6 +146,14 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                     batch_id="00000000-0000-0000-0000-000000000002")
                 assert basis_parent["source_commit_hash"] == source_prefix_hashes[-1]
                 assert basis_parent["intent_count"] == len(basis_children) == len(decision_intents)
+                dispatched_parent, dispatched_children = result["decision_basis"]
+                assert dispatched_parent["record_id"] == completion.record_id
+                assert dispatched_parent["basis_sequence"] == basis_sequence
+                assert dispatched_parent["source_commit_hash"] == basis_parent["source_commit_hash"]
+                assert [child["strategy_intent_id"] for child in dispatched_children] == [
+                    child["strategy_intent_id"] for child in basis_children]
+                with pytest.raises(TypeError):
+                    dispatched_parent["source_commit_hash"] = "e" * 64
                 from src.trading_runtime.rule_decision_basis_projection import verify_rule_decision_completion_record
                 assert verify_rule_decision_completion_record(basis_parent, basis_children, completion) is completion
                 from src.trading_runtime.arte_journal_projection import project_journal_record

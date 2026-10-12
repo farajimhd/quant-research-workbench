@@ -4852,6 +4852,7 @@ class ReplayRunController:
             await self._runtime.order_manager.reconcile()
             observation = self.program_order_observation(assignment_id=assignment_id, at=at)
         results = []
+        basis_sequence = self._journal.latest_sequence(self.run_id)
         try:
             selection = actor.select_from_orders(boundary, assignment_id=assignment_id,
                 observation=observation, terminal=terminal)
@@ -4871,15 +4872,34 @@ class ReplayRunController:
                 correlation_id=identity, causation_id=source_hash)
             signal = StrategySignal(identity, "program_boundary_completed", assignment.ticker,
                 at, "wait", "neutral", 0., 1., reason, working_timeframe="1s", metadata=metadata)
-            self._journal.append(run_id=self.run_id, category="strategy_decision",
+            completion = self._journal.append(run_id=self.run_id, category="strategy_decision",
                 entity_type="signal", entity_id=identity, account_id=assignment.account_id,
                 event_time=at, payload={**signal.payload(), "strategy_id": actor.strategy_id,
                     "strategy_revision": actor.revision, "correlation_id": identity,
                     "causation_id": source_hash})
+            from src.trading_runtime.rule_decision_basis_projection import project_program_completion_basis
+            from types import MappingProxyType
+            intent_references = []
+            for record in self._journal.records(self.run_id, after_sequence=basis_sequence):
+                if (record.category, record.entity_type) != ("strategy", "strategy_intent"):
+                    continue
+                stage = record.payload["reason"].split(":", 1)[1]
+                stage = {"target": "reduce", "terminal": "exit",
+                    "cancel_pending_acquisition": "exit"}.get(stage, stage)
+                intent_references.append(dict(stage=stage, strategy_intent_id=record.entity_id))
+            parent, children = project_program_completion_basis(completion,
+                release=actor.program_release, block=block, assignment=assignment,
+                listing_id=listing, ordinal=ordinal, source_boundary=(sequence, source_hash, cutoff),
+                basis_sequence=basis_sequence, intents=intent_references, terminal=terminal,
+                batch_id=completion.record_id)
+            # Provisional microbatch identity; the fenced publisher must rekey
+            # these scalar rows together with their original completion event.
+            decision_basis = (MappingProxyType(dict(parent)),
+                tuple(MappingProxyType(dict(child)) for child in children))
         except BaseException as exc:
             self._program_dispatch_failure = exc
             raise
-        return {"status": selection.status, "results": results}
+        return {"status": selection.status, "results": results, "decision_basis": decision_basis}
 
     def program_order_observation(self, *, assignment_id: str, at: datetime):
         """Expose processed OMS facts at this program runtime's completed clock."""
