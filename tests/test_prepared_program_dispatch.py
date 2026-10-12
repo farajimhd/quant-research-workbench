@@ -520,6 +520,50 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                         **qualification_scope)
                     assert qualification.selection == selected_again
                     assert qualification.basis_sequence == basis_sequence
+                    from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
+                    from src.backend.backtest_program_publication import (
+                        qualify_captured_pending_program_decision, program_decision_projection_arguments)
+                    from types import SimpleNamespace
+                    if controller._journal_publisher is None:
+                        synthetic_writer = SimpleNamespace(run_id=controller.run_id, run_mode="backtest",
+                            coalesce_batches=False, journal_profile="backtest_v4", max_events_per_commit=512)
+                        controller._journal_publisher = BacktestTypedJournalPublisher(controller._journal,
+                            synthetic_writer, attempt_id="00000000-0000-0000-0000-000000000001",
+                            run_month=at.date().replace(day=1))
+                    if offset == 0:
+                        from src.backend import qmd_columnar_history_transport as transport
+                        original_worker = transport._owned_worker
+                        owned_publisher = controller._journal_publisher
+                        original_cursor = owned_publisher._source_cursor
+                        async def moving_publisher_worker(*args, **kwargs):
+                            result = await original_worker(*args, **kwargs)
+                            owned_publisher._source_cursor = "changed-during-qualification"
+                            return result
+                        try:
+                            with monkeypatch.context() as changed_publisher:
+                                changed_publisher.setattr(transport, "_owned_worker", moving_publisher_worker)
+                                with pytest.raises(ValueError, match="idle owned publisher"):
+                                    await qualify_captured_pending_program_decision(controller, qualifier_candidate,
+                                        completion.record_id, recovered_intents, cold=cold, capture=captured,
+                                        packet=basis_packet, block=block, population=population,
+                                        execution_policy=policy, protection_profile=profile, outside_rth=False)
+                            assert program_decision_projection_arguments(owned_publisher, completion.sequence) == {}
+                        finally:
+                            owned_publisher._source_cursor = original_cursor
+                    envelope = await qualify_captured_pending_program_decision(controller, qualifier_candidate,
+                        completion.record_id, recovered_intents, cold=cold, capture=captured, packet=basis_packet,
+                        block=block, population=population, execution_policy=policy,
+                        protection_profile=profile, outside_rth=False)
+                    assert envelope.qualification.selection == selected_again
+                    projected = program_decision_projection_arguments(controller._journal_publisher,
+                        completion.sequence)["rule_decision_qualifications"]
+                    assert projected[completion.record_id] is envelope.qualification
+                    assert controller._journal_publisher.fenced_sequence == 0
+                    with pytest.raises(ValueError, match="cannot be replaced"):
+                        await qualify_captured_pending_program_decision(controller, qualifier_candidate,
+                            completion.record_id, recovered_intents, cold=cold, capture=captured, packet=basis_packet,
+                            block=block, population=population, execution_policy=policy,
+                            protection_profile=profile, outside_rth=False)
                     with pytest.raises(ValueError, match="owned native basis"):
                         await qualify_captured_rule_decision_runtime(
                             dispatched_parent, dispatched_children, recovered_intents, controller=controller,

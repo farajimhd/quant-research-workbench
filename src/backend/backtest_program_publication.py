@@ -116,3 +116,53 @@ async def qualify_pending_program_decision(controller, candidate, record_id, rec
                                          qualified)
     retain_qualified_rule_decision(publisher, envelope)
     return envelope
+
+
+async def qualify_captured_pending_program_decision(controller, candidate, record_id, records, *,
+        cold, capture, packet, block, population, execution_policy, protection_profile, outside_rth):
+    """Retain a native-qualified pending suffix for the existing V4 publisher."""
+    from .replay_run_service import ReplayRunController
+    from .backtest_typed_publisher import BacktestTypedJournalPublisher
+    from .rule_decision_reselection import qualify_captured_rule_decision_runtime
+    from src.trading_runtime.arte_journal_projection import project_journal_record
+    from src.trading_runtime.rule_decision_basis_projection import RuleDecisionBasisBatch
+    from src.trading_runtime.rule_decision_publication import QualifiedRuleDecisionBatch
+    if type(controller) is not ReplayRunController:
+        raise TypeError("Pending capture qualification requires the native controller")
+    publisher, journal, runtime = controller._journal_publisher, controller._journal, controller._runtime
+    if type(publisher) is not BacktestTypedJournalPublisher:
+        raise ValueError("Pending capture qualification lacks its owned V4 publisher")
+    fence = (publisher.fenced_sequence, publisher._batch_id, publisher._source_cursor)
+    def require_scope():
+        if (controller._journal_publisher is not publisher or controller._journal is not journal
+                or controller._runtime is not runtime or runtime is None or runtime.journal is not journal
+                or publisher.journal is not journal or publisher.writer.journal_profile != "backtest_v4"
+                or publisher._error is not None or publisher._terminal_task is not None
+                or publisher._task is not None and not publisher._task.done()
+                or (publisher.fenced_sequence, publisher._batch_id, publisher._source_cursor) != fence):
+            raise ValueError("Pending capture qualification lost its idle owned publisher")
+    require_scope()
+    basis = journal.rule_decision_basis_for_record(record_id)
+    if basis is None:
+        raise ValueError("Pending capture qualification lacks retained causal evidence")
+    parent, children = basis
+    sequence = parent["decision_sequence"]
+    pending = journal.unfenced_records(after_sequence=sequence - 1, through_sequence=sequence)
+    if len(pending) != 1 or pending[0].record_id != record_id:
+        raise ValueError("Pending capture qualification has no exact completion")
+    completion = pending[0]
+    qualified = await qualify_captured_rule_decision_runtime(parent, children, records,
+        controller=controller, runtime=candidate, cold=cold, capture=capture, packet=packet,
+        block=block, population=population, source=controller._program_signal_runtime,
+        execution_policy=execution_policy, protection_profile=protection_profile, outside_rth=outside_rth)
+    require_scope()
+    if (journal.rule_decision_basis_for_record(record_id) != basis
+            or journal.unfenced_records(after_sequence=sequence - 1, through_sequence=sequence) != pending):
+        raise ValueError("Pending completion changed during captured qualification")
+    base = project_journal_record(completion, run_month=publisher.run_month,
+        attempt_id=publisher.attempt_id, batch_id=parent["batch_id"],
+        prior_batch_id=publisher._batch_id, source_cursor=publisher._source_cursor)
+    envelope = QualifiedRuleDecisionBatch(RuleDecisionBasisBatch.from_pending_completion(journal, completion, base),
+        qualified)
+    retain_qualified_rule_decision(publisher, envelope)
+    return envelope

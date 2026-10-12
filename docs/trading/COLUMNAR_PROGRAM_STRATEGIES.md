@@ -133,7 +133,12 @@ broker/Portfolio/OMS finances, sealed replay metadata, exact pre-decision policy
 content, actual filled-position geometry, and prepared-source intent reselection.
 Synthetic controller tests cover this qualification at100ms and1s, including
 fee-decimal restoration and rejection of shared runtime or altered replay metadata.
-The main controller/publisher lifecycle does not yet invoke this route automatically.
+`qualify_captured_pending_program_decision` joins that proof to the exact pending
+completion and retains its qualified envelope for the existing V4 publisher.
+It checks the publisher fence remains unchanged across qualification and does
+not write or advance that fence. Synthetic controller tests retain all three
+clock decisions before any publication, without per-decision predecessor commits.
+The main compute lifecycle does not yet invoke this route automatically.
 The main clock lifecycle must resolve this dependency while preserving actual
 filled-state/OMS semantics; per-decision cold database replay is not established
 as an efficient production execution path.
