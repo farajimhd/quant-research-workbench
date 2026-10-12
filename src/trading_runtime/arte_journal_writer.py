@@ -293,7 +293,8 @@ def journal_client_from_env() -> Any:
 
 
 def backtest_v4_journal_client_from_env(*, keeper_session=None,
-                                        lease=None, automatic_ladder=False, entry_spread_risk=False) -> Any:
+                                        lease=None, automatic_ladder=False, entry_spread_risk=False,
+                                        program_decisions=False) -> Any:
     """Open V4 with a caller-owned writable Keeper session and strict dispatch.
 
     The caller must keep that session alive until the writer has drained and
@@ -304,7 +305,8 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
     from src.trading_runtime.keeper_session import ManagedKeeperSession
     from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
 
-    url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder, entry_spread_risk=entry_spread_risk)
+    url, user, password = _v4_runner_credentials(automatic_ladder=automatic_ladder,
+        entry_spread_risk=entry_spread_risk, program_decisions=program_decisions)
     if user in {os.environ.get(key, "").strip() for key in (
         "BACKTEST_CLICKHOUSE_USER", "REAL_LIVE_CLICKHOUSE_READ_USER",
         "REAL_LIVE_CLICKHOUSE_USER", "TRADING_JOURNAL_CLICKHOUSE_USER",
@@ -358,6 +360,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
     client.v4_batched_detail_readback = True
     client.automatic_ladder_profile = automatic_ladder
     client.entry_spread_risk_profile = entry_spread_risk
+    client.program_decision_profile = program_decisions
     def new_detail_lane() -> ClickHouseHttpClient:
         lane = _V4RunnerClient(
             url, user, password, timeout_seconds=60, persistent=True,
@@ -374,15 +377,20 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
     return client
 
 
-def _v4_runner_credentials(*, automatic_ladder=False, entry_spread_risk=False) -> tuple[str, str, str]:
+def _v4_runner_credentials(*, automatic_ladder=False, entry_spread_risk=False,
+                           program_decisions=False) -> tuple[str, str, str]:
     from src.trading_runtime.clickhouse_transport import workstation_ipv4_transport
 
     if type(automatic_ladder) is not bool or type(entry_spread_risk) is not bool or (automatic_ladder and entry_spread_risk):
         raise ValueError('V4 runner profile selection must be explicit')
+    if type(program_decisions) is not bool or (program_decisions and (automatic_ladder or entry_spread_risk)):
+        raise ValueError('Program runner profile cannot share another specialized writer')
     stem = 'BACKTEST_V4_LADDER_RUNNER' if automatic_ladder else 'BACKTEST_V4_RUNNER'
     principal = 'backtest_v4_ladder_runner' if automatic_ladder else 'backtest_v4_runner'
     if entry_spread_risk:
         stem, principal = 'BACKTEST_V4_ENTRY_COST_RUNNER', 'backtest_v4_entry_cost_runner'
+    if program_decisions:
+        stem, principal = 'BACKTEST_V4_PROGRAM_RUNNER', 'backtest_v4_program_runner'
     url, user, password = _dedicated_clickhouse_credentials(
         stem + '_CLICKHOUSE_', stem + '_CREDENTIAL_FILE')
     url = workstation_ipv4_transport(url)
@@ -2262,6 +2270,10 @@ class _V4PreflightSeal:
 def _v4_preflight(client: Any) -> _V4PreflightSeal:
     """Opt-in normalized fence; leave the live V1 startup contract unchanged."""
     installed = fixed_backtest_v2_contracts()
+    if getattr(client, 'program_decision_profile', False):
+        from .rule_decision_writer_preflight import preflight_rule_decision_writer
+        preflight_rule_decision_writer(client)
+        return _V4PreflightSeal(client, _V4_PREFLIGHT_SECRET)
     # A storage_preflight scans active parts as well as schema. Audit the
     # union once: repeating that catalog scan for each family can dominate
     # Backtest startup on a workstation with large market-part catalogs.

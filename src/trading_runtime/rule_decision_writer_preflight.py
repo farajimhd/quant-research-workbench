@@ -15,6 +15,9 @@ def preflight_rule_decision_writer(client):
             or getattr(client, "automatic_ladder_profile", False)
             or getattr(client, "entry_spread_risk_profile", False)):
         raise ValueError("Program writer requires its independent Backtest profile")
+    if (getattr(client, "program_decision_profile", False) is not True
+            or client.execute("SELECT currentUser()").strip() != "backtest_v4_program_runner"):
+        raise RuntimeError("Program writer requires its dedicated principal")
     preflight_rule_decision_storage(client)
     writable = rule_decision_write_tables()
     readonly = frozenset(table.name for table in fixed_backtest_v2_contracts()) - writable
