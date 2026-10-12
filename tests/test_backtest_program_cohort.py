@@ -2,6 +2,7 @@
 import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
+from decimal import Decimal, localcontext
 
 import polars as pl
 import pytest
@@ -30,15 +31,30 @@ from src.trading_runtime.runtime import typed_run_config_payload
 from src.trading_runtime.execution_policies import ExecutionPolicy, ExecutionEnvelope, ProtectionProfile, ProtectionSlice, StopRule
 
 
+def assert_multiple_entry_fill_geometry(actor, executions):
+    buys = [row for row in executions if row.side in ("B", "BUY")]
+    assert len(buys) >= 2 and len({row.price for row in buys}) >= 2
+    assert sum(row.size for row in buys) == 3
+    with localcontext() as context:
+        context.prec = 80
+        quantity = sum(Decimal(str(row.size)) for row in buys)
+        average = sum(Decimal(str(row.size)) * Decimal(str(row.price)) for row in buys) / quantity
+        position = actor.position_for("assignment")
+        assert position.quantity == quantity and position.average_price == average
+        assert position.fees == sum(Decimal(str(row.commission)) for row in executions)
+        assert average != average.quantize(Decimal("0.0000000001"))
+
+
 @pytest.mark.parametrize("resolution", [100, 1000])
-@pytest.mark.parametrize("partial_fills", [False, True])
+@pytest.mark.parametrize("partial_fills", [False, True, "multiple"])
 @pytest.mark.parametrize("fenced", [False, True])
 def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepared_source, tmp_path, monkeypatch, resolution, partial_fills, fenced):
     store = Store()
     publish(store, prepared_source)
     certificate = consume(store, prepared_source)
     pin = certificate.pin()
-    release = release_for(pin)
+    release = release_for(pin, minimum_age_seconds={stage: 3 for stage in ("add", "reduce", "exit", "trail")}
+        if partial_fills == "multiple" else None)
     definition, original = definition_and_actor()
     configuration, scope, _ = source()
     scope["session_key"] = pin.scope.session_date.isoformat()
@@ -209,7 +225,9 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                 assert load_verified_v4_prefix(persisted, controller.run_id).last_sequence == first_sequence
                 executions = await controller._runtime.broker.trades()
                 assert executions and sum(row.commission for row in executions) >= 1.
-                if partial_fills:
+                if partial_fills == "multiple":
+                    assert_multiple_entry_fill_geometry(actor, executions)
+                elif partial_fills:
                     assert any(row.size == 2 for row in executions)
                     assert persisted.tables["trading_oms_entry_acquisition_freeze_v1"]
                 # The exact same owners continue after pending records and
@@ -243,7 +261,9 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                 controller._journal_publisher._prepare_batches(result.policy_packet.journal_sequence)
             controller._journal_publisher.exact_oms_prices = True
             try:
-                if partial_fills:
+                if partial_fills == "multiple":
+                    assert_multiple_entry_fill_geometry(actor, executions)
+                elif partial_fills:
                     assert any(row.size == 2 for row in executions)
                     assert any(record.entity_type == "entry_acquisition_frozen_before_exit"
                         for record in controller._journal.records(controller.run_id))
@@ -260,16 +280,21 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                 committed = load_verified_v4_prefix(persisted, controller.run_id)
                 assert committed.last_sequence == result.policy_packet.journal_sequence
                 from src.trading_runtime.arte_journal_projection import project_journal_record
-                exit_command = next(record for record in controller._journal.records(controller.run_id)
+                exit_command = next((record for record in controller._journal.records(controller.run_id)
                     if record.category == "command" and record.entity_type == "order"
-                    and record.payload.get("action") == "exit")
+                    and record.payload.get("action") == "exit"), None)
                 projection_scope = dict(run_month=controller._journal_publisher.run_month,
                     attempt_id=controller._journal_publisher.attempt_id,
                     batch_id=units[0].base.batch_id, prior_batch_id=units[0].base.prior_batch_id,
                     source_cursor=units[0].base.source_cursor,
                     expected_config=controller._journal_publisher.expected_config,
                     expected_mode="backtest", exact_order_prices=True)
+                if partial_fills != "multiple":
+                    assert exit_command is not None
                 for action in ("hold", "wait", "cancel_entry", "unknown"):
+                    if partial_fills == "multiple":
+                        assert exit_command is None
+                        continue
                     with pytest.raises(ValueError, match="not an exact typed command"):
                         project_journal_record(replace(exit_command,
                             payload={**exit_command.payload, "action": action}), **projection_scope)

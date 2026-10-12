@@ -263,3 +263,15 @@ envelopes keep strategy identity in their exact group row, while their legacy
 decimal rows are empty. The existing legacy accessor remains unchanged.
 Storage audits and market transports are synthetic; main app launch, actual
 ClickHouse publication, full-session recovery and all30 qualification remain pending.
+
+The native cohort suite additionally covers multiple partial entry fills at
+different prices before management becomes eligible. These cases use a separate
+normalized synthetic programme release with an explicit management-age gate;
+the frozen V7 strategy and production settings are unchanged. Both 100ms and
+1s cases retain quantity three, exact execution-derived weighted entry cost
+at the ledger's declared precision, and all execution commissions. The weighted
+average deliberately cannot fit Decimal(38,10). Publication and a subsequent
+cohort after journal compaction pass through the actual worker/publisher with
+synthetic V4 storage. This demonstrates derived-ledger continuation for these
+cases; it does not establish every direct average-price column, terminal close,
+full-session recovery, all30 parity or a throughput benchmark.
