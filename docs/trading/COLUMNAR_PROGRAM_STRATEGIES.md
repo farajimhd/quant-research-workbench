@@ -89,6 +89,10 @@ the filling broker. Synthetic startup tests verify worker ownership, cleanup,
 concurrent-start rejection, policy/definition mutation rejection and actual
 native broker settings. Normal launch/input admission and full-session
 qualification remain unfinished; this API does not grant operational approval.
+Its pure pre-worker checks reject malformed typed contracts, a broker resolution
+different from the controller's selected resolution, an unavailable session or
+an already-stopped controller. These failures start no publication worker and
+do not create an uncertain-publication recovery latch.
 
 ## Delivered components
 

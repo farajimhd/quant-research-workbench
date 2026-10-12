@@ -9,6 +9,9 @@ from src.trading_runtime.arte_backtest_definition import prepare_backtest_defini
 from src.trading_runtime.arte_journal_writer import ArteJournalWriter
 from src.trading_runtime.keeper_session import ManagedKeeperSession
 from src.trading_runtime.keeper_ownership import KeeperOwnershipCoordinator
+from src.trading_runtime.backtest_broker_contract import BacktestBrokerContract
+from src.trading_runtime.backtest_journal_price_contract import BacktestJournalPriceContract
+from src.trading_runtime.runtime import RunConfig
 
 
 async def _settle_owned_task(task):
@@ -49,11 +52,17 @@ async def attach_program_journal(controller, *, context_client, read_client, wri
             or controller._journal_writer is not None or controller._journal_publisher is not None
             or controller._fixed_keeper_session is not None or controller._fixed_v4_lease is not None
             or controller._resume_state is not None or controller._program_dispatch_failure is not None
+            or controller._stop_requested
             or type(keeper_session) is not ManagedKeeperSession
+            or not keeper_session.writable
             or type(keeper) is not KeeperOwnershipCoordinator
             or keeper._client is not keeper_session.client
             or getattr(writer_client, "backtest_v4_lease", None) is None
             or writer_client.backtest_v4_lease.owner._session is not keeper_session
+            or type(runtime_config) is not RunConfig
+            or type(broker_contract) is not BacktestBrokerContract
+            or type(journal_price_contract) is not BacktestJournalPriceContract
+            or broker_contract.config.liquidity_resolution_ms != controller._program_liquidity_resolution_ms
             or runtime_config.run_id != controller.run_id
             or runtime_config.account_ids != tuple(dict.fromkeys(row.account_id for row in actor.assignments()))):
         raise RuntimeError("Programme startup lacks its fresh exclusive runtime and session scope")

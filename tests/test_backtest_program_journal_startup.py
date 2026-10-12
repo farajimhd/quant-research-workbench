@@ -89,6 +89,24 @@ def test_controller_drains_same_worker_and_only_adopts_unchanged_startup(tmp_pat
 
     async def run():
         caller = get_ident()
+        mismatched = replace(simulation, liquidity_resolution_ms=100)
+        mismatched_row = project_broker_contract(controller.run_id, mismatched, liquidity_plan_hash="c" * 64)
+        invalid_scopes = [
+            {**options, "broker_contract": BacktestBrokerContract(mismatched_row, definition.initial_cash),
+             "expected_broker_contract_hash": mismatched_row["content_hash"]},
+            {**options, "broker_contract": object()},
+            {**options, "journal_price_contract": object()},
+            {**options, "runtime_config": object()},
+        ]
+        for invalid in invalid_scopes:
+            with pytest.raises(RuntimeError, match="fresh exclusive"):
+                await controller.attach_prepared_program_journal(**invalid)
+        controller._stop_requested = True
+        with pytest.raises(RuntimeError, match="fresh exclusive"):
+            await controller.attach_prepared_program_journal(**options)
+        controller._stop_requested = False
+        assert not threads and not closed
+        assert controller._program_dispatch_failure is None
         task = asyncio.create_task(controller.attach_prepared_program_journal(**options))
         try:
             assert await asyncio.to_thread(entered.wait, 2)
