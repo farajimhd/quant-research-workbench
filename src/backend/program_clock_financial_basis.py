@@ -13,6 +13,7 @@ import re
 if TYPE_CHECKING:
     from src.trading_runtime.strategy_one_broker_match_snapshot import BrokerMatchSnapshotRows
     from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot, PreparedPortfolioSnapshot
+    from src.trading_runtime.arte_oms_actor_restore import TypedOmsActorImage
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +25,7 @@ class ProgramClockFinancialBasis:
     release_hash: str
     broker: BrokerMatchSnapshotRows
     portfolio: tuple[CapturedPortfolioSnapshot, ...]
+    oms: TypedOmsActorImage
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +40,7 @@ def prepare_program_clock_financial_basis(capture):
     from .backtest_market_data import market_day_boundary
     from src.trading_runtime.strategy_one_broker_match_snapshot import verify_broker_match_snapshot
     from src.trading_runtime.arte_portfolio_snapshot import prepare_captured_portfolio_snapshot
+    from src.trading_runtime.arte_oms_actor_restore import verify_typed_oms_broker_open_orders
     if type(capture) is not ProgramClockFinancialBasis:
         raise TypeError("Financial clock preparation requires its native capture")
     if (type(capture.journal_sequence) is not int or capture.journal_sequence < 1
@@ -47,6 +50,9 @@ def prepare_program_clock_financial_basis(capture):
             or re.fullmatch(r"[0-9a-f]{64}", capture.release_hash) is None):
         raise ValueError("Financial clock capture source scope differs")
     broker = verify_broker_match_snapshot(capture.broker)
+    if capture.oms.run_id != capture.run_id:
+        raise ValueError("Financial clock OMS scope differs from capture")
+    verify_typed_oms_broker_open_orders(capture.oms, broker)
     root = broker.snapshot
     if (root["run_id"] != capture.run_id or root["checkpoint_sequence"] != capture.journal_sequence
             or market_day_boundary(root["session_date"], root["boundary_ms"]) != capture.boundary_at):
@@ -74,6 +80,7 @@ async def capture_program_clock_financial_basis(controller, *, at):
     from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
     from src.trading_runtime.columnar_program_actor import AssignedProgramStrategy
     from src.trading_runtime.strategy_one_broker_match_snapshot import project_broker_match_snapshot
+    from src.trading_runtime.arte_oms_actor_restore import capture_typed_oms_actor_image
     if type(controller) is not ReplayRunController:
         raise TypeError("Financial clock capture requires the native controller")
     if not isinstance(at, datetime) or at.tzinfo is None or at.utcoffset() is None:
@@ -98,13 +105,20 @@ async def capture_program_clock_financial_basis(controller, *, at):
     elapsed = (at - market_day_boundary(day, 0)).total_seconds() * 1000
     if elapsed != int(elapsed):
         raise ValueError("Financial clock capture has a fractional broker clock")
-    state = runtime.broker.broker_match_snapshot_state()
-    portfolio = tuple(runtime.portfolio.capture_recovery_snapshot(account,
+    manager, portfolio_engine, native_broker = runtime.order_manager, runtime.portfolio, runtime.broker
+    state = native_broker.broker_match_snapshot_state()
+    portfolio = tuple(portfolio_engine.capture_recovery_snapshot(account,
         state_revision=sequence, snapshot_at=at) for account in runtime.config.account_ids)
+    oms = capture_typed_oms_actor_image(manager)
+    if (oms.run_id, oms.strategy_id, oms.strategy_revision) != (
+            runtime.run_id, runtime.config.strategy_id, runtime.config.strategy_revision):
+        raise ValueError("Financial clock OMS identity differs from runtime")
     broker = await _owned_worker(project_broker_match_snapshot, run_id=controller.run_id,
         session_date=day, checkpoint_sequence=sequence, boundary_ms=int(elapsed), state=state)
     if (controller._runtime is not runtime or controller._journal is not journal
             or controller._program_strategy is not actor or controller._program_signal_runtime is not source
+            or runtime.order_manager is not manager or runtime.portfolio is not portfolio_engine
+            or runtime.broker is not native_broker
             or runtime.last_event_time != at or journal.latest_sequence(controller.run_id) != sequence
             or source.typed_source_boundary(at) != boundary):
         raise ValueError("Financial clock capture changed during projection")
@@ -112,4 +126,4 @@ async def capture_program_clock_financial_basis(controller, *, at):
         name: tuple(MappingProxyType(dict(row)) for row in getattr(broker, name))
         for name in ("accounts", "positions", "open_orders", "tickers", "marks")})
     return ProgramClockFinancialBasis(controller.run_id, sequence, at, boundary,
-        actor.program_release.header["content_hash"], broker, portfolio)
+        actor.program_release.header["content_hash"], broker, portfolio, oms)

@@ -130,10 +130,27 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 assert captured.journal_sequence == basis_sequence
                 assert captured.source_boundary == runtime.typed_source_boundary(at)
                 assert captured.broker.snapshot["checkpoint_sequence"] == basis_sequence
+                from src.trading_runtime.arte_oms_projection import freeze_oms_group
+                manager = controller._runtime.order_manager
+                assert captured.oms.group_by_client_id == manager._group_by_client_id
+                assert captured.oms.group_by_broker_id == manager._group_by_broker_id
+                assert set(captured.oms.groups) == set(manager._groups)
+                for identity, group in captured.oms.groups.items():
+                    assert group is not manager._groups[identity]
+                    assert group.reprice_task is None and group.protection_task is None
+                    assert freeze_oms_group(group) == freeze_oms_group(manager._groups[identity])
+                    if group.orders:
+                        original_order = group.orders[0]
+                        group.orders[0] = replace(original_order, quantity=original_order.quantity + 1)
+                        assert manager._groups[identity].orders[0].quantity == original_order.quantity
+                        group.orders[0] = original_order
                 assert {snapshot.account_id for snapshot in captured.portfolio} == set(controller._runtime.config.account_ids)
                 with pytest.raises(TypeError):
                     captured.broker.snapshot["checkpoint_sequence"] = 0
                 prepared_finances = prepare_program_clock_financial_basis(captured)
+                with pytest.raises(ValueError, match="OMS scope"):
+                    prepare_program_clock_financial_basis(replace(captured,
+                        oms=replace(captured.oms, run_id="foreign-run")))
                 assert prepared_finances.broker == captured.broker
                 assert all(snapshot.state_revision == basis_sequence for snapshot in prepared_finances.portfolio)
                 from src.trading_runtime.arte_portfolio_snapshot import (

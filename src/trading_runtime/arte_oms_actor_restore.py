@@ -39,6 +39,39 @@ class TypedOmsActorImage:
     body_entry_group_ids: frozenset[str]
 
 
+def capture_typed_oms_actor_image(manager: OrderManagementEngine) -> TypedOmsActorImage:
+    """Detach native order facts without copying tasks or installing an actor.
+
+    This capture supplies no committed lineage or ownership proof. Staged
+    qualification must independently verify those authorities before use.
+    """
+    from dataclasses import fields
+    from .arte_oms_projection import freeze_oms_group
+    if type(manager) is not OrderManagementEngine:
+        raise TypeError("OMS capture requires the native manager")
+    groups = {}
+    for identity, original in manager._groups.items():
+        frozen = freeze_oms_group(original)
+        if identity != frozen.group_id:
+            raise ValueError("OMS capture group identity differs")
+        values = {field.name: deepcopy(getattr(frozen, field.name)) for field in fields(frozen)}
+        for name in ("orders", "broker_order_ids", "warning_message_ids"):
+            values[name] = list(values[name])
+        values["terminal_broker_order_ids"] = set(values["terminal_broker_order_ids"])
+        group = _ManagedOrderGroup(**values)
+        group.broker_order_state_fingerprints = deepcopy(original.broker_order_state_fingerprints)
+        if freeze_oms_group(group) != frozen:
+            raise ValueError("OMS capture changed native order facts")
+        groups[identity] = group
+    client_ids, broker_ids = dict(manager._group_by_client_id), dict(manager._group_by_broker_id)
+    if (any(identity not in groups for identity in (*client_ids.values(), *broker_ids.values()))
+            or not set(manager._body_entry_group_ids) <= set(groups)):
+        raise ValueError("OMS capture index has a foreign group")
+    return TypedOmsActorImage(manager.run_id, manager.strategy_id, manager.strategy_revision,
+        groups, client_ids, broker_ids, deepcopy(manager._protection_versions),
+        frozenset(manager._body_entry_group_ids))
+
+
 def attach_typed_oms_observations(
     image: TypedOmsActorImage, rows: OmsObservationSnapshotRows, *,
     through_sequence: int,
