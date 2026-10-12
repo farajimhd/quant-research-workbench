@@ -18,8 +18,6 @@ async def run_fenced_program_cohort(controller, blocks, population, projection, 
     Cancellation does not cancel the shielded publisher. An uncertain fence
     requires recovery before another cohort may use this controller.
     """
-    from .backtest_typed_publisher import TypedBacktestReceipt
-    from .program_policy_recovery import program_policy_fingerprint
     from .backtest_program_session import require_program_session_owner
     require_program_session_owner(controller)
     if getattr(controller, "_program_cohort_active", False):
@@ -33,33 +31,7 @@ async def run_fenced_program_cohort(controller, blocks, population, projection, 
         if not result.source_clocks and not result.liquidity_boundaries:
             return result
         publishing = True
-        runtime, actor = controller._runtime, controller._program_strategy
-        publisher, source = controller._journal_publisher, controller._program_signal_runtime
-        journal, writer = runtime.journal, publisher.writer
-        owners = (controller.definition, runtime, actor, publisher, source, journal,
-            writer, runtime.broker, runtime.config, runtime.order_manager, runtime.portfolio)
-        target = journal.latest_sequence(controller.run_id)
-        clock, cursor = runtime.last_event_time, source.typed_source_cursor()
-        policy_hash = program_policy_fingerprint(actor)
-        publisher.enqueue_pending()
-        receipt = await publisher.await_fence()
-        current = (controller.definition, controller._runtime, controller._program_strategy,
-            controller._journal_publisher, controller._program_signal_runtime,
-            controller._journal, publisher.writer, runtime.broker, runtime.config,
-            runtime.order_manager, runtime.portfolio)
-        if (any(before is not after for before, after in zip(owners, current))
-                or runtime.journal is not journal or publisher.journal is not journal
-                or runtime.last_event_time != clock
-                or journal.latest_sequence(controller.run_id) != target
-                or source.typed_source_cursor() != cursor
-                or program_policy_fingerprint(actor) != policy_hash
-                or type(receipt) is not TypedBacktestReceipt
-                or receipt.last_sequence != target
-                or publisher.fenced_sequence != target
-                or receipt.last_batch_id != publisher._batch_id
-                or receipt.source_cursor != publisher._source_cursor
-                or publisher._error is not None):
-            raise RuntimeError("Program cohort publication differs from its owned exact fence")
+        await fence_owned_program_suffix(controller)
         return result
     except BaseException as exc:
         if publishing:
@@ -67,6 +39,62 @@ async def run_fenced_program_cohort(controller, blocks, population, projection, 
         raise
     finally:
         controller._program_cohort_active = False
+
+
+async def fence_owned_program_suffix(controller):
+    """Acknowledge one unchanged native suffix before compaction or pause."""
+    from .backtest_program_session import require_program_session_owner
+    require_program_session_owner(controller)
+    if not getattr(controller, "_program_cohort_active", False):
+        raise RuntimeError("Programme suffix fence requires its active cohort owner")
+    from .backtest_typed_publisher import TypedBacktestReceipt
+    from .program_policy_recovery import program_policy_fingerprint
+    runtime, actor = controller._runtime, controller._program_strategy
+    publisher, source = controller._journal_publisher, controller._program_signal_runtime
+    journal, writer = runtime.journal, publisher.writer
+    owners = (controller.definition, runtime, actor, publisher, source, journal,
+        writer, runtime.broker, runtime.config, runtime.order_manager, runtime.portfolio)
+    target = journal.latest_sequence(controller.run_id)
+    clock, cursor = runtime.last_event_time, source.typed_source_cursor()
+    policy_hash = program_policy_fingerprint(actor)
+    publisher.enqueue_pending()
+    receipt = await publisher.await_fence()
+    current = (controller.definition, controller._runtime, controller._program_strategy,
+        controller._journal_publisher, controller._program_signal_runtime,
+        controller._journal, publisher.writer, runtime.broker, runtime.config,
+        runtime.order_manager, runtime.portfolio)
+    if (any(before is not after for before, after in zip(owners, current))
+            or runtime.journal is not journal or publisher.journal is not journal
+            or runtime.last_event_time != clock
+            or journal.latest_sequence(controller.run_id) != target
+            or source.typed_source_cursor() != cursor
+            or program_policy_fingerprint(actor) != policy_hash
+            or type(receipt) is not TypedBacktestReceipt or receipt.last_sequence != target
+            or publisher.fenced_sequence != target or receipt.last_batch_id != publisher._batch_id
+            or receipt.source_cursor != publisher._source_cursor or publisher._error is not None):
+        raise RuntimeError("Program cohort publication differs from its owned exact fence")
+    return receipt
+
+
+async def fence_program_pause(controller, blocks, population, *, maximum_events, initial_packet):
+    """Carry pending policy facts before a live-pause journal fence.
+
+    This receipt is not a full broker checkpoint or a cold-restart claim.
+    """
+    from .program_policy_recovery import rebuild_owned_pending_program_policy
+    if controller.current_time is None:
+        if controller._journal.unfenced_records():
+            raise RuntimeError("Initial programme pause has unfenced preparation facts")
+        return initial_packet
+    packet = await rebuild_owned_pending_program_policy(controller, blocks, population,
+        maximum_events=maximum_events, initial_packet=initial_packet)
+    await fence_owned_program_suffix(controller)
+    controller._checkpoint_projection_cache = {
+        "status": "programme_pause_fenced", "event_time": controller.current_time.isoformat(),
+        "resume_supported": False,
+    }
+    await controller._publish(force=True)
+    return packet
 
 
 async def run_prepared_program_cohort(controller, blocks, population, projection, *,
@@ -193,13 +221,17 @@ async def run_prepared_program_cohort(controller, blocks, population, projection
             group[ticker] = row
     packet = initial_packet
     replay_blocks = tuple({id(block): block for block in blocks.values()}.values())
+    async def pause_barrier():
+        nonlocal packet
+        packet = await fence_program_pause(controller, replay_blocks, population,
+            maximum_events=maximum_events, initial_packet=packet)
     decision_count = source_count = liquidity_count = 0
     started = False
     try:
         for boundary in range(after + resolution, through + 1, resolution):
             if controller._stop_requested:
                 return ProgramCohortResult("stopped", liquidity_count, source_count, decision_count, packet)
-            await controller._wait_until_active()
+            await controller._wait_until_active(program_pause_barrier=pause_barrier)
             if controller._stop_requested:
                 return ProgramCohortResult("stopped", liquidity_count, source_count, decision_count, packet)
             if (controller._runtime is not runtime or controller._program_strategy is not actor

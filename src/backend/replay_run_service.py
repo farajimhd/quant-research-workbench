@@ -7930,11 +7930,15 @@ class ReplayRunController:
             state["high"] = max(value, state["high"] or value)
         return state["high"]
 
-    async def _wait_until_active(self) -> None:
+    async def _wait_until_active(self, *, program_pause_barrier=None) -> None:
         async with self._condition:
             while True:
                 # Only the engine captures state, after the current event/frame
                 # has completed. The command endpoint never snapshots mid-event.
+                if (program_pause_barrier is not None and self._pause_checkpoint_requested
+                        and not self._stop_requested):
+                    await program_pause_barrier()
+                    self._pause_checkpoint_requested = False
                 if (self._pause_checkpoint_requested and not self._stop_requested
                         and self.current_time is not None
                         and (self._source_cursor or self._frame_cursor)):

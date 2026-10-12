@@ -294,8 +294,39 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                         assert controller._runtime.last_event_time == controller.definition.session_start
                         assert not controller._runtime_finished and not controller._stop_requested
                         await controller.bind_prepared_program_session(work)
+                        player = None
+                        if resolution in (100, 1000):
+                            from src.backend import backtest_program_cohort as cohort_module
+                            paused = asyncio.Event()
+                            native_dispatch = controller.dispatch_prepared_program_clock
+                            native_pause = cohort_module.fence_program_pause
+                            dispatch_count = 0
+                            async def pause_after_dispatch(*args, **kwargs):
+                                nonlocal dispatch_count
+                                result = await native_dispatch(*args, **kwargs)
+                                dispatch_count += 1
+                                if dispatch_count == 2:
+                                    await controller.command("pause")
+                                return result
+                            async def acknowledged_pause(*args, **kwargs):
+                                packet = await native_pause(*args, **kwargs)
+                                assert controller.status == "paused"
+                                assert not controller._journal.unfenced_records()
+                                assert controller._journal_publisher.fenced_sequence == packet.journal_sequence
+                                assert controller._checkpoint_projection_cache["resume_supported"] is False
+                                paused.set()
+                                return packet
+                            monkeypatch.setattr(controller, "dispatch_prepared_program_clock", pause_after_dispatch)
+                            monkeypatch.setattr(cohort_module, "fence_program_pause", acknowledged_pause)
+                            async def play_after_pause():
+                                await asyncio.wait_for(paused.wait(), timeout=20)
+                                await controller.command("play")
+                            player = asyncio.create_task(play_after_pause())
                         await controller.start()
                         await asyncio.wait_for(controller._task, timeout=20)
+                        if player is not None:
+                            await player
+                            assert dispatch_count == 4 and paused.is_set()
                         assert controller.status == "completed", controller.error
                         assert controller._runtime_finished and controller._journal_writer is None
                         assert controller._program_launch_plan is None
