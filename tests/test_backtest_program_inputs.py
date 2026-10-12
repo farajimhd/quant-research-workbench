@@ -67,6 +67,22 @@ def test_prepared_scanner_bridge_keeps_exact_top10_and_rejects_missing_history(p
     assert candidates["rolling_share_volume"].to_list() == [100.] * 10
     for field in release.fields:
         assert candidates.schema[field] == expanded.market.schema[field]
+    start, stop = at + timedelta(seconds=79), at + timedelta(seconds=89)
+    execution_rows = rows.filter((pl.col("boundary_at") > start) & (pl.col("boundary_at") <= stop))
+    execution_population = replace(population, rows=execution_rows,
+        ranked=select_volume_universe(execution_rows, release.universe))
+    original_market, original_masks = expanded.market.clone(), expanded.masks.clone()
+    scoped = prepare_program_scanner_projection(expanded, execution_population, release,
+        start_at=start, stop_at=stop)
+    assert len(scoped.clock_offsets) == 10
+    for clock in scoped.clock_offsets:
+        assert_frame_equal(scoped.frame_for(clock), prepared.frame_for(clock))
+    assert_frame_equal(expanded.market, original_market)
+    assert_frame_equal(expanded.masks, original_masks)
+    with pytest.raises(ValueError, match="outside its prepared cohort"):
+        scoped.frame_for(at)
+    with pytest.raises(ValueError, match="execution window"):
+        prepare_program_scanner_projection(expanded, execution_population, release, start_at=start)
     with pytest.raises(ValueError, match="outside its prepared cohort"):
         prepared.frame_for(at - timedelta(seconds=1))
     with pytest.raises(ValueError, match="immutable universe rule"):

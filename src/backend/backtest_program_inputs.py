@@ -35,7 +35,7 @@ class PreparedProgramScannerProjection:
         return self.frame.slice(offset, count)
 
 
-def prepare_program_scanner_projection(block, population, release):
+def prepare_program_scanner_projection(block, population, release, *, start_at=None, stop_at=None):
     """Join certified ranking and prepared history once per evaluation block."""
     from .qmd_columnar_population import CertifiedPopulationWindow
     from src.market_engine.volume_rank_rules import select_volume_universe
@@ -46,6 +46,22 @@ def prepare_program_scanner_projection(block, population, release):
     if not ranked.equals(population.ranked):
         raise ValueError("Program scanner ranking differs from its immutable universe rule")
     clocks = block.market.select("boundary_at").unique().sort("boundary_at")
+    if start_at is not None or stop_at is not None:
+        if (not isinstance(start_at, datetime) or not isinstance(stop_at, datetime)
+                or start_at.tzinfo is None or stop_at.tzinfo is None
+                or start_at.utcoffset() is None or stop_at.utcoffset() is None
+                or start_at.microsecond or stop_at.microsecond
+                or not timedelta(0) < stop_at - start_at <= timedelta(seconds=256)
+                or (stop_at - start_at) % timedelta(seconds=1)
+                or clocks.is_empty()
+                or clocks["boundary_at"].min() > start_at + timedelta(seconds=1)
+                or clocks["boundary_at"].max() < stop_at):
+            raise ValueError("Program scanner execution window lacks its complete prepared clocks")
+        # Select execution clocks without trimming or reevaluating the feature
+        # block. Warm-up remains part of the original market-only rule origin.
+        clocks = clocks.filter((pl.col("boundary_at") > start_at) & (pl.col("boundary_at") <= stop_at))
+        if clocks.height != (stop_at - start_at) // timedelta(seconds=1):
+            raise ValueError("Program scanner execution window has missing prepared clocks")
     if population.price_eligible_count > 0 and clocks.join(
             population.rows.select("boundary_at").unique(), on="boundary_at", how="anti").height:
         raise ValueError("Program scanner lacks population coverage for a prepared clock")
