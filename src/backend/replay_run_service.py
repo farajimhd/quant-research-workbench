@@ -5031,6 +5031,43 @@ class ReplayRunController:
         require_scope()
         return comparison
 
+    async def qualify_program_decision_candidate(self, candidate, parent, children, records, *,
+            cold, prefix, broker, oms_image, packet, block, population,
+            execution_policy, protection_profile, outside_rth):
+        """Qualify an isolated historical decision against this controller's source.
+
+        No candidate is installed, no order is submitted and no data is
+        published. Operational admission remains a separate owned fence.
+        """
+        from .rule_decision_reselection import qualify_rule_decision_runtime
+        from .qmd_columnar_population import CertifiedPopulationWindow
+        from .signal_stream_runtime_service import SignalStreamRuntime
+        from src.trading_runtime.runtime import TradingRuntime
+        owned, source = self._runtime, self._program_signal_runtime
+        def require_scope():
+            if (owned is None or self._runtime is not owned
+                    or type(source) is not SignalStreamRuntime or self._program_signal_runtime is not source
+                    or source._typed_scope is None
+                    or owned.strategy is not self._program_strategy
+                    or type(candidate) is not TradingRuntime or candidate is owned
+                    or candidate.run_id != self.run_id or candidate.config != owned.config
+                    or candidate.journal is owned.journal or candidate.broker is owned.broker
+                    or candidate.portfolio is owned.portfolio or candidate.order_manager is owned.order_manager
+                    or type(population) is not CertifiedPopulationWindow
+                    or population.source_revision != source._typed_scope[1]):
+                raise ValueError("Program decision qualification differs from controller ownership")
+        require_scope()
+        at = datetime.fromisoformat(parent["boundary_at"])
+        boundary = source.typed_source_boundary(at)
+        qualified = await qualify_rule_decision_runtime(parent, children, records,
+            runtime=candidate, cold=cold, prefix=prefix, broker=broker, oms_image=oms_image,
+            packet=packet, block=block, population=population, source=source,
+            execution_policy=execution_policy, protection_profile=protection_profile, outside_rth=outside_rth)
+        require_scope()
+        if source.typed_source_boundary(at) != boundary:
+            raise ValueError("Program decision qualification source changed")
+        return qualified
+
     async def install_program_runtime_candidate(self, candidate, packet, *, cold,
             prefix, broker, oms_image, population):
         """Swap qualified cold actors at one owned source/financial fence.

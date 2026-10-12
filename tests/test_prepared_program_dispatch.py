@@ -197,6 +197,20 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 assert retained_transport.intents == transport.intents
                 assert dispatched_parent["batch_id"] == completion.record_id
                 assert retained_transport.basis["batch_id"] == typed_completion.batch_id
+                before_rejected_qualification = controller._journal.latest_sequence(controller.run_id)
+                with pytest.raises(ValueError, match="controller ownership"):
+                    await controller.qualify_program_decision_candidate(controller._runtime,
+                        dispatched_parent, dispatched_children, (), cold=None, prefix=None, broker=None,
+                        oms_image=None, packet=None, block=block, population=population,
+                        execution_policy=policy, protection_profile=profile, outside_rth=False)
+                assert controller._journal.latest_sequence(controller.run_id) == before_rejected_qualification
+                assert controller._runtime.strategy is actor
+                from copy import copy
+                with pytest.raises(ValueError, match="controller ownership"):
+                    await controller.qualify_program_decision_candidate(copy(controller._runtime),
+                        dispatched_parent, dispatched_children, (), cold=None, prefix=None, broker=None,
+                        oms_image=None, packet=None, block=block, population=population,
+                        execution_policy=policy, protection_profile=profile, outside_rth=False)
                 from src.backend.rule_decision_reselection import reselect_rule_decision
                 from src.trading_runtime.arte_intent_projection import ProjectedIntent, RecoveredIntent, restore_strategy_intent
                 recovered_intents = []
