@@ -4,12 +4,42 @@ These images preserve blocked admission until broker/OMS synchronization. They
 are neither a strategy checkpoint nor permission to place orders.
 """
 from datetime import datetime, timezone
+from copy import deepcopy
 
 from src.backend.qmd_columnar_history_transport import _owned_worker
 from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix, load_verified_v4_prefix
 from src.trading_runtime.arte_portfolio_recovery import recover_portfolio_engine_state
 from src.trading_runtime.portfolio import PortfolioAccountProfile
 from src.trading_runtime.arte_portfolio_snapshot import load_portfolio_snapshot
+
+
+def build_program_portfolio_engine(recovery, *, journal, strategy_id,
+        strategy_revision, groups=(), event_clock, drawdown_measure_policy=None):
+    """Construct the existing engine from a detached, blocked cold image.
+
+    The readback object stays untouched while broker synchronization mutates
+    the actor. Balances and positions must come from that separate broker
+    synchronization, never from a convenient warm-state copy.
+    """
+    from src.backend.backtest_journal_memory import BacktestMemoryJournal
+    from src.trading_runtime.arte_portfolio_recovery import PortfolioRecovery
+    from src.trading_runtime.portfolio import PortfolioManagementEngine, PortfolioSyncState
+    if (type(recovery) is not PortfolioRecovery
+            or type(journal) is not BacktestMemoryJournal or journal.run_id != recovery.run_id
+            or not recovery.states or set(recovery.states) != set(recovery.revisions)
+            or len(set(recovery.revisions.values())) != 1
+            or any(type(value) is not int or value < 1 for value in recovery.revisions.values())
+            or any(state.profile.mode != "backtest" or state.summary is not None
+                   or state.ledger is not None or state.positions or state.open_orders
+                   or state.sync_state not in {PortfolioSyncState.ENTRIES_BLOCKED,
+                       PortfolioSyncState.FULLY_BLOCKED, PortfolioSyncState.DISABLED}
+                   for state in recovery.states.values())):
+        raise ValueError("Program Portfolio construction requires a blocked cold typed image")
+    detached = deepcopy(recovery)
+    return PortfolioManagementEngine(tuple(state.profile for state in detached.states.values()),
+        journal=journal, run_id=detached.run_id, strategy_id=strategy_id,
+        strategy_revision=strategy_revision, groups=groups, event_clock=event_clock,
+        typed_recovery=detached, drawdown_measure_policy=drawdown_measure_policy)
 
 
 def reconstruct_program_oms_image(prefix, *, lineages, protection, broker,

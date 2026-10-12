@@ -84,6 +84,38 @@ def test_program_portfolio_rejects_earlier_snapshot_at_same_revision(monkeypatch
     assert closed == [True]
 
 
+def test_program_portfolio_constructs_shared_actor_without_mutating_cold_evidence(monkeypatch):
+    from src.backend.backtest_journal_memory import BacktestMemoryJournal
+    from src.trading_runtime.arte_portfolio_recovery import recover_portfolio_engine_state
+    from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
+    from src.trading_runtime.domain import TradingMode
+    client, profile = _client(monkeypatch)
+    profile = replace(profile, mode="backtest")
+    cold = recover_portfolio_engine_state(client, run_id="live-run", profiles=(profile,),
+        state_revisions={"account-id": 7}, cutoff_at=AT)
+    journal = BacktestMemoryJournal(run_id="live-run")
+    actor = module.build_program_portfolio_engine(cold, journal=journal,
+        strategy_id="declared-program", strategy_revision=1, event_clock=lambda: AT)
+    assert actor._typed_backtest_recovery
+    assert actor.states["account-id"] is not cold.states["account-id"]
+    assert actor.reservations["reservation-1"] is not cold.reservations["reservation-1"]
+    broker = SimulatedBrokerAdapter(["account-id"], mode=TradingMode.BACKTEST,
+        initial_time=AT, fixed_bar_mode=True)
+    async def synchronize():
+        await broker.initialize()
+        await actor.synchronize(broker)
+    asyncio.run(synchronize())
+    assert actor.states["account-id"].ledger is not None
+    assert actor.states["account-id"].summary is not None
+    assert cold.states["account-id"].ledger is None
+    assert cold.states["account-id"].summary is None
+    assert cold.states["account-id"].sync_state is PortfolioSyncState.ENTRIES_BLOCKED
+    with pytest.raises(ValueError, match="blocked cold"):
+        module.build_program_portfolio_engine(replace(cold, states=actor.states),
+            journal=journal, strategy_id="declared-program", strategy_revision=1,
+            event_clock=lambda: AT)
+
+
 @pytest.mark.parametrize("mismatch", [None, "clock", "accounts", "prefix"])
 def test_program_oms_joins_native_empty_broker_and_observation_checkpoint(mismatch):
     from datetime import date, timedelta
