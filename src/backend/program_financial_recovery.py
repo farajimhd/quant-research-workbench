@@ -11,6 +11,59 @@ from src.trading_runtime.arte_portfolio_recovery import recover_portfolio_engine
 from src.trading_runtime.portfolio import PortfolioAccountProfile
 
 
+def reconstruct_program_oms_image(prefix, *, lineages, protection, broker,
+        observations, strategy_id, strategy_revision, cutoff_at, account_ids):
+    """Join verified shared OMS families; never infer source intent authority.
+
+    Lineages must already have their causal source and Portfolio admission
+    proved by the caller. This checks checkpoint agreement and builds the inert
+    OMS actor image; it does not install actors or enable execution.
+    """
+    from src.backend.backtest_market_data import market_day_boundary
+    from src.trading_runtime.arte_journal_reader import CompleteProtectionHistory
+    from src.trading_runtime.arte_oms_actor_restore import (
+        reconstruct_typed_oms_actor_image, attach_typed_oms_observations,
+        verify_typed_oms_broker_open_orders,
+    )
+    from src.trading_runtime.strategy_one_broker_match_snapshot import (
+        verify_broker_match_snapshot,
+    )
+    from src.trading_runtime.strategy_one_oms_observation_snapshot import (
+        verify_oms_observation_snapshot,
+    )
+    lineages = tuple(lineages)
+    account_ids = tuple(account_ids)
+    if (type(prefix) is not V4CommittedPrefix or prefix.status != "running"
+            or type(protection) is not CompleteProtectionHistory
+            or protection.run_id != prefix.run_id
+            or protection.through_sequence != prefix.last_sequence
+            or protection.committed_batch_ids != prefix.batch_ids
+            or not isinstance(cutoff_at, datetime) or cutoff_at.tzinfo is None
+            or not account_ids or len(set(account_ids)) != len(account_ids)):
+        raise ValueError("Program OMS recovery lacks one shared committed prefix")
+    broker = verify_broker_match_snapshot(broker)
+    observations = verify_oms_observation_snapshot(observations)
+    root = broker.snapshot
+    observed = observations.root
+    if (root["run_id"] != prefix.run_id
+            or root["checkpoint_sequence"] != prefix.last_sequence
+            or {row["account_id"] for row in broker.accounts} != set(account_ids)
+            or len(broker.accounts) != len(account_ids)
+            or any(observed[key] != root[key] for key in
+                   ("run_id", "checkpoint_sequence", "session_date", "boundary_ms"))
+            or market_day_boundary(root["session_date"], root["boundary_ms"]) != cutoff_at):
+        raise ValueError("Program OMS recovery checkpoint or account scope differs")
+    if any(row.state.group["account_id"] not in account_ids for row in lineages):
+        raise ValueError("Program OMS lineage contains a foreign account")
+    image = reconstruct_typed_oms_actor_image(tuple(lineages), protection,
+        run_id=prefix.run_id, strategy_id=strategy_id, strategy_revision=strategy_revision,
+        through_sequence=prefix.last_sequence, cutoff_at=cutoff_at)
+    image = attach_typed_oms_observations(image, observations,
+        through_sequence=prefix.last_sequence)
+    verify_typed_oms_broker_open_orders(image, broker)
+    return image
+
+
 async def recover_program_portfolio_async(reader_factory, prefix, *, profiles, cutoff_at):
     """Read exact account revisions off-loop and reject movement of the fence."""
     profiles = tuple(profiles)
