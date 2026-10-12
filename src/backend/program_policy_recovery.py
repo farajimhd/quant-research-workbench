@@ -28,6 +28,53 @@ from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix, load_v
 _RECOVERY_PROOF = object()
 
 
+def _position_geometry(rows, account):
+    from src.trading_runtime.ibkr_schema import PortfolioPosition
+    from decimal import localcontext
+    result = {}
+    with localcontext() as context:
+        context.prec = 80
+        for row in rows:
+            if type(row) is not PortfolioPosition or row.acctId != account:
+                raise ValueError("Recovered program financial position identity differs")
+            quantity = Decimal(str(row.position)).quantize(Decimal("0.0000000001"))
+            average = Decimal(str(row.avgPrice)).quantize(Decimal("0.0000000001"))
+            if not quantity.is_finite() or not average.is_finite() or quantity < 0:
+                raise ValueError("Recovered program financial position is invalid")
+            if quantity:
+                key = (account, row.conid, row.contractDesc.upper())
+                if key in result:
+                    raise ValueError("Recovered program financial position is duplicate")
+                result[key] = (quantity, average)
+    return result
+
+
+def verify_program_filled_geometry(actor, broker_positions, portfolio):
+    """Compare typed filled geometry; financial clocks/ownership remain separate proofs."""
+    from decimal import localcontext
+    if (type(actor) is not AssignedProgramStrategy
+            or set(broker_positions) != set(portfolio.states)
+            or set(broker_positions) != {row.account_id for row in actor.assignments()}):
+        raise ValueError("Recovered program geometry account scope differs")
+    expected = {}
+    with localcontext() as context:
+        context.prec = 80
+        for assignment in actor.assignments():
+            position = actor.position_for(assignment.assignment_id)
+            if position.position_open:
+                key = (assignment.account_id, assignment.conid, assignment.ticker)
+                if key in expected:
+                    raise ValueError("Recovered program geometry position ownership repeats")
+                expected[key] = tuple(value.quantize(Decimal("0.0000000001"))
+                    for value in (position.quantity, position.average_price))
+    actual_broker, actual_portfolio = {}, {}
+    for account, rows in broker_positions.items():
+        actual_broker.update(_position_geometry(rows, account))
+        actual_portfolio.update(_position_geometry(portfolio.states[account].positions.values(), account))
+    if actual_broker != expected or actual_portfolio != expected:
+        raise ValueError("Recovered program positions differ from broker or Portfolio")
+
+
 def program_policy_fingerprint(actor):
     """Seal the complete derived ledger and policy caches in memory only."""
     def pairs(mapping, *, sets=False):
@@ -205,7 +252,6 @@ def verify_recovered_program_positions(packet, template, *, run_id, source_hashe
         at, broker_positions, broker_ledgers, broker_executions, broker_orders, order_manager,
         portfolio, portfolio_recovery, observations, population):
     """Verify common filled geometry without executing a strategy or OMS command."""
-    from src.trading_runtime.ibkr_schema import PortfolioPosition
     from src.trading_runtime.domain import OrderState
     from src.trading_runtime.oms_assignment_observation import AssignmentOrderObservation
     from src.trading_runtime.arte_portfolio_recovery import PortfolioRecovery
@@ -278,23 +324,6 @@ def verify_recovered_program_positions(packet, template, *, run_id, source_hashe
     if actual_orders != expected_orders:
         raise ValueError("Recovered program OMS orders differ from current broker inventory")
 
-    def geometry(rows, account):
-        result = {}
-        with localcontext() as context:
-            context.prec = 80
-            for row in rows:
-                if type(row) is not PortfolioPosition or row.acctId != account:
-                    raise ValueError("Recovered program financial position identity differs")
-                quantity = Decimal(str(row.position)).quantize(Decimal("0.0000000001"))
-                average = Decimal(str(row.avgPrice)).quantize(Decimal("0.0000000001"))
-                if not quantity.is_finite() or not average.is_finite() or quantity < 0:
-                    raise ValueError("Recovered program financial position is invalid")
-                if quantity:
-                    key = (account, row.conid, row.contractDesc.upper())
-                    if key in result:
-                        raise ValueError("Recovered program financial position is duplicate")
-                    result[key] = (quantity, average)
-        return result
     actual_broker, actual_portfolio = {}, {}
     for account, rows in broker_positions.items():
         state = portfolio.states.get(account)
@@ -318,8 +347,8 @@ def verify_recovered_program_positions(packet, template, *, run_id, source_hashe
             reconciliation=portfolio_recovery.differences.values())
         if actual_capture != expected_capture:
             raise ValueError("Recovered program full Portfolio image differs")
-        actual_broker.update(geometry(rows, account))
-        actual_portfolio.update(geometry(state.positions.values(), account))
+        actual_broker.update(_position_geometry(rows, account))
+        actual_portfolio.update(_position_geometry(state.positions.values(), account))
     with localcontext() as context:
         context.prec = 80
         expected = {key: tuple(value.quantize(Decimal("0.0000000001")) for value in values)

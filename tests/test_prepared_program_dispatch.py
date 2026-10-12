@@ -426,6 +426,16 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                     deepcopy(portfolio.allocations), deepcopy(portfolio.differences),
                     deepcopy(portfolio._last_filled_by_reservation))
                 broker_positions = {account: await controller._runtime.broker.positions(account) for account in accounts}
+                from src.backend.program_policy_recovery import verify_program_filled_geometry
+                verify_program_filled_geometry(recovered.actor, broker_positions, controller._runtime.portfolio)
+                with pytest.raises(ValueError, match="account scope"):
+                    verify_program_filled_geometry(recovered.actor, {**broker_positions, "foreign": []},
+                        controller._runtime.portfolio)
+                if any(broker_positions.values()):
+                    altered_positions = {account: [replace(row, position=row.position + 1) for row in rows]
+                        for account, rows in broker_positions.items()}
+                    with pytest.raises(ValueError, match="positions differ"):
+                        verify_program_filled_geometry(recovered.actor, altered_positions, controller._runtime.portfolio)
                 broker_ledgers = {account: await controller._runtime.broker.account_ledger(account) for account in accounts}
                 broker_orders = await controller._runtime.broker.canonical_orders()
                 observations = {"assignment": controller.program_order_observation(assignment_id="assignment", at=at)}
