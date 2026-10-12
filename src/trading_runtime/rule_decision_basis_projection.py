@@ -14,6 +14,54 @@ from .journal_contract import canonical_json
 from .rule_decision_basis_schema import BASIS, INTENT
 
 
+def project_program_completion_basis(record, *, release, block, assignment,
+        listing_id, ordinal, source_boundary, basis_sequence, intents, terminal, batch_id):
+    """Bind a completed runtime record to its prepared input/source references.
+
+    This validates linkage only. Independent replay still proves the selected
+    intents; no proposal-supplied value chooses a saved-run market authority.
+    """
+    from src.backend.backtest_program_inputs import PreparedProgramBlock
+    from src.backend.signal_stream_runtime_service import signal_stream_session
+    from .columnar_strategy_release import ProgramRelease
+    from .journal_contract import JournalRecord
+    from .strategy_engine import StrategyAssignment
+    if (type(record) is not JournalRecord or type(block) is not PreparedProgramBlock
+            or type(release) is not ProgramRelease or type(assignment) is not StrategyAssignment
+            or type(terminal) is not bool or type(ordinal) is not int
+            or type(source_boundary) is not tuple or len(source_boundary) != 3):
+        raise ValueError("Program completion basis requires typed runtime references")
+    sequence, source_hash, at = source_boundary
+    row, _ = block.row_for(listing_id, ordinal)
+    payload = record.payload
+    if ((record.category, record.entity_type, payload.get("signal_type"))
+            != ("strategy_decision", "signal", "program_boundary_completed")
+            or record.event_time != at or row["boundary_at"] != at
+            or record.account_id != assignment.account_id
+            or payload.get("ticker") != assignment.ticker
+            or payload.get("causation_id") != source_hash
+            or (payload.get("strategy_id"), payload.get("strategy_revision"))
+               != (assignment.strategy_id, assignment.strategy_revision)
+            or (release.header["strategy_id"], release.header["strategy_number"])
+               != (assignment.strategy_id, assignment.strategy_revision)
+            or block.release_hash != release.header["content_hash"]
+            or record.entity_id != block.completion_identity(run_id=record.run_id,
+                assignment_id=assignment.assignment_id, source_hash=source_hash,
+                listing_id=listing_id, ordinal=ordinal, terminal=terminal)):
+        raise ValueError("Program completion basis differs from its prepared source")
+    status = payload["metadata"]["reason_detail"]
+    return project_rule_decision_basis(dict(run_id=record.run_id,
+        event_month=at.date().replace(day=1), batch_id=batch_id, record_id=record.record_id,
+        decision_id=record.entity_id, account_id=assignment.account_id,
+        assignment_id=assignment.assignment_id, listing_id=listing_id,
+        release_id=release.header["release_id"], release_content_hash=block.release_hash,
+        source_session_date=signal_stream_session(at)["session_key"], source_batch_sequence=sequence,
+        source_commit_hash=source_hash, history_input_hash=block.history_hashes[listing_id],
+        evaluation_block=block.evaluation_block, observed_ordinal=ordinal, boundary_at=at,
+        basis_sequence=basis_sequence, decision_sequence=record.sequence,
+        terminal=int(terminal), selection_status=status), intents)
+
+
 def _digest(value):
     return sha256(canonical_json(value).encode()).hexdigest()
 

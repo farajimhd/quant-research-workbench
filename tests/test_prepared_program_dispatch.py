@@ -123,9 +123,36 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                     assert not [record for record in controller._journal.records(controller.run_id)
                         if record.payload.get("signal_type") == "program_boundary_completed"]
                     return
+                basis_sequence = controller._journal.latest_sequence(controller.run_id)
                 result = await controller.dispatch_prepared_program_boundary(block, population,
                     ordinal=ordinal + offset, assignment_id="assignment", execution_policy=policy,
                     protection_profile=profile, outside_rth=False, terminal=offset == 2)
+                from src.trading_runtime.rule_decision_basis_projection import project_program_completion_basis
+                basis_records = controller._journal.records(controller.run_id)
+                completion = next(record for record in reversed(basis_records)
+                    if record.payload.get("signal_type") == "program_boundary_completed")
+                decision_intents = []
+                for record in basis_records:
+                    if record.sequence > basis_sequence and (record.category, record.entity_type) == ("strategy", "strategy_intent"):
+                        reason_stage = record.payload["reason"].split(":", 1)[1]
+                        stage_name = {"target": "reduce", "terminal": "exit",
+                            "cancel_pending_acquisition": "exit"}.get(reason_stage, reason_stage)
+                        decision_intents.append(dict(stage=stage_name, strategy_intent_id=record.entity_id))
+                basis_parent, basis_children = project_program_completion_basis(completion,
+                    release=actor.program_release, block=block, assignment=actor.assignments()[0],
+                    listing_id="listing", ordinal=ordinal + offset,
+                    source_boundary=runtime.typed_source_boundary(at), basis_sequence=basis_sequence,
+                    intents=decision_intents, terminal=offset == 2,
+                    batch_id="00000000-0000-0000-0000-000000000002")
+                assert basis_parent["source_commit_hash"] == source_prefix_hashes[-1]
+                assert basis_parent["intent_count"] == len(basis_children) == len(decision_intents)
+                with pytest.raises(ValueError, match="prepared source"):
+                    project_program_completion_basis(completion,
+                        release=actor.program_release, block=block, assignment=actor.assignments()[0],
+                        listing_id="listing", ordinal=ordinal + offset,
+                        source_boundary=(offset + 1, "e" * 64, at), basis_sequence=basis_sequence,
+                        intents=decision_intents, terminal=offset == 2,
+                        batch_id="00000000-0000-0000-0000-000000000002")
                 if offset == 0:
                     assert result["status"] == "selected" and not actor.position_for("assignment").position_open
                     repeated = await controller.dispatch_prepared_program_boundary(block, population,
