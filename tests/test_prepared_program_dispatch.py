@@ -179,6 +179,37 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 assert all(state.summary is None and state.ledger is None and not state.positions for state in cold.states.values())
                 assert set(cold.reservations) == set(controller._runtime.portfolio.reservations)
                 assert set(cold.allocations) == set(controller._runtime.portfolio.allocations)
+                from src.backend.program_runtime_recovery import build_recovered_program_runtime
+                from src.backend.program_financial_recovery import compare_captured_program_financial_runtime
+                candidate_journal = BacktestMemoryJournal(run_id=controller.run_id, initial_sequence=basis_sequence)
+                financial_candidate = build_recovered_program_runtime(
+                    replace(controller._runtime.config, write_progress_checkpoints=False), actor, candidate_journal,
+                    portfolio_recovery=cold, oms_image=captured.oms,
+                    broker_image=controller._runtime.broker.checkpoint_state(),
+                    simulation_config=controller._runtime.broker.config, completed_at=at,
+                    intent_planner=controller._planner,
+                    strategy_configuration=dict(controller.definition.configuration_revision["payload"].get("strategy") or {}),
+                    groups=tuple(controller._runtime.portfolio.groups.values()),
+                    drawdown_measure_policy=controller._runtime.portfolio.drawdown_measure_policy)
+                try:
+                    await financial_candidate.initialize(record_lifecycle=False)
+                    compared = compare_captured_program_financial_runtime(financial_candidate, cold, captured)
+                    assert compared.run_id == controller.run_id
+                    assert all(value == basis_sequence for value in compared.revisions.values())
+                    assert financial_candidate is not controller._runtime
+                    assert financial_candidate.broker is not controller._runtime.broker
+                    assert financial_candidate.portfolio is not controller._runtime.portfolio
+                    account = financial_candidate.config.account_ids[0]
+                    original_cash = financial_candidate.broker._cash[account]
+                    financial_candidate.broker._cash[account] += 1.
+                    try:
+                        with pytest.raises(ValueError, match="broker image changed"):
+                            compare_captured_program_financial_runtime(financial_candidate, cold, captured)
+                    finally:
+                        financial_candidate.broker._cash[account] = original_cash
+                finally:
+                    await financial_candidate.finish()
+                assert controller._journal.latest_sequence(controller.run_id) == basis_sequence
                 with pytest.raises(ValueError, match="exact normalized account coverage"):
                     portfolio_recovery.recover_prepared_portfolio_engine_state(
                         run_id=controller.run_id, profiles=profiles, run_account_ids=controller._runtime.config.account_ids,

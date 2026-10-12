@@ -34,13 +34,37 @@ def qualify_program_financial_runtime(runtime, cold, prefix, broker, *, oms_imag
             type(through_sequence) is not int or not 1 <= through_sequence <= prefix.last_sequence)):
         raise ValueError("Program financial qualification historical basis differs")
     basis_sequence = prefix.last_sequence if through_sequence is None else through_sequence
+    return _compare_native_program_financial_image(runtime, cold, broker, oms_image=oms_image,
+        run_id=prefix.run_id, basis_sequence=basis_sequence, running=prefix.status == "running")
+
+
+def compare_captured_program_financial_runtime(runtime, cold, capture):
+    """Compare staged native images; return no commit or decision permission."""
+    from .program_clock_financial_basis import prepare_program_clock_financial_basis
+    prepared = prepare_program_clock_financial_basis(capture)
+    return _compare_native_program_financial_image(runtime, cold, prepared.broker,
+        oms_image=capture.oms, run_id=capture.run_id,
+        basis_sequence=capture.journal_sequence, running=True)
+
+
+def _compare_native_program_financial_image(runtime, cold, broker, *, oms_image,
+        run_id, basis_sequence, running):
+    from src.trading_runtime.runtime import TradingRuntime, RunMode
+    from src.trading_runtime.arte_portfolio_recovery import PortfolioRecovery
+    from src.trading_runtime.portfolio import PortfolioSyncState
+    from src.trading_runtime.arte_oms_actor_restore import TypedOmsActorImage
+    from src.trading_runtime.arte_oms_projection import freeze_oms_group
+    from src.trading_runtime.strategy_one_broker_match_snapshot import (
+        verify_broker_match_snapshot, project_broker_match_snapshot,
+    )
+    from src.backend.backtest_market_data import market_day_boundary
     if (type(runtime) is not TradingRuntime or type(cold) is not PortfolioRecovery
-            or type(prefix) is not V4CommittedPrefix or prefix.status != "running"
+            or not running
             or type(oms_image) is not TypedOmsActorImage
             or (oms_image.run_id, oms_image.strategy_id, oms_image.strategy_revision)
                != (runtime.run_id, runtime.config.strategy_id, runtime.config.strategy_revision)
             or runtime.config.mode is not RunMode.BACKTEST
-            or runtime.run_id != cold.run_id or cold.run_id != prefix.run_id
+            or runtime.run_id != cold.run_id or cold.run_id != run_id
             or not runtime._typed_oms_recovered or runtime._canonical_session is None
             or set(runtime.portfolio.states) != set(cold.states)
             or set(cold.states) != set(cold.revisions)
@@ -61,10 +85,10 @@ def qualify_program_financial_runtime(runtime, cold, prefix, broker, *, oms_imag
     broker = verify_broker_match_snapshot(broker)
     root = broker.snapshot
     at = market_day_boundary(root["session_date"], root["boundary_ms"])
-    if (root["run_id"] != prefix.run_id or root["checkpoint_sequence"] != basis_sequence
+    if (root["run_id"] != run_id or root["checkpoint_sequence"] != basis_sequence
             or runtime.last_event_time != at):
         raise ValueError("Program financial qualification clock differs")
-    actual = project_broker_match_snapshot(run_id=prefix.run_id,
+    actual = project_broker_match_snapshot(run_id=run_id,
         session_date=at.date(), checkpoint_sequence=basis_sequence,
         boundary_ms=root["boundary_ms"], state=runtime.broker.checkpoint_state())
     if actual != broker:
@@ -74,7 +98,7 @@ def qualify_program_financial_runtime(runtime, cold, prefix, broker, *, oms_imag
         raise ValueError("Program financial qualification filled reservation cache changed")
     from src.backend.backtest_journal_memory import BacktestMemoryJournal
     reference = build_program_portfolio_engine(cold,
-        journal=BacktestMemoryJournal(run_id=prefix.run_id, initial_sequence=basis_sequence),
+        journal=BacktestMemoryJournal(run_id=run_id, initial_sequence=basis_sequence),
         strategy_id=runtime.config.strategy_id, strategy_revision=runtime.config.strategy_revision,
         groups=tuple(portfolio.groups.values()), event_clock=lambda: at,
         drawdown_measure_policy=portfolio.drawdown_measure_policy)
@@ -95,7 +119,7 @@ def qualify_program_financial_runtime(runtime, cold, prefix, broker, *, oms_imag
             state_revision=basis_sequence, snapshot_at=at)
         if current != expected:
             raise ValueError("Program financial qualification durable Portfolio image changed")
-    return PortfolioRecovery(prefix.run_id, dict(cold.revisions), deepcopy(portfolio.states),
+    return PortfolioRecovery(run_id, dict(cold.revisions), deepcopy(portfolio.states),
         deepcopy(portfolio.reservations), deepcopy(portfolio.allocations),
         deepcopy(portfolio.differences), deepcopy(portfolio._last_filled_by_reservation))
 
