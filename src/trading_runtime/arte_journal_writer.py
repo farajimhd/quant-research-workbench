@@ -2109,7 +2109,7 @@ def _verify_commission_links(
     by_family = dict(families)
     same_batch = {
         (str(row["account_id"]), str(row["execution_id"]))
-        for row in by_family["trading_execution_v1"]
+        for row in _execution_identity_rows(by_family)
     }
     for fee in by_family["trading_commission_v1"]:
         account_id, execution_id = str(fee["account_id"]), str(fee["execution_id"])
@@ -2132,6 +2132,15 @@ def _verify_commission_links(
             committed += len(fences)
         if committed != 1:
             raise RuntimeError("Commission revision requires one committed execution")
+
+
+def _execution_identity_rows(by_family):
+    """Select one physical price representation for price-free fee identities."""
+    legacy = by_family.get("trading_execution_v1", ())
+    exact = by_family.get("trading_execution_exact_price_v1", ())
+    if legacy and exact:
+        raise ValueError("Execution lineage cannot mix legacy and exact price families")
+    return exact if exact else legacy
 
 
 def _order_command_identity_rows(by_family):
@@ -3577,12 +3586,16 @@ def load_committed_order_transition_page(
 def load_committed_execution_page(
     client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 500, execution_ids: tuple[str, ...] | None = None,
+    exact_prices: bool = False,
 ) -> tuple[dict[str, Any], ...]:
     """Read committed fill evidence without admitting interrupted inserts."""
+    if type(exact_prices) is not bool:
+        raise ValueError("Execution read price mode must be an explicit boolean")
     return _load_committed_execution_detail_page(
-        client, prefix, "fill", "trading_execution_v1",
+        client, prefix, "fill", "trading_execution_exact_price_v1" if exact_prices else "trading_execution_v1",
         after_sequence=after_sequence, limit=limit,
         execution_ids=execution_ids,
+        exact_prices=exact_prices,
     )
 
 
@@ -3793,6 +3806,7 @@ def _load_committed_execution_detail_page(
     client: Any, prefix: VerifiedPrefix, entity_type: str, table: str,
     *, after_sequence: int, limit: int,
     execution_ids: tuple[str, ...] | None = None,
+    exact_prices: bool = False,
 ) -> tuple[dict[str, Any], ...]:
     if not _valid_prefix(prefix):
         raise ValueError("Execution recovery requires a verified committed prefix")
@@ -3809,8 +3823,11 @@ def _load_committed_execution_detail_page(
     exact_filter = ("AND entity_id IN (" + ",".join(
         _literal(item) for item in sorted(wanted)) + ") "
         if wanted is not None else "")
+    event_columns = "record_id,batch_id,sequence,event_month,account_id,event_time,entity_id"
+    if exact_prices:
+        event_columns = ",".join(name for name, _ in _CONTRACTS["trading_event_v1"].columns)
     events = _rows(client,
-        "SELECT record_id,batch_id,sequence,event_month,account_id,event_time,entity_id "
+        f"SELECT {event_columns} "
         "FROM arte.trading_event_v1 "
         f"WHERE run_id={_literal(prefix.run_id)} "
         f"AND sequence>{int(after_sequence)} "
@@ -3845,6 +3862,12 @@ def _load_committed_execution_detail_page(
     result = []
     prior = after_sequence
     for event in events:
+        if exact_prices:
+            event_content = {key: value for key, value in event.items() if key != "content_hash"}
+            event_hash = sha256(canonical_json(_canonical_typed_content(
+                "trading_event_v1", event_content, stored_utc=True)).encode("utf-8")).hexdigest()
+            if event_hash != event["content_hash"]:
+                raise ValueError("Committed exact execution event differs from its row hash")
         sequence = int(event["sequence"])
         detail = by_id[str(UUID(str(event["record_id"])))]
         if (sequence <= prior
@@ -3855,6 +3878,10 @@ def _load_committed_execution_detail_page(
                 or detail["source_event_time"] != event["event_time"]):
             raise RuntimeError("Committed execution page differs from its event envelope")
         prior = sequence
+        if exact_prices:
+            from .trading_price_rows import restore_exact_price_row
+            detail = {**restore_exact_price_row("trading_execution_v1", detail, stored_utc=True),
+                      "content_hash": detail["content_hash"]}
         result.append({"sequence": sequence, **detail})
     return tuple(result)
 

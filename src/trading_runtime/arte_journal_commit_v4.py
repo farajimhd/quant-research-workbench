@@ -1485,6 +1485,7 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
                             broker_snapshot_rows=None,
                             exact_oms_prices=None,
                             exact_order_prices=None,
+                            exact_execution_prices=None,
                             entry_freeze=None,
                             _prepare_only=False):
     from src.trading_runtime.arte_journal_writer import (
@@ -1519,6 +1520,12 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         from .rule_decision_writer_preflight import require_rule_decision_writer_audit
         if type(exact_order_prices) is not ExactPriceOrderCommandBatch or exact_order_prices.base is not batch:
             raise ValueError("Exact order publication requires its original typed envelope")
+        require_rule_decision_writer_audit(client)
+    if exact_execution_prices is not None:
+        from .arte_execution_exact_prices import ExactPriceExecutionBatch
+        from .rule_decision_writer_preflight import require_rule_decision_writer_audit
+        if type(exact_execution_prices) is not ExactPriceExecutionBatch or exact_execution_prices.base is not batch:
+            raise ValueError("Exact execution publication requires its original typed envelope")
         require_rule_decision_writer_audit(client)
     freeze_rows, freeze_groups = (), ()
     if entry_freeze is not None:
@@ -1847,6 +1854,7 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         exact_oms_price_rows=((exact_oms_prices.group,), exact_oms_prices.orders)
             if exact_oms_prices is not None else None,
         exact_order_command_rows=(exact_order_prices.command,) if exact_order_prices is not None else None,
+        exact_execution_rows=(exact_execution_prices.execution,) if exact_execution_prices is not None else None,
         v4_entry_freeze_ids=tuple(row['record_id'] for row in freeze_rows))
     command_rows = _order_command_identity_rows(dict(base_families))
     from .numbered_fixed_strategy import is_numbered_fixed_strategy

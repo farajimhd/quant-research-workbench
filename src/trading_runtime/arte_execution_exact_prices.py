@@ -41,3 +41,12 @@ def seal_exact_execution_batch(unit):
         raise ValueError("Exact execution sealing requires its explicit envelope")
     from .arte_journal_writer import _sealed_families
     return _sealed_families(unit.base, exact_execution_rows=(unit.execution,))
+
+
+def publish_exact_execution_batch_v4(client, unit, *, verified_prior_prefix=None):
+    """Publish through the existing V4 fence and explicit programme audit."""
+    if type(unit) is not ExactPriceExecutionBatch:
+        raise ValueError("Exact execution publication requires its explicit envelope")
+    from .arte_journal_commit_v4 import _publish_typed_batch_v4
+    return _publish_typed_batch_v4(client, unit.base, exact_execution_prices=unit,
+        verified_prior_prefix=verified_prior_prefix)

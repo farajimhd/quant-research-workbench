@@ -61,3 +61,39 @@ def test_exact_execution_rejects_tampering_or_foreign_envelope():
     invalid = exact_price_row("trading_execution_v1", {**native, "price": 0.})
     with pytest.raises(ValueError, match="original event"):
         replace(unit, execution=invalid)
+
+
+def test_exact_execution_v4_commit_readback_retry_and_corruption(monkeypatch):
+    from src.trading_runtime import rule_decision_writer_preflight as audit
+    from src.trading_runtime.arte_execution_exact_prices import publish_exact_execution_batch_v4
+    from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix, load_verified_commit_v4
+    from tests.test_arte_journal_commit_v4 import attached_v4_client
+    _, _, _, unit = projected()
+    client = attached_v4_client()
+    monkeypatch.setattr(audit, "require_rule_decision_writer_audit", lambda actual: None)
+    assert publish_exact_execution_batch_v4(client, unit) == unit.base.batch_id
+    prefix = load_verified_v4_prefix(client, unit.base.run_id)
+    assert prefix.last_sequence == 1 and prefix.last_batch_id == unit.base.batch_id
+    assert "trading_execution_v1" not in client.tables
+    assert len(client.tables["trading_execution_exact_price_v1"]) == 1
+    from src.trading_runtime.arte_journal_writer import load_committed_execution_page
+    cold, = load_committed_execution_page(client, prefix, exact_prices=True)
+    assert cold["price"] == restore_exact_price_row("trading_execution_v1", unit.execution)["price"]
+    assert cold["sequence"] == 1 and cold["execution_id"] == unit.execution["execution_id"]
+    with pytest.raises(RuntimeError, match="missing or duplicate"):
+        load_committed_execution_page(client, prefix)
+    assert publish_exact_execution_batch_v4(client, unit) == unit.base.batch_id
+    client.tables["trading_execution_exact_price_v1"][0]["price_bits"] += 1
+    with pytest.raises(ValueError, match="hash mismatch"):
+        load_committed_execution_page(client, prefix, exact_prices=True)
+    with pytest.raises(RuntimeError, match="row hash"):
+        load_verified_commit_v4(client, run_id=unit.base.run_id, batch_id=unit.base.batch_id)
+
+
+def test_fee_identity_check_rejects_mixed_execution_representations():
+    from src.trading_runtime.arte_journal_writer import _execution_identity_rows
+    row = dict(account_id="account", execution_id="execution")
+    assert _execution_identity_rows({"trading_execution_exact_price_v1": (row,)}) == (row,)
+    assert _execution_identity_rows({"trading_execution_v1": (row,)}) == (row,)
+    with pytest.raises(ValueError, match="cannot mix"):
+        _execution_identity_rows({"trading_execution_v1": (row,), "trading_execution_exact_price_v1": (row,)})
