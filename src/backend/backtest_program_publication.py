@@ -72,6 +72,7 @@ async def qualify_pending_program_decision(controller, candidate, record_id, rec
     from src.trading_runtime.arte_journal_projection import project_journal_record
     from src.trading_runtime.rule_decision_basis_projection import RuleDecisionBasisBatch
     from src.trading_runtime.rule_decision_publication import QualifiedRuleDecisionBatch
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
     if type(controller) is not ReplayRunController:
         raise TypeError("Pending decision qualification requires the native controller")
     publisher, journal = controller._journal_publisher, controller._journal
@@ -89,6 +90,13 @@ async def qualify_pending_program_decision(controller, candidate, record_id, rec
     if basis is None:
         raise ValueError("Pending decision qualification lacks retained causal evidence")
     parent, children = basis
+    if (type(prefix) is not V4CommittedPrefix or prefix.run_id != journal.run_id
+            or prefix.status != "running" or not prefix.batch_ids
+            or prefix.last_sequence != publisher.fenced_sequence
+            or prefix.last_batch_id != publisher._batch_id
+            or prefix.last_batch_id != prefix.batch_ids[-1]
+            or not 1 <= parent["basis_sequence"] <= prefix.last_sequence):
+        raise ValueError("Pending qualification requires the committed decision basis at its owned publisher fence")
     sequence = parent["decision_sequence"]
     pending = journal.unfenced_records(after_sequence=sequence - 1, through_sequence=sequence)
     if len(pending) != 1 or pending[0].record_id != record_id:

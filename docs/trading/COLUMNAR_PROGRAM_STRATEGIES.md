@@ -120,6 +120,16 @@ funnel does not yet orchestrate the full program source, qualification and
 publication lifecycle. The frozen winner is not selectable or launchable in
 the app. Do not weaken that gate to expose partially integrated components.
 
+Qualification batching is also unfinished. The historical native qualifier
+requires `basis_sequence` within the verified committed prefix. Current
+per-assignment dispatch captures the journal's latest sequence, so a later
+assignment in one clock can include earlier uncommitted decisions in its basis.
+It cannot acquire that historical proof until its predecessor is committed.
+Pending qualification now rejects this mismatch before any qualification reads.
+The main clock lifecycle must resolve this dependency while preserving actual
+filled-state/OMS semantics; per-decision cold database replay is not established
+as an efficient production execution path.
+
 ## Frozen source behavior
 
 The verified optimization market-producer contract uses a30-second elapsed

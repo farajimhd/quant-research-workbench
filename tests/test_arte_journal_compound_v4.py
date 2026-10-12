@@ -205,8 +205,15 @@ def test_compound_retains_qualified_rule_rows_and_reseals_dependent_child_hashes
             assert actual_records == ()
             return actual_proof
         controller.qualify_program_decision_candidate = qualified_candidate
-        context = dict(cold=None, prefix=None, broker=None, oms_image=None, packet=None, block=None,
+        from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+        from dataclasses import replace as replace_prefix
+        committed_prefix = V4CommittedPrefix(RUN, 2, base.prior_batch_id, "start", "running", (base.prior_batch_id,))
+        context = dict(cold=None, prefix=committed_prefix, broker=None, oms_image=None, packet=None, block=None,
             population=None, execution_policy=None, protection_profile=None, outside_rth=False)
+        with pytest.raises(ValueError, match="committed decision basis"):
+            await qualify_pending_program_decision(controller, candidate, actual_record.record_id, (),
+                **{**context, "prefix": replace_prefix(committed_prefix, last_sequence=0)})
+        assert program_decision_projection_arguments(publisher, 3) == {}
         async def changed_owner(*args, **kwargs):
             controller._journal = object()
             return actual_proof
