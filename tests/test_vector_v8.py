@@ -22,6 +22,42 @@ def metrics(profits):
         stop_risk_dollar_seconds=[0.]*len(profits),worst_position_pnl=[min(p,default=0.) for p in profits])
 
 
+def test_feature_worker_reuses_initialized_source_context(monkeypatch):
+    from datetime import date
+    import polars as pl
+    from research.vectorized_backtest.v8 import extract_features as producer
+    from research.rl_trading.v1 import arte_source
+    from research.rl_trading.v6 import source,reference,features
+    day,prior_day=date(2026,9,14),date(2026,9,11)
+    current={'build_id':'current'}
+    prior={'units':{str(prior_day):{'ABC':{}}}}
+    client=object();calls=[];expected=object()
+    monkeypatch.setattr(producer,'CLIENT',None)
+    monkeypatch.setattr(producer,'SOURCE_CONTEXT',None)
+    with pytest.raises(RuntimeError,match='not initialized'):
+        producer.work({'listing_id':'id','ticker':'ABC'})
+    monkeypatch.setattr(arte_source,'reader',lambda **kw:client)
+    bars=pl.DataFrame({'x':[1]});indicators=object();previous=object()
+    def candles(c,build,d,ticker):
+        assert c is client and build is current and d==day
+        calls.append(ticker)
+        return bars,indicators
+    def volume(c,build,d,ticker):
+        assert c is client and build is prior and d==prior_day and ticker=='ABC'
+        return previous
+    monkeypatch.setattr(source,'read_candles',candles)
+    monkeypatch.setattr(source,'read_previous_volume',volume)
+    monkeypatch.setattr(reference,'read_reference',lambda *args:('seed','splits','fundamentals','evidence'))
+    def encode(*args):
+        assert args==(day,bars,indicators,previous,'seed','splits','fundamentals')
+        return expected
+    monkeypatch.setattr(features,'encode',encode)
+    producer.initialize(day,prior_day,current,prior)
+    for identity in ('first','second'):
+        assert producer.work({'listing_id':identity,'ticker':'ABC'})==(identity,expected)
+    assert calls==['ABC','ABC']
+
+
 def test_same_backend_accounting_gate_rejects_even_roundoff():
     from research.vectorized_backtest.v8.qualify_synthetic import exact_accounting
     expected={'net_pnl':torch.tensor([1.],dtype=torch.float64)}

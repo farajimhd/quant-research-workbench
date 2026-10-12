@@ -16,6 +16,7 @@ import polars as pl
 from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime,write_json,file_hash
 
 CLIENT=None
+SOURCE_CONTEXT=None
 def ordered_features(pool,packets,maximum):
     """Bounded submission of this feature-only worker, never V6 label workers."""
     if maximum<1:raise ValueError('Positive feature queue bound required')
@@ -30,13 +31,15 @@ def ordered_features(pool,packets,maximum):
         except StopIteration:continue
         pending.append(pool.submit(work,packet))
 
-def initialize():
-    global CLIENT
+def initialize(day,prior_day,current,prior):
+    global CLIENT,SOURCE_CONTEXT
     from research.rl_trading.v1 import arte_source
     CLIENT=arte_source.reader(threads=1)
+    SOURCE_CONTEXT=(day,prior_day,current,prior)
 
-def work(packet):
-    day,prior_day,listing,current,prior=packet
+def work(listing):
+    if SOURCE_CONTEXT is None:raise RuntimeError('Feature worker source context is not initialized')
+    day,prior_day,current,prior=SOURCE_CONTEXT
     from research.rl_trading.v6.source import read_candles,read_previous_volume
     from research.rl_trading.v6.reference import read_reference
     from research.rl_trading.v6.features import encode,CandleFeatures
@@ -104,9 +107,10 @@ def main(argv=None):
         by_identity={r['listing_id']:r for r in population}
         progress_path=output/'bank'/'progress.json'
         done=set(json.loads(progress_path.read_text(encoding='utf-8-sig'))) if progress_path.exists() else set()
-        packets=((args.date,args.previous_date,by_identity[key],current,prior) for key in sorted(mapping) if key not in done)
+        packets=(by_identity[key] for key in sorted(mapping) if key not in done)
         began=time.perf_counter()
-        with ProcessPoolExecutor(max_workers=budget.listing_workers,mp_context=get_context('spawn'),initializer=initialize) as pool:
+        with ProcessPoolExecutor(max_workers=budget.listing_workers,mp_context=get_context('spawn'),initializer=initialize,
+                initargs=(args.date,args.previous_date,current,prior)) as pool:
             def rows():
                 count=len(done)
                 for identity,features in ordered_features(pool,packets,budget.max_in_flight):
