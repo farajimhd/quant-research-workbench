@@ -179,6 +179,17 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 assert retained_transport.intents == transport.intents
                 assert dispatched_parent["batch_id"] == completion.record_id
                 assert retained_transport.basis["batch_id"] == typed_completion.batch_id
+                from src.trading_runtime.rule_decision_publication import prepare_rule_decision_commit
+                from src.trading_runtime.arte_journal_commit_v4 import verify_commit_v4
+                prepared_commit = prepare_rule_decision_commit(retained_transport, committed_at=at)
+                names = {name for name, _ in prepared_commit.families}
+                assert {"trading_event_v1", "trading_strategy_signal_v2",
+                    "trading_rule_decision_basis_v1"} <= names
+                assert ("trading_rule_decision_intent_v1" in names) == bool(dispatched_children)
+                with pytest.raises(ValueError, match="lacks complete normalized families"):
+                    verify_commit_v4(prepared_commit.commit, prepared_commit.family_seals,
+                        detail_identities={name: tuple((row["record_id"], row["content_hash"]) for row in rows)
+                            for name, rows in prepared_commit.families if name != "trading_rule_decision_basis_v1"})
                 assert transport.base is typed_completion
                 with pytest.raises(TypeError):
                     transport.basis["source_commit_hash"] = "e" * 64
