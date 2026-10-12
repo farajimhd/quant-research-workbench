@@ -4088,6 +4088,24 @@ class ArteJournalWriter:
             self._accepted_writes = True
             return receipt
 
+    def submit_qualified_rule_v4(self, unit) -> Future[str]:
+        """Queue a native-qualified one-decision tail without network I/O."""
+        from .rule_decision_publication import QualifiedRuleDecisionBatch, _check_rule_decision_qualification
+        if (self._journal_profile != 'backtest_v4' or type(unit) is not QualifiedRuleDecisionBatch
+                or unit.base.run_id != self._run_id):
+            raise ValueError('Qualified rule requires its pinned Backtest writer')
+        _check_rule_decision_qualification(unit.unit, unit.qualification)
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError('V4 writer is closed or failed')
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull('V4 journal queue is full; stop admission') from exc
+            self._accepted_writes = True
+            return receipt
+
     def bind_automatic_ladder_read_client(self, client) -> None:
         """Bind a dedicated SELECT-only source principal before B admission."""
         if (self._journal_profile != 'backtest_v4' or self._accepted_writes
@@ -4867,6 +4885,7 @@ class ArteJournalWriter:
     def _run(self) -> None:
         from .arte_journal_compound_v4 import V4CompoundBatch
         from .arte_oms_tactic_projection import V4OmsTacticBatch
+        from .rule_decision_publication import QualifiedRuleDecisionBatch
 
         held: tuple[
             TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
@@ -4916,7 +4935,7 @@ class ArteJournalWriter:
                 from .automatic_ladder_transport import V4AutomaticLadderBatch
                 if (self._journal_profile in {"backtest_v2", "backtest_v3", *self._V4_PROFILES}
                         and not isinstance(group[0][0],
-                                           (TypedJournalBatch, V3SqueezeBatch, V4AutomaticLadderBatch,
+                                           (QualifiedRuleDecisionBatch, TypedJournalBatch, V3SqueezeBatch, V4AutomaticLadderBatch,
                                             V4CompoundBatch,
                                             V4StrategyOneEntryBatch, V4FollowThroughFailureBatch,
                                             V4OmsTacticBatch,
@@ -4967,6 +4986,10 @@ class ArteJournalWriter:
                     else:
                         committed_id = _publish_typed_batch_v4(self._client, unit.base,
                             profit_giveback_rows=(unit.profit,), **context)
+                elif isinstance(group[0][0], QualifiedRuleDecisionBatch):
+                    from .rule_decision_single_publication import publish_qualified_rule_decision
+                    committed_id = publish_qualified_rule_decision(self._client, group[0][0],
+                        timings_ns=compound_timings_ns)
                 elif isinstance(group[0][0], V4CompoundBatch):
                     from .arte_journal_compound_v4 import publish_compound_v4
 

@@ -125,6 +125,44 @@ def test_compound_retains_qualified_rule_rows_and_reseals_dependent_child_hashes
     writer._journal_profile = "live_v4"
     with pytest.raises(ValueError, match="Backtest writer"):
         writer.submit_compound_v4(result)
+    with pytest.raises(ValueError, match="pinned Backtest writer"):
+        writer.submit_qualified_rule_v4(first)
+    writer._journal_profile = "backtest_v4"
+    writer._queue.get_nowait()
+    writer._queue.task_done()
+    single_receipt = writer.submit_qualified_rule_v4(first)
+    assert writer._queue.queue[0] == (first, single_receipt)
+    assert not single_receipt.done()
+    with pytest.raises(JournalQueueFull):
+        writer.submit_qualified_rule_v4(first)
+    writer._closed = True
+    with pytest.raises(RuntimeError, match="closed or failed"):
+        writer.submit_qualified_rule_v4(first)
+    from src.trading_runtime import rule_decision_single_publication as single_module
+    worker_calls = []
+    def worker_publish(actual, queued, **context):
+        assert queued is first
+        worker_calls.append(queued.base.batch_id)
+        return queued.base.batch_id
+    monkeypatch.setattr(single_module, "publish_qualified_rule_decision", worker_publish)
+    queued = writer._queue.get_nowait()
+    writer._queue.task_done()
+    writer._queue = Queue()
+    writer._queue.put(queued)
+    writer._queue.put(None)
+    writer._coalesce_batches = False
+    writer._live_v4_lease = writer._backtest_v4_lease = None
+    writer._client, writer._metrics_lock = object(), Lock()
+    for name in ("_committed_units", "_committed_event_rows", "_publish_ns_total", "_publish_ns_max",
+                 "_compound_prepare_ns_total", "_compound_publish_ns_total", "_failed_units"):
+        setattr(writer, name, 0)
+    writer._compound_publish_stages_ns, writer._publish_by_unit = {}, {}
+    writer._run()
+    assert single_receipt.result() == first.base.batch_id
+    assert worker_calls == [first.base.batch_id]
+    assert writer._committed_units == writer._committed_event_rows == 1
+    assert writer._failed_units == 0 and writer._queue.unfinished_tasks == 0
+    monkeypatch.undo()
     from dataclasses import replace
     from src.trading_runtime.rule_decision_compound import qualified_compound_rule_families
     from src.trading_runtime.rule_decision_basis_schema import BASIS, INTENT
