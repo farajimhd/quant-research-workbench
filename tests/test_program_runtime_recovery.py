@@ -82,6 +82,38 @@ def test_shared_runtime_initializes_from_real_normalized_cold_portfolio(monkeypa
             assert not runtime.order_manager._groups
             assert cold.states["account-id"].ledger is None
             assert cold.states["account-id"].sync_state is PortfolioSyncState.ENTRIES_BLOCKED
+            from src.backend.program_financial_recovery import qualify_program_financial_runtime
+            from src.backend.backtest_market_data import market_day_boundary
+            from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+            from src.trading_runtime.strategy_one_broker_match_snapshot import project_broker_match_snapshot
+            boundary_ms = int((AT - market_day_boundary(AT.date(), 0)).total_seconds() * 1000)
+            broker_rows = project_broker_match_snapshot(run_id="cold-run", session_date=AT.date(),
+                checkpoint_sequence=7, boundary_ms=boundary_ms, state=kwargs["broker_image"])
+            prefix = V4CommittedPrefix("cold-run", 7, "batch", "cursor", "running", ("batch",))
+            comparison = qualify_program_financial_runtime(runtime, cold, prefix, broker_rows)
+            assert comparison.states["account-id"].ledger == state.ledger
+            assert comparison.states["account-id"] is not state
+            prior_ledger = state.ledger
+            state.ledger = replace(state.ledger, cashbalance=state.ledger.cashbalance + 1)
+            try:
+                with pytest.raises(ValueError, match="synchronized broker state changed"):
+                    qualify_program_financial_runtime(runtime, cold, prefix, broker_rows)
+            finally:
+                state.ledger = prior_ledger
+            prior_peak = state.peak_net_liquidation
+            state.peak_net_liquidation += 1
+            try:
+                with pytest.raises(ValueError, match="durable Portfolio image changed"):
+                    qualify_program_financial_runtime(runtime, cold, prefix, broker_rows)
+            finally:
+                state.peak_net_liquidation = prior_peak
+            prior_cash = runtime.broker._cash["account-id"]
+            runtime.broker._cash["account-id"] += 1
+            try:
+                with pytest.raises(ValueError, match="broker image changed"):
+                    qualify_program_financial_runtime(runtime, cold, prefix, broker_rows)
+            finally:
+                runtime.broker._cash["account-id"] = prior_cash
         finally:
             await runtime.finish()
     asyncio.run(run())

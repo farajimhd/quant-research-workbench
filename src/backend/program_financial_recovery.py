@@ -13,6 +13,73 @@ from src.trading_runtime.portfolio import PortfolioAccountProfile
 from src.trading_runtime.arte_portfolio_snapshot import load_portfolio_snapshot
 
 
+def qualify_program_financial_runtime(runtime, cold, prefix, broker):
+    """Prove broker resynchronization preserved the exact durable cold state.
+
+    Returns a detached synchronized comparison image, not a new persistence
+    authority or permission to execute. The broker checkpoint must already
+    have its registered storage/owner receipt proved by the cold reader.
+    """
+    from src.trading_runtime.runtime import TradingRuntime, RunMode
+    from src.trading_runtime.arte_portfolio_recovery import PortfolioRecovery
+    from src.trading_runtime.portfolio import PortfolioSyncState
+    from src.trading_runtime.strategy_one_broker_match_snapshot import (
+        verify_broker_match_snapshot, project_broker_match_snapshot,
+    )
+    from src.backend.backtest_market_data import market_day_boundary
+    if (type(runtime) is not TradingRuntime or type(cold) is not PortfolioRecovery
+            or type(prefix) is not V4CommittedPrefix or prefix.status != "running"
+            or runtime.config.mode is not RunMode.BACKTEST
+            or runtime.run_id != cold.run_id or cold.run_id != prefix.run_id
+            or not runtime._typed_oms_recovered or runtime._canonical_session is None
+            or set(runtime.portfolio.states) != set(cold.states)
+            or set(cold.states) != set(cold.revisions)
+            or any(value != prefix.last_sequence for value in cold.revisions.values())
+            or runtime.journal.latest_sequence(runtime.run_id) != prefix.last_sequence
+            or runtime.journal.pending_record_count):
+        raise ValueError("Program financial qualification lacks its initialized exact prefix")
+    broker = verify_broker_match_snapshot(broker)
+    root = broker.snapshot
+    at = market_day_boundary(root["session_date"], root["boundary_ms"])
+    if (root["run_id"] != prefix.run_id or root["checkpoint_sequence"] != prefix.last_sequence
+            or runtime.last_event_time != at):
+        raise ValueError("Program financial qualification clock differs")
+    actual = project_broker_match_snapshot(run_id=prefix.run_id,
+        session_date=at.date(), checkpoint_sequence=prefix.last_sequence,
+        boundary_ms=root["boundary_ms"], state=runtime.broker.checkpoint_state())
+    if actual != broker:
+        raise ValueError("Program financial qualification broker image changed")
+    portfolio = runtime.portfolio
+    if portfolio._last_filled_by_reservation != cold.last_filled_by_reservation:
+        raise ValueError("Program financial qualification filled reservation cache changed")
+    from src.backend.backtest_journal_memory import BacktestMemoryJournal
+    reference = build_program_portfolio_engine(cold,
+        journal=BacktestMemoryJournal(run_id=prefix.run_id, initial_sequence=prefix.last_sequence),
+        strategy_id=runtime.config.strategy_id, strategy_revision=runtime.config.strategy_revision,
+        groups=tuple(portfolio.groups.values()), event_clock=lambda: at,
+        drawdown_measure_policy=portfolio.drawdown_measure_policy)
+    reference.reconcile_recovered_backtest_canonical(
+        runtime._canonical_session.projector.snapshot(), completed_at=at)
+    for account, cold_state in cold.states.items():
+        if (cold_state.summary is not None or cold_state.ledger is not None
+                or cold_state.positions or cold_state.open_orders
+                or cold_state.sync_state is not PortfolioSyncState.ENTRIES_BLOCKED):
+            raise ValueError("Program financial qualification requires blocked cold evidence")
+        expected_state, actual_state = reference.states[account], portfolio.states[account]
+        if any(getattr(actual_state, field) != getattr(expected_state, field) for field in
+               ("summary", "ledger", "positions", "open_orders", "component_watermarks")):
+            raise ValueError("Program financial qualification synchronized broker state changed")
+        expected = reference.capture_recovery_snapshot(account,
+            state_revision=prefix.last_sequence, snapshot_at=at)
+        current = portfolio.capture_recovery_snapshot(account,
+            state_revision=prefix.last_sequence, snapshot_at=at)
+        if current != expected:
+            raise ValueError("Program financial qualification durable Portfolio image changed")
+    return PortfolioRecovery(prefix.run_id, dict(cold.revisions), deepcopy(portfolio.states),
+        deepcopy(portfolio.reservations), deepcopy(portfolio.allocations),
+        deepcopy(portfolio.differences), deepcopy(portfolio._last_filled_by_reservation))
+
+
 def build_program_portfolio_engine(recovery, *, journal, strategy_id,
         strategy_revision, groups=(), event_clock, drawdown_measure_policy=None):
     """Construct the existing engine from a detached, blocked cold image.
