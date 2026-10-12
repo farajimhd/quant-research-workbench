@@ -195,3 +195,49 @@ def test_central_snapshot_read_fails_on_backup_disk_before_children():
             run_id="run", checkpoint_sequence=7, broker_contract=contract,
             expected_content_hash=rows.snapshot["content_hash"]))
     assert store.closed == 1 and store.initial_children == 0
+
+
+@pytest.mark.parametrize("movement", [None, "head", "cursor", "prefix", "session"])
+def test_central_keeper_selection_requires_unchanged_v4_and_market_cursor(monkeypatch, movement):
+    from src.trading_runtime.keeper_session import ManagedKeeperSession
+    from src.trading_runtime import arte_journal_commit_v4 as commits, arte_journal_projection as projection
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    from tests.test_live_signal_completion_keeper import FakeKazoo
+    rows, contract = snapshot(1000)
+    store = Store(rows)
+    batch = "00000000-0000-0000-0000-000000000007"
+    prefix = V4CommittedPrefix("run", 7, batch, "cursor", "running", (batch,))
+    kazoo = FakeKazoo()
+    kazoo.add_listener = lambda listener: None
+    session = ManagedKeeperSession(kazoo)
+    session._on_state("CONNECTED")
+    head_reader = shared.ManagedSharedBrokerMatchHeadReader(session)
+    path = head_reader.path("run")
+    assert path != shared.codec.ManagedBrokerMatchHeadReader.path("run")
+    value = "\n".join(("1", "run", "7", batch, rows.snapshot["content_hash"]))
+    kazoo.create(path, value.encode())
+    reads = []
+    def read_prefix(*args):
+        reads.append(True)
+        return replace(prefix, last_sequence=8) if movement == "prefix" and len(reads) == 2 else prefix
+    def cursor(*args):
+        if movement == "session":
+            session._on_state("SUSPENDED")
+            session._on_state("CONNECTED")
+        if movement == "head":
+            raw, version, owner = kazoo.nodes[path]
+            kazoo.nodes[path] = (raw, version + 1, owner)
+        return dict(run_id="run", event_sequence=7, batch_id=batch,
+            boundary_ms=rows.snapshot["boundary_ms"] + (1000 if movement == "cursor" else 0),
+            session_date=rows.snapshot["session_date"])
+    monkeypatch.setattr(commits, "load_verified_v4_prefix", read_prefix)
+    monkeypatch.setattr(projection, "load_latest_backtest_cursor", cursor)
+    async def read():
+        return await shared.load_attested_shared_broker_snapshot(store.client, head_reader,
+            concurrency=2, prefix=prefix, broker_contract=contract)
+    if movement:
+        with pytest.raises((ValueError, RuntimeError), match="cursor|moved|Keeper session changed"):
+            asyncio.run(read())
+    else:
+        assert asyncio.run(read()) == rows and len(reads) == 2
+    assert store.closed == 6

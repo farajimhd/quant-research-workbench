@@ -9,6 +9,7 @@ from types import MappingProxyType
 from collections.abc import Mapping
 import json
 import re
+from hashlib import sha256
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 
@@ -23,6 +24,15 @@ ROOT = replace(ROOT, columns=tuple(("codec_content_hash", kind) if name == "cont
     for name, kind in ROOT.columns) + (("broker_contract_hash", "FixedString(64)"),
         ("liquidity_resolution_ms", "UInt32"), ("content_hash", "FixedString(64)")))
 TABLES = (ROOT, ACCOUNT, POSITION, OPEN_ORDER, TICKER, MARK)
+
+
+class ManagedSharedBrokerMatchHeadReader(codec.ManagedBrokerMatchHeadReader):
+    """Reuse the managed head decoder with a central run-owned namespace."""
+    @staticmethod
+    def path(run_id):
+        # Retain the existing exact run-ID validation without touching its head.
+        codec.ManagedBrokerMatchHeadReader.path(run_id)
+        return "/trading/simulated-broker-match/v1/" + sha256(run_id.encode()).hexdigest() + "/head"
 
 
 @dataclass(frozen=True)
@@ -206,6 +216,59 @@ async def load_shared_broker_snapshot(client_factory, *, concurrency, **scope):
         client = client_factory()
         try:
             return read_shared_broker_snapshot(client, **scope,
+                child_client_factory=client_factory, concurrency=concurrency)
+        finally:
+            client.close()
+    return await _owned_worker(load)
+
+
+def read_attested_shared_broker_snapshot(client, head_reader, *, prefix, broker_contract,
+        child_client_factory=None, concurrency=None, maximum_rows=100000, maximum_bytes=16 * 1024 * 1024):
+    """Require one unchanged running V4 cursor and central Keeper selection.
+
+    This attests snapshot selection. Programme/source/OMS recovery and later
+    writer ownership remain separate admission requirements.
+    """
+    from .arte_journal_commit_v4 import V4CommittedPrefix, load_verified_v4_prefix
+    from .arte_journal_projection import load_latest_backtest_cursor
+    if (type(prefix) is not V4CommittedPrefix or prefix.status != "running"
+            or type(head_reader) is not ManagedSharedBrokerMatchHeadReader):
+        raise ValueError("Central broker attestation requires its typed running prefix and managed head")
+    session = head_reader._session
+    keeper_client, generation, client_id = session.client, session._generation, session.client.client_id
+    head = head_reader.read_head(run_id=prefix.run_id)
+    if (head.checkpoint_sequence != prefix.last_sequence or head.journal_batch_id != prefix.last_batch_id
+            or load_verified_v4_prefix(client, prefix.run_id) != prefix):
+        raise ValueError("Central broker head differs from its running V4 receipt")
+    rows = read_shared_broker_snapshot(client, run_id=prefix.run_id, checkpoint_sequence=prefix.last_sequence,
+        broker_contract=broker_contract, expected_content_hash=head.snapshot_hash,
+        maximum_rows=maximum_rows, maximum_bytes=maximum_bytes,
+        child_client_factory=child_client_factory, concurrency=concurrency)
+    cursor = load_latest_backtest_cursor(client, prefix)
+    if (not isinstance(cursor, Mapping) or cursor.get("run_id") != prefix.run_id
+            or cursor.get("event_sequence") != head.checkpoint_sequence
+            or cursor.get("batch_id") != head.journal_batch_id
+            or cursor.get("boundary_ms") != rows.snapshot["boundary_ms"]
+            or cursor.get("session_date") != rows.snapshot["session_date"]):
+        raise ValueError("Central broker snapshot differs from its completed market cursor")
+    if (load_verified_v4_prefix(client, prefix.run_id) != prefix
+            or head_reader.read_head(run_id=prefix.run_id) != head):
+        raise ValueError("Central broker selection moved during attested readback")
+    if (head_reader._session is not session or session.client is not keeper_client
+            or not session.writable or session._generation != generation or keeper_client.client_id != client_id):
+        raise RuntimeError("Central broker Keeper session changed during attested readback")
+    return rows
+
+
+async def load_attested_shared_broker_snapshot(client_factory, head_reader, *, concurrency, **scope):
+    """Off-loop attestation with concurrent owned child reads and safe close."""
+    from src.backend.qmd_columnar_history_transport import _owned_worker
+    if not callable(client_factory) or type(concurrency) is not int or not 1 <= concurrency <= 8:
+        raise ValueError("Central broker attestation requires bounded reader concurrency")
+    def load():
+        client = client_factory()
+        try:
+            return read_attested_shared_broker_snapshot(client, head_reader, **scope,
                 child_client_factory=client_factory, concurrency=concurrency)
         finally:
             client.close()
