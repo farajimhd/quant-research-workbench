@@ -11,6 +11,8 @@ from types import MappingProxyType, SimpleNamespace
 from collections.abc import Mapping
 from datetime import date
 from uuid import NAMESPACE_URL, uuid5
+import json
+import re
 
 from . import strategy_one_oms_observation_snapshot as codec
 from .trading_price_codec import encode_trading_price, decode_trading_price
@@ -127,3 +129,86 @@ def verify_shared_oms_observations(rows):
             raise ValueError("Shared OMS observation child scalar or seal differs")
     codec.verify_oms_observation_snapshot(_codec_rows(rows))
     return rows
+
+
+def read_shared_oms_observations(client, *, run_id, checkpoint_sequence,
+        expected_content_hash, maximum_rows=100000, maximum_bytes=16 * 1024 * 1024):
+    """Read one pinned central image; SQL rows alone grant no restart admission."""
+    from src.backend.backtest_market_data import _literal, assert_select_only
+    from .arte_journal_schema import storage_preflight
+    if (type(run_id) is not str or not run_id
+            or any(char in run_id for char in "\r\n\x00")
+            or type(checkpoint_sequence) is not int or not 1 <= checkpoint_sequence < 2 ** 64
+            or type(expected_content_hash) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", expected_content_hash) is None
+            or type(maximum_rows) is not int or maximum_rows < 1
+            or type(maximum_bytes) is not int or maximum_bytes < 1):
+        raise ValueError("Shared OMS read requires bounded pinned scope")
+    storage_preflight(client, tables=TABLES)
+    used = 0
+    predicate = f"run_id={_literal(run_id)} AND checkpoint_sequence={checkpoint_sequence}"
+    def pairs(items):
+        fields = {}
+        for key, value in items:
+            if key in fields:
+                raise ValueError("Shared OMS transport repeated a field")
+            fields[key] = value
+        return fields
+    def read(table, limit, *, snapshot_id=None):
+        nonlocal used
+        where = predicate
+        if snapshot_id is not None:
+            where += f" AND snapshot_id=toUUID({_literal(snapshot_id)})"
+        response = client.execute(assert_select_only(
+            f"SELECT {','.join(name for name, _ in table.columns)} "
+            f"FROM arte.{table.name} WHERE {where} ORDER BY {table.order} "
+            f"LIMIT {limit} FORMAT JSONEachRow"))
+        if type(response) is not str:
+            raise ValueError("Shared OMS transport requires bounded text")
+        used += len(response.encode())
+        if used > maximum_bytes:
+            raise ValueError("Shared OMS response exceeds byte budget")
+        rows = tuple(json.loads(line, object_pairs_hook=pairs)
+                     for line in response.splitlines() if line.strip())
+        if len(rows) > limit:
+            raise ValueError("Shared OMS transport exceeds requested row bound")
+        for row in rows:
+            if type(row) is not dict:
+                raise ValueError("Shared OMS transport requires named fields")
+            for name, kind in table.columns:
+                if kind.startswith("UInt") and type(row.get(name)) is str:
+                    if re.fullmatch(r"0|[1-9][0-9]*", row[name]) is None:
+                        raise ValueError("Shared OMS UInt transport is not canonical")
+                    row[name] = int(row[name])
+        return rows
+    roots = read(ROOT, 2)
+    if len(roots) != 1:
+        raise ValueError("Shared OMS root is missing or duplicate")
+    root = roots[0]
+    count = root.get("observation_count")
+    if (type(count) is not int or not 0 <= count <= maximum_rows
+            or root.get("run_id") != run_id
+            or root.get("checkpoint_sequence") != checkpoint_sequence
+            or root.get("content_hash") != expected_content_hash):
+        raise ValueError("Shared OMS root differs from pinned scope or row budget")
+    children = read(OBSERVATION, count + 1, snapshot_id=root["snapshot_id"])
+    if len(children) != count:
+        raise ValueError("Shared OMS children are missing or duplicate")
+    result = verify_shared_oms_observations(SharedOmsObservationSnapshot(root, children))
+    if read(ROOT, 2) != roots:
+        raise ValueError("Shared OMS root changed during readback")
+    return result
+
+
+async def load_shared_oms_observations(client_factory, **scope):
+    """Own dependent checkpoint SELECTs off-loop and drain cancellation."""
+    from src.backend.qmd_columnar_history_transport import _owned_worker
+    if not callable(client_factory):
+        raise ValueError("Shared OMS loader requires an owned reader factory")
+    def load():
+        client = client_factory()
+        try:
+            return read_shared_oms_observations(client, **scope)
+        finally:
+            client.close()
+    return await _owned_worker(load)
