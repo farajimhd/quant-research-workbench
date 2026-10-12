@@ -32,7 +32,7 @@ def test_owned_page_runs_off_loop_and_checks_prefix_twice(monkeypatch, movement)
     def page(client, scope, **bounds):
         assert client is reader and scope == prefix and bounds == dict(after_sequence=0, limit=2)
         assert get_ident() != main_thread
-        return ("synthetic-page",)
+        return ()
     monkeypatch.setattr(module, "load_verified_v4_prefix", head)
     monkeypatch.setattr(module, "load_committed_rule_decision_page", page)
     async def run():
@@ -41,7 +41,7 @@ def test_owned_page_runs_off_loop_and_checks_prefix_twice(monkeypatch, movement)
         with pytest.raises(ValueError, match="prefix changed"):
             asyncio.run(run())
     else:
-        assert asyncio.run(run()) == ("synthetic-page",)
+        assert asyncio.run(run()) == ()
     assert reader.closed.is_set()
 
 
@@ -77,3 +77,29 @@ def test_writable_reader_is_rejected_and_closed():
     with pytest.raises(ValueError, match="SELECT-only"):
         asyncio.run(module.read_rule_decision_page_async(lambda: reader, prefix))
     assert reader.closed.is_set()
+
+
+@pytest.mark.parametrize("change", [None, "missing", "assignment", "source"])
+def test_normalized_completion_join_rejects_substitutions(change):
+    from tests.test_rule_decision_basis_projection import values
+    from src.trading_runtime.rule_decision_basis_projection import project_rule_decision_basis
+    from src.trading_runtime.arte_journal_reader import TypedJournalEvent
+    parent, children = project_rule_decision_basis(values("wait"), [])
+    common = {key: parent[key] for key in ("run_id", "record_id", "batch_id", "account_id", "event_month")}
+    event = dict(common, sequence=parent["decision_sequence"], entity_id=parent["decision_id"],
+        correlation_id=parent["decision_id"], category="strategy_decision", entity_type="signal",
+        event_time=parent["boundary_at"], recorded_at=parent["boundary_at"], causation_id=parent["source_commit_hash"])
+    detail = dict(common, signal_id=parent["decision_id"], signal_type="program_boundary_completed",
+        decision_status="completed", source_event_time=parent["boundary_at"],
+        decision_assignment_id=parent["assignment_id"], decision_reason_detail="wait")
+    if change == "assignment":
+        detail["decision_assignment_id"] = "other"
+    if change == "source":
+        event["causation_id"] = "e" * 64
+    events = () if change == "missing" else (TypedJournalEvent(event, "trading_strategy_signal_v2", detail),)
+    rows = ((parent, children),)
+    if change:
+        with pytest.raises(ValueError):
+            module.verify_decision_completion_page(rows, events)
+    else:
+        assert module.verify_decision_completion_page(rows, events) is rows
