@@ -197,6 +197,28 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
             from src.backend import backtest_program_publication as publication
             proofs = publication.program_decision_projection_arguments(controller._journal_publisher,
                 result.policy_packet.journal_sequence)["rule_decision_qualifications"]
+            spans = [controller._journal.rule_decision_basis_for_record(identity)[0] for identity in proofs]
+            first_parent = min((parent for parent in spans
+                if parent["decision_sequence"] - parent["basis_sequence"] > 1),
+                key=lambda parent: parent["basis_sequence"])
+            start, end = first_parent["basis_sequence"], first_parent["decision_sequence"]
+            owned_publisher = controller._journal_publisher
+            assert publication.program_publication_cut(owned_publisher,
+                result.policy_packet.journal_sequence) == result.policy_packet.journal_sequence
+            with pytest.raises(ValueError, match="truncates"):
+                publication.program_publication_cut(owned_publisher, start + 1)
+            original_budget = owned_publisher.batch_size
+            try:
+                owned_publisher.batch_size = end - 1
+                assert publication.program_publication_cut(owned_publisher,
+                    result.policy_packet.journal_sequence) == start
+                owned_publisher._sequence = start
+                owned_publisher.batch_size = end - start - 1
+                with pytest.raises(ValueError, match="existing writer event budget"):
+                    publication.program_publication_cut(owned_publisher, result.policy_packet.journal_sequence)
+            finally:
+                owned_publisher._sequence = 0
+                owned_publisher.batch_size = original_budget
             corrupt = dict(proofs)
             first = next(iter(corrupt))
             corrupt[first] = replace(corrupt[first], semantic_hash="0" * 64)

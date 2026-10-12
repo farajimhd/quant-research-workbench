@@ -460,8 +460,8 @@ class BacktestTypedJournalPublisher:
             if target_sequence < self._sequence:
                 raise ValueError("Typed Backtest drain target precedes its fence")
             while self._sequence < target_sequence:
-                through_sequence = min(target_sequence,
-                                       self._sequence + self.batch_size)
+                from .backtest_program_publication import program_publication_cut
+                through_sequence = program_publication_cut(self, target_sequence)
                 batches = await asyncio.to_thread(self._prepare_batches,
                                                   through_sequence)
                 if (not batches or (self.writer.journal_profile != "backtest_v4"

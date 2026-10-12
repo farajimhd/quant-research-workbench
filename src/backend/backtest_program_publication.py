@@ -6,6 +6,34 @@ _LOCK = RLock()
 _PENDING = WeakKeyDictionary()
 
 
+def program_publication_cut(publisher, target_sequence):
+    """Keep qualified decision spans atomic within the existing event budget."""
+    end = min(target_sequence, publisher.fenced_sequence + publisher.batch_size)
+    with _LOCK:
+        retained = tuple((_PENDING.get(publisher) or {}).items())
+    if not retained:
+        return end
+    if publisher.writer.journal_profile != "backtest_v4":
+        raise ValueError("Program publication cut requires its V4 owner")
+    from src.trading_runtime.rule_decision_basis_projection import rule_decision_semantic_hash
+    for identity, proof in retained:
+        basis = publisher.journal.rule_decision_basis_for_record(identity)
+        if basis is None:
+            raise ValueError("Program publication cut lost its retained decision basis")
+        parent, children = basis
+        first, last = parent["basis_sequence"], parent["decision_sequence"]
+        if first < target_sequence < last or first < end < last:
+            if (proof.run_id != publisher.journal.run_id or proof.basis_sequence != first
+                    or proof.semantic_hash != rule_decision_semantic_hash(parent, children)):
+                raise ValueError("Program publication cut differs from qualified evidence")
+            if first < target_sequence < last:
+                raise ValueError("Requested publication fence truncates a qualified program decision")
+            end = first
+    if end <= publisher.fenced_sequence:
+        raise ValueError("Qualified program decision exceeds the existing writer event budget")
+    return end
+
+
 def cache_committed_program_intent_sources(publisher, batch, unit):
     """Retain exact acknowledged source revisions for later OMS transitions."""
     from .backtest_typed_publisher import _committed_intent_source

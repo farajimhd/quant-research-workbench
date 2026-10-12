@@ -186,6 +186,11 @@ from the normalized rows. Later OMS projection can reuse that committed source
 after journal compaction. Transport tests use synthetic proof/receipt fixtures
 to confirm no cache/fence advance before acknowledgement or on writer failure;
 they do not establish native price-schema publication success.
+The publisher's existing event budget now chooses a cut before an intersected
+qualified decision span rather than split its intents/OMS actions from its
+completion. A requested fence inside a decision, or one decision larger than
+the existing budget, fails before publication. Native cohort tests check these
+cut boundaries without publishing the unresolved exact-price prefix.
 The full native prefix test exposed a persistence boundary: Float32-derived
 stop9.989999771118164 does not fit the existing OMS `Decimal(38,10)` price
 column losslessly. Publication currently fails closed and leaves the fence
