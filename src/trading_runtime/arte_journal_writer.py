@@ -109,6 +109,8 @@ from src.trading_runtime.arte_entry_activity_v4 import ENTRY_ACTIVITY
 from src.trading_runtime.arte_entry_spread_risk_v4 import ENTRY_SPREAD_RISK
 
 _CONTRACTS = {table.name: table for table in TABLES}
+from src.trading_runtime.arte_broker_match_snapshot import TABLES as SHARED_BROKER_MATCH_TABLES
+_CONTRACTS.update({table.name: table for table in SHARED_BROKER_MATCH_TABLES})
 from src.trading_runtime.rule_decision_basis_schema import STAGED_TABLES as RULE_DECISION_TABLES
 _CONTRACTS.update({table.name: table for table in RULE_DECISION_TABLES})
 _CONTRACTS[FAILURE.name] = FAILURE
@@ -1822,7 +1824,7 @@ def _insert(
                        for row in rows)):
             raise ValueError("Manager snapshot dispatch identity differs from typed rows")
         if dispatch_broker_snapshot_hash is not None and (
-                name not in {table.name for table in BROKER_MATCH_SNAPSHOT_TABLES}
+                name not in {table.name for table in (*BROKER_MATCH_SNAPSHOT_TABLES, *SHARED_BROKER_MATCH_TABLES)}
                 or any(row.get("checkpoint_sequence") != dispatch_sequence
                        or row.get("snapshot_id") != rows[0].get("snapshot_id")
                        for row in rows)):
@@ -3895,6 +3897,15 @@ class _BrokerMatchSnapshotUnit:
 
 
 @dataclass(frozen=True, slots=True)
+class _SharedBrokerMatchSnapshotUnit:
+    rows: Any
+    broker_contract: Any
+    journal_batch_id: str
+    connection_factory: Any
+    concurrency: int
+
+
+@dataclass(frozen=True, slots=True)
 class _OmsObservationSnapshotUnit:
     session_date: date
     checkpoint_sequence: int
@@ -4902,6 +4913,30 @@ class ArteJournalWriter:
             self._accepted_writes = True
         return receipt
 
+    def submit_shared_broker_match_snapshot(self, rows, *, broker_contract, journal_batch_id,
+            connection_factory, concurrency) -> Future[str]:
+        """Queue immutable central rows; acknowledge only after exact head selection."""
+        from src.trading_runtime.arte_broker_match_snapshot import SharedBrokerMatchSnapshot
+        from src.trading_runtime.backtest_broker_contract import BacktestBrokerContract
+        if (not callable(connection_factory) or type(concurrency) is not int or not 1 <= concurrency <= 8
+                or self._journal_profile != "backtest_v4" or type(rows) is not SharedBrokerMatchSnapshot
+                or type(broker_contract) is not BacktestBrokerContract
+                or rows.snapshot.get("run_id") != self._run_id
+                or broker_contract.row["run_id"] != self._run_id
+                or str(UUID(journal_batch_id)) != journal_batch_id):
+            raise ValueError("Central broker submission requires its typed V4 run scope")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("Central broker writer is closed or failed") from self._error
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((_SharedBrokerMatchSnapshotUnit(rows, broker_contract, journal_batch_id,
+                    connection_factory, concurrency), receipt))
+            except Full as exc:
+                raise JournalQueueFull("Central broker snapshot queue is full") from exc
+            self._accepted_writes = True
+        return receipt
+
     def submit_oms_observation_snapshot(
         self, *, session_date: date, checkpoint_sequence: int,
         boundary_ms: int, journal_batch_id: str,
@@ -5117,7 +5152,7 @@ class ArteJournalWriter:
                         and not (self._journal_profile == "backtest_v4"
                                  and isinstance(group[0][0], (
                                      _TerminalBacktestUnit, _ManagerSnapshotUnit,
-                                     _BrokerMatchSnapshotUnit, _EvidenceSnapshotUnit,
+                                     _BrokerMatchSnapshotUnit, _SharedBrokerMatchSnapshotUnit, _EvidenceSnapshotUnit,
                                      _OmsObservationSnapshotUnit,
                                      _CampaignSnapshotUnit,
                                      _RunningPortfolioSnapshotUnit, _ProfitPublicationUnit)))):
@@ -5374,6 +5409,15 @@ class ArteJournalWriter:
                     publish_manager_snapshot(
                         self._client, self._client.manager_keeper_session, rows,
                         journal_batch_id=unit.journal_batch_id, **price_context)
+                    committed_id = unit.journal_batch_id
+                elif isinstance(group[0][0], _SharedBrokerMatchSnapshotUnit):
+                    from src.trading_runtime.arte_broker_match_snapshot import publish_shared_broker_snapshot
+                    unit = group[0][0]
+                    if self._last_commit_id != unit.journal_batch_id:
+                        raise RuntimeError("Central broker snapshot has no preceding ordered V4 commit")
+                    publish_shared_broker_snapshot(self._client, self._client.manager_keeper_session, unit.rows,
+                        broker_contract=unit.broker_contract, journal_batch_id=unit.journal_batch_id,
+                        connection_factory=unit.connection_factory, concurrency=unit.concurrency)
                     committed_id = unit.journal_batch_id
                 elif isinstance(group[0][0], _BrokerMatchSnapshotUnit):
                     from src.trading_runtime.strategy_one_broker_match_snapshot import (

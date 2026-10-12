@@ -19,9 +19,9 @@ from tests.test_simulated_broker_liquidity_bar import START, bar
 from src.backend.backtest_market_data import market_day_boundary
 
 
-def snapshot(resolution):
+def snapshot(resolution, *, run_id="run", checkpoint_sequence=7):
     config = SimulationConfig(liquidity_resolution_ms=resolution, marketable_liquidity_participation=1)
-    contract = BacktestBrokerContract(project_broker_contract("run", config, liquidity_plan_hash="c" * 64), config.initial_cash)
+    contract = BacktestBrokerContract(project_broker_contract(run_id, config, liquidity_plan_hash="c" * 64), config.initial_cash)
     broker = SimulatedBrokerAdapter(["account"], config=config, mode=RunMode.BACKTEST,
         initial_time=START, fixed_bar_mode=True)
     async def fill():
@@ -32,8 +32,8 @@ def snapshot(resolution):
         fills = await broker.on_liquidity_bar(second_bar(at) if resolution == 1000 else bar(at), at=at)
         assert fills and sum(row.commission for row in fills) >= 1
         boundary = int((at - market_day_boundary(at.date(), 0)).total_seconds() * 1000)
-        rows = shared.project_shared_broker_snapshot(run_id="run", session_date=at.date(),
-            checkpoint_sequence=7, boundary_ms=boundary, state=broker.checkpoint_state(),
+        rows = shared.project_shared_broker_snapshot(run_id=run_id, session_date=at.date(),
+            checkpoint_sequence=checkpoint_sequence, boundary_ms=boundary, state=broker.checkpoint_state(),
             simulation_config=config, broker_contract=contract)
         return rows
     return asyncio.run(fill()), contract
@@ -48,6 +48,7 @@ class Store:
         self.barrier = Barrier(2)
         self.initial_children = 0
         self.bad_disk = False
+        self.require_overlap = True
 
     def client(self):
         store = self
@@ -76,7 +77,7 @@ class Store:
                     with store.lock:
                         store.initial_children += 1
                         wait = store.initial_children <= 2
-                    if wait:
+                    if wait and store.require_overlap:
                         store.barrier.wait(timeout=5)
                 # Model ClickHouse's quoted UInt64 transport without converting
                 # any bit pattern through a floating-point number.

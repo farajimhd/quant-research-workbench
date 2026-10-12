@@ -273,3 +273,121 @@ async def load_attested_shared_broker_snapshot(client_factory, head_reader, *, c
         finally:
             client.close()
     return await _owned_worker(load)
+
+
+def publish_shared_broker_snapshot(client, session, rows, *, broker_contract, journal_batch_id,
+        connection_factory, concurrency):
+    """Journal-worker-only central publication followed by exact Keeper CAS."""
+    from .keeper_session import ManagedKeeperSession
+    from .arte_typed_insert_dispatch import TypedInsertDispatch
+    from .arte_journal_commit_v4 import load_writer_v4_snapshot_prefix
+    from .arte_journal_projection import load_latest_backtest_cursor
+    from .arte_journal_writer import _insert
+    from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
+    if (not callable(connection_factory) or type(concurrency) is not int or not 1 <= concurrency <= 8
+            or type(session) is not ManagedKeeperSession or not session.writable
+            or getattr(client, "typed_insert_strict", False) is not True
+            or type(getattr(client, "typed_insert_dispatch", None)) is not TypedInsertDispatch
+            or client.typed_insert_dispatch.keeper is not session.client
+            or type(rows) is not SharedBrokerMatchSnapshot):
+        raise RuntimeError("Central broker publication requires its strict owned writer")
+    seal = rows.snapshot
+    run_id, sequence = seal["run_id"], seal["checkpoint_sequence"]
+    lease = getattr(client, "backtest_v4_lease", None)
+    if type(lease) is not BacktestV4KeeperLease or lease.run_id != run_id:
+        raise RuntimeError("Central broker publication lacks its current run lease")
+    keeper_client, generation, client_id = session.client, session._generation, session.client.client_id
+    def require_owner():
+        if (not session.writable or session.client is not keeper_client or session._generation != generation
+                or keeper_client.client_id != client_id or getattr(client, "backtest_v4_lease", None) is not lease):
+            raise RuntimeError("Central broker publication changed Keeper ownership")
+        lease.assert_current()
+    require_owner()
+    expected = verify_shared_broker_snapshot(rows, broker_contract=broker_contract, run_id=run_id,
+        checkpoint_sequence=sequence, expected_content_hash=seal["content_hash"])
+    storage_preflight(client, tables=TABLES)
+    prefix = load_writer_v4_snapshot_prefix(client, run_id)
+    if (prefix is None or prefix.status != "running" or prefix.last_sequence != sequence
+            or prefix.last_batch_id != journal_batch_id):
+        raise RuntimeError("Central broker snapshot lacks its exact running V4 receipt")
+    cursor = load_latest_backtest_cursor(client, prefix)
+    if (not isinstance(cursor, Mapping) or cursor.get("run_id") != run_id
+            or cursor.get("event_sequence") != sequence or cursor.get("batch_id") != journal_batch_id
+            or cursor.get("boundary_ms") != seal["boundary_ms"] or cursor.get("session_date") != seal["session_date"]):
+        raise RuntimeError("Central broker snapshot differs from the completed V4 market cursor")
+    reader = ManagedSharedBrokerMatchHeadReader(session)
+    previous = None if session.client.exists(reader.path(run_id)) is None else reader.read_head(run_id=run_id)
+    if previous is not None:
+        if previous.checkpoint_sequence > sequence:
+            raise RuntimeError("Central broker publication cannot rewind its selected head")
+        if previous.checkpoint_sequence == sequence:
+            if (previous.journal_batch_id != journal_batch_id or previous.snapshot_hash != seal["content_hash"]
+                    or read_attested_shared_broker_snapshot(client, reader,
+                        prefix=prefix, broker_contract=broker_contract,
+                        child_client_factory=connection_factory, concurrency=concurrency) != expected):
+                raise RuntimeError("Central broker publication repeat differs from selected rows")
+            require_owner()
+            return previous
+    families = ((ACCOUNT, expected.accounts), (POSITION, expected.positions),
+        (OPEN_ORDER, expected.open_orders), (TICKER, expected.tickers), (MARK, expected.marks), (ROOT, (expected.snapshot,)))
+    opened, connection_lock = [], Lock()
+    def publish_child(item):
+        table, family = item
+        if not family:
+            return None
+        owned = connection_factory()
+        with connection_lock:
+            if owned is client or any(owned is prior for prior in opened):
+                raise RuntimeError("Central broker publication cannot share owned connections")
+            opened.append(owned)
+        try:
+            if (owned.typed_insert_dispatch is not client.typed_insert_dispatch
+                    or owned.typed_insert_strict is not True or owned.manager_keeper_session is not session
+                    or getattr(owned, "backtest_v4_lease", None) is not lease):
+                raise RuntimeError("Central broker child writer differs from its dispatch ownership")
+            storage_preflight(owned, tables=TABLES)
+            require_owner()
+            token = f"broker-match:{run_id}:{sequence}:{seal['content_hash']}:{table.name}"
+            _insert(owned, table.name, family, token, dispatch_sequence=sequence,
+                dispatch_batch_id=journal_batch_id, dispatch_broker_snapshot_hash=seal["content_hash"])
+            return table.name, token
+        finally:
+            owned.close()
+    operations, failures = [], []
+    with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="shared-broker-publish") as pool:
+        futures = [pool.submit(publish_child, item) for item in families[:-1]]
+        for future in futures:
+            try:
+                operation = future.result()
+                if operation is not None:
+                    operations.append(operation)
+            except BaseException as failure:
+                failures.append(failure)
+    if len(failures) == 1:
+        raise failures[0]
+    if failures:
+        raise BaseExceptionGroup("Central broker child publication failed", failures)
+    for table, family in families[-1:]:
+        require_owner()
+        token = f"broker-match:{run_id}:{sequence}:{seal['content_hash']}:{table.name}"
+        _insert(client, table.name, family, token, dispatch_sequence=sequence,
+            dispatch_batch_id=journal_batch_id, dispatch_broker_snapshot_hash=seal["content_hash"])
+        operations.append((table.name, token))
+    observed = read_shared_broker_snapshot(client, run_id=run_id, checkpoint_sequence=sequence,
+        broker_contract=broker_contract, expected_content_hash=seal["content_hash"],
+        child_client_factory=connection_factory, concurrency=concurrency)
+    if observed != expected:
+        raise RuntimeError("Central broker publication differs from exact row readback")
+    require_owner()
+    for table, token in operations:
+        client.typed_insert_dispatch.seal_verified_operation(run_id=run_id, table=table, token=token,
+            batch_id=journal_batch_id, batch_last_sequence=sequence, broker_snapshot=True)
+    client.typed_insert_dispatch.compact_verified_shared_broker_match_snapshot(run_id=run_id,
+        batch_id=journal_batch_id, last_sequence=sequence, snapshot_hash=seal["content_hash"],
+        operations=tuple(operations), previous=previous)
+    selected = reader.read_head(run_id=run_id)
+    require_owner()
+    if (selected.checkpoint_sequence != sequence or selected.journal_batch_id != journal_batch_id
+            or selected.snapshot_hash != seal["content_hash"]):
+        raise RuntimeError("Central broker publication differs from selected Keeper head")
+    return selected
