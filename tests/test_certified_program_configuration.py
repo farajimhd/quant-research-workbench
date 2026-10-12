@@ -103,3 +103,53 @@ def test_policy_read_adapter_preserves_existing_catalogue_codec_and_bounds(monke
         def execute(self, query): return '{"policy_hash":"' + digest + '","policy_hash":"bad"}'
     with pytest.raises(ValueError, match="duplicate fields"):
         module._BoundedPolicyReader(Duplicate()).execute(queries[0].replace("LIMIT 2 ", ""))
+
+
+def test_builtin_reference_reader_verifies_real_release_and_policy_receipt_codecs(monkeypatch):
+    from tests.test_arte_portfolio_policy import Catalog
+    from tests.test_arte_typed_insert_dispatch import Keeper
+    from src.trading_runtime.arte_portfolio_policy import publish_portfolio_policy
+    registration, release_rows, _ = installed(monkeypatch)
+    dispatch = TypedInsertDispatch(Keeper())
+    class StrictCatalog(Catalog):
+        typed_insert_strict = True
+        typed_insert_dispatch = dispatch
+        def execute(self, sql, *, query_id=None): return super().execute(sql)
+    catalogue = StrictCatalog()
+    policy = PortfolioPolicy(policy_id="attested-central")
+    digest = publish_portfolio_policy(catalogue, policy)
+    rows = children()
+    rows[schema.ACCOUNT.name][0]["policy_hash"] = digest
+    release_id = release_rows["trading_columnar_strategy_release_v1"][0]["release_id"]
+    packet = prepare(rows, strategy_id=registration.strategy_id, strategy_revision=registration.revision,
+        program_release_id=release_id, program_release_hash=registration.expected_content_hash)
+    clients = []
+    def releases():
+        client = Reader(release_rows)
+        client.base_url = "http://central"
+        clients.append(client)
+        return client
+    class PolicyReader:
+        base_url = "http://central"
+        closed = False
+        def close(self): self.closed = True
+        def execute(self, sql):
+            if sql == "SELECT getSetting('readonly')": return "1"
+            return catalogue.execute(sql)
+    def policies():
+        client = PolicyReader()
+        clients.append(client)
+        return client
+    # Policy metadata placement is tested separately; receipt/content codecs are real here.
+    monkeypatch.setattr(module, "storage_preflight", lambda *_args, **_kwargs: None)
+    reader = module.ConfigurationReferenceReader("http://central", releases, policies, dispatch, 2)
+    result = reader.verify(packet)
+    assert result.selection == packet
+    assert result.revision["payload"]["portfolio"]["policies"][0]["policy_id"] == policy.policy_id
+    assert all(client.closed for client in clients)
+    with pytest.raises(ExceptionGroup) as caught:
+        replace(reader, endpoint="http://wrong").verify(packet)
+    assert len(caught.value.exceptions) == 2
+    assert all(isinstance(error, ValueError) and "endpoint" in str(error)
+               for error in caught.value.exceptions)
+    assert all(client.closed for client in clients)

@@ -21,6 +21,7 @@ from src.trading_runtime.strategy_registry import program_strategy_executor
 from src.trading_runtime.arte_portfolio_policy import load_attested_portfolio_policy
 from src.trading_runtime.arte_journal_schema import TABLES, POLICY_ALLOWED_TABLES, storage_preflight
 from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+from src.trading_runtime.strategy_configuration_selection import restore_configuration_selection
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,11 +56,15 @@ class _BoundedPolicyReader:
         return raw
 
 
-async def load_certified_program_configuration(*, selection_client_factory,
-        release_client_factory, policy_client_factory, policy_dispatch,
-        configuration_id, expected_content_hash, concurrency):
-    """Settle every concurrent authority read before returning or cancelling."""
-    if (any(not callable(factory) for factory in (selection_client_factory, release_client_factory, policy_client_factory))
+async def load_program_configuration_references(selected, *,
+        release_client_factory, policy_client_factory, policy_dispatch, concurrency):
+    """Verify programme/policy references for an already verified selection packet.
+
+    Publication can use this before the selection itself is sealed in storage.
+    This does not attest selection publication or authorize a run.
+    """
+    selected = restore_configuration_selection(selected.rows)
+    if (any(not callable(factory) for factory in (release_client_factory, policy_client_factory))
             or type(policy_dispatch) is not TypedInsertDispatch
             or type(concurrency) is not int or not 1 <= concurrency <= 6):
         raise ValueError("Programme configuration needs bounded central readers and policy attestation")
@@ -73,12 +78,8 @@ async def load_certified_program_configuration(*, selection_client_factory,
                 connections.append(client)
             return client
         return owned
-    selection_factory = distinct(selection_client_factory)
     release_factory = distinct(release_client_factory)
     policy_factory = distinct(policy_client_factory)
-    identity = dict(configuration_id=configuration_id,
-                    expected_content_hash=expected_content_hash, concurrency=concurrency)
-    selected = await load_configuration_selection(selection_factory, **identity)
     header = selected.header
     registration = program_strategy_executor(header["strategy_id"], header["strategy_revision"])
     if registration.expected_content_hash != header["program_release_hash"]:
@@ -130,10 +131,63 @@ async def load_certified_program_configuration(*, selection_client_factory,
     if errors:
         raise BaseExceptionGroup("Configuration reference reads failed", errors)
     release, verified_policies = results
-    current = await load_configuration_selection(selection_factory, **identity)
-    if current != selected or program_strategy_executor(*registration.key) is not registration:
-        raise ValueError("Configuration selection or installed pins changed during reference admission")
+    if program_strategy_executor(*registration.key) is not registration:
+        raise ValueError("Configuration installed pins changed during reference admission")
     revision = await _owned_worker(materialize_program_configuration, selected, release, verified_policies)
     if program_strategy_executor(*registration.key) is not registration:
         raise ValueError("Configuration installed pins changed during materialization")
     return CertifiedProgramConfiguration(selected, release, revision)
+
+
+async def load_certified_program_configuration(*, selection_client_factory,
+        release_client_factory, policy_client_factory, policy_dispatch,
+        configuration_id, expected_content_hash, concurrency):
+    """Verify persisted selection and settle every owned reference read."""
+    if any(not callable(factory) for factory in (selection_client_factory, release_client_factory, policy_client_factory)):
+        raise ValueError("Programme configuration needs its explicit central readers")
+    lock, used = Lock(), []
+    def distinct(factory):
+        def owned():
+            client = factory()
+            with lock:
+                if any(client is prior for prior in used):
+                    raise ValueError("Configuration authority reads cannot reuse an owned connection")
+                used.append(client)
+            return client
+        return owned
+    selection_factory = distinct(selection_client_factory)
+    identity = dict(configuration_id=configuration_id, expected_content_hash=expected_content_hash,
+                    concurrency=concurrency)
+    selected = await load_configuration_selection(selection_factory, **identity)
+    registration = program_strategy_executor(selected.header["strategy_id"], selected.header["strategy_revision"])
+    result = await load_program_configuration_references(selected,
+        release_client_factory=distinct(release_client_factory), policy_client_factory=distinct(policy_client_factory),
+        policy_dispatch=policy_dispatch, concurrency=concurrency)
+    current = await load_configuration_selection(selection_factory, **identity)
+    if current != selected or program_strategy_executor(*registration.key) is not registration:
+        raise ValueError("Configuration selection or installed pins changed during reference admission")
+    return result
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigurationReferenceReader:
+    endpoint: str
+    release_client_factory: object
+    policy_client_factory: object
+    policy_dispatch: object
+    concurrency: int
+
+    def verify(self, selected):
+        """Blocking operator-worker boundary; never an arbitrary verifier callback."""
+        def scoped(factory):
+            def owned():
+                client = factory()
+                if not self.endpoint or getattr(client, "base_url", None) != self.endpoint:
+                    client.close()
+                    raise ValueError("Configuration reference reader changed central endpoint")
+                return client
+            return owned
+        return asyncio.run(load_program_configuration_references(selected,
+            release_client_factory=scoped(self.release_client_factory),
+            policy_client_factory=scoped(self.policy_client_factory), policy_dispatch=self.policy_dispatch,
+            concurrency=self.concurrency))

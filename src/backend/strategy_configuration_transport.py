@@ -15,6 +15,7 @@ from src.trading_runtime.keeper_session import ManagedKeeperSession
 from .strategy_configuration_reader import _select
 from .strategy_configuration_publication import ConfigurationSelectionPublisher
 from .qmd_columnar_history_transport import _owned_worker
+from .certified_program_configuration import ConfigurationReferenceReader
 
 _ROOT = "/quant-research-workbench/trading/strategy-configuration-v1"
 
@@ -47,16 +48,17 @@ def configuration_writer_preflight(client):
 
 class ClickHouseConfigurationStorage:
     """Owned connection factories and one persistent immutable publication claim."""
-    def __init__(self, reader, reader_factory, writer_factory, session, selected, reference_verifier, concurrency):
+    def __init__(self, reader, reader_factory, writer_factory, session, selected, reference_reader, concurrency):
         if (type(session) is not ManagedKeeperSession or not callable(reader_factory)
-                or not callable(writer_factory) or not callable(reference_verifier)
+                or not callable(writer_factory) or type(reference_reader) is not ConfigurationReferenceReader
+                or reference_reader.endpoint != getattr(reader, "base_url", None)
                 or type(getattr(reader, "base_url", None)) is not str or not reader.base_url):
             raise ValueError("Configuration transport lacks explicit central authorities")
         self.reader, self.reader_factory, self.writer_factory = reader, reader_factory, writer_factory
         if type(concurrency) is not int or not 1 <= concurrency <= 6:
             raise ValueError("Configuration transport requires bounded read concurrency")
         self.concurrency = concurrency
-        self.session, self.selected, self.reference_verifier = session, selected, reference_verifier
+        self.session, self.selected, self.reference_reader = session, selected, reference_reader
         self.keeper = session.client
         self.generation, self.client_id = session._generation, session.client.client_id
         self.path = _ROOT + "/" + selected.header["configuration_id"]
@@ -129,7 +131,9 @@ class ClickHouseConfigurationStorage:
 
     def verify_references(self, selected):
         self.assert_owner()
-        self.reference_verifier(selected)
+        verified = self.reference_reader.verify(selected)
+        if verified.selection != selected:
+            raise ValueError("Configuration reference verification returned another selection")
         self.assert_owner()
 
     def _identity(self, identity):
@@ -204,14 +208,14 @@ class ClickHouseConfigurationStorage:
 
 
 async def publish_configuration_selection(*, reader_factory, writer_factory, session,
-        source, reference_verifier, concurrency):
+        source, reference_reader, concurrency):
     """Explicit operator entry point; it is not wired to automatic app creation."""
     selected = restore_configuration_selection(source)
     def run():
         reader = reader_factory()
         try:
             storage = ClickHouseConfigurationStorage(reader, reader_factory, writer_factory,
-                session, selected, reference_verifier, concurrency)
+                session, selected, reference_reader, concurrency)
             publisher = ConfigurationSelectionPublisher(storage, concurrency=concurrency)
             restored = publisher._publish(selected)
             storage.mark_committed()

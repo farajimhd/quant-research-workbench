@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 from threading import Lock
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +15,8 @@ from tests.test_strategy_configuration_selection import prepare
 
 def environment(monkeypatch, failure=None):
     monkeypatch.setattr(transport, "storage_preflight", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(transport.ConfigurationReferenceReader, "verify",
+                        lambda self, selected: SimpleNamespace(selection=selected))
     stored = {table.name: () for table in schema.TABLES}
     clients, writes, lock = [], [], Lock()
     keeper = Keeper()
@@ -56,7 +59,7 @@ def environment(monkeypatch, failure=None):
     def publish(packet):
         return asyncio.run(transport.publish_configuration_selection(reader_factory=factory,
             writer_factory=lambda: factory(True), session=session, source=packet.rows,
-            reference_verifier=lambda selected: None, concurrency=2))
+            reference_reader=transport.ConfigurationReferenceReader("http://test", None, None, None, 2), concurrency=2))
     return stored, clients, writes, keeper, publish
 
 
