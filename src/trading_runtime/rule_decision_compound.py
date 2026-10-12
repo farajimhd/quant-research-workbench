@@ -117,14 +117,14 @@ def publish_qualified_compound(client, compound, *, verified_prior_prefix=None,
     The shared publisher owns detail insertion, complete readback, commit
     publication, retry reconciliation and Keeper compaction.
     """
-    from .rule_decision_writer_preflight import preflight_rule_decision_writer
+    from .rule_decision_writer_preflight import require_rule_decision_writer_audit
     from .arte_journal_commit_v4 import _publish_sealed_batch_v4
     from .arte_journal_compound_v4 import V4StrategyOneEntryBatch, _compound_price_source
     # Validate native evidence before touching storage, including on retries.
     supplements = qualified_compound_rule_families(compound)
     if not supplements:
         raise ValueError("Qualified publication requires program decision evidence")
-    preflight_rule_decision_writer(client)
+    require_rule_decision_writer_audit(client)
     source = _compound_price_source(compound, first_price_source)
     base_families, families = prepare_qualified_compound_families(client, compound,
         verified_prior_prefix=verified_prior_prefix, first_price_source=source)

@@ -79,3 +79,35 @@ def test_shared_startup_uses_program_audit_once(monkeypatch):
     seal = writer._v4_preflight(client)
     assert seal.client is client and not seal.used
     assert calls == [client]
+
+
+@pytest.mark.parametrize("changed", ["typed_insert_dispatch", "backtest_v4_lease", "user", "base_url"])
+def test_publication_reuses_exact_startup_scope_and_rejects_changes(monkeypatch, changed):
+    calls = []
+    client = SimpleNamespace(program_decision_profile=True, typed_insert_dispatch=object(),
+        backtest_v4_lease=object(), user="backtest_v4_program_runner", base_url="http://localhost:18123")
+    client.execute = lambda sql: calls.append("principal") or "backtest_v4_program_runner"
+    monkeypatch.setattr(publication, "preflight_rule_decision_storage", lambda actual: calls.append("storage"))
+    monkeypatch.setattr(writer, "journal_permission_preflight", lambda actual, **kwargs: calls.append("grants"))
+    audit = module.preflight_rule_decision_writer(client)
+    assert calls == ["principal", "storage", "grants"]
+    assert module.require_rule_decision_writer_audit(client) is audit
+    assert module.require_rule_decision_writer_audit(client) is audit
+    assert len(calls) == 3
+    original = getattr(client, changed)
+    setattr(client, changed, object())
+    with pytest.raises(RuntimeError, match="scope changed"):
+        module.require_rule_decision_writer_audit(client)
+    assert len(calls) == 3
+    setattr(client, changed, original)
+    # A new startup always audits again, even on this same client.
+    assert module.preflight_rule_decision_writer(client) is not audit
+    assert calls == ["principal", "storage", "grants"] * 2
+
+
+def test_failed_startup_clears_prior_audit(monkeypatch):
+    client = SimpleNamespace(program_decision_profile=True, _program_writer_audit=object(),
+                             execute=lambda sql: "backtest_v4_runner")
+    with pytest.raises(RuntimeError, match="dedicated principal"):
+        module.preflight_rule_decision_writer(client)
+    assert client._program_writer_audit is None
