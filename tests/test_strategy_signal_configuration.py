@@ -14,9 +14,13 @@ from tests.test_strategy_configuration_selection import ID
 
 def rows():
     stream, columns, _ = _source()
+    from src.backend.data_field_contracts import build_data_field_catalog
+    data_fields = build_data_field_catalog([], [columns["price"]])
+    price_ref = data_fields[0]["outputs"][0]["field_ref"]
+    columns["price"]["field_ref"] = price_ref
     catalogue = build_signal_field_catalog(stream, columns, configuration_revision="configuration-1")
     condition = dict(configuration_id=ID, rule_set_id="up", ordinal=0, enabled=1,
-        comparator="greater_than", left_field_ref="market.last_price@1s", left_source_id="price",
+        comparator="greater_than", left_field_ref=price_ref, left_source_id="price",
         left_interval="", left_aggregation="", left_value_selection="latest",
         right_field_ref="", right_source_id="", right_interval="", right_aggregation="",
         right_value_selection="latest", value_type="number", number_value=10.,
@@ -46,7 +50,7 @@ def test_typed_stream_rows_reuse_native_polars_compiler_and_occurrence_catalogue
         dict(source.columns), as_of=datetime(2026, 10, 12, 14, tzinfo=timezone.utc),
         definition_revision="definition-1", typed_catalog=source.catalog)
     assert occurrence["evidence"] == {"price": 12., "rule_set:up": True}
-    assert source.catalog.bindings[0].instance_ref == "market.last_price@1s"
+    assert source.catalog.bindings[0].instance_ref == configuration["data_fields"][0]["outputs"][0]["field_ref"]
 
 
 @pytest.mark.parametrize("failure", ["owner", "duplicate", "orphan", "ordinal", "literal", "nan", "instance", "selection", "right", "rule_field"])
@@ -74,3 +78,12 @@ def test_signed_numeric_literals_are_preserved_for_native_polars_rules():
     configuration, _ = restore_signal_configuration(source, configuration_id=ID, configuration_revision="configuration-1")
     assert configuration["rule_sets"][0]["conditions"][0]["value"] == -2.5
     assert evaluate_rule_sets_frame(configuration["rule_sets"], [{"price": -2.}, {"price": -3.}])["up"] == [True, False]
+
+
+def test_native_transition_clock_normalization_preserves_instant_and_rejects_naive_clock():
+    from datetime import timedelta
+    from src.backend.signal_stream_runtime_service import _freeze_transition
+    at = datetime(2026, 10, 12, 14, 0, 0, 123456, tzinfo=timezone(timedelta(hours=2)))
+    assert _freeze_transition({"available_at": at})["available_at"] == "2026-10-12T12:00:00.123456+00:00"
+    with pytest.raises(ValueError, match="timezone-aware"):
+        _freeze_transition({"available_at": at.replace(tzinfo=None)})

@@ -94,6 +94,20 @@ def test_cohort_preparation_reuses_full_feature_origin_and_bounds_parallel_io(pr
     assert block.first_ordinal == 0 and block.stop_ordinal == 200
     assert block.evaluation_block == "optimizer-origin" and len(result.projection.clock_offsets) == 10
     assert_frame_equal(block.masks, evaluate_rules(block.market, release.programs, release.fields), check_exact=True)
+    from tests.test_strategy_signal_configuration import rows as signal_rows
+    from src.backend.strategy_signal_configuration import restore_signal_configuration
+    from src.backend.signal_stream_runtime_service import SignalStreamRuntime
+    from tests.test_strategy_configuration_selection import ID
+    source_rows = signal_rows()
+    discovery, source_catalogs = restore_signal_configuration(source_rows, configuration_id=ID, configuration_revision="configuration-1")
+    signal_runtime = SignalStreamRuntime()
+    signal_runtime._hydrated = True
+    at = result.projection.frame["boundary_at"].min()
+    stage = signal_runtime.stage_resolve({"market_discovery": discovery}, result.projection.frame_for(at).to_dicts(),
+                                         as_of=at, data_fields_projected=False)
+    assert len(stage.occurrences) == 1
+    price_instance = source_catalogs["stream-1"].catalog.bindings[0].instance_ref
+    assert stage.occurrences[0]["field_evidence"][price_instance]["available_at"] == at.isoformat()
     from src.backend.backtest_program_session import PreparedProgramCohortWork
     definition, original = definition_and_actor()
     definition = replace(definition, session_date=feature_pin.scope.session_date)

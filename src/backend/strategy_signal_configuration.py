@@ -7,6 +7,7 @@ from src.trading_runtime import strategy_signal_configuration_schema as schema
 from src.trading_runtime.strategy_configuration_selection import _row, _ordinals
 from .signal_stream_typed_catalog import build_signal_field_catalog
 from .signal_stream_typed_publication import SourceCatalog
+from .data_field_contracts import build_data_field_catalog, data_field_output_index
 
 _COMPARATORS = {"is_true", "equals", "not_equals", "above_by_bps", "greater_or_equal",
                 "greater_than", "less_or_equal", "less_than"}
@@ -114,5 +115,13 @@ def restore_signal_configuration(source, *, configuration_id, configuration_revi
             raise ValueError("Signal configuration field instance differs from the native catalogue")
         catalogs[identity] = SourceCatalog(catalog, stream, columns)
         decoded_streams.append(stream)
+    data_fields = build_data_field_catalog([], [column for column in global_columns.values()
+                                              if column["source_kind"] == "data_field"])
+    outputs = data_field_output_index(data_fields)
+    for column in global_columns.values():
+        if column["source_kind"] == "data_field":
+            output = outputs.get(column["field_ref"])
+            if output is None or output["field_ref"] != column["field_ref"] or output["source_id"] != column["source_id"]:
+                raise ValueError("Signal configuration field differs from the native Data Field output identity")
     return {"signal_streams": decoded_streams, "column_catalog": list(global_columns.values()),
-            "rule_sets": decoded_rules}, catalogs
+            "rule_sets": decoded_rules, "data_fields": data_fields}, catalogs

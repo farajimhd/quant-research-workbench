@@ -60,6 +60,10 @@ class OccurrenceDecision:
 
 
 def _freeze_transition(value: Any) -> Any:
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("staged Signal Stream clock must be timezone-aware")
+        return value.astimezone(UTC).isoformat()
     if isinstance(value, Mapping):
         return MappingProxyType({key: _freeze_transition(item) for key, item in value.items()})
     if isinstance(value, (tuple, list)):
