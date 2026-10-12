@@ -96,6 +96,29 @@ def test_shared_runtime_initializes_from_real_normalized_cold_portfolio(monkeypa
             comparison = qualify_program_financial_runtime(runtime, cold, prefix, broker_rows, oms_image=oms)
             assert comparison.states["account-id"].ledger == state.ledger
             assert comparison.states["account-id"] is not state
+            from src.backend import rule_decision_reselection as decision_join
+            from src.backend.program_policy_recovery import RecoveredProgramPolicy, _RECOVERY_PROOF, program_policy_fingerprint
+            from types import MappingProxyType
+            packet = RecoveredProgramPolicy(strategy, 7, 0, 0, MappingProxyType({}), "cold-run",
+                ("a" * 64,), program_policy_fingerprint(strategy), _RECOVERY_PROOF)
+            decision_parent = dict(run_id="cold-run", basis_sequence=7,
+                boundary_at=AT.isoformat(), assignment_id="assignment")
+            calls = []
+            def selected(parent, children, records, *, packet, observation):
+                assert parent is decision_parent and children == records == ()
+                assert observation.account_id == "account-id" and observation.assignment_id == "assignment"
+                assert observation.observed_at == AT and observation.working_orders == ()
+                calls.append(packet)
+                return "synthetic-selection"
+            with monkeypatch.context() as join_patch:
+                join_patch.setattr(decision_join, "reselect_recovered_rule_decision", selected)
+                assert await decision_join.qualify_rule_decision_runtime(decision_parent, (), (),
+                    runtime=runtime, cold=cold, prefix=prefix, broker=broker_rows, oms_image=oms,
+                    packet=packet) == "synthetic-selection"
+                with pytest.raises(ValueError, match="historical basis"):
+                    await decision_join.qualify_rule_decision_runtime({**decision_parent, "basis_sequence": 8}, (), (),
+                        runtime=runtime, cold=cold, prefix=prefix, broker=broker_rows, oms_image=oms, packet=packet)
+            assert calls == [packet] and runtime.journal.pending_record_count == 0
             later_prefix = replace(prefix, last_sequence=9)
             historical_comparison = qualify_program_financial_runtime(runtime, cold, later_prefix,
                 broker_rows, oms_image=oms, through_sequence=7)

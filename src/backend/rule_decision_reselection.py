@@ -13,6 +13,51 @@ from .qmd_columnar_population import CertifiedPopulationWindow
 from .signal_stream_runtime_service import SignalStreamRuntime
 
 
+async def qualify_rule_decision_runtime(parent, children, records, *, runtime,
+        cold, prefix, broker, oms_image, packet, **scope):
+    """Join native historical finances/OMS to offline reselection, without admission."""
+    import asyncio
+    from datetime import datetime
+    from .program_financial_recovery import qualify_program_financial_runtime
+    from .program_policy_recovery import RecoveredProgramPolicy, _RECOVERY_PROOF, verify_program_filled_geometry
+    from .qmd_columnar_history_transport import _owned_worker
+    from src.trading_runtime.runtime import TradingRuntime, RunMode
+    from src.trading_runtime.simulated_broker import SimulatedBrokerAdapter
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    from src.trading_runtime.oms_assignment_observation import observe_assignment_orders
+    at = datetime.fromisoformat(parent["boundary_at"])
+    basis = parent["basis_sequence"]
+    def require_scope():
+        if (type(runtime) is not TradingRuntime or runtime.config.mode is not RunMode.BACKTEST
+                or type(runtime.broker) is not SimulatedBrokerAdapter
+                or type(runtime.strategy) is not AssignedProgramStrategy
+                or type(prefix) is not V4CommittedPrefix or type(packet) is not RecoveredProgramPolicy
+                or packet._proof is not _RECOVERY_PROOF
+                or runtime.run_id != parent["run_id"] or prefix.run_id != runtime.run_id
+                or packet.run_id != runtime.run_id or packet.journal_sequence != basis
+                or runtime.last_event_time != at or runtime.journal.latest_sequence(runtime.run_id) != basis
+                or runtime.journal.pending_record_count or runtime.order_manager is None
+                or runtime.strategy.program_release.header != packet.actor.program_release.header
+                or runtime.strategy.assignments() != packet.actor.assignments()):
+            raise ValueError("Rule decision native runtime differs from historical basis")
+    require_scope()
+    await _owned_worker(qualify_program_financial_runtime, runtime, cold, prefix, broker,
+        oms_image=oms_image, through_sequence=basis)
+    require_scope()
+    capacity = asyncio.Semaphore(4)
+    async def positions(account):
+        async with capacity:
+            return account, await runtime.broker.positions(account)
+    broker_positions = dict(await asyncio.gather(*(positions(account) for account in runtime.config.account_ids)))
+    require_scope()
+    verify_program_filled_geometry(packet.actor, broker_positions, runtime.portfolio)
+    assignment = packet.actor._by_assignment[parent["assignment_id"]]
+    observation = observe_assignment_orders(runtime.order_manager, account_id=assignment.account_id,
+        assignment_id=assignment.assignment_id, ticker=assignment.ticker, at=at)
+    return reselect_recovered_rule_decision(parent, children, records,
+        packet=packet, observation=observation, **scope)
+
+
 def reselect_recovered_rule_decision(parent, children, records, *, packet, **scope):
     """Use a verified journal replay packet without mutating its derived policy.
 
