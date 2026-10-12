@@ -71,6 +71,7 @@ def _journal_instant(value: Any) -> datetime:
 def load_typed_protection_page(
     client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 500, max_children: int = 50_000,
+    exact_prices: bool = False,
 ) -> TypedProtectionPage:
     """Cold-read one V4 event page and all normalized protection children.
 
@@ -83,13 +84,14 @@ def load_typed_protection_page(
     )
     from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
 
-    if (not isinstance(prefix, V4CommittedPrefix)
+    if (type(exact_prices) is not bool or not isinstance(prefix, V4CommittedPrefix)
             or not prefix.batch_ids or type(prefix.last_sequence) is not int
             or prefix.last_sequence < 1
             or type(max_children) is not int or max_children < 0):
         raise ValueError("Typed protection page needs V4 authority and a child bound")
     page = load_typed_event_page(
-        client, prefix, after_sequence=after_sequence, limit=limit)
+        client, prefix, after_sequence=after_sequence, limit=limit,
+        **({"exact_prices": True} if exact_prices else {}))
     selected = [item for item in page
                 if (item.event["category"], item.event["entity_type"])
                 == ("protection", "protection_change")]
@@ -138,6 +140,7 @@ def load_typed_protection_page(
 def load_complete_typed_protection_history(
     client: Any, prefix: VerifiedPrefix, *, page_size: int = 500,
     max_events: int = 100_000, max_children_per_page: int = 50_000,
+    exact_prices: bool = False,
 ) -> CompleteProtectionHistory:
     """Prove the complete V4 protection history through one committed head.
 
@@ -147,7 +150,7 @@ def load_complete_typed_protection_history(
     """
     from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
 
-    if (not isinstance(prefix, V4CommittedPrefix)
+    if (type(exact_prices) is not bool or not isinstance(prefix, V4CommittedPrefix)
             or not prefix.batch_ids or type(prefix.last_sequence) is not int
             or prefix.last_sequence < 1
             or type(page_size) is not int or not 1 <= page_size <= 1000
@@ -162,7 +165,8 @@ def load_complete_typed_protection_history(
     while cursor < prefix.last_sequence:
         page = load_typed_protection_page(
             client, prefix, after_sequence=cursor, limit=page_size,
-            max_children=max_children_per_page)
+            max_children=max_children_per_page,
+            **({"exact_prices": True} if exact_prices else {}))
         if not cursor < page.next_sequence <= prefix.last_sequence:
             raise RuntimeError("Committed protection history did not advance")
         if any(not cursor < row.sequence <= page.next_sequence
@@ -218,9 +222,12 @@ def load_typed_event_page(
     client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 500,
     selected_sequences: tuple[int, ...] | None = None,
+    exact_prices: bool = False,
 ) -> tuple[TypedJournalEvent, ...]:
     """Read one typed page with one batched detail query per present family."""
     from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    if type(exact_prices) is not bool or exact_prices and not isinstance(prefix, V4CommittedPrefix):
+        raise ValueError("Exact event prices require the explicit verified V4 mode")
 
     if not isinstance(prefix, (CommittedPrefix, V2CommittedPrefix,
                                V4CommittedPrefix)) or not prefix.batch_ids:
@@ -275,12 +282,16 @@ def load_typed_event_page(
         raise RuntimeError("Typed event page ends before the committed prefix")
     details: dict[tuple[str, str], dict[str, Any]] = {}
     for family, identities in by_family.items():
+        physical_family = family
+        if exact_prices and family in {"trading_execution_v1", "trading_order_command_v1", "trading_oms_group_state_v1"}:
+            from .trading_price_contracts import PRICE_FAMILIES
+            physical_family = PRICE_FAMILIES[family][0]
         contract = (_CONTRACTS["trading_strategy_signal_v1"]
-                    if family == "trading_strategy_signal_v2" else _CONTRACTS[family])
+                    if family == "trading_strategy_signal_v2" else _CONTRACTS[physical_family])
         columns = ",".join(column for column, _ in contract.columns)
         ids = ",".join(f"toUUID({_literal(value)})" for value in sorted(identities))
         rows = _rows(client,
-            f"SELECT {columns} FROM arte.{family} "
+            f"SELECT {columns} FROM arte.{physical_family} "
             f"WHERE run_id={_literal(prefix.run_id)} AND record_id IN ({ids}) "
             f"{_committed_batch_filter(prefix)}"
             f"LIMIT {len(identities) + 1} FORMAT JSONEachRow")
@@ -288,8 +299,11 @@ def load_typed_event_page(
             raise RuntimeError(f"Typed event page has missing or duplicate {family} rows")
         for raw in rows:
             hash_contract = ("trading_strategy_signal_v1"
-                             if family == "trading_strategy_signal_v2" else family)
+                             if family == "trading_strategy_signal_v2" else physical_family)
             detail = _verified_row(hash_contract, raw)
+            if physical_family != family:
+                from .trading_price_contracts import transform_price_fields
+                detail = transform_price_fields(family, detail, _CONTRACTS, restore=True)
             record_id = str(UUID(str(detail["record_id"])))
             key = (family, record_id)
             if record_id not in identities or key in details:

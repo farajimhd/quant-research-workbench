@@ -50,7 +50,8 @@ async def recover_program_oms_lineages_async(reader_factory, prefix, *, release,
             if len(groups) > maximum_groups:
                 raise ValueError("Program OMS group inventory exceeds its bound")
             history = load_complete_typed_protection_history(client, prefix,
-                page_size=1000, max_events=maximum_events)
+                page_size=1000, max_events=maximum_events,
+                **({"exact_prices": True} if exact_prices else {}))
             if (history.run_id != prefix.run_id or history.through_sequence != prefix.last_sequence
                     or history.committed_batch_ids != prefix.batch_ids):
                 raise ValueError("Program OMS protection prefix differs")

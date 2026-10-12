@@ -5027,6 +5027,7 @@ class ReplayRunController:
         if len(hashes) != sequence or hashes and hashes[-1] != content_hash:
             raise ValueError("Program policy recovery source prefix is inconsistent")
         recovered = await recover_program_policy_async(reader_factory, prefix, actor,
+            exact_prices=True,
             source_hashes=hashes, blocks=blocks, population=population,
             executions=executions, order_manager=self._runtime.order_manager,
             maximum_events=maximum_events)

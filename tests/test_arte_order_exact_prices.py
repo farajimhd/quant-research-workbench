@@ -73,6 +73,10 @@ def test_exact_command_v4_publication_readback_retry_and_corruption(monkeypatch)
     row, = load_committed_order_command_page(client, prefix, exact_prices=True)
     assert row['aux_price'] == request.auxPrice and row['limit_price'] is None
     assert row['quantity'] == '5.0000000000' and row['sequence'] == 1
+    from src.trading_runtime.arte_journal_reader import load_typed_event_page
+    event, = load_typed_event_page(client, prefix, exact_prices=True)
+    assert event.detail_family == 'trading_order_command_v1'
+    assert event.detail['aux_price'] == request.auxPrice
     assert 'trading_order_command_v1' not in client.tables
     assert publish_exact_order_command_batch_v4(client, unit) == unit.base.batch_id
     with pytest.raises(RuntimeError, match='missing or duplicate'):

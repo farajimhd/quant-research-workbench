@@ -80,6 +80,11 @@ def test_exact_execution_v4_commit_readback_retry_and_corruption(monkeypatch):
     cold, = load_committed_execution_page(client, prefix, exact_prices=True)
     assert cold["price"] == restore_exact_price_row("trading_execution_v1", unit.execution)["price"]
     assert cold["sequence"] == 1 and cold["execution_id"] == unit.execution["execution_id"]
+    from src.trading_runtime.arte_journal_reader import load_typed_event_page, load_complete_typed_protection_history
+    event, = load_typed_event_page(client, prefix, exact_prices=True)
+    assert event.detail_family == "trading_execution_v1" and event.detail["price"] == cold["price"]
+    protection = load_complete_typed_protection_history(client, prefix, exact_prices=True)
+    assert protection.records == () and protection.through_sequence == 1
     with pytest.raises(RuntimeError, match="missing or duplicate"):
         load_committed_execution_page(client, prefix)
     assert publish_exact_execution_batch_v4(client, unit) == unit.base.batch_id

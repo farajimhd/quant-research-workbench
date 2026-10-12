@@ -533,9 +533,10 @@ def verify_recovered_program_positions(packet, template, *, run_id, source_hashe
         raise ValueError("Recovered program positions differ from broker or Portfolio")
 
 
-async def recover_program_policy_async(reader_factory, prefix, template, *, through_sequence=None, **scope):
+async def recover_program_policy_async(reader_factory, prefix, template, *, through_sequence=None,
+        exact_prices=False, **scope):
     """Read exact committed pages on an owned worker and close its SELECT client."""
-    if (type(prefix) is not V4CommittedPrefix or not prefix.batch_ids
+    if (type(exact_prices) is not bool or type(prefix) is not V4CommittedPrefix or not prefix.batch_ids
             or through_sequence is not None and (type(through_sequence) is not int
                 or not 0 <= through_sequence <= prefix.last_sequence)):
         raise ValueError("Program policy recovery requires an exact bounded historical prefix")
@@ -551,7 +552,8 @@ async def recover_program_policy_async(reader_factory, prefix, template, *, thro
                 after = 0
                 while after < basis_sequence:
                     page = load_typed_event_page(client, prefix, after_sequence=after,
-                        limit=min(1000, basis_sequence - after))
+                        limit=min(1000, basis_sequence - after),
+                        **({"exact_prices": True} if exact_prices else {}))
                     if not page:
                         raise ValueError("Program policy recovery page did not advance")
                     if int(page[-1].event["sequence"]) > basis_sequence:
