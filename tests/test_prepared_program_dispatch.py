@@ -80,6 +80,7 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                     source_row, _ = block.row_for("listing", ordinal + source_offset)
                     await publish_source_row(source_row)
             previous_basis_packet = None
+            previous_dispatch_packet = None
             for offset in range(3):
                 row, _ = block.row_for("listing", ordinal + offset)
                 at = row["boundary_at"]
@@ -276,8 +277,9 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 original_records = controller._journal.records
                 def forbidden_rescan(*args, **kwargs):
                     if automatic:
-                        assert kwargs.get("after_sequence") == (
-                            0 if previous_basis_packet is None else previous_basis_packet.journal_sequence)
+                        assert kwargs.get("after_sequence") in {
+                            0 if previous_dispatch_packet is None else previous_dispatch_packet.journal_sequence,
+                            basis_sequence}
                         return original_records(*args, **kwargs)
                     raise AssertionError("Completed dispatch must not rescan journal records")
                 controller._journal.records = forbidden_rescan
@@ -299,11 +301,36 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                             at=at, assignment_order=("assignment",), execution_policy=policy,
                             protection_profiles={"assignment": profile}, outside_rth=False, terminal=offset == 2,
                             qualify=True, policy_blocks=(block,), maximum_events=1000,
-                            initial_packet=previous_basis_packet)
+                            initial_packet=previous_dispatch_packet)
                         auto_result = dispatched[0][1]
                         assert auto_result["qualification"].selection.status == auto_result["status"]
-                        assert auto_result["policy_packet"].state_hash == pre_packet.state_hash
-                        assert auto_result["policy_packet"].journal_sequence == basis_sequence
+                        from src.backend.program_policy_recovery import program_policy_fingerprint
+                        assert auto_result["policy_packet"].state_hash == program_policy_fingerprint(actor)
+                        assert auto_result["policy_packet"].journal_sequence == controller._journal.latest_sequence(controller.run_id)
+                        assert auto_result["policy_packet"].journal_sequence > basis_sequence
+                        # Synthetic compacted-prefix handoff. This is an in-memory
+                        # fixture, not a claim of an operational storage receipt.
+                        from src.backend.program_policy_recovery import rebuild_owned_pending_program_policy
+                        post_packet = auto_result["policy_packet"]
+                        previous_dispatch_packet = post_packet
+                        compacted = BacktestMemoryJournal(run_id=controller.run_id,
+                            initial_sequence=post_packet.journal_sequence)
+                        compacted_publisher = BacktestTypedJournalPublisher(compacted,
+                            controller._journal_publisher.writer,
+                            attempt_id=controller._journal_publisher.attempt_id,
+                            run_month=at.date().replace(day=1), initial_sequence=post_packet.journal_sequence,
+                            prior_batch_id="00000000-0000-0000-0000-000000000002")
+                        with monkeypatch.context() as compacted_scope:
+                            compacted_scope.setattr(controller, "_journal", compacted)
+                            compacted_scope.setattr(controller._runtime, "journal", compacted)
+                            compacted_scope.setattr(controller, "_journal_publisher", compacted_publisher)
+                            resumed_packet = await rebuild_owned_pending_program_policy(controller, (block,), population,
+                                maximum_events=1000, initial_packet=post_packet)
+                            assert resumed_packet.state_hash == post_packet.state_hash
+                            assert resumed_packet.journal_sequence == post_packet.journal_sequence
+                            with pytest.raises(ValueError, match="read from ClickHouse"):
+                                await rebuild_owned_pending_program_policy(controller, (block,), population,
+                                    maximum_events=1000, initial_packet=pre_packet)
                     else:
                         dispatched = await controller.dispatch_prepared_program_clock({"assignment": block}, population,
                             at=at, assignment_order=("assignment",), execution_policy=policy,

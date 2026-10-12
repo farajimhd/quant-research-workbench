@@ -124,7 +124,13 @@ async def dispatch_qualified_program_boundary(controller, block, population, *, 
         envelope = await qualify_captured_pending_program_decision(controller, candidate, parent["record_id"],
             records, cold=cold, capture=capture, packet=packet, block=block, population=population,
             execution_policy=execution_policy, protection_profile=protection_profile, outside_rth=outside_rth)
-        return {**result, "qualification": envelope.qualification, "policy_packet": packet}
+        # Carry the completed suffix before the publisher can compact it. A
+        # pre-decision packet would otherwise lag the next batch fence.
+        from .program_policy_recovery import rebuild_owned_pending_program_policy
+        next_packet = await rebuild_owned_pending_program_policy(controller, (block,), population,
+            maximum_events=(maximum_events if maximum_events is not None else journal.latest_sequence(controller.run_id)),
+            initial_packet=packet)
+        return {**result, "qualification": envelope.qualification, "policy_packet": next_packet}
     except BaseException as exc:
         if dispatched:
             controller._program_dispatch_failure = exc

@@ -156,6 +156,11 @@ coordinates this route for the complete assignment order and carries each
 verified packet into the following assignment. The caller supplies explicit
 prepared replay-block coverage and event bounds and retains the returned packet
 across clocks. The default unqualified prepared-dispatch behavior is unchanged.
+The returned packet includes the completed decision suffix, rather than only
+its pre-decision basis. This allows the next clock to replay after a publisher
+fence has compacted that suffix. Synthetic tests verify continuation with an
+empty compacted journal and reject a stale pre-decision packet that would need
+removed records; no memory fallback or operational receipt is invented.
 Main launch admission, prepared-cohort scheduling, and operational full-session
 qualification remain unfinished.
 The main clock lifecycle must resolve this dependency while preserving actual
