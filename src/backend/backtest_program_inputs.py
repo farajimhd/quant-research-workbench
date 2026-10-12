@@ -210,6 +210,13 @@ class PreparedProgramBlock:
             terminal=terminal)).encode()).hexdigest()
 
 
+def required_program_history_fields(release):
+    names = set(release.fields)
+    if release.header["swing_left"]:
+        names.add(f"history.swing_low.{release.header['swing_left']}.{release.header['swing_right']}")
+    return tuple(sorted(names))
+
+
 async def prepare_program_block(release: ProgramRelease, pins: Mapping[str, CertifiedHistoryPin], *,
         first_ordinal: int, stop_ordinal: int, evaluation_block: str, as_of: datetime,
         concurrency: int, history_post=None) -> PreparedProgramBlock:
@@ -244,10 +251,11 @@ async def prepare_program_block(release: ProgramRelease, pins: Mapping[str, Cert
                     or field.product != "arte.qmd_causal_history_value_v1"
                     or field.revision != pin.scope.product_revision or field.resolution_ms != 1000):
                 raise ValueError("Program field differs from its producer-owned history contract")
-        packet_size = min(4096, 65536 // max(1, len(pin.fields)))
+        field_names = required_program_history_fields(release)
+        packet_size = min(4096, 65536 // max(1, len(field_names)))
         for first in range(first_ordinal, stop_ordinal, packet_size):
             stop = min(first + packet_size, stop_ordinal)
-            window_request(pin, first_ordinal=first, stop_ordinal=stop, as_of=as_of)
+            window_request(pin, first_ordinal=first, stop_ordinal=stop, as_of=as_of, field_names=field_names)
             jobs.append((listing, pin, first, stop))
     # All pins, field contracts and future-clock checks precede the first I/O.
     iterator = iter(enumerate(jobs))
@@ -257,7 +265,7 @@ async def prepare_program_block(release: ProgramRelease, pins: Mapping[str, Cert
             index, (listing, pin, first, stop) = item
             packets[index] = await read_history_window_async(pin, first_ordinal=first,
                 stop_ordinal=stop, evaluation_block=evaluation_block, as_of=as_of,
-                history_post=history_post)
+                history_post=history_post, field_names=required_program_history_fields(release))
     workers = [asyncio.create_task(worker()) for _ in range(min(concurrency, len(jobs)))]
     try:
         await asyncio.gather(*workers)
@@ -331,7 +339,8 @@ def preflight_program_cohort_inputs(release, pins, population_pin, listing_by_as
                     or field.product != "arte.qmd_causal_history_value_v1"
                     or field.revision != pin.scope.product_revision or field.resolution_ms != 1000):
                 raise ValueError("Programme field differs from its certified history contract")
-        window_request(pin, first_ordinal=first_ordinal, stop_ordinal=stop_ordinal, as_of=as_of)
+        window_request(pin, first_ordinal=first_ordinal, stop_ordinal=stop_ordinal, as_of=as_of,
+                       field_names=required_program_history_fields(release))
     for pin in population_pin.histories.values():
         window_request(pin, first_ordinal=first_bucket - pin.scope.first_bucket,
             stop_ordinal=stop_bucket - pin.scope.first_bucket, as_of=as_of)

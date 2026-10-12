@@ -41,13 +41,29 @@ async def verify_history_service_async(**authority):
     return await _owned_worker(verify_history_service, **authority)
 
 
-def window_request(pin, *, first_ordinal, stop_ordinal, as_of):
+def selected_history_fields(pin, field_names=None):
     if type(pin) is not CertifiedHistoryPin:
         raise TypeError("QMD history transport requires its cold-certified pin")
+    if field_names is None:
+        return pin.fields
+    if (type(field_names) is not tuple or any(type(name) is not str for name in field_names)
+            or len(set(field_names)) != len(field_names)):
+        raise ValueError("QMD history field selection must be explicit and unique")
+    names = set(field_names)
+    selected = tuple(field for field in pin.fields if field.name in names)
+    if len(selected) != len(names):
+        raise ValueError("QMD history field selection is outside its certified catalogue")
+    return selected
+
+
+def window_request(pin, *, first_ordinal, stop_ordinal, as_of, field_names=None):
+    if type(pin) is not CertifiedHistoryPin:
+        raise TypeError("QMD history transport requires its cold-certified pin")
+    fields = selected_history_fields(pin, field_names)
     if (type(first_ordinal) is not int or type(stop_ordinal) is not int
             or not 0 <= first_ordinal < stop_ordinal <= pin.scope.clock_count
             or stop_ordinal - first_ordinal > 4096
-            or len(pin.fields) * (stop_ordinal - first_ordinal) > 65536
+            or len(fields) * (stop_ordinal - first_ordinal) > 65536
             or type(as_of) is not datetime or as_of.tzinfo is None or as_of.utcoffset() is None):
         raise ValueError("QMD history transport needs a bounded completed window")
     if c.completed_clock(pin.scope, pin.scope.first_bucket + stop_ordinal - 1) > as_of:
@@ -55,13 +71,14 @@ def window_request(pin, *, first_ordinal, stop_ordinal, as_of):
     scope = pin.scope.prefix()
     scope["session_date"] = scope["session_date"].isoformat()
     return dict(scope=scope, expected_content_hash=pin.header["content_hash"],
-        field_ids=[f.field_id for f in pin.fields], first_ordinal=first_ordinal, stop_ordinal=stop_ordinal,
+        field_ids=[f.field_id for f in fields], first_ordinal=first_ordinal, stop_ordinal=stop_ordinal,
         as_of=as_of.astimezone(timezone.utc).isoformat(timespec="microseconds"))
 
 
-def decode_window(pin, response, *, first_ordinal, stop_ordinal, evaluation_block):
+def decode_window(pin, response, *, first_ordinal, stop_ordinal, evaluation_block, field_names=None):
     if type(pin) is not CertifiedHistoryPin:
         raise TypeError("QMD history response requires its cold-certified pin")
+    fields = selected_history_fields(pin, field_names)
     if type(first_ordinal) is not int or type(stop_ordinal) is not int:
         raise ValueError("QMD history window ordinals must be typed integers")
     if not isinstance(evaluation_block, str) or not 1 <= len(evaluation_block) <= 128:
@@ -76,7 +93,7 @@ def decode_window(pin, response, *, first_ordinal, stop_ordinal, evaluation_bloc
         raise ValueError("QMD history response exceeds its byte bound")
     n = stop_ordinal - first_ordinal
     if (not 0 <= first_ordinal < stop_ordinal <= pin.scope.clock_count or n > 4096
-            or len(pin.fields) * n > 65536
+            or len(fields) * n > 65536
             or any(type(response[name]) is not list or len(response[name]) != n for name in (*CLOCK_FIELDS, "observed_ordinal"))):
         raise ValueError("QMD history response column lengths differ")
     for name in ("source_known", "observed", "extremes_valid"):
@@ -105,10 +122,10 @@ def decode_window(pin, response, *, first_ordinal, stop_ordinal, evaluation_bloc
     frame = frame.with_columns(pl.Series("observed_ordinal", response["observed_ordinal"], dtype=pl.UInt32))
     frame = frame.with_columns(((pl.col("bucket_index").cast(pl.Int64) + 1) * 1000000 + c.session_clock_anchor_us(pin.scope))
         .cast(pl.Datetime("us", "UTC")).alias("boundary_at")).with_columns(pl.col("boundary_at").alias("available_at"))
-    if type(response["fields"]) is not list or len(response["fields"]) != len(pin.fields):
+    if type(response["fields"]) is not list or len(response["fields"]) != len(fields):
         raise ValueError("QMD history field population differs")
     ordinals = frame["observed_ordinal"].to_numpy()
-    for field, runs in zip(pin.fields, response["fields"], strict=True):
+    for field, runs in zip(fields, response["fields"], strict=True):
         if (type(runs) is not dict or set(runs) != {"field_id", "field_name", "unit", "first_ordinal", "stop_ordinal", "value_bits", "valid"}
                 or type(runs["field_id"]) is not int or (runs["field_id"], runs["field_name"], runs["unit"]) != (field.field_id, field.name, field.unit)
                 or type(runs["first_ordinal"]) is not list or not 1 <= len(runs["first_ordinal"]) <= n
@@ -135,12 +152,12 @@ def decode_window(pin, response, *, first_ordinal, stop_ordinal, evaluation_bloc
     return frame.with_columns(pl.lit(pin.scope.listing_id).alias("listing_id"), pl.lit(evaluation_block).alias("evaluation_block"))
 
 
-def read_history_window(pin, *, first_ordinal, stop_ordinal, evaluation_block, as_of, history_post=None):
+def read_history_window(pin, *, first_ordinal, stop_ordinal, evaluation_block, as_of, history_post=None, field_names=None):
     if not isinstance(evaluation_block, str) or not 1 <= len(evaluation_block) <= 128:
         raise ValueError("QMD history needs an explicit rule evaluation-block identity")
-    request = window_request(pin, first_ordinal=first_ordinal, stop_ordinal=stop_ordinal, as_of=as_of)
+    request = window_request(pin, first_ordinal=first_ordinal, stop_ordinal=stop_ordinal, as_of=as_of, field_names=field_names)
     response = (history_post or qmd_history_post_json)(PATH, request, timeout=45.)
-    return decode_window(pin, response, first_ordinal=first_ordinal, stop_ordinal=stop_ordinal, evaluation_block=evaluation_block)
+    return decode_window(pin, response, first_ordinal=first_ordinal, stop_ordinal=stop_ordinal, evaluation_block=evaluation_block, field_names=field_names)
 
 
 async def read_history_window_async(pin, **window):

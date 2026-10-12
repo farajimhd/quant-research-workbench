@@ -67,7 +67,7 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
     controller._journal = BacktestMemoryJournal(run_id=controller.run_id)
     publisher = TypedSignalPublicationQueue(FakeStorage(), capacity=1)
     def post(path, request, timeout):
-        return response_for(certificate, request["first_ordinal"], request["stop_ordinal"])
+        return response_for(certificate, request["first_ordinal"], request["stop_ordinal"], request["field_ids"])
     async def run_test():
         queued_writer = None
         await controller._initialize_runtime(record_configuration=False, record_lifecycle=False)

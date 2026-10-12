@@ -19,7 +19,7 @@ def test_cache_single_flights_exact_source_and_origin_and_rechecks_availability(
     calls, lock = [], Lock()
     def post(path, request, timeout):
         with lock: calls.append(request)
-        return response_for(certificate, request["first_ordinal"], request["stop_ordinal"])
+        return response_for(certificate, request["first_ordinal"], request["stop_ordinal"], request["field_ids"])
     cache = ProgramFeatureBlockCache()
     kwargs = dict(first_ordinal=0, stop_ordinal=200, evaluation_block="optimizer-origin",
         as_of=c.completed_clock(pin.scope, pin.scope.stop_bucket - 1), concurrency=2, history_post=post)

@@ -12,7 +12,7 @@ from test_columnar_history_publication import Store, publish, consume, prepared_
 from pipelines.market_sip.events.columnar_history_producer import wire_records
 
 
-def response_for(certificate, first, stop):
+def response_for(certificate, first, stop, field_ids=None):
     prepared = certificate.prepared
     result = prepared.clocks.slice(first, stop - first).to_dict(as_series=False)
     for name in ("source_known", "observed", "extremes_valid"):
@@ -20,12 +20,37 @@ def response_for(certificate, first, stop):
     result.update(contract=t.CONTRACT, coverage=wire_records(c.COVERAGE, [dict(certificate.header)])[0],
         first_ordinal=first, stop_ordinal=stop, observed_ordinal=list(range(first, stop)), fields=[])
     for field in prepared.fields:
+        if field_ids is not None and field.field_id not in field_ids:
+            continue
         runs = prepared.values.filter((pl.col("field_id") == field.field_id)
             & (pl.col("first_ordinal") < stop) & (pl.col("stop_ordinal") > first)).sort("first_ordinal")
         result["fields"].append(dict(field_id=field.field_id, field_name=field.name, unit=field.unit,
             first_ordinal=runs["first_ordinal"].to_list(), stop_ordinal=runs["stop_ordinal"].to_list(),
             value_bits=runs["value_bits"].to_list(), valid=runs["valid"].cast(pl.Boolean).to_list()))
     return result
+
+
+def test_selected_fields_keep_full_product_seal_and_exact_float32_values(certificate):
+    pin = certificate.pin()
+    field = pin.fields[0]
+    names = (field.name,)
+    request = t.window_request(pin, first_ordinal=0, stop_ordinal=100,
+        as_of=c.completed_clock(pin.scope, pin.scope.stop_bucket - 1), field_names=names)
+    assert request["field_ids"] == [field.field_id]
+    assert request["expected_content_hash"] == pin.header["content_hash"]
+    response = response_for(certificate, 0, 100, request["field_ids"])
+    decoded = t.decode_window(pin, response, first_ordinal=0, stop_ordinal=100,
+                              evaluation_block="origin", field_names=names)
+    full = t.decode_window(pin, response_for(certificate, 0, 100), first_ordinal=0,
+                           stop_ordinal=100, evaluation_block="origin")
+    assert decoded[field.name].equals(full[field.name])
+    assert decoded[field.name + "__valid"].equals(full[field.name + "__valid"])
+    assert all(other.name not in decoded.columns for other in pin.fields[1:])
+    with pytest.raises(ValueError, match="field population"):
+        t.decode_window(pin, response_for(certificate, 0, 100), first_ordinal=0,
+                        stop_ordinal=100, evaluation_block="origin", field_names=names)
+    with pytest.raises(ValueError, match="outside its certified"):
+        t.selected_history_fields(pin, ("missing",))
 
 
 @pytest.fixture

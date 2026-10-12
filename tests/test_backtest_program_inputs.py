@@ -66,7 +66,7 @@ def test_cohort_preparation_reuses_full_feature_origin_and_bounds_parallel_io(pr
                 overlap.wait(timeout=5)
             sleep(.01)
             certificate = features if request["field_ids"] else volume
-            return response_for(certificate, request["first_ordinal"], request["stop_ordinal"])
+            return response_for(certificate, request["first_ordinal"], request["stop_ordinal"], request["field_ids"])
         finally:
             with lock:
                 active -= 1
@@ -162,7 +162,7 @@ def test_prepared_scanner_bridge_keeps_exact_top10_and_rejects_missing_history(p
     pin = consume(store, prepared_source).pin()
     release = release_for(pin)
     def post(path, request, timeout):
-        return response_for(consume(store, prepared_source), request["first_ordinal"], request["stop_ordinal"])
+        return response_for(consume(store, prepared_source), request["first_ordinal"], request["stop_ordinal"], request["field_ids"])
     block = asyncio.run(prepare_program_block(release, {pin.scope.listing_id: pin},
         first_ordinal=0, stop_ordinal=200, evaluation_block="origin",
         as_of=c.completed_clock(pin.scope, pin.scope.stop_bucket - 1), concurrency=1, history_post=post))
@@ -234,7 +234,7 @@ def test_transport_packets_preserve_full_rule_block_and_warmup(prepared_source):
     calls = []
     def post(path, request, timeout):
         calls.append((request["first_ordinal"], request["stop_ordinal"]))
-        return response_for(certificate, *calls[-1])
+        return response_for(certificate, *calls[-1], request["field_ids"])
     block = asyncio.run(prepare_program_block(release, {pin.scope.listing_id: pin},
         first_ordinal=0, stop_ordinal=4200, evaluation_block="optimizer-block-0",
         as_of=c.completed_clock(pin.scope, pin.scope.stop_bucket - 1), concurrency=2, history_post=post))
@@ -291,7 +291,7 @@ def test_main_controller_prepares_certified_inputs_for_its_actual_actor(prepared
     calls = []
     def post(path, request, timeout):
         calls.append(request)
-        return response_for(certificate, request["first_ordinal"], request["stop_ordinal"])
+        return response_for(certificate, request["first_ordinal"], request["stop_ordinal"], request["field_ids"])
     async def run():
         await controller._initialize_runtime(record_configuration=False, record_lifecycle=False)
         try:

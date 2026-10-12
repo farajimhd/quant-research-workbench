@@ -11,7 +11,7 @@ class ProgramFeatureBlockCache:
 
     async def load(self, release, pins, *, first_ordinal, stop_ordinal, evaluation_block,
                    as_of, concurrency, history_post=None):
-        from .backtest_program_inputs import prepare_program_block
+        from .backtest_program_inputs import prepare_program_block, required_program_history_fields
         from .qmd_columnar_history_transport import window_request
         from .qmd_columnar_history import CertifiedHistoryPin
         from src.trading_runtime.columnar_strategy_release import ProgramRelease
@@ -27,7 +27,8 @@ class ProgramFeatureBlockCache:
             raise ValueError("Programme feature cache requires its bounded source/block scope")
         # Reuse never bypasses the current request's availability checks.
         for pin in pins.values():
-            window_request(pin, first_ordinal=first_ordinal, stop_ordinal=stop_ordinal, as_of=as_of)
+            window_request(pin, first_ordinal=first_ordinal, stop_ordinal=stop_ordinal, as_of=as_of,
+                           field_names=required_program_history_fields(release))
         key = (release.header["content_hash"], first_ordinal, stop_ordinal, evaluation_block,
                tuple(sorted((listing, pin.header["content_hash"]) for listing, pin in pins.items())))
         async with self._lock:
