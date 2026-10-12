@@ -68,11 +68,23 @@ def indicator_sql(unit: MarketUnit,database='arte',*,prior=None):
 def normalized_insert(unit: MarketUnit, product: str,database='arte'):
     target={'bars':'research_bars_v1','technical':'research_indicators_v1','broker_100ms':'research_liquidity_v1'}[product]
     table=next(t for t in schema.TABLES if t.name==target)
-    values=dict(dataset_id='toUUID(build_id)',listing_key=f'toUInt64({unit.listing_key})')
     names=[c.name for c in table.columns]
-    select=','.join(values.get(n,n) for n in names)
-    return (f"INSERT INTO {identifier(database)}.{target} ({','.join(names)}) SELECT {select} "
-            f"FROM {core.table(database,product,STAGING)} WHERE {unit.where()}")
+    return (f"INSERT INTO {identifier(database)}.{target} ({','.join(names)}) "
+            +normalized_projection(unit,product,database))
+
+
+def normalized_projection(unit: MarketUnit,product: str,database='arte'):
+    from .publication import PRODUCTS
+    table=next(t for t in schema.TABLES if t.name==PRODUCTS[product])
+    values=dict(dataset_id='toUUID(build_id)',listing_key=f'toUInt64({unit.listing_key})')
+    select=','.join(values.get(c.name,c.name)+' AS '+c.name for c in table.columns)
+    return f"SELECT {select} FROM {core.table(database,product,STAGING)} WHERE {unit.where()}"
+
+
+def expected_evidence_sql(unit: MarketUnit,product: str,database='arte'):
+    from .publication import PRODUCTS,evidence_sql
+    table=next(t for t in schema.TABLES if t.name==PRODUCTS[product])
+    return evidence_sql(table,normalized_projection(unit,product,database),'tuple(resolution_ms,bucket_index)')
 
 
 def staged_evidence(unit: MarketUnit,product: str,database='arte'):

@@ -14,9 +14,58 @@ from pipelines.certified_research.checkpoints import CheckpointBinding, boundari
 from pipelines.market_sip.events import market_day_sql
 from pipelines.certified_research.execution import Unit,execute
 from pipelines.certified_research import market
+from pipelines.certified_research.publication import Scope,Publisher,KeeperClaim,insert_rows
+from pipelines.certified_research.identity import ListingInterval,validate_intervals,identity_key,ensure_identity,membership_at,LISTING
+from pipelines.certified_research import facts
 
 
 class Contracts(unittest.TestCase):
+    def test_complete_app_catalog_and_fact_availability_contract(self):
+        from datetime import timezone
+        metrics=facts.catalog()
+        self.assertGreater(len(metrics),60)
+        tags={tag for m in metrics for tag in m.tags}
+        self.assertIn('EntityPublicFloat',tags);self.assertIn('RevenueFromContractsWithCustomers',tags)
+        self.assertEqual(facts.catalog_hash(),facts.catalog_hash())
+        at=facts.conservative_date_availability(date(2026,1,2))
+        self.assertEqual(at,datetime(2026,1,3,tzinfo=timezone.utc))
+        row=dict(dataset_id=str(uuid.uuid4()),entity_kind=1,entity_key=1,metric_key=2,revision=0,
+                 available_at=at,evidence_hash='a'*64,confidence=100,status=1,precision=2,unit_key=1,value=123.)
+        facts.verify_fact(row)
+        for fields in (dict(available_at=at.replace(tzinfo=None)),dict(value=float('nan')),dict(status=2),dict(evidence_hash='missing')):
+            with self.assertRaises(ValueError):facts.verify_fact(dict(row,**fields))
+    def test_dated_membership_removes_delisted_and_otc_without_future_births(self):
+        from datetime import timezone,timedelta
+        start=datetime(2026,1,2,9,tzinfo=timezone.utc);end=start+timedelta(days=10)
+        active=ListingInterval('listing:1','security:1','issuer:1','OLD',123,start,end,'US','NASDAQ','USD','STK',True,True,False,False,'a'*64)
+        renamed=replace(active,ticker='NEW',valid_from=end,valid_to=end+timedelta(days=10))
+        delisted=replace(renamed,listed=False,valid_from=renamed.valid_to,valid_to=end+timedelta(days=20))
+        self.assertFalse(active.reason);self.assertEqual(delisted.reason,'inactive_listing')
+        self.assertEqual(replace(active,exchange_code='OTCQX').reason,'unsupported_otc_venue')
+        self.assertEqual(active.row(str(uuid.uuid4()))['listing_key'],renamed.row(str(uuid.uuid4()))['listing_key'])
+        validate_intervals((active,renamed,delisted))
+        with self.assertRaisesRegex(ValueError,'Overlapping'):validate_intervals((active,replace(renamed,valid_from=end-timedelta(seconds=1))))
+        self.assertEqual(identity_key(LISTING,'listing:1'),identity_key(LISTING,'listing:1'))
+    def test_expired_keeper_session_cannot_publish_or_release_new_owner(self):
+        class Lock:
+            is_acquired=False
+            def acquire(self,blocking):self.is_acquired=True;return True
+            def contenders(self):return ['owner']
+            def release(self):self.is_acquired=False
+        class Client:
+            connected=True;client_id=(1,b'session')
+            def Lock(self,path,identifier):self.lock=Lock();return self.lock
+        client=Client();claim=KeeperClaim(client,str(uuid.uuid4()),owner='owner')
+        claim.check();client.client_id=(2,b'replaced')
+        with self.assertRaisesRegex(RuntimeError,'expired'):claim.check()
+        claim.close();self.assertTrue(client.lock.is_acquired)
+
+    def test_transport_bounds_reject_nonfinite_and_oversized_before_write(self):
+        writes=[]
+        def query(*args,**kw):writes.append(args)
+        with self.assertRaises(ValueError):insert_rows(query,'arte','research_facts_v1',[dict(value=float('nan'))])
+        with self.assertRaises(ValueError):insert_rows(query,'arte','research_facts_v1',[dict(value='x'*100)],maximum_bytes=10)
+        self.assertFalse(writes)
     def test_parallel_fanout_reuses_one_parent_and_respects_global_memory(self):
         units=(Unit('bars','bars',memory_bytes=1),Unit('indicators','consume',('bars',),1),
                Unit('v7','consume',('bars',),1))
@@ -145,13 +194,108 @@ class ClickHouseIntegration(unittest.TestCase):
         self.client.query(f"INSERT INTO {self.database}.research_bars_v1 VALUES "
             f"('{dataset}','2026-01-02',1,'{attempt}',1000,14400,100000,101000,99000,100100,"
             "123.5,7,1235.1,120.5,1205.1,1,1)",read=False)
-        rows=self.client.query(f"SELECT volume,trade_count,close_int FROM {self.database}.research_bars_v1")
+        rows=self.client.query(f"SELECT volume,trade_count,close_int FROM {self.database}.research_bars_v1 "
+                               f"WHERE dataset_id=toUUID('{dataset}') AND attempt_id=toUUID('{attempt}')")
         self.assertEqual(rows,[dict(volume=123.5,trade_count=7,close_int=100100)])
         s.verify_storage(self.client.query,self.database,require_tables=True)
         columns=self.client.query(f"SELECT name,compression_codec FROM system.columns "
             f"WHERE database='{self.database}' AND table='research_bars_v1'")
         self.assertTrue(columns)
         self.assertTrue(all('ZSTD' in r['compression_codec'] for r in columns))
+
+    def test_publication_reuses_verified_attempt_and_rejects_changed_outputs(self):
+        # Isolated fixture ownership; production receives a KeeperClaim.
+        database=self.database
+        class FixtureClaim:
+            def check(self):
+                if not database.startswith('certified_research_test_'):raise ValueError('Fixture scope')
+        publisher=Publisher(self.client.query,self.database,FixtureClaim())
+        dataset=str(uuid.uuid4());attempt=str(uuid.uuid4())
+        scope=Scope(dataset,date(2026,1,2),11,'bars','c'*64)
+        row=dict(dataset_id=dataset,session_date='2026-01-02',listing_key=11,attempt_id=attempt,
+                 resolution_ms=1000,bucket_index=14400,open_int=100000,high_int=101000,
+                 low_int=99000,close_int=100100,volume=123.5,trade_count=7,notional=1235.1,
+                 execution_volume=120.5,execution_notional=1205.1,price_valid=1,extremes_valid=1)
+        insert_rows(self.client.query,self.database,'research_bars_v1',[row])
+        expected=publisher.evidence(scope,attempt) # Fixture independently asserts all inserted values above.
+        with self.assertRaisesRegex(ValueError,'expected evidence'):publisher.publish(scope,attempt)
+        first=publisher.publish(scope,attempt,expected=expected)
+        self.assertEqual(publisher.publish(scope,attempt),first)
+        with self.assertRaisesRegex(ValueError,'dependencies'):
+            publisher.receipt(replace(scope,parent_hash='d'*64))
+        insert_rows(self.client.query,self.database,'research_bars_v1',[dict(row,close_int=100101)])
+        with self.assertRaisesRegex(ValueError,'Duplicate'):publisher.receipt(scope)
+        empty=Scope(dataset,date(2026,1,2),12,'bars','e'*64)
+        empty_attempt=str(uuid.uuid4());empty_expected=publisher.evidence(empty,empty_attempt)
+        with self.assertRaisesRegex(ValueError,'Empty'):publisher.publish(empty,empty_attempt,expected=empty_expected)
+        attempt2=str(uuid.uuid4())
+        receipt=publisher.publish(empty,attempt2,expected=publisher.evidence(empty,attempt2),empty_proof='f'*64)
+        self.assertEqual(int(receipt['status']),2)
+
+    def test_normalized_identity_and_half_open_historical_membership(self):
+        from datetime import timezone,timedelta
+        class Claim:
+            def check(self):pass
+        claim=Claim();dataset=str(uuid.uuid4())
+        key=ensure_identity(self.client.query,self.database,claim,LISTING,'listing:fixture')
+        self.assertEqual(ensure_identity(self.client.query,self.database,claim,LISTING,'listing:fixture'),key)
+        start=datetime(2026,1,2,9,tzinfo=timezone.utc);end=start+timedelta(days=3)
+        active=ListingInterval('listing:fixture','security:fixture','issuer:fixture','IPO',321,start,end,
+                               'US','NASDAQ','USD','STK',True,True,False,False,'a'*64)
+        dead=replace(active,listed=False,valid_from=end,valid_to=end+timedelta(days=10))
+        insert_rows(self.client.query,self.database,'research_membership_v1',[active.row(dataset),dead.row(dataset)])
+        self.assertFalse(membership_at(self.client.query,self.database,dataset,start-timedelta(microseconds=1)))
+        self.assertEqual(len(membership_at(self.client.query,self.database,dataset,start)),1)
+        self.assertFalse(membership_at(self.client.query,self.database,dataset,end))
+
+    def test_public_asof_facts_preserve_original_vintage_until_revision(self):
+        from datetime import timezone
+        dataset=str(uuid.uuid4());metric=facts.catalog()[0].key
+        base=dict(dataset_id=dataset,entity_kind=1,entity_key=19,metric_key=metric,period_start=None,
+                  period_end='2025-12-31',unit_key=1,status=1,precision=1,confidence=100,
+                  reason='',evidence_hash='a'*64)
+        rows=[dict(base,available_at='2026-02-10 12:00:00.000000',revision=0,value=100.),
+              dict(base,available_at='2026-03-01 12:00:00.000000',revision=1,value=110.)]
+        insert_rows(self.client.query,self.database,'research_facts_v1',rows)
+        def read(at,strict=False):
+            return self.client.query(facts.lookup_sql(self.database,dataset,[(1,19)],[metric],at,strict_prior=strict))
+        self.assertFalse(read(datetime(2026,1,15,tzinfo=timezone.utc)))
+        self.assertEqual(read(datetime(2026,2,11,tzinfo=timezone.utc))[0]['value'],100.)
+        boundary=datetime(2026,3,1,12,tzinfo=timezone.utc)
+        self.assertEqual(read(boundary,True)[0]['value'],100.)
+        self.assertEqual(read(boundary)[0]['value'],110.)
+
+    def test_real_training_minute_strict_activity_matches_canonical_events(self):
+        # Bounded, public training date only. No full-day source scan or final
+        # research publication is performed by this pilot fixture.
+        day=date(2026,8,21)
+        source=(f"SELECT * FROM ({market_day_sql.canonical_source(day,'AAPL')}) "
+                f"WHERE sip_timestamp_us>={market_day_sql.bounds(day,'09:30:00')} "
+                f"AND sip_timestamp_us<{market_day_sql.bounds(day,'09:31:00')}")
+        rules=self.client.query("SELECT token_id,modifier_int,update_high_low,update_last,update_volume "
+            "FROM market_sip_compact.event_condition_token_reference WHERE source_family='trade_conditions' "
+            "AND is_join_canonical=1 ORDER BY token_id")
+        self.assertTrue(rules)
+        unit=market.MarketUnit(str(uuid.uuid4()),day,'AAPL',77,str(uuid.uuid4()))
+        self.client.query(market.aggregate_sql(unit,rules,self.database,source=source),read=False)
+        for query in market.bar_queries(unit,self.database):self.client.query(query,read=False)
+        self.client.query(market.normalized_insert(unit,'broker_100ms',self.database),read=False)
+        form,_,_,volume=market_day_sql.condition_expressions(rules)
+        expected=self.client.query("SELECT sumIf(toFloat64(size_primary),kind=1 AND bitAnd(event_meta,192)=64 "
+            f"AND price_primary_int>0 AND size_primary>0 AND isFinite(size_primary) AND {volume}) volume,"
+            f"countIf(kind=1 AND bitAnd(event_meta,192)=64 AND price_primary_int>0 AND size_primary>0 "
+            f"AND isFinite(size_primary) AND {volume}) trades FROM (SELECT *,bitAnd(event_meta,1) kind,"
+            "toHour(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us),'America/New_York'))*3600+"
+            "toMinute(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us),'America/New_York'))*60+"
+            "toSecond(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us),'America/New_York')) local_second,"
+            "arrayFilter(t->t>0,[toUInt16(condition_token_1),toUInt16(condition_token_2),"
+            "toUInt16(condition_token_3),toUInt16(condition_token_4),toUInt16(condition_token_5)]) tokens,"
+            f"({form}) form_ok FROM ({source}))")[0]
+        actual=self.client.query(f"SELECT sum(volume) volume,sum(trade_count) trades "
+                                 f"FROM {self.database}.research_liquidity_v1 WHERE listing_key=77")[0]
+        self.assertGreater(int(actual['trades']),0)
+        self.assertEqual(int(actual['trades']),int(expected['trades']))
+        self.assertAlmostEqual(actual['volume'],expected['volume'],places=6)
 
     def test_strict_trade_gate_matches_real_sql_volume_price_and_count(self):
         day=date(2026,1,2);attempt=str(uuid.uuid4())
@@ -177,6 +321,12 @@ class ClickHouseIntegration(unittest.TestCase):
         self.client.query(market.indicator_sql(unit,self.database),read=False)
         for product in ('bars','technical','broker_100ms'):
             self.client.query(market.normalized_insert(unit,product,self.database),read=False)
+            class Claim:
+                def check(self):pass
+            publisher=Publisher(self.client.query,self.database,Claim())
+            scope=Scope(unit.dataset_id,day,unit.listing_key,product,'a'*64)
+            expected=self.client.query(market.expected_evidence_sql(unit,product,self.database))[0]
+            publisher.publish(scope,unit.attempt_id,expected={k:int(v) for k,v in expected.items()})
         result=self.client.query(f"SELECT sum(volume) volume,sum(trade_count) trades,"
             "sum(reporting_delayed_trades) delayed,sum(reporting_unknown_trades) unknown,"
             f"sum(reporting_invalid_trades) invalid FROM {self.database}.research_liquidity_v1 WHERE listing_key=7")

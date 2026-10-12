@@ -14,8 +14,8 @@ All tables use `MergeTree`, `live_market_ssd` and lossless per-column compressio
 | `entity_kind` | `UInt8` | `ZSTD(1)` |
 | `entity_key` | `UInt64` | `T64,ZSTD(1)` |
 | `metric_key` | `UInt32` | `T64,ZSTD(1)` |
-| `period_start` | `Date` | `ZSTD(1)` |
-| `period_end` | `Date` | `ZSTD(1)` |
+| `period_start` | `Nullable(Date)` | `ZSTD(1)` |
+| `period_end` | `Nullable(Date)` | `ZSTD(1)` |
 | `available_at` | `DateTime64(6,'UTC')` | `Delta(8),ZSTD(1)` |
 | `revision` | `UInt32` | `T64,ZSTD(1)` |
 | `value` | `Nullable(Float64)` | `ZSTD(1)` |

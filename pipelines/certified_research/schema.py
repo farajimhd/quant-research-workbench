@@ -40,9 +40,11 @@ class Table:
 
     def ddl(self, database):
         cols = ",\n    ".join(c.sql() for c in self.columns)
+        nullable_order=any(c.name in self.order and c.type.startswith('Nullable(') for c in self.columns)
         return (f"CREATE TABLE IF NOT EXISTS {identifier(database)}.{self.name} (\n    {cols}\n) "
                 f"ENGINE=MergeTree PARTITION BY {self.partition} ORDER BY ({','.join(self.order)}) "
-                f"SETTINGS storage_policy='{STORAGE_POLICY}', default_compression_codec='ZSTD(1)'")
+                f"SETTINGS storage_policy='{STORAGE_POLICY}', default_compression_codec='ZSTD(1)'"
+                +(', allow_nullable_key=1' if nullable_order else ''))
 
 
 def c(name, type, codec="ZSTD(1)"):
@@ -82,7 +84,7 @@ TABLES = (
           tuple(c(n,"Float64") for n in ("bid_size","ask_size","cumulative_volume","cumulative_notional","cumulative_execution_volume","cumulative_execution_notional")) +
           tuple(c(n,"UInt8") for n in ("price_valid","extremes_valid","volume_valid","quote_valid")), ORDER, MONTH),
     Table("research_facts_v1", (c("dataset_id","UUID"),c("entity_kind","UInt8"),c("entity_key","UInt64","T64,ZSTD(1)"),
-          c("metric_key","UInt32","T64,ZSTD(1)"),c("period_start","Date"),c("period_end","Date"),
+          c("metric_key","UInt32","T64,ZSTD(1)"),c("period_start","Nullable(Date)"),c("period_end","Nullable(Date)"),
           c("available_at","DateTime64(6,'UTC')","Delta,ZSTD(1)"),c("revision","UInt32","T64,ZSTD(1)"),
           c("value","Nullable(Float64)"),c("unit_key","UInt16"),c("status","UInt8"),c("precision","UInt8"),
           c("confidence","UInt8"),c("reason","LowCardinality(String)"),c("evidence_hash","FixedString(64)")),

@@ -31,6 +31,8 @@ Run `python -B scripts/prepare_certified_research.py schema --format sql` for ex
 
 Live isolated SSD fixture tests covered DDL, exact bar round-trip, actual part placement, strict rejection counters, all eight bar frames and indicator projection. Fixtures were removed after testing. These are bounded correctness checks, not full-market throughput certification.
 
+The next implementation slice adds attempt-scoped readback/publication, explicit empty proof, stable normalized identities, half-open membership and public-as-of fact lookup. Live tests cover receipt resume, duplicate rejection, listing/delisting boundaries, original filing values versus later revisions, and a bounded AAPL August 21 training-minute comparison against canonical events. Keeper session-loss handling has deterministic tests; live Keeper integration and full-range performance qualification remain pending.
+
 ## Remaining implementation
 
 Wire source acquisition/migration receipts; build dated normalized identities and membership; certify public-as-of SEC/short/float values; publish compatible causal checkpoints and dependency receipts; add complete run/resume/verify paths and measured representative performance. The launcher currently exposes schema inspection and read-only preflight/plan, and explicitly reports campaign execution disabled.
