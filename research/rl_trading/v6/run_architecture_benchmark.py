@@ -37,7 +37,13 @@ def save(path, value):
 
 
 def batch(data, indices, device):
-    return {name: data[name][indices].to(device) for name in FIELDS}
+    names=FIELDS+tuple(name for name in ('multi','multi_present','liquidity','market') if name in data)
+    return {name: data[name][indices].to(device) for name in names}
+
+
+def representation(model,item):
+    extras={name:item[name] for name in ('multi','multi_present','liquidity','market') if name in item}
+    return model.representation(item['raw'],item['present'],item['held'],**extras)
 
 
 @torch.no_grad()
@@ -46,7 +52,7 @@ def evaluate(model, data, device, pacer):
     for begin in range(0, len(data['action']), 8):
         pacer.begin_activity()
         item = batch(data, slice(begin, begin + 8), device)
-        context = model.representation(item['raw'], item['present'], item['held'])
+        context = representation(model,item)
         output = model.heads(context, item['held'][:, 0] > 0)
         future = model.forecast(context, model.forecast_gru, steps=5)
         for name, value in dict(current=output.logits.softmax(-1), quality=output.quality,
@@ -84,6 +90,7 @@ def main(argv=None):
     parser.add_argument('--snapshot-runtime', type=Path, help='Reuse authenticated completed benchmark snapshots')
     parser.add_argument('--candidate-indices', type=int, nargs='+', help='Explicit 1-based transformer subset for bounded smoke tests')
     parser.add_argument('--wandb-project', default='rl-trading-v6', help='Dedicated W&B project; bound into the experiment manifest')
+    parser.add_argument('--enriched-runtime',type=Path,help='Certified frozen enriched feature panel')
     args = parser.parse_args(argv)
     if not args.wandb_project or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in args.wandb_project):
         raise ValueError('Explicit alphanumeric W&B project name required')
@@ -114,8 +121,13 @@ def main(argv=None):
         snapshot = args.snapshot_runtime.resolve()
         if not snapshot.is_relative_to(runtime): raise ValueError('Snapshot runtime escaped laptop root')
         snapshot_plan = json.loads((snapshot / 'manifest.json').read_text())
-        proof = json.loads((snapshot / 'comparison-audit.json').read_text())
-        if proof['status'] != 'passed' or proof['sealed_labels_read'] or not proof['source_and_snapshot_hashes_verified']:
+        proof_path=snapshot/('final-comparison-audit.json' if (snapshot/'final-comparison-audit.json').exists() else 'comparison-audit.json')
+        proof = json.loads(proof_path.read_text())
+        authenticated=(proof.get('source_and_snapshot_hashes_verified') is True or (
+            snapshot_plan['version']=='rl-v6-transformer-search-32-v1' and proof.get('candidates')==32
+            and proof.get('manifest_and_checkpoints_verified') is True and proof.get('fresh_process_train_replays')==32
+            and proof.get('validation_aggregations_exact')==32))
+        if proof['status'] != 'passed' or proof['sealed_labels_read'] or not authenticated:
             raise ValueError('Verified completed benchmark snapshot required')
         if snapshot_plan['parent_manifest_sha256'] != file_hash(args.parent / 'manifest.json') or snapshot_plan['train_sha256'] != file_hash(snapshot / 'train.pt'):
             raise ValueError('Snapshot TRAIN/parent binding changed')
@@ -128,6 +140,20 @@ def main(argv=None):
         parent, train, bindings = training(args.parent)
     base = json.loads((args.parent / 'normalization.json').read_text())
     extra = json.loads((args.parent / 'channel-normalization.json').read_text())
+    enrichment=None;enriched_normalization=None
+    if args.enriched_runtime:
+        panel=args.enriched_runtime.resolve()
+        if not panel.is_relative_to(runtime) or not args.transformer_search or not args.snapshot_runtime:
+            raise ValueError('Enrichment requires explicit transformer snapshot/runtime')
+        enrichment=json.loads((panel/'complete.json').read_text())
+        if enrichment['status']!='prepared' or enrichment['source_manifest_sha256']!=file_hash(args.snapshot_runtime/'manifest.json'):
+            raise ValueError('Enriched panel source binding changed')
+        if file_hash(panel/'train.pt')!=enrichment['train_sha256'] or file_hash(panel/'normalization.json')!=enrichment['normalization_sha256']:
+            raise ValueError('Enriched TRAIN/normalization hash changed')
+        enriched_train=torch.load(panel/'train.pt',weights_only=False)
+        if enriched_train['keys']!=train['keys'] or any(not torch.allclose(enriched_train[k],train[k],equal_nan=True,atol=0,rtol=0) for k in FIELDS):
+            raise ValueError('Enrichment changed frozen TRAIN targets or original inputs')
+        train=enriched_train;enriched_normalization=json.loads((panel/'normalization.json').read_text())
     # Preserve global RNG while capacity is chosen without any outcomes.
     with torch.random.fork_rng():
         if args.transformer_search:
@@ -137,8 +163,13 @@ def main(argv=None):
         else:
             sizes = matched_sizes(base, extra)
     def build_model(spec):
+        if args.enriched_runtime:
+            from research.rl_trading.v6 import enriched_teacher
+            return enriched_teacher.build(spec,base,extra,enriched_normalization)
         return (transformer_search.build(spec, base, extra) if args.transformer_search
             else WindowTeacher(Candidate(spec['architecture'], spec['width']), base, extra))
+    if args.enriched_runtime:
+        for spec in sizes:spec['parameters']=sum(p.numel() for p in build_model(spec).parameters())
     train_path = output / 'train.pt'
     if train_path.exists():
         old_train = torch.load(train_path, weights_only=False)
@@ -149,6 +180,8 @@ def main(argv=None):
         save(train_path, train)
     plan = dict(version=transformer_search.VERSION if args.transformer_search else VERSION, source_commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
         wandb_project=args.wandb_project,
+        enriched_runtime=str(args.enriched_runtime.resolve()) if args.enriched_runtime else None,
+        enrichment_sha256=file_hash(args.enriched_runtime/'complete.json') if args.enriched_runtime else None,
         snapshot_runtime=str(args.snapshot_runtime.resolve()) if args.snapshot_runtime else None,
         snapshot_manifest_sha256=file_hash(args.snapshot_runtime/'manifest.json') if args.snapshot_runtime else None,
         source_runtime=str(args.source_runtime.resolve()), parent_runtime=str(args.parent.resolve()),
@@ -234,7 +267,7 @@ def main(argv=None):
                         with torch.no_grad():
                             for begin in range(0, len(train['action']), 8):
                                 pacer.begin_activity(); item = batch(train, slice(begin, begin + 8), device)
-                                contexts.append(model.representation(item['raw'], item['present'], item['held']).detach()); pacer()
+                                contexts.append(representation(model,item).detach()); pacer()
                         frozen = torch.cat(contexts)
                     model.train(); optimizer.zero_grad(set_to_none=True)
                     order = np.random.default_rng(17 + update).permutation(len(train['action']))
@@ -242,7 +275,7 @@ def main(argv=None):
                     for begin in range(0, len(order), 8):
                         pacer.begin_activity(); indices = torch.as_tensor(order[begin:begin+8])
                         item = batch(train, indices, device)
-                        context = frozen[indices.to(device)] if frozen is not None else model.representation(item['raw'], item['present'], item['held'])
+                        context = frozen[indices.to(device)] if frozen is not None else representation(model,item)
                         value = loss(model, context, item, weights)
                         if not torch.isfinite(value):
                             raise RuntimeError('Nonfinite candidate objective')
@@ -294,6 +327,13 @@ def main(argv=None):
                                 if old_receipt['manifest_sha256'] != file_hash(args.snapshot_runtime/'manifest.json') or old_receipt['sha256'] != file_hash(args.snapshot_runtime/'validation.pt'):
                                     raise ValueError('Snapshot validation binding changed')
                                 validation_data = torch.load(args.snapshot_runtime/'validation.pt', weights_only=False)
+                                if args.enriched_runtime:
+                                    if file_hash(args.enriched_runtime/'validation.pt')!=enrichment['validation_sha256']:
+                                        raise ValueError('Enriched validation hash changed')
+                                    enriched_validation=torch.load(args.enriched_runtime/'validation.pt',weights_only=False)
+                                    if enriched_validation['keys']!=validation_data['keys'] or any(not torch.allclose(enriched_validation[k],validation_data[k],equal_nan=True,atol=0,rtol=0) for k in FIELDS):
+                                        raise ValueError('Enrichment changed validation inputs/labels')
+                                    validation_data=enriched_validation
                                 scope = old_receipt['scope']
                             else:
                                 validation_data, scope = validation(args.source_runtime, parent, plan['validation_days'])
