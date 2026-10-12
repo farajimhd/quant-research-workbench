@@ -193,6 +193,14 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
             # contract is versioned; it must not silently round the program.
             with pytest.raises(ValueError, match="Number cannot fit typed Decimal"):
                 controller._journal_publisher._prepare_batches(result.policy_packet.journal_sequence)
+            controller._journal_publisher.exact_oms_prices = True
+            try:
+                # The OMS price contract is now exact. Shared order-command
+                # projection is the next independently confirmed precision gap.
+                with pytest.raises(ValueError, match="losslessly for order.aux_price"):
+                    controller._journal_publisher._prepare_batches(result.policy_packet.journal_sequence)
+            finally:
+                controller._journal_publisher.exact_oms_prices = False
             assert controller._journal_publisher.fenced_sequence == 0
             from src.backend import backtest_program_publication as publication
             proofs = publication.program_decision_projection_arguments(controller._journal_publisher,

@@ -151,6 +151,15 @@ fence, cold-read the state/tactic, retry it and reject altered children before
 reservation. Main-path selection of the exact price contract remains unfinished;
 these transport tests are not a full native session or speed qualification.
 
+The Backtest prefix projector and receipt publisher now accept an explicit
+`exact_oms_prices=True` selection. Default behavior remains legacy. The native
+100ms/1s cohort test confirms that this selection passes OMS projection and
+then fails losslessly at shared `order_command_batch` for the same protective
+`order.aux_price`. Order-command precision is therefore the next confirmed
+integration gap. This source-only selection has not been enabled in the app;
+complete price-family coverage and immutable run-setting/recovery binding are
+required before main-path admission or any real session qualification.
+
 Whichever option is selected must cover central schema definitions, projectors,
 binary insert/readback hashes, compound family seals, grants/storage audits,
 order command/modify/reprice links, broker execution attribution, OMS actor

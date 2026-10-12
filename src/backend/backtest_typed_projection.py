@@ -22,6 +22,7 @@ from src.trading_runtime.arte_journal_writer import V3SqueezeBatch
 from src.trading_runtime.arte_oms_tactic_projection import (
     V4OmsTacticBatch, tactic_rows,
 )
+from src.trading_runtime.arte_oms_exact_prices import ExactPriceOmsStateBatch
 from src.trading_runtime.arte_journal_writer import (
     V4BrokerAcknowledgementBatch, V4OrderCancelBatch, V4OrderRepriceBatch,
     V4ProtectionChangeBatch,
@@ -126,16 +127,19 @@ def project_pending_backtest_v4_prefix(
     committed_order_lineage: Mapping[str, tuple] | None = None,
     committed_order_lineage_proofs: Mapping[str, str] | None = None,
     committed_order_lineage_oms_records: Mapping[str, str] | None = None,
+    exact_oms_prices: bool = False,
     through_sequence: int,
 ) -> tuple[TypedJournalBatch | V4StrategyOneEntryBatch
            | V4ProfitGivebackBatch
            | V4ConfirmedAhFailureBatch
-           | V4OmsTacticBatch
+           | V4OmsTacticBatch | ExactPriceOmsStateBatch
            | V4BrokerAcknowledgementBatch | V4OrderCancelBatch
            | V4OrderRepriceBatch | V4RiskActionBatch | V4ProtectionChangeBatch
            | V4ProtectionReconciliationBatch | V4PortfolioAllocationBatch
            | V4ReservationReasonBatch, ...]:
     """Project one bounded V4 prefix; special families never enter a base batch."""
+    if type(exact_oms_prices) is not bool:
+        raise ValueError("V4 exact OMS price projection requires an explicit boolean")
     from src.trading_runtime.arte_broker_acknowledgement_v4 import (
         broker_acknowledgement_batch_v4,
     )
@@ -359,17 +363,20 @@ def project_pending_backtest_v4_prefix(
                 authorized_protection=protection_proof,
                 journal_record_id=record.record_id,
                 correlation_id=record.payload.get("correlation_id", ""),
-                causation_id=record.payload.get("causation_id", ""))
-            if (unit.events[0]["event_time"] != record.event_time.isoformat()
-                    or unit.events[0]["entity_id"] != record.entity_id
-                    or unit.events[0]["account_id"] != record.account_id):
+                causation_id=record.payload.get("causation_id", ""),
+                exact_prices=exact_oms_prices)
+            oms_event_unit = unit.base if exact_oms_prices else unit
+            if (oms_event_unit.events[0]["event_time"] != record.event_time.isoformat()
+                    or oms_event_unit.events[0]["entity_id"] != record.entity_id
+                    or oms_event_unit.events[0]["account_id"] != record.account_id):
                 raise RuntimeError("V4 OMS typed event differs from its journal source")
-            tactic_state, tactic_steps = tactic_rows(
-                group.tactic, group_record_id=record.record_id,
-                run_id=record.run_id,
-                event_month=record.event_time.astimezone(timezone.utc).strftime("%Y-%m-01"),
-                batch_id=batch_id, account_id=group.account_id)
-            unit = V4OmsTacticBatch(unit, tactic_state, tactic_steps)
+            if not exact_oms_prices:
+                tactic_state, tactic_steps = tactic_rows(
+                    group.tactic, group_record_id=record.record_id,
+                    run_id=record.run_id,
+                    event_month=record.event_time.astimezone(timezone.utc).strftime("%Y-%m-01"),
+                    batch_id=batch_id, account_id=group.account_id)
+                unit = V4OmsTacticBatch(unit, tactic_state, tactic_steps)
             for client_order_id, lineage in committed_oms_order_lineage(
                     group, run_id=record.run_id,
                     strategy_id=record.payload["strategy_id"],

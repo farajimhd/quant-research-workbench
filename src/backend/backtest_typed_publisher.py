@@ -167,8 +167,11 @@ class BacktestTypedJournalPublisher:
         expected_market_plan_token: str | None = None,
         expected_query_sha256: str | None = None,
         drawdown_authority=None,
+        exact_oms_prices: bool = False,
     ) -> None:
         attempt = str(UUID(attempt_id))
+        if type(exact_oms_prices) is not bool or exact_oms_prices and writer.journal_profile != "backtest_v4":
+            raise ValueError("Exact OMS price publication requires the explicit V4 mode")
         prior = str(UUID(prior_batch_id))
         if (writer.run_id != journal.run_id or writer.run_mode != "backtest"
                 or writer.journal_profile not in {"backtest_v2", "backtest_v3", "backtest_v4"}
@@ -189,6 +192,7 @@ class BacktestTypedJournalPublisher:
         projection_drawdown_policy(drawdown_authority,
             run_id=journal.run_id, expected_config=expected_config)
         self.drawdown_authority = drawdown_authority
+        self.exact_oms_prices = exact_oms_prices
         self.journal = journal
         self.writer = writer
         self.attempt_id = attempt
@@ -418,6 +422,7 @@ class BacktestTypedJournalPublisher:
                 committed_order_lineage_oms_records=dict(
                     self._committed_order_lineage_oms_records),
                 through_sequence=through_sequence,
+                **({"exact_oms_prices": True} if self.exact_oms_prices else {}),
                 **program_decision_projection_arguments(self, through_sequence))
             return _coalesce_v4_units(units, max_events=self.batch_size)
         if self.writer.journal_profile == "backtest_v3":
