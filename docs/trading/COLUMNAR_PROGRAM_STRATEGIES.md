@@ -180,6 +180,12 @@ Main launch admission and operational full-session qualification remain unfinish
 Native cohort publication now resolves generic program intents earlier in the
 same pending prefix only after verifying their retained native-qualified
 completion proofs. Default legacy projection remains unchanged.
+After a matching writer acknowledgement, the existing publisher now caches the
+exact committed program intent revision and reconstructs its semantic intent
+from the normalized rows. Later OMS projection can reuse that committed source
+after journal compaction. Transport tests use synthetic proof/receipt fixtures
+to confirm no cache/fence advance before acknowledgement or on writer failure;
+they do not establish native price-schema publication success.
 The full native prefix test exposed a persistence boundary: Float32-derived
 stop9.989999771118164 does not fit the existing OMS `Decimal(38,10)` price
 column losslessly. Publication currently fails closed and leaves the fence

@@ -528,6 +528,8 @@ class BacktestTypedJournalPublisher:
                     committed = await asyncio.wrap_future(receipt)
                     if str(UUID(str(committed))) != batch.batch_id:
                         raise RuntimeError("Typed Backtest writer changed an exclusive batch ID")
+                    from .backtest_program_publication import cache_committed_program_intent_sources
+                    cache_committed_program_intent_sources(self, batch, unit)
                     for source_unit in (unit.units if isinstance(
                             unit, V4CompoundBatch) else (unit,)):
                         source_batch = (source_unit if isinstance(source_unit,

@@ -6,6 +6,46 @@ _LOCK = RLock()
 _PENDING = WeakKeyDictionary()
 
 
+def cache_committed_program_intent_sources(publisher, batch, unit):
+    """Retain exact acknowledged source revisions for later OMS transitions."""
+    from .backtest_typed_publisher import _committed_intent_source
+    from src.trading_runtime.arte_journal_compound_v4 import V4CompoundBatch
+    from src.trading_runtime.rule_decision_publication import QualifiedRuleDecisionBatch, _check_rule_decision_qualification
+    from src.trading_runtime.arte_intent_projection import ProjectedIntent, restore_strategy_intent
+    from src.trading_runtime.arte_journal_writer import TypedJournalBatch
+    base = unit if type(unit) is TypedJournalBatch else unit.base
+    if base is not batch:
+        raise ValueError("Committed program cache requires its exact acknowledged batch")
+    units = unit.units if type(unit) is V4CompoundBatch else (unit,)
+    wanted = set()
+    for child in units:
+        if type(child) is QualifiedRuleDecisionBatch:
+            _check_rule_decision_qualification(child.unit, child.qualification)
+            wanted.update(row["strategy_intent_id"] for row in child.unit.intents)
+    if not wanted:
+        return
+    if publisher.writer.journal_profile != "backtest_v4" or batch.run_id != publisher.journal.run_id:
+        raise ValueError("Committed program cache requires its owned V4 run")
+    prepared = {}
+    for row in batch.intents:
+        if row["intent_id"] not in wanted:
+            continue
+        source = _committed_intent_source(batch, row["record_id"])
+        excluded = {"record_id", "parent_record_id", "run_id", "event_month", "batch_id", "account_id", "content_hash"}
+        core = {key: value for key, value in row.items() if key not in excluded}
+        core["event_time"] = source.events[0]["event_time"]
+        slices = tuple({"intent_id": row["intent_id"], **{key: value for key, value in item.items()
+            if key not in excluded}} for item in source.intent_slices)
+        intent = restore_strategy_intent(ProjectedIntent(core, slices))
+        if intent.intent_id in prepared:
+            raise ValueError("Committed program batch repeats a semantic intent")
+        prior = publisher._committed_strategy_intents.get(intent.intent_id)
+        if prior is not None and prior != (source, intent):
+            raise ValueError("Committed program intent cannot replace its acknowledged source")
+        prepared[intent.intent_id] = (source, intent)
+    publisher._committed_strategy_intents.update(prepared)
+
+
 def retain_qualified_rule_decision(publisher, qualified):
     from .backtest_typed_publisher import BacktestTypedJournalPublisher
     from src.trading_runtime.rule_decision_publication import QualifiedRuleDecisionBatch, _check_rule_decision_qualification
