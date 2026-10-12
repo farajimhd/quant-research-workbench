@@ -56,6 +56,11 @@ async def publish_program_broker_checkpoint(controller, *, connection_factory, c
     sequence, batch, source_cursor = publisher.fenced_sequence, publisher._batch_id, source.typed_source_cursor()
     policy_hash = program_policy_fingerprint(actor)
     captured = broker.checkpoint_state()
+    accounts = tuple(runtime.config.account_ids)
+    if not accounts or len(set(accounts)) != len(accounts) or set(accounts) != set(controller.account_ids):
+        raise ValueError("Programme checkpoint account population differs from its run")
+    portfolio_captures = tuple(runtime.portfolio.capture_recovery_snapshot(account_id,
+        state_revision=sequence, snapshot_at=at) for account_id in sorted(accounts))
     def require_owner():
         current = (controller.definition, controller._runtime, controller._program_strategy,
             controller._journal, controller._journal_publisher, publisher.writer, runtime.broker,
@@ -89,6 +94,18 @@ async def publish_program_broker_checkpoint(controller, *, connection_factory, c
         require_owner()
         if receipt != batch:
             raise RuntimeError("Programme broker checkpoint changed its V4 batch receipt")
+        for capture in portfolio_captures:
+            require_owner()
+            financial = writer.submit_running_portfolio_snapshot(journal_batch_id=batch, captured=capture)
+            job = asyncio.ensure_future(asyncio.wrap_future(financial))
+            try:
+                receipt = await asyncio.shield(job)
+            except asyncio.CancelledError:
+                await _settle_owned_task(job)
+                raise
+            require_owner()
+            if receipt != batch:
+                raise RuntimeError("Programme account checkpoint changed its V4 batch receipt")
         return rows
     except BaseException as failure:
         if submitted:
