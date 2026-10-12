@@ -4301,6 +4301,24 @@ class ArteJournalWriter:
             raise ValueError('Liquidity fade requires its exact typed envelope')
         return self._submit_profit_publication(unit, first_price_source=first_price_source)
 
+    def submit_exact_oms_v4(self, unit) -> Future[str]:
+        """Queue exact-price OMS persistence without caller-side network I/O."""
+        from .arte_oms_exact_prices import ExactPriceOmsStateBatch
+        if (self._journal_profile != "backtest_v4"
+                or type(unit) is not ExactPriceOmsStateBatch
+                or unit.base.run_id != self._run_id):
+            raise ValueError("Exact OMS prices require the pinned Backtest writer")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("V4 writer is closed or failed")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull("V4 journal queue is full; stop admission") from exc
+            self._accepted_writes = True
+            return receipt
+
     def submit_oms_tactic_v4(self, unit) -> Future[str]:
         """Queue one group+tactic graph without network I/O on the actor."""
         from .arte_oms_tactic_projection import V4OmsTacticBatch
@@ -4949,6 +4967,8 @@ class ArteJournalWriter:
         from .arte_oms_tactic_projection import V4OmsTacticBatch
         from .rule_decision_publication import QualifiedRuleDecisionBatch
 
+        from .arte_oms_exact_prices import ExactPriceOmsStateBatch
+
         held: tuple[
             TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
             | _DurabilityBarrier | _AdmissionUnit | _PortfolioSyncUnit
@@ -4997,7 +5017,7 @@ class ArteJournalWriter:
                 from .automatic_ladder_transport import V4AutomaticLadderBatch
                 if (self._journal_profile in {"backtest_v2", "backtest_v3", *self._V4_PROFILES}
                         and not isinstance(group[0][0],
-                                           (QualifiedRuleDecisionBatch, TypedJournalBatch, V3SqueezeBatch, V4AutomaticLadderBatch,
+                                           (ExactPriceOmsStateBatch, QualifiedRuleDecisionBatch, TypedJournalBatch, V3SqueezeBatch, V4AutomaticLadderBatch,
                                             V4CompoundBatch,
                                             V4StrategyOneEntryBatch, V4FollowThroughFailureBatch,
                                             V4OmsTacticBatch,
@@ -5145,6 +5165,9 @@ class ArteJournalWriter:
                         entry_activity_evidence=unit.entry_activity_evidence,
                         entry_spread_risk_evidence=unit.entry_spread_risk_evidence,
                         first_price_source=unit.first_price_source)
+                elif isinstance(group[0][0], ExactPriceOmsStateBatch):
+                    from .arte_oms_exact_prices import publish_exact_oms_state_batch_v4
+                    committed_id = publish_exact_oms_state_batch_v4(self._client, group[0][0])
                 elif isinstance(group[0][0], V4OmsTacticBatch):
                     from src.trading_runtime.arte_journal_commit_v4 import (
                         publish_oms_tactic_batch_v4,

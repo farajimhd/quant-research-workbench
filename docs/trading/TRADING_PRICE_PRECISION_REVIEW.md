@@ -133,6 +133,15 @@ still incomplete. Tactic quote/step decimal contracts remain unchanged; their
 own price precision must be reviewed before claiming complete exact-price
 coverage for every execution tactic.
 
+`ArteJournalWriter.submit_exact_oms_v4` now submits the explicit envelope to the
+existing bounded persistence worker. The actor-side method performs no network
+I/O; storage/grant admission and V4 publication stay on the worker. Synthetic
+blocked-worker tests confirm pending acknowledgement, immediate queue overflow,
+publication on a distinct thread, idempotent queued retries, failure receipts,
+and rejection of further writes after failure. Mixed-prefix compaction and
+main-path projection still need exact-family support before this route can be
+enabled in the app. No full-session throughput result is implied.
+
 Whichever option is selected must cover central schema definitions, projectors,
 binary insert/readback hashes, compound family seals, grants/storage audits,
 order command/modify/reprice links, broker execution attribution, OMS actor
