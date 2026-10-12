@@ -336,7 +336,7 @@ def project_pending_backtest_v4_prefix(
             unit = protection_reconciliation_batch_v4(
                 record, run_month=run_month, attempt_id=attempt,
                 batch_id=batch_id, prior_batch_id=previous,
-                source_cursor=cursor)
+                source_cursor=cursor, exact_prices=exact_oms_prices)
         elif kind == ("order_management", "order_group_state"):
             group = journal.oms_group_for_record(record.record_id)
             admission = journal.oms_admission_for_record(record.record_id)

@@ -4585,6 +4585,8 @@ class ArteJournalWriter:
         if (self._journal_profile not in self._V4_PROFILES
                 or not isinstance(unit, V4ProtectionReconciliationBatch)):
             raise ValueError("V4 reconciliation requires its typed writer profile")
+        if unit.exact_prices and self._journal_profile != "backtest_v4":
+            raise ValueError("Exact reconciliation prices require the Backtest writer")
         with self._submission_lock:
             if self._closed or self._error is not None:
                 raise RuntimeError("V4 writer is closed or failed")
@@ -5169,7 +5171,7 @@ class ArteJournalWriter:
                     committed_id = publish_protection_reconciliation_batch_v4(
                         self._client, unit.base,
                         reconciliation=unit.reconciliation,
-                        actions=unit.actions, replies=unit.replies)
+                        actions=unit.actions, replies=unit.replies, exact_prices=unit.exact_prices)
                 elif isinstance(group[0][0], V4ProtectionChangeBatch):
                     from src.trading_runtime.arte_journal_commit_v4 import (
                         publish_protection_change_batch_v4,

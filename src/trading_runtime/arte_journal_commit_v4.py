@@ -650,6 +650,7 @@ def _load_verified_details_v4(
                     PROTECTION_CHANGE.name, PROTECTION_ENTRY_ORDER.name,
                     PROTECTION_RECONCILIATION.name,
                     RECONCILIATION_ACTION.name, RECONCILIATION_REPLY.name,
+                    "trading_protection_reconciliation_action_exact_price_v4",
                     "trading_backtest_account_snapshot_v2",
                     "trading_backtest_position_snapshot_v2",
                     "trading_oms_group_state_v1",
@@ -930,7 +931,8 @@ def _load_verified_details_v4(
     try:
         seal_protection_reconciliation_v4(
             related_rows.get(PROTECTION_RECONCILIATION.name, ()),
-            related_rows.get(RECONCILIATION_ACTION.name, ()),
+            (*related_rows.get(RECONCILIATION_ACTION.name, ()),
+             *related_rows.get("trading_protection_reconciliation_action_exact_price_v4", ())),
             related_rows.get(RECONCILIATION_REPLY.name, ()),
             tuple(events.values()), run_id=run_id, batch_id=batch_id)
     except ValueError as exc:
@@ -1234,11 +1236,13 @@ def publish_protection_change_batch_v4(client, batch, *, change,
 
 def publish_protection_reconciliation_batch_v4(
     client, batch, *, reconciliation, actions, replies,
+    exact_prices=False,
 ) -> str:
     return _publish_typed_batch_v4(
         client, batch, protection_reconciliation_row=reconciliation,
         protection_reconciliation_actions=actions,
-        protection_reconciliation_replies=replies)
+        protection_reconciliation_replies=replies,
+        protection_reconciliation_exact_prices=exact_prices)
 
 
 def publish_terminal_typed_batch_v4(
@@ -1477,6 +1481,7 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
                             protection_reconciliation_row=None,
                             protection_reconciliation_actions=(),
                             protection_reconciliation_replies=(),
+                            protection_reconciliation_exact_prices=False,
                             broker_snapshot_rows=None,
                             exact_oms_prices=None,
                             exact_order_prices=None,
@@ -1496,6 +1501,13 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
             or not 1 <= len(batch.events) <= MAX_V4_COMMIT_EVENTS
             or batch.status not in {"running", "completed", "stopped", "failed"}):
         raise ValueError("V4 publication needs one bounded typed event batch")
+    if type(protection_reconciliation_exact_prices) is not bool:
+        raise ValueError("Reconciliation price mode must be an explicit boolean")
+    if protection_reconciliation_exact_prices:
+        from .rule_decision_writer_preflight import require_rule_decision_writer_audit
+        if protection_reconciliation_row is None:
+            raise ValueError("Exact reconciliation prices require their parent")
+        require_rule_decision_writer_audit(client)
     if exact_oms_prices is not None:
         from .arte_oms_exact_prices import ExactPriceOmsStateBatch
         from .rule_decision_writer_preflight import require_rule_decision_writer_audit
@@ -1765,6 +1777,8 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
     reconciliation_rows = ()
     reconciliation_actions = ()
     reconciliation_replies = ()
+    reconciliation_action_family = ("trading_protection_reconciliation_action_exact_price_v4"
+        if protection_reconciliation_exact_prices else RECONCILIATION_ACTION.name)
     if protection_reconciliation_row is not None:
         if (len(batch.events) != 1 or not isinstance(protection_reconciliation_row, Mapping)
                 or (batch.events[0]["category"], batch.events[0]["entity_type"])
@@ -1780,7 +1794,7 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
             return row
         reconciliation_rows = (seal_row(PROTECTION_RECONCILIATION.name,
                                          protection_reconciliation_row),)
-        reconciliation_actions = tuple(seal_row(RECONCILIATION_ACTION.name, row)
+        reconciliation_actions = tuple(seal_row(reconciliation_action_family, row)
                                        for row in protection_reconciliation_actions)
         reconciliation_replies = tuple(seal_row(RECONCILIATION_REPLY.name, row)
                                        for row in protection_reconciliation_replies)
@@ -1997,7 +2011,7 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
     if reconciliation_rows:
         families += ((PROTECTION_RECONCILIATION.name, reconciliation_rows),)
     if reconciliation_actions:
-        families += ((RECONCILIATION_ACTION.name, reconciliation_actions),)
+        families += ((reconciliation_action_family, reconciliation_actions),)
     if reconciliation_replies:
         families += ((RECONCILIATION_REPLY.name, reconciliation_replies),)
     if snapshot_accounts:

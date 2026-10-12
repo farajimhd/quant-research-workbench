@@ -21,7 +21,7 @@ from that contract. The existing OMS adaptive execution lane uses observed
 
 ## Central fields requiring consistent treatment
 
-The registered `_CONTRACTS` inventory contains these11 families and24 price or
+The registered `_CONTRACTS` inventory contains these11 families and26 price or
 reprice fields at `Decimal(38,10)`, including nullable variants. This is a
 bounded price-field inventory, not certification of every financial field.
 
@@ -36,7 +36,7 @@ bounded price-field inventory, not certification of every financial field.
 | trading_oms_execution_step_v1 | price |
 | trading_order_reprice_v4 | requested_price |
 | trading_order_modify_command_v1 | limit_price, aux_price |
-| trading_protection_reconciliation_action_v4 | stop_price, target_price |
+| trading_protection_reconciliation_action_v4 | stop_price, target_price, from_stop, to_stop |
 
 Other existing shared families use `Decimal(38,18)`, including intent protection
 slices, protection changes and proposal order-group images. Updating only the
@@ -78,7 +78,8 @@ outputs. No order-price rounding policy is introduced. Operator approval is
 still required before any schema publication or real run.
 
 `trading_price_contracts.py` defines a closed registry of eleven shared price
-families with twenty-four named UInt64 price fields. Existing table definitions,
+families with twenty-six named UInt64 price fields (the initial inventory had
+twenty-four; the reconciliation review added from_stop and to_stop). Existing table definitions,
 partitioning, sorting and nonprice columns remain unchanged. These staged
 contracts are registered only with the scalar journal codec. They are absent
 from admitted commit families and confer no writer grants or publication right.
@@ -213,6 +214,19 @@ cohort now reaches the next confirmed gap: protection-reconciliation stop price
 still rejects the Float32-derived value at Decimal(38,10). That path remains
 unqualified until its exact-price action contract is integrated. No operational
 tables were installed or real backtests run.
+
+The reconciliation projector/envelope now selects its staged exact action
+contract explicitly, retaining all four price fields without conversion through
+legacy decimals. Quantity, parent and broker-reply contracts remain unchanged.
+The existing V4 worker, mixed compactor and cold commit graph seal the selected
+physical action family; exact publication requires the program writer audit and
+is rejected by live queue admission. Standalone synthetic readback/retry and
+price-corruption tests pass. Both complete-fill and partial-fill native cohorts
+at100ms/1s now publish and verify their full bounded prefixes; partial exits
+preserve the original Float32 stop during protection repair. These are synthetic
+bounded tests, not full sessions or all30 comparison. Remaining price families,
+full actor recovery, immutable setting selection and main launch qualification
+still require completion before real runs.
 
 Whichever option is selected must cover central schema definitions, projectors,
 binary insert/readback hashes, compound family seals, grants/storage audits,

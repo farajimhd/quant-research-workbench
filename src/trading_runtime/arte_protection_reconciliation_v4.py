@@ -112,8 +112,11 @@ class V4ProtectionReconciliationBatch:
     reconciliation: Mapping[str, Any]
     actions: tuple[Mapping[str, Any], ...]
     replies: tuple[Mapping[str, Any], ...]
+    exact_prices: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.exact_prices) is not bool:
+            raise ValueError("Reconciliation price mode must be an explicit boolean")
         def freeze(row: Mapping[str, Any]) -> Mapping[str, Any]:
             if (not isinstance(row, Mapping)
                     or any(isinstance(value, (Mapping, list, tuple, set,
@@ -143,8 +146,11 @@ def _number(value: object, *, optional: bool = False) -> str | None:
 
 def project_protection_reconciliation_v4(
     record: JournalRecord, *, attempt_id: str, batch_id: str,
+    exact_prices: bool = False,
 ) -> tuple[dict, dict, tuple[dict, ...], tuple[dict, ...]]:
     from .arte_journal_writer import typed_row
+    if type(exact_prices) is not bool:
+        raise ValueError("Reconciliation price mode must be an explicit boolean")
 
     UUID(record.record_id)
     UUID(attempt_id)
@@ -215,16 +221,21 @@ def project_protection_reconciliation_v4(
             raise ValueError("Protection reconciliation action lacks bounded replies")
         action_id = str(uuid5(NAMESPACE_URL,
                               f"{record.record_id}:reconciliation-action:{ordinal}"))
-        actions.append(typed_row(ACTION.name, {
+        action_fields = {
             **common, "record_id": action_id,
             "parent_record_id": record.record_id, "ordinal": ordinal,
             "action": source["action"],
             "broker_order_id": str(source.get("order_id") or ""),
-            **{key: _number(source.get(key), optional=True)
+            **{key: source.get(key) if exact_prices and key != "quantity" else _number(source.get(key), optional=True)
                for key in ("quantity", "stop_price", "target_price",
                            "from_stop", "to_stop")},
             "reply_count": len(response),
-        }))
+        }
+        if exact_prices:
+            from .trading_price_rows import exact_price_row
+            actions.append(exact_price_row(ACTION.name, action_fields))
+        else:
+            actions.append(typed_row(ACTION.name, action_fields))
         for reply_ordinal, answer in enumerate(response):
             if not isinstance(answer, dict):
                 raise ValueError("Protection reconciliation reply is not tabular")
@@ -267,14 +278,15 @@ def project_protection_reconciliation_v4(
 def protection_reconciliation_batch_v4(
     record: JournalRecord, *, run_month: date, attempt_id: str,
     batch_id: str, prior_batch_id: str, source_cursor: str,
+    exact_prices: bool = False,
 ) -> V4ProtectionReconciliationBatch:
     from .arte_journal_writer import TypedJournalBatch
 
     event, detail, actions, replies = project_protection_reconciliation_v4(
-        record, attempt_id=attempt_id, batch_id=batch_id)
+        record, attempt_id=attempt_id, batch_id=batch_id, exact_prices=exact_prices)
     if run_month.day != 1:
         raise ValueError("Run month must start on day one")
     base = TypedJournalBatch(
         record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
         record.sequence, record.sequence, source_cursor, "running", (event,))
-    return V4ProtectionReconciliationBatch(base, detail, actions, replies)
+    return V4ProtectionReconciliationBatch(base, detail, actions, replies, exact_prices=exact_prices)

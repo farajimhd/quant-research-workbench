@@ -20,7 +20,7 @@ PRICE_FAMILIES = MappingProxyType({
     "trading_oms_execution_step_v1": ("trading_oms_execution_step_exact_price_v1", ("price",)),
     "trading_order_reprice_v4": ("trading_order_reprice_exact_price_v4", ("requested_price",)),
     "trading_order_modify_command_v1": ("trading_order_modify_command_exact_price_v1", ("limit_price", "aux_price")),
-    "trading_protection_reconciliation_action_v4": ("trading_protection_reconciliation_action_exact_price_v4", ("stop_price", "target_price")),
+    "trading_protection_reconciliation_action_v4": ("trading_protection_reconciliation_action_exact_price_v4", ("stop_price", "target_price", "from_stop", "to_stop")),
 })
 EXACT_PRICE_FAMILY_NAMES = frozenset(target for target, _ in PRICE_FAMILIES.values())
 

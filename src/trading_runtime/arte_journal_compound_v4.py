@@ -53,7 +53,7 @@ _CHILD_KEYS = (
     "entry_evidence", "momentum_evidence", "initial_momentum_evidence", "first_price_evidence", "entry_activity_evidence", "entry_spread_risk_evidence", "add_evidence", "allocations", "reservation_reasons",
     "acknowledgements", "cancellations", "repricings", "risk_actions",
     "risk_replies", "protection_changes", "protection_entry_orders",
-    "protection_reconciliations", "reconciliation_actions",
+    "protection_reconciliations", "reconciliation_actions", "exact_reconciliation_actions",
     "reconciliation_replies", "oms_tactics", "oms_tactic_steps",
 )
 _EVENT_PARENT_KEYS = frozenset({
@@ -147,7 +147,8 @@ def _unit_children(unit: Any) -> tuple[tuple[str, Mapping[str, Any]], ...]:
             ("protection_entry_orders", row) for row in unit.entry_orders)
     if type(unit) is V4ProtectionReconciliationBatch:
         return (("protection_reconciliations", unit.reconciliation),) + tuple(
-            ("reconciliation_actions", row) for row in unit.actions) + tuple(
+            ("exact_reconciliation_actions" if unit.exact_prices else "reconciliation_actions", row)
+            for row in unit.actions) + tuple(
             ("reconciliation_replies", row) for row in unit.replies)
     raise TypeError("V4 compound contains an unsupported journal envelope")
 
@@ -278,7 +279,8 @@ def _publication_kwargs(unit: Any) -> dict[str, Any]:
     if type(unit) is V4ProtectionReconciliationBatch:
         return {"protection_reconciliation_row": unit.reconciliation,
                 "protection_reconciliation_actions": unit.actions,
-                "protection_reconciliation_replies": unit.replies}
+                "protection_reconciliation_replies": unit.replies,
+                "protection_reconciliation_exact_prices": unit.exact_prices}
     if type(unit) is TypedJournalBatch:
         return {}
     raise TypeError("V4 compound contains an unsupported journal envelope")
@@ -368,6 +370,7 @@ def prepare_compound_v4_families(
         "protection_entry_orders": PROTECTION_ENTRY_ORDER.name,
         "protection_reconciliations": PROTECTION_RECONCILIATION.name,
         "reconciliation_actions": RECONCILIATION_ACTION.name,
+        "exact_reconciliation_actions": "trading_protection_reconciliation_action_exact_price_v4",
         "reconciliation_replies": RECONCILIATION_REPLY.name,
         "oms_tactics": PARENT_TABLE,
         "oms_tactic_steps": STEP_TABLE,
@@ -490,7 +493,7 @@ def prepare_compound_v4_families(
         batch_id=compound.base.batch_id)
     seal_protection_reconciliation_v4(
         extra[PROTECTION_RECONCILIATION.name],
-        extra[RECONCILIATION_ACTION.name], extra[RECONCILIATION_REPLY.name],
+        (*extra[RECONCILIATION_ACTION.name], *extra["trading_protection_reconciliation_action_exact_price_v4"]), extra[RECONCILIATION_REPLY.name],
         compound.base.events, run_id=compound.base.run_id,
         batch_id=compound.base.batch_id)
     if extra[PARENT_TABLE] or extra[STEP_TABLE]:

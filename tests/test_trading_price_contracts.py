@@ -16,7 +16,7 @@ def test_shared_contracts_preserve_legacy_and_nonprice_columns():
     before = tuple(TABLES)
     contracts = exact_price_contracts(BASE)
     assert len(contracts) == 11
-    assert sum(len(fields) for _, fields in PRICE_FAMILIES.values()) == 24
+    assert sum(len(fields) for _, fields in PRICE_FAMILIES.values()) == 26
     for source, (target, fields) in PRICE_FAMILIES.items():
         old = BASE[source]
         new = contracts[target]

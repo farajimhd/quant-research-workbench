@@ -204,9 +204,6 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                     assert any(row.size == 2 for row in executions)
                     assert any(record.entity_type == "entry_acquisition_frozen_before_exit"
                         for record in controller._journal.records(controller.run_id))
-                    with pytest.raises(ValueError, match="trading_protection_reconciliation_action_v4.stop_price loses decimal precision"):
-                        controller._journal_publisher._prepare_batches(result.policy_packet.journal_sequence)
-                    return
                 units = controller._journal_publisher._prepare_batches(result.policy_packet.journal_sequence)
                 assert len(units) == 1
                 from tests.test_arte_journal_commit_v4 import attached_v4_client
