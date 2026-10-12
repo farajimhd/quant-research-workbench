@@ -115,6 +115,21 @@ def test_compound_retains_qualified_rule_rows_and_reseals_dependent_child_hashes
     from src.trading_runtime.rule_decision_basis_schema import BASIS, INTENT
     assert qualified_compound_rule_families(result) == (
         (BASIS.name, (expected_parent,)), (INTENT.name, expected_children))
+    from src.trading_runtime.rule_decision_compound import verify_compound_rule_readback
+    stored = qualified_compound_rule_families(result)
+    verify_compound_rule_readback(result, tuple(reversed(stored)))
+    with pytest.raises(ValueError, match="coverage"):
+        verify_compound_rule_readback(result, stored[:1])
+    with pytest.raises(ValueError, match="repeated"):
+        verify_compound_rule_readback(result, (*stored, stored[0]))
+    damaged = ({**expected_parent, "intent_hash": "0" * 64},)
+    with pytest.raises(ValueError, match="scalar hash"):
+        verify_compound_rule_readback(result, ((BASIS.name, damaged), stored[1]))
+    from src.trading_runtime.rule_decision_basis_projection import _seal
+    forged = _seal(BASIS, {**{key: value for key, value in expected_parent.items() if key != "content_hash"},
+                           "intent_hash": "0" * 64})
+    with pytest.raises(ValueError, match="qualified decision evidence"):
+        verify_compound_rule_readback(result, ((BASIS.name, (forged,)), stored[1]))
     tampered = dict(result.children)
     tampered["rule_decision_bases"] = ({**tampered["rule_decision_bases"][0], "intent_hash": "0" * 64},)
     with pytest.raises(ValueError, match="qualified source units"):

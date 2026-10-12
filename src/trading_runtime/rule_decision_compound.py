@@ -56,3 +56,32 @@ def prepare_qualified_compound_families(client, compound, *, verified_prior_pref
     if {name for name, _ in ordinary_families} & {name for name, _ in supplements}:
         raise ValueError("Compound preparation repeats a rule family")
     return base_families, (*ordinary_families, *supplements)
+
+
+def verify_compound_rule_readback(compound, persisted_families):
+    """Verify stored supplement scalars and relationships against native proofs."""
+    from .rule_decision_basis_projection import _seal, verify_rule_decision_basis
+    expected = dict(qualified_compound_rule_families(compound))
+    actual = {}
+    for name, rows in persisted_families:
+        if name not in (BASIS.name, INTENT.name) or name in actual:
+            raise ValueError("Rule readback has foreign or repeated families")
+        table = BASIS if name == BASIS.name else INTENT
+        sealed = []
+        for row in rows:
+            canonical = _seal(table, {key: value for key, value in row.items() if key != "content_hash"})
+            if canonical["content_hash"] != row.get("content_hash"):
+                raise ValueError("Rule readback scalar hash differs")
+            sealed.append(canonical)
+        actual[name] = tuple(sealed)
+    if set(actual) != set(expected):
+        raise ValueError("Rule readback family coverage differs")
+    for name, rows in expected.items():
+        key = lambda row: row["record_id"]
+        if sorted(actual[name], key=key) != sorted(rows, key=key):
+            raise ValueError("Rule readback differs from qualified decision evidence")
+    children = actual.get(INTENT.name, ())
+    for parent in actual.get(BASIS.name, ()):
+        selected = tuple(sorted((row for row in children if row["parent_record_id"] == parent["record_id"]),
+                                key=lambda row: row["ordinal"]))
+        verify_rule_decision_basis(parent, selected)
