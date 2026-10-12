@@ -74,6 +74,33 @@ def test_controller_builds_program_actor_on_existing_runtime_without_legacy_fact
                 protection_profile=ProtectionProfile("test", 1,
                     (ProtectionSlice("one", 1., StopRule(price=9.)),)), outside_rth=False)
             assert result[0]["decision"]["status"] in {"approved", "resized"}
+            # Cold normalized admission must reproduce the actual Portfolio
+            # approved intent, including any quantity resize and attribution.
+            from dataclasses import asdict
+            from src.trading_runtime.program_oms_admission import restore_program_admitted_intent
+            from src.trading_runtime.arte_intent_projection import RecoveredIntent
+            group = next(iter(runtime.order_manager._groups.values()))
+            approved = group.intent
+            source_intent = proposal.to_intent(
+                execution_policy=approved.execution_policy,
+                protection_profile=approved.protection_profile, outside_rth=approved.outside_rth)
+            reservation = {**asdict(runtime.portfolio.reservations[
+                approved.metadata["portfolio_reservation_id"]]), "run_id": controller.run_id}
+            decision = {**result[0]["decision"], "run_id": controller.run_id}
+            source = RecoveredIntent(1, actor.assignments()[0].account_id,
+                "record", "batch", source_intent)
+            kwargs = dict(run_id=controller.run_id, account_id=source.account_id,
+                assignment_id="assignment", reservation=reservation, decision=decision,
+                execution_policy=approved.execution_policy,
+                protection_profile=approved.protection_profile, outside_rth=approved.outside_rth)
+            restored = restore_program_admitted_intent(actor.program_release, proposal, source, **kwargs)
+            assert restored == approved
+            with pytest.raises(ValueError, match="source or normalized"):
+                restore_program_admitted_intent(actor.program_release, proposal,
+                    replace(source, intent=replace(source_intent, reference_price=999.)), **kwargs)
+            with pytest.raises(ValueError, match="quantity differs"):
+                restore_program_admitted_intent(actor.program_release, proposal, source,
+                    **{**kwargs, "decision": {**decision, "approved_quantity": approved.quantity + 1}})
             assert not actor.position_for("assignment").position_open
             observed = controller.program_order_observation(assignment_id="assignment", at=at)
             assert observed.pending_acquisition and not observed.pending_reduction
