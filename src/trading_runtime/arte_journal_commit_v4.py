@@ -1854,7 +1854,8 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         exact_oms_price_rows=((exact_oms_prices.group,), exact_oms_prices.orders)
             if exact_oms_prices is not None else None,
         exact_order_command_rows=(exact_order_prices.command,) if exact_order_prices is not None else None,
-        exact_execution_rows=(exact_execution_prices.execution,) if exact_execution_prices is not None else None,
+        exact_execution_rows=(exact_execution_prices.execution,)
+            if exact_execution_prices is not None and exact_execution_prices.execution is not None else None,
         v4_entry_freeze_ids=tuple(row['record_id'] for row in freeze_rows))
     command_rows = _order_command_identity_rows(dict(base_families))
     from .numbered_fixed_strategy import is_numbered_fixed_strategy
@@ -2034,6 +2035,7 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         # families before one Keeper reservation. No query or INSERT has run.
         return base_families, families
     return _publish_sealed_batch_v4(client, batch, base_families, families,
+        exact_execution_parents=exact_execution_prices is not None,
         first_price_authorities=first_price_authorities,
         verified_prior_prefix=verified_prior_prefix, first_price_source=first_price_source)
 
@@ -2151,10 +2153,15 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
                              first_price_authorities: tuple = (),
                              verified_prior_prefix: V4CommittedPrefix | None = None,
                              first_price_source=None, automatic_ladder_sources=(),
-                             automatic_ladder_read_client=None) -> str:
+                             automatic_ladder_read_client=None, exact_execution_parents=False) -> str:
     """Publish one sealed normalized family graph under a Keeper fence."""
     from .trading_price_contracts import EXACT_PRICE_FAMILY_NAMES
     from .arte_entry_acquisition_freeze import FAMILY_NAMES as ENTRY_FREEZE_FAMILIES
+    if type(exact_execution_parents) is not bool:
+        raise ValueError("Exact execution parent mode must be an explicit boolean")
+    if exact_execution_parents:
+        from .rule_decision_writer_preflight import require_rule_decision_writer_audit
+        require_rule_decision_writer_audit(client)
     if any((name in EXACT_PRICE_FAMILY_NAMES or name in ENTRY_FREEZE_FAMILIES) and rows
            for name, rows in families):
         from .rule_decision_writer_preflight import require_rule_decision_writer_audit
@@ -2276,7 +2283,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
     # is never sufficient evidence for a fill, fee, or OMS command.
     profile = "live_v4" if live_lease is not None else "backtest_v4"
     _verify_commission_links(
-        client, batch, base_families, journal_profile=profile)
+        client, batch, base_families, journal_profile=profile,
+        exact_execution_prices=exact_execution_parents)
     _verify_exact_intent_uses(
         client, batch, base_families, journal_profile=profile)
     _verify_order_context_links(

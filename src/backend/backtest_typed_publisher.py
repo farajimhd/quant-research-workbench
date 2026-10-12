@@ -39,6 +39,7 @@ from src.trading_runtime.arte_journal_compound_v4 import (
 from src.trading_runtime.arte_oms_tactic_projection import V4OmsTacticBatch
 from src.trading_runtime.arte_oms_exact_prices import ExactPriceOmsStateBatch
 from src.trading_runtime.arte_order_exact_prices import ExactPriceOrderCommandBatch
+from src.trading_runtime.arte_execution_exact_prices import ExactPriceExecutionBatch
 from src.trading_runtime.arte_entry_acquisition_freeze import EntryAcquisitionFreezeBatch
 from src.trading_runtime.automatic_ladder_transport import V4AutomaticLadderBatch
 from src.trading_runtime.rule_decision_publication import QualifiedRuleDecisionBatch
@@ -477,7 +478,7 @@ class BacktestTypedJournalPublisher:
                     raise RuntimeError("Typed Backtest projector changed the bounded prefix")
                 for unit in batches:
                     batch = unit.base if isinstance(
-                        unit, (EntryAcquisitionFreezeBatch, ExactPriceOrderCommandBatch, ExactPriceOmsStateBatch, QualifiedRuleDecisionBatch, V3SqueezeBatch, V4CompoundBatch, V4AutomaticLadderBatch,
+                        unit, (EntryAcquisitionFreezeBatch, ExactPriceOrderCommandBatch, ExactPriceExecutionBatch, ExactPriceOmsStateBatch, QualifiedRuleDecisionBatch, V3SqueezeBatch, V4CompoundBatch, V4AutomaticLadderBatch,
                                V4StrategyOneEntryBatch, V4FollowThroughFailureBatch, V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch, V4LiquidityFadeFailureBatch,
                                V4OmsTacticBatch,
                                V4PortfolioAllocationBatch, V4ReservationReasonBatch,
@@ -493,6 +494,8 @@ class BacktestTypedJournalPublisher:
                                if isinstance(unit, EntryAcquisitionFreezeBatch)
                                else self.writer.submit_exact_order_v4(unit)
                                if isinstance(unit, ExactPriceOrderCommandBatch)
+                               else self.writer.submit_exact_execution_v4(unit)
+                               if isinstance(unit, ExactPriceExecutionBatch)
                                else self.writer.submit_exact_oms_v4(unit)
                                if isinstance(unit, ExactPriceOmsStateBatch)
                                else self.writer.submit_qualified_rule_v4(unit)

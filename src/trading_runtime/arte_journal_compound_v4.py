@@ -26,6 +26,7 @@ from .arte_risk_action_v4 import V4RiskActionBatch
 from .rule_decision_publication import QualifiedRuleDecisionBatch, _check_rule_decision_qualification
 from .arte_oms_exact_prices import ExactPriceOmsStateBatch
 from .arte_order_exact_prices import ExactPriceOrderCommandBatch
+from .arte_execution_exact_prices import ExactPriceExecutionBatch
 from .arte_entry_acquisition_freeze import EntryAcquisitionFreezeBatch, FREEZE, GROUP, seal_entry_freeze_rows
 from .arte_oms_tactic_projection import (
     V4OmsTacticBatch, PARENT_TABLE, STEP_TABLE, seal_oms_tactic_rows,
@@ -47,6 +48,7 @@ from .arte_entry_spread_risk_v4 import ENTRY_SPREAD_RISK, seal_certified_entry_s
 _CHILD_KEYS = (
     "entry_freezes", "entry_freeze_groups",
     "exact_order_commands",
+    "exact_executions",
     "exact_oms_groups", "exact_oms_orders",
     "rule_decision_bases", "rule_decision_intents",
     "followthrough_failures", "profit_givebacks", "confirmed_ah_failures", "liquidity_fade_failures", "command_lineages",
@@ -59,6 +61,7 @@ _CHILD_KEYS = (
 _EVENT_PARENT_KEYS = frozenset({
     "entry_freezes",
     "exact_order_commands",
+    "exact_executions",
     "exact_oms_groups", "exact_oms_orders",
     "rule_decision_bases",
     "followthrough_failures", "profit_givebacks", "confirmed_ah_failures", "liquidity_fade_failures", "command_lineages",
@@ -99,6 +102,8 @@ def _unit_children(unit: Any) -> tuple[tuple[str, Mapping[str, Any]], ...]:
     if type(unit) is ExactPriceOrderCommandBatch:
         return (("exact_order_commands", unit.command),) + tuple(
             ("command_lineages", row) for row in unit.base.v4_command_lineages)
+    if type(unit) is ExactPriceExecutionBatch:
+        return (("exact_executions", unit.execution),) if unit.execution is not None else ()
     if type(unit) is ExactPriceOmsStateBatch:
         return (("exact_oms_groups", unit.group), ("oms_tactics", unit.tactic_state)) + tuple(
             ("exact_oms_orders", row) for row in unit.orders) + tuple(
@@ -239,6 +244,8 @@ def _publication_kwargs(unit: Any) -> dict[str, Any]:
         return {"entry_freeze": unit}
     if type(unit) is ExactPriceOrderCommandBatch:
         return {"exact_order_prices": unit}
+    if type(unit) is ExactPriceExecutionBatch:
+        return {"exact_execution_prices": unit}
     if type(unit) is ExactPriceOmsStateBatch:
         return {"exact_oms_prices": unit,
                 "oms_tactic_rows": (unit.tactic_state, unit.tactic_steps)}
@@ -345,6 +352,7 @@ def prepare_compound_v4_families(
         "entry_freezes": FREEZE.name,
         "entry_freeze_groups": GROUP.name,
         "exact_order_commands": "trading_order_command_exact_price_v1",
+        "exact_executions": "trading_execution_exact_price_v1",
         "exact_oms_groups": "trading_oms_group_state_exact_price_v1",
         "exact_oms_orders": "trading_oms_order_state_exact_price_v1",
         "followthrough_failures": FAILURE.name,
@@ -435,6 +443,8 @@ def prepare_compound_v4_families(
             if compound.children["exact_oms_groups"] or compound.children["exact_oms_orders"] else None,
         exact_order_command_rows=tuple(extra["trading_order_command_exact_price_v1"])
             if compound.children["exact_order_commands"] else None,
+        exact_execution_rows=tuple(extra["trading_execution_exact_price_v1"])
+            if compound.children["exact_executions"] else None,
     )
     if tuple(extra[ENTRY_EVIDENCE.name]) != _sealed_strategy_one_entry_rows(
             compound.base, base_families, tuple(
@@ -523,7 +533,7 @@ def prepare_compound_v4_families(
                      for name, rows in base_families) + tuple(
         (table_for_key[key], tuple(extra[table_for_key[key]]))
         for key in _CHILD_KEYS if compound.children[key] and extra[table_for_key[key]]
-        and key not in {"exact_oms_groups", "exact_oms_orders", "exact_order_commands"})
+        and key not in {"exact_oms_groups", "exact_oms_orders", "exact_order_commands", "exact_executions"})
     return base_families, families
 
 
@@ -549,6 +559,7 @@ def publish_compound_v4(
     prepared_ns = perf_counter_ns()
     committed_id = _publish_sealed_batch_v4(
         client, compound.base, base_families, families,
+        exact_execution_parents=any(type(unit) is ExactPriceExecutionBatch for unit in compound.units),
         timings_ns=timings_ns,
         verified_prior_prefix=verified_prior_prefix,
         first_price_source=first_price_source,

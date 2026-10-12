@@ -97,3 +97,84 @@ def test_fee_identity_check_rejects_mixed_execution_representations():
     assert _execution_identity_rows({"trading_execution_v1": (row,)}) == (row,)
     with pytest.raises(ValueError, match="cannot mix"):
         _execution_identity_rows({"trading_execution_v1": (row,), "trading_execution_exact_price_v1": (row,)})
+
+
+@pytest.mark.parametrize("queued", [False, True])
+def test_exact_fill_and_money_fee_coalesce_under_one_verified_fence(monkeypatch, queued):
+    from decimal import Decimal
+    from src.trading_runtime.domain import CommissionEvent
+    from src.trading_runtime.arte_journal_projection import commission_revision_batch
+    from src.trading_runtime.arte_journal_compound_v4 import coalesce_v4_units, publish_compound_v4
+    from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
+    from src.trading_runtime import rule_decision_writer_preflight as audit, arte_journal_writer as writer
+    from tests.test_arte_journal_commit_v4 import attached_v4_client
+    execution, _, _, unit = projected()
+    fee = commission_revision_batch(CommissionEvent(execution.execution_id, execution.account,
+        Decimal("1"), "USD", source_event_time=AT, received_at=AT),
+        run_id=unit.base.run_id, run_month=unit.base.run_month, attempt_id=unit.base.attempt_id,
+        batch_id="00000000-0000-0000-0000-000000000005", prior_batch_id=unit.base.batch_id,
+        sequence=2, source_cursor="cursor", run_status="running", time_authority="broker")
+    compound = coalesce_v4_units((unit, ExactPriceExecutionBatch(fee, None)), max_events=2)
+    client = attached_v4_client()
+    monkeypatch.setattr(audit, "require_rule_decision_writer_audit", lambda actual: None)
+    if queued:
+        # Physical startup authority is an explicit external seam; the real
+        # queue, publisher, Keeper fence and cold validators execute below.
+        monkeypatch.setattr(writer, "_v4_preflight", lambda actual: None)
+        monkeypatch.setattr(writer, "_verify_run_identity", lambda *args: dict(mode="backtest", account_ids=("DU1",)))
+        lane = writer.ArteJournalWriter(client, run_id=unit.base.run_id,
+            journal_profile="backtest_v4", coalesce_batches=False)
+        try:
+            assert lane.submit_compound_v4(compound).result(timeout=5) == fee.batch_id
+        finally:
+            lane.close()
+    else:
+        assert publish_compound_v4(client, compound) == fee.batch_id
+    prefix = load_verified_v4_prefix(client, unit.base.run_id)
+    assert prefix.last_sequence == 2 and prefix.batch_ids == (fee.batch_id,)
+    fill, = writer.load_committed_execution_page(client, prefix, exact_prices=True)
+    charge, = writer.load_committed_commission_page(client, prefix)
+    assert fill["price"] == execution.price and charge["commission"] == "1.0000000000"
+    assert "trading_execution_v1" not in client.tables
+
+
+def test_exact_fill_uses_real_bounded_queue(monkeypatch):
+    from src.trading_runtime import arte_journal_writer as writer, rule_decision_writer_preflight as audit
+    from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
+    from tests.test_arte_journal_commit_v4 import attached_v4_client
+    _, _, _, unit = projected()
+    client = attached_v4_client()
+    monkeypatch.setattr(audit, "require_rule_decision_writer_audit", lambda actual: None)
+    monkeypatch.setattr(writer, "_v4_preflight", lambda actual: None)
+    monkeypatch.setattr(writer, "_verify_run_identity", lambda *args: dict(mode="backtest", account_ids=("DU1",)))
+    lane = writer.ArteJournalWriter(client, run_id=unit.base.run_id,
+        journal_profile="backtest_v4", coalesce_batches=False)
+    try:
+        assert lane.submit_exact_execution_v4(unit).result(timeout=5) == unit.base.batch_id
+    finally:
+        lane.close()
+    prefix = load_verified_v4_prefix(client, unit.base.run_id)
+    assert prefix.last_sequence == 1
+
+
+def test_later_money_fee_links_only_to_committed_exact_execution(monkeypatch):
+    from decimal import Decimal
+    from src.trading_runtime.domain import CommissionEvent
+    from src.trading_runtime.arte_journal_projection import commission_revision_batch
+    from src.trading_runtime.arte_execution_exact_prices import publish_exact_execution_batch_v4
+    from src.trading_runtime import rule_decision_writer_preflight as audit
+    from src.trading_runtime.arte_journal_commit_v4 import publish_base_typed_batch_v4, load_verified_v4_prefix
+    from tests.test_arte_journal_commit_v4 import attached_v4_client
+    execution, _, _, unit = projected()
+    client = attached_v4_client()
+    monkeypatch.setattr(audit, "require_rule_decision_writer_audit", lambda actual: None)
+    publish_exact_execution_batch_v4(client, unit)
+    fee = commission_revision_batch(CommissionEvent(execution.execution_id, execution.account,
+        Decimal("1"), "USD", source_event_time=AT, received_at=AT), run_id=unit.base.run_id,
+        run_month=unit.base.run_month, attempt_id=unit.base.attempt_id,
+        batch_id="00000000-0000-0000-0000-000000000005", prior_batch_id=unit.base.batch_id,
+        sequence=2, source_cursor="cursor", run_status="running", time_authority="broker")
+    with pytest.raises(RuntimeError, match="one committed execution"):
+        publish_base_typed_batch_v4(client, fee)
+    assert publish_exact_execution_batch_v4(client, ExactPriceExecutionBatch(fee, None)) == fee.batch_id
+    assert load_verified_v4_prefix(client, unit.base.run_id).last_sequence == 2

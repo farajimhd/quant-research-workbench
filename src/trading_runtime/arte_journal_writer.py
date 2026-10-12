@@ -2105,7 +2105,10 @@ def _verify_commission_links(
     client: Any, batch: TypedJournalBatch,
     families: tuple[tuple[str, tuple[dict[str, Any], ...]], ...],
     *, journal_profile: str = "v1",
+    exact_execution_prices: bool = False,
 ) -> None:
+    if type(exact_execution_prices) is not bool:
+        raise ValueError("Commission execution price mode must be an explicit boolean")
     by_family = dict(families)
     same_batch = {
         (str(row["account_id"]), str(row["execution_id"]))
@@ -2115,8 +2118,9 @@ def _verify_commission_links(
         account_id, execution_id = str(fee["account_id"]), str(fee["execution_id"])
         if (account_id, execution_id) in same_batch:
             continue
+        execution_table = "trading_execution_exact_price_v1" if exact_execution_prices else "trading_execution_v1"
         candidates = _rows(client,
-            "SELECT batch_id,record_id FROM arte.trading_execution_v1 "
+            f"SELECT batch_id,record_id FROM arte.{execution_table} "
             f"WHERE run_id={_literal(batch.run_id)} "
             f"AND account_id={_literal(account_id)} "
             f"AND execution_id={_literal(execution_id)} FORMAT JSONEachRow")
@@ -4430,6 +4434,23 @@ class ArteJournalWriter:
             self._accepted_writes = True
             return receipt
 
+    def submit_exact_execution_v4(self, unit) -> Future[str]:
+        """Queue exact fills without caller-side I/O or bypassing V4 ownership."""
+        from .arte_execution_exact_prices import ExactPriceExecutionBatch
+        if (self._journal_profile != "backtest_v4" or type(unit) is not ExactPriceExecutionBatch
+                or unit.base.run_id != self._run_id):
+            raise ValueError("Exact fills require the pinned Backtest writer")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("V4 writer is closed or failed") from self._error
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull("V4 journal queue is full; stop admission") from exc
+            self._accepted_writes = True
+            return receipt
+
     def submit_exact_oms_v4(self, unit) -> Future[str]:
         """Queue exact-price OMS persistence without caller-side network I/O."""
         from .arte_oms_exact_prices import ExactPriceOmsStateBatch
@@ -5143,6 +5164,7 @@ class ArteJournalWriter:
         from .arte_oms_exact_prices import ExactPriceOmsStateBatch
 
         from .arte_order_exact_prices import ExactPriceOrderCommandBatch
+        from .arte_execution_exact_prices import ExactPriceExecutionBatch
         from .arte_entry_acquisition_freeze import EntryAcquisitionFreezeBatch
         held: tuple[
             TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
@@ -5192,7 +5214,7 @@ class ArteJournalWriter:
                 from .automatic_ladder_transport import V4AutomaticLadderBatch
                 if (self._journal_profile in {"backtest_v2", "backtest_v3", *self._V4_PROFILES}
                         and not isinstance(group[0][0],
-                                           (EntryAcquisitionFreezeBatch, ExactPriceOrderCommandBatch, ExactPriceOmsStateBatch, QualifiedRuleDecisionBatch, TypedJournalBatch, V3SqueezeBatch, V4AutomaticLadderBatch,
+                                           (EntryAcquisitionFreezeBatch, ExactPriceOrderCommandBatch, ExactPriceExecutionBatch, ExactPriceOmsStateBatch, QualifiedRuleDecisionBatch, TypedJournalBatch, V3SqueezeBatch, V4AutomaticLadderBatch,
                                             V4CompoundBatch,
                                             V4StrategyOneEntryBatch, V4FollowThroughFailureBatch,
                                             V4OmsTacticBatch,
@@ -5347,6 +5369,9 @@ class ArteJournalWriter:
                 elif isinstance(group[0][0], ExactPriceOrderCommandBatch):
                     from .arte_order_exact_prices import publish_exact_order_command_batch_v4
                     committed_id = publish_exact_order_command_batch_v4(self._client, group[0][0])
+                elif isinstance(group[0][0], ExactPriceExecutionBatch):
+                    from .arte_execution_exact_prices import publish_exact_execution_batch_v4
+                    committed_id = publish_exact_execution_batch_v4(self._client, group[0][0])
                 elif isinstance(group[0][0], ExactPriceOmsStateBatch):
                     from .arte_oms_exact_prices import publish_exact_oms_state_batch_v4
                     committed_id = publish_exact_oms_state_batch_v4(self._client, group[0][0])

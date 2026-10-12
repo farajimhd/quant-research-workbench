@@ -120,6 +120,7 @@ def publish_qualified_compound(client, compound, *, verified_prior_prefix=None,
     from .rule_decision_writer_preflight import require_rule_decision_writer_audit
     from .arte_journal_commit_v4 import _publish_sealed_batch_v4
     from .arte_journal_compound_v4 import V4StrategyOneEntryBatch, _compound_price_source
+    from .arte_execution_exact_prices import ExactPriceExecutionBatch
     # Validate native evidence before touching storage, including on retries.
     supplements = qualified_compound_rule_families(compound)
     if not supplements:
@@ -129,6 +130,7 @@ def publish_qualified_compound(client, compound, *, verified_prior_prefix=None,
     base_families, families = prepare_qualified_compound_families(client, compound,
         verified_prior_prefix=verified_prior_prefix, first_price_source=source)
     return _publish_sealed_batch_v4(client, compound.base, base_families, families,
+        exact_execution_parents=any(type(unit) is ExactPriceExecutionBatch for unit in compound.units),
         verified_prior_prefix=verified_prior_prefix, first_price_source=source,
         timings_ns=timings_ns, first_price_authorities=tuple(
             authority for unit in compound.units if type(unit) is V4StrategyOneEntryBatch

@@ -11,12 +11,21 @@ from .trading_price_rows import restore_exact_price_row
 @dataclass(frozen=True, slots=True)
 class ExactPriceExecutionBatch:
     base: TypedJournalBatch
-    execution: Mapping
+    execution: Mapping | None
 
     def __post_init__(self):
         if (type(self.base) is not TypedJournalBatch or len(self.base.events) != 1
                 or self.base.executions):
             raise ValueError("Exact fill prices require one unmixed execution envelope")
+        if self.execution is None:
+            if len(self.base.commissions) != 1:
+                raise ValueError("Exact execution fee envelope requires one money commission")
+            event, fee = self.base.events[0], self.base.commissions[0]
+            if ((event["category"], event["entity_type"]) != ("execution", "commission")
+                    or any(fee[key] != event[key] for key in ("record_id", "run_id", "batch_id", "event_month", "account_id"))
+                    or fee["execution_id"] != event["entity_id"]):
+                raise ValueError("Exact execution fee differs from its event envelope")
+            return
         execution = restore_exact_price_row("trading_execution_v1", self.execution)
         event = self.base.events[0]
         canonical_event = _canonical_typed_content("trading_event_v1",
@@ -40,7 +49,8 @@ def seal_exact_execution_batch(unit):
     if type(unit) is not ExactPriceExecutionBatch:
         raise ValueError("Exact execution sealing requires its explicit envelope")
     from .arte_journal_writer import _sealed_families
-    return _sealed_families(unit.base, exact_execution_rows=(unit.execution,))
+    return _sealed_families(unit.base,
+        exact_execution_rows=(unit.execution,) if unit.execution is not None else None)
 
 
 def publish_exact_execution_batch_v4(client, unit, *, verified_prior_prefix=None):
