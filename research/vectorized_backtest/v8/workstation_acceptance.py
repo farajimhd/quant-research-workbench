@@ -43,7 +43,8 @@ def main():
         days=list(saved['contract']['input_receipts'])
         command('qualify_workstation',['--campaign',a.v7_campaign,'--output',root/'two-session','--days',*days[:2]],'two-session')
         validation=a.validation_inputs or root/'validation-inputs'
-        command('prepare_validation',['--v7-campaign',a.v7_campaign,'--sessions',a.sessions,'--output',validation],'prepare-validation')
+        command('prepare_validation',['--v7-campaign',a.v7_campaign,'--sessions',a.sessions,'--output',validation,
+            '--ranking-before-features'],'prepare-validation')
         command('qualify_workstation',['--campaign',a.v7_campaign,'--output',root/'all-training'],'all-training')
         active=json.loads((a.v7_campaign/'active.json').read_text(encoding='utf-8-sig'));args=active['arguments']
         get=lambda name:args[args.index('--'+name)+1]

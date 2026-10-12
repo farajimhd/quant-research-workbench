@@ -56,6 +56,7 @@ def main(argv=None):
     parser.add_argument('--manifest',type=Path,required=True);parser.add_argument('--previous-manifest',type=Path)
     parser.add_argument('--ledger',type=Path,required=True);parser.add_argument('--date',type=date.fromisoformat,required=True)
     parser.add_argument('--previous-date',type=date.fromisoformat);parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--listing-scope',type=Path)
     parser.add_argument('--workers',type=int,default=32);args=parser.parse_args(argv)
     from .input_authority import authorize_day
     item=authorize_day(args.sessions,args.date,args.display_authorization)
@@ -88,6 +89,21 @@ def main(argv=None):
             diagnostic_directory=output/'population-audit',excluded_tickers=DEFAULT_EXCLUDED_TICKERS,
             regular_us_exchanges_only=True)
         population,scope=scope_population(reader,population)
+        ranked_scope=None
+        if args.listing_scope:
+            from .opening_basis import feature_scope
+            ranked_scope=json.loads(args.listing_scope.read_text(encoding='utf-8-sig'))
+            expected=feature_scope(ranked_scope['market_root'],list(ranked_scope['selected']),file_hash(args.sessions))
+            if ranked_scope!=expected:raise ValueError('Ranked feature scope changed')
+            needed=set(ranked_scope['needed'][str(args.date)])
+            if set(ranked_scope['selected'][str(args.date)])-{r['listing_id'] for r in population}:
+                raise ValueError('Current ranked listing absent from certified feature population')
+            # A newly listed next-day member may have no prior-day identity.
+            # Keep its absence explicit; never fabricate prior candles.
+            ranked_scope=dict(manifest_sha256=file_hash(args.listing_scope),
+                required=sorted(needed),unavailable=sorted(needed-{r['listing_id'] for r in population}))
+            population=[r for r in population if r['listing_id'] in needed]
+            if not population:raise ValueError('Ranked feature scope has no current listings')
         counts=one_second_counts(reader,current,args.date,[r['ticker'] for r in population])
     finally:reader.close()
     mapping={r['listing_id']:r['ticker'] for r in population}
@@ -96,6 +112,7 @@ def main(argv=None):
     plan=dict(version='rl-trading-actual-candles-features-v6',consumer='vectorized-backtest-v8',split_role='validation',validation_feedback=False,day=str(args.date),previous_day=str(args.previous_date) if prior else None,
         source_build_id=current['build_id'],previous_build_id=prior['build_id'] if prior else None,source_units_hash=digest(current['units'][str(args.date)]),
         previous_units_hash=digest(prior['units'][str(args.previous_date)]) if prior else None,source_definition_hash=current['definition_hash'],population_snapshot_hash=proof['snapshot_hash'],universe_scope=scope,census=lengths,labels_generated=False)
+    if ranked_scope is not None:plan['ranked_feature_scope']=ranked_scope
     plan['hash']=digest(plan)
     with exclusive(output/'producer'):
         path=output/'plan.json'

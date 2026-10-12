@@ -58,6 +58,7 @@ def main():
     for name in ('v7-campaign','sessions','output'):p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--workers',type=int,default=8)
     p.add_argument('--stopped-v7-receipt',type=Path)
+    p.add_argument('--ranking-before-features',action='store_true')
     a=p.parse_args();require_finished(a.v7_campaign,a.stopped_v7_receipt)
     if not 1<=a.workers<=8:raise ValueError('Bounded preparation workers 1..8 required')
     root=require_runtime(a.output);spec=json.loads(a.sessions.read_text(encoding='utf-8-sig'))
@@ -84,14 +85,22 @@ def main():
         with (root/(log+'.log')).open('a',encoding='utf-8') as stream:
             subprocess.run(command,env=env,stdout=stream,stderr=subprocess.STDOUT,check=True)
     days=[v['day'] for v in spec['validation']]
+    scope_arguments=[]
+    if a.ranking_before_features:
+        execute('materialize',['--sessions',sessions,'--output',root/'market','--workers',2,
+            '--ranking-before-features'],'market')
+        from .opening_basis import feature_scope
+        write_json(root/'feature-scope.json',feature_scope(root/'market',days,file_hash(sessions)))
+        scope_arguments=['--listing-scope',root/'feature-scope.json']
     for item in spec['validation']:
         day=item['day'];previous=Path(item['previous_feature_root']).name
         write_json(root/'status.json',dict(stage='Features and split evidence',day=day,completed=days.index(day),total=len(days),validation_feedback=False))
         execute('extract_features',['--sessions',sessions,'--display-authorization',authorization,
             '--manifest',item['source_manifest'],'--ledger',item['source_ledger'],'--date',day,
-            '--previous-date',previous,'--output',item['feature_root'],'--workers',a.workers],day+'-features')
+            '--previous-date',previous,'--output',item['feature_root'],'--workers',a.workers,*scope_arguments],day+'-features')
         execute('certify_splits',['--sessions',sessions,'--display-authorization',authorization,'--date',day],day+'-splits')
-    execute('materialize',['--sessions',sessions,'--output',root/'market','--workers',2], 'market')
+    if not a.ranking_before_features:
+        execute('materialize',['--sessions',sessions,'--output',root/'market','--workers',2], 'market')
     execute('compact_prepare',['--sessions',sessions,'--market-roots',root/'market','--output',root/'compact','--workers',2], 'compact')
     for day in days:
         if (root/'history'/day/'complete.json').exists():

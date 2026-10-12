@@ -46,6 +46,19 @@ behavior comparisons. No trade-overlap or P&L-correlation penalty runs in select
 
 ## Display-only validation
 
+New acceptance outputs prepare validation with `--ranking-before-features`:
+opening-known split-adjusted prior-close price eligibility precedes rolling-volume
+top-10 ranking. Only the union of ranked identities receives expensive features,
+plus identities needed for the next session's prior-day warm-up. This union is a
+computation scope, never a replacement for per-clock causal admission. Full
+session observations for selected identities remain available after rank exit.
+Ranking receipts and source hashes bind the feature scope; compact preparation
+recomputes and compares the ranking and checks opening split evidence again.
+Use a new output directory when switching from full-market feature preparation.
+The legacy preparation path remains available for exact parity comparisons.
+Worker source metadata is initialized once per process rather than serialized
+again for each listing.
+
 Every generation freezes the top one batch by training score and constructs the
 successor before evaluating validation. Validation uses separate process lanes,
 source roots, receipts, result caches, and ranking. It does not access or consume

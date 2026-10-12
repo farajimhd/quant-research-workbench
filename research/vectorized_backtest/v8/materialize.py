@@ -123,6 +123,7 @@ def prepare(item, args):
                     source_manifest_sha256=file_hash(item['source_manifest']),
                     prior_close_context_sha256=file_hash(args.prior_close_context) if args.prior_close_context else None,
                     implementation_sha256=file_hash(Path(__file__)))
+    identity['ranking_before_features']=bool(getattr(args,'ranking_before_features',False))
     complete = folder / 'complete.json'
     if complete.exists():
         saved = json.loads(complete.read_text(encoding='utf-8-sig'))
@@ -165,12 +166,19 @@ def prepare(item, args):
         _validate_units(reader, source, date.fromisoformat(day), [r['ticker'] for r in members], None)
         if prior:_validate_units(reader, prior, date.fromisoformat(previous), [r['ticker'] for r in paired], None)
         # Certified per-listing split factors, already available at premarket opening.
-        mapping = json.loads(Path(item['identity_map']).read_text(encoding='utf-8-sig'))['listing_to_ticker']
-        from research.vectorized_backtest.v6.torch_backtest.feature_bank import CertifiedBank
-        from research.vectorized_backtest.v6.torch_backtest.splits import load_basis
-        bank = CertifiedBank(item['feature_root'], expected_day=day)
-        load_basis(item['split_certificate'], bank, None, mapping, rvol_only=True)
-        split = json.loads(Path(item['split_certificate']).read_text(encoding='utf-8-sig'))
+        if identity['ranking_before_features']:
+            from .opening_basis import opening_basis
+            split=opening_basis(reader,members,date.fromisoformat(day),previous)
+            mapping={key:value['ticker'] for key,value in split['listings'].items()}
+            write_json(folder/'opening_basis.json',split)
+            files['opening_basis.json']=file_hash(folder/'opening_basis.json')
+        else:
+            mapping = json.loads(Path(item['identity_map']).read_text(encoding='utf-8-sig'))['listing_to_ticker']
+            from research.vectorized_backtest.v6.torch_backtest.feature_bank import CertifiedBank
+            from research.vectorized_backtest.v6.torch_backtest.splits import load_basis
+            bank = CertifiedBank(item['feature_root'], expected_day=day)
+            load_basis(item['split_certificate'], bank, None, mapping, rvol_only=True)
+            split = json.loads(Path(item['split_certificate']).read_text(encoding='utf-8-sig'))
         factors = {mapping[k]:v['rvol_price_factor'] for k,v in split['listings'].items()}
         if split['day'] != day or set(factors) != set(mapping.values()):
             raise ValueError('Incomplete opening split identity coverage')
@@ -253,6 +261,7 @@ def main(argv=None):
     p.add_argument('--maximum-close',type=float,default=50);p.add_argument('--block-seconds',type=int,default=300)
     p.add_argument('--context-manifest',type=Path);p.add_argument('--context-ledger',type=Path)
     p.add_argument('--prior-close-context',type=Path)
+    p.add_argument('--ranking-before-features',action='store_true')
     p.add_argument('--only-days',nargs='+',help='Prepare an explicit subset; never claim full training readiness')
     args=p.parse_args(argv);args.output=require_runtime(args.output)
     if not 1<=args.workers<=4 or min(args.window,args.top_n,args.block_seconds)<1 or not 0<args.minimum_close<=args.maximum_close:

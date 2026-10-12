@@ -58,6 +58,37 @@ def test_feature_worker_reuses_initialized_source_context(monkeypatch):
     assert calls==['ABC','ABC']
 
 
+def test_top_feature_scope_includes_transient_members_and_rejects_bad_indices():
+    from research.vectorized_backtest.v8.opening_basis import selected_identities
+    members=[{'listing_id':str(i)} for i in range(4)]
+    top=np.array([[0,1],[2,0],[-1,3]],dtype=np.int32)
+    assert selected_identities(top,members)==['0','1','2','3']
+    assert selected_identities(np.full((2,2),-1),members)==[]
+    for invalid in (np.array([[4]]),np.array([[-2]]),np.array([[1.5]])):
+        with pytest.raises(ValueError):selected_identities(invalid,members)
+
+
+def test_ranked_scope_binds_history_and_rejects_changed_ranking(tmp_path):
+    from research.vectorized_backtest.v8.opening_basis import feature_scope
+    from research.vectorized_backtest.v6.torch_backtest.runtime import file_hash
+    days=['2026-09-11','2026-09-14']
+    for day,index in zip(days,[0,1]):
+        folder=tmp_path/day;folder.mkdir()
+        (folder/'eligibility.json').write_text(json.dumps({'listings':[{'listing_id':'a'},{'listing_id':'b'}]}))
+        np.save(folder/'top_indices.npy',np.array([[index,-1]],dtype=np.int32))
+        record=dict(status='complete',day=day,split_role='validation',validation_opened=True,
+            identity=dict(sessions_sha256='sessions',ranking_before_features=True),
+            files={name:file_hash(folder/name) for name in ['eligibility.json','top_indices.npy']})
+        (folder/'complete.json').write_text(json.dumps(record))
+    scope=feature_scope(tmp_path,days,'sessions')
+    assert scope['needed']=={days[0]:['a','b'],days[1]:['b']}
+    assert scope['selected']=={days[0]:['a'],days[1]:['b']}
+    with pytest.raises(ValueError):feature_scope(tmp_path,days[::-1],'sessions')
+    with pytest.raises(ValueError):feature_scope(tmp_path,days,'wrong-session')
+    np.save(tmp_path/days[1]/'top_indices.npy',np.array([[0,-1]],dtype=np.int32))
+    with pytest.raises(ValueError,match='source changed'):feature_scope(tmp_path,days,'sessions')
+
+
 def test_same_backend_accounting_gate_rejects_even_roundoff():
     from research.vectorized_backtest.v8.qualify_synthetic import exact_accounting
     expected={'net_pnl':torch.tensor([1.],dtype=torch.float64)}

@@ -105,12 +105,29 @@ def bind_session(item,args):
     volume[bars['clock'].to_numpy()-clocks[0],bars['listing'].to_numpy()]=bars['volume'].to_numpy()
     top,scores=rank_indices(volume,None,identity['window'],identity['top_n'])
     del volume
+    if saved['identity'].get('ranking_before_features'):
+        recorded=np.load(market_root/'top_indices.npy',allow_pickle=False)
+        if not np.array_equal(top,recorded):raise ValueError('Causal ranking changed before feature selection')
+        selected=np.unique(top[top>=0])
+        if not len(selected):raise ValueError('No ranked listings in session')
+        remap=np.full(len(members),-1,dtype=np.int32);remap[selected]=np.arange(len(selected),dtype=np.int32)
+        top=np.where(top>=0,remap[top.clip(0)],-1)
+        bars=bars.filter(pl.col('listing').is_in(selected.tolist())).with_columns(
+            pl.col('listing').replace_strict({int(old):int(new) for new,old in enumerate(selected)}).cast(pl.Int32))
+        members=[members[int(i)] for i in selected]
     np.save(target/'clocks.npy',clocks,allow_pickle=False);np.save(target/'top_indices.npy',top.astype(np.int32),allow_pickle=False)
     bank=CertifiedBank(item['feature_root'],expected_day=day)
     prior=CertifiedBank(item['previous_feature_root']) if item.get('previous_feature_root') else None
     mapping=json.loads(Path(item['identity_map']).read_text(encoding='utf-8-sig'))
     if mapping['bank_certificate_sha256']!=bank.certificate_hash or set(mapping['listing_to_ticker'])!=set(bank.manifest['offsets']):raise ValueError('Feature identity certificate mismatch')
     bank.split_basis,split_hash=load_basis(item['split_certificate'],bank,prior,mapping['listing_to_ticker'])
+    if saved['identity'].get('ranking_before_features'):
+        opening=json.loads((market_root/'opening_basis.json').read_text(encoding='utf-8-sig'))
+        feature_split=json.loads(Path(item['split_certificate']).read_text(encoding='utf-8-sig'))
+        for row in members:
+            identity_key=row['listing_id']
+            if feature_split['listings'][identity_key]['splits']!=opening['listings'][identity_key]['splits']:
+                raise ValueError('Opening split evidence changed between ranking and features')
     prior_split_hash=None
     if prior:
         certificate=json.loads(Path(item['previous_split_certificate']).read_text(encoding='utf-8-sig'))
