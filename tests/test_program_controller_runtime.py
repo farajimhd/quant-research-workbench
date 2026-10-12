@@ -35,6 +35,63 @@ def definition_and_actor():
 
 
 @pytest.mark.parametrize("resolution", [100, 1000])
+def test_sparse_program_clock_expires_native_orders_without_fabricating_market_data(tmp_path, resolution):
+    definition, actor = definition_and_actor()
+    controller = ReplayRunController(definition, runtime_root=tmp_path, program_strategy=actor,
+        program_liquidity_resolution_ms=resolution)
+    controller._journal = BacktestMemoryJournal(run_id=controller.run_id)
+    async def run_test():
+        await controller._initialize_runtime(record_configuration=False, record_lifecycle=False)
+        runtime = controller._runtime
+        try:
+            at = datetime(2026, 10, 12, 14, tzinfo=UTC)
+            row = second_bar(at)
+            row.update(ticker="ABC", ask_int=105000, bid_int=104900, close_int=105000,
+                high_int=105100, low_int=104800)
+            if resolution == 100:
+                row.update(resolution_ms=100, bucket_index=(row["bucket_index"] + 1) * 10 - 1)
+            await runtime.process_liquidity_boundary((row,), at=at)
+            _, boundary, _, management = inputs(entry=True)
+            proposal, = actor.proposals(replace(boundary, boundary_at=at, available_at=at),
+                assignment_id="assignment", management=replace(management, observed_at=at))
+            await runtime.submit_program_proposal(proposal,
+                account_id=actor.assignments()[0].account_id, assignment_id="assignment",
+                execution_policy=ExecutionPolicy(envelope=ExecutionEnvelope(deadline_ms=2000)),
+                protection_profile=ProtectionProfile("test", 1, (ProtectionSlice("one", 1., StopRule(price=9.)),)),
+                outside_rth=False)
+            assert await runtime.broker.live_orders()
+            await runtime.order_manager.reconcile()
+            market_boundaries = dict(runtime.broker._bar_boundaries)
+            snapshot = runtime.execution_market_data.snapshot("ABC")
+            cash = dict(runtime.broker._cash)
+            completed = at + timedelta(seconds=3)
+            await runtime.advance_program_session_clock(completed)
+            assert runtime.last_event_time == completed
+            assert runtime.broker._bar_boundaries == market_boundaries
+            assert runtime.execution_market_data.snapshot("ABC") == snapshot
+            assert runtime.broker._cash == cash
+            assert await runtime.broker.trades() == []
+            assert not actor.position_for("assignment").position_open
+            from src.trading_runtime.ibkr_schema import OrderStatus
+            orders = await runtime.broker.live_orders()
+            assert len(orders) == 2
+            assert all(order.order_status is OrderStatus.CANCELLED for order in orders)
+            with pytest.raises(ValueError, match="monotonic"):
+                await runtime.advance_program_session_clock(at)
+            assert runtime.last_event_time == completed
+            runtime.broker._bar_mode = False
+            try:
+                with pytest.raises(ValueError, match="native Backtest scope"):
+                    await runtime.advance_program_session_clock(completed + timedelta(seconds=1))
+                assert runtime.last_event_time == completed
+            finally:
+                runtime.broker._bar_mode = True
+        finally:
+            await runtime.finish()
+    asyncio.run(run_test())
+
+
+@pytest.mark.parametrize("resolution", [100, 1000])
 def test_controller_builds_program_actor_on_existing_runtime_without_legacy_factory(tmp_path, resolution, monkeypatch):
     definition, actor = definition_and_actor()
     controller = ReplayRunController(definition, runtime_root=tmp_path, program_strategy=actor,

@@ -519,6 +519,28 @@ class TradingRuntime:
         self.last_event_time = at
         return quotes
 
+    async def advance_program_session_clock(self, at: datetime) -> None:
+        """Advance a certified sparse program clock without a market observation.
+
+        The caller must have scanned the admitted liquidity window through this
+        boundary. Existing quotes and liquidity observations remain unchanged;
+        only the shared OMS timer operations run at the completed clock.
+        """
+        from .columnar_program_actor import AssignedProgramStrategy
+        from .simulated_broker import SimulatedBrokerAdapter
+        if (self.config.mode != RunMode.BACKTEST or type(self.strategy) is not AssignedProgramStrategy
+                or type(self.broker) is not SimulatedBrokerAdapter
+                or self.broker.mode != TradingMode.BACKTEST or not self.broker._bar_mode
+                or (self.config.strategy_id, self.config.strategy_revision) != (self.strategy.strategy_id, self.strategy.revision)
+                or not isinstance(at, datetime) or at.tzinfo is None or at.utcoffset() is None
+                or self.last_event_time is not None and at < self.last_event_time):
+            raise ValueError("Program session clock requires its monotonic native Backtest scope")
+        self.last_event_time = at
+        if self.order_manager is not None and self.order_manager.has_managed_groups:
+            await self.order_manager.enforce_entry_body_triggers(at)
+            await self.order_manager.advance_adaptive_execution(at)
+            await self.order_manager.expire_entry_deadlines(at)
+
     def _record_executions(self, executions: Sequence[Any]) -> None:
         """Keep broker fills and known fees as separate ordered journal facts."""
         if not executions:

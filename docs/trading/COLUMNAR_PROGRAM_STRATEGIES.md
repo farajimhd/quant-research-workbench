@@ -168,6 +168,12 @@ reads through `read_liquidity_cohort_async`. It validates all requests before
 opening clients, preserves sparse/empty windows and closes every owned client
 before cancellation returns. It consumes existing sealed ARTE products only;
 it neither builds missing coverage nor changes the100ms reader or broker clocks.
+`TradingRuntime.advance_program_session_clock` handles a completed sparse
+program clock after the admitted liquidity window has been scanned. It advances
+the runtime clock and shared OMS trigger/reprice/deadline operations without
+inventing quotes, bars or executions. Native100ms/1s tests verify deadline
+cancellation of an unfilled entry with unchanged cash, quotes and broker bar
+boundaries. This source API is not yet called by the main cohort scheduler.
 `prepare_program_scanner_projection` joins certified population ranking to the
 prepared history once per block, checks the immutable volume-universe rule and
 ranked listing/clock coverage, and exposes constant-offset per-clock scanner
