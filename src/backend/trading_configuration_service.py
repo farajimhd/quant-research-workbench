@@ -401,7 +401,22 @@ def configuration_candidate(candidate_id: str = "", *, required: bool = False) -
 def backtest_configuration_options(candidate_id: str = "") -> dict[str, Any]:
     """Expose immutable numbered ARTE releases without a candidate-store fallback."""
     from src.backend.backtest_configuration_option_reader import certified_configuration_options
-    revision, options = certified_configuration_options(candidate_id)
+    from src.backend.program_configuration_selection_service import (
+        program_configuration_selection_service,
+    )
+    service = program_configuration_selection_service()
+    programme = str(candidate_id).startswith("strategy-configuration:")
+    if programme and service is None:
+        raise ValueError("Programme configuration selection is not installed")
+    revision, options = certified_configuration_options("" if programme else candidate_id)
+    if service is not None:
+        import asyncio
+        program_options = asyncio.run(service.options())
+        options = (*options, *program_options)
+    if programme:
+        revision = next((row for row in program_options if row["revision_id"] == candidate_id), None)
+        if revision is None:
+            raise ValueError("Programme configuration selection is not approved for this app")
     return {"candidates": [{"candidate_id": row["revision_id"],
                             "candidate_revision": row["revision"], "label": row["label"],
                             "content_hash": row["content_hash"]} for row in options],
@@ -741,6 +756,9 @@ def approved_session_configuration_snapshot(
 def backtest_configuration_snapshot(
     run_plan_id: str = "", *, candidate_id: str = ""
 ) -> dict[str, Any]:
+    if str(candidate_id).startswith("strategy-configuration:"):
+        from src.backend.program_configuration_selection_service import selected_program_configuration
+        return selected_program_configuration(candidate_id, run_plan_id)
     # Numbered Strategy 1 has one immutable ARTE configuration authority.
     # The old SQLite candidate is read only by the one-time publisher, never
     # by a Backtest selection or execution path.
