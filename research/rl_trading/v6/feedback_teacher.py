@@ -15,7 +15,7 @@ class FeedbackTeacher(EnrichedTeacher):
         super().__init__(spec, base, extra, normalization)
         self.intent_feedback = IntentFeedback(spec.width)
 
-    def base_sequence(self, sequence):
+    def base_sequence(self, sequence, pacer=None):
         n, steps = sequence['clocks_us'].shape
         if steps != WARMUP + 1:
             raise ValueError('Bounded contiguous prefix required')
@@ -25,9 +25,11 @@ class FeedbackTeacher(EnrichedTeacher):
                                              'multi_present', 'liquidity', 'market')}
         values = []
         for begin in range(0, n * steps, 8):
+            if pacer is not None: pacer.begin_activity()
             batch = {name: value[begin:begin + 8] for name, value in flat.items()}
             values.append(super().representation(batch.pop('raw'), batch.pop('present'),
                                                   batch.pop('held'), **batch))
+            if pacer is not None: pacer()
         return torch.cat(values).reshape(n, steps, -1)
 
     def feedback_context(self, base, sequence):

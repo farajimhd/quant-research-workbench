@@ -40,6 +40,16 @@ def test_sealed_prefix_denied():
         prefix_windows(s, 'A', np.array([10_000_000], np.int64), np.zeros((1, 11)), 0)
 
 
+def test_activity_only_last_row_does_not_replace_valid_prior_mark():
+    s, candles = session()
+    candles.scalar[8, 35] = 0
+    candles.scalar[8, 3] = 999
+    held = np.zeros((1, 11), np.float32); held[0, :3] = 1, 16, 4
+    values = prefix_windows(s, 'A', np.array([10_000_000], np.int64), held, 0)
+    # t=9 excludes source close9 and uses valid close8, price17.
+    assert np.isclose(values['held'][0, -2, 3], 17 / 16 - 1)
+
+
 def test_real_feedback_teacher_frozen_base_and_trainable_feedback():
     torch.set_num_threads(2)
     norm = {n: dict(mean=[0.] * d, std=[1.] * d) for n, d in

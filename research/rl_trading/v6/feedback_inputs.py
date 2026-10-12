@@ -39,6 +39,7 @@ def prefix_windows(session, identity, targets, reference_held, session_start):
     values = np.concatenate([np.concatenate((x.scalar, x.levels.reshape(-1, 110)), 1) for x in sources])
     if len(source_clock) > 1 and np.any(np.diff(source_clock) <= 0):
         raise ValueError('Source clocks must be strictly ordered')
+    valid_marks = np.flatnonzero(values[:, 35] == 1)
     n, steps = clocks.shape
     raw = np.zeros((n, steps, 120, 147), np.float32)
     present = np.zeros((n, steps, 120), bool)
@@ -59,9 +60,10 @@ def prefix_windows(session, identity, targets, reference_held, session_start):
                 present[row, step, -count:] = True
                 maximum[row, step] = source_clock[end - 1]
             if units > 0 and clock >= entry_clock:
-                if not count or values[end - 1, 35] != 1:
+                mark_end = int(np.searchsorted(valid_marks, end, side='left'))
+                if not mark_end:
                     raise ValueError('Held reference requires a causal valid mark')
-                mark = np.exp(float(values[end - 1, 3]))
+                mark = np.exp(float(values[valid_marks[mark_end - 1], 3]))
                 held[row, step, :4] = units, entry_price, (clock - entry_clock) / 1_000_000, mark / entry_price - 1
         # Preserve the approved final reference descriptor exactly; the prefix
         # uses earlier marks, never the final unrealized return.
