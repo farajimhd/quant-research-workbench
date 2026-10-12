@@ -13,7 +13,8 @@ from src.trading_runtime.portfolio import PortfolioAccountProfile
 from src.trading_runtime.arte_portfolio_snapshot import load_portfolio_snapshot
 
 
-def qualify_program_financial_runtime(runtime, cold, prefix, broker, *, oms_image):
+def qualify_program_financial_runtime(runtime, cold, prefix, broker, *, oms_image,
+        through_sequence=None):
     """Prove broker resynchronization preserved the exact durable cold state.
 
     Returns a detached synchronized comparison image, not a new persistence
@@ -29,6 +30,10 @@ def qualify_program_financial_runtime(runtime, cold, prefix, broker, *, oms_imag
         verify_broker_match_snapshot, project_broker_match_snapshot,
     )
     from src.backend.backtest_market_data import market_day_boundary
+    if (type(prefix) is not V4CommittedPrefix or through_sequence is not None and (
+            type(through_sequence) is not int or not 1 <= through_sequence <= prefix.last_sequence)):
+        raise ValueError("Program financial qualification historical basis differs")
+    basis_sequence = prefix.last_sequence if through_sequence is None else through_sequence
     if (type(runtime) is not TradingRuntime or type(cold) is not PortfolioRecovery
             or type(prefix) is not V4CommittedPrefix or prefix.status != "running"
             or type(oms_image) is not TypedOmsActorImage
@@ -39,8 +44,8 @@ def qualify_program_financial_runtime(runtime, cold, prefix, broker, *, oms_imag
             or not runtime._typed_oms_recovered or runtime._canonical_session is None
             or set(runtime.portfolio.states) != set(cold.states)
             or set(cold.states) != set(cold.revisions)
-            or any(value != prefix.last_sequence for value in cold.revisions.values())
-            or runtime.journal.latest_sequence(runtime.run_id) != prefix.last_sequence
+            or any(value != basis_sequence for value in cold.revisions.values())
+            or runtime.journal.latest_sequence(runtime.run_id) != basis_sequence
             or runtime.journal.pending_record_count):
         raise ValueError("Program financial qualification lacks its initialized exact prefix")
     manager = runtime.order_manager
@@ -56,11 +61,11 @@ def qualify_program_financial_runtime(runtime, cold, prefix, broker, *, oms_imag
     broker = verify_broker_match_snapshot(broker)
     root = broker.snapshot
     at = market_day_boundary(root["session_date"], root["boundary_ms"])
-    if (root["run_id"] != prefix.run_id or root["checkpoint_sequence"] != prefix.last_sequence
+    if (root["run_id"] != prefix.run_id or root["checkpoint_sequence"] != basis_sequence
             or runtime.last_event_time != at):
         raise ValueError("Program financial qualification clock differs")
     actual = project_broker_match_snapshot(run_id=prefix.run_id,
-        session_date=at.date(), checkpoint_sequence=prefix.last_sequence,
+        session_date=at.date(), checkpoint_sequence=basis_sequence,
         boundary_ms=root["boundary_ms"], state=runtime.broker.checkpoint_state())
     if actual != broker:
         raise ValueError("Program financial qualification broker image changed")
@@ -69,7 +74,7 @@ def qualify_program_financial_runtime(runtime, cold, prefix, broker, *, oms_imag
         raise ValueError("Program financial qualification filled reservation cache changed")
     from src.backend.backtest_journal_memory import BacktestMemoryJournal
     reference = build_program_portfolio_engine(cold,
-        journal=BacktestMemoryJournal(run_id=prefix.run_id, initial_sequence=prefix.last_sequence),
+        journal=BacktestMemoryJournal(run_id=prefix.run_id, initial_sequence=basis_sequence),
         strategy_id=runtime.config.strategy_id, strategy_revision=runtime.config.strategy_revision,
         groups=tuple(portfolio.groups.values()), event_clock=lambda: at,
         drawdown_measure_policy=portfolio.drawdown_measure_policy)
@@ -85,9 +90,9 @@ def qualify_program_financial_runtime(runtime, cold, prefix, broker, *, oms_imag
                ("summary", "ledger", "positions", "open_orders", "component_watermarks")):
             raise ValueError("Program financial qualification synchronized broker state changed")
         expected = reference.capture_recovery_snapshot(account,
-            state_revision=prefix.last_sequence, snapshot_at=at)
+            state_revision=basis_sequence, snapshot_at=at)
         current = portfolio.capture_recovery_snapshot(account,
-            state_revision=prefix.last_sequence, snapshot_at=at)
+            state_revision=basis_sequence, snapshot_at=at)
         if current != expected:
             raise ValueError("Program financial qualification durable Portfolio image changed")
     return PortfolioRecovery(prefix.run_id, dict(cold.revisions), deepcopy(portfolio.states),

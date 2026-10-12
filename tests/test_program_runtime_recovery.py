@@ -96,6 +96,17 @@ def test_shared_runtime_initializes_from_real_normalized_cold_portfolio(monkeypa
             comparison = qualify_program_financial_runtime(runtime, cold, prefix, broker_rows, oms_image=oms)
             assert comparison.states["account-id"].ledger == state.ledger
             assert comparison.states["account-id"] is not state
+            later_prefix = replace(prefix, last_sequence=9)
+            historical_comparison = qualify_program_financial_runtime(runtime, cold, later_prefix,
+                broker_rows, oms_image=oms, through_sequence=7)
+            assert historical_comparison == comparison
+            assert later_prefix.last_sequence == 9
+            with pytest.raises(ValueError, match="exact prefix"):
+                qualify_program_financial_runtime(runtime, cold, later_prefix,
+                    broker_rows, oms_image=oms, through_sequence=8)
+            with pytest.raises(ValueError, match="historical basis"):
+                qualify_program_financial_runtime(runtime, cold, later_prefix,
+                    broker_rows, oms_image=oms, through_sequence=10)
             await candidate.initialize(record_lifecycle=False)
             staged_comparison = await controller.qualify_program_financial_candidate(candidate,
                 cold=cold, prefix=prefix, broker=broker_rows, oms_image=oms)
