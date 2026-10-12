@@ -163,6 +163,11 @@ empty compacted journal and reject a stale pre-decision packet that would need
 removed records; no memory fallback or operational receipt is invented.
 Main launch admission, prepared-cohort scheduling, and operational full-session
 qualification remain unfinished.
+The existing certified1s liquidity consumer now offers bounded concurrent cohort
+reads through `read_liquidity_cohort_async`. It validates all requests before
+opening clients, preserves sparse/empty windows and closes every owned client
+before cancellation returns. It consumes existing sealed ARTE products only;
+it neither builds missing coverage nor changes the100ms reader or broker clocks.
 The main clock lifecycle must resolve this dependency while preserving actual
 filled-state/OMS semantics; per-decision cold database replay is not established
 as an efficient production execution path.

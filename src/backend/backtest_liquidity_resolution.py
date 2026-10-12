@@ -19,6 +19,7 @@ from pipelines.market_sip.events import liquidity_resolution_sql as sql
 from pipelines.market_sip.events.market_day_sql import literal
 from src.trading_runtime.arte_journal_schema import storage_preflight
 from src.trading_runtime.eligible_price_contract import volumes_match
+from .qmd_columnar_history_transport import _owned_worker
 
 
 def _digest(value):
@@ -218,7 +219,7 @@ async def certify_liquidity_resolution_async(reader_factory, source, **pins):
             return certify_liquidity_resolution(reader, source, **pins)
         finally:
             reader.close()
-    return await asyncio.to_thread(run)
+    return await _owned_worker(run)
 
 
 async def read_liquidity_window_async(reader_factory, certificate, **window):
@@ -229,4 +230,39 @@ async def read_liquidity_window_async(reader_factory, certificate, **window):
             return read_liquidity_window(reader, certificate, **window)
         finally:
             reader.close()
-    return await asyncio.to_thread(run)
+    return await _owned_worker(run)
+
+
+async def read_liquidity_cohort_async(reader_factory, certificates, *,
+        first_bucket, stop_bucket, concurrency):
+    """Read sealed per-ticker windows using the admitted bounded worker count.
+
+    Every request is validated before opening any client. Sparse or empty rows
+    stay explicit; no price bar or fill is fabricated for a missing bucket.
+    """
+    from types import MappingProxyType
+    if (not callable(reader_factory) or not isinstance(certificates, (tuple, list))
+            or not certificates or type(concurrency) is not int or not 1 <= concurrency <= 32
+            or type(first_bucket) is not int or type(stop_bucket) is not int
+            or len(certificates) * (stop_bucket - first_bucket) > 262144):
+        raise ValueError("Liquidity cohort exceeds its explicit reader/concurrency bounds")
+    certificates = tuple(certificates)
+    if (any(type(row) is not CertifiedLiquidityResolution for row in certificates)
+            or len({row.source.session_date for row in certificates}) != 1
+            or len({row.source.ticker for row in certificates}) != len(certificates)):
+        raise ValueError("Liquidity cohort needs unique tickers from one certified session")
+    for certificate in certificates:
+        liquidity_window_sql(certificate, first_bucket=first_bucket, stop_bucket=stop_bucket)
+    pending = iter(sorted(certificates, key=lambda row: row.source.ticker))
+    results = {}
+    async def worker():
+        while True:
+            certificate = next(pending, None)
+            if certificate is None:
+                return
+            results[certificate.source.ticker] = await read_liquidity_window_async(
+                reader_factory, certificate, first_bucket=first_bucket, stop_bucket=stop_bucket)
+    async with asyncio.TaskGroup() as group:
+        for _ in range(min(concurrency, len(certificates))):
+            group.create_task(worker())
+    return MappingProxyType({ticker: results[ticker] for ticker in sorted(results)})
