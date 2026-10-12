@@ -192,8 +192,32 @@ def test_compound_retains_qualified_rule_rows_and_reseals_dependent_child_hashes
         publisher = BacktestTypedJournalPublisher(journal, sink, attempt_id=ATTEMPT,
             run_month=scope["event_month"], initial_sequence=2, prior_batch_id=base.prior_batch_id)
         from src.backend.backtest_program_publication import (
-            retain_qualified_rule_decision, program_decision_projection_arguments, release_fenced_rule_decisions)
-        retain_qualified_rule_decision(publisher, actual_unit)
+            retain_qualified_rule_decision, program_decision_projection_arguments, release_fenced_rule_decisions,
+            qualify_pending_program_decision)
+        from src.backend.replay_run_service import ReplayRunController
+        controller = object.__new__(ReplayRunController)
+        controller._journal_publisher, controller._journal = publisher, journal
+        controller._runtime = SimpleNamespace(journal=journal)
+        candidate = object()
+        async def qualified_candidate(actual_candidate, parent_rows, child_rows, actual_records, **context):
+            assert actual_candidate is candidate
+            assert parent_rows == actual_parent and child_rows == actual_children
+            assert actual_records == ()
+            return actual_proof
+        controller.qualify_program_decision_candidate = qualified_candidate
+        context = dict(cold=None, prefix=None, broker=None, oms_image=None, packet=None, block=None,
+            population=None, execution_policy=None, protection_profile=None, outside_rth=False)
+        async def changed_owner(*args, **kwargs):
+            controller._journal = object()
+            return actual_proof
+        controller.qualify_program_decision_candidate = changed_owner
+        with pytest.raises(ValueError, match="idle owned publisher"):
+            await qualify_pending_program_decision(controller, candidate, actual_record.record_id, (), **context)
+        assert program_decision_projection_arguments(publisher, 3) == {}
+        controller._journal = journal
+        controller.qualify_program_decision_candidate = qualified_candidate
+        retained_unit = await qualify_pending_program_decision(controller, candidate, actual_record.record_id, (), **context)
+        assert retained_unit.qualification is actual_proof
         assert program_decision_projection_arguments(publisher, 3) == {
             "rule_decision_qualifications": {actual_record.record_id: actual_proof}}
         with pytest.raises(ValueError, match="replaced"):

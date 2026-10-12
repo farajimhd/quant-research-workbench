@@ -57,3 +57,54 @@ def release_fenced_rule_decisions(publisher, batch):
                 retained.pop(event["record_id"], None)
             if not retained:
                 del _PENDING[publisher]
+
+
+async def qualify_pending_program_decision(controller, candidate, record_id, records, *,
+        cold, prefix, broker, oms_image, packet, block, population,
+        execution_policy, protection_profile, outside_rth):
+    """Qualify one pending completion through the controller's native checks.
+
+    This performs qualification reads only and retains its result in memory.
+    Publication remains the existing publisher's explicit next operation.
+    """
+    from .replay_run_service import ReplayRunController
+    from .backtest_typed_publisher import BacktestTypedJournalPublisher
+    from src.trading_runtime.arte_journal_projection import project_journal_record
+    from src.trading_runtime.rule_decision_basis_projection import RuleDecisionBasisBatch
+    from src.trading_runtime.rule_decision_publication import QualifiedRuleDecisionBatch
+    if type(controller) is not ReplayRunController:
+        raise TypeError("Pending decision qualification requires the native controller")
+    publisher, journal = controller._journal_publisher, controller._journal
+    runtime = controller._runtime
+    def require_scope():
+        if (type(publisher) is not BacktestTypedJournalPublisher
+                or controller._journal_publisher is not publisher or controller._journal is not journal
+                or controller._runtime is not runtime or runtime is None or runtime.journal is not journal
+                or publisher.journal is not journal or publisher.writer.journal_profile != "backtest_v4"
+                or publisher._error is not None or publisher._terminal_task is not None
+                or publisher._task is not None and not publisher._task.done()):
+            raise ValueError("Pending decision qualification lost its idle owned publisher")
+    require_scope()
+    basis = journal.rule_decision_basis_for_record(record_id)
+    if basis is None:
+        raise ValueError("Pending decision qualification lacks retained causal evidence")
+    parent, children = basis
+    sequence = parent["decision_sequence"]
+    pending = journal.unfenced_records(after_sequence=sequence - 1, through_sequence=sequence)
+    if len(pending) != 1 or pending[0].record_id != record_id:
+        raise ValueError("Pending decision qualification has no exact completion")
+    completion = pending[0]
+    qualified = await controller.qualify_program_decision_candidate(candidate, parent, children, records,
+        cold=cold, prefix=prefix, broker=broker, oms_image=oms_image, packet=packet,
+        block=block, population=population, execution_policy=execution_policy,
+        protection_profile=protection_profile, outside_rth=outside_rth)
+    require_scope()
+    if journal.unfenced_records(after_sequence=sequence - 1, through_sequence=sequence) != pending:
+        raise ValueError("Pending completion changed during native qualification")
+    base = project_journal_record(completion, run_month=publisher.run_month,
+        attempt_id=publisher.attempt_id, batch_id=parent["batch_id"],
+        prior_batch_id=publisher._batch_id, source_cursor=publisher._source_cursor)
+    envelope = QualifiedRuleDecisionBatch(RuleDecisionBasisBatch.from_pending_completion(journal, completion, base),
+                                         qualified)
+    retain_qualified_rule_decision(publisher, envelope)
+    return envelope
