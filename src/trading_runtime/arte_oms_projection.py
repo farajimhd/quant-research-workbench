@@ -470,10 +470,14 @@ def oms_group_state_batch(
     )
     if exact_prices:
         from .trading_price_rows import exact_price_row
+        from .arte_oms_tactic_projection import tactic_rows
+        tactic_state, tactic_steps = tactic_rows(group.tactic, group_record_id=record_id,
+            run_id=run_id, event_month=month, batch_id=batch_id, account_id=group.account_id)
         return ExactPriceOmsStateBatch(
             replace(batch, oms_group_states=(), oms_order_states=()),
             exact_price_row("trading_oms_group_state_v1", state),
             tuple(exact_price_row("trading_oms_order_state_v1", row) for row in orders),
+            tactic_state, tactic_steps,
         )
     return batch
 
@@ -1005,6 +1009,7 @@ def load_latest_committed_oms_groups(
     strategy_identity: tuple[str, int] | None = None,
     require_tactic: bool = False,
     through_sequence: int | None = None,
+    exact_prices: bool = False,
 ) -> tuple[RecoveredOmsGroupState, ...]:
     """Cold-read one latest normalized state per OMS group, with a hard bound.
 
@@ -1013,7 +1018,7 @@ def load_latest_committed_oms_groups(
     An optional historical cutoff selects earlier state inside that same fully
     verified prefix; it never manufactures a partial committed prefix.
     """
-    if (not _valid_prefix(prefix) or type(page_size) is not int
+    if (type(exact_prices) is not bool or not _valid_prefix(prefix) or type(page_size) is not int
             or not 1 <= page_size <= 500
             or type(max_transitions) is not int or max_transitions < page_size
             or allowed_accounts is not None and (
@@ -1041,7 +1046,8 @@ def load_latest_committed_oms_groups(
         try:
             page = load_committed_oms_group_state_page(
                 client, prefix, after_sequence=after, limit=current_page_size,
-                require_tactic=require_tactic)
+                require_tactic=require_tactic,
+                **({"exact_prices": True} if exact_prices else {}))
         except RuntimeError as exc:
             # A dense group can exceed the independently bounded child count.
             # Retry the *same* cursor with fewer parents; never skip or relax
@@ -1237,8 +1243,15 @@ def load_committed_oms_group_state_page(
     limit: int = 200, max_children: int = 4096,
     require_intent_revision: bool = True,
     require_tactic: bool = False,
+    exact_prices: bool = False,
 ) -> tuple[RecoveredOmsGroupState, ...]:
     """Cold-read a bounded, fence-certified OMS group page without disk state."""
+    if type(exact_prices) is not bool:
+        raise ValueError("OMS exact price recovery mode must be an explicit boolean")
+    if exact_prices:
+        from .arte_journal_commit_v4 import V4CommittedPrefix
+        if type(prefix) is not V4CommittedPrefix:
+            raise ValueError("Exact OMS recovery requires its verified V4 prefix")
     if not _valid_prefix(prefix):
         raise ValueError("OMS recovery requires a verified committed prefix")
     if after_sequence < 0 or not 1 <= limit <= 500 or max_children < 1:
@@ -1258,15 +1271,25 @@ def load_committed_oms_group_state_page(
         raise RuntimeError("Committed OMS page repeated an event identity")
     ids_sql = ",".join(f"toUUID({_literal(value)})" for value in ids)
     def family(name: str, *, children: bool) -> list[dict[str, Any]]:
-        columns = ",".join(column for column, _ in _CONTRACTS[name].columns)
+        physical_name = name
+        if exact_prices and name in {"trading_oms_group_state_v1", "trading_oms_order_state_v1"}:
+            from .trading_price_contracts import PRICE_FAMILIES
+            physical_name = PRICE_FAMILIES[name][0]
+        columns = ",".join(column for column, _ in _CONTRACTS[physical_name].columns)
         key = "parent_record_id" if children else "record_id"
         rows = _rows(client,
-            f"SELECT {columns} FROM arte.{name} "
+            f"SELECT {columns} FROM arte.{physical_name} "
             f"WHERE run_id={_literal(prefix.run_id)} AND {key} IN ({ids_sql}) "
             f"{_committed_batch_filter(prefix)}"
             f"LIMIT {max_children + 1 if children else len(events) + 1} FORMAT JSONEachRow")
         if len(rows) > (max_children if children else len(events)):
             raise RuntimeError(f"Committed OMS {name} page exceeds its row budget")
+        if physical_name != name:
+            from .trading_price_rows import restore_exact_price_row
+            try:
+                return [restore_exact_price_row(name, row, stored_utc=True) for row in rows]
+            except ValueError as exc:
+                raise RuntimeError(f"Committed {physical_name} row differs from its exact price contract") from exc
         return _verified_rows(name, rows)
     groups = family("trading_oms_group_state_v1", children=False)
     if len(groups) != len(events):

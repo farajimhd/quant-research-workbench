@@ -12,6 +12,8 @@ class ExactPriceOmsStateBatch:
     base: TypedJournalBatch
     group: Mapping[str, Any]
     orders: tuple[Mapping[str, Any], ...]
+    tactic_state: Mapping[str, Any]
+    tactic_steps: tuple[Mapping[str, Any], ...]
 
     def __post_init__(self):
         if (type(self.base) is not TypedJournalBatch or len(self.base.events) != 1
@@ -36,6 +38,11 @@ class ExactPriceOmsStateBatch:
             ids.add(order['record_id'])
         object.__setattr__(self, 'group', MappingProxyType(dict(self.group)))
         object.__setattr__(self, 'orders', tuple(MappingProxyType(dict(row)) for row in self.orders))
+        from .arte_oms_tactic_projection import seal_oms_tactic_rows
+        seal_oms_tactic_rows((self.tactic_state,), self.tactic_steps, (self.group,),
+            self.base.events, run_id=self.base.run_id, batch_id=self.base.batch_id)
+        object.__setattr__(self, 'tactic_state', MappingProxyType(dict(self.tactic_state)))
+        object.__setattr__(self, 'tactic_steps', tuple(MappingProxyType(dict(row)) for row in self.tactic_steps))
 
 
 def seal_exact_oms_state_batch(batch):
@@ -55,6 +62,7 @@ def publish_exact_oms_state_batch_v4(client, batch, *, verified_prior_prefix=Non
         raise ValueError("Exact OMS publication requires its explicit envelope")
     from .arte_journal_commit_v4 import _publish_typed_batch_v4
     return _publish_typed_batch_v4(client, batch.base, exact_oms_prices=batch,
+                                  oms_tactic_rows=(batch.tactic_state, batch.tactic_steps),
                                   verified_prior_prefix=verified_prior_prefix)
 
 

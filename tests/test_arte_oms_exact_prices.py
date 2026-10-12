@@ -97,12 +97,18 @@ def test_exact_seal_keeps_component_counts_and_parent_scope_checks():
         seal_exact_oms_state_batch(broken)
 
 
-def test_exact_oms_uses_v4_commit_readback_and_exact_intent_fence(monkeypatch):
+@pytest.mark.parametrize('has_tactic', [False, True])
+def test_exact_oms_uses_v4_commit_readback_and_exact_intent_fence(monkeypatch, has_tactic):
     from src.trading_runtime.arte_oms_exact_prices import publish_exact_oms_state_batch_v4
     from src.trading_runtime.arte_journal_commit_v4 import publish_base_typed_batch_v4, load_verified_commit_v4
     from src.trading_runtime import rule_decision_writer_preflight as audit
     from tests.test_arte_journal_commit_v4 import attached_v4_client
     group, kwargs, _ = prepared()
+    if has_tactic:
+        from src.trading_runtime.order_management import ExecutionQuote, ExecutionTactic, ExecutionUrgency, PriceStep
+        group.tactic = ExecutionTactic(ExecutionUrgency.PATIENT, 'BUY',
+            (PriceStep(0, 12.5), PriceStep(200, 12.6)),
+            ExecutionQuote(12.5, 12.6, group.updated_at, .01), 200)
     exact = oms_group_state_batch(group, **kwargs, exact_prices=True)
     client = attached_v4_client()
     calls = []
@@ -120,9 +126,27 @@ def test_exact_oms_uses_v4_commit_readback_and_exact_intent_fence(monkeypatch):
     assert 'trading_oms_order_state_v1' not in client.tables
     assert publish_exact_oms_state_batch_v4(client, exact) == exact.base.batch_id
     assert calls and all(actual is client for actual in calls)
+    from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
+    from src.trading_runtime.arte_oms_projection import load_latest_committed_oms_groups
+    prefix = load_verified_v4_prefix(client, exact.base.run_id)
+    recovered, = load_latest_committed_oms_groups(client, prefix, exact_prices=True, require_tactic=True)
+    assert recovered.orders == tuple(group.orders)
+    assert recovered.group['current_limit_price'] == group.current_limit_price
+    assert recovered.intent_record_id == kwargs['published_intent_batch'].intents[0]['record_id']
+    assert recovered.first_sequence == recovered.sequence == 2
+    assert recovered.tactic_recorded and recovered.tactic == group.tactic
+    tactic_table = 'trading_oms_execution_tactic_v1'
+    saved = client.tables.pop(tactic_table)
+    with pytest.raises(RuntimeError, match='tactic'):
+        load_latest_committed_oms_groups(client, prefix, exact_prices=True, require_tactic=True)
+    client.tables[tactic_table] = saved
+    with pytest.raises(RuntimeError, match='missing or duplicate'):
+        load_latest_committed_oms_groups(client, prefix)
     client.tables['trading_oms_order_state_exact_price_v1'][0]['limit_price_bits'] += 1
     with pytest.raises(RuntimeError, match='row hash'):
         load_verified_commit_v4(client, run_id=exact.base.run_id, batch_id=exact.base.batch_id)
+    with pytest.raises(RuntimeError, match='exact price contract'):
+        load_latest_committed_oms_groups(client, prefix, exact_prices=True)
 
 
 def test_exact_oms_publication_requires_storage_audit_before_any_write(monkeypatch):

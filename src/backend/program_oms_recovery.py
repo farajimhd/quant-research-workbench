@@ -14,7 +14,7 @@ from src.trading_runtime.program_oms_lineage import reconstruct_program_oms_line
 async def recover_program_oms_lineages_async(reader_factory, prefix, *, release,
         account_ids, reselect, execution_policy, protection_for, outside_rth,
         maximum_groups=2000, maximum_transitions=20000, maximum_events=100000,
-        through_sequence=None):
+        through_sequence=None, exact_prices=False):
     """Cold join and close the owned reader before cancellation can return.
 
     `reselect` must replay the exact historical filled/observed state and
@@ -23,7 +23,7 @@ async def recover_program_oms_lineages_async(reader_factory, prefix, *, release,
     """
     account_ids = tuple(account_ids)
     accounts = frozenset(account_ids)
-    if (type(prefix) is not V4CommittedPrefix or prefix.status != "running"
+    if (type(exact_prices) is not bool or type(prefix) is not V4CommittedPrefix or prefix.status != "running"
             or not isinstance(release, ProgramRelease) or not accounts
             or len(accounts) != len(account_ids) or type(outside_rth) is not bool
             or any(type(account) is not str or not account for account in accounts)
@@ -45,6 +45,7 @@ async def recover_program_oms_lineages_async(reader_factory, prefix, *, release,
                 allowed_accounts=accounts,
                 strategy_identity=(release.header["strategy_id"], release.header["strategy_number"]),
                 require_tactic=True, max_transitions=maximum_transitions,
+                **({"exact_prices": True} if exact_prices else {}),
                 **({"through_sequence": through_sequence} if through_sequence is not None else {}))
             if len(groups) > maximum_groups:
                 raise ValueError("Program OMS group inventory exceeds its bound")

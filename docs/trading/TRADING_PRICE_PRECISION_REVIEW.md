@@ -118,6 +118,21 @@ commit tests prove prior-intent fencing, exact physical family readback, retry
 and corruption rejection. They mock the operational startup audit and transport;
 they do not prove database installation or full-session runtime integration.
 
+Exact-price OMS envelopes now retain explicit shared tactic state and ordered
+steps, including recorded absence. The existing bounded committed OMS page and
+latest-state readers accept an explicit `exact_prices=True` mode requiring a V4
+prefix, read only the selected price tables, verify their hashes, and decode
+native prices before their unchanged lineage/count/tactic checks. There is no
+legacy-table fallback. The asynchronous program OMS cold join forwards that
+explicit mode while retaining prefix-before/after, reader ownership, normalized
+admission/decision, protection-history and reselection requirements. Synthetic
+tests cover present and absent tactics, missing tactic rejection, legacy-mode
+rejection of exact-only records and corrupted price readback. Full program actor
+recovery, writer-queue/main-path integration and real-session qualification are
+still incomplete. Tactic quote/step decimal contracts remain unchanged; their
+own price precision must be reviewed before claiming complete exact-price
+coverage for every execution tactic.
+
 Whichever option is selected must cover central schema definitions, projectors,
 binary insert/readback hashes, compound family seals, grants/storage audits,
 order command/modify/reprice links, broker execution attribution, OMS actor

@@ -1890,7 +1890,7 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
             PARENT_TABLE, STEP_TABLE, seal_oms_tactic_rows,
         )
 
-        if (len(batch.events) != 1 or len(batch.oms_group_states) != 1
+        if (len(batch.events) != 1 or (len(batch.oms_group_states) != 1 if exact_oms_prices is None else False)
                 or not isinstance(oms_tactic_rows, tuple)
                 or len(oms_tactic_rows) != 2):
             raise ValueError("V4 OMS tactic needs one group revision")
