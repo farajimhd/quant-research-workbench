@@ -88,6 +88,15 @@ Malformed/nonfinite price bits are rejected by shared canonicalization as well
 as by restoration. This is scalar transport integration, not yet complete OMS
 publication, snapshot recovery or operator provisioning.
 
+The existing `oms_group_state_batch` now has an explicit source-only
+`exact_prices=True` mode. It runs the same intent/admission/order checks and
+returns an `ExactPriceOmsStateBatch` with separately hashed group/order price
+rows and the original nonprice envelope. It retains decimal quantities and
+timers, binds price children to the original event, and rejects mixed legacy
+price rows or tampered hashes. Default projection remains unchanged. This
+staged envelope is not accepted by the existing writer queue; its shared commit
+seals, admission and complete cold recovery remain to be integrated.
+
 Whichever option is selected must cover central schema definitions, projectors,
 binary insert/readback hashes, compound family seals, grants/storage audits,
 order command/modify/reprice links, broker execution attribution, OMS actor

@@ -26,6 +26,7 @@ from src.trading_runtime.arte_journal_writer import (
 )
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.order_management import ExecutionTactic
+from src.trading_runtime.arte_oms_exact_prices import ExactPriceOmsStateBatch
 from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.journal_contract import JournalRecord
 from src.trading_runtime.signals import StrategyIntent
@@ -189,8 +190,11 @@ def oms_group_state_batch(
     journal_record_id: str | None = None,
     correlation_id: str = "",
     causation_id: str = "",
-) -> TypedJournalBatch:
+    exact_prices: bool = False,
+) -> TypedJournalBatch | ExactPriceOmsStateBatch:
     """Project the represented group revision and its keyed recovery components."""
+    if type(exact_prices) is not bool:
+        raise ValueError("OMS exact price mode must be an explicit boolean")
     if not run_id or not group.group_id or not group.account_id or not group.intent.intent_id:
         raise ValueError("OMS state identity is incomplete")
     if (len(published_intent_batch.events) != 1
@@ -370,6 +374,8 @@ def oms_group_state_batch(
              "entity_id": group.group_id, "correlation_id": correlation_id,
              "causation_id": causation_id}
     optional_number = lambda value: _exact_decimal(value) if value is not None else None
+    price_number = (lambda value: value) if exact_prices else optional_number
+    required_price = (lambda value: value) if exact_prices else _exact_decimal
     optional_time = lambda value: value.astimezone(timezone.utc).isoformat() if value is not None else None
     state = {
         **common, "record_id": record_id, "group_id": group.group_id,
@@ -383,15 +389,15 @@ def oms_group_state_batch(
         "last_reprice_at": optional_time(group.last_reprice_at),
         "failed_reprice_at": optional_time(group.failed_reprice_at),
         "internal_reaction_ms": _duration_ms(group.internal_reaction_ms),
-        "deferred_reprice_from": optional_number(group.deferred_reprice[0]) if group.deferred_reprice else None,
-        "deferred_reprice_to": optional_number(group.deferred_reprice[1]) if group.deferred_reprice else None,
-        "high_water_price": _exact_decimal(group.high_water_price),
-        "low_water_price": _exact_decimal(group.low_water_price),
+        "deferred_reprice_from": price_number(group.deferred_reprice[0]) if group.deferred_reprice else None,
+        "deferred_reprice_to": price_number(group.deferred_reprice[1]) if group.deferred_reprice else None,
+        "high_water_price": required_price(group.high_water_price),
+        "low_water_price": required_price(group.low_water_price),
         "cancel_strategy_protection": int(group.plan.cancel_strategy_protection),
         "protection_reconciliation_required": int(group.plan.protection_reconciliation_required),
         "filled_quantity": _exact_decimal(group.filled_quantity),
         "remaining_quantity": _exact_decimal(group.remaining_quantity),
-        "current_limit_price": optional_number(group.current_limit_price),
+        "current_limit_price": price_number(group.current_limit_price),
         "protection_required_quantity": _exact_decimal(group.protection_required_quantity),
         "protection_coverage_quantity": _exact_decimal(group.protection_coverage_quantity),
         "protection_delegated": int(group.protection_delegated),
@@ -420,8 +426,8 @@ def oms_group_state_batch(
             "side": order.side, "order_type": order.orderType, "time_in_force": order.tif,
             "quantity": optional_number(order.quantity),
             "cash_quantity": optional_number(order.cashQty),
-            "limit_price": optional_number(order.price),
-            "aux_price": optional_number(order.auxPrice),
+            "limit_price": price_number(order.price),
+            "aux_price": price_number(order.auxPrice),
             "trailing_amount": optional_number(order.trailingAmt),
             "trailing_type": order.trailingType or "", "outside_rth": int(order.outsideRTH),
             "single_group": int(order.isSingleGroup),
@@ -453,7 +459,7 @@ def oms_group_state_batch(
                       "parent_record_id": record_id, "ordinal": ordinal,
                       field: str(value)}
                      for ordinal, value in enumerate(values))
-    return TypedJournalBatch(
+    batch = TypedJournalBatch(
         run_id, run_month, attempt_id, batch_id, prior_batch_id,
         sequence, sequence, source_cursor, run_status, (event,),
         oms_group_states=(state,), oms_order_states=tuple(orders),
@@ -462,6 +468,14 @@ def oms_group_state_batch(
         oms_cancel_ocas=strings(group.plan.cancel_oca_groups, "cancel-oca", "oca_group"),
         intent_uses=(intent_use,),
     )
+    if exact_prices:
+        from .trading_price_rows import exact_price_row
+        return ExactPriceOmsStateBatch(
+            replace(batch, oms_group_states=(), oms_order_states=()),
+            exact_price_row("trading_oms_group_state_v1", state),
+            tuple(exact_price_row("trading_oms_order_state_v1", row) for row in orders),
+        )
+    return batch
 
 
 @dataclass(frozen=True, slots=True)
