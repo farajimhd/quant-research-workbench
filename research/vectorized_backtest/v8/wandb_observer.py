@@ -31,6 +31,19 @@ def settings(wandb):
         ignore_globs=['*.log','*.patch','requirements.txt','wandb-metadata.json'])
 
 
+def reporter_heartbeat(run, last_sent, *, now=None):
+    """Keep sparse scalar runs live without adding history rows or system data.
+
+    Empty SDK filestream requests may not advance the cloud heartbeat. A tiny
+    summary update describes reporter liveness only, not optimizer health.
+    """
+    now=time.monotonic() if now is None else now
+    if run is not None and now-last_sent>=60:
+        run.summary['reporter/heartbeat_unix']=time.time()
+        return now
+    return last_sent
+
+
 def upload(campaign,output,*,project='optimization-v8',entity=None,mode='online',follow=False,poll=30):
     """Network waits are confined to this independently launched process.
 
@@ -68,6 +81,7 @@ def upload(campaign,output,*,project='optimization-v8',entity=None,mode='online'
                           WANDB_CONFIG_DIR=str(output/'config'))
         import wandb
         next_generation=1
+        last_heartbeat=float('-inf')
         while True:
             if (output/'STOP').exists():status('stopped');break
             value=packet(campaign,next_generation)
@@ -110,6 +124,10 @@ def upload(campaign,output,*,project='optimization-v8',entity=None,mode='online'
                 status('complete' if finished else 'caught_up',last_generation=next_generation-1)
                 break
             status('waiting_for_generation',next_generation=next_generation)
+            try:
+                last_heartbeat=reporter_heartbeat(run,last_heartbeat)
+            except Exception as error:
+                status('heartbeat_retry',next_generation=next_generation,error_type=type(error).__name__)
             time.sleep(poll)
     finally:
         try:

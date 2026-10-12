@@ -88,6 +88,21 @@ def test_observer_import_has_no_compute_dependency():
     assert result.returncode==0,result.stderr
 
 
+def test_reporter_heartbeat_summary_only_and_throttled(monkeypatch):
+    from research.vectorized_backtest.v8.wandb_observer import reporter_heartbeat
+    class Run:
+        summary={}
+        def log(self,*a,**kw):raise AssertionError('Heartbeat must not add history')
+    run=Run()
+    monkeypatch.setattr('research.vectorized_backtest.v8.wandb_observer.time.time',lambda:1234)
+    assert reporter_heartbeat(None,0,now=60)==0
+    assert reporter_heartbeat(run,0,now=59)==0
+    assert run.summary=={}
+    assert reporter_heartbeat(run,0,now=60)==60
+    assert run.summary=={'reporter/heartbeat_unix':1234}
+    assert reporter_heartbeat(run,60,now=90)==60
+
+
 def test_resume_uses_sdk_history_cursor(tmp_path,monkeypatch):
     import shutil
     import wandb
