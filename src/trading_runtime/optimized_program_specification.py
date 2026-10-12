@@ -96,9 +96,17 @@ def compile_frozen_winner(reference: OptimizationReference,
         raise ValueError("Invalid frozen sizing or commission")
     if min(numbers[:2]) <= 0 or execution.get("cost_bps") != 0:
         raise ValueError("Frozen comparison execution contract changed")
+    from .columnar_strategy_release import POLICY
+    policy = dict(reference.program["policy"])
+    expected = (set(POLICY) - {"cooldown_seconds"}) | {"cooldown"}
+    if set(policy) != expected:
+        raise ValueError("Frozen policy differs from the optimization contract")
+    # V7's completed clock is in elapsed seconds, as is native management.
+    # Preserve the value exactly; only the shared field name changes.
+    policy["cooldown_seconds"] = policy.pop("cooldown")
     raw = json.dumps({"program": reference.program, "execution": dict(execution),
                       "universe": dict(universe_identity)}, sort_keys=True, separators=(",", ":"))
     return OptimizedProgramSpecification(reference.winner_sha256, reference.generation,
         reference.candidate, MappingProxyType(programs), MappingProxyType(ages),
-        MappingProxyType(dict(reference.program["policy"])), *map(float, numbers),
+        MappingProxyType(policy), *map(float, numbers),
         universe, sha256(raw.encode()).hexdigest())
