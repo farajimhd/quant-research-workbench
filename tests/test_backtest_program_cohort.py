@@ -31,7 +31,8 @@ from src.trading_runtime.execution_policies import ExecutionPolicy, ExecutionEnv
 
 
 @pytest.mark.parametrize("resolution", [100, 1000])
-def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepared_source, tmp_path, monkeypatch, resolution):
+@pytest.mark.parametrize("partial_fills", [False, True])
+def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepared_source, tmp_path, monkeypatch, resolution, partial_fills):
     store = Store()
     publish(store, prepared_source)
     certificate = consume(store, prepared_source)
@@ -72,12 +73,16 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                 attempt_id="00000000-0000-0000-0000-000000000001", run_month=pin.scope.session_date.replace(day=1),
                 expected_config=typed_run_config_payload(controller._runtime.config))
             transport_rows = []
-            for offset in (0, 2):  # The middle certified window has no liquidity row.
+            for offset in ((0, 1, 2) if partial_fills else (0, 2)):
                 market, _ = block.row_for("listing", ordinal + offset)
                 row = second_bar(market["boundary_at"])
                 price = round(market["reference_close"] * 10000)
+                if partial_fills:
+                    price += offset
                 row.update(ticker="ABC", ask_int=price, bid_int=price - 1, close_int=price,
                     high_int=price + 1, low_int=price - 1)
+                if partial_fills:
+                    row.update(ask_size=(2 if offset == 1 else 1), bid_size=1)
                 if resolution == 100:
                     row.update(resolution_ms=100, bucket_index=(row["bucket_index"] + 1) * 10 - 1)
                 transport_rows.append(row)
@@ -195,6 +200,13 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                 controller._journal_publisher._prepare_batches(result.policy_packet.journal_sequence)
             controller._journal_publisher.exact_oms_prices = True
             try:
+                if partial_fills:
+                    assert any(row.size == 2 for row in executions)
+                    assert any(record.entity_type == "entry_acquisition_frozen_before_exit"
+                        for record in controller._journal.records(controller.run_id))
+                    with pytest.raises(ValueError, match="trading_protection_reconciliation_action_v4.stop_price loses decimal precision"):
+                        controller._journal_publisher._prepare_batches(result.policy_packet.journal_sequence)
+                    return
                 units = controller._journal_publisher._prepare_batches(result.policy_packet.journal_sequence)
                 assert len(units) == 1
                 from tests.test_arte_journal_commit_v4 import attached_v4_client

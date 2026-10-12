@@ -588,6 +588,7 @@ def _load_verified_details_v4(
                f"AND batch_id=toUUID({_literal(batch_id)}) ")
     details = {}
     related_rows = {}
+    from .arte_entry_acquisition_freeze import FAMILY_NAMES as ENTRY_FREEZE_FAMILIES
     from .rule_decision_basis_schema import BASIS as RULE_BASIS, INTENT as RULE_INTENT
     family_specs = []
     for family in family_rows:
@@ -634,6 +635,8 @@ def _load_verified_details_v4(
                 raise RuntimeError("V4 typed detail differs from its row hash")
             identities.append((str(UUID(str(row["record_id"]))), digest))
         details[name] = identities
+        if name in ENTRY_FREEZE_FAMILIES:
+            related_rows[name] = rows
         if name in {RULE_BASIS.name, RULE_INTENT.name, "trading_strategy_signal_v2"}:
             related_rows[name] = rows
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
@@ -654,6 +657,14 @@ def _load_verified_details_v4(
                     "trading_oms_execution_tactic_v1",
                     "trading_oms_execution_step_v1"}:
             related_rows[name] = rows
+    if ENTRY_FREEZE_FAMILIES & set(related_rows):
+        from .arte_entry_acquisition_freeze import FREEZE, GROUP, seal_entry_freeze_rows
+        try:
+            seal_entry_freeze_rows(tuple(related_rows.get(FREEZE.name, ())),
+                tuple(related_rows.get(GROUP.name, ())), tuple(related_rows.get("trading_event_v1", ())),
+                run_id=run_id, batch_id=batch_id)
+        except ValueError as exc:
+            raise RuntimeError("V4 entry freeze differs from its reduction event") from exc
     if ("trading_oms_execution_tactic_v1" in related_rows
             or "trading_oms_execution_step_v1" in related_rows):
         from .arte_oms_tactic_projection import seal_oms_tactic_rows
@@ -1469,6 +1480,7 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
                             broker_snapshot_rows=None,
                             exact_oms_prices=None,
                             exact_order_prices=None,
+                            entry_freeze=None,
                             _prepare_only=False):
     from src.trading_runtime.arte_journal_writer import (
         TypedJournalBatch, _CONTRACTS, _identity, _insert, _literal, _rows,
@@ -1496,6 +1508,15 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         if type(exact_order_prices) is not ExactPriceOrderCommandBatch or exact_order_prices.base is not batch:
             raise ValueError("Exact order publication requires its original typed envelope")
         require_rule_decision_writer_audit(client)
+    freeze_rows, freeze_groups = (), ()
+    if entry_freeze is not None:
+        from .arte_entry_acquisition_freeze import EntryAcquisitionFreezeBatch, seal_entry_freeze_rows
+        from .rule_decision_writer_preflight import require_rule_decision_writer_audit
+        if type(entry_freeze) is not EntryAcquisitionFreezeBatch or entry_freeze.base is not batch:
+            raise ValueError("Entry freeze publication requires its original envelope")
+        require_rule_decision_writer_audit(client)
+        freeze_rows, freeze_groups = seal_entry_freeze_rows((entry_freeze.freeze,), entry_freeze.groups,
+            batch.events, run_id=batch.run_id, batch_id=batch.batch_id)
     if (getattr(client, "typed_insert_strict", False) is not True
             or not isinstance(getattr(client, "typed_insert_dispatch", None),
                               TypedInsertDispatch)):
@@ -1811,7 +1832,8 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         v4_snapshot_position_ids=tuple(row["record_id"] for row in snapshot_positions),
         exact_oms_price_rows=((exact_oms_prices.group,), exact_oms_prices.orders)
             if exact_oms_prices is not None else None,
-        exact_order_command_rows=(exact_order_prices.command,) if exact_order_prices is not None else None)
+        exact_order_command_rows=(exact_order_prices.command,) if exact_order_prices is not None else None,
+        v4_entry_freeze_ids=tuple(row['record_id'] for row in freeze_rows))
     command_rows = _order_command_identity_rows(dict(base_families))
     from .numbered_fixed_strategy import is_numbered_fixed_strategy
     strategy_one_commands = {
@@ -1982,6 +2004,9 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         families += (("trading_backtest_account_snapshot_v2", snapshot_accounts),)
     if snapshot_positions:
         families += (("trading_backtest_position_snapshot_v2", snapshot_positions),)
+    if freeze_rows:
+        from .arte_entry_acquisition_freeze import FREEZE, GROUP
+        families += ((FREEZE.name, freeze_rows), (GROUP.name, freeze_groups))
     if _prepare_only:
         # The compound transport rekeys these fully validated normalized
         # families before one Keeper reservation. No query or INSERT has run.
@@ -2107,7 +2132,8 @@ def _publish_sealed_batch_v4(client, batch, base_families, families, *,
                              automatic_ladder_read_client=None) -> str:
     """Publish one sealed normalized family graph under a Keeper fence."""
     from .trading_price_contracts import EXACT_PRICE_FAMILY_NAMES
-    if any(name in EXACT_PRICE_FAMILY_NAMES and rows
+    from .arte_entry_acquisition_freeze import FAMILY_NAMES as ENTRY_FREEZE_FAMILIES
+    if any((name in EXACT_PRICE_FAMILY_NAMES or name in ENTRY_FREEZE_FAMILIES) and rows
            for name, rows in families):
         from .rule_decision_writer_preflight import require_rule_decision_writer_audit
         require_rule_decision_writer_audit(client)

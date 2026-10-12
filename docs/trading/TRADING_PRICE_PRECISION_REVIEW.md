@@ -200,6 +200,20 @@ partial-fill, all30 comparison or workstation throughput qualification. Full
 price-family coverage, immutable run-setting/recovery selection and main launch
 integration remain required before enabling real runs.
 
+The additional partial-fill cohort exposes the existing OMS event
+`entry_acquisition_frozen_before_exit`: cancellation of a still-open acquisition
+before risk reduction. A shared parent table and ordered source-group table now
+represent all emitted fields, retaining correlation/causation in the event.
+Their codecs reject unknown fields, empty/duplicate/foreign groups, orphan
+children and mismatched counts/hashes. V4 projection, worker submission, mixed
+seals, readback and the program provisioning/audit catalog include these two
+central contracts; no strategy-owned schema or JSON column is introduced.
+Standalone synthetic publication/retry/corruption tests pass. The native partial
+cohort now reaches the next confirmed gap: protection-reconciliation stop price
+still rejects the Float32-derived value at Decimal(38,10). That path remains
+unqualified until its exact-price action contract is integrated. No operational
+tables were installed or real backtests run.
+
 Whichever option is selected must cover central schema definitions, projectors,
 binary insert/readback hashes, compound family seals, grants/storage audits,
 order command/modify/reprice links, broker execution attribution, OMS actor

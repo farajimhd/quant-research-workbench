@@ -26,6 +26,7 @@ from .arte_risk_action_v4 import V4RiskActionBatch
 from .rule_decision_publication import QualifiedRuleDecisionBatch, _check_rule_decision_qualification
 from .arte_oms_exact_prices import ExactPriceOmsStateBatch
 from .arte_order_exact_prices import ExactPriceOrderCommandBatch
+from .arte_entry_acquisition_freeze import EntryAcquisitionFreezeBatch, FREEZE, GROUP, seal_entry_freeze_rows
 from .arte_oms_tactic_projection import (
     V4OmsTacticBatch, PARENT_TABLE, STEP_TABLE, seal_oms_tactic_rows,
 )
@@ -44,6 +45,7 @@ from .arte_entry_activity_v4 import ENTRY_ACTIVITY, seal_certified_entry_activit
 from .arte_entry_spread_risk_v4 import ENTRY_SPREAD_RISK, seal_certified_entry_spread_risk_rows
 
 _CHILD_KEYS = (
+    "entry_freezes", "entry_freeze_groups",
     "exact_order_commands",
     "exact_oms_groups", "exact_oms_orders",
     "rule_decision_bases", "rule_decision_intents",
@@ -55,6 +57,7 @@ _CHILD_KEYS = (
     "reconciliation_replies", "oms_tactics", "oms_tactic_steps",
 )
 _EVENT_PARENT_KEYS = frozenset({
+    "entry_freezes",
     "exact_order_commands",
     "exact_oms_groups", "exact_oms_orders",
     "rule_decision_bases",
@@ -91,6 +94,8 @@ class V4CompoundBatch:
 
 
 def _unit_children(unit: Any) -> tuple[tuple[str, Mapping[str, Any]], ...]:
+    if type(unit) is EntryAcquisitionFreezeBatch:
+        return (("entry_freezes", unit.freeze),) + tuple(("entry_freeze_groups", row) for row in unit.groups)
     if type(unit) is ExactPriceOrderCommandBatch:
         return (("exact_order_commands", unit.command),) + tuple(
             ("command_lineages", row) for row in unit.base.v4_command_lineages)
@@ -229,6 +234,8 @@ def coalesce_v4_units(
 
 
 def _publication_kwargs(unit: Any) -> dict[str, Any]:
+    if type(unit) is EntryAcquisitionFreezeBatch:
+        return {"entry_freeze": unit}
     if type(unit) is ExactPriceOrderCommandBatch:
         return {"exact_order_prices": unit}
     if type(unit) is ExactPriceOmsStateBatch:
@@ -333,6 +340,8 @@ def prepare_compound_v4_families(
     if getattr(client, "live_v4_lease", None) is not None and compound.children['profit_givebacks']:
         raise ValueError('Live V4 compound cannot publish profit-protection witnesses')
     table_for_key = {
+        "entry_freezes": FREEZE.name,
+        "entry_freeze_groups": GROUP.name,
         "exact_order_commands": "trading_order_command_exact_price_v1",
         "exact_oms_groups": "trading_oms_group_state_exact_price_v1",
         "exact_oms_orders": "trading_oms_order_state_exact_price_v1",
@@ -417,6 +426,7 @@ def prepare_compound_v4_families(
         v4_risk_action_ids=ids(RISK_ACTION.name),
         v4_protection_ids=ids(PROTECTION_CHANGE.name),
         v4_reconciliation_ids=ids(PROTECTION_RECONCILIATION.name),
+        v4_entry_freeze_ids=ids(FREEZE.name),
         exact_oms_price_rows=(tuple(extra["trading_oms_group_state_exact_price_v1"]),
                               tuple(extra["trading_oms_order_state_exact_price_v1"]))
             if compound.children["exact_oms_groups"] or compound.children["exact_oms_orders"] else None,
@@ -471,6 +481,8 @@ def prepare_compound_v4_families(
         run_id=compound.base.run_id, batch_id=compound.base.batch_id)
     seal_risk_action_v4(
         extra[RISK_ACTION.name], extra[RISK_REPLY.name], compound.base.events,
+        run_id=compound.base.run_id, batch_id=compound.base.batch_id)
+    seal_entry_freeze_rows(tuple(extra[FREEZE.name]), tuple(extra[GROUP.name]), compound.base.events,
         run_id=compound.base.run_id, batch_id=compound.base.batch_id)
     seal_protection_changes_v3(
         extra[PROTECTION_CHANGE.name], extra[PROTECTION_ENTRY_ORDER.name],

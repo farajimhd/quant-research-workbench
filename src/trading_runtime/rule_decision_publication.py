@@ -16,7 +16,8 @@ def rule_decision_storage_contracts():
     """Exact opt-in catalog; do not alter existing V4 startup or legacy tables."""
     from .arte_journal_writer import v4_storage_contracts
     from .trading_price_contracts import exact_price_storage_contracts
-    contracts = (*v4_storage_contracts(), *STAGED_TABLES, *exact_price_storage_contracts())
+    from .arte_entry_acquisition_freeze import TABLES as ENTRY_FREEZE_TABLES
+    contracts = (*v4_storage_contracts(), *STAGED_TABLES, *exact_price_storage_contracts(), *ENTRY_FREEZE_TABLES)
     by_name = {}
     for contract in contracts:
         prior = by_name.setdefault(contract.name, contract)

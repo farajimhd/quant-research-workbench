@@ -28,8 +28,9 @@ def _require_profile(client):
 def rule_decision_write_tables():
     from .arte_journal_writer import v4_journal_write_tables
     from .trading_price_contracts import exact_price_storage_contracts
+    from .arte_entry_acquisition_freeze import TABLES as ENTRY_FREEZE_TABLES
     return v4_journal_write_tables() | frozenset(table.name for table in
-        (*STAGED_TABLES, *exact_price_storage_contracts()))
+        (*STAGED_TABLES, *exact_price_storage_contracts(), *ENTRY_FREEZE_TABLES))
 
 
 def preflight_rule_decision_writer(client):

@@ -284,6 +284,10 @@ def project_pending_backtest_v4_prefix(
                 correlation_id=str(payload.get("correlation_id") or ""),
                 causation_id=str(payload.get("causation_id") or ""),
             )
+        elif kind == ("order_management", "entry_acquisition_frozen_before_exit"):
+            from src.trading_runtime.arte_entry_acquisition_freeze import entry_acquisition_freeze_batch
+            unit = entry_acquisition_freeze_batch(record, run_month=run_month, attempt_id=attempt,
+                batch_id=batch_id, prior_batch_id=previous, source_cursor=cursor)
         elif kind in {("risk", "kill_entry_order"),
                     ("risk", "emergency_flatten")}:
             from src.trading_runtime.arte_risk_action_v4 import risk_action_batch_v4

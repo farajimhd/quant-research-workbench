@@ -13,7 +13,8 @@ def test_program_write_catalog_is_exact_extension_without_legacy_mutation():
     exact = {table.name for table in exact_price_storage_contracts()}
     assert len(exact) == 11
     assert exact.isdisjoint(original)
-    assert module.rule_decision_write_tables() == original | {table.name for table in STAGED_TABLES} | exact
+    from src.trading_runtime.arte_entry_acquisition_freeze import FAMILY_NAMES
+    assert module.rule_decision_write_tables() == original | {table.name for table in STAGED_TABLES} | exact | FAMILY_NAMES
     assert writer.v4_journal_write_tables() == original
 
 

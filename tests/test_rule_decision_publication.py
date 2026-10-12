@@ -10,12 +10,14 @@ def test_opt_in_catalog_preserves_original_v4_and_declares_shared_tables_once():
     combined = module.rule_decision_storage_contracts()
     from src.trading_runtime.trading_price_contracts import exact_price_storage_contracts
     exact = exact_price_storage_contracts()
-    assert len(combined) == len(original) + len(STAGED_TABLES) + len(exact)
+    from src.trading_runtime.arte_entry_acquisition_freeze import TABLES as freeze
+    assert len(combined) == len(original) + len(STAGED_TABLES) + len(exact) + len(freeze)
     assert combined[:len(original)] == original
     assert len({table.name for table in combined}) == len(combined)
     assert {table.name for table in STAGED_TABLES}.isdisjoint(table.name for table in original)
     assert {table.name for table in exact}.isdisjoint(table.name for table in original)
-    assert combined[-len(exact):] == exact
+    assert combined[-len(exact)-len(freeze):-len(freeze)] == exact
+    assert combined[-len(freeze):] == freeze
 
 
 @pytest.mark.parametrize("failure", [False, True])

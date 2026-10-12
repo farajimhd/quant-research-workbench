@@ -160,6 +160,8 @@ _CONTRACTS[PROTECTED_EXIT_SATISFIED.name] = PROTECTED_EXIT_SATISFIED
 _CONTRACTS.update({table.name: table for table in PROTECTION_CHANGE_TABLES})
 _CONTRACTS[PROTECTED_EXIT_SNAPSHOT.name] = PROTECTED_EXIT_SNAPSHOT
 _CONTRACTS[PORTFOLIO_ALLOCATION_FILL.name] = PORTFOLIO_ALLOCATION_FILL
+from .arte_entry_acquisition_freeze import TABLES as ENTRY_FREEZE_TABLES
+_CONTRACTS.update({table.name: table for table in ENTRY_FREEZE_TABLES})
 
 # Scalar transport registration only. This does not add commit families,
 # writer grants, publication admission or operator-owned tables.
@@ -799,6 +801,7 @@ def _sealed_families(
     v4_snapshot_position_ids: tuple[str, ...] = (),
     exact_oms_price_rows: tuple[tuple[Mapping[str, Any], ...], tuple[Mapping[str, Any], ...]] | None = None,
     exact_order_command_rows: tuple[Mapping[str, Any], ...] | None = None,
+    v4_entry_freeze_ids: tuple[str, ...] = (),
 ) -> tuple[tuple[str, tuple[dict[str, Any], ...]], ...]:
     """Validate and hash the immutable snapshot on the persistence lane."""
     if len(batch.events) != batch.last_sequence - batch.first_sequence + 1:
@@ -1080,6 +1083,15 @@ def _sealed_families(
                 if identity in details_by_record:
                     raise ValueError("Journal event has multiple typed detail families")
                 details_by_record[identity] = table
+    if v4_entry_freeze_ids:
+        from .arte_entry_acquisition_freeze import FREEZE
+        expected_details = {**expected_details,
+            ("order_management", "entry_acquisition_frozen_before_exit"): FREEZE.name}
+        for record_id in v4_entry_freeze_ids:
+            identity = str(UUID(str(record_id)))
+            if identity in details_by_record:
+                raise ValueError("Journal event has multiple typed detail families")
+            details_by_record[identity] = FREEZE.name
     for event in by_family["trading_event_v1"]:
         key = (str(event["category"]), str(event["entity_type"]))
         if key not in expected_details:
@@ -4327,6 +4339,23 @@ class ArteJournalWriter:
             raise ValueError('Liquidity fade requires its exact typed envelope')
         return self._submit_profit_publication(unit, first_price_source=first_price_source)
 
+    def submit_entry_freeze_v4(self, unit) -> Future[str]:
+        """Queue normalized entry freeze evidence without caller-side I/O."""
+        from .arte_entry_acquisition_freeze import EntryAcquisitionFreezeBatch
+        if (self._journal_profile != "backtest_v4" or type(unit) is not EntryAcquisitionFreezeBatch
+                or unit.base.run_id != self._run_id):
+            raise ValueError("Entry freeze requires its pinned Backtest writer")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("V4 writer is closed or failed")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull("V4 journal queue is full; stop admission") from exc
+            self._accepted_writes = True
+            return receipt
+
     def submit_exact_order_v4(self, unit) -> Future[str]:
         """Queue exact-price commands without caller-side network I/O."""
         from .arte_order_exact_prices import ExactPriceOrderCommandBatch
@@ -5014,6 +5043,7 @@ class ArteJournalWriter:
         from .arte_oms_exact_prices import ExactPriceOmsStateBatch
 
         from .arte_order_exact_prices import ExactPriceOrderCommandBatch
+        from .arte_entry_acquisition_freeze import EntryAcquisitionFreezeBatch
         held: tuple[
             TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
             | _DurabilityBarrier | _AdmissionUnit | _PortfolioSyncUnit
@@ -5062,7 +5092,7 @@ class ArteJournalWriter:
                 from .automatic_ladder_transport import V4AutomaticLadderBatch
                 if (self._journal_profile in {"backtest_v2", "backtest_v3", *self._V4_PROFILES}
                         and not isinstance(group[0][0],
-                                           (ExactPriceOrderCommandBatch, ExactPriceOmsStateBatch, QualifiedRuleDecisionBatch, TypedJournalBatch, V3SqueezeBatch, V4AutomaticLadderBatch,
+                                           (EntryAcquisitionFreezeBatch, ExactPriceOrderCommandBatch, ExactPriceOmsStateBatch, QualifiedRuleDecisionBatch, TypedJournalBatch, V3SqueezeBatch, V4AutomaticLadderBatch,
                                             V4CompoundBatch,
                                             V4StrategyOneEntryBatch, V4FollowThroughFailureBatch,
                                             V4OmsTacticBatch,
@@ -5210,6 +5240,10 @@ class ArteJournalWriter:
                         entry_activity_evidence=unit.entry_activity_evidence,
                         entry_spread_risk_evidence=unit.entry_spread_risk_evidence,
                         first_price_source=unit.first_price_source)
+                elif isinstance(group[0][0], EntryAcquisitionFreezeBatch):
+                    from .arte_journal_commit_v4 import _publish_typed_batch_v4
+                    unit = group[0][0]
+                    committed_id = _publish_typed_batch_v4(self._client, unit.base, entry_freeze=unit)
                 elif isinstance(group[0][0], ExactPriceOrderCommandBatch):
                     from .arte_order_exact_prices import publish_exact_order_command_batch_v4
                     committed_id = publish_exact_order_command_batch_v4(self._client, group[0][0])
