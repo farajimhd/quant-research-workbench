@@ -97,6 +97,16 @@ price rows or tampered hashes. Default projection remains unchanged. This
 staged envelope is not accepted by the existing writer queue; its shared commit
 seals, admission and complete cold recovery remain to be integrated.
 
+`seal_exact_oms_state_batch` now validates its new physical group/order families
+through the shared journal seal, including contiguous event sequence, parent
+scope, partition, intent-use links and all OMS component counts/ordinals. Exact
+prices are decoded only into internal semantic views for these existing checks;
+only new physical families and their exact hashes are emitted. No legacy
+decimal rows or surrogate rounded prices are published. Order readback uses
+the same extracted `order_request_from_oms_row` kernel as the existing cold
+reader; hashed wire rows round-trip into the original native `OrderRequest`.
+This still confers no committed-prefix, writer or actor-restoration admission.
+
 Whichever option is selected must cover central schema definitions, projectors,
 binary insert/readback hashes, compound family seals, grants/storage audits,
 order command/modify/reprice links, broker execution attribution, OMS actor

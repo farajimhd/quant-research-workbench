@@ -6,7 +6,9 @@ import pytest
 
 from src.trading_runtime.arte_intent_projection import strategy_intent_batch
 from src.trading_runtime.arte_oms_projection import oms_group_state_batch
-from src.trading_runtime.arte_oms_exact_prices import ExactPriceOmsStateBatch
+from src.trading_runtime.arte_oms_exact_prices import (
+    ExactPriceOmsStateBatch, seal_exact_oms_state_batch, decode_exact_oms_order_rows,
+)
 from src.trading_runtime.arte_journal_writer import _wire_row
 from src.trading_runtime.ibkr_schema import OrderRequest
 from src.trading_runtime.order_management import _ManagedOrderGroup, OrderManagementState
@@ -53,6 +55,16 @@ def test_native_oms_projection_preserves_exact_prices_and_keeps_legacy_guard():
     assert order['limit_price'] == price and order['quantity'] == '5.0000000000'
     wire = _wire_row('trading_oms_order_state_exact_price_v1', exact.orders[0])
     assert restore_exact_price_row('trading_oms_order_state_v1', wire, stored_utc=True)['limit_price'] == price
+    sealed = dict(seal_exact_oms_state_batch(exact))
+    assert 'trading_oms_group_state_v1' not in sealed
+    assert 'trading_oms_order_state_v1' not in sealed
+    assert sealed['trading_oms_group_state_exact_price_v1'][0]['content_hash'] == exact.group['content_hash']
+    assert sealed['trading_oms_order_state_exact_price_v1'][0]['content_hash'] == exact.orders[0]['content_hash']
+    group_wire = _wire_row('trading_oms_group_state_exact_price_v1', exact.group)
+    restored_orders = decode_exact_oms_order_rows(group_wire, (wire,), stored_utc=True)
+    assert restored_orders == tuple(group.orders)
+    with pytest.raises(ValueError, match='count'):
+        decode_exact_oms_order_rows(group_wire, (), stored_utc=True)
 
 
 def test_exact_oms_keeps_intent_lineage_and_rejects_tampering():
@@ -67,3 +79,19 @@ def test_exact_oms_keeps_intent_lineage_and_rejects_tampering():
             kwargs['published_intent_batch'], run_id='other')}, exact_prices=True)
     with pytest.raises(ValueError, match='explicit boolean'):
         oms_group_state_batch(group, **kwargs, exact_prices=1)
+
+
+def test_exact_seal_keeps_component_counts_and_parent_scope_checks():
+    group, kwargs, _ = prepared()
+    exact = oms_group_state_batch(group, **kwargs, exact_prices=True)
+    base = exact.base
+    broken = replace(exact, base=replace(base, oms_warnings=({
+        'run_id': base.run_id, 'batch_id': base.batch_id, 'event_month': '2026-08-01',
+        'account_id': 'DU1', 'record_id': str(uuid4()),
+        'parent_record_id': exact.group['record_id'], 'ordinal': 0, 'message_id': 'unexpected',
+    },)))
+    with pytest.raises(ValueError, match='counts or identity'):
+        seal_exact_oms_state_batch(broken)
+    broken = replace(exact, base=replace(base, events=({**base.events[0], 'event_month': '2026-09-01'},)))
+    with pytest.raises(ValueError, match='partition'):
+        seal_exact_oms_state_batch(broken)

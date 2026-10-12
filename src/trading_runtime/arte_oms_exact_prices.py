@@ -36,3 +36,37 @@ class ExactPriceOmsStateBatch:
             ids.add(order['record_id'])
         object.__setattr__(self, 'group', MappingProxyType(dict(self.group)))
         object.__setattr__(self, 'orders', tuple(MappingProxyType(dict(row)) for row in self.orders))
+
+
+def seal_exact_oms_state_batch(batch):
+    """Seal exact physical families with the shared event/OMS relationships.
+
+    This returns validated rows, not a writer credential or committed prefix.
+    """
+    if type(batch) is not ExactPriceOmsStateBatch:
+        raise ValueError("Exact OMS sealing requires its explicit envelope")
+    from .arte_journal_writer import _sealed_families
+    return _sealed_families(batch.base, exact_oms_price_rows=((batch.group,), batch.orders))
+
+
+def decode_exact_oms_order_rows(group_row, order_rows, *, stored_utc=False):
+    """Decode hashed scalar rows into native orders, without restore admission.
+
+    A cold reader must separately prove its complete committed prefix, source
+    intent, tactics, broker bindings and all remaining group components.
+    """
+    from .arte_oms_projection import order_request_from_oms_row
+    group = restore_exact_price_row("trading_oms_group_state_v1", group_row, stored_utc=stored_utc)
+    rows = tuple(restore_exact_price_row("trading_oms_order_state_v1", row,
+                 stored_utc=stored_utc) for row in order_rows)
+    if len(rows) != group['order_count']:
+        raise ValueError("Exact OMS order count differs from its group")
+    identities = set()
+    for ordinal, row in enumerate(rows):
+        if (row['ordinal'] != ordinal or row['parent_record_id'] != group['record_id']
+                or any(row[field] != group[field] for field in
+                       ('run_id', 'batch_id', 'event_month', 'account_id'))
+                or row['record_id'] in identities):
+            raise ValueError("Exact OMS order restoration differs from its group")
+        identities.add(row['record_id'])
+    return tuple(order_request_from_oms_row(group, row) for row in rows)

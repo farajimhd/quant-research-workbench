@@ -797,6 +797,7 @@ def _sealed_families(
     v4_reconciliation_ids: tuple[str, ...] = (),
     v4_snapshot_account_ids: tuple[str, ...] = (),
     v4_snapshot_position_ids: tuple[str, ...] = (),
+    exact_oms_price_rows: tuple[tuple[Mapping[str, Any], ...], tuple[Mapping[str, Any], ...]] | None = None,
 ) -> tuple[tuple[str, tuple[dict[str, Any], ...]], ...]:
     """Validate and hash the immutable snapshot on the persistence lane."""
     if len(batch.events) != batch.last_sequence - batch.first_sequence + 1:
@@ -809,8 +810,20 @@ def _sealed_families(
         raise ValueError("Journal batch repeated an event identity")
     events_by_id = {str(UUID(str(row["record_id"]))): row for row in batch.events}
     result: list[tuple[str, tuple[dict[str, Any], ...]]] = []
+    exact_oms_rows = {}
+    if exact_oms_price_rows is not None:
+        if (type(exact_oms_price_rows) is not tuple or len(exact_oms_price_rows) != 2
+                or any(type(rows) is not tuple for rows in exact_oms_price_rows)
+                or batch.oms_group_states or batch.oms_order_states):
+            raise ValueError("Exact OMS seal requires unmixed explicit family rows")
+        exact_oms_rows = dict(zip(("trading_oms_group_state_v1", "trading_oms_order_state_v1"),
+                                 exact_oms_price_rows, strict=True))
     for name, rows in batch.families():
-        allowed = {column for column, _ in _CONTRACTS[name].columns}
+        physical_name = name
+        if name in exact_oms_rows:
+            rows = exact_oms_rows[name]
+            physical_name = PRICE_FAMILIES[name][0]
+        allowed = {column for column, _ in _CONTRACTS[physical_name].columns}
         identities: set[str] = set()
         sealed: list[dict[str, Any]] = []
         for row in rows:
@@ -849,7 +862,7 @@ def _sealed_families(
             if any(isinstance(value, (Mapping, list, tuple, bytearray))
                    for value in content.values()):
                 raise ValueError(f"{name} contains an opaque or mutable value")
-            canonical = _canonical_typed_content(name, content)
+            canonical = _canonical_typed_content(physical_name, content)
             if (name == "trading_event_v1"
                     and canonical["event_month"] != canonical["event_time"][:7] + "-01"):
                 raise ValueError("Journal event partition differs from its UTC event time")
@@ -857,8 +870,18 @@ def _sealed_families(
             if "content_hash" in row and str(row["content_hash"]) != digest:
                 raise ValueError(f"{name} has an incorrect content hash")
             sealed.append({**content, "content_hash": digest})
-        result.append((name, tuple(sealed)))
+        result.append((physical_name, tuple(sealed)))
     by_family = dict(result)
+    if exact_oms_rows:
+        from .trading_price_contracts import transform_price_fields
+        # Semantic views reuse the existing OMS relationship checks. They are
+        # never emitted or hashed as legacy decimal rows: result retains only
+        # the selected exact schemas and their original content hashes.
+        for source in exact_oms_rows:
+            target = PRICE_FAMILIES[source][0]
+            by_family[source] = tuple(transform_price_fields(source,
+                {key: value for key, value in row.items() if key != "content_hash"},
+                _CONTRACTS, restore=True) for row in by_family[target])
     account_snapshots = {
         (str(row["account_id"]), str(row["snapshot_id"]))
         for row in by_family["trading_account_snapshot_v1"]
@@ -870,6 +893,9 @@ def _sealed_families(
             raise ValueError("Position snapshot lacks its complete account snapshot")
     details_by_record: dict[str, str] = {}
     for name, rows in result:
+        if exact_oms_rows:
+            name = next((source for source in exact_oms_rows
+                         if PRICE_FAMILIES[source][0] == name), name)
         if name in {"trading_event_v1", "trading_signal_source_v1",
                     "trading_intent_protection_slice_v1",
                     "trading_order_command_context_v1", "trading_oms_order_state_v1",

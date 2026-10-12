@@ -1421,25 +1421,7 @@ def load_committed_oms_group_state_page(
             batch_ordinals and sorted(set(batch_ordinals)) != list(range(batch_ordinals[-1] + 1))
         ):
             raise RuntimeError("Committed OMS order batches are not contiguous")
-        orders = tuple(OrderRequest(
-            acctId=group["account_id"], conid=int(row["conid"]),
-            cOID=row["client_order_id"], parentId=row["parent_broker_order_id"] or None,
-            ticker=row["ticker"], secType=row["security_type"],
-            listingExchange=row["listing_exchange"], side=row["side"],
-            orderType=row["order_type"], tif=row["time_in_force"],
-            quantity=float(row["quantity"]) if row["quantity"] is not None else None,
-            cashQty=float(row["cash_quantity"]) if row["cash_quantity"] is not None else None,
-            price=float(row["limit_price"]) if row["limit_price"] is not None else None,
-            auxPrice=float(row["aux_price"]) if row["aux_price"] is not None else None,
-            trailingAmt=float(row["trailing_amount"]) if row["trailing_amount"] is not None else None,
-            trailingType=row["trailing_type"] or None,
-            outsideRTH=bool(row["outside_rth"]),
-            isSingleGroup=bool(row["single_group"]),
-            manualIndicator=bool(row["manual_indicator"]),
-            extOperator=row["external_operator"] or None,
-            referrer=row["referrer"] or None,
-            strategy=row["broker_strategy"] or None,
-        ) for row in order_rows)
+        orders = tuple(order_request_from_oms_row(group, row) for row in order_rows)
         if len({str(row["broker_order_id"]) for row in binding_rows}) != len(binding_rows):
             raise RuntimeError("Committed OMS broker identities are duplicated")
         if any(row["request_index"] is not None and
@@ -1454,3 +1436,31 @@ def load_committed_oms_group_state_page(
             tactic_by_group.get(parent_id), require_tactic,
         ))
     return tuple(result)
+
+
+def order_request_from_oms_row(group: Mapping[str, Any], row: Mapping[str, Any]) -> OrderRequest:
+    """Decode validated normalized order fields through the shared cold kernel."""
+    return OrderRequest(
+        acctId=group['account_id'],
+        conid=int(row['conid']),
+        cOID=row['client_order_id'],
+        parentId=row['parent_broker_order_id'] or None,
+        ticker=row['ticker'],
+        secType=row['security_type'],
+        listingExchange=row['listing_exchange'],
+        side=row['side'],
+        orderType=row['order_type'],
+        tif=row['time_in_force'],
+        quantity=float(row['quantity']) if row['quantity'] is not None else None,
+        cashQty=float(row['cash_quantity']) if row['cash_quantity'] is not None else None,
+        price=float(row['limit_price']) if row['limit_price'] is not None else None,
+        auxPrice=float(row['aux_price']) if row['aux_price'] is not None else None,
+        trailingAmt=float(row['trailing_amount']) if row['trailing_amount'] is not None else None,
+        trailingType=row['trailing_type'] or None,
+        outsideRTH=bool(row['outside_rth']),
+        isSingleGroup=bool(row['single_group']),
+        manualIndicator=bool(row['manual_indicator']),
+        extOperator=row['external_operator'] or None,
+        referrer=row['referrer'] or None,
+        strategy=row['broker_strategy'] or None,
+    )
