@@ -156,6 +156,19 @@ def test_cohort_preparation_reuses_full_feature_origin_and_bounds_parallel_io(pr
     assert repeated.blocks["first"] is native.blocks["first"]
     assert calls[before_repeat:] == [(False, 80, 90)]
     assert_frame_equal(repeated.projection.frame, native.projection.frame, check_exact=True)
+    from datetime import time
+    from src.backend.backtest_program_input_plan import prepare_program_session_input_plan
+    controller.definition = replace(controller.definition, start_time=time(9, 31, 20), end_time=time(9, 31, 30))
+    session_plan = replace(plan, listing_by_assignment=dict(controller._program_strategy._listings))
+    before_session = len(calls)
+    session_work = asyncio.run(prepare_program_session_input_plan(controller, (session_plan,),
+        scopes=(scope,), history_post=post))
+    assert len(session_work) == 1 and session_work[0].blocks["first"] is native.blocks["first"]
+    assert calls[before_session:] == [(False, 80, 90)]
+    with pytest.raises(ValueError, match="gap, overlap"):
+        asyncio.run(prepare_program_session_input_plan(controller, (replace(session_plan,
+            first_bucket=session_plan.first_bucket + 1),), scopes=(scope,), history_post=post))
+    assert len(calls) == before_session + 1
     from datetime import timedelta
     controller.definition = replace(controller.definition,
         session_date=controller.definition.session_date + timedelta(days=1))
@@ -167,7 +180,7 @@ def test_cohort_preparation_reuses_full_feature_origin_and_bounds_parallel_io(pr
         asyncio.run(prepare_program_cohort_inputs(release,
             {feature_pin.scope.listing_id: feature_pin}, population,
             {"first": feature_pin.scope.listing_id}, **{**kwargs, "first_ordinal": 81}, history_post=post))
-    assert len(calls) == 5
+    assert len(calls) == 6
 
 
 def test_prepared_scanner_bridge_keeps_exact_top10_and_rejects_missing_history(prepared_source):

@@ -1,6 +1,6 @@
 """Read-only complete-session planning over existing certified QMD cohorts."""
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import MappingProxyType
 
 from .backtest_program_inputs import preflight_program_cohort_inputs
@@ -53,3 +53,48 @@ def preflight_program_session_inputs(release, cohorts, *, first_bucket, stop_buc
     if expected != stop_bucket:
         raise ValueError("Programme input plan does not cover the requested session end")
     return cohorts
+
+
+async def prepare_program_session_input_plan(controller, cohorts, *, scopes, history_post=None):
+    """Prepare validated session work through the native controller, without launch."""
+    from .replay_run_service import ReplayRunController, ReplayRunDefinition, RunMode
+    from .backtest_program_session import PreparedProgramCohortWork, validate_prepared_program_session
+    from .backtest_market_data import market_day_boundary, SESSION_OPEN_OFFSET_MS
+    if type(controller) is not ReplayRunController or controller._program_strategy is None:
+        raise ValueError("Programme input-plan preparation requires its native controller")
+    definition, actor = controller.definition, controller._program_strategy
+    release = actor.program_release
+    if (type(definition) is not ReplayRunDefinition or definition.mode is not RunMode.BACKTEST
+            or definition.execution_mode != "strategy"):
+        raise ValueError("Programme input-plan preparation requires its Backtest strategy definition")
+    if definition.final_session_date not in (None, definition.session_date):
+        raise ValueError("Programme session input plan requires one explicit session")
+    start = market_day_boundary(definition.session_date.isoformat(), 0)
+    first_ms = (definition.requested_start - start) / timedelta(milliseconds=1) + SESSION_OPEN_OFFSET_MS
+    stop_ms = (definition.session_end - start) / timedelta(milliseconds=1) + SESSION_OPEN_OFFSET_MS
+    if first_ms % 1000 or stop_ms % 1000:
+        raise ValueError("Programme session input plan requires whole-second endpoints")
+    plans = preflight_program_session_inputs(release, cohorts,
+        first_bucket=int(first_ms // 1000), stop_bucket=int(stop_ms // 1000))
+    if type(scopes) is not tuple or len(scopes) != len(plans):
+        raise ValueError("Programme input plan requires every native cohort scope")
+    prototypes = tuple(PreparedProgramCohortWork(plan.first_bucket, plan.stop_bucket, {}, None, None, scope)
+                       for plan, scope in zip(plans, scopes, strict=True))
+    if any(dict(plan.listing_by_assignment) != actor._listings for plan in plans):
+        raise ValueError("Programme input plan differs from controller assignment coverage")
+    prepared = []
+    for plan, prototype in zip(plans, prototypes, strict=True):
+        if (controller.definition is not definition or controller._program_strategy is not actor
+                or actor.program_release is not release):
+            raise RuntimeError("Programme input-plan controller ownership changed")
+        work = await controller.prepare_program_cohort_work(plan.pins, plan.population_pin,
+            scope=prototype.scope, first_ordinal=plan.first_ordinal, stop_ordinal=plan.stop_ordinal,
+            evaluation_block=plan.evaluation_block, first_bucket=plan.first_bucket,
+            stop_bucket=plan.stop_bucket, as_of=plan.as_of, concurrency=plan.concurrency,
+            history_post=history_post)
+        if (controller.definition is not definition or controller._program_strategy is not actor
+                or actor.program_release is not release):
+            raise RuntimeError("Programme input-plan controller ownership changed")
+        prepared.append(work)
+    work, _, _ = validate_prepared_program_session(controller, tuple(prepared))
+    return work
