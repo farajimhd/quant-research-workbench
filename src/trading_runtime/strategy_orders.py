@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+# Actions whose shared planner emits executable orders. Control-only intents
+# (cancel_entry, hold and wait) deliberately remain outside command admission.
+ORDER_EMITTING_ACTIONS = frozenset({
+    "enter_long", "add_long", "enter_short", "add_short", "reduce_long",
+    "take_profit", "exit", "reduce_short", "cover", "replace_profit_target",
+    "replace_protective_stop",
+})
+
 import math
 from dataclasses import dataclass, replace
 from math import floor

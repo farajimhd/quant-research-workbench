@@ -246,13 +246,16 @@ def project_journal_record(
     expected_market_start: datetime | None = None,
     allow_v3_reservation_reasons: bool = False,
     committed_order_lineage: Mapping[str, tuple] | None = None,
-) -> TypedJournalBatch:
+    exact_order_prices: bool = False,
+) -> TypedJournalBatch | ExactPriceOrderCommandBatch:
     """Strict shared entry point for existing live/Backtest journal records.
 
     Domain-object projections (orders, fills, signals, intents) must receive
     their original typed objects. A flattened payload is not sufficient to
     reconstruct arbitrary broker evidence, so unsupported records fail here.
     """
+    if type(exact_order_prices) is not bool or exact_order_prices and expected_mode != "backtest":
+        raise ValueError("Exact order journal projection requires the explicit Backtest mode")
     identity = dict(run_month=run_month, attempt_id=attempt_id,
                     batch_id=batch_id, prior_batch_id=prior_batch_id,
                     source_cursor=source_cursor)
@@ -290,6 +293,11 @@ def project_journal_record(
         strategy_id = strategy.get("strategy_id") if isinstance(strategy, dict) else None
         strategy_revision = (strategy.get("strategy_revision")
                              if isinstance(strategy, dict) else None)
+        order_actions = {"enter_long", "add_long", "exit_long",
+                         "enter_short", "add_short", "exit_short"}
+        if exact_order_prices:
+            from .strategy_orders import ORDER_EMITTING_ACTIONS
+            order_actions = ORDER_EMITTING_ACTIONS
         if (request.raw or request.strategyParameters
                 or request.acctId != record.account_id
                 or not request.cOID or record.entity_id != request.cOID
@@ -305,9 +313,7 @@ def project_journal_record(
                 # Bracket protection legs have the opposite side from the
                 # parent strategy action; validate the named action itself,
                 # not an invented one-order/one-action equivalence.
-                or (source_action is not None and source_action not in {
-                    "enter_long", "add_long", "exit_long",
-                    "enter_short", "add_short", "exit_short"})
+                or (source_action is not None and source_action not in order_actions)
                 or any(not isinstance(context[key], str) or not context[key]
                        for key in ("strategy_intent_id", "order_group_id",
                                    "policy_version"))
@@ -329,6 +335,7 @@ def project_journal_record(
             event_entity_type=record.entity_type,
             correlation_id=context["correlation_id"] or "",
             causation_id=context["causation_id"] or "",
+            exact_prices=exact_order_prices,
         )
     if kind == ("lifecycle", "run"):
         return runtime_lifecycle_batch(record, **identity,

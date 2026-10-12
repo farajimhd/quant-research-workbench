@@ -195,10 +195,32 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                 controller._journal_publisher._prepare_batches(result.policy_packet.journal_sequence)
             controller._journal_publisher.exact_oms_prices = True
             try:
-                # The OMS price contract is now exact. Shared order-command
-                # projection is the next independently confirmed precision gap.
-                with pytest.raises(ValueError, match="losslessly for order.aux_price"):
-                    controller._journal_publisher._prepare_batches(result.policy_packet.journal_sequence)
+                units = controller._journal_publisher._prepare_batches(result.policy_packet.journal_sequence)
+                assert len(units) == 1
+                from tests.test_arte_journal_commit_v4 import attached_v4_client
+                from src.trading_runtime.arte_journal_compound_v4 import publish_compound_v4
+                from src.trading_runtime import rule_decision_writer_preflight as audit
+                from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
+                persisted = attached_v4_client()
+                with monkeypatch.context() as transport:
+                    transport.setattr(audit, "require_rule_decision_writer_audit", lambda client: None)
+                    publish_compound_v4(persisted, units[0])
+                committed = load_verified_v4_prefix(persisted, controller.run_id)
+                assert committed.last_sequence == result.policy_packet.journal_sequence
+                from src.trading_runtime.arte_journal_projection import project_journal_record
+                exit_command = next(record for record in controller._journal.records(controller.run_id)
+                    if record.category == "command" and record.entity_type == "order"
+                    and record.payload.get("action") == "exit")
+                projection_scope = dict(run_month=controller._journal_publisher.run_month,
+                    attempt_id=controller._journal_publisher.attempt_id,
+                    batch_id=units[0].base.batch_id, prior_batch_id=units[0].base.prior_batch_id,
+                    source_cursor=units[0].base.source_cursor,
+                    expected_config=controller._journal_publisher.expected_config,
+                    expected_mode="backtest", exact_order_prices=True)
+                for action in ("hold", "wait", "cancel_entry", "unknown"):
+                    with pytest.raises(ValueError, match="not an exact typed command"):
+                        project_journal_record(replace(exit_command,
+                            payload={**exit_command.payload, "action": action}), **projection_scope)
             finally:
                 controller._journal_publisher.exact_oms_prices = False
             assert controller._journal_publisher.fenced_sequence == 0

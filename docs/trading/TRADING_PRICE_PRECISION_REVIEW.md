@@ -182,6 +182,24 @@ uninitialized `TradingRuntime` without `strategy`, then calls unchanged
 `_record_executions`. This fixture/runtime mismatch is separate from exact-price
 projection and has not been modified as part of this change.
 
+The native Backtest prefix now forwards the explicit OMS price selection to
+order-command projection as well. The next native rejection exposed a source
+action mismatch: the existing shared planner emits `exit`, while the legacy
+journal's six-action list rejects it. New exact-price projection now uses the
+planner-owned `ORDER_EMITTING_ACTIONS` declaration; legacy projection keeps its
+original action checks. Control-only `hold`, `wait` and `cancel_entry`, and
+unknown actions remain rejected as command sources. There is no order rounding
+or strategy-number special case in this change.
+
+Both native 100ms/1s cohort fixtures now prepare their complete journal prefix,
+publish it through the qualified mixed V4 path and cold-verify the committed
+sequence. They use actual Portfolio/OMS/simulated-broker code, native decision
+proofs and synthetic QMD/liquidity/storage/transport; the operational startup
+audit is mocked. This is bounded integration evidence, not full-session,
+partial-fill, all30 comparison or workstation throughput qualification. Full
+price-family coverage, immutable run-setting/recovery selection and main launch
+integration remain required before enabling real runs.
+
 Whichever option is selected must cover central schema definitions, projectors,
 binary insert/readback hashes, compound family seals, grants/storage audits,
 order command/modify/reprice links, broker execution attribution, OMS actor

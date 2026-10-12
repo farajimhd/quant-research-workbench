@@ -23,6 +23,7 @@ from src.trading_runtime.arte_oms_tactic_projection import (
     V4OmsTacticBatch, tactic_rows,
 )
 from src.trading_runtime.arte_oms_exact_prices import ExactPriceOmsStateBatch
+from src.trading_runtime.arte_order_exact_prices import ExactPriceOrderCommandBatch
 from src.trading_runtime.arte_journal_writer import (
     V4BrokerAcknowledgementBatch, V4OrderCancelBatch, V4OrderRepriceBatch,
     V4ProtectionChangeBatch,
@@ -132,7 +133,7 @@ def project_pending_backtest_v4_prefix(
 ) -> tuple[TypedJournalBatch | V4StrategyOneEntryBatch
            | V4ProfitGivebackBatch
            | V4ConfirmedAhFailureBatch
-           | V4OmsTacticBatch | ExactPriceOmsStateBatch
+           | V4OmsTacticBatch | ExactPriceOmsStateBatch | ExactPriceOrderCommandBatch
            | V4BrokerAcknowledgementBatch | V4OrderCancelBatch
            | V4OrderRepriceBatch | V4RiskActionBatch | V4ProtectionChangeBatch
            | V4ProtectionReconciliationBatch | V4PortfolioAllocationBatch
@@ -277,6 +278,7 @@ def project_pending_backtest_v4_prefix(
                 v4_lineage_proof_record_id=order_lineage_proofs.get(request.cOID),
                 v4_lineage_oms_record_id=order_lineage_oms_records.get(request.cOID),
                 emit_v4_lineage=True,
+                exact_prices=exact_oms_prices,
                 record_id=record.record_id, event_category=record.category,
                 event_entity_type=record.entity_type,
                 correlation_id=str(payload.get("correlation_id") or ""),
@@ -427,7 +429,8 @@ def project_pending_backtest_v4_prefix(
                 fixed_market_parent_plan=fixed_market_parent_plan,
                 fixed_market_execution_plan=fixed_market_execution_plan,
                 expected_market_start=expected_market_start,
-                committed_order_lineage=order_lineage)
+                committed_order_lineage=order_lineage,
+                **({"exact_order_prices": True} if exact_oms_prices else {}))
             if progress_state is not None:
                 from src.backend.typed_backtest_progress import project_backtest_progress
                 typed_progress = project_backtest_progress(
