@@ -141,6 +141,10 @@ class ProgramConfigurationSelectionService:
                 liquidity_resolution_ms=liquidity_resolution_ms)
             with self._prepared_lock:
                 self._preparation_controller = controller
+            from .backtest_program_input_plan import ProgramPublishedInputRequest, certify_program_session_input_plan
+            if type(cohorts) is ProgramPublishedInputRequest:
+                cohorts = await certify_program_session_input_plan(controller, cohorts,
+                    reader_factory=self.authorities['policy_client_factory'])
             return await complete_program_app_preparation(run_service, controller,
                 cohorts=cohorts, scopes=scopes, journal_scope=journal_scope,
                 signal_publisher=signal_publisher, signal_scope=signal_scope,

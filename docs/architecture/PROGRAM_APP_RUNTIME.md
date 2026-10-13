@@ -32,6 +32,14 @@ returning to the event loop. `certify_population_history_async` checks the full
 price-eligible population and opening lineage before opening those readers.
 These consumers reuse native child-hash/storage verification and never invoke
 a missing-data producer.
+The app's native `prepare_app_controller` also accepts a
+`ProgramPublishedInputRequest` in place of preassembled cohort plans. While
+holding its existing handoff reservation, it validates the release fields,
+complete eligible population, opening lineage, evaluation origin and explicit
+cohort windows; cold-loads the volume and feature seals with its approved
+reader; then passes ordinary `ProgramCohortInputPlan` objects into the existing
+typed journal/Signal Stream/launch preparation funnel. Missing inputs fail
+before any journal writer is attached. This preparation does not start a run.
 A ticker projection cannot publish an alternative scanner population under the
 same programme. Price eligibility is applied only after complete population
 coverage, before volume ranking; legacy identity readers retain their existing

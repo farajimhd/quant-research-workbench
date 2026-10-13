@@ -25,6 +25,101 @@ class ProgramCohortInputPlan:
         object.__setattr__(self, "listing_by_assignment", MappingProxyType(dict(self.listing_by_assignment)))
 
 
+@dataclass(frozen=True, slots=True)
+class ProgramPublishedInputRequest:
+    """Published source identities and explicit existing compute-funnel bounds."""
+    opening: object
+    feature_requests: tuple
+    volume_requests: tuple
+    first_ordinal: int
+    stop_ordinal: int
+    evaluation_block: str
+    cohort_windows: tuple
+    as_of: datetime
+    concurrency: int
+    maximum_retained_feature_bytes: int | None = None
+
+
+async def certify_program_session_input_plan(controller, request, *, reader_factory):
+    """Cold load central seals before the app may attach any journal writer."""
+    from .replay_run_service import ReplayRunController
+    from .qmd_opening_reference import CertifiedOpeningReference
+    from .qmd_columnar_history import HistoryPinRequest, certify_history_pins_async
+    from .qmd_columnar_population import certify_population_history_async
+    from .backtest_program_inputs import required_program_history_fields, preflight_program_feature_catalog
+    if (type(controller) is not ReplayRunController or controller._program_strategy is None
+            or type(request) is not ProgramPublishedInputRequest
+            or type(request.opening) is not CertifiedOpeningReference
+            or not callable(reader_factory) or type(request.concurrency) is not int
+            or not 1 <= request.concurrency <= 6
+            or type(request.feature_requests) is not tuple or not request.feature_requests
+            or type(request.volume_requests) is not tuple
+            or any(type(r) is not HistoryPinRequest for r in request.feature_requests + request.volume_requests)
+            or type(request.cohort_windows) is not tuple or not request.cohort_windows
+            or len(request.cohort_windows) > 57600
+            or type(request.first_ordinal) is not int or type(request.stop_ordinal) is not int
+            or not 0 <= request.first_ordinal < request.stop_ordinal
+            or type(request.evaluation_block) is not str or not request.evaluation_block
+            or not isinstance(request.as_of, datetime) or request.as_of.tzinfo is None
+            or request.as_of.utcoffset() is None
+            or (request.maximum_retained_feature_bytes is not None and
+                (type(request.maximum_retained_feature_bytes) is not int or request.maximum_retained_feature_bytes < 1))):
+        raise ValueError('Published programme inputs lack explicit native source and compute bounds')
+    release = controller._program_strategy.program_release
+    eligible = {row['listing_id']: row for row in request.opening.resolved_rows()
+        if release.universe.minimum_prior_close <= row['adjusted_prior_close'] <= release.universe.maximum_prior_close}
+    for packet in (request.feature_requests, request.volume_requests):
+        if len(packet) != len(eligible) or {r.scope.listing_id for r in packet} != set(eligible):
+            raise ValueError('Published programme inputs differ from the complete eligible population')
+        for source in packet:
+            if (source.scope.ticker != eligible[source.scope.listing_id]['ticker']
+                    or source.scope.build_id != request.opening.scope.build_id
+                    or source.scope.session_date != controller.definition.session_date
+                    or source.scope.session_date != request.opening.scope.session_date
+                    or source.parents.market_plan_hash != request.opening.scope.market_plan_hash
+                    or source.parents.opening_reference_hash != request.opening.content_hash
+                    or source.parents.volume_window_seconds != release.universe.window_seconds):
+                raise ValueError('Published programme inputs differ from their opening lineage')
+    required = set(required_program_history_fields(release))
+    first_source = request.feature_requests[0].scope
+    for source in request.feature_requests:
+        if ({f.name for f in source.fields} != required
+                or source.scope.first_bucket != first_source.first_bucket
+                or source.scope.stop_bucket != first_source.stop_bucket
+                or request.stop_ordinal > source.scope.clock_count
+                or any(field.revision != source.scope.product_revision for field in release.fields.values())):
+            raise ValueError('Published programme features differ from their release or evaluation origin')
+    if any(source.fields or source.scope.first_bucket != first_source.first_bucket
+            or source.scope.stop_bucket != first_source.stop_bucket for source in request.volume_requests):
+        raise ValueError('Published programme volume clocks differ from their feature origin')
+    previous = None
+    for window in request.cohort_windows:
+        if (type(window) is not tuple or len(window) != 2
+                or any(type(value) is not int for value in window)
+                or not 14400 <= window[0] < window[1] <= 72000
+                or window[1] - window[0] > 256 or (previous is not None and window[0] != previous)):
+            raise ValueError('Published programme cohorts have a gap, overlap or invalid clock bound')
+        previous = window[1]
+    from .backtest_market_data import market_day_boundary, SESSION_OPEN_OFFSET_MS
+    day_start = market_day_boundary(controller.definition.session_date.isoformat(), 0)
+    start_ms = (controller.definition.requested_start - day_start) / timedelta(milliseconds=1) + SESSION_OPEN_OFFSET_MS
+    end_ms = (controller.definition.session_end - day_start) / timedelta(milliseconds=1) + SESSION_OPEN_OFFSET_MS
+    if (start_ms % 1000 or end_ms % 1000
+            or request.cohort_windows[0][0] != int(start_ms // 1000)
+            or request.cohort_windows[-1][1] != int(end_ms // 1000)):
+        raise ValueError('Published programme cohorts differ from the requested session window')
+    population = await certify_population_history_async(request.opening, release.universe,
+        request.volume_requests, reader_factory=reader_factory, concurrency=request.concurrency)
+    pins = await certify_history_pins_async(reader_factory, request.feature_requests, concurrency=request.concurrency)
+    preflight_program_feature_catalog(release, pins)
+    cohorts = tuple(ProgramCohortInputPlan(pins, population, controller._program_strategy._listings,
+        request.first_ordinal, request.stop_ordinal, request.evaluation_block, first, stop,
+        request.as_of, request.concurrency, request.maximum_retained_feature_bytes)
+        for first, stop in request.cohort_windows)
+    return preflight_program_session_inputs(release, cohorts,
+        first_bucket=cohorts[0].first_bucket, stop_bucket=cohorts[-1].stop_bucket)
+
+
 def preflight_program_session_inputs(release, cohorts, *, first_bucket, stop_bucket):
     """Verify exact coverage before any transport, calculation or publication.
 
