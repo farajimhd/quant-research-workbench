@@ -53,9 +53,11 @@ def test_query_pushes_filters_and_uses_lookahead(monkeypatch, authority):
 
 
 @pytest.mark.parametrize("facets", [False, True])
-def test_exact_recorded_queries_select_shared_price_families_and_programme_decisions(monkeypatch, authority, facets):
+@pytest.mark.parametrize("requested", [None, True, False])
+def test_exact_recorded_queries_select_shared_price_families_and_programme_decisions(monkeypatch, authority, facets, requested):
     from src.backend import backtest_recorded_journal
-    monkeypatch.setattr(backtest_recorded_journal, "load_recorded_attestation", lambda *_: {"prefix": authority})
+    monkeypatch.setattr(backtest_recorded_journal, "load_recorded_attestation",
+        lambda *_: {"prefix": authority, "exact_prices": True})
     statements = []
     def rows(_, sql):
         statements.append(sql)
@@ -66,7 +68,12 @@ def test_exact_recorded_queries_select_shared_price_families_and_programme_decis
     monkeypatch.setattr(query, "_rows", rows)
     payloads = Mock(return_value=(SimpleNamespace(event={"sequence": 3}, detail=None, detail_family=None),))
     monkeypatch.setattr(query, "load_typed_event_page", payloads)
-    result = query.query_saved_journal(None, RUN, journal_only=True, exact_prices=True,
+    if requested is False:
+        with pytest.raises(ValueError, match="sealed journal"):
+            query.query_saved_journal(None, RUN, journal_only=True, exact_prices=False)
+        assert not statements
+        return
+    result = query.query_saved_journal(None, RUN, journal_only=True, exact_prices=requested,
         facets=facets, ticker="ABC")
     combined = " ".join(statements)
     assert "'strategy_decision'" in combined

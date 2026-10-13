@@ -5912,7 +5912,7 @@ async def trading_backtest_typed_financial_page(
 async def trading_backtest_v4_journal_query(
     run_id: str, domain: str = "activity", facets: bool = False,
     journal_only: bool = False,
-    exact_prices: bool = False,
+    exact_prices: bool | None = None,
     ticker: str = "", event_type: str = "", start: str = "", end: str = "",
     after_sequence: int = Query(default=0, ge=0),
     limit: int = Query(default=250, ge=1, le=500),
@@ -5928,9 +5928,9 @@ async def trading_backtest_v4_journal_query(
             return query_saved_journal(client, run_id, domain=domain, facets=facets,
                                       ticker=ticker, event_type=event_type, start=start, end=end,
                                       after_sequence=after_sequence, limit=limit, journal_only=journal_only,
-                                      **({"exact_prices": True} if exact_prices else {}))
+                                      **({"exact_prices": exact_prices} if exact_prices is not None else {}))
     try:
-        if exact_prices:
+        if journal_only or exact_prices:
             from src.backend.qmd_columnar_history_transport import _owned_worker
             return await _owned_worker(read_query)
         return await asyncio.to_thread(read_query)

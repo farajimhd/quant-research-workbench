@@ -13,8 +13,9 @@ from src.trading_runtime.arte_journal_writer import _CONTRACTS, _committed_batch
 @declared_saved_read_operation
 def query_saved_journal(client, run_id, *, domain="activity", facets=False,
                         ticker="", event_type="", start="", end="",
-                        after_sequence=0, limit=250, journal_only=False, exact_prices=False):
-    if type(exact_prices) is not bool or exact_prices and not journal_only:
+                        after_sequence=0, limit=250, journal_only=False, exact_prices=None):
+    if (exact_prices is not None and type(exact_prices) is not bool
+            or exact_prices and not journal_only):
         raise ValueError("Exact journal queries require explicit recorded-journal review")
     if domain not in {"activity", "orders", "fills"}:
         raise ValueError("Unknown journal query domain")
@@ -33,8 +34,14 @@ def query_saved_journal(client, run_id, *, domain="activity", facets=False,
         raise ValueError("Query start exceeds end")
     if journal_only:
         from src.backend.backtest_recorded_journal import load_recorded_attestation
-        prefix = load_recorded_attestation(client, str(UUID(run_id)))["prefix"]
+        attestation = load_recorded_attestation(client, str(UUID(run_id)))
+        selected_exact_prices = attestation.get("exact_prices", False)
+        if exact_prices is not None and exact_prices != selected_exact_prices:
+            raise ValueError("Requested price representation differs from the sealed journal")
+        exact_prices = selected_exact_prices
+        prefix = attestation["prefix"]
     else:
+        exact_prices = False
         prefix = _terminal_attestation(client, str(UUID(run_id)), None)["prefix"]
     fence = (f"run_id={_literal(prefix.run_id)} AND sequence<={prefix.last_sequence} "
              f"{_committed_batch_filter(prefix)}")

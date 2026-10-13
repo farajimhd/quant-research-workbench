@@ -17,23 +17,28 @@ class BacktestReviewAPITests(IsolatedAsyncioTestCase):
     async def test_exact_journal_http_query_uses_owned_worker_and_preserves_price(self):
         from threading import get_ident
         run_id = str(uuid4())
-        client = Mock()
+        clients = [Mock(), Mock()]
+        scopes = []
         main_thread = get_ident()
         price = 10.001000000000001
         def read(actual_client, actual_id, **scope):
-            self.assertIs(actual_client, client)
+            self.assertIn(actual_client, clients)
             self.assertEqual(actual_id, run_id)
-            self.assertTrue(scope["exact_prices"] and scope["journal_only"])
+            self.assertTrue(scope["journal_only"])
+            scopes.append(scope)
             self.assertNotEqual(get_ident(), main_thread)
             return {"events": [{"detail": {"price": price}}], "verified_sequence": 20}
-        with (patch('src.trading_runtime.arte_journal_writer.backtest_v4_operator_client_from_env', return_value=client),
+        with (patch('src.trading_runtime.arte_journal_writer.backtest_v4_operator_client_from_env', side_effect=clients),
               patch('src.backend.backtest_v4_query.query_saved_journal', side_effect=read)):
             async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as http:
-                response = await http.get(f'/api/trading/backtest/runs/{run_id}/v4-journal-query'
-                    '?journal_only=true&exact_prices=true')
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["events"][0]["detail"]["price"].hex(), price.hex())
-        client.close.assert_called_once()
+                for suffix in ('?journal_only=true', '?journal_only=true&exact_prices=true'):
+                    response = await http.get(f'/api/trading/backtest/runs/{run_id}/v4-journal-query' + suffix)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.json()["events"][0]["detail"]["price"].hex(), price.hex())
+        self.assertNotIn("exact_prices", scopes[0])
+        self.assertIs(scopes[1]["exact_prices"], True)
+        for client in clients:
+            client.close.assert_called_once()
 
     async def test_exact_journal_http_query_rejects_missing_authority_before_client(self):
         with patch('src.trading_runtime.arte_journal_writer.backtest_v4_operator_client_from_env') as factory:

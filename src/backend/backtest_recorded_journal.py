@@ -26,6 +26,18 @@ _LOCK = Lock()
 _SCOPES = {}
 
 
+def recorded_exact_prices(family_names):
+    """Select the shared reader format from already verified physical seals."""
+    from src.trading_runtime.trading_price_contracts import PRICE_FAMILIES
+    sources = {"trading_strategy_signal_v2", "trading_execution_v1",
+        "trading_order_command_v1", "trading_oms_group_state_v1"}
+    exact = {PRICE_FAMILIES[name][0] for name in sources}
+    names = set(family_names)
+    if names & exact and names & sources:
+        raise ValueError("Recorded journal mixes incompatible price representations")
+    return bool(names & exact)
+
+
 @contextmanager
 def _recorded_read_scope(scope, run_id):
     key = (scope, run_id)
@@ -144,6 +156,7 @@ def load_recorded_attestation(client, run_id):
         accounts = {account: load_terminal_backtest_snapshot(client, prefix, account_id=account)
                     for account in context['account_ids']}
         value = dict(context=context, prefix=prefix, cursor=cursor,
+            exact_prices=recorded_exact_prices(counts),
             initial_cash=load_committed_initial_cash(client, normalized, run_context=context),
             financial_accounts=_terminal_financial_accounts(client, prefix, tuple(context['account_ids'])),
             accounts={account: {key: snapshot[key] for key in ('state_hash', 'state_revision', 'snapshot_at')}
@@ -159,6 +172,7 @@ def load_recorded_page(client, run_id):
     attestation = load_recorded_attestation(client, run_id)
     prefix = attestation['prefix']
     return dict(schema_version='backtest-v4-recorded-journal-page-v1', journal_only=True,
+        exact_prices=attestation.get('exact_prices', False),
         run={**attestation['context'], 'initial_cash': attestation['initial_cash']},
         status=prefix.status, verified_sequence=prefix.last_sequence,
         market_cursor=attestation['cursor'], market_cursor_verified=attestation['cursor'] is not None,
@@ -189,8 +203,13 @@ def project_recorded_performance(client, run_id: str, *,
         normalized = str(UUID(run_id))
     except (TypeError, ValueError) as exc:
         raise ValueError("Strategy 1 performance requires a UUID run id") from exc
-    prefix = load_recorded_attestation(client, normalized)["prefix"]
-    fills = _complete_detail_rows(load_committed_execution_page, client, prefix)
+    attestation = load_recorded_attestation(client, normalized)
+    prefix = attestation["prefix"]
+    fill_reader = load_committed_execution_page
+    if attestation.get("exact_prices", False):
+        from functools import partial
+        fill_reader = partial(fill_reader, exact_prices=True)
+    fills = _complete_detail_rows(fill_reader, client, prefix)
     fees = _complete_detail_rows(load_committed_commission_page, client, prefix)
     fee_by_execution: dict[str, dict] = {}
     for fee in fees:
