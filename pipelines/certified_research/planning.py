@@ -167,10 +167,35 @@ class SecurityInput:
     def __post_init__(self):
         import re
         if (any(type(k) is not int or not 0<k<2**64 for k in (self.security_key,self.issuer_key))
-                or not 1<=len(self.market_parents)<=1000 or not self.corporate_parent or not self.allocation_parent
+                or not isinstance(self.market_parents,tuple) or len(self.market_parents)>1000 or not self.corporate_parent or not self.allocation_parent
                 or not self.short_volume_parents or not self.short_interest_parents
                 or any(not re.fullmatch('[0-9a-f]{64}',h) for h in (self.short_volume_hash,self.short_interest_hash))):
             raise ValueError('Security requires price, corporate, allocation and original-public short dependencies')
+
+
+def program_from_universe(config,snapshot,days,issuers,securities,*,prerequisites,source_parents,
+                          universe_parent,seed_parents,corporate_parents,fundamental_start,
+                          price_start,short_start,state_start_dates=None,maximum_sessions=250000):
+    """Compile the joined graph directly from the frozen dated identity graph."""
+    from .universe import execution_membership
+    days=tuple(days)
+    membership=execution_membership(snapshot,days,maximum_sessions=maximum_sessions)
+    if not membership['ready']:raise ValueError('Historical execution membership is empty or contains partial market days')
+    prerequisites=tuple(prerequisites);securities=tuple(securities)
+    authorities=[p for p in prerequisites if p.unit.key==universe_parent and p.unit.product=='universe']
+    if len(authorities)!=1:raise ValueError('Frozen universe execution authority is missing or duplicated')
+    args=authorities[0].arguments
+    if (args.get('source_hash')!=snapshot['source_hash'] or date.fromisoformat(args['context_start'])>min(days)
+            or date.fromisoformat(args['end'])<max(days)):
+        raise ValueError('Universe prerequisite differs from the frozen membership source or range')
+    if {s.security_key:s.issuer_key for s in securities}!=membership['security_issuers']:
+        raise ValueError('Reference securities/issuers do not match the admitted dated universe')
+    plans=program_units(config,membership['sessions'],issuers,securities,prerequisites=prerequisites,
+        source_parents=source_parents,universe_parent=universe_parent,seed_parents=seed_parents,
+        corporate_parents=corporate_parents,security_listings=membership['security_listings'],
+        fundamental_start=fundamental_start,price_start=price_start,short_start=short_start,
+        state_start_dates=state_start_dates)
+    return dict(plans=plans,membership=membership)
 
 
 def reference_units(config,issuers,securities,*,prerequisites,universe_parent,
@@ -222,6 +247,7 @@ def reference_units(config,issuers,securities,*,prerequisites,universe_parent,
         add(f'issuer:{issuer.issuer_key}:derived','derived_fundamentals',(reported,),dict(common))
     for security in securities:
         common=dict(entity_key=security.security_key,start=str(config.start),end=str(config.end))
+        if not security.market_parents:raise ValueError('Reference price dependencies require the shared market graph')
         price_parents=parents(security.market_parents,'market_aggregate');days=[]
         for key in price_parents:
             day=date.fromisoformat(prior[key].arguments['day'])

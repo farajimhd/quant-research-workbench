@@ -7,13 +7,65 @@ projected backward. Missing lifecycle or mapping evidence is reported explicitly
 from __future__ import annotations
 
 from collections import Counter
-from datetime import date,datetime,time,timedelta
+from datetime import date,datetime,time,timedelta,timezone
+from bisect import bisect_left,bisect_right
 from zoneinfo import ZoneInfo
 import re
 
 from .contracts import digest,identifier,literal
 from .identity import ListingInterval,validate_intervals
 from services.reference_gateway.tradability import otc_venue_predicate_sql
+
+
+def execution_membership(snapshot,days,*,maximum_sessions=250000):
+    """Compile compact dated execution metadata from a certified universe.
+
+    Intervals are intersected with full 04:00–20:00 New York sessions using
+    binary search. Ineligible intervals are counted; partial-day membership is
+    an explicit admission blocker because current market consumers require a
+    full day. No current snapshot is projected backward and no events are read.
+    """
+    from .identity import identity_key,LISTING,SECURITY,ISSUER
+    from .planning import MarketSession
+    days=tuple(days)
+    if (not snapshot.get('ready') or not re.fullmatch('[0-9a-f]{64}',snapshot.get('source_hash',''))
+            or not days or any(type(d) is not date for d in days) or tuple(sorted(set(days)))!=days
+            or type(maximum_sessions) is not int or not 1<=maximum_sessions<=1000000):
+        raise ValueError('Execution membership requires an admitted snapshot, ordered days and explicit metadata bound')
+    intervals=validate_intervals(tuple(snapshot['intervals']))
+    ny=ZoneInfo('America/New_York')
+    starts=tuple(datetime.combine(d,time(4),ny).astimezone(timezone.utc) for d in days)
+    ends=tuple(datetime.combine(d,time(20),ny).astimezone(timezone.utc) for d in days)
+    sessions=[];partial=[];excluded=Counter();owners={};issuers={};by_security={};seen={}
+    for row in sorted(intervals,key=lambda r:(r.listing_id,r.valid_from)):
+        if row.reason:excluded[row.reason]+=1;continue
+        left=row.valid_from.astimezone(timezone.utc);right=row.valid_to.astimezone(timezone.utc)
+        first=bisect_right(ends,left);last=bisect_left(starts,right)
+        listing=identity_key(LISTING,row.listing_id);security=identity_key(SECURITY,row.security_id)
+        issuer=identity_key(ISSUER,row.issuer_id)
+        for index in range(first,last):
+            if len(sessions)+len(partial)>=maximum_sessions:raise ValueError('Execution membership exceeds the explicit session metadata bound')
+            day=days[index]
+            if left>starts[index] or right<ends[index]:
+                partial.append(dict(day=str(day),listing_key=listing,ticker=row.ticker,reason='partial_market_day_membership',
+                    evidence_hash=row.evidence_hash))
+                continue
+            if listing in owners and owners[listing]!=security:raise ValueError('Listing has competing historical security owners')
+            if security in issuers and issuers[security]!=issuer:raise ValueError('Security has competing historical issuer owners')
+            if (security,day) in seen:raise ValueError('Competing market listings for one security/session')
+            seen[(security,day)]=listing;owners[listing]=security;issuers[security]=issuer
+            by_security.setdefault(security,set()).add(listing)
+            sessions.append(MarketSession(day,listing,row.ticker))
+    sessions=tuple(sorted(sessions,key=lambda s:(s.listing_key,s.day)))
+    result=dict(ready=bool(sessions) and not partial,sessions=sessions,
+        security_listings={k:tuple(sorted(v)) for k,v in sorted(by_security.items())},
+        security_issuers=dict(sorted(issuers.items())),partial=tuple(partial),excluded_intervals=dict(excluded),
+        source_hash=snapshot['source_hash'])
+    result['membership_hash']=digest(dict(source_hash=snapshot['source_hash'],days=days,
+        sessions=[dict(day=s.day,listing_key=s.listing_key,ticker=s.ticker) for s in sessions],
+        security_listings=result['security_listings'],security_issuers=result['security_issuers'],partial=partial,
+        excluded_intervals=result['excluded_intervals']))
+    return result
 
 
 def candidates_sql(context_start,end,anchor_date,*,database='q_live',maximum_rows=100000):
