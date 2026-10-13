@@ -4,6 +4,14 @@
 
 Understand how launch parameters determine earlier data and compatible predecessor state.
 
+### Implemented predecessor readers
+
+`market_context.indicators` consumes a verified dependency locator and loads eight certified state rows. It checks listing/date, recipe, frozen source/rules and the exact state receipt without reading bars. Indicator discovery now returns this dependency form; chronological technical authorities expose the same form for the following session.
+
+`market_context.structural` consumes the verified V7 dependency locator, checks the pinned calendar and derives its prior AH binding from certified compact bars before restoration and one day rollover. This requires a compact prior-bar read for prefix validation, but no event scan or V7 fit replay. It refuses missing intervening sessions, unsupported symbol changes and absent corporate-adjustment evidence. Split-factor resolution and its verified evidence must come from the corporate producer; this reader does not infer a factor of one from missing data.
+
+These readers connect certified outputs to chronological continuation. Initial genesis/rename/adjustment producers and the complete launcher's request assembly remain unfinished; callback-based fixture execution does not prove that full production path ready.
+
 ## On this page
 
 - [Context planner](#context-planner)

@@ -1362,6 +1362,7 @@ class ClickHouseIntegration(unittest.TestCase):
         self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
     def test_executable_market_dag_shared_aggregate_and_verified_resume(self):
         from pipelines.certified_research import indicator_state
+        from pipelines.certified_research import market_context
         from tests.test_streaming_level_book import engine
         from threading import Lock
         rules=({'token_id':1,'modifier_int':0,'update_last':1,'update_high_low':1,'update_volume':1},)
@@ -1403,6 +1404,19 @@ class ClickHouseIntegration(unittest.TestCase):
         loaded=indicator_state.load(self.client.query,self.database,Claim(),seed_scope,
             request.dataset_hash,request.prior_indicator_hash)
         self.assertEqual(len(loaded['state']),8)
+        read_state=market_context.indicators(self.client.query,self.database,Claim(),technical,unit.listing_key,
+            date(2026,8,24),request.dataset_hash,{day:request.source_hash},rules)
+        self.assertEqual(read_state,loaded['state'])
+        structural=v7.authority(request,bar,self.client.query,self.database,Claim())
+        roll=market_context.structural(self.client.query,self.database,Claim(),structural,unit.listing_key,
+            date(2026,8,24),unit.ticker,request.dataset_hash,{day:request.source_hash},split_factor=1.,split_evidence=('a'*64,))
+        self.assertEqual(roll.predecessor_hash,checkpoint['state_hash'])
+        with self.assertRaisesRegex(ValueError,'corporate adjustment'):
+            market_context.structural(self.client.query,self.database,Claim(),structural,unit.listing_key,
+                date(2026,8,24),unit.ticker,request.dataset_hash,{day:request.source_hash},split_factor=1.,split_evidence=())
+        with self.assertRaisesRegex(ValueError,'skip required'):
+            market_context.indicators(self.client.query,self.database,Claim(),technical,unit.listing_key,
+                date(2026,8,25),request.dataset_hash,{day:request.source_hash},rules)
         with self.assertRaisesRegex(ValueError,'recipe'):
             indicator_state.load(self.client.query,self.database,Claim(),seed_scope,'f'*64,request.prior_indicator_hash)
         next_day=date(2026,8,24)

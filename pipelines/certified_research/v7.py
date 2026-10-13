@@ -183,6 +183,18 @@ def load_checkpoint(query,database,claim,scope,binding,boundary,*,regular_close=
         parent_hash=row['parent_hash'],state_hash=row['state_hash'],codec_version=1,payload=payload,binding=binding),engine
 
 
+def authority(request,bars,query,database,claim):
+    """Attach independently resolvable context to a verified V7 unit receipt."""
+    from .publication import Publisher,Scope
+    base=request.unit
+    scope=Scope(base.dataset_id,base.day,base.listing_key,'v7',request.parent('v7',(bars['output_hash'],)))
+    receipt=Publisher(query,database,claim).receipt(scope)
+    if receipt is None:return None
+    return dict(receipt,state_context=dict(recipe_hash=request.dataset_hash,source_hash=request.source_hash,
+        predecessor_hash=request.prior_v7_hash,ticker=base.ticker,regular_close=request.regular_close.isoformat(),
+        bars_parent_hash=request.parent('bars')))
+
+
 def projection_sql(outputs,dataset_id,attempt_id,listing_key,day,*,include_payload=True,regular_close=None):
     from .schema import TABLES
     names=next(t for t in TABLES if t.name=='research_v7_checkpoint_v1').columns

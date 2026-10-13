@@ -64,7 +64,9 @@ def discover(query,database,claim,listing_key,before,recipe_hash,rules_hash,sour
     scope=Scope(str(row['dataset_id']),day,listing_key,'technical_state',row['parent_hash'])
     loaded=load(query,database,claim,scope,recipe_hash,row['predecessor_hash'],source_hash=source_hash,rules_hash=rules_hash)
     if loaded is None:raise ValueError('Discovered indicator receipt disappeared')
-    return dict(scope=scope,session=day,**loaded)
+    dependency=dict(loaded['receipt'],state_receipt=loaded['receipt'],state_context=dict(
+        recipe_hash=recipe_hash,source_hash=source_hash,predecessor_hash=row['predecessor_hash'],rules_hash=rules_hash))
+    return dict(scope=scope,session=day,dependency=dependency,**loaded)
 
 
 def validate(state):
@@ -72,9 +74,11 @@ def validate(state):
     validate_state(state)
 
 
-def combined(technical,state_receipt):
+def combined(technical,state_receipt,request):
     return dict(technical,output_hash=digest(dict(technical=technical['output_hash'],state=state_receipt['output_hash'])),
-        technical_receipt=technical,state_receipt=state_receipt)
+        technical_receipt=technical,state_receipt=state_receipt,
+        state_context=dict(recipe_hash=request.dataset_hash,source_hash=request.source_hash,
+            predecessor_hash=request.prior_indicator_hash,rules_hash=digest(request.rules)))
 
 
 def authority(request,bars,query,database,claim):
@@ -84,7 +88,7 @@ def authority(request,bars,query,database,claim):
     if technical is None:return None
     loaded=load(query,database,claim,scope_for(request,technical),request.dataset_hash,request.prior_indicator_hash,
         source_hash=request.source_hash,rules_hash=digest(request.rules))
-    return combined(technical,loaded['receipt']) if loaded else None
+    return combined(technical,loaded['receipt'],request) if loaded else None
 
 
 def publish(request,bars,technical,query,database,claim,source_guard):
@@ -97,7 +101,7 @@ def publish(request,bars,technical,query,database,claim,source_guard):
         raise ValueError('Indicator state requires its exact certified bar/technical parents')
     loaded=load(query,database,claim,scope,request.dataset_hash,request.prior_indicator_hash,
         source_hash=request.source_hash,rules_hash=digest(request.rules))
-    if loaded:return combined(technical,loaded['receipt'])
+    if loaded:return combined(technical,loaded['receipt'],request)
     state=indicator_state(query,database,request.unit,technical['attempt_id'],request.prior_indicators,
         bar_attempt=bars['attempt_id'])
     if not state:state={f:{n:0 if n=='sample_count' else 0. for n in STATE_FIELDS} for f in FRAMES}
@@ -121,4 +125,4 @@ def publish(request,bars,technical,query,database,claim,source_guard):
     receipt=publisher.publish(scope,attempt,expected=expected,empty_proof=scope.parent_hash)
     load(query,database,claim,scope,request.dataset_hash,request.prior_indicator_hash,
         source_hash=request.source_hash,rules_hash=digest(request.rules))
-    return combined(technical,receipt)
+    return combined(technical,receipt,request)
