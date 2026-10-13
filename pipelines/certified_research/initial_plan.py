@@ -6,6 +6,39 @@ from .contracts import digest
 from .execution import validate
 
 
+def run(query,config,dataset_id,assembled,claim,client_factory,dictionary_claim_factory,
+        capacity_factory,*,stop=None,progress=None):
+    """Publish and execute through the same admission gates used by resume.
+
+    No initial metadata is installed until ExecutionLaunch.run admits the
+    complete graph. Client and capacity factories receive frozen resources.
+    """
+    from types import SimpleNamespace
+    from uuid import UUID
+    from . import verification
+    from .launch import ExecutionLaunch
+    UUID(dataset_id)
+    if not callable(capacity_factory):raise ValueError('Initial execution requires qualified capacity admission')
+    plans=tuple(assembled['plans'])
+    plan_fingerprint=digest(tuple(p.row(dataset_id) for p in plans))
+    frozen=runtime_plan.resolve(config,plans)
+    if frozen['recipe_hash']!=assembled['recipe_hash']:
+        raise ValueError('Initial execution recipe differs from assembled plan')
+    saved=SimpleNamespace(dataset_id=dataset_id,config=config,units=plans,source_hash=assembled['source_hash'])
+    claim.check()
+    guard=verification.source_guard(query,saved)
+    guard()
+    clients=lambda:client_factory(config)
+    capacity=capacity_factory(config,plans)
+    if not callable(capacity):raise ValueError('Capacity factory must return a qualified admission guard')
+    runtime=runtime_plan.runtime(saved,claim,clients,guard)
+    if digest(tuple(p.row(dataset_id) for p in plans))!=plan_fingerprint:
+        raise ValueError('Initial plan changed during execution assembly')
+    launch=ExecutionLaunch(query,config,dataset_id,plans,saved.source_hash,claim,clients,guard,
+        capacity,dictionary_claim_factory,runtime)
+    return launch.run(stop=stop,progress=progress)
+
+
 def assemble(config,prepared,canonical,reporting,definition,rules,issuers,securities,*,
              prerequisites,universe_parent,corporate_parents,security_listings,
              fundamental_start,price_start,short_start):
