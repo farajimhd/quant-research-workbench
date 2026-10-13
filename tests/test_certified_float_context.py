@@ -3,7 +3,7 @@ from unittest.mock import Mock,patch
 
 import pytest
 
-from pipelines.certified_research.float_data import required_price_sessions
+from pipelines.certified_research.float_data import required_price_sessions,source_price_sessions
 from pipelines.certified_research.reference_publication import ReferenceScope
 from pipelines.certified_research.planning import price_context_days
 
@@ -49,3 +49,22 @@ def test_measurement_bound_fails_without_truncating_history():
         publisher.return_value.receipt.return_value=dict(attempt_id='00000000-0000-0000-0000-000000000002',output_hash='c'*64)
         with pytest.raises(ValueError,match='metadata bound'):
             required_price_sessions(query,'arte',Mock(),scope(),date(2026,1,2),date(2026,1,5),maximum_measurements=1)
+
+
+@pytest.mark.parametrize('changed',(False,True))
+def test_fresh_sec_source_context_reuses_publication_projection_and_fences_drift(changed):
+    query=Mock(return_value=[dict(period_end='2025-12-31')])
+    before=dict(source_hash='a'*64,rows=4)
+    with patch('pipelines.certified_research.reference_sql.sec_source_evidence',side_effect=[
+            before,dict(before,source_hash='b'*64) if changed else before]) as evidence:
+        args=(query,Mock(),Mock(),1,'320193',date(2024,1,1),date(2026,1,5),date(2026,1,2),date(2026,1,5),'a'*64)
+        if changed:
+            with pytest.raises(ValueError,match='authority changed'):source_price_sessions(*args)
+        else:
+            result=source_price_sessions(*args)
+            assert result['sec_source_hash']=='a'*64
+            assert date(2025,12,31) in price_context_days((date(2026,1,2),date(2026,1,5)),{1:result})
+        assert evidence.call_count==2
+        sql=query.call_args.args[0]
+        assert 'sec_bulk_mirror_xbrl_fact_v3' in sql and 'source_context_kind' in sql
+        assert 'LIMIT 2049' in sql

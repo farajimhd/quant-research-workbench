@@ -77,6 +77,47 @@ def required_price_sessions(query,database,claim,fundamental_scope,start,end,*,m
     return result
 
 
+def source_price_sessions(query,claim,source_guard,entity_key,cik,source_start,source_end,start,end,
+                          expected_source_hash,*,maximum_measurements=2048):
+    """Bootstrap context from frozen SEC inputs without publishing fundamentals.
+
+    Uses the publication projection and rechecks the full source fingerprint.
+    This proves consistency with that input, not SEC acquisition completeness.
+    """
+    from . import reference_sql
+    from .source import exchange_sessions
+    if (any(type(d) is not date for d in (source_start,source_end,start,end))
+            or source_start>start or source_end<end or start>end
+            or type(maximum_measurements) is not int or not 1<=maximum_measurements<=10000):
+        raise ValueError('Invalid SEC float-price context request')
+    def guard():claim.check();source_guard()
+    guard()
+    before=reference_sql.sec_source_evidence(query,entity_key,cik,source_start,source_end)
+    if before['source_hash']!=expected_source_hash:raise ValueError('Frozen SEC float-context source changed')
+    namespace='00000000-0000-0000-0000-000000000001'
+    projected=reference_sql.sec_projection(namespace,namespace,entity_key,cik,source_start,source_end)
+    rows=query(f'SELECT DISTINCT period_end FROM ({projected}) WHERE '
+        f'metric_key={metric("SEC public float value")} AND context_kind=1 AND status=1 '
+        f'AND unit_key=1 AND basis_unit_key=1 AND period_end IS NOT NULL '
+        f'AND period_end BETWEEN toDate({literal(start-timedelta(days=520))}) AND toDate({literal(end)}) '
+        f"AND available_at<toDateTime64({literal(end+timedelta(days=1))},6,'UTC') "
+        f'ORDER BY period_end LIMIT {maximum_measurements+1}')
+    if len(rows)>maximum_measurements:raise ValueError('SEC float-price context exceeds its metadata bound')
+    measurements=tuple(date.fromisoformat(str(r['period_end'])) for r in rows)
+    if tuple(sorted(set(measurements)))!=measurements:raise ValueError('SEC float measurements are duplicated or unordered')
+    days=exchange_sessions(measurements[0]-timedelta(days=7),measurements[-1]) if measurements else ()
+    needed=set()
+    for day in measurements:needed.update(days[bisect_left(days,day-timedelta(days=7)):bisect_right(days,day)])
+    guard()
+    after=reference_sql.sec_source_evidence(query,entity_key,cik,source_start,source_end)
+    if after!=before:raise ValueError('SEC authority changed during float-price discovery')
+    guard()
+    result=dict(measurements=measurements,sessions=tuple(sorted(needed)),sec_source_hash=before['source_hash'],
+        price_gap_days=7,sec_age_days=520)
+    result['context_hash']=digest(result)
+    return result
+
+
 def projection(database,dataset_id,attempt_id,security_key,issuer_key,parents,start: date,end: date,*,wide=False,
                context_attempt=None,prepare_context=False):
     identifier(database);UUID(dataset_id);UUID(attempt_id)

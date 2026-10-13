@@ -58,7 +58,13 @@ def test_retained_sec_input_freezes_and_verifies_without_writes():
         def query(self,sql):return self.client.query(sql+' SETTINGS readonly=1')
         def close(self):self.client.close()
     reader=Reader()
-    try:evidence=sec_source_evidence(reader.query,1,'320193',date(2025,1,1),date(2026,1,2))
+    try:
+        evidence=sec_source_evidence(reader.query,1,'320193',date(2025,1,1),date(2026,1,2))
+        from pipelines.certified_research.float_data import source_price_sessions
+        context=source_price_sessions(reader.query,SimpleNamespace(check=lambda:None),lambda:None,1,'320193',
+            date(2025,1,1),date(2026,1,2),date(2026,1,2),date(2026,1,2),evidence['source_hash'])
+        assert context['sec_source_hash']==evidence['source_hash']
+        assert all(day<=date(2026,1,2) for day in context['sessions'])
     finally:reader.close()
     plan=PlannedUnit(Unit('sec','sec_acquisition'),dict(entity_key=1,cik='320193',
         start='2025-01-01',end='2026-01-02',source_hash=evidence['source_hash']))

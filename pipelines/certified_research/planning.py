@@ -26,7 +26,8 @@ def price_context_days(target_days,issuer_contexts):
         if type(issuer) is not int or not 0<issuer<2**64:
             raise ValueError('Invalid float context issuer')
         expected={'measurements','sessions','fundamentals_hash','price_gap_days','sec_age_days','context_hash'}
-        if set(context)!=expected or context['context_hash']!=digest({k:v for k,v in context.items() if k!='context_hash'}):
+        source_expected=(expected-{'fundamentals_hash'})|{'sec_source_hash'}
+        if set(context) not in (expected,source_expected) or context['context_hash']!=digest({k:v for k,v in context.items() if k!='context_hash'}):
             raise ValueError('Float price context fingerprint differs')
         if context['price_gap_days']!=7 or context['sec_age_days']!=520:
             raise ValueError('Float price context policy differs')
