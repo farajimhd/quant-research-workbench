@@ -4851,6 +4851,12 @@ class ReplayRunController:
         return await bind_prepared_program_launch(self, cohorts,
             checkpoint_connection_factory=checkpoint_connection_factory, checkpoint_concurrency=checkpoint_concurrency)
 
+    async def bind_recovered_program_session(self, cohorts, *, checkpoint_connection_factory, checkpoint_concurrency):
+        """Prepare continuation through the adopted cold owner; never start."""
+        from .backtest_program_launch import bind_recovered_program_launch
+        return await bind_recovered_program_launch(self, cohorts,
+            checkpoint_connection_factory=checkpoint_connection_factory, checkpoint_concurrency=checkpoint_concurrency)
+
     async def publish_program_broker_checkpoint(self, *, connection_factory, concurrency):
         """Publish central broker state at this controller's acknowledged cursor."""
         from .backtest_program_checkpoint import publish_program_broker_checkpoint
@@ -5167,7 +5173,7 @@ class ReplayRunController:
         No publication or run launch occurs here. The old in-memory actors
         retire without emitting a false terminal event for the continuing run.
         """
-        from .program_policy_recovery import RecoveredProgramPolicy, verify_recovered_program_positions
+        from .program_policy_recovery import RecoveredProgramPolicy, verify_recovered_program_positions, clone_recovered_program_actor
         from .backtest_typed_publisher import BacktestTypedJournalPublisher
         from .backtest_v4_keeper_lease import BacktestV4KeeperLease
         from .qmd_columnar_population import CertifiedPopulationWindow
@@ -5240,6 +5246,7 @@ class ReplayRunController:
             broker_executions=results[-2], broker_orders=results[-1],
             order_manager=candidate.order_manager, portfolio=candidate.portfolio,
             portfolio_recovery=comparison, observations=observations, population=population)
+        installed_actor = await _owned_worker(clone_recovered_program_actor, packet)
         await _owned_worker(lease.assert_current)
         require_fence()
         if (source.typed_source_commit_hashes()[:sequence] != hashes
@@ -5250,7 +5257,7 @@ class ReplayRunController:
         # No await below: publisher and controller switch to the same buffer.
         publisher.rebind_fenced_journal(candidate.journal, expected_journal=old_journal,
             expected_sequence=packet.journal_sequence)
-        candidate.strategy = self._strategy = self._program_strategy = packet.actor
+        candidate.strategy = self._strategy = self._program_strategy = installed_actor
         candidate.processed_events = runtime.processed_events
         candidate._latest_checkpoint_cursor = runtime._latest_checkpoint_cursor
         self._runtime, self._journal, self._planner = candidate, candidate.journal, candidate.intent_planner
@@ -5260,7 +5267,7 @@ class ReplayRunController:
 
     async def install_recovered_program_policy(self, packet, *, portfolio_recovery, population):
         """Install only at an owned, fully fenced common financial/source clock."""
-        from .program_policy_recovery import RecoveredProgramPolicy, verify_recovered_program_positions
+        from .program_policy_recovery import RecoveredProgramPolicy, verify_recovered_program_positions, clone_recovered_program_actor
         from .backtest_typed_publisher import BacktestTypedJournalPublisher
         from .backtest_v4_keeper_lease import BacktestV4KeeperLease
         from .qmd_columnar_history_transport import _owned_worker
@@ -5308,13 +5315,14 @@ class ReplayRunController:
             broker_executions=results[-2], broker_orders=results[-1], order_manager=runtime.order_manager,
             portfolio=runtime.portfolio, portfolio_recovery=portfolio_recovery,
             observations=observations, population=population)
+        installed_actor = await _owned_worker(clone_recovered_program_actor, packet)
         await _owned_worker(lease.assert_current)
         require_fence()
         if (source.typed_source_commit_hashes()[:sequence] != hashes
                 or source.typed_source_boundary(at) != (sequence, source_hash, at)
                 or runtime.last_event_time != at):
             raise ValueError("Program installation cursor advanced during qualification")
-        runtime.strategy = self._strategy = self._program_strategy = packet.actor
+        runtime.strategy = self._strategy = self._program_strategy = installed_actor
         self._program_dispatch_failure = None
 
     async def prepare_program_inputs(self, pins, *, first_ordinal: int,

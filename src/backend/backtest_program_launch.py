@@ -25,6 +25,7 @@ class _PreparedProgramLaunch:
     policy_hash: str
     checkpoint_connection_factory: object
     checkpoint_concurrency: int
+    recovered: object = None
 
     def require_execution_owner(self, controller):
         from .backtest_program_journal_bootstrap import _configuration_hash
@@ -39,6 +40,10 @@ class _PreparedProgramLaunch:
 
     def require_current(self, controller):
         self.require_execution_owner(controller)
+        if self.recovered is not None:
+            from .program_controller_recovery import require_recovered_program_controller
+            if require_recovered_program_controller(controller) is not self.recovered:
+                raise RuntimeError("Programme cold launch changed its adopted proof")
         from .program_policy_recovery import program_policy_fingerprint
         if (controller._runtime.last_event_time != self.clock
                 or controller._program_signal_runtime.typed_source_cursor() != self.source_cursor
@@ -103,6 +108,39 @@ async def bind_prepared_program_launch(controller, cohorts, *, checkpoint_connec
     controller._program_launch_plan = plan
 
 
+async def bind_recovered_program_launch(controller, cohorts, *, checkpoint_connection_factory, checkpoint_concurrency):
+    """Bind the same native engine from a qualified adopted cold cursor."""
+    from .program_controller_recovery import require_recovered_program_controller
+    from .backtest_program_session import (validate_prepared_program_session,
+        _continue_fenced_session_work, require_program_session_owner)
+    from .backtest_program_journal_bootstrap import _configuration_hash
+    from .program_policy_recovery import program_policy_fingerprint
+    from .qmd_columnar_history_transport import _owned_worker
+    require_program_session_owner(controller)
+    if (not callable(checkpoint_connection_factory) or type(checkpoint_concurrency) is not int
+            or not 1 <= checkpoint_concurrency <= 8 or controller._task is not None
+            or controller.status != "created" or getattr(controller, "_program_launch_plan", None) is not None
+            or getattr(controller, "_program_startup_active", False)
+            or getattr(controller, "_program_session_active", False)
+            or getattr(controller, "_program_cohort_active", False)):
+        raise RuntimeError("Programme cold launch lacks its idle prepared owner")
+    recovered = require_recovered_program_controller(controller)
+    work, _, _ = validate_prepared_program_session(controller, cohorts)
+    # Verify that this full-origin plan has strictly remaining coverage. The
+    # native session scheduler applies this same cursor when execution begins.
+    await _continue_fenced_session_work(controller, work, recovered.packet)
+    if require_recovered_program_controller(controller) is not recovered:
+        raise RuntimeError("Programme cold launch changed during cursor verification")
+    plan = _PreparedProgramLaunch(work, _owners(controller), _configuration_hash(controller.definition), _PLAN_SECRET,
+        controller._runtime.last_event_time, controller._program_signal_runtime.typed_source_cursor(),
+        controller._journal.latest_sequence(controller.run_id), program_policy_fingerprint(controller._program_strategy),
+        checkpoint_connection_factory, checkpoint_concurrency, recovered)
+    plan.require_current(controller)
+    await _owned_worker(controller._fixed_v4_lease.assert_current)
+    plan.require_current(controller)
+    controller._program_launch_plan = plan
+
+
 async def require_bound_program_start(controller):
     from .qmd_columnar_history_transport import _owned_worker
     plan = getattr(controller, "_program_launch_plan", None)
@@ -121,7 +159,8 @@ async def run_bound_program_engine(controller):
     controller._runtime_inputs_ready = True
     await controller._publish(force=True)
     try:
-        result = await controller.run_prepared_program_session(plan.cohorts, terminal=True)
+        continuation = {"initial_packet": plan.recovered.packet} if plan.recovered is not None else {}
+        result = await controller.run_prepared_program_session(plan.cohorts, terminal=True, **continuation)
         await controller._finish("completed" if result.status == "evaluated" else "stopped")
     finally:
         # Session features belong to prepared execution, not retained UI state.

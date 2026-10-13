@@ -955,8 +955,9 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 writer._client.backtest_v4_lease = lease
                 await controller.install_recovered_program_policy(recovered,
                     portfolio_recovery=portfolio_image, population=population)
-                assert controller._runtime.strategy is recovered.actor
-                assert controller._program_strategy is recovered.actor
+                assert controller._runtime.strategy is controller._program_strategy
+                assert controller._program_strategy is not recovered.actor
+                assert program_policy_fingerprint(controller._program_strategy) == recovered.state_hash
                 # Financial cold rows are normalized via the existing reader.
                 # OMS/broker rows below are synthetic, exact captures of the
                 # executed three-clock fixture, not operational storage seals.
@@ -1017,7 +1018,9 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                     assert controller._runtime is financial_candidate
                     assert controller._journal is financial_candidate.journal
                     assert controller._journal_publisher.journal is financial_candidate.journal
-                    assert financial_candidate.strategy is recovered.actor
+                    assert financial_candidate.strategy is controller._program_strategy
+                    assert financial_candidate.strategy is not recovered.actor
+                    assert program_policy_fingerprint(financial_candidate.strategy) == recovered.state_hash
                     assert old_runtime.order_manager._closed and not old_runtime.broker._initialized
                     repeated = await controller.dispatch_prepared_program_boundary(block, population,
                         ordinal=ordinal + 2, assignment_id="assignment", execution_policy=policy,

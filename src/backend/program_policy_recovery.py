@@ -255,6 +255,30 @@ class RecoveredProgramPolicy:
     _continuation_seal: object = field(default=None, repr=False)
 
 
+def clone_recovered_program_actor(packet):
+    """Detach mutable execution state while retaining the immutable release.
+
+    The recovered packet is the replay baseline. Installing its actor directly
+    would let later fills mutate that baseline before the next qualification.
+    """
+    from copy import deepcopy
+    if (type(packet) is not RecoveredProgramPolicy or packet._proof is not _RECOVERY_PROOF
+            or program_policy_fingerprint(packet.actor) != packet.state_hash):
+        raise ValueError("Programme actor clone requires an unchanged recovered policy")
+    original = packet.actor
+    actor = AssignedProgramStrategy(original.program_release, deepcopy(original.assignments()), dict(original._listings))
+    actor.execution_state = deepcopy(original.execution_state)
+    actor.target_state = deepcopy(original.target_state)
+    actor.trail_state = deepcopy(original.trail_state)
+    # Clock values contain frozen ProgramBoundary instances with read-only
+    # scalar maps. Detach their mutable index, preserving immutable boundaries.
+    actor._selection_clocks = dict(original._selection_clocks)
+    if (program_policy_fingerprint(actor) != packet.state_hash
+            or program_policy_fingerprint(original) != packet.state_hash):
+        raise ValueError("Programme actor clone changed its verified policy")
+    return actor
+
+
 def _clock(value):
     at = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     if at.tzinfo is None or at.utcoffset() is None:

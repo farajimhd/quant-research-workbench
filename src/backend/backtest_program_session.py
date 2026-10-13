@@ -180,7 +180,7 @@ async def _continue_fenced_session_work(controller, work, packet):
         raise ValueError("Programme continuation lacks its owned completed policy fence")
     cursor = source.typed_source_cursor()
     boundary = source.typed_source_boundary(at)
-    if packet.source_commit_hashes != source.typed_source_commit_hashes()[:boundary[0]]:
+    if cursor != boundary or packet.source_commit_hashes != source.typed_source_commit_hashes()[:boundary[0]]:
         raise ValueError("Programme continuation source prefix differs from its policy fence")
     elapsed = at - market_day_boundary(controller.definition.session_date, 0)
     micros = (elapsed.days * 86400 + elapsed.seconds) * 1000000 + elapsed.microseconds

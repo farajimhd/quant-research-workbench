@@ -3,6 +3,7 @@ import asyncio
 from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
+from inspect import signature, Parameter
 from hashlib import sha256
 from types import SimpleNamespace
 
@@ -18,7 +19,8 @@ from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
 from src.backend.program_saved_definition import ProgramSavedDefinitionEvidence
 from src.backend.program_recovery_evidence import ProgramRecoveryEvidence
 from src.backend.program_checkpoint_recovery import ProgramFinancialCheckpoint
-from src.backend.program_policy_recovery import RecoveredProgramPolicy, _RECOVERY_PROOF, program_policy_fingerprint
+from src.backend.program_policy_recovery import (RecoveredProgramPolicy, _RECOVERY_PROOF,
+    _ProgramPolicyContinuationSeal, program_policy_fingerprint)
 from src.backend.signal_stream_runtime_service import SignalStreamRuntime
 from src.backend.qmd_columnar_population import CertifiedPopulationWindow
 from src.backend.backtest_market_data import market_day_boundary
@@ -32,7 +34,7 @@ from tests.test_program_controller_runtime import definition_and_actor
 from tests.test_backtest_v4_keeper_lease import _session, RUN_ID
 
 
-@pytest.mark.parametrize("failure", [None, "financial", "positions", "source", "publisher", "concurrent"])
+@pytest.mark.parametrize("failure", [None, "financial", "positions", "source", "future_source", "publisher", "concurrent"])
 def test_adoption_transfers_only_after_common_native_scope_is_qualified(tmp_path, monkeypatch, failure):
     definition, actor = definition_and_actor()
     revision = deepcopy(definition.configuration_revision)
@@ -96,8 +98,10 @@ def test_adoption_transfers_only_after_common_native_scope_is_qualified(tmp_path
             {}, revision), financial, definition)
         source._typed_cursor, source._typed_prefix, source._typed_cutoffs = (1, "b" * 64, at), ["b" * 64], [at]
         packet_actor = AssignedProgramStrategy(actor.program_release, actor.assignments(), actor._listings)
+        state_hash = program_policy_fingerprint(packet_actor)
+        seal = _ProgramPolicyContinuationSeal(RUN_ID, sequence, 0, 0, (), ("b" * 64,), state_hash, _RECOVERY_PROOF)
         packet = RecoveredProgramPolicy(packet_actor, sequence, 0, 0, {}, RUN_ID, ("b" * 64,),
-            program_policy_fingerprint(packet_actor), _RECOVERY_PROOF)
+            state_hash, _RECOVERY_PROOF, seal)
         publisher.expected_config = typed_run_config_payload(runtime.config)
         synchronized = object()
         def qualify(*args, **scope):
@@ -115,6 +119,10 @@ def test_adoption_transfers_only_after_common_native_scope_is_qualified(tmp_path
             assert set(scope["broker_positions"]) == set(runtime.config.account_ids)
             if failure == "positions": raise ValueError("positions failed")
             if failure == "source": source._typed_prefix = ["c" * 64]
+            if failure == "future_source":
+                source._typed_prefix.append("c" * 64)
+                source._typed_cutoffs.append(at + timedelta(seconds=1))
+                source._typed_cursor = (2, "c" * 64, at + timedelta(seconds=1))
             if failure == "publisher": publisher._error = RuntimeError("publisher failed")
         monkeypatch.setattr(adoption, "qualify_program_financial_runtime", qualify)
         monkeypatch.setattr(adoption, "verify_recovered_program_positions", positions)
@@ -131,10 +139,47 @@ def test_adoption_transfers_only_after_common_native_scope_is_qualified(tmp_path
                 proof = await controller.adopt_program_cold_runtime(**kwargs)
                 assert proof.controller is controller and proof.packet is packet
                 assert controller._runtime is runtime and controller._journal is journal
-                assert runtime.strategy is controller._program_strategy is packet_actor
+                assert runtime.strategy is controller._program_strategy and runtime.strategy is not packet_actor
+                assert program_policy_fingerprint(runtime.strategy) == packet.state_hash
+                from src.backend import backtest_program_session as scheduling
+                from src.backend import backtest_program_launch as launch
+                from src.backend.backtest_program_cohort import run_prepared_program_cohort
+                scope = {name: object() for name, param in signature(run_prepared_program_cohort).parameters.items()
+                    if param.kind is Parameter.KEYWORD_ONLY and param.default is Parameter.empty
+                    and name not in {"first_bucket", "stop_bucket"}}
+                work = (scheduling.PreparedProgramCohortWork(14400, 14403,
+                    {"assignment": object()}, population, object(), scope),)
+                # Prepared transport contracts are a separate integration
+                # seam here; exercise the real cold proof/lease/start binding.
+                monkeypatch.setattr(scheduling, "validate_prepared_program_session",
+                    lambda actual, cohorts: (tuple(cohorts), definition, actual._program_strategy))
+                with pytest.raises(RuntimeError, match="fresh adopted typed preparation"):
+                    await controller.bind_prepared_program_session(work,
+                        checkpoint_connection_factory=lambda: None, checkpoint_concurrency=1)
+                await controller.bind_recovered_program_session(work,
+                    checkpoint_connection_factory=lambda: None, checkpoint_concurrency=1)
+                bound = await launch.require_bound_program_start(controller)
+                assert bound.recovered is proof and bound.recovered.packet is packet
+                executed = []
+                async def evaluate(cohorts, **options):
+                    assert cohorts == work and options == dict(initial_packet=packet, terminal=True)
+                    executed.append("continued")
+                    return SimpleNamespace(status="evaluated")
+                async def publish(**options): pass
+                async def finish(status):
+                    assert status == "completed"
+                monkeypatch.setattr(controller, "run_prepared_program_session", evaluate)
+                monkeypatch.setattr(controller, "_publish", publish)
+                monkeypatch.setattr(controller, "_finish", finish)
+                await launch.run_bound_program_engine(controller)
+                assert executed == ["continued"] and controller._program_launch_plan is None
+                runtime.strategy._selection_clocks["after-adoption"] = (at, ())
+                assert "after-adoption" not in packet_actor._selection_clocks
+                with pytest.raises(RuntimeError, match="changed before continuation"):
+                    adoption.require_recovered_program_controller(controller)
                 assert controller._source_cursor["boundary_ms"] == boundary_ms
                 assert controller._fixed_v4_lease is lease and controller.current_time == at
-                assert controller._task is None and controller.status == "created"
+                assert controller._task is None
                 assert controller.created_at == at
             lease.assert_current()
             assert not controller._program_startup_active

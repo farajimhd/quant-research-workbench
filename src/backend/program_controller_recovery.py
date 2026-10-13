@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 from .qmd_columnar_history_transport import _owned_worker
 from .program_financial_recovery import qualify_program_financial_runtime
-from .program_policy_recovery import verify_recovered_program_positions, program_policy_fingerprint
+from .program_policy_recovery import verify_recovered_program_positions, program_policy_fingerprint, clone_recovered_program_actor
 
 _ADOPTION_PROOF = object()
 
@@ -21,6 +21,47 @@ class RecoveredProgramController:
     anchor: object
     configuration_hash: str
     _proof: object = field(repr=False)
+
+
+def _recovered_owners(controller):
+    runtime, publisher = controller._runtime, controller._journal_publisher
+    return (controller.definition, runtime, controller._program_strategy, controller._journal,
+        publisher, publisher.writer, controller._program_signal_runtime, runtime.broker,
+        runtime.portfolio, runtime.order_manager, controller._fixed_v4_lease,
+        controller._fixed_keeper_session, controller._program_broker_contract,
+        runtime.config, runtime.intent_planner)
+
+
+def require_recovered_program_controller(controller):
+    """Recheck the adopted baseline before binding or starting continuation."""
+    from .backtest_program_journal_bootstrap import _configuration_hash
+    proof = getattr(controller, "_program_recovered_controller", None)
+    if (type(proof) is not RecoveredProgramController or proof._proof is not _ADOPTION_PROOF
+            or proof.controller is not controller):
+        raise RuntimeError("Programme continuation lacks its adopted cold controller")
+    if (any(before is not after for before, after in zip(proof.owners, _recovered_owners(controller), strict=True))
+            or controller._runtime_finished or controller._stop_requested
+            or controller._program_dispatch_failure is not None
+            or controller.current_time != proof.anchor.completed_at
+            or controller._runtime.last_event_time != proof.anchor.completed_at
+            or controller._journal.latest_sequence(controller.run_id) != proof.packet.journal_sequence
+            or controller._journal.pending_record_count
+            or controller._journal_publisher.fenced_sequence != proof.packet.journal_sequence
+            or controller._journal_publisher._batch_id != proof.anchor.batch_id
+            or controller._journal_publisher._source_cursor != proof.anchor.source_cursor
+            or _configuration_hash(controller.definition) != proof.configuration_hash
+            or program_policy_fingerprint(controller._program_strategy) != proof.packet.state_hash
+            or program_policy_fingerprint(proof.packet.actor) != proof.packet.state_hash):
+        raise RuntimeError("Programme adopted cold controller changed before continuation")
+    source = controller._program_signal_runtime
+    boundary = source.typed_source_boundary(proof.anchor.completed_at)
+    if (source.typed_source_cursor() != boundary
+            or source.typed_source_commit_hashes()[:boundary[0]] != proof.packet.source_commit_hashes
+            or controller._source_cursor.get("session_date") != proof.anchor.session_date
+            or controller._source_cursor.get("boundary_ms") != proof.anchor.boundary_ms
+            or controller._source_cursor.get("sequence") != proof.anchor.market_sequence):
+        raise RuntimeError("Programme adopted cold source cursor changed before continuation")
+    return proof
 
 
 async def adopt_recovered_program_controller(controller, *, assembly, evidence,
@@ -137,6 +178,8 @@ async def _adopt_recovered_program_controller(controller, *, assembly, evidence,
         run_id=controller.run_id, checkpoint_sequence=prefix.last_sequence,
         expected_content_hash=financial.broker.snapshot["content_hash"])
     boundary = source.typed_source_boundary(at)
+    if source.typed_source_cursor() != boundary:
+        raise ValueError("Programme cold adoption source is not cut at its completed checkpoint")
     hashes = source.typed_source_commit_hashes()[:boundary[0]]
     await _owned_worker(lease.assert_current)
     synchronized = await _owned_worker(qualify_program_financial_runtime, runtime, financial.portfolio,
@@ -156,14 +199,16 @@ async def _adopt_recovered_program_controller(controller, *, assembly, evidence,
         broker_ledgers=dict(zip(accounts, results[len(accounts):-2], strict=True)),
         broker_executions=results[-2], broker_orders=results[-1], order_manager=runtime.order_manager,
         portfolio=runtime.portfolio, portfolio_recovery=synchronized, observations=observations, population=population)
+    installed_actor = await _owned_worker(clone_recovered_program_actor, packet)
     await _owned_worker(lease.assert_current)
     require_scope()
-    if source.typed_source_boundary(at) != boundary or source.typed_source_commit_hashes()[:boundary[0]] != hashes:
+    if (source.typed_source_boundary(at) != boundary or source.typed_source_cursor() != boundary
+            or source.typed_source_commit_hashes()[:boundary[0]] != hashes):
         raise RuntimeError("Programme cold adoption source advanced during qualification")
     # No await below: transfer the same objects whose financial and policy
     # projections passed; no alternative position or OMS state is introduced.
-    runtime.strategy = packet.actor
-    controller._strategy = controller._program_strategy = packet.actor
+    runtime.strategy = installed_actor
+    controller._strategy = controller._program_strategy = installed_actor
     controller._runtime, controller._journal, controller._planner = runtime, journal, runtime.intent_planner
     controller._journal_writer, controller._journal_publisher = assembly.writer, publisher
     controller._fixed_v4_lease, controller._fixed_keeper_session = lease, keeper_session
@@ -173,8 +218,7 @@ async def _adopt_recovered_program_controller(controller, *, assembly, evidence,
         sequence=anchor.market_sequence)
     controller._frame_cursor = {}
     controller.created_at = created_at
-    owners = (definition, runtime, packet.actor, journal, publisher, assembly.writer, source,
-        runtime.broker, runtime.portfolio, runtime.order_manager, lease, keeper_session, broker_contract)
+    owners = _recovered_owners(controller)
     proof = RecoveredProgramController(controller, owners, packet, anchor, configuration_hash, _ADOPTION_PROOF)
     controller._program_recovered_controller = proof
     return proof
