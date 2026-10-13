@@ -186,6 +186,14 @@ units and drains active workers/checkpoint writes. An interrupted stage phase
 cannot reach final publication. Declared predecessor checks run before new bar
 work; absent predecessor/bootstrap certification remains a separate required
 gate, and the coordinator does not silently infer it.
+`market_day_predecessor_absence.certify_empty_market_day_predecessors` provides
+the explicit absence gate through bounded SELECT-only catalogue reads for the
+immutable calculation/rule profile. Any compatible published technical receipt
+blocks an absence claim, including a receipt that requires further native
+audit. The producer rechecks supplied absence evidence before day work and
+again before final publication; a newly published parent revokes bootstrap
+eligibility. Existing typed seed records still express the original bootstrap
+policy. No table, storage fallback or alternative numerical seed rule is added.
 
 Managed app shutdown disposes an unused staged programme handoff before closing
 its policy reader. It drains runtime background-task and typed journal cleanup,

@@ -15,7 +15,7 @@ class MarketDayPredecessorLedger:
     require fully audited products and final Keeper attestations. A missing
     declaration is a blocker, never an inferred first-bar/bootstrap policy.
     """
-    def __init__(self, current, definition, parents):
+    def __init__(self, current, definition, parents, *, empty_predecessors=None):
         from scripts.build_market_day import digest
         if (type(current) is not CompletedMarketDayLedger or type(definition) is not dict
                 or type(parents) is not tuple or len(parents) > 256
@@ -34,6 +34,17 @@ class MarketDayPredecessorLedger:
                 raise ValueError('Declared predecessor violates chronological source ordering')
         self.predecessors = MappingProxyType(predecessors)
         self.splits = tuple(MappingProxyType(dict(row)) for row in definition['plan']['splits'])
+        self.empty = frozenset()
+        if empty_predecessors is not None:
+            from .market_day_predecessor_absence import EmptyMarketDayPredecessors
+            if type(empty_predecessors) is not EmptyMarketDayPredecessors:
+                raise TypeError('Bootstrap declarations require native predecessor absence proof')
+            empty_predecessors.verify()
+            allowed = {(predecessors[day], ticker) for day, ticker in planned if predecessors[day] is not None}
+            if (empty_predecessors.build_id != current.build_id or empty_predecessors.profile != self.profile
+                    or not set(empty_predecessors.scopes) <= allowed):
+                raise ValueError('Empty predecessor proof differs from the immutable source plan')
+            self.empty = frozenset(empty_predecessors.scopes)
         ledgers, candidates = {current.build_id: current}, {}
         for packet in parents:
             if type(packet) is not tuple or len(packet) != 2:
@@ -70,6 +81,8 @@ class MarketDayPredecessorLedger:
                     attempt_id=unit['attempt_id'], source_hash=unit['source_hash']))
         self.ledgers = MappingProxyType(ledgers)
         self.selected = MappingProxyType(candidates)
+        if self.empty & set(candidates):
+            raise ValueError('Declared audited and absent predecessor scopes conflict')
 
     def predecessor_for(self, day, ticker):
         day = day.isoformat() if type(day) is date else day
@@ -124,7 +137,11 @@ class MarketDayPredecessorLedger:
                 if unit['attempt_id'] != seed['attempt_id']:
                     raise ValueError('Current predecessor checkpoint has incompatible seed lineage')
                 return [dict(build_id=build_id, attempt_id=unit['attempt_id'], source_hash=unit['source_hash'])]
+            if unit is not None or seed is not None:
+                raise ValueError('Current predecessor checkpoint is incomplete')
         selected = self.selected.get((day, ticker))
         if selected is None:
+            if (day, ticker) in self.empty:
+                return []
             raise ValueError('Predecessor scope is undeclared; bootstrap must not be inferred')
         return [dict(selected)]

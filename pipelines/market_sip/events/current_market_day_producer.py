@@ -12,7 +12,7 @@ from pipelines.market_sip.events.market_day_predecessor import MarketDayPredeces
 
 async def run_current_market_day_producer(definition, checkpoint_writer, *,
         sql_client_factory, checkpoint_reader_factory, source_client_factory,
-        parents, workers, on_progress=None):
+        parents, workers, on_progress=None, empty_predecessors=None):
     """Operate only an explicitly approved build; this function grants no approval.
 
     Fixed workers finish active units on cancellation or peer failure. New
@@ -21,6 +21,7 @@ async def run_current_market_day_producer(definition, checkpoint_writer, *,
     """
     from scripts.build_market_day import digest
     from src.backend.backtest_program_journal_startup import _settle_owned_task
+    from .market_day_predecessor_absence import reverify_empty_market_day_predecessors
     if (type(definition) is not dict or type(checkpoint_writer) is not MarketDayCheckpointWriter
             or any(not callable(factory) for factory in
                 (sql_client_factory, checkpoint_reader_factory, source_client_factory))
@@ -87,7 +88,9 @@ async def run_current_market_day_producer(definition, checkpoint_writer, *,
         by_day.setdefault(unit['source_date'], []).append(unit)
     for day in sorted(by_day):
         selected = tuple(sorted(by_day[day], key=lambda unit: unit['ticker']))
-        registry = MarketDayPredecessorLedger(ledger, definition, parents)
+        if empty_predecessors is not None:
+            await reverify_empty_market_day_predecessors(empty_predecessors, checkpoint_reader_factory)
+        registry = MarketDayPredecessorLedger(ledger, definition, parents, empty_predecessors=empty_predecessors)
         # Resolve declared lineage before spending time on new bar calculation.
         for unit in selected:
             previous = registry.predecessor_for(day, unit['ticker'])
@@ -99,7 +102,7 @@ async def run_current_market_day_producer(definition, checkpoint_writer, *,
                 build_id=build, source_unit=unit, rules=definition['plan']['rules'])
         await phase_pool('bars:' + day, selected, bars)
         ledger = await load_completed_market_day_ledger(checkpoint_reader_factory, build, scopes)
-        registry = MarketDayPredecessorLedger(ledger, definition, parents)
+        registry = MarketDayPredecessorLedger(ledger, definition, parents, empty_predecessors=empty_predecessors)
         async def technical(unit):
             from datetime import date
             return await build_current_market_day_technical(sql_client_factory, checkpoint_writer, registry,
@@ -109,6 +112,8 @@ async def run_current_market_day_producer(definition, checkpoint_writer, *,
     if counts['active'] or counts['queued'] or counts['failed']:
         raise RuntimeError('Current producer cannot publish with unfinished or failed units')
     await report('publication')
+    if empty_predecessors is not None:
+        await reverify_empty_market_day_predecessors(empty_predecessors, checkpoint_reader_factory)
     proof = await publish_current_market_day_build(definition, checkpoint_writer,
         checkpoint_reader_factory=checkpoint_reader_factory, source_client_factory=source_client_factory)
     await report('complete')
