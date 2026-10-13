@@ -20,6 +20,10 @@ def test_measurement_price_context_precedes_launch_and_uses_exchange_calendar():
     assert result['sessions'] and all(day<date(2026,1,2) for day in result['sessions'])
     assert date(2025,12,25) not in result['sessions']
     assert '520' not in query.call_args.args[0] # Bound is a concrete derived date.
+    # UTC midnight can be the previous NY date; the oldest usable measurement
+    # then precedes UTC start by 521 dates while its NY age is only 520 days.
+    from datetime import timedelta
+    assert str(date(2026,1,2)-timedelta(days=521)) in query.call_args.args[0]
     days=price_context_days((date(2026,1,2),date(2026,1,5)),{1:result})
     assert date(2025,12,31) in days and date(2026,1,5) in days
     with pytest.raises(ValueError,match='fingerprint'):
@@ -68,3 +72,5 @@ def test_fresh_sec_source_context_reuses_publication_projection_and_fences_drift
         sql=query.call_args.args[0]
         assert 'sec_bulk_mirror_xbrl_fact_v3' in sql and 'source_context_kind' in sql
         assert 'LIMIT 2049' in sql
+        from datetime import timedelta
+        assert str(date(2026,1,2)-timedelta(days=521)) in sql

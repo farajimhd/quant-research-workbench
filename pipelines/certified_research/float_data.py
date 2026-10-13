@@ -61,7 +61,8 @@ def required_price_sessions(query,database,claim,fundamental_scope,start,end,*,m
     rows=query(f'SELECT DISTINCT period_end FROM {database}.research_facts_v1 WHERE '
         +fundamental_scope.rows_where(receipt['attempt_id'])+f' AND metric_key={metric("SEC public float value")} '
         f"AND context_kind=1 AND status=1 AND unit_key=1 AND basis_unit_key=1 AND period_end IS NOT NULL "
-        f'AND period_end BETWEEN toDate({literal(start-timedelta(days=520))}) AND toDate({literal(end)}) '
+        # UTC range start may still be the prior New York date, where age is evaluated.
+        f'AND period_end BETWEEN toDate({literal(start-timedelta(days=521))}) AND toDate({literal(end)}) '
         f"AND available_at<toDateTime64({literal(end+timedelta(days=1))},6,'UTC') "
         f'ORDER BY period_end LIMIT {maximum_measurements+1}')
     if len(rows)>maximum_measurements:raise ValueError('Float measurement context exceeds its metadata bound')
@@ -99,7 +100,7 @@ def source_price_sessions(query,claim,source_guard,entity_key,cik,source_start,s
     rows=query(f'SELECT DISTINCT period_end FROM ({projected}) WHERE '
         f'metric_key={metric("SEC public float value")} AND context_kind=1 AND status=1 '
         f'AND unit_key=1 AND basis_unit_key=1 AND period_end IS NOT NULL '
-        f'AND period_end BETWEEN toDate({literal(start-timedelta(days=520))}) AND toDate({literal(end)}) '
+        f'AND period_end BETWEEN toDate({literal(start-timedelta(days=521))}) AND toDate({literal(end)}) '
         f"AND available_at<toDateTime64({literal(end+timedelta(days=1))},6,'UTC') "
         f'ORDER BY period_end LIMIT {maximum_measurements+1}')
     if len(rows)>maximum_measurements:raise ValueError('SEC float-price context exceeds its metadata bound')
