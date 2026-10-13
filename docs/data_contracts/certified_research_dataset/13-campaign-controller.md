@@ -28,6 +28,8 @@ Reference campaign producers require global dictionary ownership for shared prov
 
 ## Operator inspection
 
+The `plan --format json` output includes live active-part row/byte counts, compression ratios, physical bytes per stored row and designated-disk free/unreserved capacity. These are physical storage observations, not logical final-row counts or future campaign estimates. Named disks can share a physical volume; their free capacities must not be summed without volume evidence. Projection remains explicitly unqualified until representative normalized product/session pilot rates and staging/merge headroom are measured.
+
 `python -B scripts/prepare_certified_research.py status --dataset-id <UUID> --format json` reads plan/progress/seal metadata without changing it. It explicitly reports `inspection_only`; a stored seal alone is not a fresh data-integrity verification.
 
 ## Verification and remaining integration

@@ -20,7 +20,7 @@ sys.dont_write_bytecode=True
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
-from pipelines.certified_research import contracts,schema,source,short_sql,campaign,acquisition
+from pipelines.certified_research import contracts,schema,source,short_sql,campaign,acquisition,capacity
 
 
 def parse_args(argv=None):
@@ -129,6 +129,7 @@ def main(argv=None):
         # Every query in the inspection path is read-only at the server as well.
         result=inspect_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),args)
         if args.command=='plan':
+            result['storage_inventory']=capacity.inventory(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database)
             end=date.fromisoformat(result['config']['config']['end']) if isinstance(result['config']['config']['end'],str) else result['config']['config']['end']
             result['short_publication_preflight']=short_sql.clock_inventory(
                 lambda sql:client.query(sql+' SETTINGS readonly=1'),args.start_date,end)

@@ -30,6 +30,17 @@ from pipelines.certified_research.universe_publication import UniversePublisher
 
 
 class Contracts(unittest.TestCase):
+    def test_capacity_inventory_preserves_exact_bytes_and_does_not_fabricate_projection(self):
+        from pipelines.certified_research import capacity
+        def query(sql):
+            if 'system.disks' in sql:return [dict(name='live_market_ssd',total_space='10000',free_space='8000',unreserved_space='7000')]
+            return [dict(database='arte',table='bars_v1',rows='10',compressed_bytes='100',uncompressed_bytes='400',disk_bytes='120',parts='1')]
+        result=capacity.inventory(query)
+        self.assertFalse(result['projection_ready'])
+        self.assertEqual(result['tables'][0]['compression_ratio'],4)
+        self.assertEqual(result['tables'][0]['compressed_bytes_per_row'],10)
+        self.assertEqual(result['disks'][0]['unreserved_space'],7000)
+
     def test_calculation_selection_is_independent_of_range_and_resource_identity(self):
         original=c.CampaignConfig(date(2026,1,2),date(2026,1,5))
         extended=replace(original,end=date(2026,10,2),workers=2,query_threads=4)
@@ -502,6 +513,14 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_live_capacity_metadata_covers_source_bytes_and_designated_disks(self):
+        from pipelines.certified_research import capacity
+        result=capacity.inventory(lambda sql:self.client.query(sql+' SETTINGS readonly=1'))
+        self.assertEqual({r['name'] for r in result['disks']},{'live_market_ssd','sip_raw_ssd'})
+        self.assertGreater(sum(r['compressed_bytes'] for r in result['tables'] if r['database']=='market_sip_compact'),0)
+        self.assertTrue(all(r['compressed_bytes']<=r['disk_bytes'] for r in result['tables']))
+        self.assertFalse(result['projection_ready'])
+
     def test_imported_source_statistics_are_read_from_canonical_certificate(self):
         from unittest.mock import patch
         from pipelines.market_sip.flatfiles import download_update_events as updater
