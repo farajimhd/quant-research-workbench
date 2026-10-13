@@ -105,7 +105,8 @@ def test_startup_reservation_blocks_foreign_staging_and_launch(monkeypatch):
 
 
 @pytest.mark.parametrize("failure", [None, "controller", "funnel", "cancel"])
-def test_app_startup_handoff_reserves_before_preparation_and_releases_on_failure(monkeypatch, failure):
+@pytest.mark.parametrize("recovered", [False, True])
+def test_app_startup_handoff_reserves_before_preparation_and_releases_on_failure(monkeypatch, failure, recovered):
     selector = selection.ProgramConfigurationSelectionService(
         approved_selections={"00000000-0000-0000-0000-000000000001": "a" * 64},
         selection_client_factory=lambda: None, release_client_factory=lambda: None,
@@ -135,8 +136,10 @@ def test_app_startup_handoff_reserves_before_preparation_and_releases_on_failure
         async def complete(actual_service, actual_controller, **actual):
             assert (actual_service, actual_controller) == (service, controller)
             assert selector._preparing and selector._preparation_controller is controller
-            assert actual == {key: value for key, value in kwargs.items()
+            expected = {key: value for key, value in kwargs.items()
                 if key not in ("assignments", "listing_by_assignment", "liquidity_resolution_ms")}
+            if recovered: expected["evidence"] = definition
+            assert actual == expected
             calls.append("funnel")
             if failure == "funnel": raise RuntimeError("funnel failed")
             # Only the startup reservation is isolated here; the native funnel
@@ -144,13 +147,14 @@ def test_app_startup_handoff_reserves_before_preparation_and_releases_on_failure
             selector._prepared = (service, controller)
             return controller
 
-        monkeypatch.setattr(selector, "prepare_controller", prepare)
-        monkeypatch.setattr(flow, "complete_program_app_preparation", complete)
-        pending = asyncio.create_task(selector.prepare_app_controller(service, definition, **kwargs))
+        monkeypatch.setattr(selector, "prepare_recovered_controller" if recovered else "prepare_controller", prepare)
+        monkeypatch.setattr(flow, "complete_recovered_program_app_preparation" if recovered else "complete_program_app_preparation", complete)
+        prepare_app = selector.prepare_recovered_app_controller if recovered else selector.prepare_app_controller
+        pending = asyncio.create_task(prepare_app(service, definition, **kwargs))
         try:
             await asyncio.wait_for(entered.wait(), timeout=5)
             with pytest.raises(ReplayRunCapacityError, match="already occupied"):
-                await selector.prepare_app_controller(service, definition, **kwargs)
+                await prepare_app(service, definition, **kwargs)
             assert calls == ["controller"]
             if failure == "cancel":
                 pending.cancel()
@@ -163,7 +167,7 @@ def test_app_startup_handoff_reserves_before_preparation_and_releases_on_failure
                 assert await pending is controller
                 assert selector._prepared == (service, controller)
                 with pytest.raises(ReplayRunCapacityError, match="already occupied"):
-                    await selector.prepare_app_controller(service, definition, **kwargs)
+                    await prepare_app(service, definition, **kwargs)
         finally:
             release.set()
             if not pending.done():

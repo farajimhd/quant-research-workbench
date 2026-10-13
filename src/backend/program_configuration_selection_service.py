@@ -139,6 +139,30 @@ class ProgramConfigurationSelectionService:
             raise RuntimeError("Programme resume preparation lost its installed app authority")
         return controller
 
+    async def prepare_recovered_app_controller(self, run_service, evidence, *, assignments,
+            listing_by_assignment, liquidity_resolution_ms, **preparation):
+        """Reserve and compose the existing cold app handoff without launch."""
+        from .program_app_preparation import complete_recovered_program_app_preparation
+        from .replay_run_service import ReplayRunCapacityError
+        if program_configuration_selection_service() is not self:
+            raise ValueError("Programme recovery requires its installed app authority")
+        with self._prepared_lock:
+            if self._preparing or self._prepared is not None or self._launching is not None:
+                raise ReplayRunCapacityError("App programme handoff is already occupied")
+            self._preparing = True
+        try:
+            controller = await self.prepare_recovered_controller(run_service, evidence,
+                assignments=assignments, listing_by_assignment=listing_by_assignment,
+                liquidity_resolution_ms=liquidity_resolution_ms)
+            with self._prepared_lock:
+                self._preparation_controller = controller
+            return await complete_recovered_program_app_preparation(run_service, controller,
+                evidence=evidence, **preparation)
+        finally:
+            with self._prepared_lock:
+                self._preparation_controller = None
+                self._preparing = False
+
     async def launch_controller(self, run_service, controller):
         """Recheck app approval, then use the existing fully bound native gate.
 

@@ -65,3 +65,95 @@ async def complete_program_app_preparation(run_service, controller, *, cohorts, 
             except BaseException as cleanup_error:
                 raise BaseExceptionGroup("Programme preparation and cleanup failed", [exc, cleanup_error])
         raise
+
+
+async def complete_recovered_program_app_preparation(run_service, controller, *,
+        evidence, cohorts, scopes, journal_scope, source, packet, population,
+        oms_image, broker_image, intent_planner, keeper_session, lease,
+        checkpoint_connection_factory, checkpoint_concurrency, history_post=None):
+    """Compose the existing cold readers/runtime/admission preparation path.
+
+    Operational authorization remains required. This opens only the supplied
+    resumed writer lane; no new context, producer, schema or run task starts.
+    Caller-owned readers, source publisher and unadopted leases remain owned by
+    the caller. Successful adoption transfers the writer/runtime/lease/session.
+    """
+    from .backtest_program_journal_bootstrap import assemble_resumed_program_v4_journal
+    from .program_runtime_recovery import build_recovered_program_runtime
+    from .backtest_v4_run_context import historical_strategy_one_portfolio_profiles
+    from .backtest_program_journal_startup import _close_unadopted_assembly
+    selector = program_configuration_selection_service()
+    if (selector is None or not isinstance(journal_scope, Mapping)
+            or not callable(checkpoint_connection_factory) or type(checkpoint_concurrency) is not int
+            or not 1 <= checkpoint_concurrency <= 8):
+        raise ValueError("Recovered app preparation lacks explicit native authorities")
+    journal_scope = dict(journal_scope)
+    signature(assemble_resumed_program_v4_journal).bind(**journal_scope)
+    if (journal_scope["recovery_evidence"] is not evidence
+            or journal_scope["release"] is not controller._program_strategy.program_release):
+        raise ValueError("Recovered app preparation differs from its joined evidence")
+    await selector._review_controller(run_service, controller)
+    if controller._runtime is not None or controller._journal is not None:
+        raise ValueError("Recovered app preparation requires its unadopted controller")
+    _, groups = historical_strategy_one_portfolio_profiles(controller.definition.configuration_revision["payload"])
+    job, result = None, None
+    def build():
+        assembly = None
+        try:
+            assembly, anchor = assemble_resumed_program_v4_journal(**journal_scope)
+            runtime = build_recovered_program_runtime(journal_scope["runtime_config"], controller._program_strategy,
+                assembly.journal, portfolio_recovery=evidence.financial.portfolio,
+                oms_image=oms_image, broker_image=broker_image,
+                simulation_config=journal_scope["broker_contract"].config,
+                completed_at=evidence.financial.completed_at, intent_planner=intent_planner,
+                strategy_configuration=controller.definition.configuration_revision["payload"]["strategy"], groups=groups)
+            return assembly, anchor, runtime
+        except BaseException as exc:
+            if assembly is not None:
+                errors = []
+                for owned in (assembly.writer, assembly.journal):
+                    try: owned.close()
+                    except BaseException as error: errors.append(error)
+                if errors:
+                    raise BaseExceptionGroup("Recovered runtime build and cleanup failed", [exc, *errors])
+            raise
+    try:
+        work = await prepare_program_session_input_plan(controller, cohorts, scopes=scopes, history_post=history_post)
+        job = asyncio.create_task(asyncio.to_thread(build))
+        result = await asyncio.shield(job)
+        assembly, anchor, runtime = result
+        await runtime.initialize(record_lifecycle=False)
+        await controller.adopt_program_cold_runtime(assembly=assembly, evidence=evidence, runtime=runtime,
+            packet=packet, source=source, population=population, oms_image=oms_image, anchor=anchor,
+            lease=lease, keeper_session=keeper_session, broker_contract=journal_scope["broker_contract"])
+        await controller.bind_recovered_program_session(work,
+            checkpoint_connection_factory=checkpoint_connection_factory, checkpoint_concurrency=checkpoint_concurrency)
+        return await selector.stage_controller(run_service, controller)
+    except BaseException as exc:
+        if result is None and job is not None:
+            try: result = await _settle_owned_task(job)
+            except BaseException as worker_error:
+                # The worker closes any partial assembly itself. Preserve its
+                # failure as well as cancellation of the waiting caller.
+                if worker_error is not exc:
+                    raise BaseExceptionGroup("Recovered preparation and worker failed", [exc, worker_error])
+        controller._program_launch_plan = None
+        controller._program_feature_cache = None
+        if result is not None:
+            assembly, _, runtime = result
+            async def close():
+                errors = []
+                try: await runtime.close_background_tasks()
+                except BaseException as error: errors.append(error)
+                try:
+                    if controller._runtime is runtime:
+                        controller._program_dispatch_failure = exc
+                        await controller._close_fixed_journal()
+                    else:
+                        await _close_unadopted_assembly(assembly)
+                except BaseException as error: errors.append(error)
+                if errors: raise BaseExceptionGroup("Recovered preparation cleanup failed", errors)
+            try: await _settle_owned_task(asyncio.create_task(close()))
+            except BaseException as error:
+                raise BaseExceptionGroup("Recovered preparation and cleanup failed", [exc, error])
+        raise
