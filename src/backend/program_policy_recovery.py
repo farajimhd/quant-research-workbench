@@ -223,6 +223,7 @@ def _program_policy_fingerprint_value(actor):
         target_fraction=actor.target_state.fraction, adds=pairs(ledger._add_intents, sets=True),
         episode_executions=pairs(ledger._episode_executions, sets=True),
         closed_executions=pairs(ledger._closed_episode_by_execution), closed_net=pairs(ledger._closed_net),
+        episode_cashflow=pairs(ledger._episode_cashflow), closed_cashflow=pairs(ledger._closed_cashflow),
         targets=pairs(actor.target_state._targets), entry_intents=pairs(actor.target_state._entry_intents),
         advanced_intents=pairs(actor.target_state._advanced_intents, sets=True),
         trail=pairs(actor.trail_state._water), clocks=pairs(actor._selection_clocks))

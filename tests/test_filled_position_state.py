@@ -227,3 +227,28 @@ def test_exact_prices_do_not_change_decimal_quantity_or_fee_contracts():
     with pytest.raises(ValueError, match="Decimal"):
         state.apply_fee(FeeFact("e1", D(".00000000001"), "USD"))
     assert state.pending_fee_count == 1
+
+
+def test_closed_episode_uses_exact_cashflows_after_repeating_average_and_late_fee():
+    state = FilledPositionState()
+    facts = [fill(q='10', price='10'),
+        fill(execution='e2', intent='add', action='add_long', q='5', price='12', second=1),
+        fill(execution='e3', intent='reduce', action='reduce_long', q='5', price='11', second=2),
+        fill(execution='e4', intent='exit', action='exit', q='10', price='10.9', second=3)]
+    for fact in facts:
+        state.apply_fill(fact)
+        if fact is not facts[-1]:
+            state.apply_fee(FeeFact(fact.execution_id, D(1), 'USD'))
+    assert state.positions[facts[0].key].realized_gross_pnl == 4
+    assert state.positions[facts[0].key].winning_positions == 1
+    state.apply_fee(FeeFact('e4', D(1), 'USD'))
+    metrics = state.terminal_financial_metrics()
+    assert metrics['net_pnl'] == metrics['worst_position_pnl'] == 0
+    assert metrics['winning_positions'] == 0 and metrics['closed_positions'] == 1
+    # Replay the exact normalized prefix with all fees after the fills.
+    recovered = FilledPositionState()
+    for fact in facts: recovered.apply_fill(fact)
+    for fact in reversed(facts): recovered.apply_fee(FeeFact(fact.execution_id, D(1), 'USD'))
+    assert recovered.terminal_financial_metrics() == metrics
+    assert recovered._episode_cashflow == state._episode_cashflow
+    assert recovered._closed_cashflow == state._closed_cashflow

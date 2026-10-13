@@ -25,6 +25,24 @@ def _exact_math(function):
     return call
 
 
+def _cash_sum(values):
+    """Add finite decimal cash flows without a fixed precision rounding tail."""
+    values = tuple(values)
+    if not values:
+        return Decimal(0)
+    with localcontext() as context:
+        context.prec = max(80, max(value.adjusted() for value in values)
+            - min(value.as_tuple().exponent for value in values) + len(str(len(values))) + 2)
+        return sum(values, Decimal(0))
+
+
+def _fill_cash(fact):
+    with localcontext() as context:
+        context.prec = len(fact.quantity.as_tuple().digits) + len(fact.price.as_tuple().digits) + 1
+        cash = fact.quantity * fact.price
+    return cash.copy_negate() if fact.action in {'enter_long', 'add_long'} else cash
+
+
 def _number(value, *, positive=False) -> Decimal:
     if not isinstance(value, Decimal) or not value.is_finite() or (positive and value <= 0):
         raise ValueError("Execution money/quantity needs a finite typed Decimal")
@@ -77,7 +95,7 @@ class FilledPosition:
     @property
     @_exact_math
     def net_realized_pnl(self):
-        return self.realized_gross_pnl - self.fees
+        return _cash_sum((self.realized_gross_pnl, self.fees.copy_negate()))
 
     @_exact_math
     def age_seconds(self, at: datetime) -> Decimal:
@@ -137,6 +155,8 @@ class FilledPositionState:
         self._episode_executions: dict[tuple, set[str]] = {}
         self._closed_episode_by_execution: dict[str, int] = {}
         self._closed_net: dict[int, Decimal] = {}
+        self._episode_cashflow: dict[tuple, Decimal] = {}
+        self._closed_cashflow: dict[tuple, Decimal] = {}
 
     @property
     def positions(self) -> Mapping[tuple, FilledPosition]:
@@ -170,7 +190,7 @@ class FilledPositionState:
         reductions = {(fact.key, fact.intent_id) for fact in self._fills.values()
                       if fact.action in {"reduce_long", "take_profit"}}
         return MappingProxyType(dict(
-            net_pnl=sum((position.net_realized_pnl for position in positions.values()), Decimal(0)),
+            net_pnl=_cash_sum(position.net_realized_pnl for position in positions.values()),
             closed_positions=closed, filled_batches=closed,
             add_count=len(adds), reduce_count=len(reductions),
             winning_positions=sum(position.winning_positions for position in positions.values()),
@@ -219,6 +239,7 @@ class FilledPositionState:
                 values.update(adds=0, episode_net_pnl=Decimal(0))
                 self._add_intents[fact.key] = set()
                 self._episode_executions[fact.key] = set()
+                self._episode_cashflow[fact.key] = Decimal(0)
             if fact.action == "add_long" and fact.intent_id not in self._add_intents[fact.key]:
                 values["adds"] += 1
                 self._add_intents[fact.key].add(fact.intent_id)
@@ -231,14 +252,23 @@ class FilledPositionState:
                 episode_net_pnl=state.episode_net_pnl + gain,
                 last_management_fill_at=fact.filled_at)
         self._episode_executions[fact.key].add(fact.execution_id)
+        self._episode_cashflow[fact.key] = _cash_sum((self._episode_cashflow[fact.key], _fill_cash(fact)))
         if values["quantity"] == 0:
             episode = len(self._closed_net)
-            self._closed_net[episode] = values["episode_net_pnl"]
+            # A closed episode has no cost basis left. Use its actual cash
+            # flows, so repeating average-price division cannot create P&L or
+            # turn a truly break-even position into a win/loss.
+            gross = self._episode_cashflow[fact.key]
+            net = _cash_sum((gross, *(self._fees[identity].commission.copy_negate()
+                for identity in self._episode_executions[fact.key] if identity in self._fees)))
+            self._closed_cashflow[fact.key] = _cash_sum((self._closed_cashflow.get(fact.key, Decimal(0)), gross))
+            self._closed_net[episode] = net
             for execution_id in self._episode_executions[fact.key]:
                 self._closed_episode_by_execution[execution_id] = episode
             values.update(average_price=Decimal(0), opened_at=None,
+                realized_gross_pnl=self._closed_cashflow[fact.key], episode_net_pnl=net,
                 closed_positions=state.closed_positions + 1,
-                winning_positions=state.winning_positions + int(values["episode_net_pnl"] > 0))
+                winning_positions=state.winning_positions + int(net > 0))
         projected = FilledPosition(**values)
         self._positions[fact.key] = projected
         self._fills[fact.execution_id] = fact
@@ -264,7 +294,7 @@ class FilledPositionState:
         episode = self._closed_episode_by_execution.get(fact.execution_id)
         if episode is not None:
             old = self._closed_net[episode]
-            new = old - fact.commission
+            new = _cash_sum((old, fact.commission.copy_negate()))
             self._closed_net[episode] = new
             values["winning_positions"] += int(new > 0) - int(old > 0)
         else:

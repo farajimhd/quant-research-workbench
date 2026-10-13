@@ -384,6 +384,20 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                         assert [item.snapshot["boundary_ms"] for item in broker_checkpoints] == [
                             (first_bucket + offset) * 1000 - 14400000 for offset in (2, 7, 8)]
                         return
+                    # Read the native processed OMS observation at the same
+                    # financial capture used by independent qualification.
+                    # The observer does not dispatch, reconcile or change fills.
+                    from src.backend import program_clock_financial_basis as clock_basis
+                    native_capture = clock_basis.capture_program_clock_financial_basis
+                    measured_orders = []
+                    async def observed_capture(owner, *, at):
+                        capture = await native_capture(owner, at=at)
+                        position = owner._program_strategy.position_for('assignment')
+                        measured_orders.append(((position.account_id, position.strategy_id,
+                            position.assignment_id, position.listing_id),
+                            owner.program_order_observation(assignment_id='assignment', at=at)))
+                        return capture
+                    monkeypatch.setattr(clock_basis, 'capture_program_clock_financial_basis', observed_capture)
                     session = await controller.run_prepared_program_session(work, terminal=True)
                     assert session.status == "evaluated" and session.completed_cohorts == 2
                     assert persisted.tables.get("trading_execution_exact_price_v1")
@@ -420,6 +434,14 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                     assert not controller._journal.unfenced_records()
                     executions = await controller._runtime.broker.trades()
                     assert executions and sum(row.commission for row in executions) >= 1.
+                    from src.backend.filled_session_measures import project_filled_session_measures_async
+                    measured = await project_filled_session_measures_async(actor.execution_state,
+                        block.market, tuple(measured_orders), start_at=start_at, stop_at=stop_at, maximum_rows=1000)
+                    from src.trading_runtime.optimized_strategy_reference import METRICS
+                    assert set(measured) == set(METRICS)
+                    assert measured['net_pnl'] == actor.position_for('assignment').net_realized_pnl
+                    assert measured['capital_dollar_seconds'] > 0 and measured['stop_risk_dollar_seconds'] >= 0
+                    assert 0 <= measured['inactivity_fraction'] <= 1 and measured['drawdown'] >= 0
                     if partial_fills == "multiple":
                         assert_multiple_entry_fill_geometry(actor, executions)
                     assert controller._program_dispatch_failure is None
