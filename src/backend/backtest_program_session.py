@@ -3,7 +3,7 @@
 Preparation remains in QMD/scanner/Signal Stream producers and the admitted
 compute funnel. This scheduler neither reads research files nor builds features.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from collections.abc import Mapping
 from datetime import timedelta
@@ -111,6 +111,8 @@ async def run_prepared_program_session(controller, cohorts, *, initial_packet=No
     controller._program_evaluated_terminal = None
     packet, completed, liquidity, clocks, decisions = initial_packet, 0, 0, 0, 0
     try:
+        if controller.current_time is not None:
+            work = await _continue_fenced_session_work(controller, work, initial_packet)
         for index, unit in enumerate(work):
             if controller._stop_requested:
                 return ProgramSessionResult("stopped", completed, len(work), liquidity, clocks, decisions, packet)
@@ -135,6 +137,79 @@ async def run_prepared_program_session(controller, cohorts, *, initial_packet=No
     finally:
         controller._program_session_active = False
         controller._program_session_task = None
+
+
+async def _continue_fenced_session_work(controller, work, packet):
+    """Retain the original feature origin after an owned completed cursor.
+
+    This is a continuation gate for an already adopted native runtime, never
+    cold-owner admission. Unfenced or merely timestamped state cannot skip work.
+    """
+    from .program_policy_recovery import (RecoveredProgramPolicy, _RECOVERY_PROOF,
+        _ProgramPolicyContinuationSeal, program_policy_fingerprint)
+    from .backtest_typed_publisher import BacktestTypedJournalPublisher
+    from .backtest_v4_keeper_lease import BacktestV4KeeperLease
+    from .qmd_columnar_history_transport import _owned_worker
+    from .backtest_market_data import market_day_boundary, SESSION_OPEN_OFFSET_MS
+    from .signal_stream_runtime_service import SignalStreamRuntime
+    seal = getattr(packet, "_continuation_seal", None)
+    runtime, actor, source = controller._runtime, controller._program_strategy, controller._program_signal_runtime
+    journal, publisher, lease = controller._journal, controller._journal_publisher, controller._fixed_v4_lease
+    at = controller.current_time
+    market_cursor = tuple(sorted(controller._source_cursor.items()))
+    writer = getattr(publisher, "writer", None)
+    if (type(packet) is not RecoveredProgramPolicy or packet._proof is not _RECOVERY_PROOF
+            or type(seal) is not _ProgramPolicyContinuationSeal or seal.token is not _RECOVERY_PROOF
+            or (packet.run_id, packet.journal_sequence, packet.execution_count, packet.completion_count,
+                tuple(sorted(packet.completed_source_sequences.items())), packet.source_commit_hashes, packet.state_hash)
+               != (seal.run_id, seal.journal_sequence, seal.execution_count, seal.completion_count,
+                   seal.completed, seal.source_hashes, seal.state_hash)
+            or runtime is None or runtime.strategy is not actor or runtime.journal is not journal
+            or runtime.last_event_time != at or type(source) is not SignalStreamRuntime
+            or type(publisher) is not BacktestTypedJournalPublisher or publisher.journal is not journal
+            or publisher._error is not None or publisher._terminal_task is not None
+            or publisher.exact_oms_prices is not True
+            or publisher._task is not None and not publisher._task.done()
+            or publisher.fenced_sequence != packet.journal_sequence
+            or journal.latest_sequence(controller.run_id) != packet.journal_sequence or journal.pending_record_count
+            or packet.run_id != controller.run_id
+            or packet.state_hash != program_policy_fingerprint(actor)
+            or packet.state_hash != program_policy_fingerprint(packet.actor)
+            or type(lease) is not BacktestV4KeeperLease or lease.run_id != controller.run_id
+            or getattr(getattr(publisher.writer, "_client", None), "backtest_v4_lease", None) is not lease):
+        raise ValueError("Programme continuation lacks its owned completed policy fence")
+    cursor = source.typed_source_cursor()
+    boundary = source.typed_source_boundary(at)
+    if packet.source_commit_hashes != source.typed_source_commit_hashes()[:boundary[0]]:
+        raise ValueError("Programme continuation source prefix differs from its policy fence")
+    elapsed = at - market_day_boundary(controller.definition.session_date, 0)
+    micros = (elapsed.days * 86400 + elapsed.seconds) * 1000000 + elapsed.microseconds
+    if micros % 1000000:
+        raise ValueError("Programme continuation requires a completed whole-second cursor")
+    bucket = micros // 1000000 + SESSION_OPEN_OFFSET_MS // 1000
+    if not work[0].first_bucket <= bucket < work[-1].stop_bucket:
+        raise ValueError("Programme continuation cursor is outside remaining session coverage")
+    if (controller._source_cursor.get("session_date") != controller.definition.session_date.isoformat()
+            or controller._source_cursor.get("boundary_ms") != micros // 1000):
+        raise ValueError("Programme continuation lacks its completed market cursor")
+    await _owned_worker(lease.assert_current)
+    if (controller._runtime is not runtime or controller._program_strategy is not actor
+            or controller._journal is not journal or controller._journal_publisher is not publisher
+            or controller._fixed_v4_lease is not lease or controller._program_signal_runtime is not source
+            or controller.current_time != at or runtime.last_event_time != at
+            or tuple(sorted(controller._source_cursor.items())) != market_cursor
+            or source.typed_source_cursor() != cursor or source.typed_source_boundary(at) != boundary
+            or packet.source_commit_hashes != source.typed_source_commit_hashes()[:boundary[0]]
+            or journal.latest_sequence(controller.run_id) != packet.journal_sequence or journal.pending_record_count
+            or publisher.fenced_sequence != packet.journal_sequence
+            or publisher.writer is not writer or publisher._error is not None
+            or publisher._terminal_task is not None
+            or publisher._task is not None and not publisher._task.done()
+            or program_policy_fingerprint(actor) != packet.state_hash
+            or program_policy_fingerprint(packet.actor) != packet.state_hash):
+        raise RuntimeError("Programme continuation changed during owner verification")
+    remaining = tuple(unit for unit in work if unit.stop_bucket > bucket)
+    return (replace(remaining[0], first_bucket=bucket),) + remaining[1:]
 
 
 def validate_prepared_program_session(controller, cohorts):
