@@ -55,6 +55,21 @@ condition array and nanosecond clocks remain in the certified sidecar. Native
 repair changes only reporting bits and independently verifies preserved fields.
 Counts-only legacy reporting receipts do not qualify as original-clock proof.
 
+Native repair now uses the most common independently audited reporting class
+as its default and materializes only nonempty minority key sets. Complete,
+immutable original-clock/canonical coverage is required before this choice;
+independent final certification still checks every flag and preserved field.
+Uniqueness is counted per ticker and summed, avoiding repeated ticker strings
+in one global ordinal set. Existing active mutations retain their original
+command/marker and are verified rather than resubmitted.
+
+A controlled one-million-row ClickHouse read tested 990,000 timely, 5,000
+delayed and 5,000 unknown rows. The previous formulation exceeded a 64 MiB
+query limit (83.35 MiB requested); the minority formulation passed that same
+limit with zero classification mismatches in 0.159 seconds. It materialized
+10,000 keys instead of 995,000. This is a bounded algorithm check, not a
+production full-day throughput or storage qualification.
+
 Exact temporary and receipt schemas are defined by `raw_table()` and
 `receipt_table()` in `pipelines/market_sip/flatfiles/retained_reporting.py`;
 the durable original-clock schema is `reporting_evidence.ddl()`. Every column

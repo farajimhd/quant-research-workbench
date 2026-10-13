@@ -44,7 +44,8 @@ def certification_sql(target,evidence,day,source_digest,first_sip_us,last_sip_us
     return f"""WITH evaluated AS (
       SELECT *,toUInt8(1) present,{computed} expected_reason FROM {evidence}
       WHERE source_date=toDate({literal(day)})
-    ) SELECT count() n,uniqExact(tuple(e.ticker,e.ordinal)) unique_keys,
+    ) SELECT sum(n) n,sum(unique_keys) unique_keys,sum(bad) bad,sum(timely) timely,sum(delayed) delayed,sum(unknown) unknown FROM (
+      SELECT e.ticker ticker,count() n,uniqExact(e.ordinal) unique_keys,
       countIf(e.present!=1 OR r.present!=1 OR intDiv(r.sip_timestamp_ns,1000)!=e.sip_timestamp_us
         OR r.source_digest!={literal(source_digest)} OR r.reporting_reason!=r.expected_reason
         OR bitAnd(e.event_meta,192)!={expected}) bad,
@@ -52,7 +53,8 @@ def certification_sql(target,evidence,day,source_digest,first_sip_us,last_sip_us
     FROM (SELECT *,toUInt8(1) present FROM {target}
       WHERE sip_timestamp_us BETWEEN {int(first_sip_us)} AND {int(last_sip_us)} AND bitAnd(event_meta,1)=1) e
     FULL OUTER JOIN evaluated r USING(ticker,ordinal)
-    SETTINGS join_algorithm='full_sorting_merge',join_use_nulls=0"""
+    GROUP BY e.ticker)
+    SETTINGS join_algorithm='full_sorting_merge',join_use_nulls=0,optimize_aggregation_in_order=1"""
 
 
 def certify(query,database,target,day,source_digest,first_sip_us,last_sip_us,expected_trades,*,table=TABLE,coverage='historical_trade_reporting_coverage_v1',expected_previous=None):

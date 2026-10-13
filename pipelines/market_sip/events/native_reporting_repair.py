@@ -16,6 +16,19 @@ HEADER='historical_native_reporting_repair_v1'
 VERSION='native-reporting-high-bit-repair-v1'
 
 
+def desired_flags_sql(evaluated,counts):
+    """Build only minority key sets after complete immutable evidence audit."""
+    sizes={0:int(counts['unknown']),64:int(counts['timely']),192:int(counts['delayed'])}
+    if any(n<0 for n in sizes.values()) or sum(sizes.values())!=int(counts['n']):
+        raise ValueError('Reporting class counts do not cover the audited source')
+    default=max(sizes,key=lambda flag:(sizes[flag],-flag))
+    choices=[]
+    for flag,n in sizes.items():
+        if flag==default or n==0:continue
+        choices.extend((f'(ticker,ordinal) IN (SELECT ticker,ordinal FROM {evaluated} WHERE {flags_sql("expected_reason")}={flag})',str(flag)))
+    return 'multiIf('+','.join((*choices,str(default)))+')' if choices else str(default)
+
+
 def header_ddl(database):
     identifier(database)
     return f"""CREATE TABLE IF NOT EXISTS {database}.{HEADER} (
@@ -140,9 +153,7 @@ def step(query,source,expected_evidence_hash,claim,source_guard,*,database='q_li
     if final['bad']:
         if own:raise ValueError('Completed native mutation failed its independent flag verification')
         evaluated=f'(SELECT ticker,ordinal,{computed} expected_reason FROM {evidence} WHERE source_date=toDate({literal(day)}))'
-        delayed=f'(ticker,ordinal) IN (SELECT ticker,ordinal FROM {evaluated} WHERE {flags_sql("expected_reason")}=192)'
-        timely=f'(ticker,ordinal) IN (SELECT ticker,ordinal FROM {evaluated} WHERE {flags_sql("expected_reason")}=64)'
-        desired=f'toUInt8(bitOr(bitAnd(event_meta,63),multiIf({delayed},192,{timely},64,0)))'
+        desired=f'toUInt8(bitOr(bitAnd(event_meta,63),{desired_flags_sql(evaluated,counts)}))'
         guard();query(f'ALTER TABLE {target} UPDATE event_meta={desired} WHERE {selected} AND bitAnd(event_meta,1)=1 '
             f'AND {literal(marker)}={literal(marker)} SETTINGS mutations_sync=0',read=False)
         return dict(status='submitted',marker=marker)

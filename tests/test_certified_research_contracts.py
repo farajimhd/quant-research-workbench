@@ -772,6 +772,15 @@ class Contracts(unittest.TestCase):
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
 
+    def test_million_row_reporting_majority_preserves_all_classes_with_bounded_memory(self):
+        from pipelines.market_sip.events.native_reporting_repair import desired_flags_sql
+        evaluated="(SELECT 'TEST' ticker,toUInt64(number) ordinal,toUInt8(multiIf(number<990000,0,number<995000,4,8)) expected_reason FROM numbers(1000000))"
+        desired=desired_flags_sql(evaluated,dict(n=1000000,timely=990000,delayed=5000,unknown=5000))
+        rows=self.client.query("SELECT count() n,countIf(actual!=expected) bad FROM (SELECT 'TEST' ticker,toUInt64(number) ordinal,"
+            +desired+" actual,toUInt8(multiIf(number<990000,64,number<995000,192,0)) expected FROM numbers(1000000)) "
+            'SETTINGS max_threads=2,max_memory_usage=67108864')
+        self.assertEqual((int(rows[0]['n']),int(rows[0]['bad'])),(1000000,0))
+
     def test_fresh_cli_real_source_gate_blocks_before_campaign_publication(self):
         from types import SimpleNamespace
         from unittest.mock import patch,Mock
@@ -905,6 +914,9 @@ class ClickHouseIntegration(unittest.TestCase):
         from pipelines.market_sip.flatfiles import retained_reporting as retained
         from pipelines.market_sip.events import native_reporting_repair as native
         from pipelines.certified_research import acquisition
+        database=self.database+'_retained'
+        self.client.query('CREATE DATABASE '+database,read=False)
+        self.addCleanup(self.client.query,'DROP DATABASE IF EXISTS '+database+' SYNC',read=False)
         day=date(2026,1,2);first=1767370000000000
         raw=(f"SELECT 'TEST' ticker,toUInt8(65) event_meta,toUInt64({first}+number) sip_timestamp_us,"
             "toUInt32(number+1) sequence_number,toUInt32(1234) price_primary_int,toUInt32(0) price_secondary_int,"
@@ -913,7 +925,7 @@ class ClickHouseIntegration(unittest.TestCase):
             f",toDate('{day}') event_date,toUInt64(({first}+number)*1000+123) sip_timestamp_ns,"
             f"toNullable(toUInt64(({first}+number)*1000-1000)) participant_timestamp_ns,"
             "CAST([] AS Array(String)) reporting_condition_entries,toUInt8(0) reporting_reason FROM numbers(2)")
-        target=self.database+'.events_2026'
+        target=database+'.events_2026'
         self.client.query(f'CREATE TABLE {target} ENGINE=MergeTree ORDER BY (ticker,ordinal) '
             "SETTINGS storage_policy='live_market_ssd' EMPTY AS SELECT toUInt64(sequence_number) ordinal,r.* "
             f'FROM ({raw}) r',read=False)
@@ -925,12 +937,12 @@ class ClickHouseIntegration(unittest.TestCase):
             def check(self):pass
         logs=[]
         def query(sql,*args,**kwargs):
-            sql=sql.replace('q_live.',self.database+'.').replace("database='q_live'",f"database='{self.database}'")
+            sql=sql.replace('q_live.',database+'.').replace("database='q_live'",f"database='{database}'")
             sql=sql.replace('market_sip_compact.events_2026',target)
             logs.append(sql);return self.client.query(sql,*args,**kwargs)
         original_step=native.step
         def step(q,row,frozen,claim,guard):
-            return original_step(q,row,frozen,claim,guard,database=self.database,target=target)
+            return original_step(q,row,frozen,claim,guard,database=database,target=target)
         with TemporaryDirectory(prefix='retained-recovery-',dir='D:/TradingML/runtimes') as directory:
             root=Path(directory);input_file=root/'input.gz';input_file.write_bytes(b'retained fixture')
             paths=SimpleNamespace(cache=root,validate=lambda:None)
@@ -949,7 +961,7 @@ class ClickHouseIntegration(unittest.TestCase):
                 logs.clear()
                 result=retained.recover(query,paths,inv,(day,),Claim(),Event(),emit=lambda *a:None)
                 self.assertEqual(result['reused'],(day,))
-                self.assertFalse(any(sql.startswith(f'INSERT INTO {self.database}.{retained.RAW}') for sql in logs))
+                self.assertFalse(any(sql.startswith(f'INSERT INTO {database}.{retained.RAW}') for sql in logs))
         actual=self.client.query(f'SELECT event_meta,price_primary_int FROM {target} ORDER BY ordinal')
         self.assertEqual([int(r['event_meta']) for r in actual],[65,65])
         self.assertEqual([int(r['price_primary_int']) for r in actual],[1234,1234])
