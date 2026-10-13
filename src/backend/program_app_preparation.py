@@ -47,5 +47,21 @@ async def complete_program_app_preparation(run_service, controller, *, cohorts, 
         controller._program_feature_cache = None
         if controller._journal is not None or controller._runtime is not None:
             controller._program_dispatch_failure = exc
-            await _settle_owned_task(asyncio.create_task(controller._close_fixed_journal()))
+            async def close_owned():
+                errors = []
+                if controller._runtime is not None:
+                    try:
+                        await controller._runtime.close_background_tasks()
+                    except BaseException as error:
+                        errors.append(error)
+                try:
+                    await controller._close_fixed_journal()
+                except BaseException as error:
+                    errors.append(error)
+                if errors:
+                    raise BaseExceptionGroup("Programme preparation cleanup failed", errors)
+            try:
+                await _settle_owned_task(asyncio.create_task(close_owned()))
+            except BaseException as cleanup_error:
+                raise BaseExceptionGroup("Programme preparation and cleanup failed", [exc, cleanup_error])
         raise

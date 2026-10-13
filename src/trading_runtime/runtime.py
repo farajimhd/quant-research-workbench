@@ -2107,13 +2107,7 @@ class TradingRuntime:
                 {"processed_events": self.processed_events},
                 self.last_event_time,
             )
-        tasks = [task for task in (self._broker_stream_task, self._risk_refresh_task) if task]
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        if self.order_manager is not None:
-            await self.order_manager.close()
+        await self.close_background_tasks()
         # Passive final ticks update broker marks without refreshing the UI
         # projector. Finish with one authoritative projection after trading
         # has stopped, so Debug equity matches the terminal broker checkpoint.
@@ -2123,6 +2117,16 @@ class TradingRuntime:
             run_id=self.run_id, category="lifecycle", entity_type="run", entity_id=self.run_id,
             event_time=self.last_event_time, payload={"status": status, "processed_events": self.processed_events},
         )
+
+    async def close_background_tasks(self) -> None:
+        """Release runtime tasks/OMS resources without publishing a run result."""
+        tasks = [task for task in (self._broker_stream_task, self._risk_refresh_task) if task]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if self.order_manager is not None:
+            await self.order_manager.close()
 
     async def _consume_broker_stream(self) -> None:
         stream_provider = getattr(self.broker, "stream_broker_messages")
