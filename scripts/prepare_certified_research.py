@@ -12,18 +12,20 @@ import json
 import os
 from pathlib import Path
 import sys
+from uuid import UUID
 
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
 sys.dont_write_bytecode=True
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
-from pipelines.certified_research import contracts,schema,source,short_sql
+from pipelines.certified_research import contracts,schema,source,short_sql,campaign
 
 
 def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('schema','preflight','plan'))
+    p.add_argument('command',choices=('schema','preflight','plan','status'))
+    p.add_argument('--dataset-id',type=UUID)
     p.add_argument('--database',default='arte')
     p.add_argument('--start-date',type=date.fromisoformat,default=date(2026,1,1))
     p.add_argument('--end-date',type=date.fromisoformat)
@@ -39,6 +41,7 @@ def parse_args(argv=None):
     try:contracts.identifier(args.database)
     except ValueError as error:p.error(str(error))
     if args.command!='schema' and args.format=='sql':p.error('SQL format is for schema inspection only')
+    if args.command=='status' and args.dataset_id is None:p.error('status requires --dataset-id')
     return args
 
 
@@ -88,6 +91,10 @@ def main(argv=None):
     args.max_threads=args.query_threads;args.max_memory_gb=args.query_memory_gib;args.query_timeout=45
     client=builder.Client(args,persistent=False)
     try:
+        if args.command=='status':
+            result=campaign.status(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database,str(args.dataset_id))
+            print(json.dumps(result,indent=2,default=str))
+            return 0
         # Every query in the inspection path is read-only at the server as well.
         result=inspect_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),args)
         if args.command=='plan':

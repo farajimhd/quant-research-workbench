@@ -23,9 +23,22 @@ from pipelines.certified_research import context
 from pipelines.certified_research import producer
 from pipelines.certified_research import reference_producer,reference_sql,short_sql,universe,fundamentals,float_data,price_inputs
 from pipelines.certified_research.reference_publication import ReferenceScope,ReferencePublisher
+from pipelines.certified_research.campaign import Campaign,PlannedUnit,status as campaign_status
 
 
 class Contracts(unittest.TestCase):
+    def test_scheduler_large_verified_resume_and_failed_chain_are_linear_and_nonrecursive(self):
+        size=10000
+        units=tuple(Unit(str(i),'stage',(str(i-1),) if i else (),1) for i in range(size))
+        before=time.monotonic();events=[]
+        result=execute(units,{'stage':lambda *args:None},workers=2,memory_bytes=2,
+            reuse=lambda unit,parents:dict(output_hash='a'*64),progress=events.append)
+        self.assertEqual(result['status'],'complete');self.assertEqual(events[-1]['counts']['reused'],size)
+        self.assertLess(time.monotonic()-before,5)
+        def fail(*args):raise ValueError('failed root')
+        result=execute(units,{'stage':fail},workers=1,memory_bytes=1)
+        self.assertEqual(result['units']['0'],'failed');self.assertEqual(result['units'][str(size-1)],'blocked')
+
     def test_formula_catalog_is_complete_and_source_arithmetic_drift_blocks_publication(self):
         from unittest.mock import patch
         self.assertEqual(len(fundamentals.definitions()),19)
@@ -185,10 +198,16 @@ class Contracts(unittest.TestCase):
         class Client:
             connected=True;client_id=(1,b'session')
             def Lock(self,path,identifier):self.lock=Lock();return self.lock
+            def add_listener(self,callback):self.listener=callback
+            def remove_listener(self,callback):pass
         client=Client();claim=KeeperClaim(client,str(uuid.uuid4()),owner='owner')
         claim.check();client.client_id=(2,b'replaced')
         with self.assertRaisesRegex(RuntimeError,'expired'):claim.check()
         claim.close();self.assertTrue(client.lock.is_acquired)
+        client=Client();claim=KeeperClaim(client,str(uuid.uuid4()),owner='owner')
+        client.listener('SUSPENDED');client.listener('CONNECTED')
+        with self.assertRaisesRegex(RuntimeError,'expired'):claim.check()
+        claim.close()
 
     def test_transport_bounds_reject_nonfinite_and_oversized_before_write(self):
         writes=[]
@@ -291,6 +310,37 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_campaign_publishes_only_verified_authorities_and_detects_tampering_on_resume(self):
+        dataset=str(uuid.uuid4());day=date(2026,1,2)
+        config=c.CampaignConfig(day,day,workers=2,query_memory_bytes=64*1024**2,global_memory_bytes=128*1024**2)
+        plans=(PlannedUnit(Unit('source','facts',(),64*1024**2),dict(value=1.,family='fundamentals')),
+               PlannedUnit(Unit('child','facts',('source',),64*1024**2),dict(value=2.,family='derived_fundamentals')))
+        class Claim:
+            def check(self):pass
+        claim=Claim();publisher=ReferencePublisher(self.client.query,self.database,claim);logs=[]
+        def query(sql,*args,**kw):logs.append(sql);return self.client.query(sql,*args,**kw)
+        def scope(plan,parents):
+            parent=c.digest({k:v['output_hash'] for k,v in parents.items()}) if parents else 'a'*64
+            return ReferenceScope(dataset,1,9919,plan.arguments['family'],day,day,parent,facts.catalog_hash())
+        def verifier(plan,parents):return publisher.receipt(scope(plan,parents))
+        def produce(plan,parents,stop):
+            attempt=str(uuid.uuid4())
+            row=dict(dataset_id=dataset,attempt_id=attempt,entity_kind=1,entity_key=9919,metric_key=1 if plan.unit.key=='source' else 2,
+                period_start=None,period_end=str(day),context_kind=1,fiscal_year=2026,fiscal_period='FY',taxonomy_key=1,
+                available_at='2026-01-02 12:00:00.000000',revision=0,value=plan.arguments['value'],unit_key=1,basis_unit_key=1,
+                status=1,precision=1,confidence=100,reason='',evidence_hash='a'*64)
+            insert_rows(self.client.query,self.database,'research_facts_v1',[row])
+            bound=scope(plan,parents);publisher.publish(bound,attempt,publisher.evidence(bound,attempt))
+        campaign=Campaign(query,self.database,claim,dataset,config,plans,'a'*64,lambda:None,{'facts':produce},{'facts':verifier})
+        result=campaign.run();self.assertEqual(result['status'],'complete');self.assertEqual(result['seal']['units'],2)
+        inspection=campaign_status(query,self.database,dataset)
+        self.assertTrue(inspection['inspection_only']);self.assertEqual(inspection['counts']['certified'],2)
+        self.assertEqual(len(campaign.verify()),64)
+        logs.clear();self.assertEqual(campaign.run()['seal'],result['seal'])
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+        self.client.query(f"ALTER TABLE {self.database}.research_facts_v1 UPDATE value=9 WHERE dataset_id=toUUID('{dataset}') AND metric_key=2 SETTINGS mutations_sync=2",read=False)
+        with self.assertRaisesRegex(ValueError,'match'):campaign.run()
+
     def test_regular_price_facts_use_early_close_and_exclude_pm_and_ah(self):
         from datetime import timezone
         dataset=str(uuid.uuid4());attempt=str(uuid.uuid4());day=date(2026,11,27);listing=9910;security=9911

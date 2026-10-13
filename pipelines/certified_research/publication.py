@@ -44,22 +44,30 @@ class KeeperClaim:
     """One ephemeral campaign writer; expired/replaced sessions cannot publish."""
     def __init__(self,client,dataset_id,*,owner=None):
         UUID(dataset_id)
-        if not client.connected or client.client_id is None:
+        if not client.connected or client.client_id is None or getattr(client,'client_state',None)=='CONNECTED_RO':
             raise RuntimeError('Research Keeper is unavailable')
         self.client=client;self.session=client.client_id;self.owner=owner or str(uuid4())
+        self.invalidated=False
+        self.listener=lambda state:self._state(state)
+        if hasattr(client,'add_listener'):client.add_listener(self.listener)
         self.lock=client.Lock('/research/certified-data/v1/claims/'+dataset_id,identifier=self.owner)
         if not self.lock.acquire(blocking=False):raise RuntimeError('Another writer owns this dataset')
 
+    def _state(self,state):
+        if getattr(state,'name',str(state))!='CONNECTED':self.invalidated=True
+
     def check(self):
-        if not self.client.connected or self.client.client_id!=self.session or not self.lock.is_acquired:
+        if (self.invalidated or not self.client.connected or self.client.client_id!=self.session
+                or not self.lock.is_acquired or getattr(self.client,'client_state',None)=='CONNECTED_RO'):
             raise RuntimeError('Research writer ownership is uncertain or expired')
         contenders=self.lock.contenders()
         if not contenders or contenders[0]!=self.owner:
             raise RuntimeError('Research writer ownership is uncertain or expired')
 
     def close(self):
-        if self.client.connected and self.client.client_id==self.session and self.lock.is_acquired:
+        if not self.invalidated and self.client.connected and self.client.client_id==self.session and self.lock.is_acquired:
             self.lock.release()
+        if hasattr(self.client,'remove_listener'):self.client.remove_listener(self.listener)
 
 
 def insert_rows(query,database,table,rows,*,maximum_rows=4096,maximum_bytes=8*1024**2):

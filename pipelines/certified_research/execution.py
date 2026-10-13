@@ -9,6 +9,8 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from threading import Event
 from collections.abc import Callable, Mapping
+from collections import deque,Counter
+from heapq import heapify,heappush,heappop
 
 
 @dataclass(frozen=True)
@@ -32,11 +34,16 @@ def validate(units: tuple[Unit, ...], memory_bytes: int):
     for u in units:
         if u.memory_bytes>memory_bytes or any(p not in by_key for p in u.parents):
             raise ValueError("Missing prerequisite or unit exceeds memory budget")
-    pending=set(by_key);seen=set()
-    while pending:
-        ready={k for k in pending if set(by_key[k].parents)<=seen}
-        if not ready:raise ValueError("Execution dependency cycle")
-        pending-=ready;seen|=ready
+    children={k:[] for k in by_key};remaining={k:len(u.parents) for k,u in by_key.items()}
+    for u in units:
+        for parent in u.parents:children[parent].append(u.key)
+    ready=deque(k for k,n in remaining.items() if not n);seen=0
+    while ready:
+        key=ready.popleft();seen+=1
+        for child in children[key]:
+            remaining[child]-=1
+            if remaining[child]==0:ready.append(child)
+    if seen!=len(units):raise ValueError('Execution dependency cycle')
     return by_key
 
 
@@ -52,29 +59,51 @@ def execute(units: tuple[Unit, ...], handlers: Mapping[str, Callable], *, worker
     stop=stop if stop is not None else Event()
     notify=progress or (lambda event:None)
     state={k:'queued' for k in by_key};results={};errors={};active={};reserved=0
+    counts=Counter(queued=len(by_key));children={k:[] for k in by_key}
+    remaining={k:len(u.parents) for k,u in by_key.items()}
+    for u in units:
+        for parent in u.parents:children[parent].append(u.key)
+    order={key:index for index,key in enumerate(by_key)}
+    ready=[(by_key[k].memory_bytes,order[k],k) for k,n in remaining.items() if not n];heapify(ready)
+    bad={'failed','blocked','interrupted'}
     def report(key,status,reason=''):
+        counts[state[key]]-=1;counts[status]+=1
         state[key]=status
         notify(dict(unit=key,product=by_key[key].product,status=status,reason=reason,
-                    counts={s:list(state.values()).count(s) for s in
+                    output_hash=results[key].get('output_hash') if isinstance(results.get(key),dict) else None,
+                    counts={s:counts[s] for s in
                             ('queued','active','certified','reused','blocked','failed','interrupted')}))
+    def finish(key,status,reason=''):
+        # Iterative propagation also handles very long failed/reused chains.
+        completed=deque([(key,status,reason)])
+        while completed:
+            key,status,reason=completed.popleft();report(key,status,reason)
+            for child in children[key]:
+                remaining[child]-=1
+                if remaining[child]==0 and state[child]=='queued':
+                    if any(state[p] in bad for p in by_key[child].parents):
+                        completed.append((child,'blocked','Required parent did not certify'))
+                    else:heappush(ready,(by_key[child].memory_bytes,order[child],child))
     with ThreadPoolExecutor(max_workers=workers,thread_name_prefix='certified-research') as pool:
         try:
-            while any(s in ('queued','active') for s in state.values()):
-                for key,u in by_key.items():
+            while counts['queued'] or counts['active']:
+                if stop.is_set() and counts['queued']:
+                    for key in by_key:
+                        if state[key]=='queued':report(key,'interrupted','Operator stop requested')
+                    ready.clear()
+                # The smallest reservation establishes whether any ready unit
+                # fits; no scan through millions of memory-blocked roots.
+                while ready and len(active)<workers:
+                    if ready[0][0]>memory_bytes-reserved:break
+                    _,_,key=heappop(ready);u=by_key[key]
                     if state[key]!='queued':continue
-                    if any(state[p] in ('failed','blocked','interrupted') for p in u.parents):
-                        report(key,'blocked','Required parent did not certify');continue
-                    if stop.is_set():
-                        report(key,'interrupted','Operator stop requested');continue
-                    if any(state[p] not in ('certified','reused') for p in u.parents):continue
-                    if len(active)>=workers or reserved+u.memory_bytes>memory_bytes:continue
                     parents={p:results[p] for p in u.parents}
                     try:
                         old=reuse(u,parents) if reuse is not None else None
                     except Exception as error:
-                        errors[key]=error;report(key,'failed','Existing receipt verification failed');continue
+                        errors[key]=error;finish(key,'failed','Existing receipt verification failed');continue
                     if old is not None:
-                        results[key]=old;report(key,'reused');continue
+                        results[key]=old;finish(key,'reused');continue
                     report(key,'active')
                     active[pool.submit(handlers[u.product],u,parents,stop)]=u
                     reserved+=u.memory_bytes
@@ -85,9 +114,9 @@ def execute(units: tuple[Unit, ...], handlers: Mapping[str, Callable], *, worker
                     try:
                         value=future.result()
                         if value is None:raise ValueError('Producer returned no verified receipt')
-                        results[u.key]=value;report(u.key,'certified')
+                        results[u.key]=value;finish(u.key,'certified')
                     except Exception as error:
-                        errors[u.key]=error;report(u.key,'failed','Producer failed; inspect bounded error receipt')
+                        errors[u.key]=error;finish(u.key,'failed','Producer failed; inspect bounded error receipt')
         except BaseException:
             stop.set()
             for future in active:future.cancel()

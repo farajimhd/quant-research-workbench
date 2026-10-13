@@ -2,7 +2,7 @@
 
 [Schema overview](12-implemented-schemas.md) · [Design overview](../certified_research_dataset_design.md)
 
-All tables use `MergeTree`, `live_market_ssd` and lossless per-column compression. Schemas are under implementation; the full publication pipeline is not yet complete.
+All tables use `MergeTree`, `live_market_ssd` and explicit lossless compression.
 
 ## research_dataset_v1
 

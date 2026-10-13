@@ -26,6 +26,7 @@ Run `python -B scripts/prepare_certified_research.py schema --format sql` for ex
 - [Identity, membership and provenance schemas](12a-schema-identity.md)
 - [Market data schemas](12b-schema-market.md)
 - [Facts, checkpoint and receipt schemas](12c-schema-facts-state.md)
+- [Campaign plan, progress and seal schemas](12d-schema-campaign.md)
 
 ## Validation performed
 
@@ -38,6 +39,8 @@ Acquisition adapters now delegate to the real updater/reporting entry points wit
 ## Remaining implementation
 
 Wire source acquisition/migration receipts; build dated normalized identities and membership; certify public-as-of SEC/short/float values; publish compatible causal checkpoints and dependency receipts; add complete run/resume/verify paths and measured representative performance. The launcher currently exposes schema inspection and read-only preflight/plan, and explicitly reports campaign execution disabled.
+
+The [campaign controller core](13-campaign-controller.md) now freezes unit plans in ClickHouse, verifies producer authorities, records bounded progress and publishes a readback-verified final root seal. Its large-graph scheduler uses dependency queues and incremental counters. The read-only `status` command is available; full concrete handler registration and launch planning remain unfinished. A real Keeper probe could not proceed because secure LAN configuration was absent in this environment; session-loss/reconnect behavior is tested deterministically.
 
 ## Runnable producer slices
 
