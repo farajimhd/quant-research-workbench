@@ -263,6 +263,13 @@ class Contracts(unittest.TestCase):
             return [dict(database='arte',table='bars_v1',rows='10',compressed_bytes='100',uncompressed_bytes='400',disk_bytes='120',parts='1')]
         result=capacity.inventory(query)
         self.assertFalse(result['projection_ready'])
+        config=c.CampaignConfig(date(2026,1,2),date(2026,1,2))
+        guard=capacity.PlanCapacityGuard(query,config,[],{},
+            reserve_bytes={'live_market_ssd':0,'sip_raw_ssd':0},
+            volume_groups={'live_market_ssd':'fixture_group','sip_raw_ssd':'fixture_group'})
+        blocked=guard('a'*64,(PlannedUnit(Unit('market','market_aggregate'),{}),))
+        self.assertEqual(blocked['status'],'blocked')
+        self.assertTrue(any('campaign_metadata' in reason for reason in blocked['blockers']))
         self.assertEqual(result['tables'][0]['compression_ratio'],4)
         self.assertEqual(result['tables'][0]['compressed_bytes_per_row'],10)
         self.assertEqual(result['disks'][0]['unreserved_space'],7000)
@@ -1133,6 +1140,13 @@ class ClickHouseIntegration(unittest.TestCase):
         self.assertGreater(sum(r['compressed_bytes'] for r in result['tables'] if r['database']=='market_sip_compact'),0)
         self.assertTrue(all(r['compressed_bytes']<=r['disk_bytes'] for r in result['tables']))
         self.assertFalse(result['projection_ready'])
+        config=c.CampaignConfig(date(2026,1,2),date(2026,1,2),database=self.database)
+        guard=capacity.PlanCapacityGuard(lambda sql:self.client.query(sql+' SETTINGS readonly=1'),config,[],{},
+            reserve_bytes={'live_market_ssd':0,'sip_raw_ssd':0},
+            volume_groups={'live_market_ssd':'fixture_group','sip_raw_ssd':'fixture_group'})
+        blocked=guard('a'*64,(PlannedUnit(Unit('market','market_aggregate'),{}),))
+        self.assertEqual(blocked['status'],'blocked')
+        self.assertTrue(any('campaign_metadata' in reason for reason in blocked['blockers']))
 
     def test_imported_source_statistics_are_read_from_canonical_certificate(self):
         from unittest.mock import patch

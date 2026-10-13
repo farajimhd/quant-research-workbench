@@ -163,6 +163,7 @@ class Campaign:
         if any(p.unit.product not in producers or p.unit.product not in verifiers for p in units):
             raise ValueError('Campaign producer/authority verifier is missing')
         self.rows=tuple(p.row(dataset_id) for p in units)
+        self.frozen_rows={p.unit.key:row for p,row in zip(self.units,self.rows)}
         self.definition=dict(config=config.identity(),source_hash=source_hash,
             units_hash=digest(sorted(self.rows,key=lambda r:r['unit_id'])),unit_count=len(units))
         self.plan_hash=digest(self.definition);self.where=f'dataset_id=toUUID({literal(dataset_id)})'
@@ -181,7 +182,17 @@ class Campaign:
     def guard(self):
         with self.guard_lock:self.claim.check();self.source_guard()
 
+    def plan_for(self,unit):
+        plan=self.by_key.get(unit.key)
+        if plan is None or plan.unit!=unit or plan.row(self.dataset)!=self.frozen_rows[unit.key]:
+            raise ValueError('Execution unit differs from its frozen campaign plan')
+        return plan
+
+    def check_plan(self):
+        for plan in self.units:self.plan_for(plan.unit)
+
     def install(self,*,allow_writes=True):
+        self.check_plan()
         self.guard();verify_storage(self.query,self.database,require_tables=True)
         existing=self.query(f'SELECT contract_hash,schema_hash,definition,start_date,end_date FROM {self.database}.research_dataset_v1 WHERE {self.where}')
         expected=dict(contract_hash=self.plan_hash,schema_hash=schema_hash(),definition=encoded(self.definition),
@@ -217,7 +228,7 @@ class Campaign:
 
     def authority(self,unit,parents):
         self.guard()
-        result=self.verifiers[unit.product](self.by_key[unit.key],parents)
+        result=self.verifiers[unit.product](self.plan_for(unit),parents)
         if result is not None and (not isinstance(result,dict) or not re.fullmatch('[0-9a-f]{64}',result.get('output_hash',''))):
             raise ValueError('Unit authority verifier did not return a valid output fingerprint')
         return result
@@ -234,7 +245,7 @@ class Campaign:
                 reason=change['reason'][:256],changed_at=self.now())])
             if progress:progress(change)
         def produce(unit,parents,stop):
-            self.guard();self.producers[unit.product](self.by_key[unit.key],parents,stop)
+            self.guard();self.producers[unit.product](self.plan_for(unit),parents,stop)
             result=self.authority(unit,parents)
             if result is None:raise ValueError('Producer completed without independently verified authority')
             return result

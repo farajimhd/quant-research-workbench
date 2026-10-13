@@ -49,6 +49,12 @@ class ExecutionLaunchTests(TestCase):
         self.assertEqual(launch.admit()['plan_hash'],launch.controller.plan_hash)
         schema_check.assert_called_once_with(query,'arte',require_tables=True)
         query.assert_not_called()
+        plans[0].arguments['ticker']='CHANGED'
+        with self.assertRaisesRegex(ValueError,'frozen campaign plan'):launch.admit()
+        with self.assertRaisesRegex(ValueError,'frozen campaign plan'):
+            launch.controller.authority(plans[0].unit,{})
+        query.assert_not_called()
+        plans[0].arguments['ticker']='TEST'
         launch.capacity_guard=lambda *args:dict(status='blocked')
         with self.assertRaisesRegex(ValueError,'blocked'):
             launch.run()

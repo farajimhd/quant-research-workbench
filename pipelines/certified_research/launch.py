@@ -73,6 +73,7 @@ class ExecutionLaunch:
 
     def admit(self):
         self.claim.check();self.source_guard()
+        self.controller.check_plan()
         installation.verify(self.query,self.config.database,require_tables=True)
         certificate=self.capacity_guard(self.controller.plan_hash,self.plans)
         if not isinstance(certificate,dict) or certificate.get('status')!='admitted':

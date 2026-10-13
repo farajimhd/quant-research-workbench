@@ -6,6 +6,67 @@ from dataclasses import dataclass
 from decimal import Decimal,ROUND_CEILING
 import re
 
+READ_PRODUCTS=frozenset(('canonical_source','technical_seed','v7_seed','sec_acquisition',
+    'short_volume_acquisition','short_interest_acquisition'))
+WRITE_PRODUCTS=frozenset(('market_aggregate','technical','v7','activity','universe','fundamentals',
+    'derived_fundamentals','regular_prices','float_supply','short_volume','short_interest','short_pressure',
+    'identity_observation','corporate_actions','float_allocation','reported_supply'))
+
+
+def plan_demands(config,plans):
+    """Conservative full-plan writes, including controller metadata.
+
+    Read-only prerequisite roots still occupy immutable campaign metadata and
+    progress rows. Unknown products must be classified before admission rather
+    than being silently omitted. Per-product peak bounds may overlap; summing
+    them is intentionally conservative and does not assume verified reuse.
+    """
+    from .execution import validate
+    plans=tuple(plans)
+    if not plans:raise ValueError('Capacity admission requires a nonempty execution plan')
+    validate(tuple(p.unit for p in plans),config.global_memory_bytes)
+    counts={};minimum={};unknown={}
+    for plan in plans:
+        product=plan.unit.product
+        if product in READ_PRODUCTS:continue
+        if product not in WRITE_PRODUCTS:
+            unknown[product]=unknown.get(product,0)+1;continue
+        counts[product]=counts.get(product,0)+1
+        minimum[product]=min(minimum.get(product,plan.unit.memory_bytes),plan.unit.memory_bytes)
+    counts['campaign_metadata']=len(plans)
+    active={product:min(units,config.workers,
+        config.global_memory_bytes//minimum[product] if minimum.get(product) else config.workers)
+        for product,units in counts.items()}
+    # Controller progress/plan publication is one scheduler-owned writer.
+    active['campaign_metadata']=1
+    result=dict(ready=not unknown,demands=dict(sorted(counts.items())),active_units=active,
+        unknown_products=dict(sorted(unknown.items())),mode='full_plan_no_reuse_discount')
+    result['demand_hash']=digest(result)
+    return result
+
+
+class PlanCapacityGuard:
+    """Qualified pilot/storage admission bound to the controller's whole plan."""
+    def __init__(self,query,config,rates,recipe_hashes,*,reserve_bytes,volume_groups,safety_factor='1.25'):
+        self.query=query;self.config=config;self.rates=tuple(rates);self.recipes=dict(recipe_hashes)
+        self.reserves=dict(reserve_bytes);self.volumes=dict(volume_groups);self.factor=safety_factor
+
+    def __call__(self,plan_hash,plans):
+        if not re.fullmatch('[0-9a-f]{64}',plan_hash):raise ValueError('Invalid capacity execution-plan fingerprint')
+        demand=plan_demands(self.config,plans)
+        storage=inventory(self.query,self.config.database)
+        result=admission(storage,demand['demands'],self.rates,self.recipes,
+            active_units=demand['active_units'],reserve_bytes=self.reserves,volume_groups=self.volumes,
+            safety_factor=self.factor)
+        if demand['unknown_products']:
+            result['blockers']+=['Unclassified execution product: '+p for p in demand['unknown_products']]
+            result['status']='blocked'
+        result.pop('certificate_hash')
+        result.update(plan_hash=plan_hash,demand_hash=demand['demand_hash'],projection_mode=demand['mode'],
+            unknown_products=demand['unknown_products'])
+        result['certificate_hash']=digest(result)
+        return result
+
 
 @dataclass(frozen=True)
 class PilotRate:
