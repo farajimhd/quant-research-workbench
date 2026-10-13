@@ -125,9 +125,29 @@ class MarketHandlers:
 
 
 class ReferenceHandlers:
-    def __init__(self,dataset_id,database,claim,client_factory,source_guard,plans):
+    def __init__(self,dataset_id,database,claim,client_factory,source_guard,plans,*,dictionary_claim_factory=None):
         self.dataset=dataset_id;self.database=database;self.claim=claim;self.client_factory=client_factory
         self.source_guard=source_guard;self.plans={p.unit.key:p for p in plans}
+        self.dictionary_claim_factory=dictionary_claim_factory
+
+    def publication_query(self,query):
+        def owned(sql,*args,**kwargs):
+            if not sql.startswith(f'INSERT INTO {self.database}.research_provenance_v1 '):
+                return query(sql,*args,**kwargs)
+            if self.dictionary_claim_factory is None:
+                if not self.database.startswith('certified_research_test_'):
+                    raise ValueError('Reference publication requires global dictionary ownership')
+                return query(sql,*args,**kwargs)
+            self.claim.check();dictionary=self.dictionary_claim_factory()
+            try:
+                if getattr(dictionary,'dictionary_database',None)!=self.database:
+                    raise ValueError('Reference dictionary ownership is for another database')
+                dictionary.check();self.claim.check();self.source_guard()
+                result=query(sql,*args,**kwargs)
+                dictionary.check();self.claim.check()
+                return result
+            finally:dictionary.close()
+        return owned
 
     def bar_parents(self,parents):
         if not parents or len(parents)>1000:raise ValueError('Regular prices require bounded shared market parents')
@@ -176,9 +196,11 @@ class ReferenceHandlers:
     def producer(self,plan,parents,stop):
         if stop.is_set():raise InterruptedError('Reference unit stopped before execution')
         if plan.unit.product not in PRODUCTS:raise ValueError('Unregistered reference product')
+        if self.dictionary_claim_factory is None and not self.database.startswith('certified_research_test_'):
+            raise ValueError('Reference publication requires global dictionary ownership')
         client=self.client_factory()
         try:
-            query=client.query;scope=self.scope(plan,parents);args=plan.arguments
+            query=self.publication_query(client.query);scope=self.scope(plan,parents);args=plan.arguments
             if plan.unit.product=='fundamentals':
                 names=args.get('metrics')
                 selected=tuple(m for m in facts.catalog() if m.tags and (names is None or m.name in names))

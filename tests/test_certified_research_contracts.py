@@ -30,6 +30,32 @@ from pipelines.certified_research.universe_publication import UniversePublisher
 
 
 class Contracts(unittest.TestCase):
+    def test_reference_dictionary_claim_covers_only_shared_insert_and_always_releases(self):
+        events=[]
+        class Claim:
+            def check(self):pass
+        class Dictionary:
+            dictionary_database='arte'
+            def check(self):events.append('check')
+            def close(self):events.append('close')
+        def acquire():events.append('acquire');return Dictionary()
+        handlers=ReferenceHandlers(str(uuid.uuid4()),'arte',Claim(),lambda:None,lambda:None,(),dictionary_claim_factory=acquire)
+        def query(sql,**kwargs):events.append('query');return 1
+        owned=handlers.publication_query(query)
+        owned('SELECT 1');self.assertEqual(events,['query']);events.clear()
+        owned('INSERT INTO arte.research_provenance_v1 SELECT 1',read=False)
+        self.assertEqual(events,['acquire','check','query','check','close']);events.clear()
+        def fail(*args,**kwargs):raise RuntimeError('insert uncertain')
+        with self.assertRaisesRegex(RuntimeError,'insert uncertain'):
+            handlers.publication_query(fail)('INSERT INTO arte.research_provenance_v1 SELECT 1',read=False)
+        self.assertEqual(events[-1],'close')
+        unsafe=ReferenceHandlers(str(uuid.uuid4()),'arte',Claim(),lambda:None,lambda:None,())
+        with self.assertRaisesRegex(ValueError,'global dictionary ownership'):
+            unsafe.producer(PlannedUnit(Unit('sec','fundamentals'),{}),{},Event())
+        from types import SimpleNamespace
+        client=SimpleNamespace(connected=True,client_id=(1,b''),client_state=SimpleNamespace(name='CONNECTED_RO'))
+        with self.assertRaisesRegex(RuntimeError,'Keeper is unavailable'):KeeperClaim(client,str(uuid.uuid4()))
+
     def test_ingestion_ownership_loss_drains_child_and_stop_signals_gracefully(self):
         from unittest.mock import patch
         paths=acquisition.IngestionPaths(Path('fixture.env'))
@@ -523,13 +549,22 @@ class ClickHouseIntegration(unittest.TestCase):
             PlannedUnit(Unit('derived','derived_fundamentals',('sec',),config.query_memory_bytes),common))
         class Claim:
             def check(self):pass
+        dictionary_events=[];database=self.database
+        class Dictionary:
+            dictionary_database=database
+            def check(self):dictionary_events.append('check')
+            def close(self):dictionary_events.append('close')
+        def dictionary():dictionary_events.append('acquire');return Dictionary()
         claim=Claim();registry=ReferenceHandlers(dataset,self.database,claim,
-            lambda:self.builder.Client(self.args,persistent=False),lambda:None,plans)
+            lambda:self.builder.Client(self.args,persistent=False),lambda:None,plans,dictionary_claim_factory=dictionary)
         producers,verifiers=registry.registry()
         campaign=Campaign(self.client.query,self.database,claim,dataset,config,plans,'a'*64,lambda:None,producers,verifiers)
         result=campaign.run();self.assertEqual(result['status'],'complete',str(result['errors']))
         self.assertEqual(result['seal']['units'],2)
+        self.assertEqual(dictionary_events.count('acquire'),2);self.assertEqual(dictionary_events.count('close'),2)
+        dictionary_events.clear()
         self.assertEqual(campaign.run()['seal'],result['seal'])
+        self.assertFalse(dictionary_events)
 
     def test_campaign_publishes_only_verified_authorities_and_detects_tampering_on_resume(self):
         dataset=str(uuid.uuid4());day=date(2026,1,2)

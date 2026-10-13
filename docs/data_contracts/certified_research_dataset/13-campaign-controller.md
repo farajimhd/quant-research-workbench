@@ -22,6 +22,8 @@ The final root hashes the immutable plan, frozen source and all independently ve
 
 Keeper suspension/loss invalidates the writer permanently, including a reconnect retaining the session ID. An invalidated claim cannot publish or release uncertain ownership. Source guards and physical SSD placement checks remain required before writers.
 
+Reference campaign producers require global dictionary ownership for shared provenance inserts in production. The lock covers only that insert, leaving SEC/derived/float calculations and output publication concurrent. Acquisition waits are bounded (10 seconds by default for dictionary claims); a failed or uncertain insert releases the valid claim and propagates failure. Constructor acquisition failures remove their listener. Read-only Keeper states are rejected whether represented as strings or named states. Verified no-insert reference resume acquires no new dictionary claim.
+
 ## Operator inspection
 
 `python -B scripts/prepare_certified_research.py status --dataset-id <UUID> --format json` reads plan/progress/seal metadata without changing it. It explicitly reports `inspection_only`; a stored seal alone is not a fresh data-integrity verification.

@@ -42,23 +42,33 @@ class Scope:
 
 class KeeperClaim:
     """One ephemeral campaign writer; expired/replaced sessions cannot publish."""
-    def __init__(self,client,dataset_id,*,owner=None):
+    def __init__(self,client,dataset_id,*,owner=None,acquire_timeout=0):
         UUID(dataset_id)
-        if not client.connected or client.client_id is None or getattr(client,'client_state',None)=='CONNECTED_RO':
+        if type(acquire_timeout) not in (int,float) or not 0<=acquire_timeout<=30:
+            raise ValueError('Keeper acquisition timeout must be bounded')
+        state=getattr(client,'client_state',None)
+        if not client.connected or client.client_id is None or getattr(state,'name',str(state))=='CONNECTED_RO':
             raise RuntimeError('Research Keeper is unavailable')
         self.client=client;self.session=client.client_id;self.owner=owner or str(uuid4())
         self.invalidated=False
         self.listener=lambda state:self._state(state)
         if hasattr(client,'add_listener'):client.add_listener(self.listener)
-        self.lock=client.Lock('/research/certified-data/v1/claims/'+dataset_id,identifier=self.owner)
-        if not self.lock.acquire(blocking=False):raise RuntimeError('Another writer owns this dataset')
+        try:
+            self.lock=client.Lock('/research/certified-data/v1/claims/'+dataset_id,identifier=self.owner)
+            acquired=self.lock.acquire(blocking=True,timeout=acquire_timeout) if acquire_timeout else self.lock.acquire(blocking=False)
+            if not acquired:raise RuntimeError('Another writer owns this dataset')
+            self.check()
+        except BaseException:
+            if hasattr(client,'remove_listener'):client.remove_listener(self.listener)
+            raise
 
     def _state(self,state):
         if getattr(state,'name',str(state))!='CONNECTED':self.invalidated=True
 
     def check(self):
+        state=getattr(self.client,'client_state',None)
         if (self.invalidated or not self.client.connected or self.client.client_id!=self.session
-                or not self.lock.is_acquired or getattr(self.client,'client_state',None)=='CONNECTED_RO'):
+                or not self.lock.is_acquired or getattr(state,'name',str(state))=='CONNECTED_RO'):
             raise RuntimeError('Research writer ownership is uncertain or expired')
         contenders=self.lock.contenders()
         if not contenders or contenders[0]!=self.owner:
@@ -72,10 +82,10 @@ class KeeperClaim:
 
 class DictionaryClaim(KeeperClaim):
     """Serialize shared identity/provenance writes across dataset writers."""
-    def __init__(self,client,database,*,owner=None):
+    def __init__(self,client,database,*,owner=None,acquire_timeout=10):
         self.dictionary_database=identifier(database)
         resource=str(uuid5(NAMESPACE_URL,'certified-research-dictionaries-v1:'+database))
-        super().__init__(client,resource,owner=owner)
+        super().__init__(client,resource,owner=owner,acquire_timeout=acquire_timeout)
 
 
 class SourceClaim(KeeperClaim):
