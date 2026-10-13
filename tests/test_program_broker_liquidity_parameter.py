@@ -93,6 +93,15 @@ def test_native_preflight_reports_selected_clock_and_rejects_changes(monkeypatch
     observed = asyncio.run(service.preflight(owner, **scope, broker_liquidity_resolution_ms=milliseconds))
     assert observed['broker_liquidity_resolution_ms'] == milliseconds
     assert observed['execution_interval'] == definition.execution_interval
+    # These are the normal page's launch-enabling identity checks, not only
+    # the programme's private prepared-run gate.
+    assert observed['configuration_revision_id'] == revision['revision_id']
+    assert observed['run_plan_id'] == revision['run_plan_id']
+    assert observed['initial_cash'] == definition.initial_cash
+    assert observed['configuration_content_hash'] == revision['content_hash']
+    assert observed['configuration_revision'] == revision['revision']
+    assert observed['available_run_plans'][0]['profile_id'] == revision['revision_id']
+    assert observed['automatic_strategy_count'] == 1
     with pytest.raises(ValueError, match='prepared filling contract'):
         asyncio.run(service.preflight(owner, **scope,
             broker_liquidity_resolution_ms={100: 1000, 1000: 100}[milliseconds]))

@@ -595,7 +595,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
               />
               <TradingModeSelectField
                 label="Strategy / Run Plan" disabled={loadingOptions || configurationOptions?.candidate_id !== candidateId || !configurationOptions?.available_run_plans.length || Boolean(optionsError)}
-                help="The release pins its only compatible execution plan and 100 ms evaluation interval."
+                help={programme ? "The release pins one-second programme evaluation and an independent broker liquidity clock." : "The release pins its only compatible execution plan and 100 ms evaluation interval."}
                 onChange={(value) => { setPreflight(null); setRunPlanId(value); }}
                 options={configurationOptions?.available_run_plans.length ? configurationOptions.available_run_plans.map((plan) => ({ value: plan.run_plan_id, label: `${plan.name} · strategy r${plan.strategy_revision}`, description: plan.profile_id })) : [{ value: "", label: loadingOptions ? "Loading strategies…" : "No compatible strategies" }]}
                 value={runPlanId}

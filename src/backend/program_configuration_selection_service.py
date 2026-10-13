@@ -325,7 +325,17 @@ class ProgramConfigurationSelectionService:
                 or canonical_json(configuration_revision.get("payload")) != canonical_json(revision["payload"])):
             raise ValueError("Programme preflight differs from its prepared session or reviewed configuration")
         days = [day.isoformat() for day in sessions]
+        strategy = revision['payload']['strategy']
         return dict(schema_version=1, mode="backtest", ready=True, strategy_run_ready=True,
+            configuration_revision_id=revision['revision_id'], configuration_revision=revision['revision'],
+            configuration_content_hash=revision['content_hash'], configuration_label=revision['label'],
+            run_plan_id=revision['run_plan_id'], initial_cash=definition.initial_cash,
+            automatic_strategy_count=1,
+            available_run_plans=[dict(run_plan_id=revision['run_plan_id'], name=revision['label'],
+                strategy_id=strategy['strategy_id'], strategy_revision=strategy['revision'],
+                profile_id=revision['revision_id'])],
+            experiment_start_time=definition.start_time.isoformat(timespec='seconds'),
+            experiment_end_time=definition.end_time.isoformat(timespec='seconds'),
             prepared_run_id=controller.run_id, execution_interval=definition.execution_interval,
             broker_liquidity_resolution_ms=controller._program_liquidity_resolution_ms,
             window=dict(sessions=days, session_count=len(days), start=days[0], end=days[-1]),

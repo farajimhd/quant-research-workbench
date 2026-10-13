@@ -40,6 +40,14 @@ cohort windows; cold-loads the volume and feature seals with its approved
 reader; then passes ordinary `ProgramCohortInputPlan` objects into the existing
 typed journal/Signal Stream/launch preparation funnel. Missing inputs fail
 before any journal writer is attached. This preparation does not start a run.
+Programme preflight returns the shared page's configuration identity, run-plan
+identity, cash and execution-window fields from that reviewed definition. The
+page requires those fields before enabling launch. A browser-only fixture review
+is available through `python scripts/run_frontend.py ui:review --
+--programme-backtest-offline --output-dir <runtime-directory>` after a frontend
+build. It intercepts all network requests, tests clock mismatch rejection and
+the launch payload, and starts no HTTP service or actual backtest. This rendered
+review is separate from native financial and source-data qualification.
 A ticker projection cannot publish an alternative scanner population under the
 same programme. Price eligibility is applied only after complete population
 coverage, before volume ranking; legacy identity readers retain their existing
