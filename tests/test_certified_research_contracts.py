@@ -42,6 +42,8 @@ class Contracts(unittest.TestCase):
         outputs,_=v7.generate(engine(),bars(engine()),binding)
         rolled=v7.StartAuthority.rollover(outputs[-1],date(2026,8,24))
         self.assertEqual(rolled.check(outputs[-1]['state_hash']).session,'2026-08-24')
+        with self.assertRaisesRegex(ValueError,'skip required exchange sessions'):
+            v7.StartAuthority.rollover(outputs[-1],date(2026,8,25))
         forged=dict(outputs[0],boundary='AH',boundary_us=outputs[-1]['boundary_us'])
         with self.assertRaisesRegex(ValueError,'encoded boundary'):v7.StartAuthority.rollover(forged,date(2026,8,24))
 

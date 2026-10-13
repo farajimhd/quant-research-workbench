@@ -1,7 +1,7 @@
 """One causal kernel for new session checkpoints and historical checkpoint fill."""
 from __future__ import annotations
 
-from datetime import date,datetime,time,timezone
+from datetime import date,datetime,time,timezone,timedelta
 from dataclasses import dataclass
 from hashlib import sha256
 from uuid import UUID
@@ -55,6 +55,9 @@ def next_day_engine(previous: StreamingLevelBook,day: date,*,previous_checkpoint
     """Day rollover once; same-day restoration must use restore instead."""
     if previous.session>=day.isoformat() or previous.seed_input_policy!=previous.input_policy:
         raise ValueError('Prior V7 state is incompatible or contains legacy seed lineage')
+    from .source import exchange_sessions
+    if exchange_sessions(date.fromisoformat(previous.session)+timedelta(days=1),day)!=(day,):
+        raise ValueError('V7 rollover cannot skip required exchange sessions; replay the context gap')
     if previous_checkpoint['boundary']!='AH' or previous_checkpoint['boundary_us']!=round(previous.end*1_000_000):
         raise ValueError('Day rollover requires the certified prior AH boundary')
     restored=restore(previous_checkpoint['payload'],previous_checkpoint['state_hash'],previous_checkpoint['binding'],
