@@ -92,3 +92,26 @@ def test_historical_listing_change_reuses_same_security_without_duplicate_day_pr
     arguments['securities']=(replace(arguments['securities'][0],market_parents=(
         *prices.unit.parents,'market:11:2026-01-05:aggregate')),)
     with pytest.raises(ValueError,match='Competing market listings'):program_units(**arguments)
+
+
+def test_initial_assembly_joins_frozen_recipe_sources_and_prepared_lanes():
+    from pipelines.certified_research import initial_plan,recipe
+    arguments=inputs();config=arguments.pop('config');day=config.start
+    rules=(dict(token_id=1,modifier_int=0,update_last=1,update_high_low=1,update_volume=1),)
+    frozen=recipe.market_recipe(config,rules)
+    seeds=tuple(p for p in arguments['prerequisites'] if p.unit.product in ('technical_seed','v7_seed'))
+    arguments['prerequisites']=tuple(p for p in arguments['prerequisites'] if p not in seeds and p.unit.key not in ('fetch','repair'))
+    prepared=dict(ready=True,blocked={},failed={},prepared={11:dict(recipe_hash=recipe.verify_definition(frozen['definition'],rules))},
+        sessions=arguments.pop('sessions'),seed_units=seeds,seed_parents=arguments.pop('seed_parents'),
+        state_start_dates={11:(day,day)},required_source_days=(day,),preparation_hash='e'*64)
+    arguments.pop('source_parents')
+    canonical=dict(missing=(),incomplete=(),expected=(day,),source_hashes={str(day):'a'*64},content_hash='b'*64)
+    reporting=dict(missing=(),mutating=False,verified={str(day):dict(source_digest='a'*64)},content_hash='c'*64)
+    result=initial_plan.assemble(config,prepared,canonical,reporting,frozen['definition'],rules,**arguments)
+    by_key={p.unit.key:p for p in result['plans']}
+    aggregate='market:11:2026-01-02:aggregate'
+    assert by_key[aggregate].unit.parents==('source:2026-01-02','universe','calculation_recipe')
+    assert by_key['security:101:prices'].unit.parents==(aggregate,)
+    with pytest.raises(ValueError,match='required canonical'):
+        initial_plan.assemble(config,dict(prepared,required_source_days=(date(2025,12,31),day)),canonical,
+            reporting,frozen['definition'],rules,**arguments)
