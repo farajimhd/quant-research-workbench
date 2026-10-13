@@ -567,7 +567,10 @@ async def recover_program_policy_async(reader_factory, prefix, template, *, thro
             if load_verified_v4_prefix(client, prefix.run_id) != prefix:
                 raise ValueError("Program policy prefix moved before readback")
             def events():
-                after = 0
+                packet = scope.get("initial_packet")
+                # The replay validator proves the continuation seal before
+                # this generator is consumed; never reread its prior prefix.
+                after = 0 if packet is None else packet.journal_sequence
                 while after < basis_sequence:
                     page = load_typed_event_page(client, prefix, after_sequence=after,
                         limit=min(1000, basis_sequence - after),

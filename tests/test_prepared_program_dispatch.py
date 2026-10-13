@@ -745,6 +745,21 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                         blocks=(block,), population=population, executions=executions, maximum_events=1000)
                 assert reader.closed and recovered.actor is not actor and controller._runtime.strategy is actor
                 from src.backend.program_policy_recovery import recover_program_policy_async
+                continuation_reader = Reader()
+                continuation_starts = []
+                def continuation_page(client, selected_prefix, *, after_sequence, limit, exact_prices):
+                    assert client is continuation_reader and selected_prefix is prefix and exact_prices is True
+                    assert after_sequence >= basis_packet.journal_sequence
+                    continuation_starts.append(after_sequence)
+                    return tuple(events[after_sequence:after_sequence + limit])
+                with patch("src.backend.program_policy_recovery.load_typed_event_page", continuation_page):
+                    continuation_policy = await recover_program_policy_async(lambda: continuation_reader,
+                        prefix, actor, exact_prices=True, source_hashes=source_prefix_hashes, blocks=(block,),
+                        population=population, executions=executions, order_manager=controller._runtime.order_manager,
+                        maximum_events=1000, initial_packet=basis_packet)
+                assert continuation_reader.closed and continuation_starts[0] == basis_packet.journal_sequence
+                assert continuation_policy.state_hash == recovered.state_hash
+                assert continuation_policy.journal_sequence == recovered.journal_sequence
                 later_prefix = replace(prefix, last_sequence=prefix.last_sequence + 1)
                 historical_reader = Reader()
                 def historical_page(client, selected_prefix, *, after_sequence, limit):
