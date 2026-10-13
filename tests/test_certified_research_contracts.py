@@ -752,6 +752,7 @@ class ClickHouseIntegration(unittest.TestCase):
         observed=historical.normalize(payload,date(2026,1,2),'HIST')
         first=historical.publish(self.client.query,self.database,Claim(),[observed])
         self.assertEqual(first['inserted'],1)
+        self.assertEqual(historical.load(self.client.query,self.database,date(2026,1,2),'HIST'),observed)
         logs=[]
         def query(sql,*args,**kwargs):logs.append(sql);return self.client.query(sql,*args,**kwargs)
         second=historical.publish(query,self.database,Claim(),[observed])
@@ -762,6 +763,27 @@ class ClickHouseIntegration(unittest.TestCase):
         changed=historical.normalize(dict(payload,composite_figi='BBG000000002'),date(2026,1,2),'HIST')
         with self.assertRaisesRegex(ValueError,'conflicts'):
             historical.publish(query,self.database,Claim(),[changed])
+        from types import SimpleNamespace
+        from threading import Event
+        from unittest.mock import Mock
+        class Dictionary(Claim):
+            dictionary_database=self.database
+            def close(self):pass
+        class Client:
+            def __init__(self):self.query=query
+            def close(self):pass
+        provider=Mock()
+        provider.fetch_ticker_overview.return_value=dict(payload,ticker='NEXT',composite_figi='BBG000000003')
+        handlers=historical.AcquisitionHandlers(self.database,Claim(),Client,lambda:provider,Dictionary,lambda:None)
+        plan=SimpleNamespace(unit=SimpleNamespace(product='identity_observation'),
+            arguments=dict(as_of='2026-01-02',ticker='NEXT',composite_figi='BBG000000003',cik='123'))
+        handlers.producer(plan,{},Event())
+        verified=handlers.verifier(plan,{})
+        self.assertEqual(verified['output_hash'],historical.normalize(provider.fetch_ticker_overview.return_value,
+            date(2026,1,2),'NEXT').evidence_hash)
+        logs.clear();handlers.producer(plan,{},Event())
+        provider.fetch_ticker_overview.assert_called_once_with('NEXT',as_of=date(2026,1,2))
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
 
     def test_corporate_adjustment_uses_public_execution_evidence_and_scales_state(self):
         from pipelines.certified_research import adjustments,indicators

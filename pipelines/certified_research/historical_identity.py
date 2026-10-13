@@ -1,6 +1,6 @@
 """Identity-only dated provider observations; never fundamental availability."""
 from dataclasses import dataclass,asdict
-from datetime import date,datetime,timezone
+from datetime import date,datetime,timezone,timedelta
 import re
 from .contracts import digest,identifier,literal
 
@@ -142,3 +142,73 @@ def publish(query,database,claim,observations):
     claim.check()
     verify_auxiliary_storage(query,database,(TABLE,))
     return dict(rows=len(desired),inserted=len(missing),evidence_hash=digest(sorted(desired,key=lambda r:(r['as_of'],r['ticker']))))
+
+
+def load(query,database,as_of,ticker):
+    """Read a dated point and independently reconstruct its identity hash."""
+    from .schema import verify_auxiliary_storage
+    identifier(database)
+    if type(as_of) is not date or not re.fullmatch(r'[A-Z0-9._-]{1,32}',ticker):raise ValueError('Invalid historical identity lookup')
+    verify_auxiliary_storage(query,database,(TABLE,))
+    rows=query(f'SELECT * FROM {database}.{TABLE} WHERE as_of=toDate({literal(as_of)}) AND ticker={literal(ticker)}')
+    if not rows:return None
+    if len(rows)!=1:raise ValueError('Historical identity point is duplicated')
+    value=rows[0]
+    if int(value['active']) not in (0,1):raise ValueError('Invalid stored historical activity state')
+    observation=ListingObservation(date.fromisoformat(str(value['as_of'])),value['ticker'],value['composite_figi'],
+        value['share_class_figi'],value['cik'],value['exchange'],value['currency'],value['provider_type'],bool(int(value['active'])),
+        None if value['list_day'] is None else EPOCH+timedelta(days=int(value['list_day'])),
+        None if value['delisted_day'] is None else EPOCH+timedelta(days=int(value['delisted_day'])))
+    if observation.evidence_hash!=value['evidence_hash']:raise ValueError('Stored historical identity evidence hash differs')
+    return observation
+
+
+class AcquisitionHandlers:
+    """One provider request per global executor unit; no nested worker pool."""
+    def __init__(self,database,claim,client_factory,provider_factory,dictionary_claim_factory,source_guard):
+        identifier(database)
+        self.database=database;self.claim=claim;self.clients=client_factory;self.providers=provider_factory
+        self.dictionaries=dictionary_claim_factory;self.guard=source_guard
+
+    def inputs(self,plan):
+        if plan.unit.product!='identity_observation':raise ValueError('Wrong historical identity acquisition product')
+        args=plan.arguments
+        day=date.fromisoformat(args['as_of']);ticker=args['ticker'];figi=args['composite_figi'];cik=args.get('cik')
+        if (not isinstance(ticker,str) or not re.fullmatch(r'[A-Z0-9._-]{1,32}',ticker)
+                or not isinstance(figi,str) or not re.fullmatch('[A-Z0-9]{12}',figi)
+                or (cik is not None and not re.fullmatch('[0-9]{1,10}',str(cik)))):
+            raise ValueError('Invalid historical identity acquisition arguments')
+        return day,ticker,figi,cik
+
+    def verifier(self,plan,parents):
+        day,ticker,figi,cik=self.inputs(plan);client=self.clients()
+        try:
+            self.claim.check();self.guard();observation=load(client.query,self.database,day,ticker)
+            if observation is None:return None
+            reconcile(observation,expected_composite_figi=figi,expected_cik=cik)
+            self.claim.check();self.guard()
+            return dict(output_hash=observation.evidence_hash,as_of=str(day),ticker=ticker,composite_figi=figi)
+        finally:client.close()
+
+    def producer(self,plan,parents,stop):
+        if stop.is_set():raise InterruptedError('Historical identity acquisition stopped')
+        if self.verifier(plan,parents) is not None:return
+        day,ticker,figi,cik=self.inputs(plan)
+        self.claim.check();self.guard()
+        payload=self.providers().fetch_ticker_overview(ticker,as_of=day)
+        observation=reconcile(normalize(payload,day,ticker),expected_composite_figi=figi,expected_cik=cik)
+        self.claim.check();self.guard()
+        if stop.is_set():raise InterruptedError('Historical identity stopped before publication')
+        client=self.clients();dictionary=None
+        try:
+            dictionary=self.dictionaries()
+            if getattr(dictionary,'dictionary_database',None)!=self.database:
+                raise ValueError('Historical identity dictionary ownership is for another database')
+            self.claim.check();self.guard()
+            publish(client.query,self.database,dictionary,[observation])
+            self.claim.check();self.guard()
+        finally:
+            if dictionary is not None:dictionary.close()
+            client.close()
+
+    def registry(self):return {'identity_observation':self.producer},{'identity_observation':self.verifier}
