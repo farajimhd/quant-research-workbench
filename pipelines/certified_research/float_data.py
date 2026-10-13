@@ -6,13 +6,15 @@ parents. Announcement dates never establish that a split has executed.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date,timedelta
+from bisect import bisect_left,bisect_right
 from uuid import UUID
 
 from .contracts import identifier,literal,digest
 from .facts import Metric
 from .fundamentals import metric
 from . import schema
+from .reference_publication import ReferencePublisher
 
 VERSION='public-float-supply-v1'
 FAMILIES=('fundamentals','regular_prices','corporate_actions','float_allocation')
@@ -38,6 +40,41 @@ def parent_hash(receipts):
         raise ValueError('Float requires reported facts, prices, corporate coverage and allocation parents')
     return digest(dict(version=VERSION,parents={k:v['output_hash'] for k,v in sorted(receipts.items())},
         policy=dict(sec_age_days=520,price_gap_days=7,provider_first=True,estimate_confidence=40)))
+
+
+def required_price_sessions(query,database,claim,fundamental_scope,start,end,*,maximum_measurements=2048):
+    """Derive measurement-price context from certified SEC public-float facts.
+
+    This is a conservative union across potentially usable vintages. It does
+    not infer class allocation or create prices before a security was listed.
+    Callers must join the result to dated membership and canonical coverage.
+    """
+    from .source import exchange_sessions
+    identifier(database)
+    if (type(start) is not date or type(end) is not date or start>end
+            or fundamental_scope.entity_kind!=1 or fundamental_scope.family!='fundamentals'
+            or fundamental_scope.start>start or fundamental_scope.end<end
+            or type(maximum_measurements) is not int or not 1<=maximum_measurements<=10000):
+        raise ValueError('Invalid certified float-price context request')
+    publisher=ReferencePublisher(query,database,claim);receipt=publisher.receipt(fundamental_scope)
+    if receipt is None:raise ValueError('Float measurement context requires certified fundamentals')
+    rows=query(f'SELECT DISTINCT period_end FROM {database}.research_facts_v1 WHERE '
+        +fundamental_scope.rows_where(receipt['attempt_id'])+f' AND metric_key={metric("SEC public float value")} '
+        f"AND context_kind=1 AND status=1 AND unit_key=1 AND basis_unit_key=1 AND period_end IS NOT NULL "
+        f'AND period_end BETWEEN toDate({literal(start-timedelta(days=520))}) AND toDate({literal(end)}) '
+        f"AND available_at<toDateTime64({literal(end+timedelta(days=1))},6,'UTC') "
+        f'ORDER BY period_end LIMIT {maximum_measurements+1}')
+    if len(rows)>maximum_measurements:raise ValueError('Float measurement context exceeds its metadata bound')
+    measurements=tuple(date.fromisoformat(str(r['period_end'])) for r in rows)
+    if tuple(sorted(set(measurements)))!=measurements:raise ValueError('Float measurement context is duplicated or unordered')
+    days=exchange_sessions(measurements[0]-timedelta(days=7),measurements[-1]) if measurements else ()
+    needed=set()
+    for day in measurements:needed.update(days[bisect_left(days,day-timedelta(days=7)):bisect_right(days,day)])
+    if publisher.receipt(fundamental_scope)!=receipt:raise ValueError('Fundamental authority changed during price-context discovery')
+    result=dict(measurements=measurements,sessions=tuple(sorted(needed)),fundamentals_hash=receipt['output_hash'],
+        price_gap_days=7,sec_age_days=520)
+    result['context_hash']=digest(result)
+    return result
 
 
 def projection(database,dataset_id,attempt_id,security_key,issuer_key,parents,start: date,end: date,*,wide=False,

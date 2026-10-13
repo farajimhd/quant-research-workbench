@@ -1368,6 +1368,10 @@ class ClickHouseIntegration(unittest.TestCase):
             parent_scopes[family]=parent_scope
             parents[family]=publisher.publish(parent_scope,attempt,publisher.evidence(parent_scope,attempt))
         scope=ReferenceScope(dataset,2,security,'float_supply',date(2025,1,1),date(2026,9,30),float_data.parent_hash(parents),facts.catalog_hash())
+        needed_prices=float_data.required_price_sessions(self.client.query,self.database,Claim(),parent_scopes['fundamentals'],
+            scope.start,scope.end)
+        self.assertIn(date(2024,12,31),needed_prices['sessions'])
+        self.assertIn(date(2024,12,31),needed_prices['measurements'])
         logs=[]
         plans=tuple(PlannedUnit(Unit(family,family),dict(entity_key=p.entity_key,start=str(p.start),end=str(p.end)))
                     for family,p in parent_scopes.items())
