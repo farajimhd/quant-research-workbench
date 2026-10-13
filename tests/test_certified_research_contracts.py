@@ -21,7 +21,7 @@ from pipelines.certified_research import source,acquisition
 from pipelines.certified_research import v7
 from pipelines.certified_research import context
 from pipelines.certified_research import producer
-from pipelines.certified_research import reference_producer,reference_sql,short_sql,universe,fundamentals
+from pipelines.certified_research import reference_producer,reference_sql,short_sql,universe,fundamentals,float_data,price_inputs
 from pipelines.certified_research.reference_publication import ReferenceScope,ReferencePublisher
 
 
@@ -291,6 +291,93 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_regular_price_facts_use_early_close_and_exclude_pm_and_ah(self):
+        from datetime import timezone
+        dataset=str(uuid.uuid4());attempt=str(uuid.uuid4());day=date(2026,11,27);listing=9910;security=9911
+        class Claim:
+            def check(self):pass
+        base=dict(dataset_id=dataset,session_date=str(day),listing_key=listing,attempt_id=attempt,resolution_ms=1000,
+            price_valid=1,extremes_valid=1)
+        bars=[dict(base,bucket_index=bucket,open_int=price,high_int=price,low_int=price,close_int=price)
+            for bucket,price in ((9*3600,100000),(9*3600+35*60,200000),(13*3600-1,300000),(13*3600,990000))]
+        insert_rows(self.client.query,self.database,'research_bars_v1',bars)
+        bar_scope=Scope(dataset,day,listing,'bars','a'*64)
+        publisher=Publisher(self.client.query,self.database,Claim())
+        receipt=publisher.publish(bar_scope,attempt,expected=publisher.evidence(bar_scope,attempt))
+        insert_rows(self.client.query,self.database,'research_membership_v1',[
+            dict(dataset_id=dataset,listing_key=listing,security_key=security,issuer_key=9912,ticker='TEST',conid=91,
+                 valid_from='2026-11-27 00:00:00.000000',valid_to='2026-11-28 00:00:00.000000',
+                 eligible=1,reason='',evidence_hash='a'*64)])
+        scope=ReferenceScope(dataset,2,security,'regular_prices',day,day,price_inputs.parent_hash([(bar_scope,receipt)]),facts.catalog_hash())
+        reference_producer.run_regular_prices(scope,[bar_scope],self.client.query,Claim(),lambda:None,database=self.database)
+        before=self.client.query(facts.lookup_sql(self.database,dataset,[(2,security)],[float_data.key('market.regular_close')],
+            datetime(2026,11,27,17,59,tzinfo=timezone.utc)))
+        self.assertFalse(before)
+        rows=self.client.query(facts.lookup_sql(self.database,dataset,[(2,security)],[float_data.key('market.regular_close')],
+            datetime(2026,11,27,18,tzinfo=timezone.utc)))
+        self.assertEqual(rows[0]['value'],30.)
+
+    def test_float_supply_uses_certified_allocation_prices_and_executed_split_vintages(self):
+        from datetime import timezone,timedelta
+        dataset=str(uuid.uuid4());security=9921;issuer=9922
+        class Claim:
+            def check(self):pass
+        publisher=ReferencePublisher(self.client.query,self.database,Claim());parents={};parent_scopes={}
+        def source_row(kind,key,metric,value,measured,available,unit=2,revision=0,period_start=None,period_end=None):
+            return dict(dataset_id=dataset,entity_kind=kind,entity_key=key,metric_key=metric,value=value,
+                period_start=period_start,period_end=period_end or measured,context_kind=1,fiscal_year=0,fiscal_period='',
+                taxonomy_key=3 if kind==1 else 0,available_at=available,revision=revision,unit_key=unit,basis_unit_key=2 if unit==5 else unit,
+                status=1,precision=1,confidence=90,reason='',evidence_hash=c.digest((kind,key,metric,value,available,revision)))
+        sources={
+            'fundamentals':[
+                source_row(1,issuer,fundamentals.metric('SEC public float value'),500.,'2024-12-31','2025-01-02 12:00:00.000000',1),
+                source_row(1,issuer,fundamentals.metric('Common shares outstanding'),100.,'2024-12-31','2025-01-02 12:00:00.000000')],
+            'regular_prices':[source_row(2,security,float_data.key('market.regular_close'),10.,'2024-12-31','2024-12-31 21:00:00.000000',5)],
+            'float_allocation':[source_row(2,security,float_data.key('identity.float_allocation'),1.,'2026-06-30',
+                '2024-12-01 00:00:00.000000',3,period_start='2024-12-01')],
+            'corporate_actions':[
+                source_row(2,security,float_data.key('corporate.announced_split_ratio'),2.,'2025-01-10','2025-01-05 12:00:00.000000',3),
+                source_row(2,security,float_data.key('corporate.executed_split_ratio'),2.,'2025-01-10','2025-01-10 14:00:00.000000',3),
+                source_row(2,security,float_data.key('corporate.executed_split_ratio'),3.,'2025-01-10','2025-01-12 12:00:00.000000',3,1)],
+            'reported_supply':[
+                source_row(2,security,float_data.key('float.reported'),80.,'2025-01-15','2025-01-15 12:00:00.000000'),
+                source_row(2,security,float_data.key('shares.outstanding'),250.,'2025-01-15','2025-01-15 12:00:00.000000')],
+        }
+        for family,rows in sources.items():
+            attempt=str(uuid.uuid4());rows=[dict(row,attempt_id=attempt) for row in rows]
+            insert_rows(self.client.query,self.database,'research_facts_v1',rows)
+            kind,key=(1,issuer) if family=='fundamentals' else (2,security)
+            parent_scope=ReferenceScope(dataset,kind,key,family,date(2024,12,1),date(2026,9,30),'a'*64,facts.catalog_hash())
+            parent_scopes[family]=parent_scope
+            parents[family]=publisher.publish(parent_scope,attempt,publisher.evidence(parent_scope,attempt))
+        scope=ReferenceScope(dataset,2,security,'float_supply',date(2025,1,1),date(2026,9,30),float_data.parent_hash(parents),facts.catalog_hash())
+        logs=[]
+        def query(sql,*args,**kw):logs.append(sql);return self.client.query(sql,*args,**kw)
+        receipt=reference_producer.run_float(scope,issuer,parent_scopes,query,Claim(),lambda:None,database=self.database)
+        def read(name,at):
+            return self.client.query(facts.lookup_sql(self.database,dataset,[(2,security)],[float_data.key(name)],at,
+                units=(2,),basis_units=(2,),taxonomies=(0,)))[0]
+        def at(year,month,day,hour=12):return datetime(year,month,day,hour,tzinfo=timezone.utc)
+        self.assertEqual(read('float.estimated',at(2025,1,9))['value'],50.)
+        self.assertEqual(read('float.estimated',at(2025,1,10))['reason'],'unconfirmed_split_execution')
+        self.assertIsNone(read('float.estimated',at(2025,1,10))['value'])
+        self.assertEqual(read('float.estimated',at(2025,1,11))['value'],100.)
+        self.assertEqual(read('float.estimated',at(2025,1,13))['value'],150.) # Replacement correction, not 2*3.
+        self.assertEqual(read('float.upper_bound',at(2025,1,13))['value'],300.)
+        self.assertEqual(read('float.reported',at(2025,1,16))['value'],80.)
+        self.assertEqual(read('float.lower_bound',at(2025,1,16))['value'],80.)
+        self.assertEqual(read('float.upper_bound',at(2025,1,16))['value'],80.)
+        self.assertEqual(read('shares.outstanding',at(2025,1,16))['value'],250.)
+        expiry=date(2024,12,31)+timedelta(days=521)
+        stale=read('float.estimated',at(expiry.year,expiry.month,expiry.day+1))
+        self.assertIsNone(stale['value']);self.assertEqual(stale['reason'],'stale_sec_public_float')
+        allocation_expired=read('float.estimated',at(2026,7,1))
+        self.assertIsNone(allocation_expired['value'])
+        self.assertEqual(allocation_expired['reason'],'unqualified_issuer_security_allocation')
+        logs.clear()
+        self.assertEqual(reference_producer.run_float(scope,issuer,parent_scopes,query,Claim(),lambda:None,database=self.database),receipt)
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+
     def test_real_sec_to_derived_chain_uses_original_fiscal_context_in_clickhouse(self):
         dataset=str(uuid.uuid4());key=993
         class Claim:
@@ -515,7 +602,7 @@ class ClickHouseIntegration(unittest.TestCase):
             cls.client.query('CREATE DATABASE '+cls.database,read=False)
             cls.created=True
             for ddl in (*s.ddl(cls.database),*market_day_sql.ddl(cls.database),*market.staging_ddl(cls.database),
-                        reference_producer.staging_table().ddl(cls.database)):
+                        reference_producer.staging_table().ddl(cls.database),float_data.staging_table().ddl(cls.database)):
                 cls.client.query(ddl,read=False)
         except BaseException:
             cls.tearDownClass()

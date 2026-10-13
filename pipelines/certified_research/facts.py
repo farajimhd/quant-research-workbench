@@ -59,11 +59,17 @@ def catalog():
         if len(units)>1:raise ValueError('App catalog mixes incompatible units')
         key='fundamental.'+name.lower().replace(' ','_').replace('&','and')
         by_name[key]=Metric(key,unit,tuple(tags))
-    for name,unit in [('float.reported','shares'),('float.estimated','shares'),('float.upper_bound','shares'),
+    for name,unit in [('float.reported','shares'),('float.estimated','shares'),('float.lower_bound','shares'),('float.upper_bound','shares'),
             ('shares.outstanding','shares'),('short.volume','shares'),('short.exempt_volume','shares'),
             ('short.non_exempt_volume','shares'),('short.total_volume','shares'),('short.interest','shares'),
             ('short.provider_adv','shares/day'),('short.provider_days_to_cover','days')]:
         by_name[name]=Metric(name,unit)
+    for name,unit,formula in [
+            ('market.regular_close','USD/share','unadjusted verified-timely regular-session close'),
+            ('corporate.executed_split_ratio','ratio','confirmed executed combined split ratio per security execution date; availability includes execution confirmation'),
+            ('corporate.announced_split_ratio','ratio','announced split_to/split_from; period_end is execution date'),
+            ('identity.float_allocation','ratio','1 only for certified issuer-to-security share allocation; period interval is half-open')]:
+        by_name[name]=Metric(name,unit,formula=formula)
     by_name['short.volume_ratio']=Metric('short.volume_ratio','ratio',formula='short.volume/short.total_volume; same source venue')
     by_name['short.interest_float_ratio']=Metric('short.interest_float_ratio','ratio',formula='short.interest/qualified_float; matching share basis')
     for name,tags in [('fundamental.total_borrowings',('Borrowings',)),

@@ -42,6 +42,8 @@ The [implemented 19-formula catalog](06a-derived-fundamentals.md) gives exact ar
 
 Float resolution reuses provider-first logic, qualified SEC public-float estimation, outstanding-share upper bound, then unavailable. `EntityPublicFloat` is USD market value, not shares. Estimated float requires measurement-aligned unadjusted regular price, applicable known splits, unique issuer/class bridge, acceptable age, and consistency with outstanding shares. Multi-class allocation is unavailable without evidence; an upper bound is not an actual float. Preserve reported/estimated/upper-bound/unavailable and conflict states.
 
+The [runnable float/supply kernel](06b-float-supply.md) documents its certified parent inputs, separate bounds, price derivation, timing and remaining acquisition/controller dependencies.
+
 ### Current producer gaps
 
 Current gaps: FINRA importer sets publication time null; short data feature SQL falls back to trade/settlement dates; scanner static publication selects latest short records without historical availability; historical loaders use a ticker lookup; float resolution is EOD/ingestion-gated and replaces dated partitions. SEC queries also filter local recorded time. Replace these behaviors in a new research contract, preserving old operational products. Do not merely remove ingestion filters: certify original vintages, original-publication bounds and revisions. Unknown publication times block causal value use; source calendars may provide conservative bounds only with verified evidence.

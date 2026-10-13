@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 from uuid import uuid4
-from . import schema,reference_sql,short_sql,fundamentals
+from . import schema,reference_sql,short_sql,fundamentals,float_data,price_inputs
 from .contracts import identifier,literal,digest
 from .reference_publication import ReferencePublisher
 from .publication import evidence_sql
+from .publication import Publisher
 from .facts import FACT_KEY,UNITS
 
 STAGING='research_stage_reference_v1'
@@ -69,6 +70,60 @@ def run_derived(scope,parent_scope,query,claim,source_guard,*,database='arte'):
     return _materialize(scope,query,claim,source_guard,database,
         lambda attempt:fundamentals.projection(database,scope.dataset_id,attempt,scope.entity_key,
             parent['attempt_id'],scope.start,scope.end,wide=True))
+
+
+def run_float(scope,issuer_key,parent_scopes,query,claim,source_guard,*,database='arte'):
+    claim.check();source_guard();schema.verify_storage(query,database,require_tables=True)
+    schema.verify_auxiliary_storage(query,database,(STAGING,float_data.STAGING))
+    if scope.entity_kind!=2 or scope.family!='float_supply':raise ValueError('Float scope must be security supply')
+    publisher=ReferencePublisher(query,database,claim);parents={}
+    for family,parent_scope in parent_scopes.items():
+        if (family!=parent_scope.family or parent_scope.dataset_id!=scope.dataset_id
+                or parent_scope.start>scope.start or parent_scope.end<scope.end
+                or (parent_scope.entity_kind,parent_scope.entity_key)!=(
+                    (1,issuer_key) if family=='fundamentals' else (2,scope.entity_key))):
+            raise ValueError('Float parent identity/range does not match the requested security')
+        receipt=publisher.receipt(parent_scope)
+        if receipt is None:raise ValueError('Required float parent is not certified: '+family)
+        parents[family]=receipt
+    if scope.parent_hash!=float_data.parent_hash(parents):raise ValueError('Float parent dependencies changed')
+    corporate=parents['corporate_actions']['attempt_id']
+    bad=query(f'SELECT countIf(period_end IS NULL OR unit_key!=3 OR basis_unit_key!=3) bad '
+        f'FROM {database}.research_facts_v1 WHERE dataset_id=toUUID({literal(scope.dataset_id)}) '
+        f'AND attempt_id=toUUID({literal(corporate)}) AND metric_key IN '
+        f'({float_data.key("corporate.executed_split_ratio")},{float_data.key("corporate.announced_split_ratio")})')
+    if int(bad[0]['bad']):raise ValueError('Corporate parent lacks complete execution-date/ratio evidence')
+    def projection(attempt):
+        claim.check();source_guard()
+        query(f'INSERT INTO {database}.{float_data.STAGING} '+float_data.projection(database,scope.dataset_id,attempt,
+            scope.entity_key,issuer_key,parents,scope.start,scope.end,prepare_context=True),read=False)
+        claim.check();source_guard()
+        return float_data.projection(database,scope.dataset_id,attempt,scope.entity_key,issuer_key,
+            parents,scope.start,scope.end,wide=True,context_attempt=attempt)
+    return _materialize(scope,query,claim,source_guard,database,projection)
+
+
+def run_regular_prices(scope,bar_scopes,query,claim,source_guard,*,database='arte'):
+    claim.check();source_guard();schema.verify_storage(query,database,require_tables=True)
+    schema.verify_auxiliary_storage(query,database,(STAGING,))
+    if scope.entity_kind!=2 or scope.family!='regular_prices':raise ValueError('Price facts require a security scope')
+    publisher=Publisher(query,database,claim);parents=[]
+    for parent_scope in sorted(bar_scopes,key=lambda p:p.session_date):
+        if (parent_scope.dataset_id!=scope.dataset_id or parent_scope.product!='bars'
+                or not scope.start<=parent_scope.session_date<=scope.end):
+            raise ValueError('Regular-price bar parent range/identity differs')
+        receipt=publisher.receipt(parent_scope)
+        if receipt is None:raise ValueError('Regular-price bars are not certified')
+        start=price_inputs.bounds(parent_scope.session_date,'09:30:00')
+        end=int(price_inputs.calendar_close(parent_scope.session_date).timestamp()*1_000_000)
+        binding=query(f'SELECT count() n FROM {database}.research_membership_v1 WHERE dataset_id=toUUID({literal(scope.dataset_id)}) '
+            f'AND security_key={scope.entity_key} AND listing_key={parent_scope.listing_key} AND eligible=1 '
+            f'AND toUnixTimestamp64Micro(valid_from)<={start} AND toUnixTimestamp64Micro(valid_to)>={end}')
+        if int(binding[0]['n'])!=1:raise ValueError('Regular-price listing/security membership is absent or ambiguous')
+        parents.append((parent_scope,receipt))
+    if scope.parent_hash!=price_inputs.parent_hash(parents):raise ValueError('Regular-price source/calendar dependency changed')
+    return _materialize(scope,query,claim,source_guard,database,
+        lambda attempt:price_inputs.projection(database,scope.dataset_id,attempt,scope.entity_key,parents,wide=True))
 
 
 def _materialize(scope,query,claim,source_guard,database,projection_factory):
