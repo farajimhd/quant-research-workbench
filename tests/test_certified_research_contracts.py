@@ -23,7 +23,7 @@ from pipelines.certified_research import context
 from pipelines.certified_research import producer
 from pipelines.certified_research import reference_producer,reference_sql,short_sql,universe,fundamentals,float_data,price_inputs
 from pipelines.certified_research.reference_publication import ReferenceScope,ReferencePublisher
-from pipelines.certified_research.campaign import Campaign,PlannedUnit,status as campaign_status
+from pipelines.certified_research.campaign import Campaign,PlannedUnit,load_plan,status as campaign_status
 from pipelines.certified_research.handlers import ReferenceHandlers,MarketHandlers,UniverseHandlers,ActivityHandlers
 from pipelines.certified_research.planning import MarketSession,market_units,IssuerInput,SecurityInput,reference_units
 from pipelines.certified_research.universe_publication import UniversePublisher
@@ -1133,7 +1133,7 @@ class ClickHouseIntegration(unittest.TestCase):
 
     def test_campaign_publishes_only_verified_authorities_and_detects_tampering_on_resume(self):
         dataset=str(uuid.uuid4());day=date(2026,1,2)
-        config=c.CampaignConfig(day,day,workers=2,query_memory_bytes=64*1024**2,global_memory_bytes=128*1024**2)
+        config=c.CampaignConfig(day,day,database=self.database,workers=2,query_memory_bytes=64*1024**2,global_memory_bytes=128*1024**2)
         plans=(PlannedUnit(Unit('source','facts',(),64*1024**2),dict(value=1.,family='fundamentals')),
                PlannedUnit(Unit('child','facts',('source',),64*1024**2),dict(value=2.,family='derived_fundamentals')))
         class Claim:
@@ -1159,8 +1159,35 @@ class ClickHouseIntegration(unittest.TestCase):
         self.assertEqual(len(campaign.verify()),64)
         logs.clear();self.assertEqual(campaign.run()['seal'],result['seal'])
         self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+        stored=load_plan(query,self.database,dataset)
+        restored=stored.controller(query,claim,lambda:None,{'facts':produce},{'facts':verifier})
+        self.assertEqual(restored.run()['seal'],result['seal'])
+        self.assertEqual(stored.config,config)
+        import io,json
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+        from scripts import prepare_certified_research as launcher
+        outer=self
+        class ReadClient:
+            closed=False
+            def query(self,sql,*args,**kwargs):
+                outer.assertIn('readonly=1',sql)
+                return outer.client.query(sql,*args,**kwargs)
+            def clean_error(self,error):return str(error)
+            def close(self):self.closed=True
+        reader=ReadClient();output=io.StringIO()
+        with patch('scripts.build_market_day.Client',return_value=reader),redirect_stdout(output):
+            code=launcher.main(['stored-plan','--dataset-id',dataset,'--database',self.database,'--format','json'])
+        self.assertEqual(code,0);self.assertTrue(reader.closed)
+        self.assertEqual(json.loads(output.getvalue())['plan_hash'],stored.plan_hash)
+        with self.assertRaisesRegex(ValueError,'unit bound'):
+            load_plan(query,self.database,dataset,maximum_units=1)
         self.client.query(f"ALTER TABLE {self.database}.research_facts_v1 UPDATE value=9 WHERE dataset_id=toUUID('{dataset}') AND metric_key=2 SETTINGS mutations_sync=2",read=False)
         with self.assertRaisesRegex(ValueError,'match'):campaign.run()
+        self.client.query(f"ALTER TABLE {self.database}.research_campaign_unit_v1 UPDATE arguments='{{}}' "
+            f"WHERE dataset_id=toUUID('{dataset}') AND unit_key='source' SETTINGS mutations_sync=2",read=False)
+        with self.assertRaisesRegex(ValueError,'fingerprint'):
+            load_plan(query,self.database,dataset)
 
     def test_regular_price_facts_use_early_close_and_exclude_pm_and_ah(self):
         from datetime import timezone

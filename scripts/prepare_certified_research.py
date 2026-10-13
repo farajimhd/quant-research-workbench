@@ -25,7 +25,7 @@ from pipelines.certified_research import contracts,schema,source,short_sql,campa
 
 def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('schema','preflight','plan','status','prepare-sources'))
+    p.add_argument('command',choices=('schema','preflight','plan','status','stored-plan','prepare-sources'))
     p.add_argument('--dataset-id',type=UUID)
     p.add_argument('--database',default='arte')
     p.add_argument('--start-date',type=date.fromisoformat,default=date(2026,1,1))
@@ -49,7 +49,7 @@ def parse_args(argv=None):
     try:contracts.identifier(args.database)
     except ValueError as error:p.error(str(error))
     if args.command!='schema' and args.format=='sql':p.error('SQL format is for schema inspection only')
-    if args.command=='status' and args.dataset_id is None:p.error('status requires --dataset-id')
+    if args.command in ('status','stored-plan') and args.dataset_id is None:p.error(args.command+' requires --dataset-id')
     if args.command=='prepare-sources' and (args.end_date is None or args.format!='text'):
         p.error('prepare-sources requires --end-date and uses text progress')
     if args.hydrate_missing_trades:p.error('Imported-day reporting repair cannot hydrate flatfiles; G-to-D staging belongs to acquisition')
@@ -144,6 +144,15 @@ def main(argv=None):
         if args.command=='status':
             result=campaign.status(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database,str(args.dataset_id))
             print(json.dumps(result,indent=2,default=str))
+            return 0
+        if args.command=='stored-plan':
+            from collections import Counter
+            saved=campaign.load_plan(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database,str(args.dataset_id))
+            result=dict(dataset_id=saved.dataset_id,plan_hash=saved.plan_hash,source_hash=saved.source_hash,
+                config=saved.config.identity(),units=len(saved.units),products=dict(Counter(p.unit.product for p in saved.units)),
+                dependencies=sum(len(p.unit.parents) for p in saved.units),inspection_only=True)
+            if args.format=='json':print(json.dumps(result,indent=2,default=str))
+            else:print(f"Stored plan verified | {result['units']} units | {result['dependencies']} dependencies | {saved.plan_hash}")
             return 0
         # Every query in the inspection path is read-only at the server as well.
         result=inspect_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),args)

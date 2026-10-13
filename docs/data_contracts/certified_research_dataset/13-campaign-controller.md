@@ -20,6 +20,10 @@ Partial membership resumes by inserting only missing expected intervals. Changed
 
 ## Final seal and restart
 
+`campaign.load_plan` reconstructs the exact stored configuration and dependency graph from ClickHouse. It validates current schema/version, dataset dates/database, the complete unit census and content hash, deterministic IDs, argument hashes, parent references and acyclicity. Explicit unit/metadata bounds reject oversized plans without truncating them. The restored controller requires registered producers/verifiers and the original source guard; loading metadata alone never proves data readiness.
+
+The single entry point now exposes `stored-plan --dataset-id <UUID> --database arte` (optionally `--format json`) as a server-enforced read-only inspection of this validated graph. A live fixture restored and resumed an existing sealed controller and rejected changed stored arguments. Full production `run/resume/verify` assembly still requires the unfinished acquisition/admission and initial-seed paths.
+
 The final root hashes the immutable plan, frozen source and all independently verified unit outputs. It is inserted only after every unit verifies, then read back exactly. A previously sealed campaign resumes without inserts and rechecks the complete authority chain. Changed outputs or duplicate seals are rejected.
 
 Keeper suspension/loss invalidates the writer permanently, including a reconnect retaining the session ID. An invalidated claim cannot publish or release uncertain ownership. Source guards and physical SSD placement checks remain required before writers.

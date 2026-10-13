@@ -7,14 +7,14 @@ re-reads every unit's authority and source epoch; progress history is not proof.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime,timezone
+from datetime import date,datetime,timezone
 from hashlib import sha256
 import json,re
 from collections import deque
 from threading import RLock
 from uuid import UUID
 
-from .contracts import digest,identifier,literal
+from .contracts import CampaignConfig,digest,identifier,literal
 from .execution import Unit,execute,validate
 from .publication import insert_rows
 from .schema import schema_hash,verify_storage
@@ -70,6 +70,85 @@ class PlannedUnit:
         body=encoded(self.arguments)
         return dict(dataset_id=dataset,unit_id=unit_id(self.unit.key),unit_key=self.unit.key,product=self.unit.product,
             parents=[unit_id(k) for k in self.unit.parents],arguments=body,arguments_hash=digest(self.arguments),memory_bytes=self.unit.memory_bytes)
+
+
+@dataclass(frozen=True)
+class StoredPlan:
+    dataset_id: str
+    config: CampaignConfig
+    units: tuple[PlannedUnit,...]
+    source_hash: str
+    plan_hash: str
+
+    def controller(self,query,claim,source_guard,producers,verifiers):
+        result=Campaign(query,self.config.database,claim,self.dataset_id,self.config,self.units,
+            self.source_hash,source_guard,producers,verifiers)
+        if result.plan_hash!=self.plan_hash:raise ValueError('Restored controller differs from its immutable stored plan')
+        return result
+
+
+def load_plan(query,database,dataset_id,*,maximum_units=1_000_000,maximum_metadata_bytes=256*1024**2):
+    """Read/validate persisted metadata only; never produce data or mark units done.
+
+    Explicit bounds reject oversized plans rather than truncate their graph.
+    Unit receipts and source epochs still require independent runtime verification.
+    """
+    identifier(database);UUID(dataset_id);verify_storage(query,database,require_tables=True)
+    if (type(maximum_units) is not int or maximum_units<1 or type(maximum_metadata_bytes) is not int
+            or maximum_metadata_bytes<8192):raise ValueError('Invalid stored-plan metadata bounds')
+    where=f'dataset_id=toUUID({literal(dataset_id)})'
+    header=query(f'SELECT contract_hash,schema_hash,definition,start_date,end_date FROM {database}.research_dataset_v1 WHERE {where}')
+    if len(header)!=1:raise ValueError('Stored dataset definition is missing or duplicated')
+    row=header[0]
+    if row['schema_hash']!=schema_hash():raise ValueError('Stored dataset schema is incompatible with current producers')
+    if len(row['definition'].encode())>maximum_metadata_bytes:raise ValueError('Stored definition exceeds metadata budget')
+    def parse_json(text):
+        def pairs(values):
+            result={}
+            for key,value in values:
+                if key in result:raise ValueError('Duplicate key in stored campaign JSON')
+                result[key]=value
+            return result
+        value=json.loads(text,object_pairs_hook=pairs)
+        encoded(value) # Reject secrets and nonfinite numeric values.
+        return value
+    definition=parse_json(row['definition'])
+    if set(definition)!={'config','source_hash','units_hash','unit_count'} or digest(definition)!=row['contract_hash']:
+        raise ValueError('Stored dataset contract fingerprint differs')
+    values=dict(definition['config']['config'])
+    for name in ('start','end'):values[name]=date.fromisoformat(values[name])
+    for name in ('volume_windows_seconds','short_windows_sessions','resolutions_ms','checkpoints'):values[name]=tuple(values[name])
+    config=CampaignConfig(**values)
+    if (config.database!=database or encoded(config.identity())!=encoded(definition['config'])
+            or str(config.start)!=str(row['start_date']) or str(config.end)!=str(row['end_date'])):
+        raise ValueError('Stored campaign configuration/version is incompatible')
+    expected=definition['unit_count']
+    if type(expected) is not int or not 1<=expected<=maximum_units:raise ValueError('Stored plan exceeds the explicit unit bound')
+    census=query(f'SELECT count() n,uniqExact(unit_id) ids,sum(length(unit_key)+length(product)+length(arguments)+length(toJSONString(parents))+256) bytes '
+        f'FROM {database}.research_campaign_unit_v1 WHERE {where}')[0]
+    if int(census['n'])!=expected or int(census['ids'])!=expected:raise ValueError('Stored graph is incomplete or duplicated')
+    if int(census['bytes'])+len(row['definition'].encode())>maximum_metadata_bytes:raise ValueError('Stored graph exceeds the explicit metadata budget')
+    rows=query(f'SELECT * FROM {database}.research_campaign_unit_v1 WHERE {where} ORDER BY unit_id LIMIT {expected+1}')
+    if len(rows)!=expected:raise ValueError('Stored graph changed during load')
+    normalized=[];keys={}
+    for item in rows:
+        item=dict(item,unit_id=int(item['unit_id']),memory_bytes=int(item['memory_bytes']),parents=[int(p) for p in item['parents']])
+        if str(item['dataset_id'])!=dataset_id or item['unit_id']!=unit_id(item['unit_key']):
+            raise ValueError('Stored unit identity differs from its deterministic key')
+        keys[item['unit_id']]=item['unit_key'];normalized.append(item)
+    if digest(normalized)!=definition['units_hash']:raise ValueError('Stored unit content fingerprint differs')
+    plans=[]
+    for item in normalized:
+        arguments=parse_json(item['arguments'])
+        if digest(arguments)!=item['arguments_hash']:raise ValueError('Stored unit argument fingerprint differs')
+        if any(parent not in keys for parent in item['parents']):raise ValueError('Stored unit references an absent parent')
+        plan=PlannedUnit(Unit(item['unit_key'],item['product'],tuple(keys[p] for p in item['parents']),item['memory_bytes']),arguments)
+        if plan.row(dataset_id)!=item:raise ValueError('Stored unit cannot round-trip through the runtime contract')
+        plans.append(plan)
+    validate(tuple(p.unit for p in plans),config.global_memory_bytes)
+    source_hash=definition['source_hash']
+    if not isinstance(source_hash,str) or not re.fullmatch('[0-9a-f]{64}',source_hash):raise ValueError('Stored source epoch is invalid')
+    return StoredPlan(dataset_id,config,tuple(plans),source_hash,row['contract_hash'])
 
 
 class Campaign:
