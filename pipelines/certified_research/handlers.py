@@ -15,7 +15,7 @@ from .execution import Unit
 from .publication import Publisher,Scope
 from .reference_publication import ReferenceScope,ReferencePublisher
 
-PRODUCTS=('fundamentals','derived_fundamentals','short_volume','short_interest','regular_prices','float_supply')
+PRODUCTS=('fundamentals','derived_fundamentals','short_volume','short_interest','regular_prices','float_supply','short_pressure')
 MARKET_PRODUCTS=('market_aggregate','technical','v7')
 
 
@@ -216,10 +216,16 @@ class ReferenceHandlers:
         return scope
 
     def scope(self,plan,parents):
+        from . import short_pressure
         args=plan.arguments;kind=1 if plan.unit.product in ('fundamentals','derived_fundamentals') else 2
         if plan.unit.product=='derived_fundamentals':
             if len(parents)!=1:raise ValueError('Derived fundamentals require one certified reported parent')
             parent=next(iter(parents.values()));parent_hash=reference_producer.derived_parent_hash(parent)
+        elif plan.unit.product=='short_pressure':
+            if len(parents)!=1:raise ValueError('Short pressure requires one certified short-volume parent')
+            key=next(iter(parents))
+            if self.plans[key].unit.product!='short_volume':raise ValueError('Wrong short-pressure parent product')
+            parent_hash=short_pressure.parent_hash(parents[key],tuple(args.get('windows',(20,))))
         elif plan.unit.product=='regular_prices':
             parent_hash=price_inputs.parent_hash(self.bar_parents(parents))
         elif plan.unit.product=='float_supply':
@@ -252,6 +258,11 @@ class ReferenceHandlers:
                 reference_producer.run_derived(scope,parent_scope,query,self.claim,self.source_guard,database=self.database)
             elif plan.unit.product in ('short_volume','short_interest'):
                 reference_producer.run_short(scope,query,self.claim,self.source_guard,database=self.database)
+            elif plan.unit.product=='short_pressure':
+                from . import short_pressure
+                key=next(iter(parents))
+                short_pressure.run(scope,self.received_scope(self.plans[key],parents[key]),
+                    tuple(args.get('windows',(20,))),query,self.claim,self.source_guard,database=self.database)
             elif plan.unit.product=='regular_prices':
                 reference_producer.run_regular_prices(scope,[s for s,_ in self.bar_parents(parents)],query,
                     self.claim,self.source_guard,database=self.database)

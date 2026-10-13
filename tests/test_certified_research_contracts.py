@@ -621,6 +621,9 @@ class ClickHouseIntegration(unittest.TestCase):
                     available_at=day+' 22:00:00.000000',revision=0,value=value,unit_key=2,basis_unit_key=2,
                     status=1,precision=1,confidence=90,reason='',evidence_hash=c.digest((day,name))))
         rows.append(dict(rows[0],value=50,available_at='2026-01-08 22:00:00.000000',revision=1,evidence_hash='b'*64))
+        for base,value in ((rows[0],-1),(rows[1],100)):
+            rows.append(dict(base,period_start='2026-01-09',period_end='2026-01-09',value=value,
+                available_at='2026-01-09 23:00:00.000000',evidence_hash=c.digest(('invalid',base['metric_key']))))
         insert_rows(self.client.query,self.database,'research_facts_v1',rows)
         publisher=ReferencePublisher(self.client.query,self.database,Claim())
         publisher.publish(parent,attempt,publisher.evidence(parent,attempt))
@@ -637,6 +640,28 @@ class ClickHouseIntegration(unittest.TestCase):
         self.assertAlmostEqual(original[0]['ratio'],.25);self.assertAlmostEqual(original[1]['ratio'],.2)
         self.assertIsNone(original[2]['ratio']);self.assertEqual(int(original[2]['context_ready']),0)
         self.assertAlmostEqual(corrected[0]['ratio'],.25);self.assertAlmostEqual(corrected[1]['ratio'],1/3)
+        self.client.query(short_pressure.staging_table().ddl(self.database),read=False)
+        receipt=publisher.receipt(parent);windows=(2,3,20)
+        scope=ReferenceScope(dataset,2,key,'short_pressure',parent.start,parent.end,
+            short_pressure.parent_hash(receipt,windows),facts.catalog_hash())
+        result=short_pressure.run(scope,parent,windows,self.client.query,Claim(),lambda:None,database=self.database)
+        stored=self.client.query(f'SELECT * FROM {self.database}.research_short_pressure_v1 WHERE '
+            +scope.rows_where(result['attempt_id'])+' ORDER BY available_at,window_sessions')
+        before=[r for r in stored if r['available_at'].startswith('2026-01-06')]
+        after=[r for r in stored if r['available_at'].startswith('2026-01-08')]
+        self.assertAlmostEqual(before[1]['ratio'],.2);self.assertAlmostEqual(after[1]['ratio'],1/3)
+        self.assertEqual(before[1]['window_end'],'2026-01-06')
+        self.assertIsNone(after[2]['ratio']);self.assertEqual(int(after[2]['context_ready']),0)
+        invalid=[r for r in stored if r['available_at'].startswith('2026-01-09')]
+        self.assertTrue(all(r['ratio'] is None and int(r['context_ready'])==0 for r in invalid))
+        logs=[]
+        def traced(sql,*args,**kwargs):logs.append(sql);return self.client.query(sql,*args,**kwargs)
+        self.assertEqual(short_pressure.run(scope,parent,windows,traced,Claim(),lambda:None,database=self.database),result)
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+        self.client.query(f"ALTER TABLE {self.database}.research_short_pressure_v1 UPDATE ratio=0.9 WHERE "
+            +scope.rows_where(result['attempt_id'])+" AND ratio IS NOT NULL SETTINGS mutations_sync=2",read=False)
+        with self.assertRaisesRegex(ValueError,'actual output'):
+            short_pressure.run(scope,parent,windows,traced,Claim(),lambda:None,database=self.database)
 
     def test_native_ns_reporting_certificate_recomputes_flags_and_reuses_verified_evidence(self):
         from pipelines.market_sip.events import reporting_evidence

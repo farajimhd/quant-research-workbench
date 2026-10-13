@@ -32,6 +32,26 @@ All tables use `MergeTree`, `live_market_ssd` and lossless per-column compressio
 | `reason` | `LowCardinality(String)` | `ZSTD(1)` |
 | `evidence_hash` | `FixedString(64)` | `ZSTD(1)` |
 
+## research_short_pressure_v1
+
+**Order:** `dataset_id, entity_key, attempt_id, available_at, window_sessions`. **Partition:** `toYYYYMM(available_at)`.
+
+| Column | Type | Codec |
+| --- | --- | --- |
+| `dataset_id`, `attempt_id` | `UUID` | `ZSTD(1)` |
+| `entity_kind` | `UInt8` | `ZSTD(1)` |
+| `entity_key` | `UInt64` | `T64,ZSTD(1)` |
+| `available_at` | `DateTime64(6,'UTC')` | `Delta(8),ZSTD(1)` |
+| `window_sessions`, `observed_sessions` | `UInt16` | `T64,ZSTD(1)` |
+| `window_end` | `Nullable(Date)` | `ZSTD(1)` |
+| `ratio` | `Nullable(Float64)` | `ZSTD(1)` |
+| `context_ready` | `UInt8` | `ZSTD(1)` |
+| `reason` | `LowCardinality(String)` | `ZSTD(1)` |
+
+This is CNMS short-volume pressure, not outstanding short interest or exchange-wide short activity. The producer publishes a snapshot at the range start and every original public input clock; corrections affect subsequent snapshots only. Downstream consumers select the latest certified snapshot whose `available_at` is at or before their decision time, and inspect `window_end` for freshness. Missing/invalid measurement sessions yield a null ratio. Complete zero-volume windows also yield null, with a denominator reason. The latest available measurement anchors the window; publication delays do not manufacture newer measurement dates.
+
+Execution dependency: certified `short_volume` facts → `short_pressure`. Each bounded security/range uses one vectorized ClickHouse projection, an identically compressed private staging table, independent output fingerprints and the shared reference receipt/resume protocol. Window selection is part of the parent recipe. Neither original public times nor absent coverage are inferred. The full campaign launcher and historical source-clock acquisition remain unfinished; this producer is tested independently.
+
 ## research_metric_v1
 
 **Order:** `catalog_hash, metric_key`. **Partition:** `tuple()`.

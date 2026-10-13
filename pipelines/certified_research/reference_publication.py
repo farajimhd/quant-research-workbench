@@ -47,15 +47,17 @@ class ReferencePublisher:
         self.claim.check()
 
     def evidence(self,scope,attempt):
-        table=next(t for t in TABLES if t.name=='research_facts_v1')
-        rows=self.query(evidence_sql(table,f'SELECT * FROM {self.database}.research_facts_v1 WHERE '
-                    +scope.rows_where(attempt),FACT_KEY))
+        name='research_short_pressure_v1' if scope.family=='short_pressure' else 'research_facts_v1'
+        key='tuple(available_at,window_sessions)' if scope.family=='short_pressure' else FACT_KEY
+        table=next(t for t in TABLES if t.name==name)
+        rows=self.query(evidence_sql(table,f'SELECT * FROM {self.database}.{name} WHERE '
+                    +scope.rows_where(attempt),key))
         if len(rows)!=1:raise ValueError('Reference evidence is ambiguous')
         proof={k:int(v) for k,v in rows[0].items()}
         if proof['n']!=proof['unique_keys']:raise ValueError('Duplicate reference fact keys')
         bounds=self.query(f'SELECT countIf(toDate(available_at)<toDate({literal(scope.start)}) '
                          f'OR toDate(available_at)>toDate({literal(scope.end)})) bad '
-                         f'FROM {self.database}.research_facts_v1 WHERE '+scope.rows_where(attempt))
+                         f'FROM {self.database}.{name} WHERE '+scope.rows_where(attempt))
         if int(bounds[0]['bad']):raise ValueError('Reference facts extend beyond their certified range')
         return proof
 
