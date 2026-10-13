@@ -105,3 +105,17 @@ def clock_evidence_inventory(query,start,end):
         coverage.append(dict(table=coverage_table,days=rows))
     return dict(columns=columns,policies=policies,parts=parts,coverage=coverage,reporting_ready=False,
         reason='Microsecond execution clocks with SIP fallback do not prove original participant-clock validity or nanosecond threshold edges. Reporting repair requires certified full reporting evidence; these counts alone cannot certify it.')
+
+
+def corporate_evidence_inventory(query):
+    """Current Gateway split rows are not original-public vintage certificates."""
+    columns=query("SELECT name,type FROM system.columns WHERE database='q_live' AND table='market_stock_split_v1' ORDER BY position")
+    parts=query("SELECT disk_name,sum(rows) rows,sum(data_compressed_bytes) compressed_bytes FROM system.parts "
+        "WHERE active AND database='q_live' AND table='market_stock_split_v1' GROUP BY disk_name ORDER BY disk_name")
+    for row in parts:
+        row['rows']=int(row['rows']);row['compressed_bytes']=int(row['compressed_bytes'])
+    names={r['name'] for r in columns}
+    return dict(table='q_live.market_stock_split_v1',columns=columns,parts=parts,
+        has_execution_date='execution_date' in names,has_local_insertion_time='inserted_at' in names,
+        original_public_vintage_certified=False,
+        reason='Execution date and insertion time do not prove original public availability, announcement history, confirmation or revision vintages. Certified float needs an independently qualified corporate parent.')

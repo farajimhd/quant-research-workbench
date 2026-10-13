@@ -130,6 +130,8 @@ def main(argv=None):
         result=inspect_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),args)
         if args.command=='plan':
             result['storage_inventory']=capacity.inventory(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database)
+            result['corporate_evidence_preflight']=source.corporate_evidence_inventory(
+                lambda sql:client.query(sql+' SETTINGS readonly=1'))
             end=date.fromisoformat(result['config']['config']['end']) if isinstance(result['config']['config']['end'],str) else result['config']['config']['end']
             result['short_publication_preflight']=short_sql.clock_inventory(
                 lambda sql:client.query(sql+' SETTINGS readonly=1'),args.start_date,end)

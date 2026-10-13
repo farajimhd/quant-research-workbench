@@ -30,6 +30,14 @@ from pipelines.certified_research.universe_publication import UniversePublisher
 
 
 class Contracts(unittest.TestCase):
+    def test_corporate_preflight_does_not_backdate_current_split_rows(self):
+        def query(sql):
+            if 'system.columns' in sql:return [dict(name='execution_date',type='Date'),dict(name='inserted_at',type="DateTime64(3,'UTC')")]
+            return [dict(disk_name='live_market_ssd',rows='10',compressed_bytes='100')]
+        result=source.corporate_evidence_inventory(query)
+        self.assertTrue(result['has_execution_date']);self.assertTrue(result['has_local_insertion_time'])
+        self.assertFalse(result['original_public_vintage_certified'])
+
     def test_native_reporting_evidence_builder_has_no_sip_fallback_and_rejects_certified_capture(self):
         from unittest.mock import patch
         from pipelines.market_sip.flatfiles import download_update_events as updater

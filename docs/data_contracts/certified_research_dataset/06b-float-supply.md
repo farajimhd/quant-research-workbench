@@ -4,6 +4,8 @@
 
 ## Inputs and execution
 
+October 12 live source audit: `q_live.market_stock_split_v1` had 16,355 physical rows and fields for execution date, ratio and local insertion time. It lacked original public availability and revision-vintage clocks. The launcher now exposes this as an uncertified corporate-input prerequisite. Neither execution date nor insertion time is backdated into a public announcement/confirmation certificate. A qualified corporate producer and historical evidence acquisition remain necessary before the full float campaign can seal.
+
 The runnable `run_float` producer requires certified same-dataset parents for issuer fundamentals, security regular prices, corporate-action coverage and dated issuer-to-security allocation. A certified security-specific reported-supply parent is optional. Parent receipts are independently read back; issuer/security mismatches and changed dependencies block publication.
 
 Shared as-of observations are prepared once in compressed ClickHouse staging. Prices and corporate revisions consume that context inside ClickHouse. No event files or local data exports are used. The staging table uses `live_market_ssd`; it is not published authority.
