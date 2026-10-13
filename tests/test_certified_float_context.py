@@ -74,3 +74,13 @@ def test_fresh_sec_source_context_reuses_publication_projection_and_fences_drift
         assert 'LIMIT 2049' in sql
         from datetime import timedelta
         assert str(date(2026,1,2)-timedelta(days=521)) in sql
+
+
+def test_measurement_cap_separates_final_market_date_from_utc_availability_date():
+    query=Mock(return_value=[]);proof=dict(source_hash='a'*64,rows=4)
+    with patch('pipelines.certified_research.reference_sql.sec_source_evidence',return_value=proof):
+        source_price_sessions(query,Mock(),Mock(),1,'320193',date(2025,1,1),date(2026,1,3),
+            date(2026,1,2),date(2026,1,3),'a'*64,measurement_end=date(2026,1,2))
+    sql=query.call_args.args[0]
+    assert "AND toDate('2026-01-02')" in sql
+    assert "available_at<toDateTime64('2026-01-04'" in sql

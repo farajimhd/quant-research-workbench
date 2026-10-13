@@ -79,7 +79,7 @@ def required_price_sessions(query,database,claim,fundamental_scope,start,end,*,m
 
 
 def source_price_sessions(query,claim,source_guard,entity_key,cik,source_start,source_end,start,end,
-                          expected_source_hash,*,maximum_measurements=2048):
+                          expected_source_hash,*,maximum_measurements=2048,measurement_end=None):
     """Bootstrap context from frozen SEC inputs without publishing fundamentals.
 
     Uses the publication projection and rechecks the full source fingerprint.
@@ -91,6 +91,9 @@ def source_price_sessions(query,claim,source_guard,entity_key,cik,source_start,s
             or source_start>start or source_end<end or start>end
             or type(maximum_measurements) is not int or not 1<=maximum_measurements<=10000):
         raise ValueError('Invalid SEC float-price context request')
+    measurement_end=end if measurement_end is None else measurement_end
+    if type(measurement_end) is not date or not start<=measurement_end<=end:
+        raise ValueError('Invalid float measurement cutoff')
     def guard():claim.check();source_guard()
     guard()
     before=reference_sql.sec_source_evidence(query,entity_key,cik,source_start,source_end)
@@ -100,7 +103,7 @@ def source_price_sessions(query,claim,source_guard,entity_key,cik,source_start,s
     rows=query(f'SELECT DISTINCT period_end FROM ({projected}) WHERE '
         f'metric_key={metric("SEC public float value")} AND context_kind=1 AND status=1 '
         f'AND unit_key=1 AND basis_unit_key=1 AND period_end IS NOT NULL '
-        f'AND period_end BETWEEN toDate({literal(start-timedelta(days=521))}) AND toDate({literal(end)}) '
+        f'AND period_end BETWEEN toDate({literal(start-timedelta(days=521))}) AND toDate({literal(measurement_end)}) '
         f"AND available_at<toDateTime64({literal(end+timedelta(days=1))},6,'UTC') "
         f'ORDER BY period_end LIMIT {maximum_measurements+1}')
     if len(rows)>maximum_measurements:raise ValueError('SEC float-price context exceeds its metadata bound')

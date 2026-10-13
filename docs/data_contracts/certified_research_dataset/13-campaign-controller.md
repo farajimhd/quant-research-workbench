@@ -22,6 +22,8 @@
 
 [Unified launcher execution, resume and capacity configuration](13j-launcher-execution.md)
 
+[First-launch context preparation and graph assembly](13l-initial-preparation.md)
+
 ## Implemented controller core
 
 `ExecutionLaunch` now combines the concrete market, reference, activity and universe registries into one `Campaign` executor. Acquisition, initial-seed and corporate/allocation stages must supply registered application handlers; missing handlers stop construction, and competing product authorities are rejected. Nothing in stored arguments is executed as code.

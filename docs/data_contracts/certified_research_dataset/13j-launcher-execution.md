@@ -123,6 +123,11 @@ prepared state lanes, price-only historical listings and reference prerequisites
 `initial_plan.run` publishes and executes through the same admission gates.
 These APIs have focused and bounded ClickHouse tests.
 
+[First-launch preparation](13l-initial-preparation.md) now connects SEC float
+measurement-price discovery, expanded canonical/reporting context, dated
+membership, compatible state discovery and price-only histories to the assembler.
+It remains read-only and requires supplied reference source locators.
+
 **Automatic fresh-plan discovery/publication is not yet connected to CLI `run`.**
 Do not mistake the installed-plan execution path for a complete first launch.
 The remaining integration must discover/freeze all source, universe, SEC,
