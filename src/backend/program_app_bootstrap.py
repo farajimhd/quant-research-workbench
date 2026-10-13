@@ -125,12 +125,25 @@ async def prepare_managed_program_startup(application, spec):
 
 
 async def close_managed_program_startup(application):
-    """Close only this app's adopted policy reader, draining cancellation."""
+    """Drain this app's unused native handoff before closing its policy reader."""
     owned = getattr(application.state, OWNED_KEY, None)
     if owned is None:
         return
     setattr(application.state, OWNED_KEY, None)
-    await _settle_owned_task(asyncio.create_task(asyncio.to_thread(owned[0].close)))
+    async def close_owned():
+        errors = []
+        if owned[1] is not None:
+            try:
+                await owned[1].close_prepared_handoff()
+            except BaseException as error:
+                errors.append(error)
+        try:
+            await asyncio.to_thread(owned[0].close)
+        except BaseException as error:
+            errors.append(error)
+        if errors:
+            raise BaseExceptionGroup('Managed programme shutdown failed', errors)
+    await _settle_owned_task(asyncio.create_task(close_owned()))
 
 
 def create_app():

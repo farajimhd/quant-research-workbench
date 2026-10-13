@@ -118,3 +118,10 @@ RTH sessions, producer publication, centrally sealed release/configuration,
 normal app activation, real fills, cold recovery and all30 optimizer comparison.
 Synthetic rule equivalence does not establish filling or P&L equivalence. The
 legacy SQLite-ledger market-day builder is not an approved new producer path.
+
+Managed app shutdown disposes an unused staged programme handoff before closing
+its policy reader. It drains runtime background-task and typed journal cleanup,
+revokes the unused launch plan, and attempts policy-reader cleanup even when a
+handoff resource fails. A run already transferred to the run service remains
+run-owned. Preparation or launch in progress must settle before disposal;
+shutdown reports an ownership error rather than disposing that active handoff.

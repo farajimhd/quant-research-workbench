@@ -35,8 +35,41 @@ class ProgramConfigurationSelectionService:
         self._launching = None
         self._preparing = False
         self._preparation_controller = None
+        self._closed = False
+
+    async def close_prepared_handoff(self):
+        """Dispose only this selector's unused handoff; active runs stay run-owned."""
+        from .backtest_program_journal_startup import _settle_owned_task
+        with self._prepared_lock:
+            if self._preparing or self._launching is not None:
+                raise RuntimeError('Cannot close programme handoff during preparation or launch')
+            self._closed = True
+            prepared, self._prepared = self._prepared, None
+        if prepared is None:
+            return
+        controller = prepared[1]
+        if controller._task is not None or controller.status != 'created':
+            raise RuntimeError('Unused programme handoff unexpectedly owns a running task')
+        async def close_owned():
+            errors = []
+            if controller._runtime is not None:
+                try:
+                    await controller._runtime.close_background_tasks()
+                except BaseException as error:
+                    errors.append(error)
+            try:
+                await controller._close_fixed_journal()
+            except BaseException as error:
+                errors.append(error)
+            controller._program_launch_plan = None
+            controller._program_feature_cache = None
+            if errors:
+                raise BaseExceptionGroup('Unused programme handoff cleanup failed', errors)
+        await _settle_owned_task(asyncio.create_task(close_owned()))
 
     async def snapshot(self, candidate_id, run_plan_id=""):
+        if self._closed:
+            raise RuntimeError('Programme app authority is closed')
         if type(candidate_id) is not str or not candidate_id.startswith("strategy-configuration:"):
             raise ValueError("Programme selection requires its exact central revision identity")
         identity = candidate_id.removeprefix("strategy-configuration:")
@@ -99,7 +132,7 @@ class ProgramConfigurationSelectionService:
         if program_configuration_selection_service() is not self:
             raise ValueError("Programme preparation requires its installed app authority")
         with self._prepared_lock:
-            if self._preparing or self._prepared is not None or self._launching is not None:
+            if self._closed or self._preparing or self._prepared is not None or self._launching is not None:
                 raise ReplayRunCapacityError("App programme handoff is already occupied")
             self._preparing = True
         try:
@@ -147,7 +180,7 @@ class ProgramConfigurationSelectionService:
         if program_configuration_selection_service() is not self:
             raise ValueError("Programme recovery requires its installed app authority")
         with self._prepared_lock:
-            if self._preparing or self._prepared is not None or self._launching is not None:
+            if self._closed or self._preparing or self._prepared is not None or self._launching is not None:
                 raise ReplayRunCapacityError("App programme handoff is already occupied")
             self._preparing = True
         try:
@@ -172,7 +205,7 @@ class ProgramConfigurationSelectionService:
         await self._review_controller(run_service, controller)
         from .replay_run_service import ReplayRunCapacityError
         with self._prepared_lock:
-            if self._launching is not None or self._preparing:
+            if self._closed or self._launching is not None or self._preparing:
                 raise ReplayRunCapacityError("Programme launch is already in progress")
             claim = self._launching = (run_service, controller)
         retain = False
@@ -196,6 +229,8 @@ class ProgramConfigurationSelectionService:
         await self._review_controller(run_service, controller)
         await require_bound_program_start(controller)
         with self._prepared_lock:
+            if self._closed:
+                raise RuntimeError('Programme app authority is closed')
             if self._preparing and self._preparation_controller is not controller:
                 raise RuntimeError("App programme preparation owns another handoff")
             if self._launching is not None:
@@ -242,7 +277,7 @@ class ProgramConfigurationSelectionService:
         from .replay_run_service import ReplayRunService, ReplayRunController
         from .backtest_program_journal_bootstrap import _configuration_hash
         from src.trading_runtime.strategy_configuration_selection import StrategyConfigurationSelection
-        if (program_configuration_selection_service() is not self
+        if (self._closed or program_configuration_selection_service() is not self
                 or type(run_service) is not ReplayRunService or type(controller) is not ReplayRunController
                 or controller.runtime_root != run_service.runtime_root
                 or controller.status != "created" or controller._task is not None):
