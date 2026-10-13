@@ -30,7 +30,8 @@ def test_certified_selection_prepares_native_service_controller_without_starting
         program_release_id=release.header["release_id"], program_release_hash=registration.expected_content_hash)
     revision = materialize_program_configuration(packet, release, {digest: policy})
     definition, _ = definition_and_actor()
-    definition = replace(definition, configuration_revision=revision)
+    definition = replace(definition, configuration_revision=revision, experimental_structure_book="",
+        experimental_structure_fingerprint="b" * 64)
     account, = historical_simulated_account_ids(mode=RunMode.BACKTEST, configuration=revision["payload"])
     selected = replace(selected, account_id=account)
     current = {**revision, "content_hash": "c" * 64} if failure == "review" else revision
@@ -94,6 +95,34 @@ def test_certified_selection_prepares_native_service_controller_without_starting
                 assert preflight["execution_interval"] == "100ms"
                 with pytest.raises(ValueError, match="prepared session"):
                     await selector.preflight(service, **{**scope, "initial_cash": definition.initial_cash + 1})
+                from src.backend import app as api
+                from httpx import AsyncClient, ASGITransport
+                launched = []
+                async def launch(owned_service, owned_controller):
+                    assert owned_service is service and owned_controller is controller
+                    launched.append(owned_controller.run_id)
+                    return controller
+                async def legacy_create(*args, **kwargs):
+                    pytest.fail("Programme HTTP create used the legacy controller path")
+                slot.setattr(selector, "launch_controller", launch)
+                slot.setattr(service, "create", legacy_create)
+                slot.setattr(api, "backtest_run_service", service)
+                request = dict(anchor_date="2026-10-13", session_count=1, initial_cash=definition.initial_cash,
+                    start_time="04:00:00", end_time="20:00:00", run_plan_id=revision["run_plan_id"],
+                    configuration_revision_id=revision["revision_id"], simulation_profile=definition.simulation_profile,
+                    new_order_activation_delay_ms=definition.new_order_activation_delay_ms,
+                    minimum_p_norm=definition.minimum_p_norm)
+                request["experimental_structure_book"] = definition.experimental_structure_book
+                async with AsyncClient(transport=ASGITransport(app=api.app), base_url="http://test") as http:
+                    response = await http.post("/api/trading/historical-preflight", json={**request, "mode": "backtest"})
+                    assert response.status_code == 200, response.text
+                    assert response.json()["prepared_run_id"] == controller.run_id
+                    rejected = await http.post("/api/trading/backtest/runs", json={**request,
+                        "new_order_activation_delay_ms": definition.new_order_activation_delay_ms + 1})
+                    assert rejected.status_code == 400 and not launched
+                    response = await http.post("/api/trading/backtest/runs", json=request)
+                    assert response.status_code == 200, response.text
+                    assert launched == [controller.run_id]
                 assert not service._runs and controller._task is None
             assert not service._runs and controller._task is None
             revision["selection_hash"] = "f" * 64

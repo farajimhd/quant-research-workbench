@@ -5349,6 +5349,8 @@ def _trading_historical_preflight_payload(
         return _blocked_trading_launch_preflight(payload.mode)
     try:
         if payload.mode == "backtest":
+            revision = backtest_configuration_snapshot(payload.run_plan_id,
+                candidate_id=payload.configuration_revision_id)
             return backtest_preflight(
                 anchor_date=payload.anchor_date,
                 session_count=payload.session_count,
@@ -5357,12 +5359,9 @@ def _trading_historical_preflight_payload(
                 end_time=_replay_clock_time(payload.end_time),
                 tickers=tuple(payload.tickers),
                 experimental_structure_book=payload.experimental_structure_book,
-                configuration_revision=(
-                    backtest_configuration_snapshot(
-                        payload.run_plan_id,
-                        candidate_id=payload.configuration_revision_id,
-                    )
-                ),
+                configuration_revision=revision,
+                **({"_program_run_service": backtest_run_service}
+                    if str(revision.get("revision_id") or "").startswith("strategy-configuration:") else {}),
             )
         return historical_preflight(
             mode=payload.mode,
@@ -5507,6 +5506,8 @@ async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict
             configuration_revision=configuration_revision,
             tickers=tuple(payload.tickers),
             experimental_structure_book=payload.experimental_structure_book,
+            **({"_program_run_service": backtest_run_service}
+                if str(configuration_revision.get("revision_id") or "").startswith("strategy-configuration:") else {}),
         )
         if not preflight["strategy_run_ready"]:
             blockers = [str(check.get("summary") or check.get("label"))
@@ -5533,8 +5534,18 @@ async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict
             experimental_structure_book=payload.experimental_structure_book,
             minimum_p_norm=payload.minimum_p_norm,
             tickers=tuple(payload.tickers),
+            **({"experimental_structure_fingerprint": preflight["experimental_structure_fingerprint"]}
+                if str(configuration_revision.get("revision_id") or "").startswith("strategy-configuration:") else {}),
         )
-        controller = await backtest_run_service.create(definition)
+        if str(configuration_revision.get("revision_id") or "").startswith("strategy-configuration:"):
+            from src.backend.program_configuration_selection_service import program_configuration_selection_service
+            selector = program_configuration_selection_service()
+            if selector is None or not preflight.get("prepared_run_id"):
+                raise ValueError("Programme create lacks its reviewed prepared handoff")
+            controller = await selector.launch_reviewed_definition(backtest_run_service, definition,
+                prepared_run_id=preflight["prepared_run_id"])
+        else:
+            controller = await backtest_run_service.create(definition)
         return controller.snapshot()
     except ReplayRunCapacityError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc

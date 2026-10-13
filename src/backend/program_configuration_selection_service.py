@@ -168,9 +168,29 @@ class ProgramConfigurationSelectionService:
             window=dict(sessions=days, session_count=len(days), start=days[0], end=days[-1]),
             market_data_plan=deepcopy(definition.market_data_plan),
             causal_v7_plan=deepcopy(definition.causal_v7_plan),
+            experimental_structure_fingerprint=definition.experimental_structure_fingerprint,
             checks=[dict(id="prepared_programme_funnel", label="Prepared programme funnel", status="ready",
                 required=True, summary="Certified inputs and native typed launch ownership verified.",
                 evidence=controller.run_id)], coverage={}, gateway={"source": "qmd_history_certified"})
+
+    async def launch_reviewed_definition(self, run_service, definition, *, prepared_run_id):
+        """Match the submitted typed run settings before using native admission."""
+        from .replay_run_service import ReplayRunDefinition
+        from src.trading_runtime.arte_backtest_definition import prepare_backtest_definition
+        from .backtest_program_journal_bootstrap import _configuration_hash
+        controller = await self.staged_controller(run_service)
+        if type(definition) is not ReplayRunDefinition or controller.run_id != prepared_run_id:
+            raise ValueError("Programme create differs from its reviewed prepared run")
+        month = controller.created_at.date().replace(day=1)
+        prepared = controller.definition
+        if (_configuration_hash(definition) != _configuration_hash(prepared)
+                or definition.configuration_revision.get("selection_hash") != prepared.configuration_revision.get("selection_hash")
+                or definition.market_data_plan != prepared.market_data_plan
+                or definition.causal_v7_plan != prepared.causal_v7_plan
+                or prepare_backtest_definition(controller.run_id, definition, run_month=month)
+                    != prepare_backtest_definition(controller.run_id, prepared, run_month=month)):
+            raise ValueError("Programme create changed its prepared typed run definition")
+        return await self.launch_controller(run_service, controller)
 
 
 def install_program_configuration_selection_service(service):

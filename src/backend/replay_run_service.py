@@ -540,7 +540,9 @@ class ReplayRunDefinition:
         recovery = recovery or self.configuration_revision.get('payload', {}).get('strategy', {}).get('parameters', {}).get('historical_hod_contract')
         recovery = recovery or self.configuration_revision.get('payload', {}).get('strategy', {}).get('parameters', {}).get('macd_r3_contract')
         hindsight_long = self.configuration_revision.get('payload', {}).get('strategy', {}).get('parameters', {}).get('hindsight_long_contract')
-        if not self.archived_review_only and not self.experimental_structure_book and self.debug_fixture is None and not hindsight_long:
+        programme_selection = str(self.configuration_revision.get("revision_id") or "").startswith("strategy-configuration:")
+        if (not programme_selection and not self.archived_review_only and not self.experimental_structure_book
+                and self.debug_fixture is None and not hindsight_long):
             object.__setattr__(self, 'experimental_structure_book', 'level-book-v7')
         if self.experimental_structure_book and not self.archived_review_only:
             if self.mode == RunMode.BACKTEST and resolved_interval.kind == "fixed":
@@ -12721,6 +12723,7 @@ def backtest_preflight(
     configuration_revision: dict[str, Any] | None = None,
     experimental_structure_book: str = "",
     _saved_review_authority: Any = None,
+    _program_run_service: Any = None,
 ) -> dict[str, Any]:
     preflight_started = time.perf_counter()
     preflight_timings: dict[str, float] = {}
@@ -12734,9 +12737,16 @@ def backtest_preflight(
         )
     approved = configuration_revision or backtest_configuration_snapshot()
     if str(approved.get("revision_id") or "").startswith("strategy-configuration:"):
-        raise ValueError(
-            "Programme Backtest requires its certified QMD/Signal Stream preparation and "
-            "bound native launch; generic legacy preflight cannot certify this selection")
+        from .program_configuration_selection_service import program_configuration_selection_service
+        selector = program_configuration_selection_service()
+        if (selector is None or _program_run_service is None or _saved_review_authority is not None
+                or tickers or experimental_structure_book):
+            raise ValueError("Programme Backtest requires its exact prepared scope and bound native launch")
+        window = historical_window_preview(mode=RunMode.BACKTEST.value, anchor_date=anchor_date,
+            session_count=session_count, replay_end_date=None)
+        return asyncio.run(selector.preflight(_program_run_service, configuration_revision=approved,
+            sessions=tuple(date.fromisoformat(day) for day in window["sessions"]),
+            start_time=start_time, end_time=end_time, initial_cash=initial_cash))
     configuration = dict(approved.get("payload") or {})
     if _saved_review_authority is not None:
         from src.backend.backtest_saved_source_authority import validate_saved_review_source
