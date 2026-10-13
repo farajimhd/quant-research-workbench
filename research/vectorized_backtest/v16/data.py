@@ -38,6 +38,11 @@ class SessionData:
         self.identity=dict(input_sha256=file_hash(self.root/'complete.json'),history_sha256=file_hash(Path(history)/'complete.json'))
         self.file_stats={str(p):(p.stat().st_size,p.stat().st_mtime_ns) for folder in (self.root,Path(history)) for p in folder.iterdir() if p.is_file()}
         self.feature_cache=None
+        # The original 764-channel cache is bound before appending the separate
+        # period-bank identity. Its source/schema check stays unchanged.
+        if feature_cache is not None:
+            from research.vectorized_backtest.v7.feature_cache import FeatureCache
+            self.feature_cache=FeatureCache(feature_cache,self)
         self.indicator_values=None
         if indicator_root is not None:
             import json
@@ -53,9 +58,6 @@ class SessionData:
             if self.indicator_values.dtype!=np.float32 or self.indicator_values.shape!=(len(self.arrays['features']),len(VARIANTS)):raise ValueError('Indicator shape/type mismatch')
             self.identity['indicator_sha256']=file_hash(folder/'complete.json')
             for p in (folder/'complete.json',path):self.file_stats[str(p)]=(p.stat().st_size,p.stat().st_mtime_ns)
-        if feature_cache is not None:
-            from research.vectorized_backtest.v7.feature_cache import FeatureCache
-            self.feature_cache=FeatureCache(feature_cache,self)
 
     def activate(self,device):
         for name,expected in self.file_stats.items():

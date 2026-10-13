@@ -83,3 +83,33 @@ def test_validation_sort_by_training_rank_preserves_validation_rank():
     assert [r['training_rank'] for r in view[:]]==[1,17]
     assert [r['rank'] for r in view[:]]==[2,1]
     assert view[0]['training_net_profit']==900
+
+
+def test_original_cache_and_separate_indicator_identity_both_bound(tmp_path):
+    import json
+    from test_vector_v7_lightweight import fixture_files
+    from research.vectorized_backtest.v7.data import SessionData as OriginalData
+    from research.vectorized_backtest.v7.feature_cache import prepare
+    from research.vectorized_backtest.v16.data import SessionData
+    from research.vectorized_backtest.v16.features import VERSION,VARIANTS
+    from research.vectorized_backtest.v6.torch_backtest.runtime import file_hash
+    from pathlib import Path
+    root,history=fixture_files(tmp_path);old=OriginalData(root,history)
+    cache=tmp_path/'cache';prepare(old,cache)
+    bank=tmp_path/'periods';bank.mkdir();values=np.ones((len(old.arrays['features']),len(VARIANTS)),np.float32)
+    np.save(bank/'values.npy',values)
+    math_file=Path(__file__).resolve().parents[1]/'research/vectorized_backtest/v16/indicator_math.py'
+    (bank/'complete.json').write_text(json.dumps(dict(status='complete',version=VERSION,input_sha256=old.identity['input_sha256'],
+        values_sha256=file_hash(bank/'values.npy'),validation_opened=False,definition=dict(math_sha256=file_hash(math_file)))))
+    new=SessionData(root,history,feature_cache=cache,indicator_root=bank)
+    try:
+        assert 'indicator_sha256' in new.identity
+        actual,valid=new.feature_block(0,new.clocks,[0]);original,mask=old.feature_block(0,old.clocks,[0])
+        torch.testing.assert_close(actual[...,:len(ORIGINAL)],original,rtol=0,atol=0)
+        assert torch.equal(valid[...,:len(ORIGINAL)],mask)
+        from research.vectorized_backtest.v16.io_pipeline import feature_tiles
+        tiles=list(feature_tiles(new,[(0,new.clocks,[0])]))
+        assert len(tiles)==1
+        torch.testing.assert_close(tiles[0][1][0],actual,rtol=0,atol=0)
+        assert torch.equal(tiles[0][1][1],valid)
+    finally:new.close();old.close()
