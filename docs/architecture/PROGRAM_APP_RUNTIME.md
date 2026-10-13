@@ -164,6 +164,12 @@ their final fences and calculation/rule profile. The target-bound numerical
 reader rejects same-day and future parent access. Missing or ambiguous parent
 declarations block preparation; they never silently select a newer mutable
 build timestamp or infer bootstrap state.
+`current_market_day_technical.build_current_market_day_technical` reuses the
+existing numerical SQL and seed-hash rules through that target-bound parent
+reader. Split data comes from the immutable source plan. Reverified completed
+technical output can finish its missing seed checkpoint without reinsertion;
+changed parent state or orphaned uncheckpointed output blocks publication.
+This stage alone does not issue a final fence or admit any app consumer.
 
 Managed app shutdown disposes an unused staged programme handoff before closing
 its policy reader. It drains runtime background-task and typed journal cleanup,

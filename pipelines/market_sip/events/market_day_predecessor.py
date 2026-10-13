@@ -33,6 +33,7 @@ class MarketDayPredecessorLedger:
                     or date.fromisoformat(previous).isoformat() != previous or previous >= day):
                 raise ValueError('Declared predecessor violates chronological source ordering')
         self.predecessors = MappingProxyType(predecessors)
+        self.splits = tuple(MappingProxyType(dict(row)) for row in definition['plan']['splits'])
         ledgers, candidates = {current.build_id: current}, {}
         for packet in parents:
             if type(packet) is not tuple or len(packet) != 2:
