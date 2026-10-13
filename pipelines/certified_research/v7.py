@@ -238,6 +238,77 @@ def verify_seed(query,database,claim,parent,recipe_hash,source_hash,rules):
     return dict(receipt,state_context=dict(context)),checkpoint
 
 
+def discover(query,database,claim,listing_key,before,recipe_hash,rules,day_contexts,*,
+             dataset_id=None,maximum_candidates=128):
+    """Find the latest compatible causal AH authority from bounded metadata.
+
+    Each independently frozen day context supplies source_hash, ticker and
+    adjustment_hash. Receipt metadata is used only for candidate selection;
+    the selected seed must pass ``verify_seed`` before it is returned.
+    """
+    import re
+    from .publication import Publisher,Scope
+    from .producer import MarketRequest
+    from .market import MarketUnit
+    from .price_inputs import calendar_close
+    identifier(database)
+    if (type(listing_key) is not int or not 0<listing_key<2**64 or type(before) is not date
+            or not re.fullmatch('[0-9a-f]{64}',recipe_hash) or not rules
+            or type(maximum_candidates) is not int or not 1<=maximum_candidates<=1024
+            or not 1<=len(day_contexts)<=4096):raise ValueError('Invalid bounded V7 discovery scope')
+    if dataset_id is not None:UUID(dataset_id)
+    contexts={}
+    for key,value in day_contexts.items():
+        day=date.fromisoformat(str(key))
+        if day in contexts:raise ValueError('Duplicated frozen V7 day context')
+        if (set(value)!={'source_hash','ticker','adjustment_hash'}
+                or not re.fullmatch('[0-9a-f]{64}',value['source_hash'])
+                or not value['ticker'] or not isinstance(value['ticker'],str)
+                or not (re.fullmatch('[0-9a-f]{64}',value['adjustment_hash'])
+                    or value['adjustment_hash']=='' and database.startswith('certified_research_test_'))):
+            raise ValueError('V7 discovery needs independently frozen source/ticker/adjustment context')
+        contexts[day]=value
+    days=tuple(sorted(d for d in contexts if d<before))
+    if not days:return None
+    Publisher(query,database,claim)
+    selected=f' AND r.dataset_id=toUUID({literal(dataset_id)})' if dataset_id else ''
+    candidates=query(f'SELECT r.*,c.parent_hash seed_predecessor_hash FROM {database}.research_unit_receipt_v1 r '
+        f'INNER JOIN {database}.research_v7_checkpoint_v1 c USING (dataset_id,session_date,listing_key,attempt_id) '
+        f"WHERE r.product='v7' AND r.status=1 AND r.listing_key={listing_key} AND c.boundary=1 "
+        f"AND r.session_date IN ({','.join('toDate('+literal(d)+')' for d in days)}){selected} "
+        f'ORDER BY r.session_date DESC,r.dataset_id,r.attempt_id LIMIT {maximum_candidates+1}')
+    if len(candidates)>maximum_candidates:raise ValueError('V7 discovery exceeds candidate bound; narrow frozen context or select a dataset')
+    matches=[];inspected=0
+    for candidate in candidates:
+        day=date.fromisoformat(str(candidate['session_date']))
+        if matches and day<matches[0][0].unit.day:break
+        if day not in contexts or day>=before or int(candidate['listing_key'])!=listing_key:
+            raise ValueError('V7 discovery returned an out-of-scope candidate')
+        inspected+=1;context=contexts[day]
+        unit=MarketUnit(str(candidate['dataset_id']),day,context['ticker'],listing_key,str(candidate['attempt_id']))
+        request=MarketRequest(unit,recipe_hash,context['source_hash'],tuple(rules),{},'0'*64,
+            candidate['seed_predecessor_hash'],calendar_close(day),True,adjustment_hash=context['adjustment_hash'])
+        bars_scope=Scope(unit.dataset_id,day,listing_key,'bars',request.parent('bars'))
+        # Compact receipt metadata is provisional until verify_seed checks its
+        # physical output. Incompatible recipes do not fetch bars or payloads.
+        bars=query(f'SELECT * FROM {database}.research_unit_receipt_v1 WHERE '+bars_scope.where()
+            +f" AND product='bars' AND parent_hash={literal(bars_scope.parent_hash)}")
+        if not bars:continue
+        if len(bars)!=1:raise ValueError('Competing V7 source bar receipts')
+        if request.parent('v7',(bars[0]['output_hash'],))!=candidate['parent_hash']:continue
+        parent={k:v for k,v in candidate.items() if k!='seed_predecessor_hash'}
+        parent['state_context']=dict(recipe_hash=recipe_hash,source_hash=context['source_hash'],
+            predecessor_hash=request.prior_v7_hash,ticker=unit.ticker,regular_close=request.regular_close.isoformat(),
+            bars_parent_hash=request.parent('bars'),adjustment_hash=context['adjustment_hash'])
+        matches.append((request,parent))
+    if not matches:return None
+    if len(matches)>1:raise ValueError('Competing compatible V7 predecessors; select an explicit dataset')
+    request,parent=matches[0]
+    dependency,checkpoint=verify_seed(query,database,claim,parent,recipe_hash,request.source_hash,rules)
+    return dict(session=request.unit.day,dependency=dependency,checkpoint=checkpoint,
+        inspected_candidates=inspected,incompatible_candidates=inspected-1)
+
+
 def projection_sql(outputs,dataset_id,attempt_id,listing_key,day,*,include_payload=True,regular_close=None):
     from .schema import TABLES
     names=next(t for t in TABLES if t.name=='research_v7_checkpoint_v1').columns

@@ -1740,6 +1740,19 @@ class ClickHouseIntegration(unittest.TestCase):
             request.dataset_hash,request.source_hash,rules)
         self.assertEqual(seed,result['results']['levels'])
         self.assertEqual(checkpoint['boundary'],'AH')
+        contexts={day:dict(source_hash=request.source_hash,ticker='TEST',adjustment_hash='')}
+        found=v7.discover(self.client.query,self.database,claim,93,date(2026,8,24),request.dataset_hash,rules,contexts)
+        self.assertEqual(found['dependency'],seed)
+        self.assertEqual(found['session'],day)
+        incompatible={day:dict(contexts[day],source_hash='f'*64)}
+        self.assertIsNone(v7.discover(self.client.query,self.database,claim,93,date(2026,8,24),request.dataset_hash,rules,incompatible))
+        def competing(sql):
+            rows=self.client.query(sql)
+            return rows+rows if 'seed_predecessor_hash' in sql else rows
+        with self.assertRaisesRegex(ValueError,'Competing compatible'):
+            v7.discover(competing,self.database,claim,93,date(2026,8,24),request.dataset_hash,rules,contexts)
+        selected=v7.discover(self.client.query,self.database,claim,93,date(2026,8,24),request.dataset_hash,rules,contexts,dataset_id=dataset)
+        self.assertEqual(selected['dependency'],seed)
         from types import SimpleNamespace
         from pipelines.certified_research.handlers import V7SeedHandlers,IndicatorSeedHandlers
         runtime=SimpleNamespace(recipe_hash=request.dataset_hash,sources={day:request.source_hash},rules=rules)
