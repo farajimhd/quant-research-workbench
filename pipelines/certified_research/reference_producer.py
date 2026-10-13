@@ -25,6 +25,8 @@ def run_sec(scope,cik,metrics,query,claim,source_guard,*,database='arte',expecte
     schema.verify_auxiliary_storage(query,database,(STAGING,))
     schema.verify_auxiliary_storage(query,'q_live',('sec_filing_v3','sec_xbrl_company_fact_v3'))
     schema.verify_auxiliary_storage(query,'sec_core',('sec_bulk_mirror_xbrl_fact_v3',))
+    from . import sec_coverage
+    sec_coverage.require_ready(query,scope.start,scope.end)
     if scope.entity_kind!=1 or scope.family!='fundamentals':raise ValueError('SEC scope must be issuer fundamentals')
     if expected_source_hash is not None and expected_source_hash!=scope.parent_hash:
         raise ValueError('SEC input fingerprint differs from publication lineage')

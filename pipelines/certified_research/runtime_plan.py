@@ -5,11 +5,11 @@ from datetime import date
 from .campaign import PlannedUnit,encoded
 from .execution import Unit
 from .contracts import digest
-from . import recipe,facts,fundamentals,reference_sql,reference_producer,float_data,short_sql,short_pressure,price_inputs,activity
+from . import recipe,facts,fundamentals,reference_sql,reference_producer,float_data,short_sql,short_pressure,price_inputs,activity,sec_coverage
 
 
 def reference_contract():
-    modules=(reference_sql,reference_producer,float_data,short_sql,short_pressure,price_inputs,activity)
+    modules=(reference_sql,reference_producer,float_data,short_sql,short_pressure,price_inputs,activity,sec_coverage)
     return dict(catalog=facts.catalog_hash(),formulas=fundamentals.contract_hash(),
         algorithms={module.__name__:recipe.code_hash(module) for module in modules})
 

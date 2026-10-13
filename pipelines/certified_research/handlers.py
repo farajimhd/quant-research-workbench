@@ -101,6 +101,8 @@ class PreparedSecSourceHandlers:
             self.claim.check();self.guard()
             schema.verify_auxiliary_storage(client.query,'q_live',('sec_filing_v3','sec_xbrl_company_fact_v3'))
             schema.verify_auxiliary_storage(client.query,'sec_core',('sec_bulk_mirror_xbrl_fact_v3',))
+            from . import sec_coverage
+            sec_coverage.require_ready(client.query,date.fromisoformat(args['start']),date.fromisoformat(args['end']))
             evidence=reference_sql.sec_source_evidence(client.query,int(args['entity_key']),args['cik'],
                 date.fromisoformat(args['start']),date.fromisoformat(args['end']))
             if evidence['source_hash']!=args['source_hash']:raise ValueError('Frozen SEC public input evidence changed')

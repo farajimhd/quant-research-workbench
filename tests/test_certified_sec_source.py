@@ -33,8 +33,22 @@ def test_sec_handler_rejects_frozen_source_drift_and_closes_client():
     client=SimpleNamespace(query=Mock(),close=Mock())
     handler=PreparedSecSourceHandlers(SimpleNamespace(check=Mock()),lambda:client,Mock())
     with patch('pipelines.certified_research.schema.verify_auxiliary_storage'),patch(
+            'pipelines.certified_research.sec_coverage.require_ready'),patch(
             'pipelines.certified_research.reference_sql.sec_source_evidence',return_value=dict(source_hash='b'*64)):
         with pytest.raises(ValueError,match='changed'):handler.verifier(plan,{})
+    client.close.assert_called_once()
+
+
+def test_sec_handler_checks_acquisition_before_fact_fingerprinting():
+    args=dict(entity_key=1,cik='320193',start='2025-01-01',end='2026-10-02',source_hash='a'*64)
+    plan=PlannedUnit(Unit('sec','sec_acquisition'),args)
+    client=SimpleNamespace(query=Mock(),close=Mock())
+    handler=PreparedSecSourceHandlers(SimpleNamespace(check=Mock()),lambda:client,Mock())
+    with patch('pipelines.certified_research.schema.verify_auxiliary_storage'),patch(
+            'pipelines.certified_research.sec_coverage.require_ready',side_effect=ValueError('coverage incomplete')),patch(
+            'pipelines.certified_research.reference_sql.sec_source_evidence') as facts:
+        with pytest.raises(ValueError,match='coverage incomplete'):handler.verifier(plan,{})
+        facts.assert_not_called()
     client.close.assert_called_once()
 
 

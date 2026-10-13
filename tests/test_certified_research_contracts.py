@@ -771,6 +771,20 @@ class Contracts(unittest.TestCase):
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
 
+    def test_sec_uncovered_acquisition_range_blocks_before_publication(self):
+        from pipelines.certified_research import sec_coverage
+        start=date(2026,1,1);end=date(2026,10,2)
+        coverage=sec_coverage.inventory(self.client.query,start,end)
+        self.assertFalse(coverage['ready'])
+        scope=ReferenceScope(str(uuid.uuid4()),1,991,'fundamentals',start,end,'a'*64,facts.catalog_hash())
+        class Claim:
+            def check(self):pass
+        logs=[]
+        def query(sql,*args,**kwargs):logs.append(sql);return self.client.query(sql,*args,**kwargs)
+        with self.assertRaisesRegex(ValueError,'acquisition coverage is incomplete'):
+            reference_producer.run_sec(scope,'320193',facts.catalog(),query,Claim(),lambda:None,database=self.database)
+        self.assertFalse(any(sql.startswith(('INSERT INTO','ALTER TABLE')) for sql in logs))
+
     def test_retained_recovery_materializes_reconciles_certifies_and_resumes(self):
         from tempfile import TemporaryDirectory
         from types import SimpleNamespace
@@ -1307,7 +1321,7 @@ class ClickHouseIntegration(unittest.TestCase):
     def test_concrete_sec_and_derived_handlers_run_through_campaign_controller(self):
         from types import SimpleNamespace
         from pipelines.certified_research.launch import ExecutionLaunch
-        dataset=str(uuid.uuid4());start=date(2026,1,1);end=date(2026,10,2)
+        dataset=str(uuid.uuid4());start=date(2026,1,1);end=date(2026,8,12)
         config=c.CampaignConfig(start,end,database=self.database,workers=2)
         common=dict(entity_key=9918,start='2025-01-01',end=str(end))
         plans=(PlannedUnit(Unit('sec','fundamentals',(),config.query_memory_bytes),dict(common,cik='320193',source_hash='a'*64)),
@@ -1578,7 +1592,7 @@ class ClickHouseIntegration(unittest.TestCase):
         dataset=str(uuid.uuid4());key=993
         class Claim:
             def check(self):pass
-        parent_scope=ReferenceScope(dataset,1,key,'fundamentals',date(2025,1,1),date(2026,10,2),'a'*64,facts.catalog_hash())
+        parent_scope=ReferenceScope(dataset,1,key,'fundamentals',date(2025,1,1),date(2026,8,12),'a'*64,facts.catalog_hash())
         before=time.monotonic()
         parent=reference_producer.run_sec(parent_scope,'320193',facts.catalog(),self.client.query,Claim(),lambda:None,database=self.database)
         scope=ReferenceScope(dataset,1,key,'derived_fundamentals',parent_scope.start,parent_scope.end,
@@ -1763,7 +1777,7 @@ class ClickHouseIntegration(unittest.TestCase):
 
     def test_real_sec_producer_normalizes_once_and_certifies_public_vintages(self):
         dataset=str(uuid.uuid4());selected=tuple(m for m in facts.catalog() if m.name=='fundamental.cash')
-        scope=ReferenceScope(dataset,1,991,'fundamentals',date(2026,1,1),date(2026,8,21),'a'*64,facts.catalog_hash())
+        scope=ReferenceScope(dataset,1,991,'fundamentals',date(2026,1,1),date(2026,8,12),'a'*64,facts.catalog_hash())
         class Claim:
             def check(self):pass
         logs=[]
@@ -1771,7 +1785,7 @@ class ClickHouseIntegration(unittest.TestCase):
         receipt=reference_producer.run_sec(scope,'320193',selected,query,Claim(),lambda:None,database=self.database)
         self.assertGreater(int(receipt['output_rows']),0)
         rows=self.client.query(facts.lookup_sql(self.database,dataset,[(1,991)],[selected[0].key],
-            datetime(2026,8,21,12,tzinfo=boundaries(date(2026,8,21))['PM'].tzinfo)))
+            datetime(2026,8,12,12,tzinfo=boundaries(date(2026,8,12))['PM'].tzinfo)))
         self.assertEqual(len(rows),1);self.assertEqual(int(rows[0]['status']),1)
         proof=self.client.query(f"SELECT count() n FROM {self.database}.research_provenance_v1")
         self.assertGreater(int(proof[0]['n']),0)
@@ -1780,7 +1794,7 @@ class ClickHouseIntegration(unittest.TestCase):
         self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
     def test_sec_materialized_stage_matches_frozen_input_and_rejects_changed_binding(self):
         selected=tuple(m for m in facts.catalog() if m.name=='fundamental.cash')
-        start=date(2026,1,1);end=date(2026,8,21);dataset=str(uuid.uuid4())
+        start=date(2026,1,1);end=date(2026,8,12);dataset=str(uuid.uuid4())
         class Claim:
             def check(self):pass
         proof=reference_sql.sec_source_evidence(self.client.query,992,'320193',start,end,metrics=selected)

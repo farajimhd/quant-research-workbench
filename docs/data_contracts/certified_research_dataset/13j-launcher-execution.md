@@ -69,6 +69,13 @@ size, **not** a certified sidecar/output storage projection. The bounded real
 ClickHouse integration test proves reconciliation, flag repair, certification,
 preserved prices and receipt reuse; full-day throughput is not yet qualified.
 
+## SEC acquisition admission
+
+SEC producers require completed, error-free acquisition and integrity coverage
+for their actual context range, independently of fact fingerprints. See
+[SEC acquisition admission](13k-sec-acquisition-admission.md) for the exact rules,
+current August 13 exclusive boundary, and validation evidence.
+
 ## Capacity profile configuration
 
 This is small launch **configuration**, not a market/reference data export. All

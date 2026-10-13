@@ -124,6 +124,8 @@ def qualify_plan(result):
         if summary['repair_required']:blocked.append(f"{family}: {summary['unknown_public_time']} rows lack public-time evidence")
     if not result['corporate_evidence_preflight']['original_public_vintage_certified']:
         blocked.append('corporate actions: original public vintages are not certified')
+    if 'sec_acquisition_preflight' in result and not result['sec_acquisition_preflight']['ready']:
+        blocked.append('SEC acquisition: incomplete '+','.join(result['sec_acquisition_preflight']['gaps']))
     if not result['campaign_execution_enabled']:blocked.append('full campaign execution integration is unfinished')
     result['admission_blockers']=blocked;result['status']='blocked' if blocked else 'ready'
     result['reason']='; '.join(blocked) if blocked else 'All campaign admission requirements verified'
@@ -281,6 +283,10 @@ def main(argv=None):
             result['corporate_evidence_preflight']=source.corporate_evidence_inventory(
                 lambda sql:client.query(sql+' SETTINGS readonly=1'))
             end=date.fromisoformat(result['config']['config']['end']) if isinstance(result['config']['config']['end'],str) else result['config']['config']['end']
+            from pipelines.certified_research import sec_coverage,planning
+            result['sec_acquisition_preflight']=sec_coverage.inventory(
+                lambda sql:client.query(sql+' SETTINGS readonly=1'),args.context_start_date or args.start_date,
+                planning.reference_coverage_end(end))
             historical=universe.load(lambda sql:client.query(sql+' SETTINGS readonly=1'),
                 args.context_start_date or args.start_date,end,args.universe_anchor_date)
             result['universe_preflight']=dict(ready=historical['ready'],intervals=len(historical['intervals']),
