@@ -116,20 +116,37 @@ def short_audit(database,dataset_id,entity_key,start,end,family,*,source_databas
     event='short_volume_id' if family=='short_volume' else 'short_interest_id'
     measurement='trade_date' if family=='short_volume' else 'settlement_date'
     # Hash source values, clock evidence and identity binding, excluding ingestion clocks.
-    values=('short_volume,total_volume,exempt_volume,non_exempt_volume' if family=='short_volume'
-            else 'short_interest,avg_daily_volume,days_to_cover,publication_date')
     date_invalid=" OR (publication_date IS NOT NULL AND publication_date<settlement_date)" if family=='short_interest' else ''
     return prefix+f"""SELECT count() n,uniqExact({event}) unique_events,
       countIf({time}) unknown_public_time,
       countIf((published_at_utc IS NOT NULL AND toDate(published_at_utc,'America/New_York')<{measurement}){date_invalid}) invalid_public_time,
       countIf(NOT match(source_content_sha256,'^[0-9a-f]{{64}}$') OR empty(source_evidence_ref)) missing_evidence,
-      lower(hex(SHA256(toJSONString(arraySort(groupArray(tuple({event},provider_ticker,{measurement},
-        {values},published_at_utc,source_system,source_venue,security_id,listing_id,
-        source_content_sha256,source_evidence_ref,mapped_listing_key))))))) source_hash
+      lower(hex(SHA256(toJSONString(arraySort(groupArray({input_tuple(family)})))))) source_hash
       FROM mapped"""
 
 
-def short_projection(database,dataset_id,attempt_id,entity_key,start,end,family,*,source_database='q_live',wide=False):
+def input_tuple(family):
+    if family=='short_volume':event='short_volume_id';measurement='trade_date';values='short_volume,total_volume,exempt_volume,non_exempt_volume'
+    elif family=='short_interest':event='short_interest_id';measurement='settlement_date';values='short_interest,avg_daily_volume,days_to_cover,publication_date'
+    else:raise ValueError('Invalid short input family')
+    return (f'tuple({event},provider_ticker,{measurement},{values},published_at_utc,source_system,source_venue,'
+        'security_id,listing_id,source_content_sha256,source_evidence_ref,mapped_listing_key)')
+
+
+def staged_input_audit(database,where,family):
+    """Reconstruct the original audit hash from lossless staged JSON records."""
+    identifier(database)
+    if family not in ('short_volume','short_interest'):raise ValueError('Invalid short input family')
+    position=16 if family=='short_volume' else 14
+    return (f'WITH records AS (SELECT DISTINCT JSONExtractString(proof,{position}) input_record '
+        f'FROM {database}.research_stage_reference_v1 WHERE {where}) '
+        "SELECT count() n,uniqExact(JSONExtractString(input_record,1)) unique_events,"
+        "lower(hex(SHA256(concat('[',arrayStringConcat(arrayMap(x -> x.2,"
+        "arraySort(x -> x.1,groupArray(tuple(JSONExtractString(input_record,1),input_record)))),','),']')))) source_hash,"
+        f'(SELECT count() FROM {database}.research_stage_reference_v1 WHERE {where}) fact_rows FROM records')
+
+
+def short_projection(database,dataset_id,attempt_id,entity_key,start,end,family,*,source_database='q_live',wide=False,preserve_measurements=False):
     UUID(attempt_id)
     prefix=short_source(database,dataset_id,entity_key,start,end,family,source_database=source_database)
     metrics={m.name:m for m in catalog()}
@@ -161,7 +178,7 @@ def short_projection(database,dataset_id,attempt_id,entity_key,start,end,family,
         toUInt8({integer_range}) integer_range_invalid,toUInt8(({invalid}) OR integer_range_invalid) invalid_values,
         toJSONString(tuple({event},provider_ticker,{measurement},source_system,source_venue,
           mapped_listing_key,{raw_values},
-          published_at_utc,source_content_sha256,source_evidence_ref,{expansion})) source_proof,
+          published_at_utc,source_content_sha256,source_evidence_ref,{expansion},toJSONString({input_tuple(family)}))) source_proof,
         lower(hex(SHA256(source_proof))) evidence_hash,arrayJoin([{expansion}]) metric
       FROM mapped
     ) """
@@ -178,4 +195,4 @@ def short_projection(database,dataset_id,attempt_id,entity_key,start,end,family,
         {"metric.1="+str(metrics['short.volume_ratio'].key)+" AND total_volume=0,'zero_source_denominator'," if family=='short_volume' else ''}
         metric.3 IS NULL,'missing_source_metric','') reason,
       evidence_hash{extras} FROM normalized
-      WHERE toDate(public_at,'UTC') BETWEEN toDate({literal(start)}) AND toDate({literal(end)})"""
+      {'' if preserve_measurements else "WHERE toDate(public_at,'UTC') BETWEEN toDate("+literal(start)+") AND toDate("+literal(end)+")"}"""

@@ -60,9 +60,17 @@ def run_short(scope,query,claim,source_guard,*,database='arte',source_database='
     # The immutable scope is bound to the measured values and original clocks.
     if scope.parent_hash!=audit['source_hash']:
         raise ValueError('Short source differs from the frozen audited dependency')
+    def check_stage(attempt):
+        rows=query(short_sql.staged_input_audit(database,scope.rows_where(attempt),scope.family))
+        if len(rows)!=1:raise ValueError('Materialized short source evidence is ambiguous')
+        staged=rows[0];metrics=5 if scope.family=='short_volume' else 3
+        if (staged['source_hash']!=scope.parent_hash or int(staged['n'])!=int(audit['n'])
+                or int(staged['unique_events'])!=int(staged['n']) or int(staged['fact_rows'])!=int(staged['n'])*metrics):
+            raise ValueError('Short input changed before materialized publication')
     return _materialize(scope,query,claim,source_guard,database,
         lambda attempt:short_sql.short_projection(database,scope.dataset_id,attempt,scope.entity_key,
-            scope.start,scope.end,scope.family,source_database=source_database,wide=True))
+            scope.start,scope.end,scope.family,source_database=source_database,wide=True,preserve_measurements=True),
+        stage_check=check_stage,publication_filter=f"toDate(available_at,'UTC') BETWEEN toDate({literal(scope.start)}) AND toDate({literal(scope.end)})")
 
 
 def derived_parent_hash(receipt):
@@ -147,7 +155,7 @@ def regular_price_parents(scope,bar_scopes,query,claim,*,database='arte'):
     return parents
 
 
-def _materialize(scope,query,claim,source_guard,database,projection_factory,*,stage_check=None):
+def _materialize(scope,query,claim,source_guard,database,projection_factory,*,stage_check=None,publication_filter=None):
     publisher=ReferencePublisher(query,database,claim)
     previous=publisher.receipt(scope)
     if previous:return previous
@@ -157,6 +165,7 @@ def _materialize(scope,query,claim,source_guard,database,projection_factory,*,st
     projection=projection_factory(attempt)
     query(f'INSERT INTO {database}.{STAGING} '+projection,read=False)
     if stage_check is not None:stage_check(attempt)
+    if publication_filter is not None:where+=' AND '+publication_filter
     fact_table=next(t for t in schema.TABLES if t.name=='research_facts_v1')
     names=','.join(c.name for c in fact_table.columns)
     normalized=f'SELECT {names} FROM {database}.{STAGING} WHERE {where}'

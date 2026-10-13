@@ -1520,6 +1520,34 @@ class ClickHouseIntegration(unittest.TestCase):
         interest_receipt=reference_producer.run_short(scope('short_interest'),query,Claim(),lambda:None,
             database=self.database,source_database=self.database)
         self.assertEqual(int(interest_receipt['output_rows']),3)
+        # All measurement inputs are checked even when publication is later
+        # than this scope. Future facts themselves remain unpublished.
+        start=date(2026,1,1);end=date(2026,1,8)
+        future_audit=self.client.query(short_sql.short_audit(self.database,dataset,key,start,end,
+            'short_interest',source_database=self.database))[0]
+        future_scope=ReferenceScope(dataset,2,key,'short_interest',start,end,future_audit['source_hash'],facts.catalog_hash())
+        future=reference_producer.run_short(future_scope,query,Claim(),lambda:None,
+            database=self.database,source_database=self.database)
+        self.assertEqual(int(future['output_rows']),0)
+        # Simulate a real source revision after the frozen audit and before
+        # the staging INSERT, inside this disposable fixture namespace.
+        race_audit=self.client.query(short_sql.short_audit(self.database,dataset,key,start,end,
+            'short_volume',source_database=self.database))[0]
+        race_scope=ReferenceScope(dataset,2,key,'short_volume',start,end,race_audit['source_hash'],facts.catalog_hash())
+        revised=[False]
+        def race(sql,*args,**kwargs):
+            if sql.startswith(f'INSERT INTO {self.database}.research_stage_reference_v1') and not revised[0]:
+                revised[0]=True
+                insert_rows(self.client.query,self.database,'market_short_volume_v1',[
+                    dict(row,short_volume=21,non_exempt_volume=19,source_content_sha256='d'*64,inserted_at='2026-02-02 00:00:00.000')])
+            return self.client.query(sql,*args,**kwargs)
+        with self.assertRaisesRegex(ValueError,'changed before materialized publication'):
+            reference_producer.run_short(race_scope,race,Claim(),lambda:None,
+                database=self.database,source_database=self.database)
+        self.assertEqual(int(self.client.query(f'SELECT count() n FROM {self.database}.research_reference_receipt_v1 WHERE '
+            +race_scope.receipt_where())[0]['n']),0)
+        insert_rows(self.client.query,self.database,'market_short_volume_v1',[
+            dict(row,inserted_at='2026-02-03 00:00:00.000')])
         missing=dict(row,short_volume_id='missing-time',trade_date='2026-01-06',published_at_utc=None)
         insert_rows(self.client.query,self.database,'market_short_volume_v1',[missing])
         logs.clear()
