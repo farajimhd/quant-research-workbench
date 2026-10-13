@@ -1,7 +1,7 @@
 """Shared request/engine resolution from a campaign's certified dependencies."""
 from datetime import date,datetime,time,timezone
 from uuid import uuid4,UUID
-from . import producer,market,market_context,adjustments,price_inputs
+from . import producer,market,market_context,adjustments,price_inputs,source
 from .contracts import identifier,literal
 from .checkpoints import NY
 from .recipe import verify_definition
@@ -43,6 +43,7 @@ class MarketRuntime:
             day=date.fromisoformat(args['day']);listing=int(args['listing_key']);ticker=args['ticker']
             source_hash=self.sources.get(day)
             if source_hash is None:raise ValueError('Market day is outside frozen canonical/reporting context')
+            source.require_exact_symbol(client.query,day,ticker)
             unit=market.MarketUnit(self.dataset,day,ticker,listing,str(uuid4()))
             start=datetime.combine(day,time(4),NY).astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')
             end=datetime.combine(day,time(20),NY).astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')

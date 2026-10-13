@@ -41,6 +41,24 @@ def certified_units(canonical,reporting):
     return plans,{date.fromisoformat(p.arguments['day']):(p.unit.key,) for p in plans}
 
 
+def require_exact_symbol(query,day,ticker):
+    """Do not certify empty bars when normalization hides a source symbol.
+
+    Uses the ingestion-certified compact ticker/day index, never events or
+    retained files. This detects ambiguity; it does not invent an alias map.
+    A genuinely absent source symbol remains a possible no-event session.
+    """
+    if type(day) is not date or not isinstance(ticker,str) or not ticker or len(ticker.encode())>64:
+        raise ValueError('Invalid canonical source symbol check')
+    rows=query('SELECT ticker,event_count FROM market_sip_compact.events_ticker_day_index FINAL '
+        f'WHERE source_date=toDate({literal(day)}) AND upper(ticker)=upper({literal(ticker)}) ORDER BY ticker LIMIT 3')
+    if len(rows)>1:raise ValueError('Canonical source symbol is ambiguous after normalization; explicit historical mapping is required')
+    if rows and rows[0]['ticker']!=ticker:
+        raise ValueError('Canonical source ticker spelling differs from admitted symbol; explicit historical mapping is required')
+    if rows and int(rows[0]['event_count'])<=0:raise ValueError('Canonical ticker/day index has an invalid event count')
+    return bool(rows)
+
+
 def inventory(query,start: date,end: date,*,sessions=None):
     if type(start) is not date or type(end) is not date or start>end:
         raise ValueError('Invalid source inventory range')

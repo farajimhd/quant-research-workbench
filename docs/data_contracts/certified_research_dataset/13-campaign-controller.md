@@ -14,6 +14,8 @@
 
 [Read-only saved dataset verification command](13f-saved-verification.md)
 
+[Case-sensitive canonical source symbol checks](13g-source-symbols.md)
+
 ## Implemented controller core
 
 `ExecutionLaunch` now combines the concrete market, reference, activity and universe registries into one `Campaign` executor. Acquisition, initial-seed and corporate/allocation stages must supply registered application handlers; missing handlers stop construction, and competing product authorities are rejected. Nothing in stored arguments is executed as code.
