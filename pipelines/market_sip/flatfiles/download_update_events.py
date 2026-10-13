@@ -2848,6 +2848,22 @@ def source_filter_key(args: argparse.Namespace) -> str:
     return f"flatfile_direct_events_v{SOURCE_DAY_STATS_VERSION}|drop_trade_correction_codes={codes}|condition_slots={CONDITION_TOKEN_SLOTS}"
 
 
+def certified_source_day_stats(client, args, day):
+    """Imported-day authority; never stat/open files or choose among vintages."""
+    rows=client.query_tsv(f"SELECT quote_event_rows,trade_event_rows,total_event_rows_after_filters,"
+        f"first_sip_timestamp_us,last_sip_timestamp_us,stats_version,source_filter_key "
+        f"FROM {quote_ident(args.database)}.{quote_ident(args.source_day_stats_table)} FINAL "
+        f"WHERE source_date=toDate({sql_string(day.source_date)}) FORMAT TSV").strip().splitlines()
+    if len(rows)!=1:raise RuntimeError('Imported source-day certificate is missing or ambiguous; explicit canonical migration required')
+    fields=rows[0].split('\t')
+    if len(fields)!=7 or int(fields[5])!=SOURCE_DAY_STATS_VERSION or fields[6]!=source_filter_key(args):
+        raise RuntimeError('Imported source-day filter contract is incompatible')
+    q,t,n,first,last=map(int,fields[:5])
+    if q<0 or t<0 or n!=q+t or n<=0 or first<=0 or last<first:
+        raise RuntimeError('Imported source-day counts/bounds are invalid')
+    return RawDayStats(q,t,n,first,last)
+
+
 def source_day_file_identity(args: argparse.Namespace, day: DayFiles) -> SourceDayFileIdentity:
     quote_path = Path(day.quote_job.destination)
     trade_path = Path(day.trade_job.destination)
@@ -3775,47 +3791,25 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
     job = DayJob(source_date=day.source_date, build_step=build_step_for_date(day.source_date))
     ensure_event_table(client, args)
     status = latest_day_status(client, args, job)
+    if status=='ok' and args.force_day_rebuild:
+        raise RuntimeError('Certified source requires an explicit versioned canonical migration; retained-flatfile rebuild is forbidden')
     if status == "ok" and not args.force_day_rebuild:
-        raw_key = f"{day.source_date}:raw_stats_existing"
-        raw_started_at = time.time()
+        certified = certified_source_day_stats(client, args, day)
         if reporter is not None:
-            reporter.task_start(raw_key, "raw flatfile count", day=day.source_date, stage="raw")
-        try:
-            raw_stats = audit_raw_day_count(client, args, day, report_path, context="manifest_ok_skip")
-        except Exception:
-            if reporter is not None:
-                reporter.task_done(raw_key, "failed", seconds=time.time() - raw_started_at)
-            raise
-        if reporter is not None:
-            reporter.task_done(raw_key, "ok", seconds=time.time() - raw_started_at, rows=raw_stats.rows, detail="raw row count and timestamp bounds")
-        if reporter is not None:
-            reporter.task_start(f"{day.source_date}:audit:events_existing", "validate existing event rows", day=day.source_date, stage="audit")
+            reporter.task_start(f"{day.source_date}:audit:events_existing", "validate canonical event rows", day=day.source_date, stage="audit")
         integrity_counts = validate_day_event_integrity(
-            client,
-            args,
-            day,
-            job.build_step,
-            report_path,
-            context="manifest_ok_skip",
-            expected_event_rows=raw_stats.rows,
+            client, args, day, job.build_step, report_path,
+            context="manifest_ok_canonical", expected_event_rows=certified.rows,
         )
         if reporter is not None:
-            reporter.task_done(
-                f"{day.source_date}:audit:events_existing",
-                "ok",
-                rows=integrity_counts.get("rows", 0),
-                detail="existing events have unique ordinals and monotonic timestamps",
-            )
-            reporter.task_start(f"{day.source_date}:audit:raw_existing", "sample raw flatfile match", day=day.source_date, stage="audit")
-        audit_day_events_against_raw_csv(client, args, day, report_path, allow_legacy_flags=True)
-        if reporter is not None:
-            reporter.task_done(f"{day.source_date}:audit:raw_existing", "ok", detail="sample compact rows match raw flatfiles")
+            reporter.task_done(f"{day.source_date}:audit:events_existing","ok",rows=integrity_counts.get('rows',0),
+                detail="certified source count, unique ordinals and monotonic timestamps")
         if reporter is not None:
             reporter.task_start(f"{day.source_date}:index:manifest_ok", "rebuild ticker/day index", day=day.source_date, stage="index")
         rebuild_day_ticker_index(client, args, day, job.build_step, report_path, reason="manifest_ok")
         if reporter is not None:
             reporter.task_start(f"{day.source_date}:execution_clock", "restore execution clock", day=day.source_date, stage="execution-clock")
-        rebuild_execution_clock_day(client, args, day, job.build_step, reporter=reporter)
+        rebuild_execution_clock_day(client, args, day, job.build_step, reporter=reporter, allow_raw_rebuild=False)
         if reporter is not None:
             reporter.task_done(f"{day.source_date}:execution_clock", "ok", detail="exact participant clock coverage")
         if reporter is not None:
@@ -4305,16 +4299,29 @@ def main() -> None:
         if args.execution_clock_only:
             download_results = {day.source_date: {"ok": True} for day in days}
         else:
+            # Imported/certified days never enter file download or raw audit.
+            certified_days=[day for day in days if latest_day_status(
+                client,event_args_for_day(args,day),DayJob(day.source_date,build_step_for_date(day.source_date)))=='ok']
+            if certified_days and args.force_day_rebuild:
+                raise RuntimeError('Certified source requires a versioned migration, not force-day-rebuild')
+            certified_dates={day.source_date for day in certified_days}
+            download_days=[day for day in days if day.source_date not in certified_dates]
+            reporter.total_bytes=sum(int(day.quote_job.remote_size or 0)+int(day.trade_job.remote_size or 0) for day in download_days)
+            for day in certified_days:
+                for job in (day.quote_job,day.trade_job):
+                    reporter.handle_download_event(dict(type='result',kind=job.kind,session_date=day.source_date,
+                        status='skipped_canonical',bytes_expected=0,bytes_written=0))
             progress_queue: mp.Queue = mp.Queue()
             reporter.set_stage("download flatfiles")
             download_results = run_download_phase(
-                days=days,
+                days=download_days,
                 config=config,
                 args=args,
                 reporter=reporter,
                 report_path=report_path,
                 progress_queue=progress_queue,
             )
+            download_results.update({day.source_date:dict(ok=True,statuses={'canonical':'certified'}) for day in certified_days})
 
         reporter.set_stage("insert events")
         completed = 0

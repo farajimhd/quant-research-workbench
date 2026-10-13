@@ -30,6 +30,36 @@ from pipelines.certified_research.universe_publication import UniversePublisher
 
 
 class Contracts(unittest.TestCase):
+    def test_certified_updater_resume_never_reads_flatfiles_and_requires_sidecars(self):
+        from unittest.mock import patch
+        from pipelines.market_sip.flatfiles import download_update_events as updater
+        with patch.object(sys,'argv',['updater','--start-date','2026-01-02','--end-date','2026-01-02','--skip-bars']):
+            args=updater.parse_args()
+        job=updater.DownloadJob('trades','2026-01-02','unavailable.csv.gz','unavailable.csv.gz',1)
+        day=updater.DayFiles('2026-01-02',job,job)
+        class Client:
+            def query_tsv(self,sql):
+                self.sql=sql
+                return '3\t2\t5\t10000000000000001\t10000000000000005\t1\t'+updater.source_filter_key(args)+'\n'
+        client=Client()
+        with patch.object(updater,'event_args_for_day',side_effect=lambda a,d:a),\
+             patch.object(updater,'ensure_event_table'),patch.object(updater,'latest_day_status',return_value='ok'),\
+             patch.object(updater,'validate_day_event_integrity',return_value={'rows':5}) as validate,\
+             patch.object(updater,'rebuild_day_ticker_index'),patch.object(updater,'rebuild_execution_clock_day') as clocks,\
+             patch.object(updater,'audit_raw_day_count',side_effect=AssertionError('raw read')),\
+             patch.object(updater,'audit_day_events_against_raw_csv',side_effect=AssertionError('raw sample')),\
+             patch.object(Path,'stat',side_effect=AssertionError('file access')):
+            stats=updater.certified_source_day_stats(client,args,day)
+            self.assertEqual(stats.first_sip_timestamp_us,10000000000000001)
+            self.assertEqual(updater.run_day(client,args,day,'fixture',Path('unused.jsonl')),'skipped')
+            self.assertEqual(validate.call_args.kwargs['expected_event_rows'],5)
+            self.assertFalse(clocks.call_args.kwargs['allow_raw_rebuild'])
+            args.force_day_rebuild=True
+            with self.assertRaisesRegex(RuntimeError,'versioned canonical migration'):
+                updater.run_day(client,args,day,'fixture',Path('unused.jsonl'))
+        with patch.object(client,'query_tsv',return_value=''):
+            with self.assertRaisesRegex(RuntimeError,'missing or ambiguous'):updater.certified_source_day_stats(client,args,day)
+
     def test_universe_repair_gate_precedes_dictionary_ownership_and_closes_client(self):
         from unittest.mock import patch
         class Claim:
@@ -352,6 +382,21 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_imported_source_statistics_are_read_from_canonical_certificate(self):
+        from unittest.mock import patch
+        from pipelines.market_sip.flatfiles import download_update_events as updater
+        with patch.object(sys,'argv',['updater','--start-date','2026-01-02','--end-date','2026-01-02','--skip-bars']):
+            args=updater.parse_args()
+        builder=self.client
+        class Client:
+            def query_tsv(self,sql):
+                rows=builder.query(sql.replace(' FORMAT TSV',' SETTINGS readonly=1'))
+                return '\n'.join('\t'.join(str(v) for v in row.values()) for row in rows)
+        job=updater.DownloadJob('trades','2026-01-02','unavailable.csv.gz','unavailable.csv.gz',0)
+        stats=updater.certified_source_day_stats(Client(),args,updater.DayFiles('2026-01-02',job,job))
+        self.assertGreater(stats.rows,0);self.assertEqual(stats.quote_rows+stats.trade_rows,stats.rows)
+        self.assertLessEqual(stats.first_sip_timestamp_us,stats.last_sip_timestamp_us)
+
     def test_universe_publication_resumes_partial_membership_and_rechecks_authority(self):
         from datetime import timezone,timedelta
         from hashlib import sha256

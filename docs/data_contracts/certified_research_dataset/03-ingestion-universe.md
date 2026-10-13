@@ -21,6 +21,8 @@ Authority: `market_sip_compact.events_YYYY`, source-day stats and reporting cove
 
 The ingestion entry point is `pipelines/market_sip/flatfiles/download_update_events.py`. Its current code supports remote discovery or explicit start/end source dates, bounded download workers, compact encoding/ClickHouse insert, continuity checks, sampled raw-to-encoded audits, ticker/day index and source-day statistics. New imports compute reporting flags. An updater `ok` manifest is not sufficient by itself to satisfy downstream reporting coverage: reconcile/publish the source-matching reporting receipt required by market-day consumers.
 
+Certified existing days now skip downloads and raw-file audits. Their event integrity is checked against the unique compatible ClickHouse source-day certificate, retaining exact integer timestamp/count precision. Existing clock repair is restricted to canonical/sidecar reads; missing clock rows require an explicit migration. `--force-day-rebuild` cannot reopen a certified day from retained files. Raw count and encoding audits remain part of new-source acquisition.
+
 ### Source-day classification and G-to-D staging
 
 At plan time classify each source day: already certified and reusable; imported but requiring reporting/provenance repair; cached but not imported; or absent and requiring remote acquisition. Reuse certified days without re-reading retained raw files. Copy required existing G files into verified D cache; configure fresh downloads and ClickHouse file paths to that D cache. Validate Windows/UNC and ClickHouse mount paths refer to the same files. Download/import missing sources, certify encoding and source receipts, then run applicable legacy migrations. This ingestion-owned path is the only raw-file consumer.
