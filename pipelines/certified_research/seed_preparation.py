@@ -108,6 +108,12 @@ def prepare_universe(client_factory,config,claim,source_guard,membership,recipe_
     if not membership.get('ready'):raise ValueError('Universe preparation requires admitted execution membership')
     if type(maximum_listings) is not int or not 1<=maximum_listings<=65536:
         raise ValueError('Invalid universe preparation listing bound')
+    targets={s.listing_key for s in membership['sessions'] if config.start<=s.day<=config.end}
+    if not targets or len(targets)>maximum_listings:raise ValueError('Universe preparation target is empty or exceeds listing bound')
+    indicator_datasets=indicator_datasets or {};v7_datasets=v7_datasets or {}
+    for selection in (adjustment_hashes,indicator_datasets,v7_datasets):
+        if set(selection)-targets:raise ValueError('Preparation input belongs to an unplanned listing')
+    relevant=tuple(s for s in membership['sessions'] if s.listing_key in targets)
     stop=stop if stop is not None else Event()
     def spelling_guard():
         if stop.is_set():raise InterruptedError('Source spelling preparation stopped')
@@ -115,18 +121,13 @@ def prepare_universe(client_factory,config,claim,source_guard,membership,recipe_
     spelling_guard()
     reader=client_factory()
     try:
-        resolved=resolve_spellings(reader.query,membership['sessions'],guard=spelling_guard)
+        resolved=resolve_spellings(reader.query,relevant,guard=spelling_guard)
     finally:reader.close()
     membership=dict(membership,sessions=resolved['sessions'],membership_hash=digest(dict(
         membership=membership['membership_hash'],source_index=resolved['evidence_hash'])))
     grouped={}
-    targets={s.listing_key for s in membership['sessions'] if config.start<=s.day<=config.end}
-    if not targets or len(targets)>maximum_listings:raise ValueError('Universe preparation target is empty or exceeds listing bound')
     for session in membership['sessions']:
         if session.listing_key in targets:grouped.setdefault(session.listing_key,[]).append(session)
-    indicator_datasets=indicator_datasets or {};v7_datasets=v7_datasets or {}
-    for selection in (adjustment_hashes,indicator_datasets,v7_datasets):
-        if set(selection)-targets:raise ValueError('Preparation input belongs to an unplanned listing')
     stop=stop if stop is not None else Event();blocked={};lock=Lock();reported_blocked=set()
     class Blocked(Exception):pass
     def run(unit,parents,signal):

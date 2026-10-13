@@ -14,4 +14,6 @@ Aggregation selects the raw source spelling while staging/output identity and V7
 
 `prepare_universe()` performs this discovery before starting its worker pool, closes its coordinator reader, and binds the index fingerprint into membership/preparation evidence. Worker lanes receive the resolved source spellings. This adds no persistence schema, event scan, nested pool or generated file.
 
+Target/listing bounds and dataset-selection keys are checked before opening the source reader. Listings with no admitted target session are excluded from spelling/preparation work; their historical intervals are not discarded from the universe authority. This avoids spending source queries on an invalid or unrelated preparation request.
+
 Read-only live checks confirmed `ABRpD` exists, unmapped `ABRPD` is rejected, an explicit mapping reads a bounded five-event canonical sample, and one batched lookup resolves `ABRPD` plus exact `MSFT` with no absent source sessions. Focused selection/ambiguity checks and the live preparation fixture passed. Full-universe throughput and final launcher orchestration remain unfinished. No retained flatfiles or provider requests were used.

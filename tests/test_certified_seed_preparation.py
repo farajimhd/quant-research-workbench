@@ -68,6 +68,15 @@ def test_metadata_bound_rejects_before_discovery_without_truncating():
     arguments['query'].assert_not_called()
 
 
+def test_universe_admission_checks_target_before_any_source_reader():
+    from pipelines.certified_research.seed_preparation import prepare_universe
+    arguments=inputs();factory=Mock()
+    membership=dict(ready=True,sessions=(MarketSession(date(2026,1,2),11,'TEST'),),membership_hash='a'*64)
+    with pytest.raises(ValueError,match='target is empty'):
+        prepare_universe(factory,arguments['config'],arguments['claim'],arguments['source_guard'],membership,{},(),{}, {})
+    factory.assert_not_called()
+
+
 def test_later_target_rename_is_blocked_before_writers():
     from dataclasses import replace
     arguments=inputs();day=date(2026,1,6);technical,structural=found(date(2026,1,2))
