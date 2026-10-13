@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Inspect certified research schemas and source prerequisites.
+"""Inspect research contracts or prepare canonical source prerequisites.
 
 This entry point is under implementation. No campaign or downstream export
-can be started by the inspection commands. All inspection reads are bounded.
+can be started by the inspection commands. Source preparation owns bounded
+acquisition/reporting repair; derived campaign execution is not yet enabled.
 """
 from __future__ import annotations
 
@@ -19,29 +20,37 @@ sys.dont_write_bytecode=True
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
-from pipelines.certified_research import contracts,schema,source,short_sql,campaign
+from pipelines.certified_research import contracts,schema,source,short_sql,campaign,acquisition
 
 
 def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('schema','preflight','plan','status'))
+    p.add_argument('command',choices=('schema','preflight','plan','status','prepare-sources'))
     p.add_argument('--dataset-id',type=UUID)
     p.add_argument('--database',default='arte')
     p.add_argument('--start-date',type=date.fromisoformat,default=date(2026,1,1))
     p.add_argument('--end-date',type=date.fromisoformat)
+    p.add_argument('--context-start-date',type=date.fromisoformat,help='Explicit earlier source prerequisite bound; target start is unchanged')
     p.add_argument('--env-file',type=Path,default=ROOT/'.env')
     p.add_argument('--workers',type=int,default=4)
     p.add_argument('--query-threads',type=int,default=2)
     p.add_argument('--query-memory-gib',type=int,default=2)
     p.add_argument('--global-memory-gib',type=int,default=16)
     p.add_argument('--format',choices=('text','json','sql'),default='text')
-    p.add_argument('--acquire-missing',action='store_true',help='Include missing-source acquisition in the frozen plan')
+    p.add_argument('--acquire-missing',action='store_true',help='Acquire missing appendable sources before freezing the derived plan')
+    p.add_argument('--stage-archive',action='store_true',help='Stage new-source G files on D inside the canonical updater')
+    p.add_argument('--runtime-root',type=Path,default=acquisition.RUNTIME/'certified-research')
+    p.add_argument('--cache-root',type=Path,default=acquisition.CACHE)
+    p.add_argument('--archive-root',type=Path,default=acquisition.ARCHIVE)
+    p.add_argument('--clickhouse-cache-root',default='/mnt/d/market-data/flatfiles/us_stocks_sip')
     p.add_argument('--hydrate-missing-trades',action='store_true',help='Deprecated: imported-day repair requires canonical sidecars')
     args=p.parse_args(argv)
     try:contracts.identifier(args.database)
     except ValueError as error:p.error(str(error))
     if args.command!='schema' and args.format=='sql':p.error('SQL format is for schema inspection only')
     if args.command=='status' and args.dataset_id is None:p.error('status requires --dataset-id')
+    if args.command=='prepare-sources' and (args.end_date is None or args.format!='text'):
+        p.error('prepare-sources requires --end-date and uses text progress')
     if args.hydrate_missing_trades:p.error('Imported-day reporting repair cannot hydrate flatfiles; G-to-D staging belongs to acquisition')
     return args
 
@@ -92,6 +101,27 @@ def main(argv=None):
     args.max_threads=args.query_threads;args.max_memory_gb=args.query_memory_gib;args.query_timeout=45
     client=builder.Client(args,persistent=False)
     try:
+        if args.command=='prepare-sources':
+            from contextlib import closing
+            from threading import Event
+            from pipelines.market_sip.flatfiles.download_update_events import load_env_files
+            from src.trading_runtime.keeper_session import open_workstation_keeper_session
+            from pipelines.certified_research.publication import SourceClaim
+            load_env_files([args.env_file],verbose=False)
+            config=contracts.CampaignConfig(args.start_date,args.end_date,database=args.database,workers=args.workers,
+                query_threads=args.query_threads,query_memory_bytes=args.query_memory_gib*1024**3,
+                global_memory_bytes=args.global_memory_gib*1024**3)
+            paths=acquisition.IngestionPaths(args.env_file,args.runtime_root,args.cache_root,args.archive_root,args.clickhouse_cache_root)
+            paths.validate()
+            with closing(open_workstation_keeper_session()) as keeper:
+                claim=SourceClaim(keeper.client)
+                try:
+                    result=acquisition.prepare_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),paths,config,claim,
+                        Event(),acquire_missing=args.acquire_missing,stage_archive=args.stage_archive,context_start=args.context_start_date)
+                finally:claim.close()
+            print(f"Source ready | {len(result['source']['expected'])} sessions | {result['source_hash']}")
+            print('Derived campaign execution remains under implementation.')
+            return 0
         if args.command=='status':
             result=campaign.status(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database,str(args.dataset_id))
             print(json.dumps(result,indent=2,default=str))
@@ -119,6 +149,9 @@ def main(argv=None):
     except Exception as error:
         print('Preflight failed: '+client.clean_error(error),file=sys.stderr)
         return 2
+    except KeyboardInterrupt:
+        print('Source preparation interrupted; verify canonical receipts before resume.',file=sys.stderr)
+        return 130
     finally:client.close()
 
 

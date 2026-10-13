@@ -30,6 +30,66 @@ from pipelines.certified_research.universe_publication import UniversePublisher
 
 
 class Contracts(unittest.TestCase):
+    def test_ingestion_ownership_loss_drains_child_and_stop_signals_gracefully(self):
+        from unittest.mock import patch
+        paths=acquisition.IngestionPaths(Path('fixture.env'))
+        command=acquisition.updater_command(paths,date(2026,1,2),date(2026,1,2))
+        class Child:
+            code=None;terminated=0;signals=0
+            def poll(self):return self.code
+            def wait(self,**kwargs):return self.code
+            def terminate(self):self.terminated+=1;self.code=1
+            def send_signal(self,signal):self.signals+=1;self.code=130
+        child=Child();checks=[]
+        def guard():
+            checks.append(1)
+            if len(checks)>1:raise RuntimeError('ownership lost')
+        with patch.object(acquisition.IngestionPaths,'validate'),patch.object(acquisition.subprocess,'Popen',return_value=child) as spawn:
+            with self.assertRaisesRegex(RuntimeError,'ownership lost'):
+                acquisition.run_ingestion(command,paths,Event(),guard=guard)
+            self.assertEqual(child.terminated,1)
+            self.assertEqual(spawn.call_args.kwargs['env']['PYTHONDONTWRITEBYTECODE'],'1')
+        child=Child();stop=Event()
+        def launch(*args,**kwargs):stop.set();return child
+        with patch.object(acquisition.IngestionPaths,'validate'),patch.object(acquisition.subprocess,'Popen',side_effect=launch):
+            with self.assertRaises(InterruptedError):acquisition.run_ingestion(command,paths,stop)
+        self.assertEqual(child.signals,1);self.assertEqual(child.terminated,0)
+
+    def test_source_preparation_orders_acquisition_repair_and_verified_freeze(self):
+        from unittest.mock import patch
+        days=(date(2026,1,2),date(2026,1,5));memory=64*1024**2
+        config=c.CampaignConfig(*days,query_memory_bytes=memory,global_memory_bytes=4*memory)
+        paths=acquisition.IngestionPaths(Path('fixture.env'));commands=[]
+        class Claim:
+            def check(self):pass
+        def query(sql):
+            if 'storage_policies' in sql:return [dict(disk_name='sip_raw_ssd' if "='sip_raw_ssd'" in sql else 'live_market_ssd')]
+            if 'system.tables' in sql:return [dict(name='events_2026',storage_policy='sip_raw_ssd')]
+            if 'system.parts' in sql:return [dict(disk_name='sip_raw_ssd')]
+            return [dict(last_day='2025-12-31')]
+        def runner(command,paths,stop,**kwargs):commands.append(command);kwargs['guard']()
+        missing=dict(expected=days,missing=days,incomplete=());ready=dict(expected=days,missing=(),incomplete=())
+        reporting=dict(missing=(days[-1],),mutating=False);complete=dict(missing=(),mutating=False)
+        with patch.object(source,'inventory',side_effect=[missing,ready]),\
+             patch.object(source,'reporting_inventory',side_effect=[reporting,complete]),\
+             patch.object(source,'require_ready',return_value='a'*64) as verify:
+            result=acquisition.prepare_sources(query,paths,config,Claim(),Event(),acquire_missing=True,
+                stage_archive=True,runner=runner,emit=lambda *args:None)
+        self.assertEqual(len(commands),3)
+        self.assertIn('download_update_events.py',commands[0][2]);self.assertIn('--archive-root-win',commands[0])
+        self.assertEqual(commands[0][commands[0].index('--max-memory-usage')+1],str(memory))
+        self.assertEqual(commands[-1][commands[-1].index('--max-memory-gb')+1],'0.0625')
+        self.assertIn('backfill_trade_reporting_flags.py',commands[-1][2]);self.assertEqual(result['source_hash'],'a'*64)
+        verify.assert_called_once_with(query,ready,complete)
+        with patch.object(source,'inventory',return_value=missing):
+            with self.assertRaisesRegex(ValueError,'acquisition is not selected'):
+                acquisition.prepare_sources(query,paths,config,Claim(),Event(),runner=runner)
+        with patch.object(source,'inventory',return_value=missing):
+            with self.assertRaisesRegex(ValueError,'did not certify'):
+                acquisition.prepare_sources(query,paths,config,Claim(),Event(),acquire_missing=True,runner=runner,emit=lambda *args:None)
+        with self.assertRaisesRegex(ValueError,'Source context'):
+            acquisition.prepare_sources(query,paths,config,Claim(),Event(),context_start=date(2026,1,3))
+
     def test_ingestion_archive_copy_is_atomic_contained_and_restart_safe(self):
         from tempfile import TemporaryDirectory
         from hashlib import sha256

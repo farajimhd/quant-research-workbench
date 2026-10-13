@@ -78,6 +78,12 @@ class DictionaryClaim(KeeperClaim):
         super().__init__(client,resource,owner=owner)
 
 
+class SourceClaim(KeeperClaim):
+    """One canonical acquisition/reporting-repair owner across all datasets."""
+    def __init__(self,client,*,owner=None):
+        super().__init__(client,str(uuid5(NAMESPACE_URL,'certified-research-canonical-source-v1')),owner=owner)
+
+
 def insert_rows(query,database,table,rows,*,maximum_rows=4096,maximum_bytes=8*1024**2):
     """Bounded JSONEachRow transport; source precision and no automatic retry."""
     identifier(database);identifier(table)

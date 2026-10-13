@@ -14,7 +14,8 @@ import subprocess
 import sys
 import time
 
-from .contracts import SOURCE_STORAGE_POLICY
+from .contracts import SOURCE_STORAGE_POLICY,digest
+from . import source
 
 ROOT=Path(__file__).resolve().parents[2]
 ARCHIVE=Path(r'\\DESKTOP-SAAI85T\Workstation-G\market-data\flatfiles\us_stocks_sip')
@@ -52,30 +53,34 @@ def contiguous_ranges(days):
     return tuple(result)
 
 
-def updater_command(paths: IngestionPaths,start: date,end: date,*,workers=4,threads=2,memory_gib=2,stage_archive=False):
+def updater_command(paths: IngestionPaths,start: date,end: date,*,workers=4,threads=2,memory_gib=2,stage_archive=False,memory_bytes=None):
     if start>end or not 1<=workers<=8 or not 1<=threads<=8 or not 1<=memory_gib<=32:
         raise ValueError('Invalid bounded acquisition limits')
+    if memory_bytes is not None and (type(memory_bytes) is not int or not 64*1024**2<=memory_bytes<=32*1024**3):
+        raise ValueError('Invalid acquisition byte budget')
     command=(sys.executable,'-B',str(ROOT/'pipelines/market_sip/flatfiles/download_update_events.py'),
             '--start-date',str(start),'--end-date',str(end),'--env-file',str(paths.env_file),
             '--flatfiles-root-win',str(paths.cache),'--flatfiles-root-ch',paths.clickhouse_cache,
             '--output-root-win',str(paths.runtime/'acquisition'),'--storage-policy',SOURCE_STORAGE_POLICY,
-            '--download-workers',str(workers),'--max-threads',str(threads),'--max-memory-usage',f'{memory_gib}G',
+            '--download-workers',str(workers),'--max-threads',str(threads),'--max-memory-usage',str(memory_bytes) if memory_bytes is not None else f'{memory_gib}G',
             '--skip-bars','--progress-layout','text','--no-progress-screen')
     return command+(('--archive-root-win',str(paths.archive)) if stage_archive else ())
 
 
-def reporting_command(paths: IngestionPaths,start: date,end: date,*,hydrate=False,threads=2,memory_gib=2):
+def reporting_command(paths: IngestionPaths,start: date,end: date,*,hydrate=False,threads=2,memory_gib=2,memory_bytes=None):
     if hydrate:raise ValueError('Historical reporting repair cannot hydrate imported flatfiles; certified sidecars are required')
     if start>end or not 1<=threads<=8 or not 1<=memory_gib<=32:
         raise ValueError('Invalid reporting migration limits')
+    if memory_bytes is not None and (type(memory_bytes) is not int or not 64*1024**2<=memory_bytes<=32*1024**3):
+        raise ValueError('Invalid reporting byte budget')
     command=(sys.executable,'-B',str(ROOT/'scripts/backfill_trade_reporting_flags.py'),
              '--start-date',str(start),'--end-date',str(end),'--env-file',str(paths.env_file),
              '--runtime',str(paths.runtime/'reporting'),'--max-threads',str(threads),
-             '--max-memory-gb',str(memory_gib),'--progress','text')
+             '--max-memory-gb',str(memory_bytes/1024**3 if memory_bytes is not None else memory_gib),'--progress','text')
     return command
 
 
-def run_ingestion(command,paths: IngestionPaths,stop,*,emit=print):
+def run_ingestion(command,paths: IngestionPaths,stop,*,emit=print,guard=None):
     """Own and drain one child. A stopped mutation is reconciled by source gate."""
     paths.validate()
     allowed={str(ROOT/'pipelines/market_sip/flatfiles/download_update_events.py'),
@@ -85,6 +90,7 @@ def run_ingestion(command,paths: IngestionPaths,stop,*,emit=print):
     if any(flag in command for flag in ('--force-day-delete','--force-day-rebuild','--rebuild-existing','--force-rebuild')):
         raise ValueError('Destructive source rebuild is not an automatic acquisition operation')
     if stop.is_set():raise InterruptedError('Acquisition stopped before launch')
+    if guard:guard()
     # Existing tools already report stage progress. Inherit their terminal to
     # avoid pipe deadlock or retaining bulk output in memory/history.
     env=dict(os.environ,PYTHONDONTWRITEBYTECODE='1')
@@ -93,6 +99,7 @@ def run_ingestion(command,paths: IngestionPaths,stop,*,emit=print):
     interrupted=False
     try:
         while child.poll() is None:
+            if guard:guard()
             if stop.wait(.25):
                 interrupted=True
                 child.send_signal(signal.CTRL_BREAK_EVENT if os.name=='nt' else signal.SIGINT)
@@ -110,3 +117,52 @@ def run_ingestion(command,paths: IngestionPaths,stop,*,emit=print):
             try:child.wait(timeout=30)
             except subprocess.TimeoutExpired:child.kill();child.wait(timeout=30)
         raise
+
+
+def prepare_sources(query,paths,config,claim,stop,*,acquire_missing=False,stage_archive=False,emit=print,
+                    runner=run_ingestion,context_start=None):
+    """Acquire/repair first; freeze the derived campaign only after verification.
+
+    Canonical ordinals prohibit filling internal holes through ordinary append.
+    Existing incomplete sources require an explicit migration. Child exit code
+    is never certification: every completed range is reread from ClickHouse.
+    """
+    def guard():
+        claim.check()
+        if stop.is_set():raise InterruptedError('Source preparation stopped')
+    guard()
+    range_start=context_start if context_start is not None else config.start
+    if type(range_start) is not date or not date(2019,1,2)<=range_start<=config.start:
+        raise ValueError('Source context must be within canonical history and no later than target start')
+    for policy in ('sip_raw_ssd','live_market_ssd'):
+        disks=query(f"SELECT disk_name FROM system.storage_policies ARRAY JOIN disks AS disk_name WHERE policy_name='{policy}'")
+        if not disks or any(r['disk_name']!=policy for r in disks):raise ValueError('Required source preparation storage policy is unavailable')
+    tables=query("SELECT name,storage_policy FROM system.tables WHERE database='market_sip_compact' AND match(name,'^events_[0-9]{4}$')")
+    parts=query("SELECT disk_name FROM system.parts WHERE active AND database='market_sip_compact' AND match(table,'^events_[0-9]{4}$') GROUP BY disk_name")
+    if any(r['storage_policy']!='sip_raw_ssd' for r in tables) or any(r['disk_name']!='sip_raw_ssd' for r in parts):
+        raise ValueError('Canonical source tables/parts are misplaced')
+    inv=source.inventory(query,range_start,config.end)
+    if inv['incomplete']:raise ValueError('Incomplete imported days require explicit canonical migration')
+    if inv['missing']:
+        if not acquire_missing:raise ValueError('Missing source days; acquisition is not selected')
+        frontier=query('SELECT max(source_date) last_day FROM market_sip_compact.events_source_day_stats FINAL')[0]['last_day']
+        if frontier and frontier!='1970-01-01' and any(d<=date.fromisoformat(frontier) for d in inv['missing']):
+            raise ValueError('Internal source holes require an ordinal-preserving versioned migration')
+        for first,last in contiguous_ranges(inv['missing']):
+            guard();emit(f'Acquire source range {first} to {last}')
+            command=updater_command(paths,first,last,workers=min(config.workers,8),threads=config.query_threads,
+                memory_bytes=config.query_memory_bytes,stage_archive=stage_archive)
+            runner(command,paths,stop,emit=emit,guard=claim.check);guard()
+        inv=source.inventory(query,range_start,config.end)
+        if inv['missing'] or inv['incomplete']:raise ValueError('Updater did not certify all required source sessions')
+    reporting=source.reporting_inventory(query,inv)
+    if reporting['mutating']:raise ValueError('Canonical reporting mutations must finish before preparation')
+    for first,last in contiguous_ranges(reporting['missing']):
+        guard();emit(f'Reconcile reporting range {first} to {last}')
+        command=reporting_command(paths,first,last,threads=config.query_threads,
+            memory_bytes=config.query_memory_bytes)
+        runner(command,paths,stop,emit=emit,guard=claim.check);guard()
+    reporting=source.reporting_inventory(query,inv);guard()
+    epoch=source.require_ready(query,inv,reporting)
+    return dict(source=inv,reporting=reporting,source_hash=epoch,
+        preparation_hash=digest(dict(source_hash=epoch,range=(range_start,config.start,config.end))))
