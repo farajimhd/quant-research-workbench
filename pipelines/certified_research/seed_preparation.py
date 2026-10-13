@@ -12,7 +12,7 @@ from .recipe import verify_definition
 
 
 def discover_adjustment_contexts(query,config,dataset_id,claim,source_guard,membership,prerequisites,
-                                 corporate_parents,source_days,*,stop=None,maximum_candidates=128):
+                                 corporate_parents,source_days,*,stop=None,maximum_candidates=128,snapshot=None):
     """Independently resolve corporate hashes for bounded prior V7 candidates."""
     from . import adjustments
     from .contracts import literal
@@ -42,12 +42,24 @@ def discover_adjustment_contexts(query,config,dataset_id,claim,source_guard,memb
             raise ValueError('Adjustment-context candidates are outside their bound')
         plan=plans.get(corporate_parents.get(listing));args={} if plan is None else plan.arguments
         if plan is None or plan.unit.product!='corporate_actions':raise ValueError('Candidate lacks certified corporate history')
-        receipt=args['receipt']
-        scope=ReferenceScope(dataset_id,2,int(args['entity_key']),'corporate_actions',date.fromisoformat(args['start']),
-            date.fromisoformat(args['end']),receipt['parent_hash'],catalog_hash())
+        if 'receipt' in args:
+            receipt=args['receipt']
+            scope=ReferenceScope(dataset_id,2,int(args['entity_key']),'corporate_actions',date.fromisoformat(args['start']),
+                date.fromisoformat(args['end']),receipt['parent_hash'],catalog_hash())
+        else:
+            from . import reference_import
+            if len(plan.unit.parents)!=1 or plan.unit.parents[0] not in plans:
+                raise ValueError('Corporate import context lacks its source locator')
+            imported=plans[plan.unit.parents[0]]
+            if imported.unit.product!='reference_import':raise ValueError('Corporate context has an unsupported parent')
+            scope=reference_import.source_scope(imported.arguments['source_receipt'])
         previous=context.preceding_sessions(day,1)[0]
         guard()
-        resolved=adjustments.resolve(query,config.database,claim,scope,listing,previous,day)
+        if snapshot is None:resolved=adjustments.resolve(query,config.database,claim,scope,listing,previous,day)
+        else:
+            from . import short_sql
+            projected=short_sql.snapshot_membership(snapshot,scope.entity_key)
+            resolved=adjustments.resolve(query,config.database,claim,scope,listing,previous,day,membership_sql=projected)
         result.setdefault(listing,{})[day]=resolved.evidence_hash
     guard();return result
 

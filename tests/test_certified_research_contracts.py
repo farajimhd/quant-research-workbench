@@ -772,6 +772,41 @@ class Contracts(unittest.TestCase):
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
 
+    def test_reference_import_preserves_public_values_restarts_partial_and_reuses_receipt(self):
+        from hashlib import sha256
+        from uuid import uuid5,NAMESPACE_URL
+        from pipelines.certified_research import reference_import as imported
+        source_dataset=str(uuid.uuid4());target_dataset=str(uuid.uuid4());key=12201
+        source=ReferenceScope(source_dataset,2,key,'float_allocation',date(2026,1,1),date(2026,1,31),'a'*64,facts.catalog_hash())
+        class Claim:
+            def check(self):pass
+        proof='{"fixture":"qualified-allocation"}';hash_=sha256(proof.encode()).hexdigest()
+        insert_rows(self.client.query,self.database,'research_provenance_v1',[dict(evidence_hash=hash_,source_system='fixture',
+            source_record='allocation-fixture',source_hash='d'*64,proof=proof)])
+        attempt=str(uuid.uuid4());metric=next(m for m in facts.catalog() if m.name=='identity.float_allocation')
+        row=dict(dataset_id=source_dataset,attempt_id=attempt,entity_kind=2,entity_key=key,metric_key=metric.key,
+            period_start='2026-01-01',period_end='2026-01-31',context_kind=1,fiscal_year=0,fiscal_period='',taxonomy_key=0,
+            available_at='2026-01-02 12:00:00.000000',revision=0,value=1.,unit_key=3,basis_unit_key=3,status=1,
+            precision=1,confidence=100,reason='',evidence_hash=hash_)
+        insert_rows(self.client.query,self.database,'research_facts_v1',[row,dict(row,available_at='2026-01-03 12:00:00.000000',revision=1)])
+        publisher=ReferencePublisher(self.client.query,self.database,Claim())
+        receipt=publisher.publish(source,attempt,publisher.evidence(source,attempt))
+        target=imported.target_scope(target_dataset,receipt)
+        target_attempt=str(uuid5(NAMESPACE_URL,c.digest(dict(dataset=target_dataset,parent=target.parent_hash))))
+        insert_rows(self.client.query,self.database,'research_facts_v1',[dict(row,dataset_id=target_dataset,attempt_id=target_attempt)])
+        actual=imported.run(self.client.query,self.database,target_dataset,receipt,Claim(),lambda:None)
+        self.assertEqual(int(actual['output_rows']),2)
+        values=self.client.query(f'SELECT available_at,value,evidence_hash FROM {self.database}.research_facts_v1 WHERE '
+            +target.rows_where(target_attempt)+' ORDER BY available_at')
+        self.assertEqual([v['value'] for v in values],[1.,1.]);self.assertEqual([v['evidence_hash'] for v in values],[hash_,hash_])
+        logs=[]
+        def query(sql,*args,**kwargs):logs.append(sql);return self.client.query(sql,*args,**kwargs)
+        self.assertEqual(imported.run(query,self.database,target_dataset,receipt,Claim(),lambda:None),actual)
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+        self.client.query(f"ALTER TABLE {self.database}.research_provenance_v1 UPDATE proof='changed' WHERE evidence_hash='{hash_}' SETTINGS mutations_sync=2",read=False)
+        with self.assertRaisesRegex(ValueError,'provenance'):
+            imported.run(self.client.query,self.database,target_dataset,receipt,Claim(),lambda:None)
+
     def test_million_row_reporting_majority_preserves_all_classes_with_bounded_memory(self):
         from pipelines.market_sip.events.native_reporting_repair import desired_flags_sql
         evaluated="(SELECT 'TEST' ticker,toUInt64(number) ordinal,toUInt8(multiIf(number<990000,0,number<995000,4,8)) expected_reason FROM numbers(1000000))"

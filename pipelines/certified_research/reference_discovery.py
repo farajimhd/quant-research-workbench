@@ -78,6 +78,21 @@ def discover(query,config,dataset_id,claim,client_factory,source_guard,snapshot,
         receipts[key]=row
     missing=tuple(dict(security_key=key,family=family,start=str(fundamental_start),end=str(end))
         for key in sorted(securities) for family in ('corporate_actions','float_allocation') if (key,family) not in receipts)
+    donor_receipts={}
+    if missing:
+        missing_keys={(r['security_key'],r['family']) for r in missing}
+        pairs=','.join(f'({r["security_key"]},{literal(r["family"])})' for r in missing)
+        donors=query(f'SELECT * FROM {config.database}.research_reference_receipt_v1 WHERE dataset_id!=toUUID({literal(dataset_id)}) '
+            f'AND entity_kind=2 AND (entity_key,family) IN ({pairs}) AND catalog_hash={literal(facts.catalog_hash())} '
+            f'AND range_start<=toDate({literal(fundamental_start)}) AND range_end>=toDate({literal(end)}) LIMIT {maximum_entities*4+1}')
+        if len(donors)>maximum_entities*4:raise ValueError('Reference import candidates exceed their metadata bound')
+        for row in donors:
+            key=(int(row['entity_key']),row['family'])
+            if key in donor_receipts:raise ValueError('Competing qualified reference imports require explicit selection')
+            if key in receipts or key not in missing_keys:
+                raise ValueError('Reference import candidate is unrelated to missing authority')
+            donor_receipts[key]=row
+        missing=tuple(r for r in missing if (r['security_key'],r['family']) not in donor_receipts)
     if missing:
         guard()
         return dict(ready=False,issuers=(),securities=(),prerequisites=(),corporate_parents={},
@@ -127,14 +142,23 @@ def discover(query,config,dataset_id,claim,client_factory,source_guard,snapshot,
             short_parents[family]=(unit,)
         authorities={}
         for family in ('corporate_actions','float_allocation','reported_supply'):
-            if (key,family) not in receipts:continue
-            row=receipts[(key,family)];scope=ReferenceScope(dataset_id,2,key,family,date.fromisoformat(str(row['range_start'])),
+            row=receipts.get((key,family),donor_receipts.get((key,family)))
+            if row is None:continue
+            source_dataset=str(row['dataset_id'])
+            scope=ReferenceScope(source_dataset,2,key,family,date.fromisoformat(str(row['range_start'])),
                 date.fromisoformat(str(row['range_end'])),row['parent_hash'],facts.catalog_hash())
             if ReferencePublisher(query,config.database,claim).receipt(scope)!=row:
                 raise ValueError('Discovered reference authority differs from its persisted output')
             unit=f'{family}:{key}:authority';authorities[family]=unit
-            plans.append(PlannedUnit(Unit(unit,family,(),config.query_memory_bytes),
-                dict(entity_key=key,start=str(scope.start),end=str(scope.end),receipt=row)))
+            if source_dataset==dataset_id:
+                plans.append(PlannedUnit(Unit(unit,family,(),config.query_memory_bytes),
+                    dict(entity_key=key,start=str(scope.start),end=str(scope.end),receipt=row)))
+            else:
+                from . import reference_import
+                target=reference_import.target_scope(dataset_id,row);import_key=f'{family}:{key}:import'
+                plans.append(PlannedUnit(Unit(import_key,'reference_import',(),config.query_memory_bytes),dict(source_receipt=row)))
+                plans.append(PlannedUnit(Unit(unit,family,(import_key,),config.query_memory_bytes),
+                    dict(entity_key=key,start=str(target.start),end=str(target.end),import_parent_hash=target.parent_hash)))
         if all(f in authorities for f in ('corporate_actions','float_allocation')):
             security_inputs.append(planning.SecurityInput(key,security_issuers[key],(),authorities['corporate_actions'],
                 authorities['float_allocation'],result['results'][f'short_volume:{key}']['source_hash'],

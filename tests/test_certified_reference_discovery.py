@@ -67,3 +67,29 @@ def test_missing_authorities_are_reported_before_opening_workers_or_fabricating_
 def test_short_context_cannot_use_a_snapshot_clipped_to_target_dates():
     args,_,_,_,_=fixture();args['snapshot']=dict(args['snapshot'],context_start=args['config'].start)
     with pytest.raises(ValueError,match='context range'):discovery.discover(**args)
+
+
+def test_qualified_donor_scopes_create_explicit_capacity_classified_imports():
+    args,receipts,client,_,_=fixture()
+    donors=[dict(r,dataset_id=str(uuid4())) for r in receipts]
+    def query(sql):
+        if 'id_issuer_identifier_v1' in sql:return [dict(issuer_id='issuer',ciks=['123'])]
+        if 'dataset_id!=' in sql:return donors
+        if 'research_reference_receipt_v1' in sql:return []
+        raise AssertionError(sql)
+    args['query']=query
+    with patch.object(discovery.schema,'verify_storage'),patch.object(discovery.schema,'verify_auxiliary_storage'),\
+         patch.object(discovery.sec_coverage,'require_ready'),\
+         patch.object(discovery.short_sql,'publication_coverage',return_value=dict(ready=True,coverage_hash='d'*64)),\
+         patch.object(discovery.reference_sql,'sec_source_evidence',return_value=dict(source_hash='e'*64)),\
+         patch.object(discovery,'ReferencePublisher') as publisher:
+        publisher.return_value.receipt.side_effect=lambda scope:next(r for r in donors if r['family']==scope.family)
+        result=discovery.discover(**args)
+    assert result['ready']
+    imports=[p for p in result['prerequisites'] if p.unit.product=='reference_import']
+    assert len(imports)==2
+    from pipelines.certified_research import capacity
+    assert 'reference_import' in capacity.WRITE_PRODUCTS
+    for plan in result['prerequisites']:
+        if plan.unit.product in ('corporate_actions','float_allocation'):
+            assert len(plan.unit.parents)==1 and 'import_parent_hash' in plan.arguments

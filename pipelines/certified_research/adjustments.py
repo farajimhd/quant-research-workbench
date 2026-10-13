@@ -22,7 +22,7 @@ class Adjustment:
             raise ValueError('Invalid certified price adjustment')
 
 
-def resolve(query,database,claim,scope,listing_key,previous,day):
+def resolve(query,database,claim,scope,listing_key,previous,day,*,membership_sql=None):
     """Use executions publicly confirmed before PM; pending actions block.
 
     The corporate producer must certify complete history, including earlier
@@ -37,9 +37,12 @@ def resolve(query,database,claim,scope,listing_key,previous,day):
     publisher=ReferencePublisher(query,database,claim);receipt=publisher.receipt(scope)
     if receipt is None:raise ValueError('Corporate adjustment history is not certified')
     cutoff=datetime.combine(day,time(4),NY).astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')
-    membership=query(f'SELECT count() n FROM {database}.research_membership_v1 WHERE '
-        f'dataset_id=toUUID({literal(scope.dataset_id)}) AND listing_key={listing_key} AND security_key={scope.entity_key} '
-        f'AND eligible=1 AND valid_from<=toDateTime64({literal(cutoff)},6,\'UTC\') '
+    membership_source=f'{database}.research_membership_v1' if membership_sql is None else f'({membership_sql})'
+    identity=(f'dataset_id=toUUID({literal(scope.dataset_id)}) AND security_key={scope.entity_key} AND eligible=1 AND '
+        if membership_sql is None else '')
+    membership=query(f'SELECT count() n FROM {membership_source} WHERE '
+        f'{identity}listing_key={listing_key} '
+        f'AND valid_from<=toDateTime64({literal(cutoff)},6,\'UTC\') '
         f'AND valid_to>toDateTime64({literal(cutoff)},6,\'UTC\')')
     if len(membership)!=1 or int(membership[0]['n'])!=1:raise ValueError('Corporate security does not match dated listing membership')
     executed=key('corporate.executed_split_ratio');announced=key('corporate.announced_split_ratio')

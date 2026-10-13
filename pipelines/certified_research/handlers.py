@@ -180,9 +180,14 @@ class ReferenceAuthorityHandlers:
         from . import schema
         if stop is not None and stop.is_set():raise InterruptedError('Reference authority verification stopped')
         args=plan.arguments
-        if plan.unit.product not in self.PRODUCTS or set(args)!={'entity_key','start','end','receipt'}:
+        imported=set(args)=={'entity_key','start','end','import_parent_hash'}
+        if plan.unit.product not in self.PRODUCTS or not (imported or set(args)=={'entity_key','start','end','receipt'}):
             raise ValueError('Reference prerequisite requires an explicit certified receipt locator')
-        row=args['receipt']
+        if imported:
+            if len(parents)!=1:raise ValueError('Reference handoff requires one verified import parent')
+            row=next(iter(parents.values()))
+            if row.get('parent_hash')!=args['import_parent_hash']:raise ValueError('Reference import parent binding differs')
+        else:row=args['receipt']
         scope=ReferenceScope(self.dataset,2,int(args['entity_key']),plan.unit.product,
             date.fromisoformat(args['start']),date.fromisoformat(args['end']),row['parent_hash'],facts.catalog_hash())
         if (str(row['dataset_id'])!=self.dataset or int(row['entity_kind'])!=2
@@ -202,6 +207,23 @@ class ReferenceAuthorityHandlers:
     def producer(self,plan,parents,stop):return self.execute(plan,parents,stop)
     def verifier(self,plan,parents):return self.execute(plan,parents)
     def registry(self):return {p:self.producer for p in self.PRODUCTS},{p:self.verifier for p in self.PRODUCTS}
+
+
+class ReferenceImportHandlers:
+    def __init__(self,dataset_id,database,claim,client_factory,source_guard):
+        self.dataset=dataset_id;self.database=database;self.claim=claim;self.clients=client_factory;self.guard=source_guard
+    def execute(self,plan,parents,*,write,stop=None):
+        from . import reference_import
+        if stop is not None and stop.is_set():raise InterruptedError('Reference import stopped')
+        if plan.unit.product!='reference_import' or set(plan.arguments)!={'source_receipt'}:
+            raise ValueError('Invalid qualified reference import locator')
+        client=self.clients()
+        try:return reference_import.run(client.query,self.database,self.dataset,plan.arguments['source_receipt'],
+            self.claim,self.guard,write=write)
+        finally:client.close()
+    def producer(self,plan,parents,stop):return self.execute(plan,parents,write=True,stop=stop)
+    def verifier(self,plan,parents):return self.execute(plan,parents,write=False)
+    def registry(self):return {'reference_import':self.producer},{'reference_import':self.verifier}
 
 
 class ActivityHandlers:

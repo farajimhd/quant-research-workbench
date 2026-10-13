@@ -10,7 +10,7 @@ READ_PRODUCTS=frozenset(('condition_rules','calculation_recipe','canonical_sourc
     'short_volume_acquisition','short_interest_acquisition','corporate_actions','float_allocation','reported_supply'))
 WRITE_PRODUCTS=frozenset(('market_aggregate','technical','v7','activity','universe','fundamentals',
     'derived_fundamentals','regular_prices','float_supply','short_volume','short_interest','short_pressure',
-    'identity_observation'))
+    'identity_observation','reference_import'))
 
 
 def plan_demands(config,plans):

@@ -19,8 +19,9 @@ callers no longer need to construct issuer/security source locators themselves.
 Corporate and allocation authorities are mandatory. Missing scopes are returned
 as explicit preparation requirements before expensive source workers start;
 no empty authority is manufactured. Ambiguous receipt candidates require an
-explicit scope selection rather than a choice by insertion time. Cross-dataset
-import and creating new authority receipts remain separate unfinished producers.
+explicit scope selection rather than a choice by insertion time. Qualified
+donors from another dataset produce separate import units and dependent family
+handoffs. Creating authorities from missing original evidence remains unfinished.
 
 ## Removing the membership publication cycle
 

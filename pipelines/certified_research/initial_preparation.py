@@ -26,7 +26,7 @@ def discover_and_prepare(query,config,dataset_id,claim,client_factory,source_gua
     if adjustment_hashes is None:
         adjustment_hashes=seed_preparation.discover_adjustment_contexts(query,config,dataset_id,claim,
             source_guard,references['membership'],references['prerequisites'],references['corporate_parents'],
-            canonical['expected'],stop=stop)
+            canonical['expected'],stop=stop,snapshot=snapshot)
     authority=PlannedUnit(Unit('universe','universe'),dict(context_start=str(start),end=str(config.end),
         anchor_date=str(anchor_date),source_hash=snapshot['source_hash']))
     assembled=prepare(query,config,claim,client_factory,source_guard,canonical,reporting,definition,rules,
