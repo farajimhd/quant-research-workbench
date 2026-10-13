@@ -78,6 +78,37 @@ def decode_bars(rows):
                       close=int(r['close_int'])/10000.,volume=float(r['volume'])) for r in rows)
 
 
+def load_checkpoint(query,database,claim,scope,binding,boundary,*,regular_close=None):
+    """Restore a certified PM/regular/AH authority without files or day rollover.
+
+    The caller resolves the exact expected input-prefix/predecessor binding.
+    Reading an envelope is not permission to trust its self-declared lineage.
+    """
+    from .publication import Publisher
+    from .checkpoints import MAX_PAYLOAD_BYTES
+    if scope.product!='v7' or scope.session_date!=binding.session or boundary not in ('PM','REGULAR','AH'):
+        raise ValueError('Checkpoint request scope/boundary differs')
+    publisher=Publisher(query,database,claim);receipt=publisher.receipt(scope)
+    if receipt is None:raise ValueError('V7 checkpoint authority is not certified')
+    code={'PM':1,'REGULAR':2,'AH':3}[boundary]
+    where=scope.where(receipt['attempt_id'])+f' AND boundary={code}'
+    headers=query(f'SELECT boundary_us,last_input_us,parent_hash,state_hash,codec_version,length(payload) bytes '
+        f'FROM {identifier(database)}.research_v7_checkpoint_v1 WHERE {where}')
+    if len(headers)!=1:raise ValueError('Checkpoint boundary is missing or duplicated')
+    row=headers[0];cut=round(boundaries(binding.session,regular_close)[boundary].timestamp()*1_000_000)
+    if (int(row['codec_version'])!=1 or int(row['boundary_us'])!=cut
+            or row['parent_hash']!=binding.predecessor_hash or not 0<int(row['bytes'])<=MAX_PAYLOAD_BYTES):
+        raise ValueError('Checkpoint header is incompatible or exceeds transport bounds')
+    payloads=query(f'SELECT hex(payload) payload FROM {database}.research_v7_checkpoint_v1 WHERE {where}')
+    if len(payloads)!=1:raise ValueError('Checkpoint payload is missing or duplicated')
+    payload=bytes.fromhex(payloads[0]['payload'])
+    engine=restore(payload,row['state_hash'],binding,expected_boundary_us=cut)
+    if round(engine.as_of*1_000_000)!=int(row['last_input_us']):raise ValueError('Checkpoint input timestamp differs from header')
+    if publisher.receipt(scope)!=receipt:raise ValueError('Checkpoint authority changed during restore')
+    return dict(boundary=boundary,boundary_us=cut,last_input_us=int(row['last_input_us']),
+        parent_hash=row['parent_hash'],state_hash=row['state_hash'],codec_version=1,payload=payload,binding=binding),engine
+
+
 def projection_sql(outputs,dataset_id,attempt_id,listing_key,day,*,include_payload=True,regular_close=None):
     from .schema import TABLES
     names=next(t for t in TABLES if t.name=='research_v7_checkpoint_v1').columns

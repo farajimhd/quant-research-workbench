@@ -1109,6 +1109,13 @@ class ClickHouseIntegration(unittest.TestCase):
         expected=self.client.query(v7.expected_evidence_sql(outputs,dataset,attempt,81,binding.session))[0]
         scope=Scope(dataset,binding.session,81,'v7','d'*64)
         publisher.publish(scope,attempt,expected={k:int(v) for k,v in expected.items()})
+        for output in outputs:
+            loaded,state=v7.load_checkpoint(self.client.query,self.database,Claim(),scope,output['binding'],output['boundary'])
+            self.assertEqual(loaded['payload'],output['payload'])
+            self.assertEqual(state.checkpoint(),restore(output['payload'],output['state_hash'],output['binding']).checkpoint())
+        with self.assertRaisesRegex(ValueError,'binding mismatch'):
+            v7.load_checkpoint(self.client.query,self.database,Claim(),scope,
+                replace(outputs[0]['binding'],input_prefix_hash='f'*64),'PM')
         bad=[dict(o) for o in outputs];bad[1]['parent_hash']='e'*64
         with self.assertRaisesRegex(ValueError,'chain'):v7.insert_sql(bad,dataset,str(uuid.uuid4()),81,binding.session,self.database)
 
