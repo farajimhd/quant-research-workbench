@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Inspect research contracts or prepare canonical source prerequisites.
 
-This entry point is under implementation. No campaign or downstream export
-can be started by the inspection commands. Source preparation owns bounded
-acquisition/reporting repair; derived campaign execution is not yet enabled.
+This entry point is under implementation. Inspection and saved verification
+do not start a campaign. Source preparation owns bounded acquisition/reporting
+repair; derived campaign execution is not yet enabled.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from pipelines.certified_research import contracts,schema,source,short_sql,campa
 
 def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('schema','install-schema','preflight','plan','status','stored-plan','prepare-sources'))
+    p.add_argument('command',choices=('schema','install-schema','preflight','plan','status','stored-plan','prepare-sources','verify'))
     p.add_argument('--dataset-id',type=UUID)
     p.add_argument('--database',default='arte')
     p.add_argument('--start-date',type=date.fromisoformat,default=date(2026,1,1))
@@ -49,10 +49,11 @@ def parse_args(argv=None):
     try:contracts.identifier(args.database)
     except ValueError as error:p.error(str(error))
     if args.command!='schema' and args.format=='sql':p.error('SQL format is for schema inspection only')
-    if args.command in ('status','stored-plan') and args.dataset_id is None:p.error(args.command+' requires --dataset-id')
+    if args.command in ('status','stored-plan','verify') and args.dataset_id is None:p.error(args.command+' requires --dataset-id')
     if args.command=='prepare-sources' and (args.end_date is None or args.format!='text'):
         p.error('prepare-sources requires --end-date and uses text progress')
     if args.hydrate_missing_trades:p.error('Imported-day reporting repair cannot hydrate flatfiles; G-to-D staging belongs to acquisition')
+    if args.command=='verify' and (args.acquire_missing or args.stage_archive):p.error('verify is read-only; acquisition flags belong to prepare-sources')
     return args
 
 
@@ -118,6 +119,31 @@ def main(argv=None):
     args.max_threads=args.query_threads;args.max_memory_gb=args.query_memory_gib;args.query_timeout=45
     client=builder.Client(args,persistent=False)
     try:
+        if args.command=='verify':
+            from contextlib import closing
+            from types import SimpleNamespace
+            from pipelines.market_sip.flatfiles.download_update_events import load_env_files
+            from src.trading_runtime.keeper_session import open_workstation_keeper_session
+            from pipelines.certified_research.publication import KeeperClaim,DictionaryClaim
+            from pipelines.certified_research import verification
+            load_env_files([args.env_file],verbose=False)
+            def factory(config):
+                options=SimpleNamespace(env_file=args.env_file,max_threads=config.query_threads,
+                    max_memory_gb=config.query_memory_bytes/1024**3,query_timeout=45)
+                real=builder.Client(options,persistent=False)
+                class Reader:
+                    def query(self,sql):return real.query(sql+' SETTINGS readonly=1')
+                    def close(self):real.close()
+                return Reader()
+            with closing(open_workstation_keeper_session()) as keeper:
+                claim=KeeperClaim(keeper.client,str(args.dataset_id))
+                try:
+                    result=verification.verify(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database,
+                        str(args.dataset_id),claim,factory,lambda:DictionaryClaim(keeper.client,args.database))
+                finally:claim.close()
+            if args.format=='json':print(json.dumps(result,indent=2))
+            else:print(f"Verified | {result['units']} units | {result['root_hash']} | read-only")
+            return 0
         if args.command=='install-schema':
             from contextlib import closing
             from pipelines.market_sip.flatfiles.download_update_events import load_env_files
@@ -199,10 +225,11 @@ def main(argv=None):
             print(f"Status: {result['status']} | {result['reason']}")
         return 2 if result['status']=='blocked' else 0
     except Exception as error:
-        print('Preflight failed: '+client.clean_error(error),file=sys.stderr)
+        print(('Verification failed: ' if args.command=='verify' else 'Preflight failed: ')+client.clean_error(error),file=sys.stderr)
         return 2
     except KeyboardInterrupt:
-        print('Source preparation interrupted; verify canonical receipts before resume.',file=sys.stderr)
+        print('Verification interrupted; rerun verify to recheck stored authority.' if args.command=='verify' else
+            'Source preparation interrupted; verify canonical receipts before resume.',file=sys.stderr)
         return 130
     finally:client.close()
 
