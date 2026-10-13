@@ -147,9 +147,18 @@ class FilledPositionState:
         positions = self.finalized_positions()
         if any(position.position_open for position in positions.values()):
             raise ValueError("Terminal financial metrics require all positions closed")
+        closed = sum(position.closed_positions for position in positions.values())
+        # Search counts one entry per opened episode, not broker partial fills.
+        # Terminal closure makes the episode count identical to closed positions.
+        # Management fills retain their originating intent across partial fills.
+        adds = {(fact.key, fact.intent_id) for fact in self._fills.values()
+                if fact.action == "add_long"}
+        reductions = {(fact.key, fact.intent_id) for fact in self._fills.values()
+                      if fact.action in {"reduce_long", "take_profit"}}
         return MappingProxyType(dict(
             net_pnl=sum((position.net_realized_pnl for position in positions.values()), Decimal(0)),
-            closed_positions=sum(position.closed_positions for position in positions.values()),
+            closed_positions=closed, filled_batches=closed,
+            add_count=len(adds), reduce_count=len(reductions),
             winning_positions=sum(position.winning_positions for position in positions.values()),
             worst_position_pnl=min(self._closed_net.values(), default=Decimal(0)),
             terminal_valid=True))

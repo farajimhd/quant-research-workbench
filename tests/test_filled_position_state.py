@@ -48,7 +48,8 @@ def test_fees_determine_net_pnl_and_late_fees_correct_win_rate():
     assert state.pending_fee_count == 0 and state.finalized_positions()[fill().key] == pos
     metrics = state.terminal_financial_metrics()
     assert metrics == dict(net_pnl=D("-.50"), closed_positions=1, winning_positions=0,
-        worst_position_pnl=D("-.50"), terminal_valid=True)
+        worst_position_pnl=D("-.50"), terminal_valid=True,
+        filled_batches=1, add_count=0, reduce_count=0)
     from src.backend.backtest_program_terminal import _terminal_financial_projection
     terminal_metrics, unavailable = _terminal_financial_projection(state, "completed")
     assert terminal_metrics == metrics and not unavailable
@@ -56,6 +57,33 @@ def test_fees_determine_net_pnl_and_late_fees_correct_win_rate():
         None, "Run did not complete its requested session")
     with pytest.raises(TypeError):
         metrics["net_pnl"] = D("100")
+
+
+def test_terminal_action_counts_use_filled_intents_and_closed_episodes():
+    state = FilledPositionState()
+    facts = (
+        fill("entry-a", "entry", q="4"),
+        fill("entry-b", "entry", q="6", second=1),
+        fill("add-a", "add", "add_long", q="2", second=2),
+        fill("add-b", "add", "add_long", q="2", second=3),
+        fill("reduce-a", "reduce", "reduce_long", q="3", second=4),
+        fill("reduce-b", "reduce", "reduce_long", q="2", second=5),
+        fill("target", "target", "take_profit", q="1", second=6),
+        fill("exit", "stop", "exit", q="8", second=7),
+        fill("entry-2", "entry-2", q="5", second=8),
+        fill("exit-2", "exit-2", "exit", q="5", second=9),
+    )
+    for fact in facts:
+        state.apply_fill(fact)
+        state.apply_fee(FeeFact(fact.execution_id, D("1"), "USD"))
+    # Repeated callbacks and delayed fees must not count as more actions.
+    state.apply_fill(facts[3])
+    state.apply_fee(FeeFact(facts[3].execution_id, D("1"), "USD"))
+    metrics = state.terminal_financial_metrics()
+    assert metrics["filled_batches"] == metrics["closed_positions"] == 2
+    assert metrics["add_count"] == 1 and metrics["reduce_count"] == 2
+    assert metrics["net_pnl"] == -10 and metrics["winning_positions"] == 0
+    assert metrics["worst_position_pnl"] == -8
 
 
 def test_terminal_metrics_reject_open_positions_and_pending_fees():
