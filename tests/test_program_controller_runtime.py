@@ -183,7 +183,11 @@ def test_controller_builds_program_actor_on_existing_runtime_without_legacy_fact
             monkeypatch.setattr(cold, "load_verified_v4_prefix", lambda *_: prefix)
             monkeypatch.setattr(cold, "load_latest_committed_oms_groups", lambda *a, **k: (state,))
             monkeypatch.setattr(cold, "load_complete_typed_protection_history", lambda *a, **k: history)
-            monkeypatch.setattr(cold, "load_committed_strategy_intent_page", lambda *a, **k: (source,))
+            def source_page(*args, **scope):
+                assert scope["include_source_batch"] is True
+                assert scope["record_ids"] == (source.record_id,)
+                return (source,)
+            monkeypatch.setattr(cold, "load_committed_strategy_intent_page", source_page)
             monkeypatch.setattr(cold, "load_committed_oms_admission_page", lambda *a, **k: {2: reservation})
             monkeypatch.setattr(cold, "load_committed_oms_decision_page", lambda *a, **k: {2: decision})
             def reselect(*facts):
@@ -241,7 +245,7 @@ def test_controller_builds_program_actor_on_existing_runtime_without_legacy_fact
                 return (state,)
             monkeypatch.setattr(cold, "load_latest_committed_oms_groups", historical_groups)
             monkeypatch.setattr(cold, "load_complete_typed_protection_history", lambda *a, **k: later_history)
-            monkeypatch.setattr(cold, "load_committed_strategy_intent_page", lambda *a, **k: (source,))
+            monkeypatch.setattr(cold, "load_committed_strategy_intent_page", source_page)
             historical_lineages = await cold.recover_program_oms_lineages_async(lambda: client, later_prefix,
                 release=actor.program_release, account_ids=(source.account_id,), reselect=reselect,
                 execution_policy=approved.execution_policy,

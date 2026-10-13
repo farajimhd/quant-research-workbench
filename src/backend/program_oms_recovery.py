@@ -20,6 +20,8 @@ async def recover_program_oms_lineages_async(reader_factory, prefix, *, release,
     `reselect` must replay the exact historical filled/observed state and
     certified prepared source for each intent. The callback receives normalized
     facts, not admission permission. No group is returned without reselection.
+    Source batches are retained for the existing publisher's cold source indexes;
+    the shared intent reader independently verifies their normalized V4 rows.
     """
     account_ids = tuple(account_ids)
     accounts = frozenset(account_ids)
@@ -69,7 +71,7 @@ async def recover_program_oms_lineages_async(reader_factory, prefix, *, release,
                 for start in range(0, len(identifiers), 500):
                     chunk = tuple(identifiers[start:start + 500])
                     page = load_committed_strategy_intent_page(client, prefix,
-                        record_ids=chunk, limit=len(chunk), include_source_batch=False)
+                        record_ids=chunk, limit=len(chunk), include_source_batch=True)
                     if len(page) != len(chunk) or {row.record_id for row in page} != set(chunk):
                         raise ValueError("Program OMS source join is incomplete")
                     sources.update((row.record_id, row) for row in page)
