@@ -589,7 +589,7 @@ def _load_verified_details_v4(
     details = {}
     related_rows = {}
     from .arte_entry_acquisition_freeze import FAMILY_NAMES as ENTRY_FREEZE_FAMILIES
-    from .rule_decision_basis_schema import BASIS as RULE_BASIS, INTENT as RULE_INTENT
+    from .rule_decision_basis_schema import STAGED_TABLES as RULE_DECISION_TABLES
     family_specs = []
     for family in family_rows:
         name = str(family["family_name"])
@@ -637,7 +637,7 @@ def _load_verified_details_v4(
         details[name] = identities
         if name in ENTRY_FREEZE_FAMILIES:
             related_rows[name] = rows
-        if name in {RULE_BASIS.name, RULE_INTENT.name}:
+        if name in {table.name for table in RULE_DECISION_TABLES}:
             related_rows[name] = rows
         if name == "trading_strategy_signal_v2":
             related_rows[name] = (*related_rows.get(name, ()), *rows)

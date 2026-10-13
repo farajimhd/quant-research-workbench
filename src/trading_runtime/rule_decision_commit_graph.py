@@ -10,6 +10,8 @@ def verify_rule_decision_commit_graph(families, *, run_id, batch_id):
                     for row in families.get(BASIS.name, ()))
     children = tuple(_seal(INTENT, {key: value for key, value in row.items() if key != "content_hash"})
                      for row in families.get(INTENT.name, ()))
+    from .rule_decision_observation import verify_decision_observation_graph
+    verify_decision_observation_graph(families, parents)
     raw_signals = tuple(families.get("trading_strategy_signal_v2", ()))
     exact_signals = tuple(families.get("trading_strategy_signal_exact_price_v2", ()))
     if exact_signals:
@@ -29,6 +31,10 @@ def verify_rule_decision_commit_graph(families, *, run_id, batch_id):
         raise ValueError("Rule commit has missing, duplicate or orphan decision coverage")
     events = {row["record_id"]: row for row in families.get("trading_event_v1", ())}
     details = {row["record_id"]: row for row in signals}
+    from .rule_decision_basis_schema import OBSERVATION
+    if any(root['ticker'] != details[root['record_id']]['ticker']
+           for root in families.get(OBSERVATION.name, ())):
+        raise ValueError('Rule observation ticker differs from its completed signal')
     grouped = {identity: [] for identity in parent_ids}
     for child in children:
         grouped[child["parent_record_id"]].append(child)

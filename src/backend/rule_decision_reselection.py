@@ -24,6 +24,8 @@ class _NativeDecisionEvidence:
     basis_sequence: int
     semantic_hash: str
     token: object = field(repr=False)
+    observation: object = field(default=None, repr=False)
+    observation_hash: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,7 +81,9 @@ async def qualify_rule_decision_runtime(parent, children, records, *, runtime,
     selection = reselect_recovered_rule_decision(parent, children, records,
         packet=packet, observation=observation, **scope)
     digest = rule_decision_semantic_hash(parent, children)
-    evidence = _NativeDecisionEvidence(runtime.run_id, basis, digest, _NATIVE_DECISION_PROOF)
+    from src.trading_runtime.rule_decision_observation import observation_digest
+    evidence = _NativeDecisionEvidence(runtime.run_id, basis, digest, _NATIVE_DECISION_PROOF,
+        observation, observation_digest(observation))
     return QualifiedRuleDecision(runtime.run_id, basis, digest, selection, evidence)
 
 
@@ -158,7 +162,9 @@ async def qualify_captured_rule_decision_runtime(parent, children, records, *,
     await _owned_worker(verify_owned_program_clock_financial_basis, controller, capture)
     await _owned_worker(compare_captured_program_financial_runtime, runtime, cold, capture)
     require_scope()
-    evidence = _NativeDecisionEvidence(runtime.run_id, basis, digest, _NATIVE_DECISION_PROOF)
+    from src.trading_runtime.rule_decision_observation import observation_digest
+    evidence = _NativeDecisionEvidence(runtime.run_id, basis, digest, _NATIVE_DECISION_PROOF,
+        observation, observation_digest(observation))
     return QualifiedRuleDecision(runtime.run_id, basis, digest, selection, evidence)
 
 

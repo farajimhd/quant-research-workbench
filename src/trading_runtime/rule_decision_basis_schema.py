@@ -31,4 +31,32 @@ INTENT = TableContract(
      ("strategy_intent_id", "String"), ("content_hash", "FixedString(64)")),
     "toYYYYMM(event_month)", "run_id, decision_id, ordinal",
 )
-STAGED_TABLES = (BASIS, INTENT)
+OBSERVATION = TableContract(
+    'trading_rule_decision_observation_v1',
+    (("run_id", "String"), ("event_month", "Date"), ("batch_id", "UUID"),
+     ("record_id", "UUID"), ("decision_id", "FixedString(64)"),
+     ("account_id", "String"), ("assignment_id", "String"), ("listing_id", "String"),
+     ("ticker", "LowCardinality(String)"), ("observed_at", "DateTime64(6, 'UTC')"),
+     ("pending_acquisition", "UInt8"), ("pending_reduction", "UInt8"),
+     ("high_water_price_bits", "UInt64"),
+     ("working_order_count", "UInt16"), ("working_order_hash", "FixedString(64)"),
+     ("unobserved_order_count", "UInt16"), ("unobserved_order_hash", "FixedString(64)"),
+     ("content_hash", "FixedString(64)")),
+    'toYYYYMM(event_month)', 'run_id, record_id')
+OBSERVED_ORDER = TableContract(
+    'trading_rule_decision_observed_order_v1',
+    (("run_id", "String"), ("event_month", "Date"), ("batch_id", "UUID"),
+     ("record_id", "UUID"), ("parent_record_id", "UUID"), ("ordinal", "UInt16"),
+     ("broker_order_id", "String"), ("role", "LowCardinality(String)"),
+     ("status", "String"), ("remaining_quantity_bits", "UInt64"),
+     ("limit_price_bits", "UInt64"), ("stop_price_bits", "UInt64"),
+     ("content_hash", "FixedString(64)")),
+    'toYYYYMM(event_month)', 'run_id, parent_record_id, ordinal')
+UNOBSERVED_ORDER = TableContract(
+    'trading_rule_decision_unobserved_order_v1',
+    (("run_id", "String"), ("event_month", "Date"), ("batch_id", "UUID"),
+     ("record_id", "UUID"), ("parent_record_id", "UUID"), ("ordinal", "UInt16"),
+     ("broker_order_id", "String"), ("content_hash", "FixedString(64)")),
+    'toYYYYMM(event_month)', 'run_id, parent_record_id, ordinal')
+OBSERVATION_TABLES = (OBSERVATION, OBSERVED_ORDER, UNOBSERVED_ORDER)
+STAGED_TABLES = (BASIS, INTENT, *OBSERVATION_TABLES)

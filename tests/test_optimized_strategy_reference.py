@@ -7,7 +7,8 @@ from pathlib import Path
 from decimal import Decimal
 
 from src.trading_runtime.optimized_strategy_reference import (
-    OptimizationReference, compare_sessions,
+    OptimizationReference, compare_sessions, _read_reference_clock_window,
+    ReferenceClockWindow,
 )
 
 
@@ -33,6 +34,61 @@ def test_partial_comparison_keeps_every_reference_session():
     assert rows[0]['differences'] == {'net_pnl': -8., 'closed_positions': 0}
     assert rows[0]['status'] == 'compared'
     assert all(row['status'] == 'not_run' and row['app'] is None for row in rows[1:])
+
+
+@pytest.mark.parametrize('failure', [None, 'input_hash', 'clock_hash', 'gap', 'dtype', 'count', 'window', 'naive', 'validation'])
+def test_reference_window_is_bound_to_input_receipt_and_dense_clock_bytes(tmp_path, failure):
+    import numpy as np
+    from datetime import datetime, timedelta, timezone
+    day = '2026-08-03'
+    target = tmp_path / day
+    target.mkdir()
+    start = datetime(2026, 8, 3, 8, tzinfo=timezone.utc)
+    clocks = np.arange(int(start.timestamp()) + 1, int(start.timestamp()) + 5, dtype=np.int64)
+    if failure == 'gap': clocks[2] += 1
+    elif failure == 'dtype': clocks = clocks.astype(np.float64)
+    np.save(target / 'clocks.npy', clocks, allow_pickle=False)
+    stop = start + timedelta(seconds=4 if failure != 'window' else 5)
+    metadata = dict(status='complete', ready_for_replay=True, validation_opened=failure == 'validation',
+        clocks=4 if failure != 'count' else 5,
+        identity=dict(top_n=10, window=30, session=dict(day=day,
+            start=(start.replace(tzinfo=None) if failure == 'naive' else start).isoformat(), end=stop.isoformat())),
+        files={'clocks.npy': sha256((target / 'clocks.npy').read_bytes()).hexdigest()})
+    if failure == 'clock_hash': metadata['files']['clocks.npy'] = '0' * 64
+    content = json.dumps(metadata).encode()
+    (target / 'complete.json').write_bytes(content)
+    checksum = '0' * 64 if failure == 'input_hash' else sha256(content).hexdigest()
+    if failure:
+        with pytest.raises(ValueError): _read_reference_clock_window(tmp_path, day, checksum)
+    else:
+        window = _read_reference_clock_window(tmp_path, day, checksum)
+        assert window.requested_start == start and window.first_clock == start + timedelta(seconds=1)
+        assert window.last_clock == stop and window.clocks == 4 and window.metric_intervals == 3
+
+
+@pytest.mark.parametrize('failure', [None, 'missing', 'start', 'origin', 'end', 'samples', 'bool_count', 'interval', 'naive'])
+def test_bound_reference_cannot_compare_a_different_or_shifted_app_clock_window(failure):
+    from datetime import datetime, timedelta, timezone
+    from dataclasses import replace
+    start = datetime(2026, 8, 1, 8, tzinfo=timezone.utc)
+    end = start + timedelta(seconds=4)
+    frozen = replace(reference(), clock_windows={'2026-08-01': ReferenceClockWindow(start,
+        start + timedelta(seconds=1), end, 4, 'a' * 64, 'b' * 64)})
+    actual = result()
+    actual.update(execution_window=dict(start_at=start, end_at=end),
+        measurement_window=dict(origin_at=start + timedelta(seconds=1), end_at=end, samples=3, interval_ms=1000))
+    if failure == 'missing': actual.pop('measurement_window')
+    elif failure == 'start': actual['execution_window']['start_at'] += timedelta(seconds=1)
+    elif failure == 'origin': actual['measurement_window']['origin_at'] = start
+    elif failure == 'end': actual['execution_window']['end_at'] += timedelta(seconds=1)
+    elif failure == 'samples': actual['measurement_window']['samples'] = 4
+    elif failure == 'bool_count': actual['measurement_window']['samples'] = True
+    elif failure == 'interval': actual['measurement_window']['interval_ms'] = 100
+    elif failure == 'naive': actual['execution_window']['start_at'] = start.replace(tzinfo=None).isoformat()
+    if failure:
+        with pytest.raises(ValueError): compare_sessions(frozen, {'2026-08-01': actual})
+    else:
+        assert compare_sessions(frozen, {'2026-08-01': actual})[0]['status'] == 'compared'
 
 
 def test_native_decimal_money_is_compared_without_float_rounding():

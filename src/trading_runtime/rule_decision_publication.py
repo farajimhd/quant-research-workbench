@@ -78,10 +78,11 @@ def prepare_rule_decision_insert_requests(prepared):
     if type(prepared) is not PreparedRuleDecisionCommit:
         raise ValueError("Rule decision INSERT preparation requires its commit")
     result = []
+    contracts = {table.name: table for table in STAGED_TABLES}
     for name, rows in prepared.families:
-        if name not in {BASIS.name, INTENT.name}:
+        if name not in contracts:
             continue
-        table = BASIS if name == BASIS.name else INTENT
+        table = contracts[name]
         normalized = []
         for row in rows:
             sealed = _seal(table, {key: value for key, value in row.items() if key != "content_hash"})
@@ -99,16 +100,22 @@ def prepare_rule_decision_insert_requests(prepared):
     return tuple(result)
 
 
-def prepare_rule_decision_commit(unit, *, committed_at):
+def prepare_rule_decision_commit(unit, *, committed_at, _observation_families=()):
     """Seal the original typed completion and scalar decision children together."""
     if type(unit) is not RuleDecisionBasisBatch or unit.base.status != "running":
         raise ValueError("Rule decision preparation requires its running typed transport")
     # Revalidate the immutable supplement before sealing its standard base.
     unit = RuleDecisionBasisBatch(unit.base, unit.basis, unit.intents)
+    from .rule_decision_basis_schema import OBSERVATION_TABLES
+    names = [name for name, _ in _observation_families]
+    if len(names) != len(set(names)) or set(names) - {table.name for table in OBSERVATION_TABLES}:
+        raise ValueError('Rule observation preparation has foreign or repeated families')
+    from .rule_decision_observation import verify_decision_observation_graph
+    verify_decision_observation_graph(dict(_observation_families), (unit.basis,))
     base = unit.base
     families = tuple((name, rows) for name, rows in (
         *((_v4_family_table(name), rows) for name, rows in _sealed_families(base)),
-        (BASIS.name, (unit.basis,)), (INTENT.name, unit.intents)) if rows)
+        (BASIS.name, (unit.basis,)), (INTENT.name, unit.intents), *_observation_families) if rows)
     commit, seals = prepare_commit_v4(run_id=base.run_id, run_month=base.run_month,
         attempt_id=base.attempt_id, batch_id=base.batch_id, prior_batch_id=base.prior_batch_id,
         first_sequence=base.first_sequence, last_sequence=base.last_sequence,
@@ -133,12 +140,16 @@ def _check_rule_decision_qualification(unit, qualified):
             or qualified.basis_sequence != unit.basis["basis_sequence"]
             or qualified.semantic_hash != rule_decision_semantic_hash(unit.basis, unit.intents)):
         raise ValueError("Rule decision commit lacks matching native qualification")
+    from .rule_decision_observation import qualified_observation_rows
+    qualified_observation_rows(unit, qualified)
 
 
 def prepare_qualified_rule_decision_commit(unit, qualified, *, committed_at):
     """Require native financial/reselection evidence bound to the exact rows."""
     _check_rule_decision_qualification(unit, qualified)
-    return prepare_rule_decision_commit(unit, committed_at=committed_at)
+    from .rule_decision_observation import qualified_observation_rows
+    return prepare_rule_decision_commit(unit, committed_at=committed_at,
+        _observation_families=qualified_observation_rows(unit, qualified))
 
 
 def verify_rule_decision_commit_readback(prepared, families):
@@ -151,14 +162,15 @@ def verify_rule_decision_commit_readback(prepared, families):
     if len(families) != len(expected) or {name for name, _ in families} != set(expected):
         raise ValueError("Rule decision readback family coverage differs")
     identities = {}
+    contracts = {table.name: table for table in STAGED_TABLES}
     for name, rows in families:
         rows = tuple(rows)
         if len(rows) != expected[name]:
             raise ValueError("Rule decision readback row count differs")
         verified = []
         for row in rows:
-            if name in {BASIS.name, INTENT.name}:
-                table = BASIS if name == BASIS.name else INTENT
+            if name in contracts:
+                table = contracts[name]
                 canonical = _seal(table, {key: value for key, value in row.items() if key != "content_hash"})
                 if canonical["content_hash"] != row.get("content_hash"):
                     raise ValueError("Rule decision readback scalar hash differs")

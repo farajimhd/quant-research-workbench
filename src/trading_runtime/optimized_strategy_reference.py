@@ -10,9 +10,11 @@ import json
 from math import isfinite
 from pathlib import Path
 from typing import Mapping
-from datetime import date
+from datetime import date, datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal, localcontext
+from types import MappingProxyType
+from io import BytesIO
 
 
 WINNER_SHA256 = '57c03ac8aba6e2e09df254d0ac615fce61efa63fe64754351f73c06fafde4d12'
@@ -68,6 +70,53 @@ def _metric_difference(actual, expected):
 
 
 @dataclass(frozen=True)
+class ReferenceClockWindow:
+    requested_start: datetime
+    first_clock: datetime
+    last_clock: datetime
+    clocks: int
+    input_sha256: str
+    clocks_sha256: str
+
+    @property
+    def metric_intervals(self):
+        return self.clocks - 1
+
+
+def _read_reference_clock_window(input_root, day, input_hash):
+    """Read sealed clock metadata only; never supply app market observations."""
+    import numpy as np
+    target = (input_root / day).resolve()
+    if not target.is_relative_to(input_root):
+        raise ValueError('Frozen optimizer clock path escaped its declared authority')
+    complete = (target / 'complete.json').read_bytes()
+    if sha256(complete).hexdigest() != input_hash:
+        raise ValueError(f'Frozen optimizer input identity changed: {day}')
+    metadata = json.loads(complete)
+    if (metadata['status'] != 'complete' or metadata['ready_for_replay'] is not True
+            or metadata['validation_opened'] is not False
+            or metadata['identity']['session']['day'] != day
+            or metadata['identity']['top_n'] != 10 or metadata['identity']['window'] != 30):
+        raise ValueError(f'Frozen optimizer clock metadata differs: {day}')
+    content = (target / 'clocks.npy').read_bytes()
+    clock_hash = metadata['files']['clocks.npy']
+    if sha256(content).hexdigest() != clock_hash:
+        raise ValueError(f'Frozen optimizer clocks changed: {day}')
+    clocks = np.load(BytesIO(content), allow_pickle=False)
+    if (clocks.dtype != np.dtype('int64') or clocks.ndim != 1 or not 2 <= len(clocks) <= 57601
+            or metadata['clocks'] != len(clocks) or not np.all(np.diff(clocks) == 1)):
+        raise ValueError(f'Frozen optimizer clocks lack a complete dense second grid: {day}')
+    declared = metadata['identity']['session']
+    start, end = (datetime.fromisoformat(declared[name]) for name in ('start', 'end'))
+    if any(at.tzinfo is None or at.utcoffset() is None for at in (start, end)):
+        raise ValueError(f'Frozen optimizer window lacks timezone authority: {day}')
+    first, last = (datetime.fromtimestamp(int(clocks[index]), timezone.utc) for index in (0, -1))
+    if start.astimezone(timezone.utc) + timedelta(seconds=1) != first or end.astimezone(timezone.utc) != last:
+        raise ValueError(f'Frozen optimizer clocks differ from their declared session: {day}')
+    return ReferenceClockWindow(start.astimezone(timezone.utc), first, last, len(clocks), input_hash, clock_hash)
+
+
+@dataclass(frozen=True)
 class OptimizationReference:
     generation: int
     winner_sha256: str
@@ -75,9 +124,10 @@ class OptimizationReference:
     program: Mapping
     execution: Mapping
     sessions: Mapping
+    clock_windows: Mapping | None = None
 
 
-def read_reference(root: str | Path, *, concurrency: int = 1) -> OptimizationReference:
+def read_reference(root: str | Path, *, concurrency: int = 1, input_root=None) -> OptimizationReference:
     """Require every frozen session, its receipt hash and the exact winner.
 
     The immutable winner hash is the trust anchor. Reference files are not
@@ -152,6 +202,7 @@ def read_reference(root: str | Path, *, concurrency: int = 1) -> OptimizationRef
         raise ValueError('Invalid winner population index')
     sessions = {}
     execution = None
+    input_hashes = {}
     for day in days:
         name = f'{day}/receipt.json'
         if name not in hashes:
@@ -172,14 +223,55 @@ def read_reference(root: str | Path, *, concurrency: int = 1) -> OptimizationRef
             raise ValueError(f'Winner lacks valid terminal accounting: {day}')
         sessions[day] = {name: values[candidate] for name, values in metrics.items()}
         _validate_metrics(sessions[day], day=day, origin='reference', complete=True)
+        if input_root is not None:
+            input_hashes[day] = receipt['identity']['input_sha256']
+    windows = None
+    if input_root is not None:
+        input_root = Path(input_root).resolve()
+        # These independent, hash-bound metadata reads use the same explicit
+        # bounded pool. No feature, price, SQLite or raw SIP input is opened.
+        with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix='reference-clocks') as pool:
+            futures = {day: pool.submit(_read_reference_clock_window, input_root, day, checksum)
+                       for day, checksum in input_hashes.items()}
+            measured, errors = {}, []
+            for day, future in futures.items():
+                try: measured[day] = future.result()
+                except BaseException as error: errors.append(error)
+            if errors:
+                if len(errors) == 1: raise errors[0]
+                raise BaseExceptionGroup('Frozen optimizer clock reads failed', errors)
+            windows = MappingProxyType(measured)
     return OptimizationReference(GENERATION, WINNER_SHA256, candidate,
-        json.loads(contents['winner.json']), execution, sessions)
+        json.loads(contents['winner.json']), execution, sessions, windows)
 
 
-async def load_reference(root, *, concurrency):
+async def load_reference(root, *, concurrency, input_root=None):
     """Read the all-session comparison reference off-loop; never launch research."""
     from src.backend.qmd_columnar_history_transport import _owned_worker
-    return await _owned_worker(read_reference, root, concurrency=concurrency)
+    return await _owned_worker(read_reference, root, concurrency=concurrency, input_root=input_root)
+
+
+def _verified_comparison_clock(value):
+    if type(value) is str:
+        value = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    if type(value) is not datetime or value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError('App comparison clock lacks explicit timezone authority')
+    return value.astimezone(timezone.utc)
+
+
+def verify_comparison_windows(window, actual):
+    """Require the frozen execution bounds and search's first-clock exclusion."""
+    if type(window) is not ReferenceClockWindow:
+        raise ValueError('App comparison lacks a hash-bound optimizer clock window')
+    execution, measurement = actual.get('execution_window'), actual.get('measurement_window')
+    if (not isinstance(execution, Mapping) or not isinstance(measurement, Mapping)
+            or _verified_comparison_clock(execution.get('start_at')) != window.requested_start
+            or _verified_comparison_clock(execution.get('end_at')) != window.last_clock
+            or _verified_comparison_clock(measurement.get('origin_at')) != window.first_clock
+            or _verified_comparison_clock(measurement.get('end_at')) != window.last_clock
+            or type(measurement.get('samples')) is not int or measurement['samples'] != window.metric_intervals
+            or type(measurement.get('interval_ms')) is not int or measurement['interval_ms'] != 1000):
+        raise ValueError('App comparison differs from its frozen execution or measurement window')
 
 
 def compare_sessions(reference: OptimizationReference, app_results: Mapping) -> list[dict]:
@@ -206,6 +298,10 @@ def compare_sessions(reference: OptimizationReference, app_results: Mapping) -> 
                     or type(actual.get('verified_sequence')) is not int
                     or actual['verified_sequence'] < 1):
                 raise ValueError(f'Unverified or mismatched app comparison: {day}')
+            if reference.clock_windows is not None:
+                if day not in reference.clock_windows:
+                    raise ValueError(f'Missing frozen optimizer clock window: {day}')
+                verify_comparison_windows(reference.clock_windows[day], actual)
             metrics = actual['metrics']
             _validate_metrics(metrics, day=day, origin='app')
             missing = set(expected) - set(metrics)

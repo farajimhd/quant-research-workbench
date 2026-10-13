@@ -19,7 +19,8 @@ class Reader:
 
 
 @pytest.mark.parametrize("movement", [None, "before", "after"])
-def test_owned_page_runs_off_loop_and_checks_prefix_twice(monkeypatch, movement):
+@pytest.mark.parametrize("observations", [False, True])
+def test_owned_page_runs_off_loop_and_checks_prefix_twice(monkeypatch, movement, observations):
     reader = Reader()
     prefix = V4CommittedPrefix("run", 5, "batch", "source", "running", ("batch",))
     main_thread = get_ident()
@@ -36,6 +37,9 @@ def test_owned_page_runs_off_loop_and_checks_prefix_twice(monkeypatch, movement)
     monkeypatch.setattr(module, "load_verified_v4_prefix", head)
     monkeypatch.setattr(module, "load_committed_rule_decision_page", page)
     async def run():
+        if observations:
+            return await module.read_rule_decision_observation_page_async(lambda: reader, prefix, limit=2,
+                maximum_children=8)
         return await module.read_rule_decision_page_async(lambda: reader, prefix, limit=2)
     if movement:
         with pytest.raises(ValueError, match="prefix changed"):
@@ -45,7 +49,8 @@ def test_owned_page_runs_off_loop_and_checks_prefix_twice(monkeypatch, movement)
     assert reader.closed.is_set()
 
 
-def test_cancellation_drains_owned_reader(monkeypatch):
+@pytest.mark.parametrize("observations", [False, True])
+def test_cancellation_drains_owned_reader(monkeypatch, observations):
     reader = Reader()
     prefix = V4CommittedPrefix("run", 5, "batch", "source", "running", ("batch",))
     entered, release = Event(), Event()
@@ -56,7 +61,8 @@ def test_cancellation_drains_owned_reader(monkeypatch):
     monkeypatch.setattr(module, "load_verified_v4_prefix", head)
     monkeypatch.setattr(module, "load_committed_rule_decision_page", lambda *args, **kwargs: ())
     async def run():
-        task = asyncio.create_task(module.read_rule_decision_page_async(lambda: reader, prefix))
+        task = asyncio.create_task(module.read_rule_decision_observation_page_async(lambda: reader, prefix,
+            maximum_children=8) if observations else module.read_rule_decision_page_async(lambda: reader, prefix))
         try:
             assert await asyncio.to_thread(entered.wait, 5)
             task.cancel()
@@ -70,12 +76,14 @@ def test_cancellation_drains_owned_reader(monkeypatch):
     asyncio.run(run())
 
 
-def test_writable_reader_is_rejected_and_closed():
+@pytest.mark.parametrize("observations", [False, True])
+def test_writable_reader_is_rejected_and_closed(observations):
     reader = Reader()
     reader.execute = lambda sql: "0"
     prefix = V4CommittedPrefix("run", 5, "batch", "source", "running", ("batch",))
     with pytest.raises(ValueError, match="SELECT-only"):
-        asyncio.run(module.read_rule_decision_page_async(lambda: reader, prefix))
+        asyncio.run(module.read_rule_decision_observation_page_async(lambda: reader, prefix, maximum_children=8)
+            if observations else module.read_rule_decision_page_async(lambda: reader, prefix))
     assert reader.closed.is_set()
 
 

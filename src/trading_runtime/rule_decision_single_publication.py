@@ -19,5 +19,7 @@ def publish_qualified_rule_decision(client, qualified, *, verified_prior_prefix=
     families = (*families, (BASIS.name, (qualified.unit.basis,)))
     if qualified.unit.intents:
         families = (*families, (INTENT.name, qualified.unit.intents))
+    from .rule_decision_observation import qualified_observation_rows
+    families = (*families, *qualified_observation_rows(qualified.unit, qualified.qualification))
     return _publish_sealed_batch_v4(client, qualified.base, base_families, families,
         verified_prior_prefix=verified_prior_prefix, timings_ns=timings_ns)

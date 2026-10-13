@@ -437,6 +437,25 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                     from src.backend.filled_session_measures import project_filled_session_measures_async
                     measured = await project_filled_session_measures_async(actor.execution_state,
                         block.market, tuple(measured_orders), start_at=start_at, stop_at=stop_at, maximum_rows=1000)
+                    from src.trading_runtime.rule_decision_basis_schema import BASIS, OBSERVATION, OBSERVED_ORDER, UNOBSERVED_ORDER
+                    from src.trading_runtime.rule_decision_observation import restore_decision_observation
+                    persisted_bases = {row['record_id']: row for row in persisted.tables[BASIS.name]}
+                    stored_orders = persisted.tables.get(OBSERVED_ORDER.name, ())
+                    stored_unknown = persisted.tables.get(UNOBSERVED_ORDER.name, ())
+                    recorded_observations = []
+                    for root in sorted(persisted.tables[OBSERVATION.name],
+                            key=lambda row: persisted_bases[row['record_id']]['decision_sequence']):
+                        observation = restore_decision_observation(persisted_bases[root['record_id']], root,
+                            tuple(sorted((row for row in stored_orders if row['parent_record_id'] == root['record_id']),
+                                key=lambda row: row['ordinal'])),
+                            tuple(sorted((row for row in stored_unknown if row['parent_record_id'] == root['record_id']),
+                                key=lambda row: row['ordinal'])))
+                        recorded_observations.append(((root['account_id'], actor.strategy_id,
+                            root['assignment_id'], root['listing_id']), observation))
+                    assert recorded_observations == measured_orders
+                    recorded_measures = await project_filled_session_measures_async(session.policy_packet.actor.execution_state,
+                        block.market, tuple(recorded_observations), start_at=start_at, stop_at=stop_at, maximum_rows=1000)
+                    assert recorded_measures == measured
                     from src.trading_runtime.optimized_strategy_reference import METRICS
                     assert set(measured) == set(METRICS)
                     assert measured['net_pnl'] == actor.position_for('assignment').net_realized_pnl

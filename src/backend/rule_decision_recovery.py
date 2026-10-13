@@ -99,3 +99,77 @@ async def read_rule_decision_page_async(reader_factory, prefix, *, after_sequenc
             client.close()
 
     return await _owned_worker(read)
+
+
+def load_decision_observation_page(client, prefix, rows, *, maximum_children):
+    """Join complete normalized OMS observations to already verified decisions.
+
+    Missing observation roots are explicit failures, including old releases
+    which did not preserve this evidence. Never borrow their later checkpoint.
+    ``prefix`` must have been verified by the owning read operation.
+    """
+    from src.trading_runtime.rule_decision_basis_schema import OBSERVATION, OBSERVED_ORDER, UNOBSERVED_ORDER
+    from src.trading_runtime.rule_decision_observation import restore_decision_observation
+    if (type(prefix) is not V4CommittedPrefix or type(maximum_children) is not int
+            or not 1 <= maximum_children <= 1000000 or len(rows) > 500):
+        raise ValueError('Decision observation read requires explicit bounded committed scope')
+    if not rows:
+        return ()
+    bases = {parent['record_id']: parent for parent, _ in rows}
+    if len(bases) != len(rows) or any(parent['run_id'] != prefix.run_id for parent in bases.values()):
+        raise ValueError('Decision observation page repeats or changes its run identity')
+    ids = ','.join(_literal(identity) for identity in bases)
+    common = f'WHERE run_id={_literal(prefix.run_id)} {_committed_batch_filter(prefix)} '
+    roots = _rows(client, f'SELECT * FROM arte.{OBSERVATION.name} {common}'
+        f'AND record_id IN ({ids}) LIMIT {len(rows) + 1} FORMAT JSONEachRow')
+    if len(roots) != len(rows) or {root['record_id'] for root in roots} != set(bases):
+        raise ValueError('Committed decision observation root coverage differs')
+    children = []
+    remaining = maximum_children
+    for table in (OBSERVED_ORDER, UNOBSERVED_ORDER):
+        page = _rows(client, f'SELECT * FROM arte.{table.name} {common}'
+            f'AND parent_record_id IN ({ids}) LIMIT {remaining + 1} FORMAT JSONEachRow')
+        if len(page) > remaining:
+            raise ValueError('Committed decision observations exceed their explicit child bound')
+        remaining -= len(page)
+        grouped = {identity: [] for identity in bases}
+        for child in page:
+            if child['parent_record_id'] not in grouped:
+                raise ValueError('Committed decision observation child has a foreign parent')
+            grouped[child['parent_record_id']].append(child)
+        children.append(grouped)
+    roots = {root['record_id']: root for root in roots}
+    return tuple((parent, intents, restore_decision_observation(parent, roots[parent['record_id']],
+        tuple(sorted(children[0][parent['record_id']], key=lambda row: row['ordinal'])),
+        tuple(sorted(children[1][parent['record_id']], key=lambda row: row['ordinal']))))
+        for parent, intents in rows)
+
+
+async def read_rule_decision_observation_page_async(reader_factory, prefix, *,
+        after_sequence=0, limit=200, maximum_children):
+    """Read decision, completion, intent and observed-OMS facts on one worker."""
+    if (not callable(reader_factory) or type(prefix) is not V4CommittedPrefix or not prefix.batch_ids
+            or type(after_sequence) is not int or not 0 <= after_sequence <= prefix.last_sequence
+            or type(limit) is not int or not 1 <= limit <= 500
+            or type(maximum_children) is not int or not 1 <= maximum_children <= 1000000):
+        raise ValueError('Recorded observation recovery requires a bounded exact V4 prefix')
+    def read():
+        client = reader_factory()
+        try:
+            if client.execute("SELECT getSetting('readonly')").strip() != '1':
+                raise ValueError('Recorded observation recovery requires a SELECT-only client')
+            if load_verified_v4_prefix(client, prefix.run_id) != prefix:
+                raise ValueError('Recorded observation prefix changed before readback')
+            rows = load_committed_rule_decision_page(client, prefix, after_sequence=after_sequence, limit=limit)
+            if rows:
+                events = load_typed_event_page(client, prefix, after_sequence=after_sequence, limit=len(rows),
+                    selected_sequences=tuple(parent['decision_sequence'] for parent, _ in rows))
+                verify_decision_completion_page(rows, events)
+                join_decision_intents(client, prefix, rows)
+            result = load_decision_observation_page(client, prefix, rows, maximum_children=maximum_children)
+            if load_verified_v4_prefix(client, prefix.run_id) != prefix:
+                raise ValueError('Recorded observation prefix changed after readback')
+            return result
+        finally:
+            client.close()
+    return await _owned_worker(read)

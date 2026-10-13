@@ -1,6 +1,6 @@
 """Qualified decision supplements for the shared mixed-batch writer."""
 from .rule_decision_basis_projection import rekey_rule_decision_basis
-from .rule_decision_basis_schema import BASIS, INTENT
+from .rule_decision_basis_schema import BASIS, INTENT, STAGED_TABLES
 from .rule_decision_publication import QualifiedRuleDecisionBatch, _check_rule_decision_qualification
 
 
@@ -13,7 +13,7 @@ def qualified_compound_rule_families(compound):
     from .arte_journal_compound_v4 import V4CompoundBatch
     if type(compound) is not V4CompoundBatch:
         raise TypeError("Rule supplements require the shared compound envelope")
-    parents, children = [], []
+    parents, children, observations = [], [], {}
     for unit in compound.units:
         if type(unit) is not QualifiedRuleDecisionBatch:
             continue
@@ -22,13 +22,17 @@ def qualified_compound_rule_families(compound):
             unit.unit.basis, unit.unit.intents, batch_id=compound.base.batch_id)
         parents.append(parent)
         children.extend(intents)
+        from .rule_decision_observation import qualified_observation_rows
+        for name, rows in qualified_observation_rows(unit.unit, unit.qualification, rekeyed_basis=parent):
+            observations.setdefault(name, []).extend(rows)
     for key, rows in (("rule_decision_bases", parents), ("rule_decision_intents", children)):
         expected = tuple({name: value for name, value in row.items() if name != "content_hash"}
                          for row in rows)
         if expected != compound.children[key]:
             raise ValueError("Compound rule evidence differs from its qualified source units")
-    return tuple((table.name, tuple(rows)) for table, rows in
-                 ((BASIS, parents), (INTENT, children)) if rows)
+    return (*tuple((table.name, tuple(rows)) for table, rows in
+                 ((BASIS, parents), (INTENT, children)) if rows),
+            *((name, tuple(rows)) for name, rows in observations.items()))
 
 
 def prepare_qualified_compound_families(client, compound, *, verified_prior_prefix=None,
@@ -63,10 +67,11 @@ def verify_compound_rule_readback(compound, persisted_families):
     from .rule_decision_basis_projection import _seal, verify_rule_decision_basis
     expected = dict(qualified_compound_rule_families(compound))
     actual = {}
+    contracts = {table.name: table for table in STAGED_TABLES}
     for name, rows in persisted_families:
-        if name not in (BASIS.name, INTENT.name) or name in actual:
+        if name not in contracts or name in actual:
             raise ValueError("Rule readback has foreign or repeated families")
-        table = BASIS if name == BASIS.name else INTENT
+        table = contracts[name]
         sealed = []
         for row in rows:
             canonical = _seal(table, {key: value for key, value in row.items() if key != "content_hash"})
