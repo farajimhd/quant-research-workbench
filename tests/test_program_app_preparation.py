@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from src.backend import program_app_preparation as flow
+from src.backend import program_configuration_selection_service as selection
+from src.backend.replay_run_service import ReplayRunCapacityError
 
 
 @pytest.mark.parametrize("failure,cleanup_failure", [(None, None), ("signals", None),
@@ -75,4 +77,99 @@ def test_preparation_orders_existing_gates_and_closes_adopted_failure(monkeypatc
             assert await flow.complete_program_app_preparation(service, controller, **kwargs) is controller
             assert stages == ["review", "inputs", "journal", "runtime", "signals", "bind", "stage"]
         assert controller._task is None
+    asyncio.run(run())
+
+
+def test_startup_reservation_blocks_foreign_staging_and_launch(monkeypatch):
+    selector = selection.ProgramConfigurationSelectionService(
+        approved_selections={"00000000-0000-0000-0000-000000000001": "a" * 64},
+        selection_client_factory=lambda: None, release_client_factory=lambda: None,
+        policy_client_factory=lambda: None, policy_dispatch=object(), concurrency=1)
+    from src.backend import backtest_program_launch as launch
+    service, owned, foreign = object(), object(), object()
+    async def review(*args): pass
+    async def bound(*args): pass
+    monkeypatch.setattr(selector, "_review_controller", review)
+    monkeypatch.setattr(launch, "require_bound_program_start", bound)
+    selector._preparing = True
+    selector._preparation_controller = owned
+    async def run():
+        with pytest.raises(RuntimeError, match="owns another handoff"):
+            await selector.stage_controller(service, foreign)
+        assert selector._prepared is None
+        assert await selector.stage_controller(service, owned) is owned
+        with pytest.raises(ReplayRunCapacityError, match="already in progress"):
+            await selector.launch_controller(service, owned)
+        assert selector._prepared == (service, owned) and selector._launching is None
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("failure", [None, "controller", "funnel", "cancel"])
+def test_app_startup_handoff_reserves_before_preparation_and_releases_on_failure(monkeypatch, failure):
+    selector = selection.ProgramConfigurationSelectionService(
+        approved_selections={"00000000-0000-0000-0000-000000000001": "a" * 64},
+        selection_client_factory=lambda: None, release_client_factory=lambda: None,
+        policy_client_factory=lambda: None, policy_dispatch=object(), concurrency=1)
+    monkeypatch.setattr(selection, "_SERVICE", selector)
+    service, definition, controller = object(), object(), object()
+    calls = []
+
+    async def run():
+        entered, release = asyncio.Event(), asyncio.Event()
+        kwargs = dict(assignments=(object(),), listing_by_assignment={"assignment": "listing"},
+            liquidity_resolution_ms=1000, cohorts=(object(),), scopes=({},), journal_scope={},
+            signal_publisher=object(), signal_scope={}, checkpoint_connection_factory=lambda: None,
+            checkpoint_concurrency=2, history_post=object())
+
+        async def prepare(actual_service, actual_definition, **actual):
+            assert (actual_service, actual_definition) == (service, definition)
+            assert actual == {key: kwargs[key] for key in
+                ("assignments", "listing_by_assignment", "liquidity_resolution_ms")}
+            assert selector._preparing and selector._preparation_controller is None
+            calls.append("controller")
+            entered.set()
+            await release.wait()
+            if failure == "controller": raise RuntimeError("controller failed")
+            return controller
+
+        async def complete(actual_service, actual_controller, **actual):
+            assert (actual_service, actual_controller) == (service, controller)
+            assert selector._preparing and selector._preparation_controller is controller
+            assert actual == {key: value for key, value in kwargs.items()
+                if key not in ("assignments", "listing_by_assignment", "liquidity_resolution_ms")}
+            calls.append("funnel")
+            if failure == "funnel": raise RuntimeError("funnel failed")
+            # Only the startup reservation is isolated here; the native funnel
+            # ordering, failure cleanup and broker path have integration tests.
+            selector._prepared = (service, controller)
+            return controller
+
+        monkeypatch.setattr(selector, "prepare_controller", prepare)
+        monkeypatch.setattr(flow, "complete_program_app_preparation", complete)
+        pending = asyncio.create_task(selector.prepare_app_controller(service, definition, **kwargs))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            with pytest.raises(ReplayRunCapacityError, match="already occupied"):
+                await selector.prepare_app_controller(service, definition, **kwargs)
+            assert calls == ["controller"]
+            if failure == "cancel":
+                pending.cancel()
+            release.set()
+            if failure == "cancel":
+                with pytest.raises(asyncio.CancelledError): await pending
+            elif failure:
+                with pytest.raises(RuntimeError, match=failure + " failed"): await pending
+            else:
+                assert await pending is controller
+                assert selector._prepared == (service, controller)
+                with pytest.raises(ReplayRunCapacityError, match="already occupied"):
+                    await selector.prepare_app_controller(service, definition, **kwargs)
+        finally:
+            release.set()
+            if not pending.done():
+                pending.cancel()
+                with pytest.raises(asyncio.CancelledError): await pending
+        assert not selector._preparing and selector._preparation_controller is None
+        if failure: assert selector._prepared is None
+        assert calls == (["controller", "funnel"] if failure in (None, "funnel") else ["controller"])
     asyncio.run(run())

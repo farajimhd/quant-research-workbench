@@ -33,6 +33,8 @@ class ProgramConfigurationSelectionService:
         self._prepared_lock = Lock()
         self._prepared = None
         self._launching = None
+        self._preparing = False
+        self._preparation_controller = None
 
     async def snapshot(self, candidate_id, run_plan_id=""):
         if type(candidate_id) is not str or not candidate_id.startswith("strategy-configuration:"):
@@ -82,6 +84,40 @@ class ProgramConfigurationSelectionService:
             raise RuntimeError("Programme preparation lost its installed app authority")
         return controller
 
+    async def prepare_app_controller(self, run_service, definition, *, assignments,
+            listing_by_assignment, liquidity_resolution_ms, cohorts, scopes,
+            journal_scope, signal_publisher, signal_scope, checkpoint_connection_factory,
+            checkpoint_concurrency, history_post=None):
+        """Operator startup handoff through the existing native compute funnel.
+
+        All publication authorities are explicit and caller-owned. This reserves
+        the single app handoff before reads or journal ownership, prepares and
+        stages it, and never admits or starts the run.
+        """
+        from .program_app_preparation import complete_program_app_preparation
+        from .replay_run_service import ReplayRunCapacityError
+        if program_configuration_selection_service() is not self:
+            raise ValueError("Programme preparation requires its installed app authority")
+        with self._prepared_lock:
+            if self._preparing or self._prepared is not None or self._launching is not None:
+                raise ReplayRunCapacityError("App programme handoff is already occupied")
+            self._preparing = True
+        try:
+            controller = await self.prepare_controller(run_service, definition,
+                assignments=assignments, listing_by_assignment=listing_by_assignment,
+                liquidity_resolution_ms=liquidity_resolution_ms)
+            with self._prepared_lock:
+                self._preparation_controller = controller
+            return await complete_program_app_preparation(run_service, controller,
+                cohorts=cohorts, scopes=scopes, journal_scope=journal_scope,
+                signal_publisher=signal_publisher, signal_scope=signal_scope,
+                checkpoint_connection_factory=checkpoint_connection_factory,
+                checkpoint_concurrency=checkpoint_concurrency, history_post=history_post)
+        finally:
+            with self._prepared_lock:
+                self._preparation_controller = None
+                self._preparing = False
+
     async def launch_controller(self, run_service, controller):
         """Recheck app approval, then use the existing fully bound native gate.
 
@@ -91,7 +127,7 @@ class ProgramConfigurationSelectionService:
         await self._review_controller(run_service, controller)
         from .replay_run_service import ReplayRunCapacityError
         with self._prepared_lock:
-            if self._launching is not None:
+            if self._launching is not None or self._preparing:
                 raise ReplayRunCapacityError("Programme launch is already in progress")
             claim = self._launching = (run_service, controller)
         retain = False
@@ -115,6 +151,8 @@ class ProgramConfigurationSelectionService:
         await self._review_controller(run_service, controller)
         await require_bound_program_start(controller)
         with self._prepared_lock:
+            if self._preparing and self._preparation_controller is not controller:
+                raise RuntimeError("App programme preparation owns another handoff")
             if self._launching is not None:
                 raise RuntimeError("Cannot stage a programme while launch is in progress")
             if self._prepared is not None and self._prepared != (run_service, controller):
