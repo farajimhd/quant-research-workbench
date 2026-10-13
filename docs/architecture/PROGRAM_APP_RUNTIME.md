@@ -170,6 +170,13 @@ reader. Split data comes from the immutable source plan. Reverified completed
 technical output can finish its missing seed checkpoint without reinsertion;
 changed parent state or orphaned uncheckpointed output blocks publication.
 This stage alone does not issue a final fence or admit any app consumer.
+`current_market_day_publication.publish_current_market_day_build` is the
+operational completion boundary. It loads the complete shared checkpoint
+population, assembles the existing normalized inventory off-loop, and retains
+the native canonical source replay, physical storage checks, exact readback and
+final Keeper CAS. Missing stage/seed receipts fail before a source publication
+client opens. Calling this writer still requires explicit operational approval;
+source implementation and synthetic qualification do not authorize publication.
 
 Managed app shutdown disposes an unused staged programme handoff before closing
 its policy reader. It drains runtime background-task and typed journal cleanup,
