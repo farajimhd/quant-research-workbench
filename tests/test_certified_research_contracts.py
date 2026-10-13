@@ -211,6 +211,9 @@ class Contracts(unittest.TestCase):
         request=producer.MarketRequest(unit,original['hash'],'b'*64,rules,{},'c'*64,'d'*64,
             boundaries(unit.day)['REGULAR'],True,original['definition'])
         producer.validate_recipe(request,'arte')
+        with self.assertRaisesRegex(ValueError,'adjustment lineage'):
+            producer.validate_recipe(request,'arte',product='v7')
+        producer.validate_recipe(replace(request,adjustment_hash='e'*64),'arte',product='v7')
         stale=json.loads(json.dumps(original['definition']));stale['algorithms']['ema']='f'*64
         with self.assertRaisesRegex(ValueError,'loaded algorithms'):
             producer.validate_recipe(replace(request,recipe_definition=stale),'arte')
