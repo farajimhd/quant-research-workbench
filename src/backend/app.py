@@ -588,7 +588,7 @@ async def application_lifespan(_app: FastAPI):
     from src.backend.program_app_startup import start_program_app_selection
     from src.backend.program_app_bootstrap import close_managed_program_startup
     try:
-        await start_program_app_selection(_app)
+        await start_program_app_selection(_app, run_service=backtest_run_service)
         from src.backend.live_strategy_runtime_service import LIVE_STRATEGY_RUNTIME
         from src.backend.market_discovery_runtime_service import MARKET_DISCOVERY_RUNTIME
         LIVE_STRATEGY_RUNTIME.start()

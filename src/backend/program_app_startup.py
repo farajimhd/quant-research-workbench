@@ -2,8 +2,9 @@
 
 The supplied service carries approved immutable pins and managed readers.
 The optional managed startup path reads approved references and verifies
-central releases before registration. Neither path publishes data or starts
-a producer, writer, or backtest.
+central releases before registration. Selection verification is read-only.
+An explicitly approved typed handoff may prepare existing journal/source facts;
+neither path starts a producer or a backtest.
 """
 from fastapi import FastAPI
 
@@ -33,7 +34,7 @@ def configure_program_app_startup(application, service):
     return application
 
 
-async def start_program_app_selection(application):
+async def start_program_app_selection(application, *, run_service=None):
     """Read all supplied central seals, then install; default startup is inert."""
     service = getattr(application.state, _STATE_KEY, None)
     from .program_app_bootstrap import SPEC_KEY, prepare_managed_program_startup, close_managed_program_startup
@@ -43,9 +44,15 @@ async def start_program_app_selection(application):
             raise RuntimeError('Managed programme startup cannot replace the installed authority')
         service = await prepare_managed_program_startup(application, managed_spec)
     if service is None:
+        from .program_app_handoff import HANDOFF_KEY
+        if getattr(application.state, HANDOFF_KEY, None) is not None:
+            raise ValueError('Programme handoff cannot start without approved central selections')
         return 0
     try:
-        return await _verify_program_app_selection(application, service, managed_spec=managed_spec)
+        count = await _verify_program_app_selection(application, service, managed_spec=managed_spec)
+        from .program_app_handoff import prepare_configured_program_app_handoff
+        await prepare_configured_program_app_handoff(application, service, run_service)
+        return count
     except BaseException:
         if managed_spec is not None:
             await close_managed_program_startup(application)
