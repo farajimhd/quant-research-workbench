@@ -5,6 +5,7 @@ import pytest
 
 from pipelines.market_sip.events import program_input_publication as publication
 from test_columnar_history_publication import source as history_source
+from test_columnar_history_publication import prepared_source
 
 
 def test_native_composition_is_lazy_and_bounds_cross_pipeline_work(monkeypatch):
@@ -87,3 +88,60 @@ def test_duplicate_liquidity_is_rejected_before_second_publication(monkeypatch):
             await lane.publish_liquidity(source, ownership=None, code_hash='pin')
         assert not lane._liquidity_active and lane.active == 0
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('mode', ['complete', 'missing_volume', 'origin_mismatch', 'bad_windows'])
+def test_session_receipts_bridge_native_publication_to_app_request(prepared_source, monkeypatch, mode):
+    from dataclasses import replace
+    from datetime import datetime, UTC
+    from types import MappingProxyType
+    from test_columnar_history_publication import Store, Client, Owner, CODE, publish, consume
+    from tests.test_backtest_program_inputs import release_for
+    from src.backend.backtest_program_input_plan import ProgramPublishedInputRequest
+    from src.backend.qmd_columnar_history import certify_history_product
+    opening = replace(prepared_source.opening_reference, rows_by_listing=MappingProxyType({
+        'listing': MappingProxyType(dict(ticker='ABC', listing_id='listing',
+            status='resolved', adjusted_prior_close=10.))}))
+    feature = replace(prepared_source, opening_reference=opening)
+    volume = replace(feature, fields=())
+    feature_store, volume_store = Store(), Store()
+    publish(feature_store, feature)
+    release = release_for(consume(feature_store, feature).pin())
+    lane = publication.ProgramInputPublication(query_limits=dict(max_threads=2,
+        max_memory_usage=1024, max_execution_time=30, max_result_rows=1000, max_result_bytes=65536),
+        maximum_concurrent_units=1)
+    # The fixture models one product partition per store; real ClickHouse
+    # filters the shared tables by the native product-revision scope.
+    readers, writers = iter((feature_store, volume_store)), iter((feature_store, volume_store))
+    lane.history.reader_factory = lambda: Client(next(readers))
+    lane.history.writer_factory = lambda: Client(next(writers), True)
+    packet = () if mode == 'missing_volume' else (volume,)
+    if mode == 'origin_mismatch':
+        packet = (replace(volume, first_bucket=34201, stop_bucket=34401),)
+    windows = ((34200, 34500),) if mode == 'bad_windows' else ((34200, 34400),)
+    reports = []
+    async def report(value):
+        reports.append(dict(value))
+    pending = lane.publish_session_histories(release, opening, (feature,), packet,
+        ownership=Owner(), code_hash=CODE, first_ordinal=0, stop_ordinal=200,
+        evaluation_block='full-session', cohort_windows=windows,
+        as_of=datetime(2026, 8, 4, tzinfo=UTC), on_progress=report)
+    if mode != 'complete':
+        with pytest.raises(ValueError):
+            asyncio.run(pending)
+        assert not volume_store.writes and not reports
+        assert lane.history.completed == lane.history.skipped_verified == 0
+        return
+    request = asyncio.run(pending)
+    assert type(request) is ProgramPublishedInputRequest
+    assert len(request.feature_requests) == len(request.volume_requests) == 1
+    assert not request.volume_requests[0].fields
+    for pin, store in zip(request.feature_requests + request.volume_requests, (feature_store, volume_store)):
+        product = certify_history_product(Client(store), pin.scope, pin.fields, pin.parents,
+            expected_content_hash=pin.expected_content_hash)
+        assert product.pin().scope == pin.scope
+    assert lane.history.skipped_verified == 1 and lane.history.completed == 1
+    assert reports[-1]['queued'] == reports[-1]['active'] == reports[-1]['failed'] == 0
+    assert reports[-1]['completed'] == reports[-1]['skipped'] == 1
+    assert all(sum(row[key] for key in ('queued', 'active', 'completed', 'skipped', 'failed')) == row['total']
+        for row in reports)
