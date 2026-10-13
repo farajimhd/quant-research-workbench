@@ -267,6 +267,22 @@ def test_factory_uses_certified_central_identity_and_effective_intervals(monkeyp
     assert rebuilt == src
 
 
+def test_projected_market_cannot_redefine_complete_scanner_population(monkeypatch):
+    src, facts = certificate_source(monkeypatch)
+    # Both identity rows are correctly hashed; the market asks for only ABC.
+    # This must fail before interval/price reads or any publication.
+    facts = [*facts, dict(facts[0], ticker='XYZ', listing_id='listing-xyz',
+        symbol_id='symbol-xyz', security_id='security-xyz', ibkr_conid=2)]
+    identity = replace(src.identity, content_hash=p.identity_content_hash(facts))
+    src = replace(src, identity=identity)
+    monkeypatch.setattr(p, 'certify_identity_plan', lambda *args, **kwargs: identity)
+    client = CertificateClient(facts)
+    with pytest.raises(ValueError, match='complete sealed identity population'):
+        p.certified_opening_input(client, src.market, src.prior_market)
+    with pytest.raises(ValueError, match='complete sealed identity population'):
+        src.verify(client)
+
+
 def test_current_only_listing_is_explicitly_excluded_without_a_prior_bar_read(verified_source):
     src = replace(verified_source, listings=(replace(verified_source.listings[0],
         valid_from=date(2026, 8, 3)),), prior_market=replace(verified_source.prior_market,

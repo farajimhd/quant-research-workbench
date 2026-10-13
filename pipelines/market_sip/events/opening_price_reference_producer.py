@@ -142,6 +142,8 @@ def _identity_rows(reader, market, identity):
     mapped = {r["ticker"]: r for r in found[0]}
     if len(mapped) != len(found[0]):
         raise ValueError("Opening central identity has duplicate tickers")
+    if set(mapped) != set(market.tickers):
+        raise ValueError("Opening scanner population must cover the complete sealed identity population; ticker projections are not permitted")
     return mapped
 
 

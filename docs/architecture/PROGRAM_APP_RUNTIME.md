@@ -18,6 +18,11 @@ split-adjusted close eligibility from $0.80 through $50 before ranking, top 10,
 and lexical listing ties. Its initial entry allowance is $1,000 and each add is
 $200; changing cash parameters creates a new immutable release. Every fill's
 commission and applicable execution cost contributes to app P&L.
+Opening-reference publication requires the entire sealed identity population.
+A ticker projection cannot publish an alternative scanner population under the
+same programme. Price eligibility is applied only after complete population
+coverage, before volume ranking; legacy identity readers retain their existing
+projection behavior.
 
 QMD history and opening references use the central `q_live` contracts. Broker
 liquidity, configuration, programmes, releases, lifecycle and journals use
