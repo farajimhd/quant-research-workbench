@@ -221,8 +221,7 @@ def preflight_program_liquidity_scope(controller, work):
         if (certificates is not None or type(market) is not CertifiedMarketDayPlan
                 or type(prices) is not PriceLevelPlan or market.sessions != (day.isoformat(),)
                 or set(market.tickers) != tickers or len(market.tickers) != len(tickers)
-                or market.required_resolutions_ms != (100,)
-                or len(tickers) * (work.stop_bucket - work.first_bucket) * 10 > 262144):
+                or market.required_resolutions_ms != (100,)):
             raise ValueError("Programme liquidity scope differs from certified100ms assignments")
         for ticker in market.tickers:
             projected = project_market_day_plan(market, (ticker,))
@@ -236,8 +235,7 @@ def preflight_program_liquidity_scope(controller, work):
                 or any(type(row) is not CertifiedLiquidityResolution for row in certificates)
                 or len(certificates) != len(tickers)
                 or {row.source.ticker for row in certificates} != tickers
-                or any(row.source.session_date != day for row in certificates)
-                or len(tickers) * (work.stop_bucket - work.first_bucket) > 262144):
+                or any(row.source.session_date != day for row in certificates)):
             raise ValueError("Programme liquidity scope differs from certified1s assignments")
         for certificate in certificates:
             liquidity_window_sql(certificate, first_bucket=work.first_bucket, stop_bucket=work.stop_bucket)

@@ -197,12 +197,19 @@ async def run_prepared_program_cohort(controller, blocks, population, projection
     before_source = source.typed_source_cursor()
     before_fence = (journal_publisher.fenced_sequence, journal_publisher._batch_id,
         journal_publisher._source_cursor)
+    from .backtest_program_liquidity_scope import program_cohort_liquidity_tickers
+    before_broker_orders = tuple(await broker.live_orders())
+    read_tickers = program_cohort_liquidity_tickers(actor, manager, projection,
+        first_clock=clocks[0], last_clock=clocks[-1], broker_orders=before_broker_orders)
     if resolution == 100:
         if (liquidity_certificates is not None or market_plan is None or price_plan is None
                 or set(market_plan.tickers) != tickers or market_plan.sessions != (day,)):
             raise ValueError("Program cohort100ms market coverage differs from assignments")
-        rows_by_ticker = await read_fixed_liquidity_cohort_async(reader_factory, market_plan, price_plan,
-            after_boundary_ms=after, through_boundary_ms=through, concurrency=concurrency)
+        from .backtest_market_data import project_market_day_plan
+        projected = project_market_day_plan(market_plan, read_tickers) if read_tickers else None
+        rows_by_ticker = (await read_fixed_liquidity_cohort_async(reader_factory, projected,
+            price_plan.projected(projected), after_boundary_ms=after,
+            through_boundary_ms=through, concurrency=concurrency)) if projected is not None else {}
     else:
         if (resolution != 1000 or market_plan is not None or price_plan is not None
                 or not isinstance(liquidity_certificates, (tuple, list))
@@ -210,8 +217,9 @@ async def run_prepared_program_cohort(controller, blocks, population, projection
                 or {row.source.ticker for row in liquidity_certificates} != tickers
                 or any(row.source.session_date != controller.definition.session_date for row in liquidity_certificates)):
             raise ValueError("Program cohort1s market coverage differs from assignments")
-        rows_by_ticker = await read_liquidity_cohort_async(reader_factory, liquidity_certificates,
-            first_bucket=first_bucket, stop_bucket=stop_bucket, concurrency=concurrency)
+        selected_certificates = tuple(row for row in liquidity_certificates if row.source.ticker in read_tickers)
+        rows_by_ticker = (await read_liquidity_cohort_async(reader_factory, selected_certificates,
+            first_bucket=first_bucket, stop_bucket=stop_bucket, concurrency=concurrency)) if selected_certificates else {}
     if (controller._runtime is not runtime or controller._program_strategy is not actor
             or controller._program_signal_runtime is not source or controller._journal_publisher is not journal_publisher
             or controller.definition is not definition or runtime.broker is not broker or runtime.config is not config
@@ -222,9 +230,12 @@ async def run_prepared_program_cohort(controller, blocks, population, projection
             or source_publisher._closing or source_publisher._fatal is not None
             or journal_publisher._error is not None or journal_publisher._terminal_task is not None
             or journal_publisher._task is not None and not journal_publisher._task.done()
-            or (journal_publisher.fenced_sequence, journal_publisher._batch_id, journal_publisher._source_cursor) != before_fence):
+            or (journal_publisher.fenced_sequence, journal_publisher._batch_id, journal_publisher._source_cursor) != before_fence
+            or tuple(await broker.live_orders()) != before_broker_orders
+            or program_cohort_liquidity_tickers(actor, manager, projection,
+                first_clock=clocks[0], last_clock=clocks[-1], broker_orders=before_broker_orders) != read_tickers):
         raise ValueError("Program cohort ownership changed during liquidity I/O")
-    if set(rows_by_ticker) != tickers:
+    if set(rows_by_ticker) != set(read_tickers):
         raise ValueError("Program cohort read lacks exact certified ticker coverage")
     boundaries = {}
     for ticker, rows in rows_by_ticker.items():
