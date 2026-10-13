@@ -30,6 +30,25 @@ from pipelines.certified_research.universe_publication import UniversePublisher
 
 
 class Contracts(unittest.TestCase):
+    def test_native_reporting_fingerprint_is_required_and_changes_source_epoch(self):
+        import json
+        from pipelines.market_sip.events import reporting_evidence as ns
+        day=date(2026,1,2)
+        inputs=dict(expected=(day,),source_hashes={str(day):'a'*64},rows={day:dict(trade_event_rows=4)})
+        details=dict(counts=dict(n=4,bad=0),evidence_version=ns.VERSION,evidence_hash='b'*64)
+        def query(sql):
+            if 'historical_trade_reporting_coverage' in sql:
+                return [dict(source_date=str(day),revision=c.REPORTING_REVISION,source_digest='a'*64,
+                    status='complete',details=json.dumps(details))]
+            return []
+        first=source.reporting_inventory(query,inputs)
+        details['evidence_hash']='c'*64
+        second=source.reporting_inventory(query,inputs)
+        self.assertNotEqual(first['content_hash'],second['content_hash'])
+        details.pop('evidence_hash')
+        with self.assertRaisesRegex(ValueError,'fingerprint migration'):
+            source.reporting_inventory(query,inputs)
+
     def test_reference_graph_shares_issuer_and_blocks_float_on_all_required_inputs(self):
         config=c.CampaignConfig(date(2026,1,1),date(2026,1,9),workers=4)
         prerequisite=[PlannedUnit(Unit('universe','universe'),{}),
@@ -686,6 +705,64 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_native_reporting_repair_preserves_fields_resumes_and_fails_closed(self):
+        from pipelines.certified_research import source as source_contract
+        from pipelines.market_sip.events import reporting_evidence as ns,native_reporting_repair as repair
+        day=date(2026,1,2);name='repair_events_'+uuid.uuid4().hex;clock='repair_ns_'+uuid.uuid4().hex
+        coverage='repair_coverage_'+uuid.uuid4().hex
+        target=self.database+'.'+name;first=1767370000000000
+        self.client.query(f'CREATE TABLE {target} (ticker String,ordinal UInt64,event_meta UInt8,sip_timestamp_us UInt64,price UInt32) '
+            "ENGINE=MergeTree ORDER BY (ticker,ordinal) SETTINGS storage_policy='live_market_ssd'",read=False)
+        self.client.query(ns.ddl(self.database,clock),read=False)
+        source=dict(source_date=str(day),first_sip_timestamp_us=first,last_sip_timestamp_us=first+4,trade_event_rows=4)
+        source_hash=c.digest(source)
+        insert_rows(self.client.query,self.database,name,[dict(ticker='TEST',ordinal=n,event_meta=71 if n<5 else 6,
+            sip_timestamp_us=first+n-1,price=100+n) for n in range(1,6)])
+        input_rows=[]
+        for n,delta,reason in ((1,1000,0),(2,None,8),(3,10_000_000_001,4),(4,-1000,8)):
+            sip=(first+n-1)*1000+123
+            input_rows.append(dict(source_date=str(day),ticker='TEST',ordinal=n,sip_timestamp_ns=sip,
+                participant_timestamp_ns=None if delta is None else sip-delta,reporting_condition_entries=[],
+                reporting_reason=reason,source_digest=source_hash))
+        insert_rows(self.client.query,self.database,clock,input_rows)
+        frozen=repair._hash(self.client.query,repair.evidence_fingerprint_sql(self.database+'.'+clock,day))
+        class Claim:
+            def check(self):pass
+        logs=[]
+        def query(sql,*args,**kwargs):logs.append(sql);return self.client.query(sql,*args,**kwargs)
+        def step():return repair.step(query,source,frozen,Claim(),lambda:None,database=self.database,table=clock,target=target,coverage=coverage)
+        result=step();self.assertEqual(result['status'],'submitted')
+        def coverage_query(sql):
+            if 'historical_trade_reporting_coverage_v1' in sql:
+                return self.client.query(sql.replace('q_live.historical_trade_reporting_coverage_v1',self.database+'.'+coverage))
+            return []
+        admitted=source_contract.reporting_inventory(coverage_query,dict(expected=(day,),source_hashes={str(day):source_hash},
+            rows={day:dict(trade_event_rows=4)}))
+        self.assertEqual(admitted['missing'],(day,))
+        deadline=time.monotonic()+30
+        while result['status']!='complete' and time.monotonic()<deadline:
+            time.sleep(.1);result=step()
+        self.assertEqual(result['status'],'complete')
+        actual=self.client.query(f'SELECT ordinal,event_meta,price FROM {target} ORDER BY ordinal')
+        self.assertEqual([int(r['event_meta']) for r in actual],[71,7,199,7,6])
+        self.assertEqual([int(r['price']) for r in actual],[101,102,103,104,105])
+        polls=[]
+        def active_query(sql,*args,**kwargs):
+            polls.append(sql);rows=self.client.query(sql,*args,**kwargs)
+            if 'SELECT mutation_id,command,is_done' in sql:
+                return [dict(r,is_done=0,parts_to_do=1) for r in rows]
+            return rows
+        active=repair.step(active_query,source,frozen,Claim(),lambda:None,database=self.database,table=clock,target=target,coverage=coverage)
+        self.assertEqual(active['status'],'mutating')
+        self.assertFalse(any('SHA256(toString(tuple(' in sql for sql in polls))
+        logs.clear();self.assertEqual(step()['status'],'complete')
+        self.assertFalse(any(sql.startswith(('INSERT INTO','ALTER TABLE')) for sql in logs))
+        with self.assertRaisesRegex(ValueError,'frozen acquisition'):
+            repair.step(query,source,'f'*64,Claim(),lambda:None,database=self.database,table=clock,target=target,coverage=coverage)
+        self.client.query(f'ALTER TABLE {target} UPDATE price=999 WHERE ordinal=1 SETTINGS mutations_sync=2',read=False)
+        with self.assertRaisesRegex(ValueError,'preserved fields'):
+            step()
+
     def test_continuous_wilder_state_survives_warmup_and_ready_session_boundaries(self):
         from pipelines.certified_research import indicators
         from datetime import timedelta

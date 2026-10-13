@@ -6,6 +6,22 @@ TABLE='historical_trade_reporting_ns_v1'
 VERSION='original-reporting-nanosecond-evidence-v1'
 
 
+def evidence_fingerprint_sql(evidence,day):
+    database,table=evidence.split('.');identifier(database);identifier(table)
+    fields='source_date,ticker,ordinal,sip_timestamp_ns,participant_timestamp_ns,reporting_condition_entries,reporting_reason,source_digest'
+    sums=','.join(f'sum(reinterpretAsUInt64(substring(h,{offset},8))) h{i}' for i,offset in enumerate((1,9,17,25)))
+    return (f'SELECT count() n,{sums} FROM (SELECT SHA256(toString(tuple({fields}))) h FROM {evidence} '
+        f'WHERE source_date=toDate({literal(day)}))')
+
+
+def evidence_hash(query,evidence,day):
+    """Frozen original-clock input fingerprint retained in native receipts."""
+    from pipelines.certified_research.contracts import digest
+    rows=query(evidence_fingerprint_sql(evidence,day))
+    if len(rows)!=1:raise ValueError('Native evidence fingerprint is ambiguous')
+    return digest({k:int(v) for k,v in rows[0].items()})
+
+
 def coverage_ddl(database='q_live',table='historical_trade_reporting_coverage_v1'):
     identifier(database);identifier(table)
     return f"""CREATE TABLE IF NOT EXISTS {database}.{table} (
@@ -39,7 +55,7 @@ def certification_sql(target,evidence,day,source_digest,first_sip_us,last_sip_us
     SETTINGS join_algorithm='full_sorting_merge',join_use_nulls=0"""
 
 
-def certify(query,database,target,day,source_digest,first_sip_us,last_sip_us,expected_trades,*,table=TABLE,coverage='historical_trade_reporting_coverage_v1'):
+def certify(query,database,target,day,source_digest,first_sip_us,last_sip_us,expected_trades,*,table=TABLE,coverage='historical_trade_reporting_coverage_v1',expected_previous=None):
     """Publish native reporting coverage only after independent NS/flag checks."""
     import json
     from datetime import datetime,timezone
@@ -55,11 +71,15 @@ def certify(query,database,target,day,source_digest,first_sip_us,last_sip_us,exp
     query(coverage_ddl(database,coverage),read=False);verify_auxiliary_storage(query,database,(coverage,table))
     rows=query(f'SELECT source_digest,status,details FROM {database}.{coverage} FINAL '
         f'WHERE source_date=toDate({literal(day)}) AND revision={literal(REVISION)}')
-    details=json.dumps(dict(counts=counts,evidence_version=VERSION),sort_keys=True)
+    details=json.dumps(dict(counts=counts,evidence_version=VERSION,evidence_hash=evidence_hash(query,database+'.'+table,day)),sort_keys=True)
     wanted=dict(source_digest=source_digest,status='complete',details=details)
     if rows:
-        if rows!=[wanted]:raise ValueError('Existing reporting certificate differs from native evidence')
-        return counts
+        if rows==[wanted]:return counts
+        if (expected_previous is None or rows!=[expected_previous]
+                or expected_previous.get('status')!='native_mutating'
+                or expected_previous.get('source_digest')!=source_digest
+                or json.loads(expected_previous['details']).get('evidence_hash')!=json.loads(details)['evidence_hash']):
+            raise ValueError('Existing reporting certificate differs from native evidence')
     insert_rows(query,database,coverage,[dict(source_date=str(day),revision=REVISION,**wanted,
         raw_table=database+'.'+table,map_table=database+'.'+table,
         updated_at=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f'))])

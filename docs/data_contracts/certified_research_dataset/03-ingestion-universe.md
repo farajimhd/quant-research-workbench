@@ -51,6 +51,16 @@ Audit optional execution-clock sidecar ownership separately: the current updater
 
 ### Earlier-range extension and source repair
 
+#### Native nanosecond repair adapter
+
+`native_reporting_repair.step` repairs imported canonical trades from a frozen, ingestion-owned original-nanosecond reconciliation receipt. It accepts no flatfile path and does not establish historical clock provenance by inspecting a current snapshot. Production calls require the canonical `SourceClaim`, `sip_raw_ssd` target placement and `live_market_ssd` sidecars/metadata. Historical REST evidence acquisition and complete launcher routing to this adapter remain unfinished.
+
+The adapter verifies complete ticker/ordinal/SIP association, original condition/clock reasons and the acquisition fingerprint. A compressed immutable repair header stores the source/evidence hashes, target, column list, preserved-field fingerprint and deterministic mutation marker. The header uses `MergeTree`, `live_market_ssd`, `ZSTD(1)` throughout, with `Delta(8)` for its UTC microsecond creation clock; hashes use `FixedString(64)` and the column list uses `Array(String)`. It stores one metadata row per repaired source day, with no market payload on disk.
+
+Only the high reporting bits change. All other canonical fields and quote rows are independently fingerprinted before and after repair. Coverage changes to `native_mutating` before submission, blocking downstream admission even if the server mutation finishes before certification. The controller receives `submitted`, `mutating` (IDs and remaining parts), or `complete`; it owns waits/cancellation. Active polls read control metadata instead of rescanning the source day. Completed mutations are not blindly resubmitted.
+
+Final certification rechecks frozen NS evidence, reporting flags and preserved fields. Native receipts retain the original-clock fingerprint, and source freezing includes that fingerprint. Resume reuses matching headers/receipts; changed source evidence, duplicate/incomplete association, unrelated active mutations or preserved-field changes fail closed. The existing legacy raw/map adapter remains separate until acquisition supplies the required native reconciliation receipts.
+
 Never enable `--force-day-delete` or rebuild-existing deletion flags by default. Existing-source repair requires a separately planned restart-safe migration and lineage invalidation. Earlier imports must respect yearly ordinal continuity, not merely insert rows into an older date partition; audit updater support before permitting earlier-range extension. An ordinal-changing canonical migration invalidates indexes/sidecars and descendant receipts. Encoding/schema evolution must be versioned without reinterpreting old bitfields.
 
 ### Shared strict trade gate

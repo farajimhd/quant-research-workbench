@@ -59,11 +59,16 @@ def reporting_inventory(query,source):
         if row is None or row['status']!='complete':missing.append(day);continue
         if row['source_digest']!=source['source_hashes'].get(str(day)):
             raise ValueError(f'{day}: reporting receipt source mismatch')
-        counts=json.loads(row['details']).get('counts',{})
+        details=json.loads(row['details']);counts=details.get('counts',{})
         expected=source['rows'][day]
         if int(counts.get('n',-1))!=int(expected['trade_event_rows']) or int(counts.get('bad',-1))!=0:
             raise ValueError(f'{day}: reporting counts are invalid')
         verified[str(day)]=dict(source_digest=row['source_digest'],revision=REVISION,counts=counts)
+        if details.get('evidence_version')=='original-reporting-nanosecond-evidence-v1':
+            import re
+            proof=details.get('evidence_hash','')
+            if not re.fullmatch('[0-9a-f]{64}',proof):raise ValueError(f'{day}: native reporting input fingerprint migration required')
+            verified[str(day)]['evidence_hash']=proof
     active=query("SELECT mutation_id FROM system.mutations WHERE database='market_sip_compact' "
                  "AND startsWith(table,'events_') AND NOT is_done LIMIT 1")
     return dict(missing=tuple(missing),verified=verified,mutating=bool(active),content_hash=digest(verified))
