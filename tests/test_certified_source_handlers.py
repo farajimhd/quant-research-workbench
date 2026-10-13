@@ -43,6 +43,21 @@ def test_prepared_source_root_verifies_metadata_and_closes_private_client():
     assert all('FROM market_sip_compact.events_2026' not in sql and 'file(' not in sql for sql in queries)
 
 
+def test_counts_only_legacy_reporting_receipt_cannot_authorize_market_reads():
+    plan,parents,query,queries,proof,mutation=prepared()
+    proof['details']=json.dumps(dict(counts=dict(n=4,bad=0)))
+    day=date(2026,1,2)
+    canonical=source.inventory(query,day,day,sessions=(day,))
+    reporting=source.reporting_inventory(query,canonical)
+    assert reporting['missing']==(day,)
+    assert reporting['unqualified'][str(day)]=='original_reporting_evidence_migration_required'
+    assert not reporting['verified']
+    with pytest.raises(ValueError,match='prerequisites'):
+        source.certified_units(canonical,reporting)
+    assert all(sql.startswith('SELECT') for sql in queries)
+    assert all('FROM market_sip_compact.events_2026' not in sql and 'file(' not in sql for sql in queries)
+
+
 @pytest.mark.parametrize('failure',('changed','missing','mutating','stop'))
 def test_prepared_source_root_rejects_changed_or_unready_reporting(failure):
     plan,_,query,_,proof,mutation=prepared()

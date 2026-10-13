@@ -23,6 +23,54 @@ def test_execution_parser_requires_frozen_dataset_and_qualified_profile():
             '--capacity-profile','pilot.json','--acquire-missing'])
 
 
+def test_launch_selections_share_one_configuration_and_cannot_omit_v7_input():
+    args=launcher.parse_args(['plan','--end-date','2026-01-05','--volume-windows-seconds','10,60,3600',
+        '--short-windows-sessions','5,20','--resolutions-ms','1000,60000'])
+    config=launcher.campaign_config(args,args.end_date)
+    assert config.volume_windows_seconds==(10,60,3600)
+    assert config.short_windows_sessions==(5,20) and config.resolutions_ms==(1000,60000)
+    with pytest.raises(SystemExit):launcher.parse_args(['plan','--volume-windows-seconds','60,10'])
+    args=launcher.parse_args(['plan','--end-date','2026-01-05','--resolutions-ms','60000'])
+    with pytest.raises(ValueError,match='V7 requires'):launcher.campaign_config(args,args.end_date)
+
+
+def test_retained_recovery_is_explicit_and_has_bounded_ssd_defaults():
+    args=launcher.parse_args(['prepare-sources','--end-date','2026-10-02','--recover-retained-reporting'])
+    assert args.recover_retained_reporting
+    assert (args.staging_reserve_gib,args.staging_reserve_fraction,args.staging_chunk_gib)==(256,.10,256)
+    for command in ('plan','verify','run'):
+        with pytest.raises(SystemExit):launcher.parse_args([command,'--recover-retained-reporting'])
+    for option,value in (('--staging-reserve-gib','-1'),('--staging-chunk-gib','-1'),
+                         ('--staging-reserve-fraction','nan'),('--staging-reserve-fraction','1')):
+        with pytest.raises(SystemExit):launcher.parse_args(['prepare-sources','--end-date','2026-10-02',option,value])
+
+
+def test_source_preparation_routes_recovery_before_freezing_source_epoch():
+    from threading import Event
+    from pipelines.certified_research import acquisition,source
+    from pipelines.market_sip.flatfiles import retained_reporting
+    day=date(2026,1,2);config=CampaignConfig(day,day)
+    inv=dict(missing=(),incomplete=())
+    absent=dict(missing=(day,),mutating=False);ready=dict(missing=(),mutating=False)
+    def query(sql):
+        if 'system.storage_policies' in sql:
+            return [dict(disk_name='sip_raw_ssd' if "policy_name='sip_raw_ssd'" in sql else 'live_market_ssd')]
+        return []
+    writer=Mock();claim=Mock();paths=Mock();stop=Event()
+    with patch.object(source,'inventory',return_value=inv),\
+         patch.object(source,'reporting_inventory',side_effect=[absent,ready,ready]),\
+         patch.object(source,'require_ready',return_value='a'*64) as freeze,\
+         patch.object(acquisition,'resume_native_repairs'),patch.object(retained_reporting,'recover') as recover:
+        result=acquisition.prepare_sources(query,paths,config,claim,stop,writer_query=writer,
+            recover_retained_reporting=True,staging_reserve_bytes=123,staging_chunk_bytes=456)
+        recover.assert_called_once()
+        assert recover.call_args.args==(writer,paths,inv,(day,),claim,stop)
+        assert recover.call_args.kwargs['reserve_bytes']==123
+        assert recover.call_args.kwargs['maximum_chunk_bytes']==456
+        freeze.assert_called_once_with(query,inv,ready)
+        assert result['source_hash']=='a'*64
+
+
 def profile():
     config=CampaignConfig(date(2026,1,2),date(2026,1,2))
     rules=(dict(token_id=1,modifier_int=0,update_last=1,update_high_low=1,update_volume=1),)

@@ -120,7 +120,8 @@ def run_ingestion(command,paths: IngestionPaths,stop,*,emit=print,guard=None):
 
 
 def prepare_sources(query,paths,config,claim,stop,*,acquire_missing=False,stage_archive=False,emit=print,
-                    runner=run_ingestion,context_start=None,writer_query=None):
+                    runner=run_ingestion,context_start=None,writer_query=None,recover_retained_reporting=False,
+                    staging_reserve_bytes=256*1024**3,staging_reserve_fraction=.10,staging_chunk_bytes=256*1024**3):
     """Acquire/repair first; freeze the derived campaign only after verification.
 
     Canonical ordinals prohibit filling internal holes through ordinary append.
@@ -158,6 +159,14 @@ def prepare_sources(query,paths,config,claim,stop,*,acquire_missing=False,stage_
     resume_native_repairs(query,writer_query,inv,claim,stop,emit=emit)
     reporting=source.reporting_inventory(query,inv)
     if reporting['mutating']:raise ValueError('Canonical reporting mutations must finish before preparation')
+    if recover_retained_reporting and reporting['missing']:
+        if writer_query is None:raise ValueError('Retained reporting recovery requires the owned writer connection')
+        from pipelines.market_sip.flatfiles import retained_reporting
+        retained_reporting.recover(writer_query,paths,inv,reporting['missing'],claim,stop,
+            reserve_bytes=staging_reserve_bytes,reserve_fraction=staging_reserve_fraction,
+            maximum_chunk_bytes=staging_chunk_bytes,emit=emit,query_threads=config.query_threads,
+            query_memory_bytes=config.query_memory_bytes)
+        guard();reporting=source.reporting_inventory(query,inv)
     for first,last in contiguous_ranges(reporting['missing']):
         guard();emit(f'Reconcile reporting range {first} to {last}')
         command=reporting_command(paths,first,last,threads=config.query_threads,

@@ -39,15 +39,32 @@ def parse_args(argv=None):
     p.add_argument('--query-threads',type=int,default=2)
     p.add_argument('--query-memory-gib',type=int,default=2)
     p.add_argument('--global-memory-gib',type=int,default=16)
+    def integer_list(value):
+        try:values=tuple(int(v) for v in value.split(','))
+        except ValueError:raise argparse.ArgumentTypeError('Use comma-separated positive integers')
+        if not values or tuple(sorted(set(values)))!=values or any(v<=0 for v in values):
+            raise argparse.ArgumentTypeError('Values must be sorted, unique and positive')
+        return values
+    p.add_argument('--volume-windows-seconds',type=integer_list,default=(10,60),help='Rolling market feature requirements for new planning')
+    p.add_argument('--short-windows-sessions',type=integer_list,default=(20,),help='Short-pressure session lookbacks for new planning')
+    p.add_argument('--resolutions-ms',type=integer_list,default=(100,1000,5000,10000,30000,60000,300000,3600000),help='New-plan bar resolutions; 1000 is required by causal V7')
     p.add_argument('--format',choices=('text','json','sql'),default='text')
     p.add_argument('--acquire-missing',action='store_true',help='Opt in to the existing flatfile downloader after Massive resubscription; acquire missing appendable sources before plan freeze')
     p.add_argument('--stage-archive',action='store_true',help='Stage new-source G files on D inside the canonical updater')
+    p.add_argument('--recover-retained-reporting',action='store_true',help='Authorized ingestion-only original-clock recovery from retained G/D trades; no REST')
+    p.add_argument('--staging-reserve-gib',type=int,default=256,help='Minimum D free-space reserve')
+    p.add_argument('--staging-reserve-fraction',type=float,default=.10,help='D capacity fraction reserved; larger of both reserve bounds applies')
+    p.add_argument('--staging-chunk-gib',type=int,default=256,help='Maximum retained-file chunk; 0 uses all available headroom')
     p.add_argument('--runtime-root',type=Path,default=acquisition.RUNTIME/'certified-research')
     p.add_argument('--cache-root',type=Path,default=acquisition.CACHE)
     p.add_argument('--archive-root',type=Path,default=acquisition.ARCHIVE)
     p.add_argument('--clickhouse-cache-root',default='/mnt/d/market-data/flatfiles/us_stocks_sip')
     p.add_argument('--hydrate-missing-trades',action='store_true',help='Deprecated: imported-day repair requires canonical sidecars')
     args=p.parse_args(argv)
+    if args.staging_reserve_gib<0 or args.staging_chunk_gib<0 or not 0<=args.staging_reserve_fraction<1:
+        p.error('Invalid SSD staging reserve or chunk bound')
+    if args.recover_retained_reporting and args.command!='prepare-sources':
+        p.error('--recover-retained-reporting belongs to prepare-sources')
     try:contracts.identifier(args.database)
     except ValueError as error:p.error(str(error))
     if args.command!='schema' and args.format=='sql':p.error('SQL format is for schema inspection only')
@@ -59,6 +76,14 @@ def parse_args(argv=None):
     if args.command=='verify' and (args.acquire_missing or args.stage_archive):p.error('verify is read-only; acquisition flags belong to prepare-sources')
     if args.command in ('run','resume') and (args.acquire_missing or args.stage_archive):p.error('Frozen execution cannot acquire sources; use prepare-sources before freezing the plan')
     return args
+
+
+def campaign_config(args,end):
+    """One authority for launch selections and requirement-derived context."""
+    return contracts.CampaignConfig(args.start_date,end,database=args.database,workers=args.workers,
+        query_threads=args.query_threads,query_memory_bytes=args.query_memory_gib*1024**3,
+        global_memory_bytes=args.global_memory_gib*1024**3,volume_windows_seconds=args.volume_windows_seconds,
+        short_windows_sessions=args.short_windows_sessions,resolutions_ms=args.resolutions_ms)
 
 
 def inspect_sources(query,args):
@@ -79,9 +104,7 @@ def inspect_sources(query,args):
     if len(source)!=1 or not source[0]['sessions']:
         raise ValueError('No certified source-day statistics; acquisition is required')
     end=args.end_date or date.fromisoformat(source[0]['last_day'])
-    config=contracts.CampaignConfig(args.start_date,end,database=args.database,workers=args.workers,
-        query_threads=args.query_threads,query_memory_bytes=args.query_memory_gib*1024**3,
-        global_memory_bytes=args.global_memory_gib*1024**3)
+    config=campaign_config(args,end)
     mutations=query("SELECT database,table,mutation_id FROM system.mutations "
                     "WHERE database='market_sip_compact' AND startsWith(table,'events_') AND NOT is_done LIMIT 20")
     return dict(status='blocked' if mutations else 'inspected',source=source[0],storage=status,
@@ -213,22 +236,28 @@ def main(argv=None):
         if args.command=='prepare-sources':
             from contextlib import closing
             from threading import Event
+            import signal
             from pipelines.market_sip.flatfiles.download_update_events import load_env_files
             from src.trading_runtime.keeper_session import open_workstation_keeper_session
             from pipelines.certified_research.publication import SourceClaim
             load_env_files([args.env_file],verbose=False)
-            config=contracts.CampaignConfig(args.start_date,args.end_date,database=args.database,workers=args.workers,
-                query_threads=args.query_threads,query_memory_bytes=args.query_memory_gib*1024**3,
-                global_memory_bytes=args.global_memory_gib*1024**3)
+            config=campaign_config(args,args.end_date)
             paths=acquisition.IngestionPaths(args.env_file,args.runtime_root,args.cache_root,args.archive_root,args.clickhouse_cache_root)
             paths.validate()
-            with closing(open_workstation_keeper_session()) as keeper:
-                claim=SourceClaim(keeper.client)
-                try:
-                    result=acquisition.prepare_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),paths,config,claim,
-                        Event(),acquire_missing=args.acquire_missing,stage_archive=args.stage_archive,context_start=args.context_start_date,
-                        writer_query=client.query)
-                finally:claim.close()
+            stop=Event();original=signal.getsignal(signal.SIGINT)
+            signal.signal(signal.SIGINT,lambda *unused:stop.set())
+            try:
+                with closing(open_workstation_keeper_session()) as keeper:
+                    claim=SourceClaim(keeper.client)
+                    try:
+                        result=acquisition.prepare_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),paths,config,claim,
+                            stop,acquire_missing=args.acquire_missing,stage_archive=args.stage_archive,context_start=args.context_start_date,
+                            writer_query=client.query,recover_retained_reporting=args.recover_retained_reporting,
+                            staging_reserve_bytes=args.staging_reserve_gib*1024**3,
+                            staging_reserve_fraction=args.staging_reserve_fraction,
+                            staging_chunk_bytes=args.staging_chunk_gib*1024**3)
+                    finally:claim.close()
+            finally:signal.signal(signal.SIGINT,original)
             print(f"Source ready | {len(result['source']['expected'])} sessions | {result['source_hash']}")
             print('Derived campaign execution remains under implementation.')
             return 0
@@ -264,7 +293,7 @@ def main(argv=None):
             reporting=source.reporting_inventory(lambda sql:client.query(sql+' SETTINGS readonly=1'),inv)
             result['source_plan']=dict(missing_sources=[str(d) for d in inv['missing']],
                 incomplete_sources=[str(d) for d in inv['incomplete']],
-                missing_reporting=[str(d) for d in reporting['missing']],source_hash=inv['content_hash'],
+                missing_reporting=[str(d) for d in reporting['missing']],unqualified_reporting=reporting.get('unqualified',{}),source_hash=inv['content_hash'],
                 reporting_hash=reporting['content_hash'],acquire_missing=args.acquire_missing,
                 hydrate_missing_trades=args.hydrate_missing_trades)
             result['reporting_clock_evidence']=source.clock_evidence_inventory(

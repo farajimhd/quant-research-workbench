@@ -102,7 +102,7 @@ def ddl(database='q_live',table=TABLE,*,stage=False):
     SETTINGS storage_policy='live_market_ssd',default_compression_codec='ZSTD(1)'"""
 
 
-def reconciled_projection(raw_sql,target,source_date,source_digest,fields,*,first_sip_us,last_sip_us,repair_reporting_flags=False):
+def reconciled_projection(raw_sql,target,source_date,source_digest,fields,*,first_sip_us,last_sip_us,repair_reporting_flags=False,ticker_bucket=None):
     """Rank matches use full canonical-field equality; unmatched rows block sealing.
 
     The updater supplies its own acquisition-owned raw projection. Historical
@@ -117,6 +117,12 @@ def reconciled_projection(raw_sql,target,source_date,source_digest,fields,*,firs
     if type(first_sip_us) is not int or type(last_sip_us) is not int or not 0<first_sip_us<=last_sip_us:
         raise ValueError('Certified source SIP bounds are required')
     if type(repair_reporting_flags) is not bool:raise ValueError('Reporting repair mode must be explicit Boolean')
+    bucket_filter=''
+    if ticker_bucket is not None:
+        index,total=ticker_bucket
+        if type(index) is not int or type(total) is not int or not 0<=index<total<=256:
+            raise ValueError('Invalid reconciliation ticker bucket')
+        bucket_filter=f' AND cityHash64(ticker)%{total}={index}'
     fields=tuple(fields)
     if len(fields)!=len(set(fields)) or 'event_meta' in fields:raise ValueError('Canonical comparison fields are duplicated')
     for field in fields:identifier(field)
@@ -129,7 +135,7 @@ def reconciled_projection(raw_sql,target,source_date,source_digest,fields,*,firs
       toUInt8(e.present!=1 OR r.present!=1 OR NOT ({equality})) mismatch,
       toUInt8(r.tie_count!=1) ambiguous
     FROM (SELECT *,toUInt8(1) present,row_number() OVER (PARTITION BY ticker ORDER BY ordinal) trade_rank
-      FROM {target} WHERE sip_timestamp_us BETWEEN {first_sip_us} AND {last_sip_us} AND bitAnd(event_meta,1)=1) e
+      FROM {target} WHERE sip_timestamp_us BETWEEN {first_sip_us} AND {last_sip_us} AND bitAnd(event_meta,1)=1{bucket_filter}) e
     FULL OUTER JOIN (SELECT *,toUInt8(1) present,
       count() OVER (PARTITION BY ticker,sip_timestamp_us,sequence_number) tie_count,
       row_number() OVER (PARTITION BY ticker ORDER BY sip_timestamp_us,sequence_number) trade_rank

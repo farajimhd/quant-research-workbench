@@ -146,7 +146,7 @@ def reporting_inventory(query,source):
         day=date.fromisoformat(row['source_date'])
         if day in by_day:raise ValueError('Ambiguous reporting coverage')
         by_day[day]=row
-    missing=[];verified={}
+    missing=[];verified={};unqualified={}
     for day in days:
         row=by_day.get(day)
         if row is None or row['status']!='complete':missing.append(day);continue
@@ -156,6 +156,9 @@ def reporting_inventory(query,source):
         expected=source['rows'][day]
         if int(counts.get('n',-1))!=int(expected['trade_event_rows']) or int(counts.get('bad',-1))!=0:
             raise ValueError(f'{day}: reporting counts are invalid')
+        if details.get('evidence_version')!='original-reporting-nanosecond-evidence-v1':
+            missing.append(day);unqualified[str(day)]='original_reporting_evidence_migration_required'
+            continue
         verified[str(day)]=dict(source_digest=row['source_digest'],revision=REVISION,counts=counts)
         if details.get('evidence_version')=='original-reporting-nanosecond-evidence-v1':
             import re
@@ -164,7 +167,7 @@ def reporting_inventory(query,source):
             verified[str(day)]['evidence_hash']=proof
     active=query("SELECT mutation_id FROM system.mutations WHERE database='market_sip_compact' "
                  "AND startsWith(table,'events_') AND NOT is_done LIMIT 1")
-    return dict(missing=tuple(missing),verified=verified,mutating=bool(active),content_hash=digest(verified))
+    return dict(missing=tuple(missing),verified=verified,unqualified=unqualified,mutating=bool(active),content_hash=digest(verified))
 
 
 def require_ready(query,source,reporting):

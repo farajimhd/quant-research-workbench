@@ -260,7 +260,7 @@ class AutoUpdatePlan:
     waiting_incomplete_days: tuple[tuple[str, tuple[str, ...]], ...]
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Download Massive SIP flatfiles and update market_sip_compact.events directly. "
@@ -423,7 +423,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep isolated test tables after a successful audit for manual inspection.",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def download_config(args: argparse.Namespace) -> DownloadConfig:

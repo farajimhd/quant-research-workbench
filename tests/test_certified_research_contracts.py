@@ -2,6 +2,7 @@
 from dataclasses import replace
 from datetime import date, datetime
 import os
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -368,6 +369,20 @@ class Contracts(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'Source context'):
             acquisition.prepare_sources(query,paths,config,Claim(),Event(),context_start=date(2026,1,3))
 
+    def test_ssd_chunks_preserve_headroom_and_whole_units(self):
+        from pipelines.market_sip.flatfiles import archive_staging
+        from unittest.mock import patch
+        from collections import namedtuple
+        Usage=namedtuple('Usage','total used free')
+        with patch.object(archive_staging.shutil,'disk_usage',return_value=Usage(1000,300,700)):
+            space=archive_staging.space_budget(Path('D:/TradingML/runtimes'),reserve_bytes=200,reserve_fraction=.10)
+        self.assertEqual(space['usable_bytes'],500)
+        plan=archive_staging.plan_chunks((('a',300),('b',200),('c',400)),space,maximum_chunk_bytes=0)
+        self.assertEqual(plan['chunks'],((('a',300),('b',200)),(('c',400),)))
+        self.assertEqual(plan['total_bytes'],900)
+        with self.assertRaisesRegex(ValueError,'headroom'):
+            archive_staging.plan_chunks((('a',501),),space,maximum_chunk_bytes=0)
+
     def test_ingestion_archive_copy_is_atomic_contained_and_restart_safe(self):
         from tempfile import TemporaryDirectory
         from hashlib import sha256
@@ -387,6 +402,11 @@ class Contracts(unittest.TestCase):
                 archive_staging.copy_file(source_file,cache/'stopped.gz',archive,cache,len(data),stop=stop,
                     progress=lambda *args:stop.set())
             self.assertFalse((cache/'stopped.gz').exists());self.assertFalse(list(cache.glob('*.part')))
+            from unittest.mock import patch
+            with patch.object(archive_staging,'space_budget',side_effect=[{'usable_bytes':len(data)}, {'usable_bytes':0}]):
+                with self.assertRaisesRegex(ValueError,'reserved headroom'):
+                    archive_staging.copy_file(source_file,cache/'space-lost.gz',archive,cache,len(data),reserve_bytes=1)
+            self.assertFalse((cache/'space-lost.gz').exists());self.assertFalse(list(cache.glob('*.part')))
             with self.assertRaisesRegex(ValueError,'escapes'):
                 archive_staging.copy_file(source_file,root/'outside.gz',archive,cache,len(data))
             self.assertEqual(archive_staging.copy_file(archive/'absent.gz',cache/'absent.gz',archive,cache,1)['status'],'archive_missing')
@@ -587,7 +607,8 @@ class Contracts(unittest.TestCase):
             return [dict(day=r['source_date'],statuses=['ok']) for r in rows] if 'events_build_manifest' in sql else rows
         inv=source.inventory(query,days[0],days[-1],sessions=days)
         receipt=[dict(source_date=str(day),revision=c.REPORTING_REVISION,source_digest=inv['source_hashes'][str(day)],
-                      status='complete',details='{"counts":{"n":2,"bad":0}}') for day in days]
+                      status='complete',details=json.dumps(dict(counts=dict(n=2,bad=0),
+                          evidence_version='original-reporting-nanosecond-evidence-v1',evidence_hash='b'*64))) for day in days]
         active=[]
         def reporting_query(sql):return active if 'system.mutations' in sql else receipt
         reporting=source.reporting_inventory(reporting_query,inv)
@@ -749,6 +770,62 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+
+    def test_retained_recovery_materializes_reconciles_certifies_and_resumes(self):
+        from tempfile import TemporaryDirectory
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from pipelines.market_sip.flatfiles import retained_reporting as retained
+        from pipelines.market_sip.events import native_reporting_repair as native
+        from pipelines.certified_research import acquisition
+        day=date(2026,1,2);first=1767370000000000
+        raw=(f"SELECT 'TEST' ticker,toUInt8(65) event_meta,toUInt64({first}+number) sip_timestamp_us,"
+            "toUInt32(number+1) sequence_number,toUInt32(1234) price_primary_int,toUInt32(0) price_secondary_int,"
+            "toFloat32(1) size_primary,toFloat32(0) size_secondary,toUInt8(1) exchange_primary,toUInt8(0) exchange_secondary,"
+            +','.join(f'toUInt16(0) condition_token_{i}' for i in range(1,6))+
+            f",toDate('{day}') event_date,toUInt64(({first}+number)*1000+123) sip_timestamp_ns,"
+            f"toNullable(toUInt64(({first}+number)*1000-1000)) participant_timestamp_ns,"
+            "CAST([] AS Array(String)) reporting_condition_entries,toUInt8(0) reporting_reason FROM numbers(2)")
+        target=self.database+'.events_2026'
+        self.client.query(f'CREATE TABLE {target} ENGINE=MergeTree ORDER BY (ticker,ordinal) '
+            "SETTINGS storage_policy='live_market_ssd' EMPTY AS SELECT toUInt64(sequence_number) ordinal,r.* "
+            f'FROM ({raw}) r',read=False)
+        self.client.query(f'INSERT INTO {target} SELECT row_number() OVER () ordinal,* FROM ({raw})',read=False)
+        self.client.query(f'ALTER TABLE {target} UPDATE event_meta=1 WHERE 1 SETTINGS mutations_sync=2',read=False)
+        source_row=dict(source_date=str(day),first_sip_timestamp_us=first,last_sip_timestamp_us=first+1,trade_event_rows=2)
+        inv=dict(rows={day:source_row},source_hashes={str(day):c.digest(source_row)},missing=(),incomplete=())
+        class Claim:
+            def check(self):pass
+        logs=[]
+        def query(sql,*args,**kwargs):
+            sql=sql.replace('q_live.',self.database+'.').replace("database='q_live'",f"database='{self.database}'")
+            sql=sql.replace('market_sip_compact.events_2026',target)
+            logs.append(sql);return self.client.query(sql,*args,**kwargs)
+        original_step=native.step
+        def step(q,row,frozen,claim,guard):
+            return original_step(q,row,frozen,claim,guard,database=self.database,target=target)
+        with TemporaryDirectory(prefix='retained-recovery-',dir='D:/TradingML/runtimes') as directory:
+            root=Path(directory);input_file=root/'input.gz';input_file.write_bytes(b'retained fixture')
+            paths=SimpleNamespace(cache=root,validate=lambda:None)
+            key=Path('trades_v1/2026/01/2026-01-02.csv.gz')
+            space=dict(total_bytes=10**12,free_bytes=10**12,reserve_bytes=0,usable_bytes=10**12)
+            plan=dict(files={day:dict(key=key,source=input_file,bytes=input_file.stat().st_size,origin=2)},missing=(),space=space,
+                chunks=(((day,input_file.stat().st_size),),),total_bytes=input_file.stat().st_size,free_bytes=10**12,reserve_bytes=0)
+            paths.clickhouse_cache='/mnt/d/fixture'
+            with patch.object(retained,'SourceClaim',Claim),patch.object(retained,'file_plan',return_value=plan),\
+                 patch.object(retained.archive_staging,'space_budget',return_value=space),\
+                 patch.object(retained.canonical_source,'inventory',return_value=inv),\
+                 patch.object(retained.updater,'parse_args',return_value=SimpleNamespace()),\
+                 patch.object(retained.updater,'raw_event_union_sql',return_value=raw),patch.object(native,'step',side_effect=step):
+                result=retained.recover(query,paths,inv,(day,),Claim(),Event(),emit=lambda *a:None)
+                self.assertEqual(result['completed'],(day,));self.assertTrue(input_file.is_file())
+                logs.clear()
+                result=retained.recover(query,paths,inv,(day,),Claim(),Event(),emit=lambda *a:None)
+                self.assertEqual(result['reused'],(day,))
+                self.assertFalse(any(sql.startswith(f'INSERT INTO {self.database}.{retained.RAW}') for sql in logs))
+        actual=self.client.query(f'SELECT event_meta,price_primary_int FROM {target} ORDER BY ordinal')
+        self.assertEqual([int(r['event_meta']) for r in actual],[65,65])
+        self.assertEqual([int(r['price_primary_int']) for r in actual],[1234,1234])
 
     def test_frozen_runtime_descriptor_persists_and_restores_without_defaults(self):
         from pipelines.certified_research import runtime_plan,recipe
@@ -1092,6 +1169,16 @@ class ClickHouseIntegration(unittest.TestCase):
         self.assertEqual(int(rows[0]['sip_timestamp_ns']),1000000123)
         self.assertIsNone(rows[1]['participant_timestamp_ns'])
         self.assertEqual(len(rows[0]['reporting_condition_entries']),6)
+        partitioned=[]
+        for bucket in range(4):
+            bounded=f'SELECT * FROM ({raw}) WHERE cityHash64(ticker)%4={bucket}'
+            partitioned.extend(self.client.query(reporting_evidence.reconciled_projection(
+                bounded,self.database+'.'+table,'2026-01-02','a'*64,['sip_timestamp_us'],
+                first_sip_us=1000000,last_sip_us=1000001,ticker_bucket=(bucket,4))))
+        self.assertEqual(sorted(partitioned,key=lambda r:int(r['ordinal'])),rows)
+        with self.assertRaisesRegex(ValueError,'ticker bucket'):
+            reporting_evidence.reconciled_projection(raw,self.database+'.'+table,'2026-01-02','a'*64,
+                ['sip_timestamp_us'],first_sip_us=1000000,last_sip_us=1000001,ticker_bucket=(4,4))
         self.client.query(reporting_evidence.ddl(self.database),read=False)
         self.client.query(f'INSERT INTO {self.database}.{reporting_evidence.TABLE} SELECT * EXCEPT(mismatch,ambiguous) FROM ({sql})',read=False)
         stored=self.client.query(f'SELECT participant_timestamp_ns FROM {self.database}.{reporting_evidence.TABLE} ORDER BY ordinal')
