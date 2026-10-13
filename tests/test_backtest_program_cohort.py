@@ -477,6 +477,13 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                     monkeypatch.setattr(controller._runtime, "finish", owned_finish)
                     terminal = await controller.finish_prepared_program_session(status="completed")
                     assert terminal.status == controller.status == "completed"
+                    assert any(position.position_open for position in controller._program_strategy.execution_state.positions.values())
+                    assert terminal.financial_metrics is None
+                    assert terminal.financial_metrics_unavailable == "Actual filled positions remain open"
+                    financials = controller.snapshot()["program_terminal_financials"]
+                    assert financials["verified_sequence"] == terminal.last_sequence
+                    assert financials["metrics"] is None
+                    assert financials["unavailable_reason"] == terminal.financial_metrics_unavailable
                     assert controller._runtime_finished
                     assert terminal.last_sequence > session.policy_packet.journal_sequence
                     assert load_verified_v4_prefix(persisted, controller.run_id).last_sequence == terminal.last_sequence

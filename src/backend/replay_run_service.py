@@ -2104,6 +2104,17 @@ class ReplayRunController:
             authority="historical_run_controller",
             mode=self.definition.mode.value,
         )
+        programme_terminal = getattr(self, "_program_terminal_result", None)
+        if programme_terminal is not None:
+            from decimal import Decimal
+            payload["program_terminal_financials"] = dict(
+                verified_sequence=programme_terminal.last_sequence,
+                last_batch_id=programme_terminal.last_batch_id,
+                source_cursor=programme_terminal.source_cursor,
+                unavailable_reason=programme_terminal.financial_metrics_unavailable,
+                metrics=None if programme_terminal.financial_metrics is None else {
+                    key: str(value) if isinstance(value, Decimal) else value
+                    for key, value in programme_terminal.financial_metrics.items()})
         return payload
 
     def stream_snapshot(self) -> dict[str, Any]:

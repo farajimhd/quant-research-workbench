@@ -49,19 +49,45 @@ def test_fees_determine_net_pnl_and_late_fees_correct_win_rate():
     metrics = state.terminal_financial_metrics()
     assert metrics == dict(net_pnl=D("-.50"), closed_positions=1, winning_positions=0,
         worst_position_pnl=D("-.50"), terminal_valid=True)
+    from src.backend.backtest_program_terminal import _terminal_financial_projection
+    terminal_metrics, unavailable = _terminal_financial_projection(state, "completed")
+    assert terminal_metrics == metrics and not unavailable
+    assert _terminal_financial_projection(state, "stopped") == (
+        None, "Run did not complete its requested session")
     with pytest.raises(TypeError):
         metrics["net_pnl"] = D("100")
 
 
 def test_terminal_metrics_reject_open_positions_and_pending_fees():
+    from src.backend.backtest_program_terminal import _terminal_financial_projection
     state = FilledPositionState()
     assert state.terminal_financial_metrics()["closed_positions"] == 0
     state.apply_fill(fill())
+    assert _terminal_financial_projection(state, "completed") == (
+        None, "Actual executions have pending commissions")
     with pytest.raises(ValueError, match="pending execution commissions"):
         state.terminal_financial_metrics()
     state.apply_fee(FeeFact("e1", D("1"), "USD"))
+    assert _terminal_financial_projection(state, "completed") == (
+        None, "Actual filled positions remain open")
     with pytest.raises(ValueError, match="all positions closed"):
         state.terminal_financial_metrics()
+
+
+def test_programme_terminal_snapshot_preserves_decimal_metric_values(tmp_path):
+    """Serialization check only; a supplied result is not a durable run receipt."""
+    from tests.test_program_controller_runtime import definition_and_actor
+    from src.backend.replay_run_service import ReplayRunController
+    from src.backend.backtest_program_terminal import ProgramTerminalResult
+    from types import MappingProxyType
+    definition, actor = definition_and_actor()
+    controller = ReplayRunController(definition, runtime_root=tmp_path,
+        program_strategy=actor, program_liquidity_resolution_ms=1000)
+    amount = D("100.000000000000000000000000000001")
+    controller._program_terminal_result = ProgramTerminalResult("completed", 40, "batch", "cursor",
+        MappingProxyType(dict(net_pnl=amount, closed_positions=1, terminal_valid=True)))
+    financials = controller.snapshot()["program_terminal_financials"]
+    assert financials["metrics"] == dict(net_pnl=str(amount), closed_positions=1, terminal_valid=True)
 
 
 def test_old_episode_late_fee_does_not_charge_new_position_episode():

@@ -2,6 +2,7 @@
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Mapping
 
 
 @dataclass(frozen=True)
@@ -10,6 +11,18 @@ class ProgramTerminalResult:
     last_sequence: int
     last_batch_id: str
     source_cursor: str
+    financial_metrics: Mapping | None = None
+    financial_metrics_unavailable: str = ""
+
+
+def _terminal_financial_projection(ledger, status):
+    if status != "completed":
+        return None, "Run did not complete its requested session"
+    if ledger.pending_fee_count:
+        return None, "Actual executions have pending commissions"
+    if any(position.position_open for position in ledger.positions.values()):
+        return None, "Actual filled positions remain open"
+    return ledger.terminal_financial_metrics(), ""
 
 
 async def finish_prepared_program_session(controller, *, status):
@@ -106,7 +119,13 @@ async def finish_prepared_program_session(controller, *, status):
             raise RuntimeError("Programme terminal ownership changed during publication")
         controller.status = status
         controller.updated_at = datetime.now(timezone.utc)
-        return ProgramTerminalResult(status, receipt.last_sequence, receipt.last_batch_id, receipt.source_cursor)
+        metrics, unavailable = _terminal_financial_projection(actor.execution_state, status)
+        result = ProgramTerminalResult(status, receipt.last_sequence, receipt.last_batch_id,
+            receipt.source_cursor, metrics, unavailable)
+        # A retained projection is UI evidence only. ClickHouse facts and the
+        # acknowledged terminal prefix remain the durable comparison authority.
+        controller._program_terminal_result = result
+        return result
     except BaseException as exc:
         if started:
             controller._program_dispatch_failure = exc
