@@ -59,6 +59,27 @@ All tables use `MergeTree`, `live_market_ssd` and lossless per-column compressio
 | `atr_ready` | `UInt8` | `ZSTD(1)` |
 | `sample_count` | `UInt64` | `T64,ZSTD(1)` |
 
+## research_indicator_state_v1
+
+**Order:** `dataset_id, listing_key, session_date, attempt_id, resolution_ms`. **Partition:** `toYYYYMM(session_date)`.
+
+| Column | Type | Codec |
+| --- | --- | --- |
+| `dataset_id`, `attempt_id` | `UUID` | `ZSTD(1)` |
+| `session_date` | `Date` | `ZSTD(1)` |
+| `listing_key` | `UInt64` | `T64,ZSTD(1)` |
+| `resolution_ms` | `UInt32` | `T64,ZSTD(1)` |
+| `recipe_hash`, `predecessor_hash`, `source_hash`, `rules_hash` | `FixedString(64)` | `ZSTD(1)` |
+| `ema_7`, `ema_9`, `ema_12`, `ema_15`, `ema_20`, `ema_26`, `ema_50` | `Float64` | `ZSTD(1)` |
+| `macd_signal`, `close`, `atr_14`, `avg_gain`, `avg_loss` | `Float64` | `ZSTD(1)` |
+| `sample_count` | `UInt64` | `T64,ZSTD(1)` |
+
+Exactly eight compact rows represent the final state of one session. Price-empty frames carry their predecessor unchanged; a never-initialized frame has zero state and zero sample count, which is an explicit unready state rather than a synthetic bar. This preserves unfinished Wilder warmup as well as ready EMA/MACD/RSI/ATR state.
+
+Execution: certify bars → calculate/certify technical rows → publish/certify state against those exact parent receipts. The campaign's technical authority combines both receipts; a technical-row receipt alone no longer completes that unit. Interrupted state publication can resume without reaggregating events. The state is independently fingerprinted and verified for every declared frame and its recipe/source/rule/predecessor bindings before loading.
+
+`indicator_state.discover` searches earlier certified states by stable listing key and exact recipe/rule identity, then checks current frozen source evidence. It returns the predecessor date so context planning can replay every intervening session. Competing same-date states require an explicit dataset selection; discovery never picks whichever was inserted latest. No automatic genesis, split adjustment, or full-launcher readiness is implied by this loader.
+
 ## research_liquidity_v1
 
 **Order:** `dataset_id, listing_key, session_date, attempt_id, resolution_ms, bucket_index`. **Partition:** `toYYYYMM(session_date)`.

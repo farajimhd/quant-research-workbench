@@ -7,6 +7,19 @@ STATE_FIELDS=tuple('ema_'+str(p) for p in core.EMAS)+(
     'macd_signal','close','atr_14','avg_gain','avg_loss','sample_count')
 
 
+def validate_state(prior,frames=core.FRAMES):
+    if not frames or tuple(sorted(set(frames)))!=tuple(frames):raise ValueError('Invalid indicator frames')
+    if prior and set(prior)!=set(frames):raise ValueError('Incomplete continuous indicator frames')
+    for row in prior.values():
+        if set(row)!=set(STATE_FIELDS) or any(not isfinite(float(v)) for v in row.values()):
+            raise ValueError('Incomplete or nonfinite continuous indicator state')
+        if (type(row['sample_count']) is not int or not 0<=row['sample_count']<2**64
+                or (row['sample_count']>0 and row['close']<=0)
+                or (row['sample_count']==0 and any(row.values()))
+                or any(row[n]<0 for n in ('atr_14','avg_gain','avg_loss'))):
+            raise ValueError('Invalid continuous indicator predecessor')
+
+
 def technical_sql(database,unit,source,prior,*,frames=core.FRAMES):
     """One vectorized warehouse pass; warmup sums survive session boundaries.
 
@@ -14,15 +27,8 @@ def technical_sql(database,unit,source,prior,*,frames=core.FRAMES):
     warmup. Readiness controls visibility; once ready they are Wilder means.
     No fixed warmup length is substituted for certified predecessor state.
     """
-    if not frames or tuple(sorted(set(frames)))!=tuple(frames):raise ValueError('Invalid indicator frames')
-    if prior and set(prior)!=set(frames):raise ValueError('Incomplete continuous indicator frames')
-    for row in prior.values():
-        if set(row)!=set(STATE_FIELDS) or any(not isfinite(float(v)) for v in row.values()):
-            raise ValueError('Incomplete or nonfinite continuous indicator state')
-        if (type(row['sample_count']) is not int or not 0<row['sample_count']<2**64
-                or row['close']<=0 or any(row[n]<0 for n in ('atr_14','avg_gain','avg_loss'))):
-            raise ValueError('Invalid continuous indicator predecessor')
-    keys=','.join(map(str,frames));has='1' if prior else '0'
+    validate_state(prior,frames)
+    keys=','.join(map(str,frames))
     def state(name):
         values=','.join(str(prior.get(f,{}).get(name,0)) if name=='sample_count'
             else format(prior.get(f,{}).get(name,0),'.17g') for f in frames)
@@ -39,7 +45,7 @@ def technical_sql(database,unit,source,prior,*,frames=core.FRAMES):
     return f"""INSERT INTO {core.table(database,'technical',{'technical':'research_stage_indicators_v1'})}
       WITH numbered AS (SELECT *,close_int/10000. close,high_int/10000. high,low_int/10000. low,
         row_number() OVER ({ordered}) n,toUInt64({state('sample_count')}) prior_samples,
-        {has} has_prior,lagInFrame(close_int/10000.,1,{state('close')}) OVER ({ordered}) prev
+        toUInt8({state('sample_count')}>0) has_prior,lagInFrame(close_int/10000.,1,{state('close')}) OVER ({ordered}) prev
         FROM ({source}) WHERE resolution_ms IN ({keys})),
       averages AS (SELECT *,n+prior_samples samples,if(prior_samples>0,toUInt64(prior_samples-1),toUInt64(0)) prior_changes,
         n+prior_samples-1 changes,greatest(close-prev,0.) gain,greatest(prev-close,0.) loss,

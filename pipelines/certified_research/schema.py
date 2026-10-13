@@ -88,6 +88,13 @@ TABLES = (
     Table("research_indicators_v1", BUCKET + tuple(c("ema_"+str(p),"Float64") for p in (7,9,12,15,20,26,50)) +
           tuple(c(n,"Float64") for n in ("macd_line","macd_signal","macd_histogram","rsi_14","atr_14","previous_close","avg_gain","avg_loss")) +
           (c("rsi_ready","UInt8"),c("atr_ready","UInt8"),c("sample_count","UInt64","T64,ZSTD(1)")), ORDER, MONTH),
+    Table("research_indicator_state_v1", UNIT + (c("resolution_ms","UInt32","T64,ZSTD(1)"),
+          c("recipe_hash","FixedString(64)"),c("predecessor_hash","FixedString(64)")) +
+          (c("source_hash","FixedString(64)"),c("rules_hash","FixedString(64)")) +
+          tuple(c("ema_"+str(p),"Float64") for p in (7,9,12,15,20,26,50)) +
+          tuple(c(n,"Float64") for n in ("macd_signal","close","atr_14","avg_gain","avg_loss")) +
+          (c("sample_count","UInt64","T64,ZSTD(1)"),),
+          ("dataset_id","listing_key","session_date","attempt_id","resolution_ms"),MONTH),
     Table("research_activity_v1", BUCKET + (c("window_seconds","UInt32","T64,ZSTD(1)"),) +
           tuple(c(n,"Nullable(Float64)") for n in ("volume","notional")) +
           (c("trade_count","Nullable(UInt64)"),) +

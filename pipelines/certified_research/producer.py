@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
 
-from . import market,v7,schema,indicators
+from . import market,v7,schema,indicators,indicator_state as state_publication
 from .contracts import digest,identifier,literal
 from .execution import Unit,execute
 from .publication import Publisher,Scope
@@ -104,7 +104,9 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
             bar_receipt=parents['bars'];parent=request.parent(u.product,(bar_receipt['output_hash'],))
             scope=Scope(base.dataset_id,base.day,base.listing_key,u.product,parent)
             old=publisher.receipt(scope)
-            if old:return old
+            if old:
+                if u.product=='technical':return state_publication.publish(request,bar_receipt,old,query,database,claim,source_guard)
+                return old
             unit=market.MarketUnit(base.dataset_id,base.day,base.ticker,base.listing_key,str(uuid4()))
             if u.product=='technical':
                 source=(f'SELECT session_date,resolution_ms,bucket_index,close_int,high_int,low_int '
@@ -130,8 +132,10 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
                                     regular_close=request.regular_close),read=False)
             else:raise ValueError('Unexpected market producer product')
             source_guard();claim.check()
-            return publisher.publish(scope,unit.attempt_id,expected=expected,
+            receipt=publisher.publish(scope,unit.attempt_id,expected=expected,
                                      empty_proof=digest(dict(source=request.source_hash,bar=bar_receipt['output_hash'],product=u.product)))
+            if u.product=='technical':return state_publication.publish(request,bar_receipt,receipt,query,database,claim,source_guard)
+            return receipt
         finally:client.close()
     units=(Unit('aggregate','aggregate',memory_bytes=query_memory_bytes),
            Unit('bars','bars',('aggregate',),query_memory_bytes),

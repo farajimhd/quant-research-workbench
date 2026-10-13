@@ -134,6 +134,9 @@ class MarketHandlers:
             if plan.unit.product=='market_aggregate' or combined is None:return combined
             self.shared_parent(parents,combined)
             bars=combined['receipts']['bars'];base=request.unit
+            if plan.unit.product=='technical':
+                from . import indicator_state
+                return indicator_state.authority(request,bars,client.query,self.database,self.claim)
             scope=Scope(self.dataset,base.day,base.listing_key,plan.unit.product,
                         request.parent(plan.unit.product,(bars['output_hash'],)))
             return Publisher(client.query,self.database,self.claim).receipt(scope)

@@ -608,7 +608,8 @@ class ClickHouseIntegration(unittest.TestCase):
     def test_continuous_wilder_state_survives_warmup_and_ready_session_boundaries(self):
         from pipelines.certified_research import indicators
         from datetime import timedelta
-        dataset=str(uuid.uuid4());prior={};offset=0;ag=al=atr=0.;previous=None;emas={};signal=None
+        dataset=str(uuid.uuid4());prior={1000:{n:0 if n=='sample_count' else 0. for n in indicators.STATE_FIELDS}}
+        offset=0;ag=al=atr=0.;previous=None;emas={};signal=None
         for day,count in ((date(2026,1,2),7),(date(2026,1,5),8),(date(2026,1,6),25)):
             unit=market.MarketUnit(dataset,day,'TEST',997,str(uuid.uuid4()))
             source=(f"SELECT toDate('{day}') session_date,toUInt32(1000) resolution_ms,toUInt32(number) bucket_index,"
@@ -1171,6 +1172,7 @@ class ClickHouseIntegration(unittest.TestCase):
         self.assertEqual(reference_producer.run_sec(scope,'320193',selected,query,Claim(),lambda:None,database=self.database),receipt)
         self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
     def test_executable_market_dag_shared_aggregate_and_verified_resume(self):
+        from pipelines.certified_research import indicator_state
         from tests.test_streaming_level_book import engine
         from threading import Lock
         rules=({'token_id':1,'modifier_int':0,'update_last':1,'update_high_low':1,'update_volume':1},)
@@ -1208,6 +1210,49 @@ class ClickHouseIntegration(unittest.TestCase):
         resumed=producer.run_market(request,factory,Claim(),lambda:None,start_authority,database=self.database,fixture_source=source_sql)
         self.assertEqual(resumed['status'],'complete')
         self.assertFalse(any(s.startswith('INSERT INTO') for s in logs))
+        seed_scope=indicator_state.scope_for(request,technical['technical_receipt'])
+        loaded=indicator_state.load(self.client.query,self.database,Claim(),seed_scope,
+            request.dataset_hash,request.prior_indicator_hash)
+        self.assertEqual(len(loaded['state']),8)
+        with self.assertRaisesRegex(ValueError,'recipe'):
+            indicator_state.load(self.client.query,self.database,Claim(),seed_scope,'f'*64,request.prior_indicator_hash)
+        next_day=date(2026,8,24)
+        next_unit=replace(unit,day=next_day,attempt_id=str(uuid.uuid4()))
+        next_request=producer.MarketRequest(next_unit,request.dataset_hash,'e'*64,rules,loaded['state'],
+            technical['output_hash'],checkpoint['state_hash'],boundaries(next_day)['REGULAR'])
+        quote_sql=source_sql.replace(str(market_day_sql.bounds(day,'04:05:00')),
+            str(market_day_sql.bounds(next_day,'04:05:00'))).replace('if(number=0,6,71)','6')
+        quote_only=producer.run_market(next_request,factory,Claim(),lambda:None,
+            lambda:v7.StartAuthority.rollover(checkpoint,next_day),database=self.database,fixture_source=quote_sql)
+        self.assertEqual(quote_only['status'],'complete',str(quote_only['errors']))
+        next_technical=quote_only['results']['technical']
+        carried=indicator_state.load(self.client.query,self.database,Claim(),
+            indicator_state.scope_for(next_request,next_technical['technical_receipt']),request.dataset_hash,technical['output_hash'])
+        self.assertEqual(carried['state'],loaded['state'])
+        self.assertEqual(int(next_technical['technical_receipt']['output_rows']),0)
+        self.assertEqual(int(next_technical['state_receipt']['output_rows']),8)
+        found=indicator_state.discover(self.client.query,self.database,Claim(),unit.listing_key,date(2026,8,25),
+            request.dataset_hash,c.digest(rules),{day:request.source_hash,next_day:next_request.source_hash})
+        self.assertEqual(found['session'],next_day);self.assertEqual(found['state'],loaded['state'])
+        self.assertIsNone(indicator_state.discover(self.client.query,self.database,Claim(),unit.listing_key,
+            date(2026,8,25),'f'*64,c.digest(rules),{}))
+        with self.assertRaisesRegex(ValueError,'recipe'):
+            indicator_state.discover(self.client.query,self.database,Claim(),unit.listing_key,date(2026,8,25),
+                request.dataset_hash,c.digest(rules),{next_day:'0'*64})
+        def competing(sql,*args,**kwargs):
+            rows=self.client.query(sql,*args,**kwargs)
+            return [rows[0],rows[0]] if 'min(recipe_hash)' in sql else rows
+        with self.assertRaisesRegex(ValueError,'Competing'):
+            indicator_state.discover(competing,self.database,Claim(),unit.listing_key,date(2026,8,25),
+                request.dataset_hash,c.digest(rules),{next_day:next_request.source_hash})
+        selected=indicator_state.discover(self.client.query,self.database,Claim(),unit.listing_key,date(2026,8,25),
+            request.dataset_hash,c.digest(rules),{next_day:next_request.source_hash},dataset_id=unit.dataset_id)
+        self.assertEqual(selected['scope'],found['scope'])
+        next_scope=indicator_state.scope_for(next_request,next_technical['technical_receipt'])
+        self.client.query(f'ALTER TABLE {self.database}.research_indicator_state_v1 UPDATE avg_gain=999. WHERE '
+            +next_scope.where(carried['receipt']['attempt_id'])+' SETTINGS mutations_sync=2',read=False)
+        with self.assertRaisesRegex(ValueError,'readback|output|receipt'):
+            indicator_state.load(self.client.query,self.database,Claim(),next_scope,request.dataset_hash,technical['output_hash'])
 
     def test_market_campaign_global_pool_shared_scan_seal_and_resume(self):
         from tests.test_streaming_level_book import engine
