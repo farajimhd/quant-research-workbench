@@ -605,6 +605,36 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_short_pressure_uses_session_windows_and_original_public_revision_clocks(self):
+        from datetime import timezone
+        from pipelines.certified_research import short_pressure
+        dataset=str(uuid.uuid4());attempt=str(uuid.uuid4());key=9998
+        metrics={m.name:m.key for m in facts.catalog()}
+        parent=ReferenceScope(dataset,2,key,'short_volume',date(2026,1,1),date(2026,1,9),'a'*64,facts.catalog_hash())
+        class Claim:
+            def check(self):pass
+        rows=[]
+        for day,volume in (('2026-01-02',10),('2026-01-05',20),('2026-01-06',30)):
+            for name,value in (('short.volume',volume),('short.total_volume',100)):
+                rows.append(dict(dataset_id=dataset,attempt_id=attempt,entity_kind=2,entity_key=key,metric_key=metrics[name],
+                    period_start=day,period_end=day,context_kind=1,fiscal_year=0,fiscal_period='',taxonomy_key=0,
+                    available_at=day+' 22:00:00.000000',revision=0,value=value,unit_key=2,basis_unit_key=2,
+                    status=1,precision=1,confidence=90,reason='',evidence_hash=c.digest((day,name))))
+        rows.append(dict(rows[0],value=50,available_at='2026-01-08 22:00:00.000000',revision=1,evidence_hash='b'*64))
+        insert_rows(self.client.query,self.database,'research_facts_v1',rows)
+        publisher=ReferencePublisher(self.client.query,self.database,Claim())
+        publisher.publish(parent,attempt,publisher.evidence(parent,attempt))
+        def read(day,windows):
+            sql=short_pressure.snapshot_sql(self.client.query,self.database,Claim(),parent,
+                datetime(2026,1,day,22,tzinfo=timezone.utc),windows)
+            return self.client.query(sql)
+        original=read(7,(2,3,20));corrected=read(9,(2,3))
+        unavailable=read(1,(2,3))
+        self.assertTrue(all(r['ratio'] is None and r['reason']=='no_public_short_volume' for r in unavailable))
+        self.assertAlmostEqual(original[0]['ratio'],.25);self.assertAlmostEqual(original[1]['ratio'],.2)
+        self.assertIsNone(original[2]['ratio']);self.assertEqual(int(original[2]['context_ready']),0)
+        self.assertAlmostEqual(corrected[0]['ratio'],.25);self.assertAlmostEqual(corrected[1]['ratio'],1/3)
+
     def test_native_ns_reporting_certificate_recomputes_flags_and_reuses_verified_evidence(self):
         from pipelines.market_sip.events import reporting_evidence
         table='native_ns_'+uuid.uuid4().hex;target='native_events_'+uuid.uuid4().hex;day=date(2026,1,2)
