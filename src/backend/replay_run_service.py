@@ -12804,6 +12804,7 @@ def backtest_preflight(
     experimental_structure_book: str = "",
     _saved_review_authority: Any = None,
     _program_run_service: Any = None,
+    broker_liquidity_resolution_ms: int | None = None,
 ) -> dict[str, Any]:
     preflight_started = time.perf_counter()
     preflight_timings: dict[str, float] = {}
@@ -12826,7 +12827,11 @@ def backtest_preflight(
             session_count=session_count, replay_end_date=None)
         return asyncio.run(selector.preflight(_program_run_service, configuration_revision=approved,
             sessions=tuple(date.fromisoformat(day) for day in window["sessions"]),
-            start_time=start_time, end_time=end_time, initial_cash=initial_cash))
+            start_time=start_time, end_time=end_time, initial_cash=initial_cash,
+            **({"broker_liquidity_resolution_ms": broker_liquidity_resolution_ms}
+                if broker_liquidity_resolution_ms is not None else {})))
+    if broker_liquidity_resolution_ms is not None:
+        raise ValueError('Independent broker liquidity selection requires a current programme configuration')
     configuration = dict(approved.get("payload") or {})
     if _saved_review_authority is not None:
         from src.backend.backtest_saved_source_authority import validate_saved_review_source

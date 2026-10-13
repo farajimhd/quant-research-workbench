@@ -12,6 +12,12 @@ typed Signal Streams, market-only vectorized rule evaluation, and chronological
 selection using actual filled position state and age. Orders use the existing
 Portfolio, OMS and simulated filling broker. Evaluation and liquidity clocks
 are separate pinned contracts.
+The normal Backtest request accepts `broker_liquidity_resolution_ms` as 100 or
+1000 for programme configurations. Omitting it retains the certified prepared
+clock. Preflight reports that clock and rejects any requested mismatch; it never
+silently changes a prepared filling contract. The Backtest page exposes this
+choice separately from one-second programme evaluation and uses the full
+population without attaching a legacy structural-book option.
 
 The frozen winner uses elapsed 30-second completed share volume, prior RTH
 split-adjusted close eligibility from $0.80 through $50 before ranking, top 10,

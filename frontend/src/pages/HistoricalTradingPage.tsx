@@ -29,6 +29,7 @@ type HistoricalCheck = {
 };
 
 type HistoricalPreflight = {
+  broker_liquidity_resolution_ms?: 100 | 1000;
   automatic_strategy_count: number;
   checks: HistoricalCheck[];
   strategy_run_ready: boolean;
@@ -122,6 +123,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [tickerPreset, setTickerPreset] = useState<'market' | 'custom'>('market');
   const [initialCash, setInitialCash] = useState(10_000);
   const [simulationProfile, setSimulationProfile] = useState<"baseline" | "stress">("baseline");
+  const [brokerLiquidity, setBrokerLiquidity] = useState("prepared");
   const [periodPreset, setPeriodPreset] = useState<BacktestPeriodPreset>("premarket");
   const [startTime, setStartTime] = useState("04:00:00");
   const [endTime, setEndTime] = useState("09:30:00");
@@ -129,6 +131,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const fullMarket = tickerPreset === 'market';
   function chooseTickerPreset(value: string) {
     if (value !== 'market' && value !== 'custom') return;
+    if (programme && value !== 'market') return;
     setTickerPreset(value);
     if (value === 'market') applyPeriodPreset('premarket', setPeriodPreset, setStartTime, setEndTime);
   }
@@ -149,6 +152,9 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [controlBusy, setControlBusy] = useState("");
   const [runPlanId, setRunPlanId] = useState("");
   const [candidateId, setCandidateId] = useState("");
+  const programme = candidateId.startsWith("strategy-configuration:");
+  const requestedBrokerLiquidity = programme && brokerLiquidity !== "prepared"
+    ? Number(brokerLiquidity) as 100 | 1000 : undefined;
   const resolvedOptionsRequest = useRef<string | null>(null);
   const [configurationOptions, setConfigurationOptions] = useState<BacktestConfigurationOptions | null>(null);
   const [loadingOptions, setLoadingOptions] = useState(true);
@@ -156,14 +162,18 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
   const [checkedSetupKey, setCheckedSetupKey] = useState("");
   const parsedTickers = useMemo(() => parseBacktestTickers(tickerInput), [tickerInput]);
   const normalizedTickers = useMemo(() => fullMarket ? [] : parsedTickers.tickers, [fullMarket, parsedTickers]);
-  const tickerReady = fullMarket || (normalizedTickers.length > 0 && normalizedTickers.length <= 100 && parsedTickers.invalid.length === 0);
+  const tickerReady = (!programme || fullMarket) && (fullMarket || (normalizedTickers.length > 0 && normalizedTickers.length <= 100 && parsedTickers.invalid.length === 0));
   const periodReady = startTime >= "04:00:00" && endTime <= "20:00:00" && startTime < endTime;
   const anchorDate = nextIsoDate(sessionDate);
   const resolvedSessionMatches = preflight?.window.sessions.length === 1 && preflight.window.sessions[0] === sessionDate;
   const selectedPlan = configurationOptions?.candidate_id === candidateId
     ? configurationOptions.available_run_plans.find((plan) => plan.run_plan_id === runPlanId) : undefined;
-  const setupKey = JSON.stringify([candidateId, runPlanId, sessionDate, startTime, endTime, initialCash, normalizedTickers, tickerPreset, refreshKey]);
+  const setupKey = JSON.stringify([candidateId, runPlanId, sessionDate, startTime, endTime, initialCash, normalizedTickers, tickerPreset, requestedBrokerLiquidity, refreshKey]);
   const currentPreflight = checkedSetupKey === setupKey && preflight?.configuration_revision_id === candidateId && preflight.run_plan_id === runPlanId && preflight.initial_cash === initialCash;
+
+  useEffect(() => {
+    if (programme && tickerPreset !== 'market') setTickerPreset('market');
+  }, [programme, tickerPreset]);
 
   useEffect(() => {
     if (!selectedRunId) return;
@@ -298,6 +308,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
           start_time: startTime,
           end_time: endTime,
           tickers: normalizedTickers,
+          ...(requestedBrokerLiquidity !== undefined ? { broker_liquidity_resolution_ms: requestedBrokerLiquidity } : {}),
         }),
         method: "POST",
         timeoutMs: fullMarket ? 180_000 : 60_000,
@@ -323,7 +334,7 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [anchorDate, candidateId, endTime, fullMarket, initialCash, loadingOptions, mode, normalizedTickers, optionsError, refreshKey, runPlanId, selectedPlan, setupKey, startTime, tickerReady, selectedRunId]);
+  }, [anchorDate, candidateId, endTime, fullMarket, initialCash, loadingOptions, mode, normalizedTickers, optionsError, refreshKey, runPlanId, selectedPlan, setupKey, startTime, tickerReady, selectedRunId, requestedBrokerLiquidity]);
 
   usePollingTask({
     enabled: Boolean(run && (run.work_progress?.active || !["completed", "stopped", "failed"].includes(run.status))),
@@ -388,10 +399,11 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
             run_plan_id: runPlanId,
             session_count: 1,
             simulation_profile: simulationProfile,
-            experimental_structure_book: "level-book-v7",
+            experimental_structure_book: programme ? "" : "level-book-v7",
             start_time: startTime,
             end_time: endTime,
             tickers: normalizedTickers,
+            ...(requestedBrokerLiquidity !== undefined ? { broker_liquidity_resolution_ms: requestedBrokerLiquidity } : {}),
             ...(fullMarket ? { new_order_activation_delay_ms: 0 } : {}),
           }),
           method: "POST",
@@ -590,17 +602,20 @@ export function HistoricalTradingPage({ mode }: { mode: "backtest" }) {
               />
               <TradingModeSelectField label="Ticker scope" value={tickerPreset} onChange={chooseTickerPreset}
                 options={[{value:'market',label:'Full market · shared portfolio',description:'Certified signals admit tickers causally into one portfolio'},
-                  {value:'custom',label:'Selected tickers · shared portfolio'}]} help="Both scopes use one shared simulated portfolio and automatic certified V7 inputs." />
-              {fullMarket ? <p className="configuration-help">Tickers enter causally through the selected strategy's certified candidates and share portfolio cash. Missing market products or V7 coverage block preflight; Backtest does not build them.</p> : null}
-              {tickerPreset === 'custom' ? <label className="configuration-field"><span>Tickers</span><textarea aria-label="Tickers" value={tickerInput} onChange={event => setTickerInput(event.target.value.toUpperCase())} /><small>Up to 100 symbols, separated by commas or spaces.</small></label> : null}
+                  ...(!programme ? [{value:'custom',label:'Selected tickers · shared portfolio'}] : [])]} help={programme ? "The full eligible population determines the volume-ranked top 10." : "Both scopes use one shared simulated portfolio and automatic certified V7 inputs."} />
+              {fullMarket ? <p className="configuration-help">{programme ? "Certified QMD History feeds the volume-ranked top 10 and typed Signal Streams. Orders share portfolio cash and use the filling broker." : "Tickers enter causally through the selected strategy's certified candidates and share portfolio cash. Missing market products or V7 coverage block preflight; Backtest does not build them."}</p> : null}
+              {!programme && tickerPreset === 'custom' ? <label className="configuration-field"><span>Tickers</span><textarea aria-label="Tickers" value={tickerInput} onChange={event => setTickerInput(event.target.value.toUpperCase())} /><small>Up to 100 symbols, separated by commas or spaces.</small></label> : null}
               <label className="configuration-field"><span>Trading date</span><input onChange={(event) => setSessionDate(event.target.value)} type="date" value={sessionDate} /><small>Must be an exchange trading session; weekends and holidays fail closed.</small></label>
               <TradingModeSelectField help="Presets bound the decision window while retaining causal warm-up evidence." label="Time period" onChange={(value) => applyPeriodPreset(value as BacktestPeriodPreset, setPeriodPreset, setStartTime, setEndTime)} options={[{ label: "Premarket · 04:00–09:30 ET", value: "premarket" }, { label: "Regular session · 09:30–16:00 ET", value: "regular" }, { label: "After hours · 16:00–20:00 ET", value: "after_hours" }, { label: "Whole extended session · 04:00–20:00 ET", value: "extended" }, { label: "Custom period", value: "custom" }]} value={periodPreset} />
               <label className="configuration-field"><span>Start time · ET</span><input aria-label="Start time" max="19:59:59" min="04:00:00" onChange={(event) => { setPeriodPreset("custom"); setStartTime(normalizeClockInput(event.target.value)); }} step="1" type="time" value={startTime} /><small>No new strategy actions are admitted before this time.</small></label>
               <label className="configuration-field"><span>End time · ET</span><input aria-label="End time" max="20:00:00" min="04:00:01" onChange={(event) => { setPeriodPreset("custom"); setEndTime(normalizeClockInput(event.target.value)); }} step="1" type="time" value={endTime} /><small>The run stops at this exact New York boundary.</small></label>
               <label className="configuration-field"><span>Initial cash</span><input max={1_000_000_000} min={1_000} onChange={(event) => setInitialCash(Math.max(1_000, Number(event.target.value) || 1_000))} step={1_000} type="number" value={initialCash} /><small>Applied to the isolated simulated account for the full run.</small></label>
-              <p className="configuration-help">Automatic V7 uses certified structural rows and causal completed 1-second bars. Missing coverage blocks preflight; no legacy book is substituted.</p>
+              <p className="configuration-help">{programme ? "Programme rules use certified completed one-second inputs. Missing coverage blocks preflight." : "Automatic V7 uses certified structural rows and causal completed 1-second bars. Missing coverage blocks preflight; no legacy book is substituted."}</p>
+              {programme ? <TradingModeSelectField label="Broker liquidity clock" value={brokerLiquidity} onChange={setBrokerLiquidity}
+                options={[{value:'prepared',label:'Use the certified run clock'}, {value:'100',label:'100 milliseconds'}, {value:'1000',label:'1 second'}]}
+                help={preflight?.broker_liquidity_resolution_ms ? `Certified fills use ${preflight.broker_liquidity_resolution_ms === 100 ? '100 milliseconds' : '1 second'}. Strategy rules remain on one-second inputs.` : "Choose liquidity granularity for fills. Strategy rules remain on one-second inputs."} /> : null}
               <TradingModeSelectField help="Both use $0.005 per share with a $1 minimum commission. Approval requires positive stress results." label="Execution realism" onChange={(value) => setSimulationProfile(value as "baseline" | "stress")} options={[{ label: "Baseline · 25% participation · 5 bps slippage", value: "baseline" }, { label: "Stress · 10% participation · 10 bps slippage", value: "stress" }]} value={simulationProfile} />
-              <div className="historical-accelerated-engine-note"><Zap aria-hidden="true" size={17} /><div><strong>Accelerated causal engine</strong><span>{selectedPlan ? `Immutable Strategy ${selectedPlan.strategy_revision} · 100 ms completed-bar evaluation.` : "Loading the published strategy."} Launch checks require certified source data and current execution code. Results open in Charts &amp; Quotes with MACD, positions, lifecycle activity, and performance.</span></div></div>
+              <div className="historical-accelerated-engine-note"><Zap aria-hidden="true" size={17} /><div><strong>Accelerated causal engine</strong><span>{selectedPlan ? `Immutable Strategy ${selectedPlan.strategy_revision} · ${programme ? '1 second programme evaluation; independent broker liquidity' : '100 ms completed-bar evaluation'}.` : "Loading the published strategy."} Launch checks require certified source data and current execution code. Results open in Charts &amp; Quotes with MACD, positions, lifecycle activity, and performance.</span></div></div>
     </TradingModeLaunch>
   );
 }

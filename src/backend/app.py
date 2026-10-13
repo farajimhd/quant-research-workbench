@@ -28,7 +28,7 @@ from functools import lru_cache
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Any, Callable
+from typing import Annotated, Any, Callable, Literal
 from zoneinfo import ZoneInfo
 
 import polars as pl
@@ -1009,6 +1009,7 @@ class HistoricalPreflightRequest(BaseModel):
     end_time: str = "20:00:00"
     tickers: list[str] = Field(default_factory=list, max_length=100)
     experimental_structure_book: str = Field(default="", max_length=64)
+    broker_liquidity_resolution_ms: Literal[100, 1000] | None = None
 
 
 class IndicatorWarmupSubmit(BaseModel):
@@ -1057,6 +1058,7 @@ class BacktestRunCreateRequest(BaseModel):
     start_time: str = "04:00:00"
     end_time: str = "20:00:00"
     tickers: list[str] = Field(default_factory=list, max_length=100)
+    broker_liquidity_resolution_ms: Literal[100, 1000] | None = None
 
 
 class BacktestDebugRunCreateRequest(BaseModel):
@@ -5350,6 +5352,8 @@ def _trading_historical_preflight_payload(
 ) -> dict[str, Any]:
     if payload.mode not in {"replay", "backtest"}:
         raise HTTPException(status_code=400, detail="mode must be replay or backtest")
+    if payload.mode != 'backtest' and payload.broker_liquidity_resolution_ms is not None:
+        raise HTTPException(status_code=400, detail='Independent broker liquidity selection is a Backtest parameter')
     if (payload.mode != "backtest" and approved_configuration() is None
             and configuration_candidate() is None):
         return _blocked_trading_launch_preflight(payload.mode)
@@ -5366,6 +5370,8 @@ def _trading_historical_preflight_payload(
                 tickers=tuple(payload.tickers),
                 experimental_structure_book=payload.experimental_structure_book,
                 configuration_revision=revision,
+                **({"broker_liquidity_resolution_ms": payload.broker_liquidity_resolution_ms}
+                    if payload.broker_liquidity_resolution_ms is not None else {}),
                 **({"_program_run_service": backtest_run_service}
                     if str(revision.get("revision_id") or "").startswith("strategy-configuration:") else {}),
             )
@@ -5510,6 +5516,8 @@ async def trading_backtest_run_create(payload: BacktestRunCreateRequest) -> dict
             start_time=_replay_clock_time(payload.start_time),
             end_time=_replay_clock_time(payload.end_time),
             configuration_revision=configuration_revision,
+            **({"broker_liquidity_resolution_ms": payload.broker_liquidity_resolution_ms}
+                if payload.broker_liquidity_resolution_ms is not None else {}),
             tickers=tuple(payload.tickers),
             experimental_structure_book=payload.experimental_structure_book,
             **({"_program_run_service": backtest_run_service}

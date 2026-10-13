@@ -264,11 +264,16 @@ class ProgramConfigurationSelectionService:
             raise RuntimeError("Programme launch changed its reviewed central selection")
 
     async def preflight(self, run_service, *, configuration_revision, sessions,
-            start_time, end_time, initial_cash):
+            start_time, end_time, initial_cash, broker_liquidity_resolution_ms=None):
         """Describe existing prepared coverage only for the exact reviewed scope."""
         from datetime import time
         from src.trading_runtime.journal_contract import canonical_json
         controller = await self.staged_controller(run_service)
+        if (broker_liquidity_resolution_ms is not None and
+                (type(broker_liquidity_resolution_ms) is not int
+                 or broker_liquidity_resolution_ms not in (100, 1000)
+                 or broker_liquidity_resolution_ms != controller._program_liquidity_resolution_ms)):
+            raise ValueError('Requested broker liquidity differs from the prepared filling contract')
         definition = controller.definition
         revision = definition.configuration_revision
         if (type(sessions) is not tuple or sessions != (definition.session_date,)
@@ -283,6 +288,7 @@ class ProgramConfigurationSelectionService:
         days = [day.isoformat() for day in sessions]
         return dict(schema_version=1, mode="backtest", ready=True, strategy_run_ready=True,
             prepared_run_id=controller.run_id, execution_interval=definition.execution_interval,
+            broker_liquidity_resolution_ms=controller._program_liquidity_resolution_ms,
             window=dict(sessions=days, session_count=len(days), start=days[0], end=days[-1]),
             market_data_plan=deepcopy(definition.market_data_plan),
             causal_v7_plan=deepcopy(definition.causal_v7_plan),
