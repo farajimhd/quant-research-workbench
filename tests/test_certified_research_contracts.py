@@ -742,6 +742,27 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_historical_identity_publication_is_compact_exact_and_restart_safe(self):
+        from pipelines.certified_research import historical_identity as historical
+        class Claim:
+            def check(self):pass
+        self.client.query(historical.persistence_table().ddl(self.database),read=False)
+        payload=dict(ticker='HIST',market='stocks',locale='us',composite_figi='BBG000000001',share_class_figi='',
+            cik='123',primary_exchange='XNYS',currency_name='usd',type='CS',active=True,list_date='1892-01-01')
+        observed=historical.normalize(payload,date(2026,1,2),'HIST')
+        first=historical.publish(self.client.query,self.database,Claim(),[observed])
+        self.assertEqual(first['inserted'],1)
+        logs=[]
+        def query(sql,*args,**kwargs):logs.append(sql);return self.client.query(sql,*args,**kwargs)
+        second=historical.publish(query,self.database,Claim(),[observed])
+        self.assertEqual(second['inserted'],0);self.assertEqual(second['evidence_hash'],first['evidence_hash'])
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+        stored=self.client.query(f"SELECT list_day FROM {self.database}.{historical.TABLE} WHERE ticker='HIST'")[0]
+        self.assertEqual(int(stored['list_day']),(date(1892,1,1)-date(1970,1,1)).days)
+        changed=historical.normalize(dict(payload,composite_figi='BBG000000002'),date(2026,1,2),'HIST')
+        with self.assertRaisesRegex(ValueError,'conflicts'):
+            historical.publish(query,self.database,Claim(),[changed])
+
     def test_corporate_adjustment_uses_public_execution_evidence_and_scales_state(self):
         from pipelines.certified_research import adjustments,indicators
         class Claim:

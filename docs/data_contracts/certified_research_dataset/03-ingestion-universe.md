@@ -81,6 +81,12 @@ This distinction is required by the [provider's ticker-overview contract](https:
 
 An empty ticker-event history does not prove a listing start. Dated observations prove their requested dates only; historical interval reconstruction must combine verified listing dates, stable identity, dated endpoints and complete intervening change coverage. Persistence, canonical historical mapping and bulk repair orchestration for these observations remain unfinished; the current unresolved universe intervals remain blocked.
 
+#### Implemented observation persistence
+
+`historical_identity.persistence_table()` defines `research_listing_observation_v1`: `MergeTree`, ordered by `(as_of,ticker)`, partitioned monthly and restricted to `live_market_ssd`. All columns have lossless `ZSTD(1)`; the UTC microsecond observation clock also uses `Delta(8)`. Fields are `as_of Date`, ticker/type/venue/currency/CIK/share-class FIGI as compact categorical strings, `composite_figi FixedString(12)`, `active UInt8`, nullable signed `Int32` listing/delisting day offsets, `evidence_hash FixedString(64)` and `observed_at DateTime64(6,'UTC')`. Signed epoch-day offsets preserve pre-1970 listing dates without narrowing them to ClickHouse `Date`'s range.
+
+The bounded publisher requires global database dictionary ownership in production, checks exact columns/codecs/engine/keys and actual storage placement, reads back every inserted observation and reuses matching rows without inserts. Conflicting ticker/date identity is an explicit versioned repair, never an overwrite. Missing venue/activity/FIGI or conflicting lifecycle evidence is rejected. Financial fields and raw financial payloads are not persisted in this identity product. Table installation and bulk acquisition/canonical interval repair orchestration remain unfinished; this point-observation store does not certify a continuous interval.
+
 Plan output now reports independent Reference Gateway repair requirements. A first rejection such as `missing_dated_symbol_mapping` can also hide missing listing lifecycle or history binding. Counts deduplicate listing/stage jobs. Identity/listing/history evidence must precede dated symbol reconstruction; admission is rerun afterward. The inventory is inspection only and does not infer historical dates or launch a broad history download. Live samples of rejected January listings had null listing dates and absent interval/history fields, confirming the need for this ordering.
 
 ### Prepared reference forms
