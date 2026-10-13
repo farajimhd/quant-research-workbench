@@ -3,6 +3,43 @@ use serde::Serialize;
 use std::env;
 use std::path::PathBuf;
 
+#[derive(Clone)]
+pub struct ColumnarHistoryConnection {
+    pub url: String,
+    pub user: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for ColumnarHistoryConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ColumnarHistoryConnection")
+            .field("credentials", &"<redacted>").finish()
+    }
+}
+
+impl ColumnarHistoryConnection {
+    fn from_values(url: String, user: String, password: String) -> Option<Self> {
+        if url.is_empty() && user.is_empty() && password.is_empty() {
+            None
+        } else {
+            Some(Self { url, user, password })
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        let url = reqwest::Url::parse(&self.url)
+            .map_err(|_| "Columnar history reader URL is invalid".to_string())?;
+        if self.user != "program_market_input_reader" || self.password.is_empty()
+            || url.scheme() != "http" || url.host_str() != Some("desktop-saai85t")
+            || url.port() != Some(18123) || !url.username().is_empty()
+            || url.password().is_some() || url.path() != "/"
+            || url.query().is_some() || url.fragment().is_some() {
+            return Err("Columnar history reader differs from its managed read-only profile".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct HistoricalGatewayConfig {
     /// Explicit archive timing authority. Native recent/live clocks are unchanged.
@@ -23,6 +60,8 @@ pub struct HistoricalGatewayConfig {
     pub clickhouse_password_present: bool,
     pub clickhouse_url: String,
     pub clickhouse_user: String,
+    #[serde(skip_serializing)]
+    pub columnar_history_connection: Option<ColumnarHistoryConnection>,
     pub live_gateway_url: String,
     pub max_events_per_request: usize,
     pub recent_database: String,
@@ -91,6 +130,10 @@ impl HistoricalGatewayConfig {
             clickhouse_password: source.password,
             clickhouse_url: source.url,
             clickhouse_user: source.user,
+            columnar_history_connection: ColumnarHistoryConnection::from_values(
+                env_string("PROGRAM_MARKET_INPUT_READER_CLICKHOUSE_URL", ""),
+                env_string("PROGRAM_MARKET_INPUT_READER_CLICKHOUSE_USER", ""),
+                env_string("PROGRAM_MARKET_INPUT_READER_CLICKHOUSE_PASSWORD", "")),
             live_gateway_url: env_string("QMD_HISTORY_LIVE_GATEWAY_URL", "http://127.0.0.1:8795"),
             max_events_per_request: env_usize("QMD_HISTORY_MAX_EVENTS_PER_REQUEST", 10_000_000)
                 .max(1),
@@ -213,6 +256,9 @@ impl HistoricalGatewayConfig {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(connection) = &self.columnar_history_connection {
+            connection.validate()?;
+        }
         if !matches!(self.archive_clock_policy.as_str(), "execution_clock" | "canonical_sip") {
             return Err("QMD_HISTORY_ARCHIVE_CLOCK_POLICY must be execution_clock or canonical_sip".into());
         }
@@ -351,7 +397,40 @@ fn env_list(name: &str, default: &[&str]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{valid_checkpoint_set_id, valid_identifier};
+    use super::{valid_checkpoint_set_id, valid_identifier, ColumnarHistoryConnection, HistoricalGatewayConfig};
+
+    #[test]
+    fn columnar_history_profile_is_optional_but_partial_configuration_fails_closed() {
+        assert!(ColumnarHistoryConnection::from_values(String::new(), String::new(), String::new()).is_none());
+        assert!(ColumnarHistoryConnection::from_values("http://DESKTOP-SAAI85T:18123".into(),
+            String::new(), String::new()).unwrap().validate().is_err());
+    }
+
+    #[test]
+    fn columnar_history_profile_rejects_other_accounts_endpoints_and_embedded_credentials() {
+        for (url, user) in [
+            ("http://other-host:18123", "program_market_input_reader"),
+            ("http://DESKTOP-SAAI85T:18123", "program_history_publisher"),
+            ("http://name:private@DESKTOP-SAAI85T:18123", "program_market_input_reader"),
+            ("http://DESKTOP-SAAI85T:18123?readonly=0", "program_market_input_reader"),
+        ] {
+            assert!(ColumnarHistoryConnection::from_values(url.into(), user.into(),
+                "synthetic-private".into()).unwrap().validate().is_err());
+        }
+    }
+
+    #[test]
+    fn columnar_history_credentials_are_not_serialized_or_debugged() {
+        let connection = ColumnarHistoryConnection::from_values("http://DESKTOP-SAAI85T:18123".into(),
+            "program_market_input_reader".into(), "synthetic-columnar-private".into()).unwrap();
+        connection.validate().unwrap();
+        assert!(!format!("{connection:?}").contains("synthetic-columnar-private"));
+        let mut config = HistoricalGatewayConfig::from_env();
+        config.columnar_history_connection = Some(connection);
+        let wire = serde_json::to_string(&config).unwrap();
+        assert!(!wire.contains("synthetic-columnar-private"));
+        assert!(!wire.contains("columnar_history_connection"));
+    }
 
     #[test]
     fn identifiers_are_strict() {

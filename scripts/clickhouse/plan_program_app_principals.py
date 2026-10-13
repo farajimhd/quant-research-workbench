@@ -19,6 +19,7 @@ from src.market_engine.opening_price_reference import TABLES as OPENING
 from pipelines.market_sip.events.liquidity_resolution_sql import TABLES as LIQUIDITY
 from src.trading_runtime.columnar_strategy_release import TABLES as RELEASE
 from src.trading_runtime.strategy_configuration_schema import TABLES as SELECTION
+from src.backend.program_app_credentials import PROGRAM_APP_PRINCIPALS as PRINCIPALS
 
 SYSTEM = frozenset(('system', name) for name in
     ('tables', 'columns', 'parts', 'storage_policies', 'data_skipping_indices'))
@@ -57,15 +58,15 @@ def desired_plans():
     liquidity_parents = frozenset((('arte', 'liquidity_100ms_v1'),
         ('arte', 'liquidity_execution_price_100ms_v1')))
     return (
-        ProgramPrincipalPlan('program_market_input_reader',
+        ProgramPrincipalPlan(PRINCIPALS['market_input_reader'],
             frozenset(inherited) | SYSTEM | history | opening | liquidity | opening_parents | liquidity_parents),
-        ProgramPrincipalPlan('program_history_publisher', SYSTEM | history, history),
-        ProgramPrincipalPlan('program_opening_reference_publisher', SYSTEM | opening | opening_parents, opening),
-        ProgramPrincipalPlan('program_liquidity_publisher', SYSTEM | liquidity | liquidity_parents, liquidity),
-        ProgramPrincipalPlan('program_release_reader', SYSTEM | release),
-        ProgramPrincipalPlan('program_release_publisher', SYSTEM | release, release),
-        ProgramPrincipalPlan('program_selection_reader', SYSTEM | selection),
-        ProgramPrincipalPlan('program_selection_publisher', SYSTEM | selection, selection),
+        ProgramPrincipalPlan(PRINCIPALS['history_publisher'], SYSTEM | history, history),
+        ProgramPrincipalPlan(PRINCIPALS['opening_reference_publisher'], SYSTEM | opening | opening_parents, opening),
+        ProgramPrincipalPlan(PRINCIPALS['liquidity_publisher'], SYSTEM | liquidity | liquidity_parents, liquidity),
+        ProgramPrincipalPlan(PRINCIPALS['release_reader'], SYSTEM | release),
+        ProgramPrincipalPlan(PRINCIPALS['release_publisher'], SYSTEM | release, release),
+        ProgramPrincipalPlan(PRINCIPALS['selection_reader'], SYSTEM | selection),
+        ProgramPrincipalPlan(PRINCIPALS['selection_publisher'], SYSTEM | selection, selection),
     )
 
 

@@ -225,6 +225,7 @@ struct HealthPayload {
     cache: CacheMetrics,
     columnar_history_contract: &'static str,
     columnar_history_cold_certification_required: bool,
+    columnar_history_reader_configured: bool,
     calculation_revision: &'static str,
     corporate_action_revision: &'static str,
     config: HistoricalGatewayConfig,
@@ -404,6 +405,12 @@ async fn columnar_history_window(
     Json(request): Json<crate::columnar_history::HistoryWindowRequest>,
 ) -> Result<Json<crate::columnar_history::HistoryWindowResponse>, ApiError> {
     crate::columnar_history::validate_request(&request).map_err(bad_request)?;
+    if state.config.columnar_history_connection.is_none() {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, Json(json!({
+            "error": "Columnar history requires its dedicated input reader",
+            "error_code": "columnar_history_reader_not_configured", "retryable": false,
+        }))));
+    }
     // Reuse the configured historical watchlist compute funnel. Saturation
     // returns a retryable receipt instead of creating an unbounded work queue.
     let _permit = state.watchlist_materialization_permits.clone().try_acquire_owned().map_err(|_| (
@@ -897,6 +904,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Result<Json<HealthPayload
         cache: state.cache.metrics().await,
         columnar_history_contract: crate::columnar_history::CONTRACT,
         columnar_history_cold_certification_required: true,
+        columnar_history_reader_configured: state.config.columnar_history_connection.is_some(),
         calculation_revision: HISTORICAL_CALCULATION_REVISION,
         corporate_action_revision: HISTORICAL_CORPORATE_ACTION_REVISION,
         config: state.config.clone(),

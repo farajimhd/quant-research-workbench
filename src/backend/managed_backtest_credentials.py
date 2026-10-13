@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import platform
 from typing import MutableMapping
+from .program_app_credentials import PROGRAM_APP_CREDENTIAL_FILES
 
 
 SECRET_ROOT = Path(r"D:\TradingML\secrets")
@@ -29,6 +30,7 @@ _OPTIONAL_FILES = {
         "BACKTEST_V4_PROGRAM_RUNNER_CLICKHOUSE_" + suffix
         for suffix in ("URL", "USER", "PASSWORD")
     ),
+    **PROGRAM_APP_CREDENTIAL_FILES,
 }
 
 

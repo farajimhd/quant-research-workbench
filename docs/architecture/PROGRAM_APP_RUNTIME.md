@@ -1,0 +1,81 @@
+# Current columnar programme app integration
+
+This is the shared current path for new programme strategies. Legacy releases
+and their recorded results retain their original executable contracts. The
+frozen V7 reference is a strategy specification and comparison authority, never
+an app market-data source or filling broker.
+
+## Data and execution
+
+Certified database inputs pass through QMD History, the shared volume scanner,
+typed Signal Streams, market-only vectorized rule evaluation, and chronological
+selection using actual filled position state and age. Orders use the existing
+Portfolio, OMS and simulated filling broker. Evaluation and liquidity clocks
+are separate pinned contracts.
+
+The frozen winner uses elapsed 30-second completed share volume, prior RTH
+split-adjusted close eligibility from $0.80 through $50 before ranking, top 10,
+and lexical listing ties. Its initial entry allowance is $1,000 and each add is
+$200; changing cash parameters creates a new immutable release. Every fill's
+commission and applicable execution cost contributes to app P&L.
+
+QMD history and opening references use the central `q_live` contracts. Broker
+liquidity, configuration, programmes, releases, lifecycle and journals use
+their central `arte` contracts. No programme creates tables, persists JSON/blob
+trading rows, or substitutes SQLite or a disk journal for ClickHouse authority.
+Coverage, source hashes, exact clock bounds, native price bits and Keeper
+receipts remain mandatory. A populated table alone is not certification.
+
+## Credentials and readers
+
+`program_app_credentials.py` defines the shared credential profile names.
+`managed_backtest_credentials.py` loads provisioned optional profiles on the
+workstation through the normal backend launcher. Missing optional files leave
+existing launches unchanged; malformed or conflicting files fail atomically.
+Private values stay in workstation secrets and process memory.
+
+The lazy `program_app_reader_factory` accepts the market-input, release,
+selection and journal reader roles. The journal role uses the already-approved
+programme runner principal with server-enforced `readonly=1` and its native
+programme cold-read profile; it does not create another account or writer lane.
+Native asynchronous readers invoke each factory
+in an owned worker, receive an independent SELECT-only connection, and close
+it before returning. Factories never install releases, start producers, or
+authorize backtests. The existing app startup gate still requires explicit
+approved selection/executor pins and a native portfolio-policy attestation.
+
+The QMD History columnar endpoint uses the dedicated
+`program_market_input_reader` profile, loaded using the existing `DOTENV_PATHS`
+mechanism from its private file. It does not fall back to the gateway's general
+historical credentials. An absent profile returns HTTP 503 with
+`columnar_history_reader_not_configured`; a partial or wrong profile fails
+configuration validation. Health exposes `columnar_history_reader_configured`,
+which reports configuration, not input coverage or successful authentication.
+Every input request still checks grants, physical placement and its cold seal.
+The gateway's other historical routes retain their existing credentials.
+
+## Operator boundary
+
+`scripts/clickhouse/plan_program_app_principals.py` is review-only. Its eight
+profiles separate three readers from five product publishers. Publisher writes
+are confined to 28 shared tables: four history, three opening-reference, three
+liquidity, five release and thirteen configuration/Signal Stream definition
+tables. The source reader inherits the existing app's reference/market read
+catalogue plus the required new product SELECTs. Exact SQL grants are available
+with `--show-grants`.
+
+`scripts/clickhouse/provision_program_app_principals.py` is plan-only by default.
+Applying requires workstation ownership, an exact bounded runtime approval
+plan, `--apply`, and `--confirm-program-principals`. It verifies SSD storage
+before credentials, audits existing accounts before new changes, refuses
+unexpected authority, preserves partial account/grant progress for exact-plan
+resume, and verifies final effective grants. It creates no tables or rows and
+starts no producer, release publication, service or backtest. Accounts and
+grants require operator approval; this command does not confer permission for
+subsequent operational steps.
+
+Full app qualification requires certified source days including causal prior
+RTH sessions, producer publication, centrally sealed release/configuration,
+normal app activation, real fills, cold recovery and all30 optimizer comparison.
+Synthetic rule equivalence does not establish filling or P&L equivalence. The
+legacy SQLite-ledger market-day builder is not an approved new producer path.

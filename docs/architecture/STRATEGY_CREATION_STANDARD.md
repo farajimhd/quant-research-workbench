@@ -37,11 +37,18 @@ and structural products. A Strategy only consumes them. For example, a new
 one-minute MACD rule first requires a certified one-minute QMD indicator; a
 Strategy may not calculate or approximate that MACD from trades or other bars.
 
-Backtest SELECTs only certified immutable `arte` products with a market
+Backtest SELECTs only certified immutable database products with a market
 principal that cannot INSERT, ALTER, CREATE, repair, or materialize them.
 Missing coverage fails preflight before entering the Backtest workspace.
 Expensive reusable derivatives may be published once by a separate producer
-as normalized, typed, coverage-sealed `arte` tables; no JSON/blob substitute.
+as normalized, typed, coverage-sealed shared tables; no JSON/blob substitute.
+QMD history, opening-price references and their coverage belong in `q_live`.
+Market bars and broker liquidity retain their declared `arte` authorities;
+trading configuration, rules, release seals, lifecycle and journals belong in
+`arte`. Every field and relationship must use the central normalized schema.
+Strategies may not create private tables or store trading data in JSON columns.
+All new operational tables and their active parts must use the prescribed
+workload storage policy; `default` remains backup-only.
 
 The default evaluation interval is completed 100 ms boundaries. Event mode
 must be declared explicitly. A completed higher-timeframe indicator is not
@@ -51,6 +58,12 @@ trades or candles. The fixed broker consumes completed persisted liquidity
 buckets without fabricating intra-bucket order. Pin the fill contract,
 activation delay, spread/quote freshness, liquidity budgets, and ambiguous
 stop/target policy independently of the interval.
+Current columnar programmes declare completed one-second evaluation and may
+select certified 100 ms or one-second broker liquidity independently. This
+does not change a legacy release's interval or fill semantics. Programme
+branches see actual filled position-open state and elapsed position age through
+the chronological coordinator, while vectorized market programs cannot read
+entry cost, fill prices, unrealized P&L, or portfolio/broker internals.
 
 ## Reusable rules and bounded state
 
@@ -80,7 +93,7 @@ the old release and its runs remain executable for exact reproduction.
 | Stage | Required artifact and boundary | Strategy 1 example |
 |---|---|---|
 | 1. Specify | One reviewed behavior specification and `NumberedStrategyRelease` seal. Declare activation, entry, re-entry, additions, stop/target precedence, sizing, permissions, interval, fill policy, and technical dependencies before registering the number. | `strategy_one_contract.py`, `strategy_registry.py` |
-| 2. Source | Typed QMD/producer products with resolution, timestamp semantics, build/attempt identity, coverage, and an explicit missing-data result. Request a new producer product before a rule can consume an unavailable indicator. A reusable expensive derivative is calculated once by producer-owned code and published coverage-last in normalized `arte` columns. | `backtest_market_data.py`, `backtest_strategy_one_candidate_store.py` |
+| 2. Source | Typed QMD/producer products with resolution, timestamp semantics, build/attempt identity, coverage, and an explicit missing-data result. Request a new producer product before a rule can consume an unavailable indicator. A reusable expensive derivative is calculated once by producer-owned code and published coverage-last in central normalized `q_live` or `arte` columns according to the authority above. | `backtest_market_data.py`, `backtest_strategy_one_candidate_store.py` |
 | 3. Preflight | Compile the release's minimal dependency plan and verify every required source, revision, interval, identity, storage policy, and read-only market grant before the Backtest page or run can start. Missing data is an error, never an invitation to build it in Backtest. | `replay_run_service.py` fixed preflight |
 | 4. Filter | Apply reusable, revision-pinned pure rule functions to bounded columnar batches. Emit immutable candidate indexes, causal boundary references, and reason-bit masks. Keep data extraction and candidate materialization bounded and measured. The mask is a necessary condition, never order authorization. | `strategy_one_contract.py`, `backtest_strategy_one_static_gate.py` |
 | 5. Execute | Advance only surviving candidates through sequential per-ticker state and one deterministic global Portfolio/OMS/broker coordinator. Read only completed rows; order activation and fills use the declared broker contract. No state transition may see a future bar, indicator, quote, level, or fill. | `backtest_strategy_one_scheduler.py`, `strategy_one_stateful.py` |

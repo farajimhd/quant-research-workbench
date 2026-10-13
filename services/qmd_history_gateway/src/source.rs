@@ -37,6 +37,79 @@ const LATEST_COVERAGE_QUERY_MAX_THREADS: u8 = 2;
 const LATEST_COVERAGE_QUERY_MAX_SECONDS: u8 = 15;
 const STRUCTURE_ARCHIVE_EXECUTION_CLOCK_REQUIRED: bool = false;
 
+fn columnar_history_request(client: &Client, config: &HistoricalGatewayConfig,
+    sql: &str) -> Result<reqwest::Request, String> {
+    if !sql.starts_with("SELECT ") || sql.len() > 32 * 1024 {
+        return Err("History input transport requires bounded SELECT statements".into());
+    }
+    let connection = config.columnar_history_connection.as_ref()
+        .ok_or("Columnar history dedicated input reader is not configured")?;
+    connection.validate()?;
+    let mut key = reqwest::header::HeaderValue::from_str(&connection.password)
+        .map_err(|_| "Columnar history credential header is invalid".to_string())?;
+    key.set_sensitive(true);
+    client.post(format!("{}/?database=q_live", connection.url.trim_end_matches('/')))
+        .timeout(Duration::from_secs(35))
+        .header("Accept-Encoding", "gzip")
+        .header("Content-Type", "text/plain; charset=utf-8")
+        .header("X-ClickHouse-User", &connection.user)
+        .header("X-ClickHouse-Key", key)
+        .query(&[("readonly", "1"), ("max_execution_time", "30"),
+            ("max_threads", "1"), ("max_memory_usage", "268435456"),
+            ("max_result_bytes", "8388608"), ("result_overflow_mode", "throw"),
+            ("output_format_json_quote_64bit_integers", "0")])
+        .body(sql.to_string()).build()
+        .map_err(|_| "Columnar history request construction failed".to_string())
+}
+
+#[cfg(test)]
+mod columnar_history_transport_tests {
+    use super::*;
+    use crate::config::ColumnarHistoryConnection;
+
+    fn config() -> HistoricalGatewayConfig {
+        let mut config = HistoricalGatewayConfig::from_env();
+        config.clickhouse_user = "legacy_reader".into();
+        config.clickhouse_password = "legacy-private-must-not-be-used".into();
+        config.columnar_history_connection = Some(ColumnarHistoryConnection {
+            url: "http://DESKTOP-SAAI85T:18123".into(),
+            user: "program_market_input_reader".into(),
+            password: "synthetic-columnar-private".into(),
+        });
+        config
+    }
+
+    #[test]
+    fn request_uses_only_dedicated_reader_and_bounded_readonly_query() {
+        let request = columnar_history_request(&Client::new(), &config(), "SELECT 1").unwrap();
+        assert_eq!(request.headers()["X-ClickHouse-User"], "program_market_input_reader");
+        assert_eq!(request.headers()["X-ClickHouse-Key"], "synthetic-columnar-private");
+        assert!(request.headers()["X-ClickHouse-Key"].is_sensitive());
+        assert!(request.url().query_pairs().any(|(k, v)| k == "database" && v == "q_live"));
+        assert!(request.url().query_pairs().any(|(k, v)| k == "readonly" && v == "1"));
+        assert!(request.url().query_pairs().any(|(k, v)| k == "max_result_bytes" && v == "8388608"));
+        assert!(!format!("{request:?}").contains("synthetic-columnar-private"));
+    }
+
+    #[test]
+    fn absent_or_changed_reader_never_falls_back_to_legacy_credentials() {
+        let mut config = config();
+        config.columnar_history_connection = None;
+        assert!(columnar_history_request(&Client::new(), &config, "SELECT 1").is_err());
+        config.columnar_history_connection = Some(ColumnarHistoryConnection {
+            url: "http://DESKTOP-SAAI85T:18123".into(), user: "legacy_reader".into(),
+            password: "synthetic-private".into(),
+        });
+        assert!(columnar_history_request(&Client::new(), &config, "SELECT 1").is_err());
+    }
+
+    #[test]
+    fn non_select_or_oversized_queries_are_rejected_before_request_construction() {
+        assert!(columnar_history_request(&Client::new(), &config(), "INSERT INTO x VALUES (1)").is_err());
+        assert!(columnar_history_request(&Client::new(), &config(), &format!("SELECT {}", "x".repeat(32768))).is_err());
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct EventWindow {
     pub end: DateTime<Utc>,
@@ -4129,22 +4202,8 @@ impl HistoricalEventSource {
     }
 
     pub(crate) async fn query_columnar_history(&self, sql: &str) -> Result<String, String> {
-        if !sql.starts_with("SELECT ") || sql.len() > 32 * 1024 {
-            return Err("History input transport requires bounded SELECT statements".into());
-        }
-        let url = format!("{}/?database={}", self.config.clickhouse_url,
-            urlencoding::encode(&self.config.clickhouse_database));
-        let mut request = self.client.post(url).timeout(Duration::from_secs(35))
-            .header("Accept-Encoding", "gzip").header("Content-Type", "text/plain; charset=utf-8")
-            .header("X-ClickHouse-User", &self.config.clickhouse_user)
-            .query(&[("readonly", "1"), ("max_execution_time", "30"),
-                ("max_threads", "1"), ("max_memory_usage", "268435456"),
-                ("max_result_bytes", "8388608"), ("result_overflow_mode", "throw"),
-                ("output_format_json_quote_64bit_integers", "0")]).body(sql.to_string());
-        if !self.config.clickhouse_password.is_empty() {
-            request = request.header("X-ClickHouse-Key", &self.config.clickhouse_password);
-        }
-        let mut response = request.send().await.map_err(|error| error.to_string())?;
+        let request = columnar_history_request(&self.client, &self.config, sql)?;
+        let mut response = self.client.execute(request).await.map_err(|error| error.to_string())?;
         let status = response.status();
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
