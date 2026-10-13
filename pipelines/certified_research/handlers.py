@@ -85,6 +85,34 @@ class PreparedShortSourceHandlers:
         return {p:self.producer for p in products},{p:self.verifier for p in products}
 
 
+class PreparedSecSourceHandlers:
+    """Verify retained SEC inputs, with no SEC or market-provider requests."""
+    def __init__(self,claim,client_factory,source_guard):
+        self.claim=claim;self.clients=client_factory;self.guard=source_guard
+
+    def execute(self,plan,parents,stop=None):
+        from . import reference_sql,schema
+        if stop is not None and stop.is_set():raise InterruptedError('SEC source verification stopped')
+        args=plan.arguments
+        if plan.unit.product!='sec_acquisition' or set(args)!={'entity_key','cik','start','end','source_hash'}:
+            raise ValueError('Invalid prepared SEC source unit')
+        client=self.clients()
+        try:
+            self.claim.check();self.guard()
+            schema.verify_auxiliary_storage(client.query,'q_live',('sec_filing_v3','sec_xbrl_company_fact_v3'))
+            schema.verify_auxiliary_storage(client.query,'sec_core',('sec_bulk_mirror_xbrl_fact_v3',))
+            evidence=reference_sql.sec_source_evidence(client.query,int(args['entity_key']),args['cik'],
+                date.fromisoformat(args['start']),date.fromisoformat(args['end']))
+            if evidence['source_hash']!=args['source_hash']:raise ValueError('Frozen SEC public input evidence changed')
+            self.claim.check();self.guard()
+            return dict(product='sec_acquisition',**evidence,output_hash=evidence['source_hash'])
+        finally:client.close()
+
+    def producer(self,plan,parents,stop):return self.execute(plan,parents,stop)
+    def verifier(self,plan,parents):return self.execute(plan,parents)
+    def registry(self):return {'sec_acquisition':self.producer},{'sec_acquisition':self.verifier}
+
+
 class ActivityHandlers:
     """Concurrent SQL windows consuming shared current/context liquidity."""
     def __init__(self,dataset_id,database,claim,client_factory,source_guard,plans):
@@ -291,6 +319,14 @@ class ReferenceHandlers:
     def scope(self,plan,parents):
         from . import short_pressure
         args=plan.arguments;kind=1 if plan.unit.product in ('fundamentals','derived_fundamentals') else 2
+        if plan.unit.product=='fundamentals' and parents:
+            acquired=[receipt for receipt in parents.values() if receipt.get('product')=='sec_acquisition']
+            if acquired or not self.database.startswith('certified_research_test_'):
+                if len(acquired)!=1:raise ValueError('Fundamentals require one verified SEC input authority')
+                receipt=acquired[0]
+                if (receipt['source_hash']!=args['source_hash'] or int(receipt['entity_key'])!=int(args['entity_key'])
+                        or int(receipt['cik'])!=int(args['cik']) or receipt['start']!=args['start'] or receipt['end']!=args['end']):
+                    raise ValueError('Fundamental SEC input identity, range or fingerprint differs')
         if plan.unit.product=='derived_fundamentals':
             if len(parents)!=1:raise ValueError('Derived fundamentals require one certified reported parent')
             parent=next(iter(parents.values()));parent_hash=reference_producer.derived_parent_hash(parent)
@@ -323,7 +359,9 @@ class ReferenceHandlers:
                 selected=tuple(m for m in facts.catalog() if m.tags and (names is None or m.name in names))
                 if not selected or (names is not None and set(names)!={m.name for m in selected}):
                     raise ValueError('Reported metric selection is empty or not in the frozen catalog')
-                reference_producer.run_sec(scope,args['cik'],selected,query,self.claim,self.source_guard,database=self.database)
+                verified_input=any(p.get('product')=='sec_acquisition' for p in parents.values())
+                reference_producer.run_sec(scope,args['cik'],selected,query,self.claim,self.source_guard,database=self.database,
+                    expected_source_hash=args['source_hash'] if verified_input else None)
             elif plan.unit.product=='derived_fundamentals':
                 key=next(iter(parents));parent_plan=self.plans[key]
                 if parent_plan.unit.product!='fundamentals':raise ValueError('Wrong derived parent product')

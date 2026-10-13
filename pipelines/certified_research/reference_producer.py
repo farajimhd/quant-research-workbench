@@ -19,16 +19,28 @@ def staging_table():
                         facts.order,facts.partition)
 
 
-def run_sec(scope,cik,metrics,query,claim,source_guard,*,database='arte'):
+def run_sec(scope,cik,metrics,query,claim,source_guard,*,database='arte',expected_source_hash=None):
     identifier(database);claim.check();source_guard()
     schema.verify_storage(query,database,require_tables=True)
     schema.verify_auxiliary_storage(query,database,(STAGING,))
     schema.verify_auxiliary_storage(query,'q_live',('sec_filing_v3','sec_xbrl_company_fact_v3'))
     schema.verify_auxiliary_storage(query,'sec_core',('sec_bulk_mirror_xbrl_fact_v3',))
     if scope.entity_kind!=1 or scope.family!='fundamentals':raise ValueError('SEC scope must be issuer fundamentals')
+    if expected_source_hash is not None and expected_source_hash!=scope.parent_hash:
+        raise ValueError('SEC input fingerprint differs from publication lineage')
+    def check_stage(attempt):
+        namespace='00000000-0000-0000-0000-000000000001'
+        projection=(f'SELECT * REPLACE(toUUID({literal(namespace)}) AS dataset_id,'
+            f'toUUID({literal(namespace)}) AS attempt_id) FROM {database}.{STAGING} AS s '
+            f'WHERE s.dataset_id=toUUID({literal(scope.dataset_id)}) AND s.attempt_id=toUUID({literal(attempt)}) '
+            f'AND s.entity_kind={scope.entity_kind} AND s.entity_key={scope.entity_key}')
+        rows=query(evidence_sql(staging_table(),projection,FACT_KEY))
+        if len(rows)!=1:raise ValueError('Materialized SEC input evidence is ambiguous')
+        binding=reference_sql.sec_source_binding(rows[0],scope.entity_key,cik,scope.start,scope.end,metrics)
+        if binding['source_hash']!=expected_source_hash:raise ValueError('SEC input changed before materialized publication')
     return _materialize(scope,query,claim,source_guard,database,
         lambda attempt:reference_sql.sec_projection(scope.dataset_id,attempt,scope.entity_key,cik,scope.start,scope.end,
-                                                   metrics=metrics,wide=True))
+                                                   metrics=metrics,wide=True),stage_check=check_stage if expected_source_hash is not None else None)
 
 
 def run_short(scope,query,claim,source_guard,*,database='arte',source_database='q_live'):
@@ -135,7 +147,7 @@ def regular_price_parents(scope,bar_scopes,query,claim,*,database='arte'):
     return parents
 
 
-def _materialize(scope,query,claim,source_guard,database,projection_factory):
+def _materialize(scope,query,claim,source_guard,database,projection_factory,*,stage_check=None):
     publisher=ReferencePublisher(query,database,claim)
     previous=publisher.receipt(scope)
     if previous:return previous
@@ -144,6 +156,7 @@ def _materialize(scope,query,claim,source_guard,database,projection_factory):
     where=scope.rows_where(attempt)
     projection=projection_factory(attempt)
     query(f'INSERT INTO {database}.{STAGING} '+projection,read=False)
+    if stage_check is not None:stage_check(attempt)
     fact_table=next(t for t in schema.TABLES if t.name=='research_facts_v1')
     names=','.join(c.name for c in fact_table.columns)
     normalized=f'SELECT {names} FROM {database}.{STAGING} WHERE {where}'

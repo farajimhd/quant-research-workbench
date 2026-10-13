@@ -10,7 +10,7 @@ from datetime import date
 from uuid import UUID
 import re
 
-from .contracts import identifier,literal
+from .contracts import identifier,literal,digest
 from .facts import catalog,UNITS,CURRENCY_UNITS,TAXONOMIES,FACT_KEY
 from .publication import evidence_sql
 from .schema import TABLES
@@ -134,6 +134,36 @@ def sec_insert(database,*args,**kw):
 def sec_expected(*args,**kw):
     table=next(t for t in TABLES if t.name=='research_facts_v1')
     return evidence_sql(table,sec_projection(*args,**kw),FACT_KEY)
+
+
+def sec_source_evidence(query,entity_key,cik,start,end,*,metrics=None):
+    """Fingerprint selected original-public facts and provenance inside CH.
+
+    Fixed namespace UUIDs make the evidence independent of campaign/attempt.
+    All quantitative inputs, filing-clock proofs and normalization outputs are
+    hashed in one projection scan; only six aggregate numbers leave SQL.
+    Empty input requires a separate coverage contract and cannot be certified
+    by this function. Selection/range/issuer identity are part of the hash.
+    """
+    from .reference_producer import staging_table
+    selected=tuple(metrics or (m for m in catalog() if m.tags))
+    namespace='00000000-0000-0000-0000-000000000001'
+    rows=query(evidence_sql(staging_table(),sec_projection(namespace,namespace,entity_key,cik,start,end,
+        metrics=selected,wide=True),FACT_KEY))
+    if len(rows)!=1:raise ValueError('SEC source fingerprint is ambiguous')
+    return sec_source_binding(rows[0],entity_key,cik,start,end,selected)
+
+
+def sec_source_binding(numbers,entity_key,cik,start,end,selected):
+    """Shared binding for source projection and the exact materialized stage."""
+    from .facts import catalog_hash
+    evidence={k:int(numbers[k]) for k in ('n','unique_keys','h0','h1','h2','h3')}
+    if evidence['n']<=0 or evidence['n']!=evidence['unique_keys']:
+        raise ValueError('SEC source is empty or has ambiguous normalized keys')
+    value=dict(version='sec-public-input-v1',entity_key=entity_key,cik=str(int(cik)),
+        start=start,end=end,catalog_hash=catalog_hash(),metrics=sorted(m.name for m in selected),evidence=evidence)
+    return dict(source_hash=digest(value),rows=evidence['n'],entity_key=entity_key,cik=str(int(cik)),
+        start=str(start),end=str(end),catalog_hash=value['catalog_hash'])
 
 
 def sec_provenance_insert(database,*args,**kw):

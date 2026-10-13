@@ -1545,6 +1545,23 @@ class ClickHouseIntegration(unittest.TestCase):
         logs.clear()
         self.assertEqual(reference_producer.run_sec(scope,'320193',selected,query,Claim(),lambda:None,database=self.database),receipt)
         self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+    def test_sec_materialized_stage_matches_frozen_input_and_rejects_changed_binding(self):
+        selected=tuple(m for m in facts.catalog() if m.name=='fundamental.cash')
+        start=date(2026,1,1);end=date(2026,8,21);dataset=str(uuid.uuid4())
+        class Claim:
+            def check(self):pass
+        proof=reference_sql.sec_source_evidence(self.client.query,992,'320193',start,end,metrics=selected)
+        scope=ReferenceScope(dataset,1,992,'fundamentals',start,end,proof['source_hash'],facts.catalog_hash())
+        receipt=reference_producer.run_sec(scope,'320193',selected,self.client.query,Claim(),lambda:None,
+            database=self.database,expected_source_hash=proof['source_hash'])
+        self.assertGreater(int(receipt['output_rows']),0)
+        bad=ReferenceScope(str(uuid.uuid4()),1,992,'fundamentals',start,end,'f'*64,facts.catalog_hash())
+        with self.assertRaisesRegex(ValueError,'changed before materialized publication'):
+            reference_producer.run_sec(bad,'320193',selected,self.client.query,Claim(),lambda:None,
+                database=self.database,expected_source_hash='f'*64)
+        self.assertEqual(int(self.client.query(f"SELECT count() n FROM {self.database}.research_reference_receipt_v1 "
+            f"WHERE dataset_id=toUUID('{bad.dataset_id}')")[0]['n']),0)
+
     def test_executable_market_dag_shared_aggregate_and_verified_resume(self):
         from pipelines.certified_research import indicator_state
         from pipelines.certified_research import market_context
