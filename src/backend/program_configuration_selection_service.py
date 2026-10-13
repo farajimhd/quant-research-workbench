@@ -118,6 +118,27 @@ class ProgramConfigurationSelectionService:
                 self._preparation_controller = None
                 self._preparing = False
 
+    async def prepare_recovered_controller(self, run_service, evidence, *, assignments,
+            listing_by_assignment, liquidity_resolution_ms):
+        """Read-only saved-identity preparation through approved app authorities."""
+        from .replay_run_service import ReplayRunService, ReplayRunDefinition
+        from .program_recovery_evidence import ProgramRecoveryEvidence
+        if (program_configuration_selection_service() is not self or type(run_service) is not ReplayRunService
+                or type(evidence) is not ProgramRecoveryEvidence or type(evidence.run_definition) is not ReplayRunDefinition):
+            raise ValueError("Programme resume preparation requires its installed app authority")
+        revision = evidence.run_definition.configuration_revision
+        candidate = revision.get("revision_id", "")
+        digest = self.pins.get(candidate.removeprefix("strategy-configuration:")) if type(candidate) is str else None
+        if (type(candidate) is not str or not candidate.startswith("strategy-configuration:")
+                or digest is None or digest != revision.get("selection_hash")):
+            raise ValueError("Programme resume selection is not approved for this app")
+        controller = await run_service.prepare_certified_program_resume_controller(evidence,
+            assignments=assignments, listing_by_assignment=listing_by_assignment,
+            liquidity_resolution_ms=liquidity_resolution_ms, **self.authorities)
+        if program_configuration_selection_service() is not self:
+            raise RuntimeError("Programme resume preparation lost its installed app authority")
+        return controller
+
     async def launch_controller(self, run_service, controller):
         """Recheck app approval, then use the existing fully bound native gate.
 

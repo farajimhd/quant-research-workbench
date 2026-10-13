@@ -67,6 +67,36 @@ def test_certified_selection_prepares_native_service_controller_without_starting
             assert controller._program_configuration_selection is packet
             assert controller._program_strategy.program_release.header["content_hash"] == registration.expected_content_hash
             assert controller._runtime is None and controller._task is None and controller.status == "created"
+            from src.backend.program_recovery_evidence import ProgramRecoveryEvidence
+            from src.backend.program_saved_definition import ProgramSavedDefinitionEvidence, _freeze
+            from src.backend.program_checkpoint_recovery import ProgramFinancialCheckpoint
+            from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+            saved_id = "62908518-9fd4-4a8e-8c90-2162ccb237e1"
+            prefix = V4CommittedPrefix(saved_id, 10, "batch", "cursor", "running", ("batch",))
+            saved = ProgramSavedDefinitionEvidence(prefix, dict(run_id=saved_id,
+                configuration_hash=revision["content_hash"], code_hash=release.header["code_hash"],
+                mode="backtest", session_date=definition.session_date.isoformat(), account_ids=(account,)),
+                {}, _freeze(revision))
+            evidence = ProgramRecoveryEvidence(saved,
+                ProgramFinancialCheckpoint(prefix, object(), object(), object(), definition.requested_start), definition)
+            resumed = await selector.prepare_recovered_controller(service, evidence, **preparation)
+            assert resumed.run_id == saved_id and resumed.run_id != controller.run_id
+            assert resumed._program_configuration_selection is packet
+            assert resumed._runtime is None and resumed._journal is None and resumed._task is None
+            with pytest.raises(RuntimeError, match="prepared typed launch handoff"):
+                await selector.launch_controller(service, resumed)
+            before_resume = len(clients)
+            service._runs[saved_id] = SimpleNamespace(status="running", review_only=False)
+            try:
+                with pytest.raises(ValueError, match="already resident and active"):
+                    await selector.prepare_recovered_controller(service, evidence, **preparation)
+            finally:
+                service._runs.pop(saved_id)
+            assert len(clients) == before_resume
+            changed = replace(evidence, definition=replace(saved,
+                context={**saved.context, "code_hash": "e" * 64}))
+            with pytest.raises(ValueError, match="saved source code"):
+                await selector.prepare_recovered_controller(service, changed, **preparation)
             with pytest.raises(RuntimeError, match="prepared typed launch handoff"):
                 await selector.launch_controller(service, controller)
             with pytest.raises(RuntimeError, match="prepared typed launch handoff"):

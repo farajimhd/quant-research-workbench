@@ -10370,6 +10370,49 @@ class ReplayRunService:
         controller._program_configuration_selection = certified.selection
         return controller
 
+    async def prepare_certified_program_resume_controller(self, evidence, **authorities) -> ReplayRunController:
+        """Read-prepare the installed programme under its saved run identity.
+
+        This acquires no writer or owner and grants no resume admission. All
+        cold adoption and remaining-coverage gates still follow preparation.
+        """
+        from .program_recovery_evidence import ProgramRecoveryEvidence
+        from .program_saved_definition import _freeze, ProgramSavedDefinitionEvidence
+        from .program_checkpoint_recovery import ProgramFinancialCheckpoint
+        from .backtest_program_journal_bootstrap import _configuration_hash
+        from .backtest_v4_run_context import historical_simulated_account_ids
+        from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+        if (type(evidence) is not ProgramRecoveryEvidence or type(evidence.run_definition) is not ReplayRunDefinition
+                or type(evidence.definition) is not ProgramSavedDefinitionEvidence
+                or type(evidence.financial) is not ProgramFinancialCheckpoint):
+            raise ValueError("Programme resume preparation requires joined saved evidence")
+        prefix, definition = evidence.definition.prefix, evidence.run_definition
+        if (type(prefix) is not V4CommittedPrefix or prefix.status != "running" or prefix.last_sequence < 1
+                or str(UUID(prefix.run_id)) != prefix.run_id or evidence.financial.prefix != prefix
+                or evidence.definition.context.get("run_id") != prefix.run_id
+                or evidence.definition.context.get("mode") != "backtest"
+                or evidence.definition.context.get("session_date") != definition.session_date.isoformat()
+                or tuple(evidence.definition.context.get("account_ids") or ()) != historical_simulated_account_ids(
+                    mode=definition.mode, configuration=definition.configuration_revision["payload"])
+                or evidence.definition.context.get("configuration_hash") != _configuration_hash(definition)
+                or _freeze(definition.configuration_revision) != _freeze(evidence.definition.revision)):
+            raise ValueError("Programme resume preparation differs from saved identity or settings")
+        def require_unowned():
+            resident = self._runs.get(prefix.run_id)
+            if (resident is not None and resident.status not in TERMINAL_REPLAY_STATUSES
+                    and getattr(resident, "review_only", False) is not True):
+                raise ValueError("Historical run is already resident and active")
+        require_unowned()
+        prepared = await self.prepare_certified_program_controller(definition, **authorities)
+        require_unowned()
+        if prepared._program_strategy.program_release.header["code_hash"] != evidence.definition.context.get("code_hash"):
+            raise ValueError("Programme resume preparation differs from saved source code")
+        controller = ReplayRunController(definition, run_id=prefix.run_id, runtime_root=self.runtime_root,
+            program_strategy=prepared._program_strategy,
+            program_liquidity_resolution_ms=prepared._program_liquidity_resolution_ms)
+        controller._program_configuration_selection = prepared._program_configuration_selection
+        return controller
+
     async def prepare_program_controller(self, definition: ReplayRunDefinition, *, assignments,
             listing_by_assignment, liquidity_resolution_ms, release_client_factory) -> ReplayRunController:
         """Prepare the installed central programme on this service's native lane.
