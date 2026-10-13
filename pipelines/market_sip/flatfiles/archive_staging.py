@@ -78,7 +78,7 @@ def copy_file(source,destination,archive_root,cache_root,expected_size,*,stop=No
     def check_space(additional_bytes):
         if reserve_bytes is not None:
             budget=space_budget(cache_root,reserve_bytes=reserve_bytes,reserve_fraction=reserve_fraction)
-            if additional_bytes>budget['usable_bytes']:
+            if budget['free_bytes']<budget['reserve_bytes'] or additional_bytes>budget['usable_bytes']:
                 raise ValueError('SSD free space changed; staging would consume reserved headroom')
     try:
         check()

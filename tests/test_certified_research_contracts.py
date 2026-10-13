@@ -404,10 +404,19 @@ class Contracts(unittest.TestCase):
                     progress=lambda *args:stop.set())
             self.assertFalse((cache/'stopped.gz').exists());self.assertFalse(list(cache.glob('*.part')))
             from unittest.mock import patch
-            with patch.object(archive_staging,'space_budget',side_effect=[{'usable_bytes':len(data)}, {'usable_bytes':0}]):
+            with patch.object(archive_staging,'space_budget',side_effect=[{'usable_bytes':len(data)},
+                    {'usable_bytes':0,'free_bytes':1,'reserve_bytes':1}]):
                 with self.assertRaisesRegex(ValueError,'reserved headroom'):
                     archive_staging.copy_file(source_file,cache/'space-lost.gz',archive,cache,len(data),reserve_bytes=1)
             self.assertFalse((cache/'space-lost.gz').exists());self.assertFalse(list(cache.glob('*.part')))
+            budget={'usable_bytes':len(data),'free_bytes':len(data)+1,'reserve_bytes':1}
+            with patch.object(archive_staging,'space_budget',side_effect=[budget,budget,budget,
+                    {'usable_bytes':0,'free_bytes':0,'reserve_bytes':1}]):
+                with self.assertRaisesRegex(ValueError,'reserved headroom'):
+                    archive_staging.copy_file(source_file,cache/'reserve-lost-after-readback.gz',archive,cache,
+                        len(data),reserve_bytes=1)
+            self.assertFalse((cache/'reserve-lost-after-readback.gz').exists())
+            self.assertFalse(list(cache.glob('*.part')))
             with self.assertRaisesRegex(ValueError,'escapes'):
                 archive_staging.copy_file(source_file,root/'outside.gz',archive,cache,len(data))
             self.assertEqual(archive_staging.copy_file(archive/'absent.gz',cache/'absent.gz',archive,cache,1)['status'],'archive_missing')
