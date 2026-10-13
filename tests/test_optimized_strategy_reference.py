@@ -75,6 +75,32 @@ def test_non_reference_session_is_rejected():
         compare_sessions(reference(), {'2027-01-01': result()})
 
 
+@pytest.mark.parametrize('name,value', [
+    ('net_pnl', True), ('closed_positions', True), ('closed_positions', -.1),
+    ('closed_positions', 1.5), ('drawdown', -1), ('capital_dollar_seconds', -1),
+    ('stop_risk_dollar_seconds', -1), ('inactivity_fraction', -.01),
+    ('inactivity_fraction', 1.01), ('winning_positions', 3),
+    ('unknown_metric', 0),
+])
+def test_metric_semantics_are_checked_for_app_and_reference(name, value):
+    actual = result()
+    actual['metrics'][name] = value
+    with pytest.raises(ValueError):
+        compare_sessions(reference(), {'2026-08-01': actual})
+    expected = reference()
+    expected.sessions['2026-08-01'][name] = value
+    with pytest.raises(ValueError):
+        compare_sessions(expected, {})
+
+
+@pytest.mark.parametrize('count', [2, 2., Decimal('2.000')])
+def test_integral_search_floats_and_native_decimal_counts_remain_comparable(count):
+    actual = result()
+    actual['metrics'].update(closed_positions=count, winning_positions=count)
+    row = compare_sessions(reference(), {'2026-08-01': actual})[0]
+    assert row['status'] == 'compared' and row['differences']['closed_positions'] == 0
+
+
 @pytest.mark.parametrize('terminal', [False, 0, 1, 'true'])
 def test_invalid_terminal_accounting_is_never_a_completed_comparison(terminal):
     actual = result()
@@ -96,7 +122,11 @@ def frozen_root(monkeypatch, tmp_path):
         files[f"{day}/receipt.json"] = json.dumps(dict(day=day, full_session=True,
             validation_opened=False, population_sha256="synthetic-population",
             execution={"entry_cash": 1000, "add_cash": 200},
-            metrics={"net_pnl": [100.], "terminal_valid": [True]})).encode()
+            metrics={name: [value] for name, value in dict(net_pnl=100., drawdown=0.,
+                capital_dollar_seconds=1000., stop_risk_dollar_seconds=20.,
+                filled_batches=2., terminal_valid=True, inactivity_fraction=.5,
+                add_count=0., reduce_count=0., worst_position_pnl=40.,
+                closed_positions=2., winning_positions=2.).items()})).encode()
     complete = json.loads(files["complete.json"])
     complete.update(selection_allowed=True, session_receipts={day:
         sha256(files[f"{day}/receipt.json"]).hexdigest() for day in days})
@@ -135,6 +165,24 @@ def test_every_comparison_metadata_and_session_file_requires_a_seal(monkeypatch,
     manifest["files_sha256"].pop(missing)
     (tmp_path / "freeze.json").write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match="Missing frozen|Missing frozen session"):
+        module.read_reference(tmp_path)
+
+
+def test_hash_valid_freeze_cannot_silently_omit_an_optimizer_metric(monkeypatch, tmp_path):
+    module, manifest = frozen_root(monkeypatch, tmp_path)
+    name = '2026-08-01/receipt.json'
+    receipt = json.loads((tmp_path / name).read_bytes())
+    receipt['metrics'].pop('stop_risk_dollar_seconds')
+    content = json.dumps(receipt).encode()
+    (tmp_path / name).write_bytes(content)
+    manifest['files_sha256'][name] = sha256(content).hexdigest()
+    seal = json.loads((tmp_path / 'complete.json').read_bytes())
+    seal['session_receipts']['2026-08-01'] = manifest['files_sha256'][name]
+    content = json.dumps(seal).encode()
+    (tmp_path / 'complete.json').write_bytes(content)
+    manifest['files_sha256']['complete.json'] = sha256(content).hexdigest()
+    (tmp_path / 'freeze.json').write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match='Incomplete frozen metric contract'):
         module.read_reference(tmp_path)
 
 

@@ -17,6 +17,37 @@ from decimal import Decimal, localcontext
 
 WINNER_SHA256 = '57c03ac8aba6e2e09df254d0ac615fce61efa63fe64754351f73c06fafde4d12'
 GENERATION = 24
+METRICS = frozenset(('net_pnl', 'drawdown', 'capital_dollar_seconds',
+    'stop_risk_dollar_seconds', 'filled_batches', 'terminal_valid',
+    'inactivity_fraction', 'add_count', 'reduce_count', 'worst_position_pnl',
+    'closed_positions', 'winning_positions'))
+_COUNTS = frozenset(('filled_batches', 'add_count', 'reduce_count',
+    'closed_positions', 'winning_positions'))
+_NONNEGATIVE = _COUNTS | {'drawdown', 'capital_dollar_seconds', 'stop_risk_dollar_seconds'}
+
+
+def _validate_metrics(metrics, *, day, origin, complete=False):
+    """Preserve search metric meanings, including its float-encoded counts."""
+    if not isinstance(metrics, Mapping) or set(metrics) - METRICS:
+        raise ValueError(f'Unknown {origin} comparison metrics: {day}')
+    if complete and set(metrics) != METRICS:
+        raise ValueError(f'Incomplete frozen metric contract: {day}')
+    for name, value in metrics.items():
+        if name == 'terminal_valid':
+            if value is not True:
+                raise ValueError(f'{origin} result lacks valid terminal accounting: {day}')
+            continue
+        if type(value) is bool or not _finite_metric(value):
+            raise ValueError(f'Non-finite or non-numeric {origin} metrics: {day}')
+        if name in _NONNEGATIVE and value < 0:
+            raise ValueError(f'Negative {origin} comparison metric {name}: {day}')
+        if name in _COUNTS and value != int(value):
+            raise ValueError(f'Fractional {origin} comparison count {name}: {day}')
+        if name == 'inactivity_fraction' and not 0 <= value <= 1:
+            raise ValueError(f'Invalid {origin} inactivity fraction: {day}')
+    if ('winning_positions' in metrics and 'closed_positions' in metrics
+            and metrics['winning_positions'] > metrics['closed_positions']):
+        raise ValueError(f'{origin} winning positions exceed closed positions: {day}')
 
 
 def _finite_metric(value):
@@ -140,6 +171,7 @@ def read_reference(root: str | Path, *, concurrency: int = 1) -> OptimizationRef
         if ('terminal_valid' not in metrics or metrics['terminal_valid'][candidate] is not True):
             raise ValueError(f'Winner lacks valid terminal accounting: {day}')
         sessions[day] = {name: values[candidate] for name, values in metrics.items()}
+        _validate_metrics(sessions[day], day=day, origin='reference', complete=True)
     return OptimizationReference(GENERATION, WINNER_SHA256, candidate,
         json.loads(contents['winner.json']), execution, sessions)
 
@@ -162,8 +194,7 @@ def compare_sessions(reference: OptimizationReference, app_results: Mapping) -> 
         raise ValueError('App comparison contains non-reference sessions')
     rows = []
     for day, expected in reference.sessions.items():
-        if any(not _finite_metric(value) for value in expected.values()):
-            raise ValueError(f'Non-finite or non-numeric reference metrics: {day}')
+        _validate_metrics(expected, day=day, origin='reference')
         actual = app_results.get(day)
         row = dict(day=day, optimization=expected, app=None, differences=None,
                    status='not_run')
@@ -176,10 +207,7 @@ def compare_sessions(reference: OptimizationReference, app_results: Mapping) -> 
                     or actual['verified_sequence'] < 1):
                 raise ValueError(f'Unverified or mismatched app comparison: {day}')
             metrics = actual['metrics']
-            if any(not _finite_metric(value) for value in metrics.values()):
-                raise ValueError(f'Non-finite or non-numeric app metrics: {day}')
-            if ('terminal_valid' in metrics and metrics['terminal_valid'] is not True):
-                raise ValueError(f'App result lacks valid terminal accounting: {day}')
+            _validate_metrics(metrics, day=day, origin='app')
             missing = set(expected) - set(metrics)
             row.update(app=actual, status='incomplete_metrics' if missing else 'compared',
                        missing_metrics=sorted(missing),
