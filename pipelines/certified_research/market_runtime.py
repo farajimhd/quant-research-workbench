@@ -43,8 +43,9 @@ class MarketRuntime:
             day=date.fromisoformat(args['day']);listing=int(args['listing_key']);ticker=args['ticker']
             source_hash=self.sources.get(day)
             if source_hash is None:raise ValueError('Market day is outside frozen canonical/reporting context')
-            source.require_exact_symbol(client.query,day,ticker)
-            unit=market.MarketUnit(self.dataset,day,ticker,listing,str(uuid4()))
+            spelling=args.get('source_ticker')
+            source.require_exact_symbol(client.query,day,ticker,source_ticker=spelling)
+            unit=market.MarketUnit(self.dataset,day,ticker,listing,str(uuid4()),spelling)
             start=datetime.combine(day,time(4),NY).astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')
             end=datetime.combine(day,time(20),NY).astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')
             membership=client.query(f'SELECT count() n FROM {self.database}.research_membership_v1 WHERE '

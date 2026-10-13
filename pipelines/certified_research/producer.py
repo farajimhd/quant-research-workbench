@@ -42,11 +42,14 @@ class MarketRequest:
 
     def parent(self,product,parents=()):
         version='research-market-v7-prefix-v2' if product=='v7' else 'research-market-continuous-wilder-v2' if product=='technical' else 'research-market-producer-v1'
-        return digest(dict(version=version,dataset_hash=self.dataset_hash,
+        value=dict(version=version,dataset_hash=self.dataset_hash,
             source=self.source_hash,rules=digest(self.rules),product=product,
             predecessor=self.prior_indicator_hash if product=='technical' else self.prior_v7_hash if product=='v7' else '',
             parents=parents,regular_close=self.regular_close.astimezone(timezone.utc).isoformat() if product=='v7' else '',
-            adjustment=self.adjustment_hash if product in ('technical','v7') else ''))
+            adjustment=self.adjustment_hash if product in ('technical','v7') else '')
+        if self.unit.source_ticker is not None and self.unit.source_ticker!=self.unit.ticker:
+            value['source_spelling']=dict(version='explicit-case-source-v1',ticker=self.unit.source_ticker)
+        return digest(value)
 
 
 def indicator_state(query,database,unit,attempt,prior,*,bar_attempt):
@@ -104,7 +107,7 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
                     receipt=publisher.receipt(Scope(base.dataset_id,base.day,base.listing_key,product,request.parent(product)))
                     if receipt:found[product]=receipt
                 if len(found)==2:return dict(reused=True,receipts=found,attempt=base.attempt_id)
-                unit=market.MarketUnit(base.dataset_id,base.day,base.ticker,base.listing_key,str(uuid4()))
+                unit=market.MarketUnit(base.dataset_id,base.day,base.ticker,base.listing_key,str(uuid4()),base.source_ticker)
                 query(market.aggregate_sql(unit,request.rules,database,source=fixture_source),read=False)
                 for sql in market.bar_queries(unit,database):
                     claim.check();query(sql,read=False)
@@ -125,7 +128,7 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
             if old:
                 if u.product=='technical':return state_publication.publish(request,bar_receipt,old,query,database,claim,source_guard)
                 return old
-            unit=market.MarketUnit(base.dataset_id,base.day,base.ticker,base.listing_key,str(uuid4()))
+            unit=market.MarketUnit(base.dataset_id,base.day,base.ticker,base.listing_key,str(uuid4()),base.source_ticker)
             if u.product=='technical':
                 source=(f'SELECT session_date,resolution_ms,bucket_index,close_int,high_int,low_int '
                     f'FROM {database}.research_bars_v1 WHERE '

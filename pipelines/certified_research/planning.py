@@ -16,12 +16,15 @@ class MarketSession:
     day: date
     listing_key: int
     ticker: str
+    source_ticker: str|None=None
 
     def __post_init__(self):
         if (type(self.day) is not date or type(self.listing_key) is not int
                 or not 0<self.listing_key<2**64 or not isinstance(self.ticker,str)
                 or not self.ticker or len(self.ticker.encode())>64):
             raise ValueError('Invalid dated market session')
+        if self.source_ticker is not None and (not isinstance(self.source_ticker,str) or not self.source_ticker
+                or self.source_ticker.upper()!=self.ticker.upper()):raise ValueError('Invalid dated source spelling')
 
 
 def market_units(config: CampaignConfig,sessions,*,source_parents,universe_parent,seed_parents,corporate_parents,state_start_dates=None):
@@ -64,6 +67,7 @@ def market_units(config: CampaignConfig,sessions,*,source_parents,universe_paren
         prefix=f'market:{session.listing_key}:{session.day}'
         aggregate=prefix+':aggregate';technical=prefix+':technical';v7=prefix+':v7'
         args=dict(day=str(session.day),listing_key=session.listing_key,ticker=session.ticker)
+        if session.source_ticker is not None:args['source_ticker']=session.source_ticker
         state_starts=state_start_dates.get(session.listing_key,(session.day,session.day))
         dependencies=tuple(dict.fromkeys((*sources,universe_parent)))
         for key,kind,parents in ((aggregate,'market_aggregate',dependencies),
@@ -175,12 +179,20 @@ class SecurityInput:
 
 def program_from_universe(config,snapshot,days,issuers,securities,*,prerequisites,source_parents,
                           universe_parent,seed_parents,corporate_parents,fundamental_start,
-                          price_start,short_start,state_start_dates=None,maximum_sessions=250000):
+                          price_start,short_start,state_start_dates=None,maximum_sessions=250000,source_spellings=None):
     """Compile the joined graph directly from the frozen dated identity graph."""
     from .universe import execution_membership
     days=tuple(days)
     membership=execution_membership(snapshot,days,maximum_sessions=maximum_sessions)
     if not membership['ready']:raise ValueError('Historical execution membership is empty or contains partial market days')
+    spellings={} if source_spellings is None else dict(source_spellings)
+    if set(spellings)-{(s.listing_key,s.day) for s in membership['sessions']}:
+        raise ValueError('Source spelling belongs to an unplanned listing/session')
+    if spellings:
+        from .contracts import digest
+        membership=dict(membership,sessions=tuple(replace(s,source_ticker=spellings.get((s.listing_key,s.day)))
+            for s in membership['sessions']),membership_hash=digest(dict(membership=membership['membership_hash'],
+                spellings=[dict(listing=k[0],day=k[1],ticker=v) for k,v in sorted(spellings.items())])))
     prerequisites=tuple(prerequisites);securities=tuple(securities)
     authorities=[p for p in prerequisites if p.unit.key==universe_parent and p.unit.product=='universe']
     if len(authorities)!=1:raise ValueError('Frozen universe execution authority is missing or duplicated')

@@ -193,9 +193,11 @@ def authority(request,bars,query,database,claim):
     scope=Scope(base.dataset_id,base.day,base.listing_key,'v7',request.parent('v7',(bars['output_hash'],)))
     receipt=Publisher(query,database,claim).receipt(scope)
     if receipt is None:return None
-    return dict(receipt,state_context=dict(recipe_hash=request.dataset_hash,source_hash=request.source_hash,
+    context=dict(recipe_hash=request.dataset_hash,source_hash=request.source_hash,
         predecessor_hash=request.prior_v7_hash,ticker=base.ticker,regular_close=request.regular_close.isoformat(),
-        bars_parent_hash=request.parent('bars'),adjustment_hash=request.adjustment_hash))
+        bars_parent_hash=request.parent('bars'),adjustment_hash=request.adjustment_hash)
+    if base.source_ticker is not None and base.source_ticker!=base.ticker:context['source_ticker']=base.source_ticker
+    return dict(receipt,state_context=context)
 
 
 def verify_seed(query,database,claim,parent,recipe_hash,source_hash,rules):
@@ -213,13 +215,13 @@ def verify_seed(query,database,claim,parent,recipe_hash,source_hash,rules):
     if parent.get('product')!='v7':raise ValueError('Seed must reference causal V7 authority')
     day=date.fromisoformat(str(parent['session_date']));context=parent.get('state_context',{})
     required={'recipe_hash','source_hash','predecessor_hash','ticker','regular_close','bars_parent_hash','adjustment_hash'}
-    if set(context)!=required or context['recipe_hash']!=recipe_hash or context['source_hash']!=source_hash:
+    if set(context) not in (required,required|{'source_ticker'}) or context['recipe_hash']!=recipe_hash or context['source_hash']!=source_hash:
         raise ValueError('V7 seed recipe/source context differs from frozen authority')
     close=calendar_close(day)
     if datetime.fromisoformat(context['regular_close'])!=close:raise ValueError('V7 seed calendar boundary differs')
     if not context['adjustment_hash'] and not database.startswith('certified_research_test_'):
         raise ValueError('V7 seed requires certified corporate adjustment lineage')
-    unit=MarketUnit(str(parent['dataset_id']),day,context['ticker'],int(parent['listing_key']),str(parent['attempt_id']))
+    unit=MarketUnit(str(parent['dataset_id']),day,context['ticker'],int(parent['listing_key']),str(parent['attempt_id']),context.get('source_ticker'))
     request=MarketRequest(unit,recipe_hash,source_hash,tuple(rules),{},'0'*64,context['predecessor_hash'],close,
         True,adjustment_hash=context['adjustment_hash'])
     if request.parent('bars')!=context['bars_parent_hash']:raise ValueError('V7 seed bar lineage differs')
@@ -261,7 +263,7 @@ def discover(query,database,claim,listing_key,before,recipe_hash,rules,day_conte
     for key,value in day_contexts.items():
         day=date.fromisoformat(str(key))
         if day in contexts:raise ValueError('Duplicated frozen V7 day context')
-        if (set(value)!={'source_hash','ticker','adjustment_hash'}
+        if (set(value) not in ({'source_hash','ticker','adjustment_hash'},{'source_hash','ticker','adjustment_hash','source_ticker'})
                 or not re.fullmatch('[0-9a-f]{64}',value['source_hash'])
                 or not value['ticker'] or not isinstance(value['ticker'],str)
                 or not (re.fullmatch('[0-9a-f]{64}',value['adjustment_hash'])
@@ -285,7 +287,7 @@ def discover(query,database,claim,listing_key,before,recipe_hash,rules,day_conte
         if day not in contexts or day>=before or int(candidate['listing_key'])!=listing_key:
             raise ValueError('V7 discovery returned an out-of-scope candidate')
         inspected+=1;context=contexts[day]
-        unit=MarketUnit(str(candidate['dataset_id']),day,context['ticker'],listing_key,str(candidate['attempt_id']))
+        unit=MarketUnit(str(candidate['dataset_id']),day,context['ticker'],listing_key,str(candidate['attempt_id']),context.get('source_ticker'))
         request=MarketRequest(unit,recipe_hash,context['source_hash'],tuple(rules),{},'0'*64,
             candidate['seed_predecessor_hash'],calendar_close(day),True,adjustment_hash=context['adjustment_hash'])
         bars_scope=Scope(unit.dataset_id,day,listing_key,'bars',request.parent('bars'))
@@ -300,6 +302,7 @@ def discover(query,database,claim,listing_key,before,recipe_hash,rules,day_conte
         parent['state_context']=dict(recipe_hash=recipe_hash,source_hash=context['source_hash'],
             predecessor_hash=request.prior_v7_hash,ticker=unit.ticker,regular_close=request.regular_close.isoformat(),
             bars_parent_hash=request.parent('bars'),adjustment_hash=context['adjustment_hash'])
+        if unit.source_ticker is not None and unit.source_ticker!=unit.ticker:parent['state_context']['source_ticker']=unit.source_ticker
         matches.append((request,parent))
     if not matches:return None
     if len(matches)>1:raise ValueError('Competing compatible V7 predecessors; select an explicit dataset')

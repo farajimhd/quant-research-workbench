@@ -291,7 +291,8 @@ class MarketHandlers:
         request=self.request_factory(plan,parents);args=plan.arguments
         if (not isinstance(request,producer.MarketRequest) or request.unit.dataset_id!=self.dataset
                 or str(request.unit.day)!=args['day'] or request.unit.listing_key!=args['listing_key']
-                or request.unit.ticker!=args['ticker']):
+                or request.unit.ticker!=args['ticker']
+                or (request.unit.source_ticker or request.unit.ticker)!=args.get('source_ticker',args['ticker'])):
             raise ValueError('Market request does not match immutable campaign scope')
         producer.validate_recipe(request,self.database,product=plan.unit.product)
         return request

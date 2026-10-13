@@ -25,11 +25,15 @@ class MarketUnit:
     ticker: str
     listing_key: int
     attempt_id: str
+    source_ticker: str|None=None
 
     def __post_init__(self):
         UUID(self.dataset_id);UUID(self.attempt_id)
         if type(self.day) is not date or not self.ticker or type(self.listing_key) is not int or not 0<self.listing_key<2**64:
             raise ValueError('Invalid market unit identity')
+        if self.source_ticker is not None and (not isinstance(self.source_ticker,str) or not self.source_ticker
+                or self.source_ticker.upper()!=self.ticker.upper()):
+            raise ValueError('Source spelling must preserve normalized symbol identity')
 
     def where(self):
         return core.selection(self.dataset_id,self.day,self.ticker,self.attempt_id)
@@ -49,6 +53,8 @@ def staging_ddl(database='arte'):
 
 
 def aggregate_sql(unit: MarketUnit, rules, database='arte', *, source=None):
+    if source is None and unit.source_ticker is not None and unit.source_ticker!=unit.ticker:
+        source=core.canonical_source(unit.day,unit.source_ticker)
     return core.broker_sql(database,unit.dataset_id,unit.day,unit.ticker,unit.attempt_id,rules,source,
                            verified_timely=True,table_names=STAGING,reporting_audit=True)
 

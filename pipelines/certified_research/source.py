@@ -41,7 +41,7 @@ def certified_units(canonical,reporting):
     return plans,{date.fromisoformat(p.arguments['day']):(p.unit.key,) for p in plans}
 
 
-def require_exact_symbol(query,day,ticker):
+def require_exact_symbol(query,day,ticker,*,source_ticker=None):
     """Do not certify empty bars when normalization hides a source symbol.
 
     Uses the ingestion-certified compact ticker/day index, never events or
@@ -50,12 +50,16 @@ def require_exact_symbol(query,day,ticker):
     """
     if type(day) is not date or not isinstance(ticker,str) or not ticker or len(ticker.encode())>64:
         raise ValueError('Invalid canonical source symbol check')
+    expected=ticker if source_ticker is None else source_ticker
+    if not isinstance(expected,str) or not expected or expected.upper()!=ticker.upper():
+        raise ValueError('Explicit source spelling changes normalized symbol identity')
     rows=query('SELECT ticker,event_count FROM market_sip_compact.events_ticker_day_index FINAL '
         f'WHERE source_date=toDate({literal(day)}) AND upper(ticker)=upper({literal(ticker)}) ORDER BY ticker LIMIT 3')
     if len(rows)>1:raise ValueError('Canonical source symbol is ambiguous after normalization; explicit historical mapping is required')
-    if rows and rows[0]['ticker']!=ticker:
+    if rows and rows[0]['ticker']!=expected:
         raise ValueError('Canonical source ticker spelling differs from admitted symbol; explicit historical mapping is required')
     if rows and int(rows[0]['event_count'])<=0:raise ValueError('Canonical ticker/day index has an invalid event count')
+    if not rows and expected!=ticker:raise ValueError('Explicit source spelling is absent from the canonical day index')
     return bool(rows)
 
 

@@ -48,6 +48,8 @@ def prepare_listing(query,config,claim,source_guard,admitted_sessions,recipe_def
     guard()
     prior={s.day:dict(source_hash=sources[s.day],ticker=s.ticker,adjustment_hash=adjustments[s.day])
         for s in sessions if s.day<first and s.day in sources and s.day in adjustments}
+    for session in sessions:
+        if session.day in prior and session.source_ticker is not None:prior[session.day]['source_ticker']=session.source_ticker
     structural=v7.discover(query,config.database,claim,listing,first,recipe_hash,rules,prior,
         dataset_id=v7_dataset,maximum_candidates=maximum_candidates) if prior else None
     guard()
@@ -85,7 +87,7 @@ def prepare_listing(query,config,claim,source_guard,admitted_sessions,recipe_def
         sessions=tuple(by_day[d] for d in needed if d in by_day))
     result['preparation_hash']=digest(dict(recipe=recipe_hash,config=config.identity(),listing=listing,
         context=demand,blocked=blocked,roots=[dict(key=p.unit.key,parents=p.unit.parents,arguments=p.arguments) for p in roots],
-        sessions=[dict(day=s.day,listing_key=s.listing_key,ticker=s.ticker) for s in result['sessions']],
+        sessions=[dict(day=s.day,listing_key=s.listing_key,ticker=s.ticker,source_ticker=s.source_ticker) for s in result['sessions']],
         sources={str(d):sources.get(d) for d in result['required_source_days']}))
     guard();return result
 
