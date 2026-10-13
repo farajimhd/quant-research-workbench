@@ -177,6 +177,15 @@ the native canonical source replay, physical storage checks, exact readback and
 final Keeper CAS. Missing stage/seed receipts fail before a source publication
 client opens. Calling this writer still requires explicit operational approval;
 source implementation and synthetic qualification do not authorize publication.
+`current_market_day_producer.run_current_market_day_producer` composes the stage
+workers and completion gate with an explicit fixed worker count. Dates execute
+chronologically; each day's bar phase completes before its technical phase.
+Progress reports count ticker/session/phase units and expose queued, active,
+completed, skipped and failed counts. Cancellation or peer failure stops new
+units and drains active workers/checkpoint writes. An interrupted stage phase
+cannot reach final publication. Declared predecessor checks run before new bar
+work; absent predecessor/bootstrap certification remains a separate required
+gate, and the coordinator does not silently infer it.
 
 Managed app shutdown disposes an unused staged programme handoff before closing
 its policy reader. It drains runtime background-task and typed journal cleanup,
