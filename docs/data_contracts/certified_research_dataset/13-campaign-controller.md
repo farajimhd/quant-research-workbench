@@ -28,6 +28,8 @@ Reference campaign producers require global dictionary ownership for shared prov
 
 ## Operator inspection
 
+`plan` now includes the Gateway historical-universe admission audit, with an explicit `--universe-anchor-date`. It summarizes admitted intervals, rejection counts and frozen evidence hash. Unresolved source/reporting, universe, short-publication or corporate-vintage inputs produce `status=blocked`, actionable blockers and exit code 2. Unfinished full execution also blocks admission. A live January 2 plan reported 4,295 intervals, 2,634 unresolved intervals and 20,024 short-volume rows without public-time evidence; it made no writes. These counts are a date/anchor-specific audit, not completed historical coverage.
+
 `ActivityHandlers` registers configurable elapsed-time volume, notional, trade-count and execution-activity windows as a concurrent consumer of shared certified liquidity. The SQL uses one input scan/shared ordering, materializes compressed staging once and publishes normalized rows keyed by window and bucket. Incomplete prefix context produces null values with an explicit readiness flag; missing exchange-session parents block the unit. `market_units` plans this consumer against current/context aggregate units with a bounded elapsed-time context selection. Live coverage checks sparse 10/60/120-second windows, publication, root sealing and no-insert resume. Complete launch-time session admission/context discovery and short-pressure rolling windows are still outstanding.
 
 V7 rollover permits only the next exchange session. Weekend/holiday gaps are allowed; omitted trading sessions require context replay. It cannot silently jump past missing sessions.

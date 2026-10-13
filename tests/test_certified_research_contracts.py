@@ -30,6 +30,15 @@ from pipelines.certified_research.universe_publication import UniversePublisher
 
 
 class Contracts(unittest.TestCase):
+    def test_plan_marks_unresolved_inputs_blocked_instead_of_inspected(self):
+        from scripts.prepare_certified_research import qualify_plan
+        result=dict(source_plan=dict(missing_sources=[],incomplete_sources=[],missing_reporting=['2026-01-02']),
+            universe_preflight=dict(ready=False,rejected=1),canonical_mutations=0,
+            short_publication_preflight=dict(families={'short_volume':dict(repair_required=True,unknown_public_time=3)}),
+            corporate_evidence_preflight=dict(original_public_vintage_certified=False),campaign_execution_enabled=False)
+        qualified=qualify_plan(result)
+        self.assertEqual(qualified['status'],'blocked');self.assertEqual(len(qualified['admission_blockers']),5)
+
     def test_corporate_preflight_does_not_backdate_current_split_rows(self):
         def query(sql):
             if 'system.columns' in sql:return [dict(name='execution_date',type='Date'),dict(name='inserted_at',type="DateTime64(3,'UTC')")]

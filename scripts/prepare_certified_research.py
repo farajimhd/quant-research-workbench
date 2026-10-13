@@ -20,7 +20,7 @@ sys.dont_write_bytecode=True
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
-from pipelines.certified_research import contracts,schema,source,short_sql,campaign,acquisition,capacity
+from pipelines.certified_research import contracts,schema,source,short_sql,campaign,acquisition,capacity,universe
 
 
 def parse_args(argv=None):
@@ -31,6 +31,7 @@ def parse_args(argv=None):
     p.add_argument('--start-date',type=date.fromisoformat,default=date(2026,1,1))
     p.add_argument('--end-date',type=date.fromisoformat)
     p.add_argument('--context-start-date',type=date.fromisoformat,help='Explicit earlier source prerequisite bound; target start is unchanged')
+    p.add_argument('--universe-anchor-date',type=date.fromisoformat,default=date.today(),help='Last allowed 2026-onward conid observation date')
     p.add_argument('--env-file',type=Path,default=ROOT/'.env')
     p.add_argument('--workers',type=int,default=4)
     p.add_argument('--query-threads',type=int,default=2)
@@ -84,6 +85,23 @@ def inspect_sources(query,args):
                 reason='Full campaign handlers are still under implementation')
 
 
+def qualify_plan(result):
+    """Inspection evidence cannot masquerade as campaign admission."""
+    blocked=[];inputs=result['source_plan'];membership=result['universe_preflight']
+    for field in ('missing_sources','incomplete_sources','missing_reporting'):
+        if inputs[field]:blocked.append(f'{field}: {len(inputs[field])} sessions')
+    if result['canonical_mutations']:blocked.append('canonical source mutations are active')
+    if not membership['ready']:blocked.append(f"historical universe: {membership['rejected']} unresolved intervals")
+    for family,summary in result['short_publication_preflight']['families'].items():
+        if summary['repair_required']:blocked.append(f"{family}: {summary['unknown_public_time']} rows lack public-time evidence")
+    if not result['corporate_evidence_preflight']['original_public_vintage_certified']:
+        blocked.append('corporate actions: original public vintages are not certified')
+    if not result['campaign_execution_enabled']:blocked.append('full campaign execution integration is unfinished')
+    result['admission_blockers']=blocked;result['status']='blocked' if blocked else 'ready'
+    result['reason']='; '.join(blocked) if blocked else 'All campaign admission requirements verified'
+    return result
+
+
 def main(argv=None):
     args=parse_args(argv)
     if args.command=='schema':
@@ -97,7 +115,7 @@ def main(argv=None):
             for t in schema.TABLES:print(f'  {t.name}: {len(t.columns)} columns, explicit lossless codecs')
             print('Use --format sql for exact DDL or --format json for the column catalog.')
         return 0
-    import build_market_day as builder
+    from scripts import build_market_day as builder
     args.max_threads=args.query_threads;args.max_memory_gb=args.query_memory_gib;args.query_timeout=45
     client=builder.Client(args,persistent=False)
     try:
@@ -133,6 +151,11 @@ def main(argv=None):
             result['corporate_evidence_preflight']=source.corporate_evidence_inventory(
                 lambda sql:client.query(sql+' SETTINGS readonly=1'))
             end=date.fromisoformat(result['config']['config']['end']) if isinstance(result['config']['config']['end'],str) else result['config']['config']['end']
+            historical=universe.load(lambda sql:client.query(sql+' SETTINGS readonly=1'),
+                args.context_start_date or args.start_date,end,args.universe_anchor_date)
+            result['universe_preflight']=dict(ready=historical['ready'],intervals=len(historical['intervals']),
+                rejected=len(historical['rejected']),rejection_counts=historical['rejection_counts'],
+                outside_scope=historical['outside_scope'],source_hash=historical['source_hash'])
             result['short_publication_preflight']=short_sql.clock_inventory(
                 lambda sql:client.query(sql+' SETTINGS readonly=1'),args.start_date,end)
             inv=source.inventory(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.start_date,end)
@@ -144,6 +167,7 @@ def main(argv=None):
                 hydrate_missing_trades=args.hydrate_missing_trades)
             result['reporting_clock_evidence']=source.clock_evidence_inventory(
                 lambda sql:client.query(sql+' SETTINGS readonly=1'),args.start_date,end)
+            qualify_plan(result)
         if args.format=='json':print(json.dumps(result,indent=2,default=str))
         else:
             summary=result['source']
