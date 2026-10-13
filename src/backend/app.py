@@ -5912,10 +5912,14 @@ async def trading_backtest_typed_financial_page(
 async def trading_backtest_v4_journal_query(
     run_id: str, domain: str = "activity", facets: bool = False,
     journal_only: bool = False,
+    exact_prices: bool = False,
     ticker: str = "", event_type: str = "", start: str = "", end: str = "",
     after_sequence: int = Query(default=0, ge=0),
     limit: int = Query(default=250, ge=1, le=500),
 ) -> dict[str, Any]:
+    if exact_prices and not journal_only:
+        raise HTTPException(status_code=400,
+            detail="Exact journal queries require explicit recorded-journal review")
     def read_query():
         from contextlib import closing
         from src.backend.backtest_v4_query import query_saved_journal
@@ -5923,8 +5927,12 @@ async def trading_backtest_v4_journal_query(
         with closing(backtest_v4_operator_client_from_env()) as client:
             return query_saved_journal(client, run_id, domain=domain, facets=facets,
                                       ticker=ticker, event_type=event_type, start=start, end=end,
-                                      after_sequence=after_sequence, limit=limit, journal_only=journal_only)
+                                      after_sequence=after_sequence, limit=limit, journal_only=journal_only,
+                                      **({"exact_prices": True} if exact_prices else {}))
     try:
+        if exact_prices:
+            from src.backend.qmd_columnar_history_transport import _owned_worker
+            return await _owned_worker(read_query)
         return await asyncio.to_thread(read_query)
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

@@ -13,7 +13,9 @@ from src.trading_runtime.arte_journal_writer import _CONTRACTS, _committed_batch
 @declared_saved_read_operation
 def query_saved_journal(client, run_id, *, domain="activity", facets=False,
                         ticker="", event_type="", start="", end="",
-                        after_sequence=0, limit=250, journal_only=False):
+                        after_sequence=0, limit=250, journal_only=False, exact_prices=False):
+    if type(exact_prices) is not bool or exact_prices and not journal_only:
+        raise ValueError("Exact journal queries require explicit recorded-journal review")
     if domain not in {"activity", "orders", "fills"}:
         raise ValueError("Unknown journal query domain")
     if type(limit) is not int or not 1 <= limit <= 500 or after_sequence < 0:
@@ -37,7 +39,7 @@ def query_saved_journal(client, run_id, *, domain="activity", facets=False,
     fence = (f"run_id={_literal(prefix.run_id)} AND sequence<={prefix.last_sequence} "
              f"{_committed_batch_filter(prefix)}")
     scope = {
-        "activity": "category IN ('strategy','portfolio_management','protection','order_management','execution','broker','command')",
+        "activity": "category IN ('strategy','strategy_decision','portfolio_management','protection','order_management','execution','broker','command')",
         "orders": "((category='command' AND entity_type='order') OR (category='order_management' AND entity_type='order_command'))",
         "fills": "category='execution' AND entity_type='fill'",
     }[domain]
@@ -47,7 +49,15 @@ def query_saved_journal(client, run_id, *, domain="activity", facets=False,
     families = sorted({family for row in kinds
                        if (family := _detail_family(prefix, (row['category'], row['entity_type'])))
                        and 'ticker' in dict(_CONTRACTS[family].columns)})
-    sources = [f"SELECT record_id,ticker FROM arte.{'trading_strategy_signal_v2' if family == 'trading_strategy_signal_v1' else family} WHERE run_id={_literal(prefix.run_id)} {_committed_batch_filter(prefix)} AND record_id IN (SELECT record_id FROM arte.trading_event_v1 WHERE {fence} AND {scope})"
+    def physical_family(family):
+        if family == "trading_strategy_signal_v1":
+            family = "trading_strategy_signal_v2"
+        if exact_prices and family in {"trading_execution_v1", "trading_order_command_v1",
+                "trading_oms_group_state_v1", "trading_strategy_signal_v2"}:
+            from src.trading_runtime.trading_price_contracts import PRICE_FAMILIES
+            return PRICE_FAMILIES[family][0]
+        return family
+    sources = [f"SELECT record_id,ticker FROM arte.{physical_family(family)} WHERE run_id={_literal(prefix.run_id)} {_committed_batch_filter(prefix)} AND record_id IN (SELECT record_id FROM arte.trading_event_v1 WHERE {fence} AND {scope})"
                for family in families]
     ticker_source = " UNION ALL ".join(sources)
     if facets:
@@ -66,7 +76,8 @@ def query_saved_journal(client, run_id, *, domain="activity", facets=False,
                 predicates.append(f"{field}{op}parseDateTime64BestEffort({_literal(value)},9,'UTC')")
         selected = _rows(client, f"SELECT sequence FROM arte.trading_event_v1 WHERE {fence} AND {' AND '.join(predicates)} ORDER BY sequence LIMIT {limit + 1} FORMAT JSONEachRow")
         sequences = tuple(int(row['sequence']) for row in selected[:limit])
-        rows = load_typed_event_page(client, prefix, limit=limit, selected_sequences=sequences) if sequences else ()
+        rows = load_typed_event_page(client, prefix, limit=limit, selected_sequences=sequences,
+            **({"exact_prices": True} if exact_prices else {})) if sequences else ()
         result = {"events": [{"event": row.event, "detail_family": row.detail_family, "detail": row.detail} for row in rows],
                   "complete": len(selected) <= limit,
                   "next_sequence": sequences[-1] if sequences else after_sequence,

@@ -52,6 +52,40 @@ def test_query_pushes_filters_and_uses_lookahead(monkeypatch, authority):
     assert 'LIMIT 2' in statements[-1]
 
 
+@pytest.mark.parametrize("facets", [False, True])
+def test_exact_recorded_queries_select_shared_price_families_and_programme_decisions(monkeypatch, authority, facets):
+    from src.backend import backtest_recorded_journal
+    monkeypatch.setattr(backtest_recorded_journal, "load_recorded_attestation", lambda *_: {"prefix": authority})
+    statements = []
+    def rows(_, sql):
+        statements.append(sql)
+        if "GROUP BY" in sql:
+            return [{"category": "strategy_decision", "entity_type": "signal"},
+                {"category": "execution", "entity_type": "fill"}]
+        return [{"ticker": "ABC"}] if "DISTINCT ticker" in sql else [{"sequence": 3}]
+    monkeypatch.setattr(query, "_rows", rows)
+    payloads = Mock(return_value=(SimpleNamespace(event={"sequence": 3}, detail=None, detail_family=None),))
+    monkeypatch.setattr(query, "load_typed_event_page", payloads)
+    result = query.query_saved_journal(None, RUN, journal_only=True, exact_prices=True,
+        facets=facets, ticker="ABC")
+    combined = " ".join(statements)
+    assert "'strategy_decision'" in combined
+    assert "arte.trading_strategy_signal_exact_price_v2" in combined
+    assert "arte.trading_execution_exact_price_v1" in combined
+    assert "arte.trading_strategy_signal_v2 " not in combined
+    assert "arte.trading_execution_v1 " not in combined
+    if facets:
+        assert result["tickers"] == ["ABC"]
+        payloads.assert_not_called()
+    else:
+        assert payloads.call_args.kwargs["exact_prices"] is True
+
+
+def test_exact_query_requires_explicit_read_authority_before_io():
+    with pytest.raises(ValueError, match="recorded-journal"):
+        query.query_saved_journal(None, RUN, exact_prices=True)
+
+
 @pytest.mark.parametrize('kwargs', [dict(domain='invalid'), dict(limit=501),
     dict(start='2026-08-18T08:00:00'), dict(start='2026-08-19T08:00:00Z', end='2026-08-18T08:00:00Z')])
 def test_invalid_query_rejected_before_reads(kwargs):
