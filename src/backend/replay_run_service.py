@@ -5049,6 +5049,15 @@ class ReplayRunController:
             raise ValueError("Program policy recovery source advanced during cold readback")
         return recovered
 
+    async def adopt_program_cold_runtime(self, *, assembly, evidence, runtime, packet,
+            source, population, oms_image, anchor, lease, keeper_session, broker_contract):
+        """Transfer qualified native cold objects without admission or start."""
+        from .program_controller_recovery import adopt_recovered_program_controller
+        return await adopt_recovered_program_controller(self, assembly=assembly,
+            evidence=evidence, runtime=runtime, packet=packet, source=source,
+            population=population, oms_image=oms_image, anchor=anchor, lease=lease,
+            keeper_session=keeper_session, broker_contract=broker_contract)
+
     async def stage_program_financial_runtime(self, *, portfolio_recovery, oms_image,
             broker_image, completed_at):
         """Construct a detached cold candidate using this controller's run config.
