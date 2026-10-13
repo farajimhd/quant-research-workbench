@@ -1753,6 +1753,14 @@ class ClickHouseIntegration(unittest.TestCase):
             v7.discover(competing,self.database,claim,93,date(2026,8,24),request.dataset_hash,rules,contexts)
         selected=v7.discover(self.client.query,self.database,claim,93,date(2026,8,24),request.dataset_hash,rules,contexts,dataset_id=dataset)
         self.assertEqual(selected['dependency'],seed)
+        from pipelines.certified_research.seed_preparation import prepare_listing
+        target_day=date(2026,8,24)
+        prepared=prepare_listing(self.client.query,replace(config,start=target_day,end=target_day,database=self.database),claim,lambda:None,
+            (MarketSession(day,93,'TEST'),MarketSession(target_day,93,'TEST')),request.recipe_definition,rules,
+            {day:request.source_hash,target_day:'f'*64},{day:''},indicator_dataset=dataset,v7_dataset=dataset)
+        self.assertTrue(prepared['ready'],str(prepared['blocked']))
+        self.assertEqual(prepared['state_start_dates'],{93:(target_day,target_day)})
+        self.assertEqual(len(prepared['seed_units']),2)
         from types import SimpleNamespace
         from pipelines.certified_research.handlers import V7SeedHandlers,IndicatorSeedHandlers
         runtime=SimpleNamespace(recipe_hash=request.dataset_hash,sources={day:request.source_hash},rules=rules)
