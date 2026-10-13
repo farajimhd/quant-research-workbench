@@ -18,6 +18,7 @@ from .objectives import Objective,score,session_scores
 from .evaluator import Execution
 from .session_lanes import SessionLanes
 from .terminal import CampaignProgress
+from .search_space import VERSION as SEARCH_SPACE_VERSION
 
 VERSION='v15-random-search-v1'
 
@@ -118,7 +119,7 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
         seed=seed,device=device,backend=backend,execution=asdict(execution),objective=asdict(objective),selection=asdict(selection),
         episode_capacity=episode_capacity,maximum_gate_gib=maximum_gate_gib,maximum_data_gib=maximum_data_gib,
         plan_limit=plan_limit,capture_gib=capture_gib,validation_feedback=False,input_receipts=train['receipts'],session_execution='independent',
-        initialization='random-only-v1',search_space_version='v15-random-typed-space-v1')
+        initialization='random-only-v1',search_space_version=SEARCH_SPACE_VERSION)
     def lane_config(data,role):
         return dict(inputs=data['inputs'],history=data['history'],feature_cache=data.get('feature_cache'),
             output=str(output/role),device=device,backend=backend,batch_size=batch_size,

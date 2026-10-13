@@ -12,8 +12,13 @@ Search-space changes:
 - Every lifecycle stage samples 1/2/3 atoms with probabilities .80/.15/.05.
   Management stages also have a 5% explicit constant-rule option. Mutation can
   grow, simplify or replace expressions up to the existing 32-node limit.
-- Sample domain uniformly (base/levels/history/market), then family, then channel.
-  Every feature remains reachable without window-count bias.
+- Sample eligible families uniformly across the entire catalog, then channels
+  uniformly within the selected family. No preliminary domain draw. Apply the
+  same rule to initial atoms, comparison partners and feature substitutions.
+  Compatibility and self-exclusion tables are precomputed once; each draw takes
+  two constant-time RNG calls without scanning the catalog. Mutation preserves
+  units, semantics and threshold ranges; singleton classes are explicit no-ops.
+  The v2 search-space identity prevents resuming the old biased population.
 - Compare price levels with levels, magnitudes with magnitudes. Persisted relative
   average_move stays average_move/close-1; thresholds use -1+loguniform(1e-6,1.5).
   Other priors use declared ranges with extra small-value resolution. No priors

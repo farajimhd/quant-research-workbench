@@ -54,7 +54,7 @@ class Individual:
 
 def condition(rng, feature=None):
     """A bounded typed atom; every evaluator operator has a generation route."""
-    from .search_space import feature_index,semantic,threshold,COMPARISONS,TEMPORAL
+    from .search_space import feature_index,comparison_feature,semantic,threshold,COMPARISONS,TEMPORAL
     index=feature_index(rng) if feature is None else int(feature);spec=CATALOG[index]
     if spec.unit=='bool':
         nodes=[Node(Op.FEATURE,feature=index)]
@@ -63,9 +63,7 @@ def condition(rng, feature=None):
     nodes=[Node(Op.FEATURE,feature=index)];left=0;value=threshold(rng,index)
     # Compare like semantic quantities. A price change is not a price level.
     if spec.unit=='price':
-        choices=PRICE_PEERS[semantic(spec)]
-        choices=[i for i in choices if i!=index]
-        nodes.append(Node(Op.FEATURE,feature=int(rng.choice(choices))))
+        nodes.append(Node(Op.FEATURE,feature=comparison_feature(rng,index)))
         right=1
     else:
         if spec.unit=='log_price':
@@ -103,8 +101,6 @@ def condition(rng, feature=None):
 
 
 from .search_space import semantic
-PRICE_PEERS={kind:tuple(i for i,f in enumerate(CATALOG) if f.unit=='price' and semantic(f)==kind)
-             for kind in ('price','magnitude')}
 
 
 def random_rule(rng,stage):
@@ -147,7 +143,7 @@ def sample(rng,count):
 def mutate(rng,parent):
     """Local rule edits, bounded resampling and independent policy/age edits."""
     from .complexity import simplify
-    from .search_space import age,MAXIMUM_AGE,COMPARISONS,TEMPORAL
+    from .search_space import age,mutation_feature,MAXIMUM_AGE,COMPARISONS,TEMPORAL
     rules=effective_rules(parent);stage=str(rng.choice(STAGES));rule=simplify(rules[stage])
     nodes=list(rule.nodes);action=int(rng.integers(8))
     if action==0:
@@ -164,11 +160,9 @@ def mutate(rng,parent):
     elif action==2:
         choices=[i for i,n in enumerate(nodes) if n.op==Op.FEATURE]
         if choices:
-            i=int(rng.choice(choices));n=nodes[i];f=CATALOG[n.feature]
+            i=int(rng.choice(choices));n=nodes[i]
             # Keep threshold/feature semantics aligned; full replacement explores other families.
-            candidates=[j for j,g in enumerate(CATALOG) if g.unit==f.unit and semantic(g)==semantic(f)
-                        and (g.lower,g.upper)==(f.lower,f.upper)]
-            nodes[i]=replace(n,feature=int(rng.choice(candidates)));rule=Program(tuple(nodes),rule.output)
+            nodes[i]=replace(n,feature=mutation_feature(rng,n.feature));rule=Program(tuple(nodes),rule.output)
     elif action==3:
         choices=[i for i,n in enumerate(nodes) if n.op in TEMPORAL]
         if choices:

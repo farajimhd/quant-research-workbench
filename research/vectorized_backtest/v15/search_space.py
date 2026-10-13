@@ -4,7 +4,7 @@ import numpy as np
 from .features import CATALOG
 from research.vectorized_backtest.v6.torch_backtest.program import Op, WINDOWS
 
-VERSION='v15-random-typed-space-v1'
+VERSION='v15-global-family-space-v2'
 MAXIMUM_AGE=300  # Existing evaluator clock units (seconds), holding stages only.
 FRACTIONS=('stop_fraction','target_fraction','reduce_fraction','trail_fraction',
            'add_minimum_profit','reduce_minimum_profit')
@@ -16,21 +16,48 @@ def family(feature):
     if name.startswith('market.'):return 'market',name.split('.')[1]
     return 'base',name
 
-_groups=defaultdict(lambda:defaultdict(list))
+_groups=defaultdict(list)
 for _i,_f in enumerate(CATALOG):
-    _domain,_family=family(_f);_groups[_domain][_family].append(_i)
-GROUPS=tuple(tuple(tuple(indices) for indices in families.values()) for families in _groups.values())
+    _groups[family(_f)].append(_i)
+GROUPS=tuple(tuple(indices) for indices in _groups.values())
 
-def feature_index(rng):
-    """Uniform domain, then family, then member; window count is not family weight."""
-    domain=GROUPS[int(rng.integers(len(GROUPS)))]
-    members=domain[int(rng.integers(len(domain)))]
+def feature_index(rng,groups=GROUPS):
+    """Uniform eligible family globally, then channel; two O(1) draws."""
+    if not groups:raise ValueError('No compatible feature families')
+    members=groups[int(rng.integers(len(groups)))]
     return members[int(rng.integers(len(members)))]
 
 def semantic(feature):
     if feature.name.startswith('history.average_move.') or feature.name=='market.spread':
         return 'magnitude' if feature.unit=='price' else 'shifted_magnitude'
     return feature.unit
+
+
+def compatible_groups(indices,exclude):
+    """Build once at import; never scan the catalog while sampling/mutating."""
+    eligible=set(indices)-{exclude}
+    return tuple(members for group in GROUPS if (members:=tuple(i for i in group if i in eligible)))
+
+
+_prices=defaultdict(list);_substitutions=defaultdict(list)
+for _i,_f in enumerate(CATALOG):
+    _kind=semantic(_f)
+    if _f.unit=='price':_prices[_kind].append(_i)
+    _substitutions[(_f.unit,_kind,_f.lower,_f.upper)].append(_i)
+PRICE_GROUPS=tuple(compatible_groups(_prices[semantic(f)],i) if f.unit=='price' else ()
+                   for i,f in enumerate(CATALOG))
+MUTATION_GROUPS=tuple(compatible_groups(_substitutions[(f.unit,semantic(f),f.lower,f.upper)],i)
+                      for i,f in enumerate(CATALOG))
+
+
+def comparison_feature(rng,index):
+    return feature_index(rng,PRICE_GROUPS[index])
+
+
+def mutation_feature(rng,index):
+    groups=MUTATION_GROUPS[index]
+    # A singleton compatibility class has no alternative, not an unsafe fallback.
+    return feature_index(rng,groups) if groups else index
 
 def threshold(rng,index):
     f=CATALOG[index];kind=semantic(f)
