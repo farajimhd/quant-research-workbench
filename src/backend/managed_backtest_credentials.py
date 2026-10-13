@@ -24,6 +24,12 @@ _FILES = {
         "BACKTEST_V4_RUNNER_CLICKHOUSE_PASSWORD",
     ),
 }
+_OPTIONAL_FILES = {
+    "backtest_v4_program_runner.env": tuple(
+        "BACKTEST_V4_PROGRAM_RUNNER_CLICKHOUSE_" + suffix
+        for suffix in ("URL", "USER", "PASSWORD")
+    ),
+}
 
 
 def _private_values(path: Path, allowed: tuple[str, ...]) -> dict[str, str]:
@@ -44,7 +50,11 @@ def load_managed_backtest_credentials(
     *, environment: MutableMapping[str, str] | None = None,
     workstation: str | None = None, secret_root: Path = SECRET_ROOT,
 ) -> bool:
-    """Load both journal principals atomically; leave other hosts unchanged."""
+    """Load existing and provisioned optional principals atomically.
+
+    Loading credentials does not register a programme, publish a release, or
+    authorize a run. Missing optional files preserve existing app launches.
+    """
     if (workstation or platform.node()).upper() != "DESKTOP-SAAI85T":
         return False
     env = os.environ if environment is None else environment
@@ -54,15 +64,19 @@ def load_managed_backtest_credentials(
     collected: dict[str, str] = {}
     for name, allowed in _FILES.items():
         collected.update(_private_values(paths[name], allowed))
-    for key, value in collected.items():
-        if key in env and env[key] != value:
-            raise ValueError("Managed Backtest credential conflicts with process environment")
-    env.update(collected)
+    for name, allowed in _OPTIONAL_FILES.items():
+        path = secret_root / name
+        if path.is_file():
+            collected.update(_private_values(path, allowed))
     reader = secret_root / "backtest_v3_read.env"
     if reader.is_file():
         selected = str(reader)
         if (env.get("BACKTEST_V3_READ_CREDENTIAL_FILE")
                 and env["BACKTEST_V3_READ_CREDENTIAL_FILE"] != selected):
             raise ValueError("Managed Backtest read credential path conflicts")
-        env["BACKTEST_V3_READ_CREDENTIAL_FILE"] = selected
+        collected["BACKTEST_V3_READ_CREDENTIAL_FILE"] = selected
+    for key, value in collected.items():
+        if key in env and env[key] != value:
+            raise ValueError("Managed Backtest credential conflicts with process environment")
+    env.update(collected)
     return True
