@@ -26,6 +26,31 @@ def test_complete_recorded_chain_is_terminal_and_not_a_write_lease():
     assert prefix.last_sequence == 1
 
 
+@pytest.mark.parametrize("damage", [None, "code", "clock", "mode", "uninstalled"])
+def test_recorded_programme_admission_and_read_profile_use_installed_pins(monkeypatch, damage):
+    from tests.test_program_strategy_registry import installed
+    from src.trading_runtime import strategy_registry
+    from src.backend.backtest_v4_saved_review import _require_declared_read_profile
+    from types import SimpleNamespace
+    registration, _, _ = installed(monkeypatch)
+    context = dict(mode="backtest", strategy_id=registration.strategy_id,
+        strategy_revision=registration.revision, code_hash=registration.expected_code_hash,
+        evaluation_interval_ms=1000)
+    if damage == "code": context["code_hash"] = "f" * 64
+    if damage == "clock": context["evaluation_interval_ms"] = 500
+    if damage == "mode": context["mode"] = "paper"
+    if damage == "uninstalled": monkeypatch.setattr(strategy_registry, "_PROGRAM_REGISTRY", {})
+    if damage:
+        with pytest.raises(ValueError, match="installed|Backtest|programme executor"):
+            recorded.require_recorded_strategy(context)
+    else:
+        assert recorded.require_recorded_strategy(context) is registration
+        assert _require_declared_read_profile(SimpleNamespace(), context) == {"program_decisions": True}
+        assert _require_declared_read_profile(SimpleNamespace(program_decision_profile=True), context) == {}
+        context["evaluation_interval_ms"] = 100
+        assert recorded.require_recorded_strategy(context) is registration
+
+
 def test_only_explicit_recorded_reads_use_the_read_workload_lane():
     from src.backend.workload_budget import classify_workload
     for endpoint in ('v4-performance', 'v4-journal-query'):

@@ -51,13 +51,17 @@ class _DeclaredReadProfileRequired(Exception):
 def _require_declared_read_profile(client, context):
     """Select authority from the already validated typed run context."""
     from src.trading_runtime.numbered_fixed_strategy import resolve_numbered_fixed_strategy
-    contract = resolve_numbered_fixed_strategy(context['strategy_id'], int(context['strategy_revision']))
-    options = ({'automatic_ladder': True}
-               if getattr(contract, 'automatic_entry_policy', None) is not None
-               else {'entry_spread_risk': True}
-               if getattr(contract, 'entry_spread_risk_policy', None) is not None else {})
-    flag = ('automatic_ladder_profile' if 'automatic_ladder' in options
-            else 'entry_spread_risk_profile' if options else None)
+    from src.backend.backtest_recorded_journal import require_recorded_strategy
+    if require_recorded_strategy(context) is not None:
+        options, flag = {'program_decisions': True}, 'program_decision_profile'
+    else:
+        contract = resolve_numbered_fixed_strategy(context['strategy_id'], int(context['strategy_revision']))
+        options = ({'automatic_ladder': True}
+                   if getattr(contract, 'automatic_entry_policy', None) is not None
+                   else {'entry_spread_risk': True}
+                   if getattr(contract, 'entry_spread_risk_policy', None) is not None else {})
+        flag = ('automatic_ladder_profile' if 'automatic_ladder' in options
+                else 'entry_spread_risk_profile' if options else None)
     if flag is not None and getattr(client, flag, False) is not True:
         if _DECLARED_READ_SCOPE.get() is not None:
             raise _DeclaredReadProfileRequired(options)

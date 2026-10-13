@@ -38,6 +38,23 @@ def recorded_exact_prices(family_names):
     return bool(names & exact)
 
 
+def require_recorded_strategy(context):
+    """Recognize installed immutable identities without granting execution."""
+    from src.trading_runtime.numbered_fixed_strategy import is_numbered_fixed_strategy
+    from src.trading_runtime.strategy_registry import program_strategy_executor
+    if context.get("mode") != "backtest":
+        raise ValueError("Recorded Review requires an installed Backtest strategy")
+    identity = (context["strategy_id"], int(context["strategy_revision"]))
+    if is_numbered_fixed_strategy(*identity):
+        return None
+    programme = program_strategy_executor(*identity)
+    if (context.get("code_hash") != programme.expected_code_hash
+            or type(context.get("evaluation_interval_ms")) is not int
+            or context["evaluation_interval_ms"] not in (100, 1000)):
+        raise ValueError("Recorded programme differs from its installed code and native clock pins")
+    return programme
+
+
 @contextmanager
 def _recorded_read_scope(scope, run_id):
     key = (scope, run_id)
@@ -100,7 +117,6 @@ def verify_recorded_chain(commits, families, rows_by_family, run_id):
 @declared_saved_read_operation
 def load_recorded_attestation(client, run_id):
     from src.backend import historical_runtime_versions as versions
-    from src.trading_runtime.numbered_fixed_strategy import is_numbered_fixed_strategy
     from src.trading_runtime.arte_backtest_snapshot_anchor import load_terminal_backtest_snapshot
     from src.trading_runtime.arte_backtest_definition import load_committed_initial_cash
     from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
@@ -109,8 +125,7 @@ def load_recorded_attestation(client, run_id):
     if versions.backend_source_fingerprint() != versions.LOADED_BACKEND_FINGERPRINT:
         raise RuntimeError('Saved journal reader source changed after startup; restart the backend')
     context = load_typed_run_context(client, normalized)
-    if context['mode'] != 'backtest' or not is_numbered_fixed_strategy(context['strategy_id'], int(context['strategy_revision'])):
-        raise ValueError('Recorded Review requires an installed numbered Backtest strategy')
+    require_recorded_strategy(context)
     _require_declared_read_profile(client, context)
     with _recorded_read_scope(_client_scope(client), normalized):
         for key in _CACHE.candidate_keys(_client_scope(client), normalized):
