@@ -13,6 +13,49 @@ from .contracts import identifier,literal,digest
 from .facts import catalog,UNITS
 
 
+def snapshot_membership(snapshot,security_key,*,maximum_intervals=1024):
+    """Pre-publication membership from the same qualified interval authority.
+
+    Only bounded identity metadata goes into SQL; observations stay server-side.
+    The caller must freeze/recheck the Gateway snapshot before plan publication.
+    """
+    return snapshot_memberships(snapshot,(security_key,),maximum_intervals=maximum_intervals)[security_key]
+
+
+def snapshot_memberships(snapshot,security_keys,*,maximum_intervals=1024):
+    """Validate/group the metadata once for a bounded security worker pool."""
+    from .identity import identity_key,SECURITY,validate_intervals
+    import re
+    security_keys=tuple(security_keys)
+    if (snapshot.get('ready') is not True or snapshot.get('rejected')
+            or not re.fullmatch('[0-9a-f]{64}',snapshot.get('source_hash',''))
+            or not security_keys or len(set(security_keys))!=len(security_keys)
+            or any(type(k) is not int or not 0<k<2**64 for k in security_keys)
+            or type(maximum_intervals) is not int or not 1<=maximum_intervals<=8192):
+        raise ValueError('Short discovery requires a qualified dated universe')
+    grouped={key:[] for key in security_keys}
+    for interval in validate_intervals(tuple(snapshot['intervals'])):
+        key=identity_key(SECURITY,interval.security_id)
+        if key in grouped and not interval.reason:grouped[key].append(interval)
+    result={}
+    for key,intervals in grouped.items():
+        if not intervals or len(intervals)>maximum_intervals:
+            raise ValueError('Short discovery membership is missing or exceeds its metadata bound')
+        statements=[]
+        for interval in intervals:
+            row=interval.row('00000000-0000-0000-0000-000000000001')
+            statements.append(f'SELECT {literal(row["ticker"])} ticker,toUInt64({row["listing_key"]}) listing_key,'
+                f"toDateTime64({literal(row['valid_from'])},6,'UTC') valid_from,"
+                f"toDateTime64({literal(row['valid_to'])},6,'UTC') valid_to")
+        result[key]=' UNION ALL '.join(statements)
+    return result
+
+
+def snapshot_audit(database,dataset_id,security_key,start,end,family,snapshot,*,source_database='q_live'):
+    return short_audit(database,dataset_id,security_key,start,end,family,source_database=source_database,
+        membership_sql=snapshot_membership(snapshot,security_key))
+
+
 def publication_coverage(query,start,end,family,*,sessions=None,maximum_rows=10000):
     """Qualify Gateway acquisition coverage; bootstrap trust is not certification.
 
@@ -82,7 +125,7 @@ def clock_inventory(query,start,end):
     return dict(inspection_only=True,start=str(start),end=str(end),families=result)
 
 
-def short_source(database,dataset_id,entity_key,start,end,family,*,source_database='q_live'):
+def short_source(database,dataset_id,entity_key,start,end,family,*,source_database='q_live',membership_sql=None):
     identifier(database);identifier(source_database);UUID(dataset_id)
     if source_database!='q_live' and not source_database.startswith('certified_research_test_'):
         raise ValueError('Only canonical or isolated fixture reference sources are allowed')
@@ -93,9 +136,10 @@ def short_source(database,dataset_id,entity_key,start,end,family,*,source_databa
     table='market_'+family+'_v1'
     # Restrict the symbol scan first, then verify membership at measurement time.
     # The date comparison is deliberately half-open, like the identity contract.
+    membership_sql=membership_sql or (f'SELECT ticker,listing_key,valid_from,valid_to FROM {database}.research_membership_v1 '
+        f'WHERE dataset_id=toUUID({literal(dataset_id)}) AND security_key={entity_key} AND eligible=1')
     return f"""WITH membership AS (
-      SELECT ticker,listing_key,valid_from,valid_to FROM {database}.research_membership_v1
-      WHERE dataset_id=toUUID({literal(dataset_id)}) AND security_key={entity_key} AND eligible=1
+      {membership_sql}
     ), source AS (
       SELECT s.* FROM {source_database}.{table} s FINAL
       PREWHERE upper(s.provider_ticker) IN (SELECT ticker FROM membership)
@@ -109,8 +153,8 @@ def short_source(database,dataset_id,entity_key,start,end,family,*,source_databa
     ) """
 
 
-def short_audit(database,dataset_id,entity_key,start,end,family,*,source_database='q_live'):
-    prefix=short_source(database,dataset_id,entity_key,start,end,family,source_database=source_database)
+def short_audit(database,dataset_id,entity_key,start,end,family,*,source_database='q_live',membership_sql=None):
+    prefix=short_source(database,dataset_id,entity_key,start,end,family,source_database=source_database,membership_sql=membership_sql)
     time=("published_at_utc IS NULL" if family=='short_volume'
           else "published_at_utc IS NULL AND publication_date IS NULL")
     event='short_volume_id' if family=='short_volume' else 'short_interest_id'

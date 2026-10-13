@@ -8,6 +8,31 @@ from .contracts import digest
 from .execution import Unit,execute
 
 
+def discover_and_prepare(query,config,dataset_id,claim,client_factory,source_guard,canonical,reporting,definition,rules,*,
+                         fundamental_start,short_start,anchor_date,adjustment_hashes,
+                         indicator_datasets=None,v7_datasets=None,stop=None,progress=None):
+    """Compose reference discovery and preparation without caller-built locators."""
+    from . import reference_discovery
+    stop=Event() if stop is None else stop
+    claim.check();source_guard()
+    if stop.is_set():raise InterruptedError('Initial discovery stopped')
+    source.require_ready(query,canonical,reporting)
+    start=min((*canonical['expected'],short_start))
+    snapshot=universe.load(query,start,config.end,anchor_date)
+    references=reference_discovery.discover(query,config,dataset_id,claim,client_factory,source_guard,snapshot,
+        canonical['expected'],fundamental_start=fundamental_start,short_start=short_start,stop=stop,progress=progress)
+    if not references['ready']:
+        return dict(ready=False,phase='reference-authorities',missing_authorities=references['missing_authorities'])
+    authority=PlannedUnit(Unit('universe','universe'),dict(context_start=str(start),end=str(config.end),
+        anchor_date=str(anchor_date),source_hash=snapshot['source_hash']))
+    assembled=prepare(query,config,claim,client_factory,source_guard,canonical,reporting,definition,rules,
+        references['issuers'],references['securities'],prerequisites=(authority,*references['prerequisites']),
+        universe_parent='universe',corporate_parents=references['corporate_parents'],adjustment_hashes=adjustment_hashes,
+        fundamental_start=fundamental_start,short_start=short_start,anchor_date=anchor_date,
+        indicator_datasets=indicator_datasets,v7_datasets=v7_datasets,stop=stop,progress=progress)
+    return dict(assembled,ready=True)
+
+
 def prepare(query,config,claim,client_factory,source_guard,canonical,reporting,definition,rules,
             issuers,securities,*,prerequisites,universe_parent,corporate_parents,adjustment_hashes,
             fundamental_start,short_start,anchor_date,indicator_datasets=None,v7_datasets=None,
@@ -88,7 +113,8 @@ def prepare(query,config,claim,client_factory,source_guard,canonical,reporting,d
             if source.require_ready(query,frozen,frozen_reporting)!=epoch:
                 raise ValueError('Initial canonical/reporting source changed during preparation')
     frozen_guard()
-    snapshot=universe.load(query,min(required),config.end,anchor_date)
+    membership_start=min((*required,short_start))
+    snapshot=universe.load(query,membership_start,config.end,anchor_date)
     if not snapshot['ready']:raise ValueError('Initial historical universe requires evidence repair: '+str(snapshot['rejection_counts']))
     membership=universe.execution_membership(snapshot,required,maximum_sessions=maximum_sessions)
     if not membership['ready']:raise ValueError('Initial dated membership is empty or partial')
@@ -116,7 +142,7 @@ def prepare(query,config,claim,client_factory,source_guard,canonical,reporting,d
     sessions=(*prepared['sessions'],*price_only)
     planned_listings={s.listing_key for s in sessions}
     linked={k:tuple(listing for listing in v if listing in planned_listings) for k,v in membership['security_listings'].items()}
-    universe_unit=PlannedUnit(authority.unit,dict(context_start=str(min(required)),end=str(config.end),
+    universe_unit=PlannedUnit(authority.unit,dict(context_start=str(membership_start),end=str(config.end),
         anchor_date=str(anchor_date),source_hash=snapshot['source_hash']))
     prerequisites=tuple(universe_unit if p.unit.key==universe_parent else p for p in prerequisites)
     assembled=initial_plan.assemble(config,prepared,frozen,frozen_reporting,definition,rules,issuers,securities,
@@ -124,7 +150,7 @@ def prepare(query,config,claim,client_factory,source_guard,canonical,reporting,d
         security_listings=linked,fundamental_start=fundamental_start,price_start=min(s.day for s in sessions),
         short_start=short_start,price_context_sessions=price_only)
     frozen_guard()
-    current=universe.load(query,min(required),config.end,anchor_date)
+    current=universe.load(query,membership_start,config.end,anchor_date)
     if not current['ready'] or current['source_hash']!=snapshot['source_hash']:
         raise ValueError('Initial Gateway identity source changed during preparation')
     assembled.update(float_contexts=contexts,float_price_unavailable=assigned['unavailable'],

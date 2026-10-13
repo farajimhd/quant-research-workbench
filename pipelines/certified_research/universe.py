@@ -218,6 +218,7 @@ def load(query,context_start,end,anchor_date,*,database='q_live',maximum_rows=10
     result['source_hash']=digest(sorted(census,key=lambda r:r['scope_reason']))
     result['source_census']=census
     result['source_rows']=rows # Bounded provenance metadata, never event/bar rows.
+    result.update(context_start=context_start,end=end,anchor_date=anchor_date)
     return result
 
 

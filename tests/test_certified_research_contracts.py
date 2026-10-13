@@ -772,6 +772,35 @@ class Contracts(unittest.TestCase):
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
 
+    def test_short_snapshot_discovery_matches_published_membership_exactly(self):
+        from datetime import timezone
+        from pipelines.certified_research.identity import ListingInterval,identity_key,SECURITY
+        from pipelines.certified_research import short_sql
+        dataset=str(uuid.uuid4())
+        interval=ListingInterval('snapshot-listing','snapshot-security','snapshot-issuer','SNAPTEST',19,
+            datetime(2025,12,1,tzinfo=timezone.utc),datetime(2026,1,10,tzinfo=timezone.utc),
+            'US','XNAS','USD','STK',True,True,False,False,'a'*64)
+        snapshot=dict(ready=True,intervals=(interval,),source_hash='a'*64)
+        key=identity_key(SECURITY,interval.security_id)
+        self.client.query(f'CREATE TABLE IF NOT EXISTS {self.database}.market_short_volume_v1 '
+            'AS q_live.market_short_volume_v1 ENGINE=ReplacingMergeTree(inserted_at) ORDER BY short_volume_id '
+            "SETTINGS storage_policy='live_market_ssd',default_compression_codec='ZSTD(1)'",read=False)
+        row=dict(short_volume_id='snapshot-short',symbol_id='',listing_id='',security_id='',source_system='finra',
+            source_venue='CNMS',provider_ticker='SNAPTEST',trade_date='2025-12-31',published_at_utc='2025-12-31 23:00:00.000',
+            short_volume=20,total_volume=100,exempt_volume=2,non_exempt_volume=18,short_volume_ratio=.2,
+            source_event_key='snapshot',source_evidence_ref='https://example.test/snapshot',source_run_id='',
+            source_content_sha256='a'*64,inserted_at='2026-02-01 00:00:00.000')
+        insert_rows(self.client.query,self.database,'market_short_volume_v1',[row,dict(row,short_volume_id='snapshot-delisted',
+            trade_date='2026-01-12',published_at_utc='2026-01-12 23:00:00.000')])
+        args=(self.database,dataset,key,date(2025,12,1),date(2026,1,31),'short_volume')
+        before=self.client.query(short_sql.snapshot_audit(*args,snapshot,source_database=self.database))[0]
+        self.assertEqual(int(before['n']),1);self.assertEqual(int(before['unknown_public_time']),0)
+        insert_rows(self.client.query,self.database,'research_membership_v1',[interval.row(dataset)])
+        after=self.client.query(short_sql.short_audit(*args,source_database=self.database))[0]
+        self.assertEqual(before,after)
+        with self.assertRaisesRegex(ValueError,'qualified dated universe'):
+            short_sql.snapshot_membership(dict(snapshot,ready=False),key)
+
     def test_selected_resolutions_publish_exact_bars_states_and_causal_v7_boundaries(self):
         from pipelines.certified_research import recipe,indicator_state
         from tests.test_streaming_level_book import engine

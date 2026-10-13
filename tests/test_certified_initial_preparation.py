@@ -128,3 +128,18 @@ def test_real_initial_preparation_rejects_uncertified_sec_range_without_writers(
     args['client_factory'].assert_not_called()
     assert logs and all(sql.startswith('SELECT') for sql in logs)
     assert all('sec_xbrl_company_fact_v3' not in sql for sql in logs)
+
+
+@pytest.mark.parametrize('ready',(False,True))
+def test_combined_discovery_routes_only_complete_reference_inputs_into_preparation(ready):
+    from pipelines.certified_research import reference_discovery
+    args,snapshot,_,_=inputs()
+    refs=dict(ready=ready,issuers=args['issuers'],securities=args['securities'],prerequisites=(),
+        corporate_parents=args['corporate_parents'],missing_authorities=({'family':'float_allocation'},) if not ready else ())
+    with patch.object(prep.source,'require_ready'),patch.object(prep.universe,'load',return_value=snapshot),\
+         patch.object(reference_discovery,'discover',return_value=refs),patch.object(prep,'prepare',return_value=dict(plans=())) as prepare:
+        result=prep.discover_and_prepare(args['query'],args['config'],'00000000-0000-0000-0000-000000000001',
+            args['claim'],args['client_factory'],args['source_guard'],args['canonical'],args['reporting'],args['definition'],args['rules'],
+            fundamental_start=args['fundamental_start'],short_start=args['short_start'],anchor_date=args['anchor_date'],adjustment_hashes={})
+    assert result['ready']==ready
+    assert prepare.call_count==int(ready)

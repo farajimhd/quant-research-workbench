@@ -38,8 +38,10 @@ no price is invented for those dates.
 
 ## Remaining launch boundary
 
-This coordinator requires supplied reference source locators and fundamental
-coverage bounds. Automatic reference-source discovery/acquisition, initial
+The lower-level coordinator accepts supplied reference source locators and
+fundamental coverage bounds. [Retained reference discovery](13m-reference-discovery.md)
+now supplies those locators through `discover_and_prepare`. Missing reference
+authority creation/acquisition, initial
 genesis/legacy checkpoint qualification, production capacity measurements and
 the fresh CLI launch route remain unfinished. Existing `run/resume` execute
 installed immutable plans. This page does not claim the full first launch is
