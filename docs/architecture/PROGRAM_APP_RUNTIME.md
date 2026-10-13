@@ -141,6 +141,15 @@ RTH sessions, producer publication, centrally sealed release/configuration,
 normal app activation, real fills, cold recovery and all30 optimizer comparison.
 Synthetic rule equivalence does not establish filling or P&L equivalence. The
 legacy SQLite-ledger market-day builder is not an approved new producer path.
+The current producer checkpoint interface is
+`pipelines.market_sip.events.market_day_checkpoint`. It stores completed stage
+and seed receipts in the existing shared normalized ARTE certificate tables,
+uses bounded off-loop reads and native Keeper ownership for writes, and
+reconciles uncertain acknowledgements without blind reinsertion. Its immutable
+completed-receipt view satisfies the existing certificate assembler's ledger
+interface. These unfinished producer receipts never admit consumers: the full
+native inventory and final Keeper fence are still required. No legacy builder
+cutover, schema publication or market production is enabled by this source.
 
 Managed app shutdown disposes an unused staged programme handoff before closing
 its policy reader. It drains runtime background-task and typed journal cleanup,
