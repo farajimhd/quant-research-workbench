@@ -7,6 +7,7 @@ from datetime import date,datetime,timezone
 from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
 from time import perf_counter
+from hashlib import sha256
 import numpy as np
 import polars as pl
 from .features import VERSION,SPECS
@@ -27,12 +28,13 @@ def prepare(training,validation,output,workers=4):
         datasets[role]=value
     days=sorted(datasets['training']['days']+datasets['validation']['days'])
     if len(set(days))!=len(days) or max(datasets['training']['days'])>=min(datasets['validation']['days']):raise ValueError('Disjoint chronological splits required')
-    bases={};requests={};arrays={};listing_set=set();sessions={};target_counts={}
+    bases={};requests={};arrays={};listing_set=set();sessions={};target_counts={};compact_members={}
     for role,dataset in datasets.items():
         for day in dataset['days']:
             root=Path(dataset['inputs'])/day;receipt=json.loads((root/'complete.json').read_text(encoding='utf-8-sig'))
             if file_hash(root/'complete.json')!=dataset['receipts'][day]['inputs'] or bool(receipt['validation_opened'])!=(role=='validation'):raise ValueError('Certified input changed')
             bases[day]=file_hash(root/'complete.json');sessions[day]=receipt['identity']['session']
+            compact_members[day]=receipt['listings']
             keys=np.load(root/'feature_keys.npy',mmap_mode='r');top=np.unique(np.load(root/'top_indices.npy',mmap_mode='r'));top=top[top>=0]
             folder=require_runtime(output/day)
             if (folder/'complete.json').exists():raise ValueError('Preparation output already sealed; use a distinct source-bound directory')
@@ -51,10 +53,16 @@ def prepare(training,validation,output,workers=4):
     c=authority.reader(threads=1);storage=authority.storage_check(c)
     if source['definition']['plan']['requested']!=days:raise ValueError('Continuous bank requires the full consecutive certified source sequence')
     mapping={};split={};split_hashes={}
+    last_needed={i:max(d for d,identity in requests if identity==i) for i in listing_set}
     for day in days:
         session=sessions[day]
         if session['source_manifest']!=first['source_manifest'] or session['source_ledger']!=first['source_ledger']:raise ValueError('Mixed bar authorities')
-        population,_=authority.population(c,source,date.fromisoformat(day));mapping[day]={r['listing_id']:r['ticker'] for r in population if r['listing_id'] in listing_set}
+        wanted={r['ticker'] for r in compact_members[day] if r['listing_id'] in listing_set and day<=last_needed[r['listing_id']]}
+        if not wanted:
+            mapping[day]={}
+            continue
+        subset=dict(source,units={**source['units'],day:{t:u for t,u in source['units'][day].items() if t in wanted}})
+        population,_=authority.population(c,subset,date.fromisoformat(day));mapping[day]={r['listing_id']:r['ticker'] for r in population if r['listing_id'] in listing_set}
         path=Path(session['split_certificate']);value=json.loads(path.read_text(encoding='utf-8-sig'))
         receipt=json.loads((Path(next(v['inputs'] for v in datasets.values() if day in v['days']))/day/'complete.json').read_text(encoding='utf-8-sig'))
         if (file_hash(path)!=receipt['split_certificate_sha256'] or value.get('hash')!=digest({k:v for k,v in value.items() if k!='hash'})
@@ -72,7 +80,11 @@ def prepare(training,validation,output,workers=4):
     # Compile once before threads contend for the compiler.
     s,n=initial_state();calculate(np.array([1.]),np.array([1.]),np.array([1.]),np.array([True]),np.array([True]),s,n,1.,np.array([True]))
     def unit(day,identity,ticker):
-        client=authority.reader(threads=1);authority.verify_listing(client,source,day,ticker)
+        client=authority.reader(threads=1)
+        actual=arte_sql.query(client,f'SELECT count() AS n,uniqExact((resolution_ms,bucket_index)) AS unique_keys,sum(cityHash64(tuple(*))) AS hash '
+            f'FROM arte.bars_v1 WHERE {authority.selection(source,day,ticker,"bars")}')[0]
+        saved=source['units'][day][ticker]['bars']
+        if int(actual['n'])!=saved['output_rows'] or int(actual['n'])!=int(actual['unique_keys']) or str(actual['hash'])!=saved['output_hash']:raise ValueError('Certified bars changed')
         end=f'toInt64({arte_sql.bounds(day)})+(toInt64(bucket_index)+1)*1000000'
         frame=authority.frame(client,f'SELECT {end} AS time_us,close_int/10000. AS close,high_int/10000. AS high,low_int/10000. AS low,price_valid,extremes_valid '
             f'FROM arte.bars_v1 WHERE {authority.selection(source,day,ticker,"bars")} AND resolution_ms=1000 ORDER BY bucket_index',
@@ -92,7 +104,7 @@ def prepare(training,validation,output,workers=4):
             frame['price_valid'].to_numpy()!=0,frame['extremes_valid'].to_numpy()!=0,state,count,factor,emit)
         for target,rows,clocks in targets:arrays[target][rows]=values[np.searchsorted(wanted,clocks)]
         return identity,state,count,dict(day=day,listing_id=identity,ticker=ticker,bar_certificate=source['units'][day][ticker]['bars'],
-            split_factor=factor,predecessor_day=previous.get(identity),emitted_rows=len(wanted)),[(d,len(r)) for d,r,_ in targets]
+            split_factor=factor,predecessor_day=previous.get(identity),emitted_rows=len(wanted),end_state_sha256=sha256(state.tobytes()+count.tobytes()).hexdigest()),[(d,len(r)) for d,r,_ in targets]
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for day in days:
             write_json(output/'status.json',dict(status='running',stage='Continuous certified indicators',day=day,completed_days=len(proofs),total_days=len(days),listing_count=len(listing_set)))
@@ -104,7 +116,7 @@ def prepare(training,validation,output,workers=4):
             if missing:raise ValueError('Requested listing absent from certified point-in-time universe')
             proofs.append(dict(day=day,units=day_proofs))
     definition=dict(version=VERSION,specs=SPECS,bootstrap='first eligible certified bar from frozen source origin',origin=days[0],
-        observation_axis='completed nonempty one-second candles',carry='full sessions, across days, listing identity and opening-known splits',source_build=source['build_id'],source_definition_sha256=source['definition_hash'])
+        observation_axis='completed nonempty one-second candles',carry='full sessions, across days, listing identity and opening-known splits',source_build=source['build_id'],source_definition_sha256=source['definition_hash'],math_sha256=file_hash(Path(__file__).with_name('indicator_math.py')))
     previous_hash=None
     for day,proof in zip(days,proofs):
         if counts_done[day]!=target_counts[day]:raise ValueError('Indicator row coverage did not reconcile')

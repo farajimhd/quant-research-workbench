@@ -26,9 +26,10 @@ class SortedRows:
         mask=active[:,candidate] if split=='training' else np.ones(d.shape,dtype=bool)
         d=d[mask];c=c[mask]
         local=np.lexsort((serial[c],-scores[d,candidate[c]],d))
-        local_days=d[local]
+        profit_order=np.lexsort((serial[c],-profits[d,candidate[c]],d))
+        local_days=d[profit_order]
         starts=np.maximum.accumulate(np.where(np.r_[True,local_days[1:]!=local_days[:-1]],np.arange(len(local)),0)) if len(local) else np.empty(0,dtype=int)
-        ranks=np.empty(len(local),dtype=int);ranks[local]=np.arange(len(local))-starts+1
+        ranks=np.empty(len(local),dtype=int);ranks[profit_order]=np.arange(len(local))-starts+1
         order=local if mode=='session_score' else np.lexsort((serial[c],d,-profits[d,candidate[c]]))
         self.d=d[order];self.c=c[order];self.ranks=ranks[order];self.candidate=candidate
 
@@ -61,7 +62,7 @@ def load_panel(output,split,generation):
 class RankingObserver:
     """Nonblocking UI snapshots; disk reads and sorts run in this observer thread."""
     def __init__(self,output):
-        self.output=Path(output);self.request=('training','session_score');self.snapshot={}
+        self.output=Path(output);self.request=('training','net_profit');self.snapshot={}
         self.cache={};self.stop=threading.Event();self.lock=threading.Lock()
         self.thread=threading.Thread(target=self._run,name='v16-display-loader',daemon=True)
 

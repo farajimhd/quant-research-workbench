@@ -53,7 +53,7 @@ def main():
                 warm_rule_seconds=float(np.median(samples)),groups=len(plan.groups),capture_bytes=plan.capture_bytes)
             checks.append(version+' captured rules equal eager outputs and masks')
         finally:plan.close()
-    # Same fresh V16 population on the unchanged V14 evaluator: all policy/age
+    # Same fresh V16 population on the unchanged V15 evaluator: all policy/age
     # differences are inputs, and every financial metric must be exactly equal.
     from research.vectorized_backtest.v7.qualify import synthetic
     from research.vectorized_backtest.v15.evaluator import replay_cohort as baseline
@@ -67,7 +67,7 @@ def main():
         right=replay_cohort([synthetic(args.device)],members,[gates],execution=execution,backend=backend)[0]
         exact_accounting({k:v for k,v in left.items() if isinstance(v,torch.Tensor)},right)
         assert left['episode_profits']==right['episode_profits']
-        checks.append(backend+' same-backend accounting exactly matches V14')
+        checks.append(backend+' same-backend accounting exactly matches V15')
     rng=np.random.default_rng(15);pop=populations['v16'];pedigree=Pedigree();ids=pedigree.birth(pop,1,[(-1,-1)]*1024,['fresh']*1024)
     values=rng.normal(size=(30,1024));start=perf_counter()
     _,_,selection=next_population(rng,pop,ids,pedigree,[],2,session_values=values,session_eligible=np.ones_like(values,dtype=bool),global_values=values.sum(0))

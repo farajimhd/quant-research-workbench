@@ -39,7 +39,7 @@ def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output',type=Path,required=True);p.add_argument('--once',action='store_true')
     p.add_argument('--view',choices=('financial','objective','positions','performance','validation'),default='financial')
-    p.add_argument('--sort',choices=MODES,default='session_score')
+    p.add_argument('--sort',choices=MODES,default='net_profit')
     args=p.parse_args(argv);console=Console(no_color=bool(os.environ.get('NO_COLOR')))
     if console.is_terminal and not args.once and os.name=='nt':maximize_window()
     observer=RankingObserver(args.output);rank=1;page=0;rank_page=0
