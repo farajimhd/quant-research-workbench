@@ -5,6 +5,7 @@ import pytest
 
 from pipelines.certified_research.float_data import required_price_sessions
 from pipelines.certified_research.reference_publication import ReferenceScope
+from pipelines.certified_research.planning import price_context_days
 
 
 def scope():return ReferenceScope('00000000-0000-0000-0000-000000000001',1,1,'fundamentals',
@@ -19,6 +20,10 @@ def test_measurement_price_context_precedes_launch_and_uses_exchange_calendar():
     assert result['sessions'] and all(day<date(2026,1,2) for day in result['sessions'])
     assert date(2025,12,25) not in result['sessions']
     assert '520' not in query.call_args.args[0] # Bound is a concrete derived date.
+    days=price_context_days((date(2026,1,2),date(2026,1,5)),{1:result})
+    assert date(2025,12,31) in days and date(2026,1,5) in days
+    with pytest.raises(ValueError,match='fingerprint'):
+        price_context_days((date(2026,1,2),),{1:dict(result,sessions=())})
 
 
 def test_uncertified_fundamentals_do_not_generate_guessed_price_dates():

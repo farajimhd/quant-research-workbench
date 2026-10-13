@@ -11,6 +11,35 @@ from .contracts import CampaignConfig
 from .execution import Unit
 
 
+def price_context_days(target_days,issuer_contexts):
+    """Union certified float-price demands before dated universe preparation.
+
+    Returned days are discovery demands, not proof of listing or source
+    coverage. Universe preparation must resolve eligibility for each day.
+    """
+    from .contracts import digest
+    target_days=tuple(target_days)
+    if not target_days or any(type(d) is not date for d in target_days):
+        raise ValueError('Price context requires nonempty target dates')
+    needed=set(target_days)
+    for issuer,context in issuer_contexts.items():
+        if type(issuer) is not int or not 0<issuer<2**64:
+            raise ValueError('Invalid float context issuer')
+        expected={'measurements','sessions','fundamentals_hash','price_gap_days','sec_age_days','context_hash'}
+        if set(context)!=expected or context['context_hash']!=digest({k:v for k,v in context.items() if k!='context_hash'}):
+            raise ValueError('Float price context fingerprint differs')
+        if context['price_gap_days']!=7 or context['sec_age_days']!=520:
+            raise ValueError('Float price context policy differs')
+        sessions=context['sessions'];measurements=context['measurements']
+        if (not isinstance(sessions,tuple) or not isinstance(measurements,tuple)
+                or any(type(d) is not date for d in (*sessions,*measurements))
+                or tuple(sorted(set(sessions)))!=sessions or tuple(sorted(set(measurements)))!=measurements
+                or any(d>max(target_days) or d<date(2019,1,2) for d in sessions)):
+            raise ValueError('Float price context dates are invalid')
+        needed.update(sessions)
+    return tuple(sorted(needed))
+
+
 @dataclass(frozen=True)
 class MarketSession:
     day: date
