@@ -27,7 +27,9 @@ Preserve price-valid, extrema-valid and activity-only rows. No-trade clocks do n
 
 ### Indicators and continuity
 
-Current SQL catalog: EMA 7/9/12/15/20/26/50, MACD 12/26/9 including histogram, RSI14 and ATR14 at supported frames, with readiness flags. EMA/MACD carry certified predecessor state; existing RSI/ATR session reset semantics remain versioned. A request for alternative periods/resolutions produces a new declared product, not an execution-time substitution.
+Current SQL catalog: EMA 7/9/12/15/20/26/50, MACD 12/26/9 including histogram, RSI14 and ATR14 at supported frames, with readiness flags. The certified research producer carries all four indicator families across sessions. Its `research-market-continuous-wilder-v2` recipe rejects old technical receipts. Existing app calculations retain their separate session-reset behavior. A request for alternative periods/resolutions produces a new declared product, not an execution-time substitution.
+
+The continuous predecessor stores every EMA, MACD signal, last close, ATR mean, gain/loss means and the exact UInt64 sample count per frame. Before 14 seed samples, Wilder state retains partial seed sums divided by 14; readiness remains false. RSI needs 14 price changes (15 initial prices), while ATR needs 14 prices. These state fields must survive even when a session ends during warmup. Price-empty frames carry their prior state. Split adjustment and compatible seed discovery still require explicit implementation/qualification before production launch; legacy EMA-only seeds cannot establish continuous RSI/ATR state.
 
 ### Rolling activity and RVOL
 
@@ -49,7 +51,7 @@ Detailed RL/optimization V6 execution needs fresh arrival quotes, extrema and pa
 
 ### Offline execution tape
 
-Prepare a reusable indexed execution tape for the selected range; current RL environment reads submitted/held-ticker evidence lazily. Add an offline adapter so repeated PPO runs can use certified indexed shards without per-step database round trips. This adapter preserves arrival/freshness/partial-fill semantics; it does not replace execution evidence with 1-second candle volume.
+Prepare reusable compact indexed execution evidence in ClickHouse; current RL environment reads submitted/held-ticker evidence lazily. Training shards, offline adapters and downstream execution are outside this campaign. The published evidence must preserve arrival/freshness/partial-fill inputs; 1-second candle volume cannot replace price-level execution evidence.
 
 ### Tick size, LULD and halt evidence
 

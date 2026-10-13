@@ -61,8 +61,10 @@ def bar_queries(unit: MarketUnit,database='arte'):
 
 
 def indicator_sql(unit: MarketUnit,database='arte',*,prior=None):
-    return core.technical_sql(database,unit.dataset_id,unit.day,unit.ticker,unit.attempt_id,
-                             unit.attempt_id,prior,table_names=STAGING)
+    from .indicators import technical_sql
+    source=(f'SELECT session_date,resolution_ms,bucket_index,close_int,high_int,low_int '
+        f"FROM {core.table(database,'bars',STAGING)} WHERE {unit.where()} AND price_valid=1 AND extremes_valid=1")
+    return technical_sql(database,unit,source,prior or {})
 
 
 def normalized_insert(unit: MarketUnit, product: str,database='arte'):

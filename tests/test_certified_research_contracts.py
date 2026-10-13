@@ -605,6 +605,44 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_continuous_wilder_state_survives_warmup_and_ready_session_boundaries(self):
+        from pipelines.certified_research import indicators
+        from datetime import timedelta
+        dataset=str(uuid.uuid4());prior={};offset=0;ag=al=atr=0.;previous=None;emas={};signal=None
+        for day,count in ((date(2026,1,2),7),(date(2026,1,5),8),(date(2026,1,6),25)):
+            unit=market.MarketUnit(dataset,day,'TEST',997,str(uuid.uuid4()))
+            source=(f"SELECT toDate('{day}') session_date,toUInt32(1000) resolution_ms,toUInt32(number) bucket_index,"
+                f'toUInt64(100000+((number+{offset})%5)*1000) close_int,close_int+500 high_int,close_int-500 low_int FROM numbers({count})')
+            self.client.query(indicators.technical_sql(self.database,unit,source,prior,frames=(1000,)),read=False)
+            actual=self.client.query(f'SELECT * FROM {self.database}.research_stage_indicators_v1 WHERE '
+                +unit.where()+' ORDER BY bucket_index')
+            for j,row in enumerate(actual):
+                n=offset+j+1;close=10+((n-1)%5)*.1
+                gain=max(close-previous,0) if previous is not None else 0
+                loss=max(previous-close,0) if previous is not None else 0
+                tr=max(.1,abs(close+.05-previous),abs(close-.05-previous)) if previous is not None else .1
+                if n<=15:ag+=gain/14;al+=loss/14
+                else:ag=ag*13/14+gain/14;al=al*13/14+loss/14
+                atr=atr+tr/14 if n<=14 else atr*13/14+tr/14
+                for p in market_day_sql.EMAS:
+                    emas[p]=close if p not in emas else emas[p]*(1-2/(p+1))+close*2/(p+1)
+                    self.assertAlmostEqual(row['ema_'+str(p)],emas[p],places=10)
+                line=emas[12]-emas[26];signal=line if signal is None else signal*.8+line*.2
+                self.assertAlmostEqual(row['macd_signal'],signal,places=10)
+                self.assertAlmostEqual(row['avg_gain'],ag,places=10);self.assertAlmostEqual(row['avg_loss'],al,places=10)
+                self.assertAlmostEqual(row['atr_14'],atr,places=10)
+                self.assertEqual(int(row['sample_count']),n)
+                self.assertEqual(int(row['rsi_ready']),int(n>=15));self.assertEqual(int(row['atr_ready']),int(n>=14))
+                expected_rsi=0 if n<15 else 100 if al<=0 else 100-100/(1+ag/al)
+                self.assertAlmostEqual(row['rsi_14'],expected_rsi,places=10);previous=close
+            last=actual[-1]
+            prior={1000:{name:previous if name=='close' else int(last[name]) if name=='sample_count'
+                else float(last[name]) for name in indicators.STATE_FIELDS}}
+            offset+=count
+        broken={1000:dict(prior[1000])};broken[1000].pop('avg_gain')
+        with self.assertRaisesRegex(ValueError,'Incomplete'):
+            indicators.technical_sql(self.database,unit,source,broken,frames=(1000,))
+
     def test_short_pressure_uses_session_windows_and_original_public_revision_clocks(self):
         from datetime import timezone
         from pipelines.certified_research import short_pressure

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
 
-from . import market,v7,schema
+from . import market,v7,schema,indicators
 from .contracts import digest,identifier,literal
 from .execution import Unit,execute
 from .publication import Publisher,Scope
@@ -37,7 +37,8 @@ class MarketRequest:
             raise ValueError('Indicator predecessor is absent; explicit bootstrap proof is required')
 
     def parent(self,product,parents=()):
-        return digest(dict(version='research-market-v7-prefix-v2' if product=='v7' else 'research-market-producer-v1',dataset_hash=self.dataset_hash,
+        version='research-market-v7-prefix-v2' if product=='v7' else 'research-market-continuous-wilder-v2' if product=='technical' else 'research-market-producer-v1'
+        return digest(dict(version=version,dataset_hash=self.dataset_hash,
             source=self.source_hash,rules=digest(self.rules),product=product,
             predecessor=self.prior_indicator_hash if product=='technical' else self.prior_v7_hash if product=='v7' else '',
             parents=parents))
@@ -45,9 +46,10 @@ class MarketRequest:
 
 def indicator_state(query,database,unit,attempt,prior,*,bar_attempt):
     """Price-empty frames carry the verified predecessor; no fabricated rows."""
-    from pipelines.market_sip.events.market_day_sql import FRAMES,EMAS
-    names=tuple('ema_'+str(p) for p in EMAS)+('macd_signal','close')
-    rows=query(f"SELECT i.resolution_ms resolution_ms,{','.join('argMax(i.'+n+',i.bucket_index) AS '+n for n in names[:-1])},"
+    from pipelines.market_sip.events.market_day_sql import FRAMES
+    names=indicators.STATE_FIELDS
+    persisted=tuple(n for n in names if n!='close')
+    rows=query(f"SELECT i.resolution_ms resolution_ms,{','.join('argMax(i.'+n+',i.bucket_index) AS '+n for n in persisted)},"
                'argMax(b.close_int/10000.,i.bucket_index) close FROM '
                f'{identifier(database)}.research_bars_v1 b INNER JOIN '
                f'{identifier(database)}.research_indicators_v1 i USING '
@@ -55,7 +57,7 @@ def indicator_state(query,database,unit,attempt,prior,*,bar_attempt):
                f"WHERE b.dataset_id=toUUID({literal(unit.dataset_id)}) AND b.session_date=toDate({literal(unit.day)}) "
                f'AND b.listing_key={unit.listing_key} AND i.attempt_id=toUUID({literal(attempt)}) '
                f'AND b.attempt_id=toUUID({literal(bar_attempt)}) GROUP BY i.resolution_ms')
-    result={int(r['resolution_ms']):{n:float(r[n]) for n in names} for r in rows}
+    result={int(r['resolution_ms']):{n:int(r[n]) if n=='sample_count' else float(r[n]) for n in names} for r in rows}
     for frame in FRAMES:
         if frame not in result and frame in prior:result[frame]=dict(prior[frame])
     if result and set(result)!=set(FRAMES):raise ValueError('Current/prior indicator state lacks a required frame')
@@ -105,14 +107,12 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
             if old:return old
             unit=market.MarketUnit(base.dataset_id,base.day,base.ticker,base.listing_key,str(uuid4()))
             if u.product=='technical':
-                from pipelines.market_sip.events import market_day_sql as core
                 source=(f'SELECT session_date,resolution_ms,bucket_index,close_int,high_int,low_int '
                     f'FROM {database}.research_bars_v1 WHERE '
                     f'dataset_id=toUUID({literal(base.dataset_id)}) AND session_date=toDate({literal(base.day)}) '
                     f'AND listing_key={base.listing_key} AND attempt_id=toUUID({literal(bar_receipt["attempt_id"])}) '
                     'AND price_valid=1 AND extremes_valid=1')
-                query(core.technical_from_source(database,unit.dataset_id,unit.day,unit.ticker,unit.attempt_id,
-                                                source,request.prior_indicators,table_names=market.STAGING),read=False)
+                query(indicators.technical_sql(database,unit,source,request.prior_indicators),read=False)
                 expected={k:int(v) for k,v in query(market.expected_evidence_sql(unit,'technical',database))[0].items()}
                 query(market.normalized_insert(unit,'technical',database),read=False)
             elif u.product=='v7':
