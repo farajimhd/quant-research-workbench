@@ -80,3 +80,43 @@ def test_programme_selection_never_enters_legacy_market_preflight(monkeypatch):
     with pytest.raises(ValueError, match="bound native launch"):
         backtest_preflight(anchor_date=date(2026, 10, 12), session_count=1,
             configuration_revision=revision)
+
+
+@pytest.mark.parametrize('failure', [None, 'running', 'selection', 'changed_owner'])
+def test_recorded_comparison_routes_only_completed_approved_app_owner(monkeypatch, tmp_path, failure):
+    from dataclasses import replace
+    from src.backend.replay_run_service import ReplayRunService, ReplayRunController
+    from tests.test_program_controller_runtime import definition_and_actor
+    from src.backend.signal_stream_runtime_service import SignalStreamRuntime
+    from src.backend.program_policy_recovery import RecoveredProgramPolicy, _RECOVERY_PROOF, program_policy_fingerprint
+    from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    from src.backend import recorded_program_comparison as reader
+    service, revision, _ = installed(monkeypatch)
+    _, actor, selection, _ = configured()
+    owner = ReplayRunService(runtime_root=tmp_path)
+    definition, _ = definition_and_actor()
+    controller = ReplayRunController(replace(definition, configuration_revision=revision), runtime_root=tmp_path,
+        program_strategy=actor, program_liquidity_resolution_ms=1000)
+    controller.status = 'running' if failure == 'running' else 'completed'
+    controller._program_configuration_selection = None if failure == 'selection' else selection
+    controller._program_signal_runtime = SignalStreamRuntime()
+    prefix = V4CommittedPrefix(controller.run_id, 100, 'batch', 'cursor', 'completed', ('batch',))
+    packet = RecoveredProgramPolicy(actor, 100, 0, 0, {}, controller.run_id, (),
+        program_policy_fingerprint(actor), _RECOVERY_PROOF)
+    calls = []
+    reference, blocks, result = object(), (object(),), object()
+    async def joined(factory, scope, recovered, inputs, source, frozen, **bounds):
+        assert scope is prefix and recovered is packet and inputs is blocks and frozen is reference
+        assert source is controller._program_signal_runtime and bounds == dict(day=definition.session_date.isoformat(), maximum_measure_rows=100)
+        calls.append(True)
+        if failure == 'changed_owner': controller._program_signal_runtime = SignalStreamRuntime()
+        return result
+    monkeypatch.setattr(reader, 'read_recorded_program_session_metrics', joined)
+    async def run():
+        return await service.read_recorded_comparison(owner, controller, reader_factory=lambda: None,
+            prefix=prefix, packet=packet, blocks=blocks, reference=reference, maximum_measure_rows=100)
+    if failure:
+        with pytest.raises((ValueError, RuntimeError)): asyncio.run(run())
+    else:
+        assert asyncio.run(run()) is result
+    assert calls == ([True] if failure in (None, 'changed_owner') else [])

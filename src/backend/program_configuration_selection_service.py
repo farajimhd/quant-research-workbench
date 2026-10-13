@@ -310,6 +310,52 @@ class ProgramConfigurationSelectionService:
             raise ValueError("Programme create changed its prepared typed run definition")
         return await self.launch_controller(run_service, controller)
 
+    async def read_recorded_comparison(self, run_service, controller, *, reader_factory,
+            prefix, packet, blocks, reference, **bounds):
+        """Read a completed current app programme through the joined native reader.
+
+        The caller supplies certified prepared blocks and explicit SELECT-only
+        clients. This starts no producer, writer, broker or backtest task.
+        """
+        from .replay_run_service import ReplayRunService, ReplayRunController
+        from .backtest_program_journal_bootstrap import _configuration_hash
+        from src.trading_runtime.strategy_configuration_selection import StrategyConfigurationSelection
+        from .recorded_program_comparison import read_recorded_program_session_metrics
+        from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+        from .program_policy_recovery import RecoveredProgramPolicy
+        if (program_configuration_selection_service() is not self
+                or type(run_service) is not ReplayRunService or type(controller) is not ReplayRunController
+                or type(prefix) is not V4CommittedPrefix or type(packet) is not RecoveredProgramPolicy
+                or controller.runtime_root != run_service.runtime_root or controller.status != 'completed'
+                or controller._task is not None and not controller._task.done()
+                or controller.run_id != prefix.run_id or controller._program_strategy is None
+                or controller._program_signal_runtime is None):
+            raise ValueError('Recorded programme comparison lacks its completed installed app owner')
+        definition, actor, source = controller.definition, controller._program_strategy, controller._program_signal_runtime
+        revision = definition.configuration_revision
+        selection = getattr(controller, '_program_configuration_selection', None)
+        if (type(selection) is not StrategyConfigurationSelection
+                or revision.get('revision_id') != 'strategy-configuration:' + selection.header['configuration_id']
+                or self.pins.get(selection.header['configuration_id']) != selection.header['content_hash']
+                or revision.get('selection_hash') != selection.header['content_hash']
+                or packet.actor.program_release.header != actor.program_release.header
+                or packet.actor.assignments() != actor.assignments() or packet.actor._listings != actor._listings):
+            raise ValueError('Recorded programme comparison differs from its approved central selection')
+        selected_hash = _configuration_hash(definition)
+        current = await self.snapshot(revision['revision_id'])
+        if (program_configuration_selection_service() is not self or controller.definition is not definition
+                or controller._program_strategy is not actor or controller._program_signal_runtime is not source
+                or _configuration_hash(definition) != selected_hash or current['content_hash'] != selected_hash):
+            raise RuntimeError('Recorded programme comparison selection changed during review')
+        result = await read_recorded_program_session_metrics(reader_factory, prefix, packet, blocks, source, reference,
+            day=definition.session_date.isoformat(), **bounds)
+        if (program_configuration_selection_service() is not self or controller.definition is not definition
+                or controller._program_strategy is not actor or controller._program_signal_runtime is not source
+                or controller._program_configuration_selection is not selection or controller.status != 'completed'
+                or _configuration_hash(definition) != selected_hash):
+            raise RuntimeError('Recorded programme comparison owner changed during its reads')
+        return result
+
 
 def install_program_configuration_selection_service(service):
     """Operator-authorized startup hook; no public HTTP installation endpoint."""
