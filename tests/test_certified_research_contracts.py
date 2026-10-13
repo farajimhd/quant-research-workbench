@@ -1249,6 +1249,25 @@ class ClickHouseIntegration(unittest.TestCase):
         dictionary_events.clear()
         self.assertEqual(campaign.run()['seal'],result['seal'])
         self.assertFalse(dictionary_events)
+        # Exercise the saved-run adapter against the actual stored plan and
+        # certified facts. This SEC-only fixture supplies source/runtime seams;
+        # this check does not qualify production canonical-source bindings.
+        from unittest.mock import patch
+        from pipelines.certified_research import saved_execution
+        logs=[]
+        def tracked(sql):
+            logs.append(sql)
+            return self.client.query(sql)
+        def frozen_clients(frozen):
+            self.assertEqual(frozen,config)
+            return self.builder.Client(self.args,persistent=False)
+        with patch.object(saved_execution.verification,'source_guard',return_value=lambda:None), \
+                patch.object(saved_execution.runtime_plan,'runtime',return_value=runtime):
+            resumed=saved_execution.run(tracked,self.database,dataset,claim,frozen_clients,dictionary,
+                lambda frozen,units:capacity)
+        self.assertEqual(resumed['seal'],result['seal'])
+        self.assertFalse(any(sql.startswith(('INSERT INTO','ALTER TABLE','CREATE TABLE')) for sql in logs))
+        self.assertFalse(dictionary_events)
 
     def test_campaign_publishes_only_verified_authorities_and_detects_tampering_on_resume(self):
         dataset=str(uuid.uuid4());day=date(2026,1,2)
