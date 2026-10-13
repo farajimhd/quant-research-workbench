@@ -15,6 +15,13 @@ class ResidentFeatures(OriginalResident):
             self.tensors=self.host
 
     def _values(self,rows,ids,clock,columns):
+        if self.device.type=='cuda':
+            from .feature_gather import project
+            return project(self,rows,ids,clock,columns)
+        return self._values_reference(rows,ids,clock,columns)
+
+    def _values_reference(self,rows,ids,clock,columns):
+        """Unchanged Torch projection, retained as CPU path and exact oracle."""
         old=[(i,c) for i,c in enumerate(columns) if c<len(ORIGINAL)]
         new=[(i,c-len(ORIGINAL)) for i,c in enumerate(columns) if c>=len(ORIGINAL)]
         if not new:return super()._values(rows,ids,clock,columns)

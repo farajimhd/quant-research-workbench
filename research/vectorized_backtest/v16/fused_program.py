@@ -7,8 +7,8 @@ from .program import TorchPrograms,Op
 
 
 @triton.jit
-def instruction(X,K,V,M,OPS,A,B,FI,W,C,rows,candles,features,candidates,index,BLOCK:tl.constexpr):
-    candidate=tl.program_id(0);r=tl.program_id(1)*BLOCK+tl.arange(0,BLOCK);live=r<rows
+def instruction(X,K,V,M,OPS,A,B,FI,W,C,ACTIVE,rows,candles,features,candidates,index,BLOCK:tl.constexpr):
+    candidate=tl.load(ACTIVE+tl.program_id(0));r=tl.program_id(1)*BLOCK+tl.arange(0,BLOCK);live=r<rows
     gene=index*candidates+candidate;op=tl.load(OPS+gene)
     output=(index*candidates+candidate)*rows+r
     value=tl.full((BLOCK,),0,tl.float32);known=tl.full((BLOCK,),False,tl.int1)
@@ -78,6 +78,10 @@ class FusedPrograms(TorchPrograms):
         super().__init__(programs,catalog,device,output_unit=output_unit)
         from .program import Node
         rows=[[p.nodes[i] if i<len(p.nodes) else Node(Op.CONSTANT) for p in programs] for i in range(self.width)]
+        # Do not change candidate ordering or moving-mean scan batch shapes.
+        # Padding nodes cannot be outputs or operands of any actual program.
+        self.active_rows=[torch.tensor([j for j,p in enumerate(programs) if i<len(p.nodes)],
+                                       device=device,dtype=torch.int32) for i in range(self.width)]
         self.boolean_means=set()
         for i,row in enumerate(rows):
             for j,n in enumerate(row):
@@ -110,7 +114,7 @@ class FusedPrograms(TorchPrograms):
         values=features.new_empty((self.width,*shape));masks=torch.empty_like(values,dtype=torch.bool)
         axis=torch.arange(c,device=features.device)[None]
         for i in range(self.width):
-            instruction[(b,triton.cdiv(rows,128))](features,valid,values,masks,*self.genes,
+            instruction[(self.active_rows[i].numel(),triton.cdiv(rows,128))](features,valid,values,masks,*self.genes,self.active_rows[i],
                 rows,c,features.shape[-1],b,i,BLOCK=128,enable_fp_fusion=False)
             # Keep precisely the old cumsum and pooling order, including float32
             # rounding and missing-evidence propagation. Never approximate a mean.
