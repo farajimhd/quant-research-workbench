@@ -12,7 +12,7 @@ from src.backend.backtest_market_data import market_day_boundary
 from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
 
 
-@pytest.mark.parametrize("failure", [None, "accounts", "clock", "moved"])
+@pytest.mark.parametrize("failure", [None, "accounts", "clock", "moved", "source"])
 def test_recovery_join_preserves_common_prefix_accounts_and_session_clock(monkeypatch, failure):
     prefix = V4CommittedPrefix("run", 10, "batch", "cursor", "running", ("batch",))
     definition = ProgramSavedDefinitionEvidence(prefix,
@@ -32,16 +32,26 @@ def test_recovery_join_preserves_common_prefix_accounts_and_session_clock(monkey
         return ProgramFinancialCheckpoint(prefix, object(), object(), object(), at)
     monkeypatch.setattr(joined, "load_program_saved_definition", read)
     monkeypatch.setattr(joined, "recover_program_financial_checkpoint", financial)
+    reconstructed = object()
+    async def source_preflight(evidence):
+        assert evidence is definition
+        if failure == "source": raise ValueError("source readiness failed")
+        return {"ready": True}
+    def reconstruct(evidence, preflight):
+        assert evidence is definition and preflight == {"ready": True}
+        return reconstructed
+    monkeypatch.setattr(joined, "reconstruct_program_saved_definition", reconstruct)
     async def run():
         kwargs = dict(expected_code_hash="a" * 64, broker_contract=object(), broker_head_reader=object(),
             observation_head_reader=object(), profiles=(SimpleNamespace(account_id="other" if failure == "accounts" else "account"),),
-            broker_read_concurrency=2)
+            broker_read_concurrency=2, source_preflight=source_preflight)
         if failure:
-            with pytest.raises((ValueError, RuntimeError), match="accounts|session window|moved"):
+            with pytest.raises((ValueError, RuntimeError), match="accounts|session window|moved|source readiness"):
                 await joined.load_program_recovery_evidence(lambda: None, "run", **kwargs)
         else:
             result = await joined.load_program_recovery_evidence(lambda: None, "run", **kwargs)
             assert result.definition is definition and result.financial.prefix is prefix
+            assert result.run_definition is reconstructed
             assert len(reads) == 2
     asyncio.run(run())
-    assert len(financial_calls) == (0 if failure == "accounts" else 1)
+    assert len(financial_calls) == (0 if failure in ("accounts", "source") else 1)

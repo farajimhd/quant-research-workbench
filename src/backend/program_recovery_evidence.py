@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import date
 from threading import Lock
 
-from .program_saved_definition import load_program_saved_definition
+from .program_saved_definition import load_program_saved_definition, reconstruct_program_saved_definition
 from .program_checkpoint_recovery import recover_program_financial_checkpoint
 from .backtest_market_data import market_day_boundary, SESSION_OPEN_OFFSET_MS
 
@@ -12,16 +12,20 @@ from .backtest_market_data import market_day_boundary, SESSION_OPEN_OFFSET_MS
 class ProgramRecoveryEvidence:
     definition: object
     financial: object
+    run_definition: object
 
 
 async def load_program_recovery_evidence(client_factory, run_id, *, expected_code_hash,
-        broker_contract, broker_head_reader, observation_head_reader, profiles, broker_read_concurrency):
+        broker_contract, broker_head_reader, observation_head_reader, profiles, broker_read_concurrency,
+        source_preflight):
     """Require coherent definition/account/clock evidence from owned readers.
 
-    Source, policy replay, OMS lineage and recovered-owner admission remain
-    independent mandatory gates. This grants no restart or write permission.
+    The explicit asynchronous source preflight must prove current certified
+    database plans; native reconstruction must reproduce all saved rows.
+    Policy replay, OMS lineage and recovered-owner admission remain mandatory
+    gates. This grants no restart or write permission.
     """
-    if not callable(client_factory):
+    if not callable(client_factory) or not callable(source_preflight):
         raise ValueError("Programme recovery evidence requires its owned reader factory")
     connections, lock = [], Lock()
     def owned_factory():
@@ -32,6 +36,10 @@ async def load_program_recovery_evidence(client_factory, run_id, *, expected_cod
             connections.append(client)
         return client
     definition = await load_program_saved_definition(owned_factory, run_id, expected_code_hash=expected_code_hash)
+    # The caller resolves certified database coverage using its existing source
+    # authorities; a saved plan token alone never establishes current readiness.
+    preflight = await source_preflight(definition)
+    run_definition = reconstruct_program_saved_definition(definition, preflight)
     profiles = tuple(profiles)
     if ({profile.account_id for profile in profiles} != set(definition.context["account_ids"])
             or len(profiles) != len(definition.context["account_ids"])):
@@ -50,4 +58,4 @@ async def load_program_recovery_evidence(client_factory, run_id, *, expected_cod
     final = await load_program_saved_definition(owned_factory, run_id, expected_code_hash=expected_code_hash)
     if final != definition:
         raise RuntimeError("Programme recovery definition moved during financial reads")
-    return ProgramRecoveryEvidence(definition, financial)
+    return ProgramRecoveryEvidence(definition, financial, run_definition)

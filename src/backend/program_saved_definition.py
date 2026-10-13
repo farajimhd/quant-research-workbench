@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 from uuid import UUID
 from types import MappingProxyType
+from collections.abc import Mapping
 import re
 
 from .qmd_columnar_history_transport import _owned_worker
@@ -25,6 +26,30 @@ def _freeze(value):
     if isinstance(value, (tuple, list)):
         return tuple(_freeze(item) for item in value)
     return value
+
+
+def reconstruct_program_saved_definition(evidence, preflight):
+    """Reconstruct native settings from saved facts and fresh source readiness.
+
+    This creates no runtime or owner claim. The native codec independently
+    round-trips every normalized definition family against the reviewed plans.
+    """
+    from src.trading_runtime.arte_backtest_definition import reconstruct_backtest_definition_from_arte
+    if (type(evidence) is not ProgramSavedDefinitionEvidence
+            or type(evidence.prefix) is not V4CommittedPrefix
+            or evidence.prefix.status != "running"
+            or evidence.prefix.run_id != evidence.context.get("run_id")
+            or not isinstance(preflight, Mapping)
+            or not str(evidence.revision.get("revision_id") or "").startswith("strategy-configuration:")):
+        raise ValueError("Programme reconstruction requires coherent running definition evidence")
+    def detach(value):
+        if isinstance(value, Mapping):
+            return {key: detach(item) for key, item in value.items()}
+        if isinstance(value, (tuple, list)):
+            return tuple(detach(item) for item in value)
+        return value
+    return reconstruct_backtest_definition_from_arte(detach(evidence.saved),
+        detach(evidence.context), detach(evidence.revision), detach(preflight))
 
 
 async def load_program_saved_definition(client_factory, run_id, *, expected_code_hash):
