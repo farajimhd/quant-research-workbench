@@ -135,7 +135,8 @@ def main(argv=None):
                 claim=SourceClaim(keeper.client)
                 try:
                     result=acquisition.prepare_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),paths,config,claim,
-                        Event(),acquire_missing=args.acquire_missing,stage_archive=args.stage_archive,context_start=args.context_start_date)
+                        Event(),acquire_missing=args.acquire_missing,stage_archive=args.stage_archive,context_start=args.context_start_date,
+                        writer_query=client.query)
                 finally:claim.close()
             print(f"Source ready | {len(result['source']['expected'])} sessions | {result['source_hash']}")
             print('Derived campaign execution remains under implementation.')

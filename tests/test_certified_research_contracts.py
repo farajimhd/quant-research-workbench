@@ -30,6 +30,36 @@ from pipelines.certified_research.universe_publication import UniversePublisher
 
 
 class Contracts(unittest.TestCase):
+    def test_source_preparation_routes_only_frozen_native_repair_headers(self):
+        from unittest.mock import patch
+        from pipelines.market_sip.events import native_reporting_repair as native
+        day=date(2026,1,2);record=dict(source_date=str(day),trade_event_rows=2)
+        frozen=c.digest(record)
+        inventory=dict(expected=(day,),rows={day:record},source_hashes={str(day):frozen},missing=(),incomplete=())
+        header=dict(source_date=str(day),source_hash=frozen,evidence_hash='b'*64,target='market_sip_compact.events_2026')
+        def query(sql):
+            if 'system.tables' in sql:return [dict(n=1)]
+            if 'historical_trade_reporting_coverage_v1' in sql:return []
+            return [header]
+        class Claim:
+            def check(self):pass
+        class Stop:
+            def is_set(self):return False
+            def wait(self,seconds):return False
+        writer=lambda *args,**kwargs:None
+        with patch.object(source,'inventory',return_value=inventory),patch.object(native,'step',side_effect=[
+                dict(status='mutating',parts_remaining=1),dict(status='complete')]) as step:
+            acquisition.resume_native_repairs(query,writer,inventory,Claim(),Stop(),emit=lambda *args:None)
+            self.assertEqual(step.call_count,2)
+            self.assertEqual(step.call_args.args[2],'b'*64)
+            step.call_args.args[4]() # The native step receives a current-source guard.
+        header['source_hash']='f'*64
+        with self.assertRaisesRegex(ValueError,'frozen canonical'):
+            acquisition.resume_native_repairs(query,writer,inventory,Claim(),Stop())
+        header['source_hash']=frozen
+        with self.assertRaisesRegex(ValueError,'writer connection'):
+            acquisition.resume_native_repairs(query,None,inventory,Claim(),Stop())
+
     def test_native_reporting_fingerprint_is_required_and_changes_source_epoch(self):
         import json
         from pipelines.market_sip.events import reporting_evidence as ns
@@ -298,6 +328,7 @@ class Contracts(unittest.TestCase):
             def check(self):pass
         def query(sql):
             if 'storage_policies' in sql:return [dict(disk_name='sip_raw_ssd' if "='sip_raw_ssd'" in sql else 'live_market_ssd')]
+            if 'historical_native_reporting_repair_v1' in sql:return [dict(n=0)]
             if 'system.tables' in sql:return [dict(name='events_2026',storage_policy='sip_raw_ssd')]
             if 'system.parts' in sql:return [dict(disk_name='sip_raw_ssd')]
             return [dict(last_day='2025-12-31')]

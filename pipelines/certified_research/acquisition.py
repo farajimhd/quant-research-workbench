@@ -120,7 +120,7 @@ def run_ingestion(command,paths: IngestionPaths,stop,*,emit=print,guard=None):
 
 
 def prepare_sources(query,paths,config,claim,stop,*,acquire_missing=False,stage_archive=False,emit=print,
-                    runner=run_ingestion,context_start=None):
+                    runner=run_ingestion,context_start=None,writer_query=None):
     """Acquire/repair first; freeze the derived campaign only after verification.
 
     Canonical ordinals prohibit filling internal holes through ordinary append.
@@ -155,6 +155,7 @@ def prepare_sources(query,paths,config,claim,stop,*,acquire_missing=False,stage_
             runner(command,paths,stop,emit=emit,guard=claim.check);guard()
         inv=source.inventory(query,range_start,config.end)
         if inv['missing'] or inv['incomplete']:raise ValueError('Updater did not certify all required source sessions')
+    resume_native_repairs(query,writer_query,inv,claim,stop,emit=emit)
     reporting=source.reporting_inventory(query,inv)
     if reporting['mutating']:raise ValueError('Canonical reporting mutations must finish before preparation')
     for first,last in contiguous_ranges(reporting['missing']):
@@ -166,3 +167,52 @@ def prepare_sources(query,paths,config,claim,stop,*,acquire_missing=False,stage_
     epoch=source.require_ready(query,inv,reporting)
     return dict(source=inv,reporting=reporting,source_hash=epoch,
         preparation_hash=digest(dict(source_hash=epoch,range=(range_start,config.start,config.end))))
+
+
+def resume_native_repairs(query,writer_query,inventory,claim,stop,*,emit=print):
+    """Route only previously frozen native jobs; never adopt unsigned NS rows."""
+    from pipelines.market_sip.events import native_reporting_repair as native
+    from .contracts import literal
+    exists=query(f"SELECT count() n FROM system.tables WHERE database='q_live' AND name={literal(native.HEADER)}")[0]['n']
+    if not int(exists):return
+    days=inventory['expected']
+    rows=query(f'SELECT source_date,source_hash,evidence_hash,target FROM q_live.{native.HEADER} '
+        f'WHERE source_date BETWEEN toDate({literal(min(days))}) AND toDate({literal(max(days))}) ORDER BY source_date')
+    if not rows:return
+    import json
+    from pipelines.market_sip.events import reporting_evidence as ns
+    from .contracts import REPORTING_REVISION
+    has_coverage=query("SELECT count() n FROM system.tables WHERE database='q_live' AND name='historical_trade_reporting_coverage_v1'")[0]['n']
+    coverage=query('SELECT source_date,source_digest,status,details FROM q_live.historical_trade_reporting_coverage_v1 FINAL '
+        f'WHERE source_date BETWEEN toDate({literal(min(days))}) AND toDate({literal(max(days))}) AND revision={literal(REPORTING_REVISION)}') if int(has_coverage) else []
+    by_day={str(r['source_date']):r for r in coverage}
+    if len(by_day)!=len(coverage):raise ValueError('Native reporting coverage is ambiguous')
+    seen=set()
+    for row in rows:
+        day=date.fromisoformat(str(row['source_date']))
+        if day not in inventory['rows']:continue
+        if day in seen:raise ValueError('Native reporting repair headers are ambiguous')
+        seen.add(day)
+        expected_hash=inventory['source_hashes'][str(day)]
+        if row['source_hash']!=expected_hash or row['target']!=f'market_sip_compact.events_{day.year}':
+            raise ValueError('Native reporting repair header differs from frozen canonical source')
+        certified=by_day.get(str(day))
+        if certified and certified['status']=='complete' and certified['source_digest']==expected_hash:
+            details=json.loads(certified['details']);counts=details.get('counts',{})
+            if (details.get('evidence_version')==ns.VERSION and details.get('evidence_hash')==row['evidence_hash']
+                    and int(counts.get('n',-1))==int(inventory['rows'][day]['trade_event_rows']) and int(counts.get('bad',-1))==0):
+                emit(f'Native reporting {day} | certified receipt reused')
+                continue
+        if writer_query is None:raise ValueError('Native repair resume requires the owned writer connection')
+        def guard():
+            claim.check()
+            if stop.is_set():raise InterruptedError('Native repair stopped; server mutation retained for resume')
+            current=source.inventory(query,day,day,sessions=(day,))
+            if current['missing'] or current['incomplete'] or current['source_hashes'].get(str(day))!=expected_hash:
+                raise ValueError('Canonical source changed during native reporting repair')
+        while True:
+            guard()
+            result=native.step(writer_query,inventory['rows'][day],row['evidence_hash'],claim,guard)
+            emit(f"Native reporting {day} | {result['status']} | parts remaining {result.get('parts_remaining',0)}")
+            if result['status']=='complete':break
+            if stop.wait(1):raise InterruptedError('Native repair stopped; server mutation retained for resume')
