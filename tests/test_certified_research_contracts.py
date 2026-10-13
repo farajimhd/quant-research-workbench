@@ -750,6 +750,29 @@ class Contracts(unittest.TestCase):
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
 
+    def test_frozen_runtime_descriptor_persists_and_restores_without_defaults(self):
+        from pipelines.certified_research import runtime_plan,recipe
+        from src.market_engine.historical_session_levels import Settings
+        from types import SimpleNamespace
+        config=c.CampaignConfig(date(2026,1,2),date(2026,1,2),database=self.database)
+        rules=tuple(dict(token_id=i,modifier_int=0,update_last=1,update_high_low=1,update_volume=1) for i in range(80))
+        frozen=recipe.market_recipe(config,rules,settings=Settings(tick=.02),coverage=.75)
+        plans=runtime_plan.units(config,frozen['definition'],rules);dataset=str(uuid.uuid4())
+        class Claim:
+            def check(self):pass
+        runtime=SimpleNamespace(recipe_hash=frozen['hash'],definition=frozen['definition'],rules=rules)
+        handlers=runtime_plan.Handlers(config,plans,Claim(),lambda:None,runtime)
+        producers,verifiers=handlers.registry()
+        controller=Campaign(self.client.query,self.database,Claim(),dataset,config,plans,'a'*64,lambda:None,producers,verifiers)
+        result=controller.run()
+        self.assertEqual(result['status'],'complete',str(result['errors']))
+        stored=load_plan(self.client.query,self.database,dataset)
+        restored=runtime_plan.resolve(stored.config,stored.units)
+        self.assertEqual(restored['definition'],frozen['definition'])
+        self.assertEqual(restored['rules'],rules)
+        self.assertEqual(restored['definition']['v7_parameters']['coverage'],.75)
+        self.assertEqual(controller.run()['seal'],result['seal'])
+
     def test_complete_schema_installation_is_exact_and_no_write_on_resume(self):
         from pipelines.certified_research import installation
         from pipelines.certified_research.publication import DictionaryClaim

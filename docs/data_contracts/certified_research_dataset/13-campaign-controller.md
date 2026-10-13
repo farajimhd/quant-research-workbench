@@ -10,6 +10,8 @@
 
 [Existing corporate/allocation/supply authority handoffs](13d-reference-handoffs.md)
 
+[Frozen recipe/rule metadata and runtime reconstruction](13e-frozen-runtime.md)
+
 ## Implemented controller core
 
 `ExecutionLaunch` now combines the concrete market, reference, activity and universe registries into one `Campaign` executor. Acquisition, initial-seed and corporate/allocation stages must supply registered application handlers; missing handlers stop construction, and competing product authorities are rejected. Nothing in stored arguments is executed as code.

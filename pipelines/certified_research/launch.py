@@ -2,7 +2,7 @@
 from .campaign import Campaign,load_plan
 from .handlers import MarketHandlers,ReferenceHandlers,ActivityHandlers,UniverseHandlers,CanonicalSourceHandlers,PreparedShortSourceHandlers,PreparedSecSourceHandlers,V7SeedHandlers,IndicatorSeedHandlers,ReferenceAuthorityHandlers
 from .contracts import digest
-from . import installation
+from . import installation,runtime_plan
 
 
 def combine_registries(registries):
@@ -25,7 +25,7 @@ class ExecutionLaunch:
     """
     @classmethod
     def from_stored(cls,query,database,dataset_id,claim,client_factory,source_guard,
-                    capacity_guard,dictionary_claim_factory,runtime_factory,*,
+                    capacity_guard,dictionary_claim_factory,runtime_factory=None,*,
                     prerequisite_registries=(),maximum_units=1_000_000,
                     maximum_metadata_bytes=256*1024**2):
         """Restore handlers against the immutable ClickHouse plan, without writes.
@@ -37,6 +37,8 @@ class ExecutionLaunch:
         claim.check();source_guard()
         saved=load_plan(query,database,dataset_id,maximum_units=maximum_units,
             maximum_metadata_bytes=maximum_metadata_bytes)
+        if runtime_factory is None:
+            runtime_factory=lambda frozen:runtime_plan.runtime(frozen,claim,client_factory,source_guard)
         runtime=runtime_factory(saved)
         launch=cls(query,saved.config,saved.dataset_id,saved.units,saved.source_hash,
             claim,client_factory,source_guard,capacity_guard,dictionary_claim_factory,
@@ -55,7 +57,13 @@ class ExecutionLaunch:
         if (market_runtime.dataset!=dataset_id or market_runtime.database!=config.database
                 or market_runtime.claim is not claim):
             raise ValueError('Market runtime ownership/dataset differs from execution launch')
+        if any(p.unit.product=='calculation_recipe' for p in self.plans):
+            frozen=runtime_plan.resolve(config,self.plans)
+            if (market_runtime.recipe_hash!=frozen['recipe_hash'] or market_runtime.definition!=frozen['definition']
+                    or market_runtime.rules!=frozen['rules']):
+                raise ValueError('Market runtime differs from the frozen plan descriptor')
         registries=(CanonicalSourceHandlers(claim,client_factory,source_guard),
+            runtime_plan.Handlers(config,self.plans,claim,source_guard,market_runtime),
             ReferenceAuthorityHandlers(dataset_id,config.database,claim,client_factory,source_guard),
             V7SeedHandlers(config.database,claim,client_factory,source_guard,market_runtime),
             IndicatorSeedHandlers(config.database,claim,client_factory,source_guard,market_runtime),
@@ -75,6 +83,7 @@ class ExecutionLaunch:
     def admit(self):
         self.claim.check();self.source_guard()
         self.controller.check_plan()
+        if any(p.unit.product=='calculation_recipe' for p in self.plans):runtime_plan.resolve(self.config,self.plans)
         installation.verify(self.query,self.config.database,require_tables=True)
         certificate=self.capacity_guard(self.controller.plan_hash,self.plans)
         if not isinstance(certificate,dict) or certificate.get('status')!='admitted':
