@@ -10,7 +10,13 @@ def verify_rule_decision_commit_graph(families, *, run_id, batch_id):
                     for row in families.get(BASIS.name, ()))
     children = tuple(_seal(INTENT, {key: value for key, value in row.items() if key != "content_hash"})
                      for row in families.get(INTENT.name, ()))
-    signals = tuple(row for row in families.get("trading_strategy_signal_v2", ())
+    raw_signals = tuple(families.get("trading_strategy_signal_v2", ()))
+    exact_signals = tuple(families.get("trading_strategy_signal_exact_price_v2", ()))
+    if exact_signals:
+        from .trading_price_rows import restore_exact_price_row
+        raw_signals += tuple(restore_exact_price_row("trading_strategy_signal_v2", row)
+            for row in exact_signals)
+    signals = tuple(row for row in raw_signals
                     if row["signal_type"] == "program_boundary_completed")
     if not parents and not children and not signals:
         return

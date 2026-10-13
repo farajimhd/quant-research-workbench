@@ -36,6 +36,10 @@ def test_entry_requests_cash_without_opening_position_and_pending_blocks_duplica
     assert select(data)[0].intent_id == p.intent_id
     assert select((*data[:3], replace(data[3], pending_acquisition=True))) == ()
     assert select(data, terminal=True) == ()
+    cancellation, = select((*data[:3], replace(data[3], pending_acquisition=True)), terminal=True)
+    assert cancellation.action == "cancel_entry"
+    assert cancellation.reason == "program:cancel_pending_acquisition"
+    assert not data[2].position_open
 
 
 def test_open_branch_and_age_require_actual_fills_and_manage_outside_top10():

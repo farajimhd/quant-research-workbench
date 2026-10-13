@@ -80,7 +80,9 @@ def test_session_carries_packet_and_rejects_gaps_before_dispatch(prepared_source
         assert result.policy_packet == f"packet-{len(calls)}"
         assert result.source_clocks == 2 * len(calls)
         assert result.qualified_decisions == len(calls)
-        assert calls[0]["terminal"] is False
+        # Every cohort receives the session closing policy; its global cutoff
+        # may precede the final cohort and is evaluated by the native scheduler.
+        assert calls[0]["terminal"] is True
         if not stop_after_first:
             assert calls[1]["terminal"] is True
         assert not controller._program_session_active and controller._program_session_task is None

@@ -535,8 +535,11 @@ class TypedJournalBatch:
     backtest_market_authorities: tuple[Mapping[str, Any], ...] = ()
     backtest_progress: tuple[Mapping[str, Any], ...] = ()
     prepared_v7_leases: tuple[Mapping[str, Any], ...] = ()
+    exact_signal_prices: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.exact_signal_prices) is not bool:
+            raise ValueError("Signal price representation must be an explicit boolean")
         if not self.run_id or self.first_sequence < 1 or self.last_sequence < self.first_sequence:
             raise ValueError("Journal batch has invalid run or sequence identity")
         if (not isinstance(self.source_cursor, str) or not self.source_cursor
@@ -825,12 +828,17 @@ def _sealed_families(
     events_by_id = {str(UUID(str(row["record_id"]))): row for row in batch.events}
     result: list[tuple[str, tuple[dict[str, Any], ...]]] = []
     exact_price_rows = {}
+    if batch.exact_signal_prices:
+        from .trading_price_rows import exact_price_row
+        exact_price_rows["trading_strategy_signal_v1"] = tuple(exact_price_row(
+            "trading_strategy_signal_v1", {key: value for key, value in row.items() if key != "content_hash"})
+            for row in batch.signals)
     if exact_oms_price_rows is not None:
         if (type(exact_oms_price_rows) is not tuple or len(exact_oms_price_rows) != 2
                 or any(type(rows) is not tuple for rows in exact_oms_price_rows)
                 or batch.oms_group_states or batch.oms_order_states):
             raise ValueError("Exact OMS seal requires unmixed explicit family rows")
-        exact_price_rows = dict(zip(("trading_oms_group_state_v1", "trading_oms_order_state_v1"),
+        exact_price_rows.update(zip(("trading_oms_group_state_v1", "trading_oms_order_state_v1"),
                                  exact_oms_price_rows, strict=True))
     if exact_order_command_rows is not None:
         if type(exact_order_command_rows) is not tuple or batch.order_commands:
@@ -1429,6 +1437,9 @@ def _coalesce_unpublished(batches: tuple[TypedJournalBatch, ...]) -> TypedJourna
     if len(batches) == 1:
         return batches[0]
     last = batches[-1]
+    signal_modes = {batch.exact_signal_prices for batch in batches if batch.signals}
+    if len(signal_modes) > 1:
+        raise ValueError("Journal microbatches mix signal price representations")
     families: dict[str, tuple[dict[str, Any], ...]] = {}
     for _, attribute, _, _ in _FAMILIES:
         families[attribute] = tuple(
@@ -1456,6 +1467,7 @@ def _coalesce_unpublished(batches: tuple[TypedJournalBatch, ...]) -> TypedJourna
         batches[0].first_sequence, last.last_sequence,
         last.source_cursor, last.status,
         **families, v4_command_lineages=lineages,
+        exact_signal_prices=True in signal_modes,
     )
 
 
@@ -2413,8 +2425,8 @@ def _v4_preflight(client: Any) -> _V4PreflightSeal:
 
 def _v4_family_table(name: str) -> str:
     """Write current signal shape to V2; occupied legacy V1 is read-only."""
-    return ("trading_strategy_signal_v2" if name == "trading_strategy_signal_v1"
-            else name)
+    return {"trading_strategy_signal_v1": "trading_strategy_signal_v2",
+            "trading_strategy_signal_exact_price_v1": "trading_strategy_signal_exact_price_v2"}.get(name, name)
 
 
 def _optional_v3_commit_exists(client: Any) -> bool:
@@ -2485,6 +2497,8 @@ def _publish_typed_batch(
     portfolio_allocation_fills: tuple[Mapping[str, Any], ...] | None = None,
 ) -> str:
     """Publish and verify one typed batch, with the commit row written last."""
+    if batch.exact_signal_prices:
+        raise ValueError("Exact signal publication requires the audited V4 writer")
     if batch.signal_evidence_nodes:
         raise ValueError("Generic signal evidence nodes are retired for new writes")
     if journal_profile not in {"v1", "backtest_v2", "backtest_v3"}:

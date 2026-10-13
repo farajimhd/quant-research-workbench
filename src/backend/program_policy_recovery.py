@@ -54,7 +54,8 @@ def project_pending_program_policy_events(records, *, executions, run_month,
             unit = project_journal_record(record, run_month=run_month, attempt_id=attempt_id,
                 batch_id=batch_id, prior_batch_id=prior_batch_id, source_cursor=source_cursor,
                 committed_order_lineage=lineages,
-                **({"expected_mode": "backtest", "exact_execution_prices": True} if exact_prices else {}))
+                **({"expected_mode": "backtest", "exact_execution_prices": True,
+                    "exact_signal_prices": True} if exact_prices else {}))
             batch = unit.base if type(unit) is ExactPriceExecutionBatch else unit
             event = dict(batch.events[0])
             if record.entity_type == "fill":

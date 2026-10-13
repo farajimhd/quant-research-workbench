@@ -249,6 +249,7 @@ def project_journal_record(
     committed_order_lineage: Mapping[str, tuple] | None = None,
     exact_order_prices: bool = False,
     exact_execution_prices: bool = False,
+    exact_signal_prices: bool = False,
 ) -> TypedJournalBatch | ExactPriceOrderCommandBatch | ExactPriceExecutionBatch:
     """Strict shared entry point for existing live/Backtest journal records.
 
@@ -260,6 +261,8 @@ def project_journal_record(
         raise ValueError("Exact order journal projection requires the explicit Backtest mode")
     if type(exact_execution_prices) is not bool or exact_execution_prices and expected_mode != "backtest":
         raise ValueError("Exact execution projection requires the explicit Backtest mode")
+    if type(exact_signal_prices) is not bool or exact_signal_prices and expected_mode != "backtest":
+        raise ValueError("Exact signal projection requires the explicit Backtest mode")
     identity = dict(run_month=run_month, attempt_id=attempt_id,
                     batch_id=batch_id, prior_batch_id=prior_batch_id,
                     source_cursor=source_cursor)
@@ -639,6 +642,7 @@ def project_journal_record(
             causation_id=str(payload.get("causation_id") or ""),
             persist_metadata_nodes=False,
             decision_metadata=metadata or None,
+            exact_prices=exact_signal_prices,
         )
     if kind == ("resource_lease", "prepared_v7_stream"):
         return prepared_v7_lease_batch(record, **identity)
@@ -1861,8 +1865,11 @@ def strategy_signal_batch(
     causation_id: str = "",
     persist_metadata_nodes: bool = False,
     decision_metadata: Mapping[str, Any] | None = None,
+    exact_prices: bool = False,
 ) -> TypedJournalBatch:
     """Project a signal only when every source and evidence field is represented."""
+    if type(exact_prices) is not bool:
+        raise ValueError("Signal price representation must be explicit")
     if not signal.signal_id or not signal.ticker or not strategy_id or not account_id:
         raise ValueError("Strategy signal identity is incomplete")
     if not (-1 <= signal.score <= 1 and 0 <= signal.confidence <= 1):
@@ -1905,15 +1912,16 @@ def strategy_signal_batch(
         "confidence": _exact_decimal(signal.confidence, _MEASURE_SCALE,
                                       field="signal.confidence"),
         "reason": signal.reason, "working_timeframe": signal.working_timeframe,
-        "invalidation_price": (_exact_decimal(signal.invalidation_price,
+        "invalidation_price": ((signal.invalidation_price if exact_prices else _exact_decimal(signal.invalidation_price,
                                                 field="signal.invalidation_price")
+                               )
                                if signal.invalidation_price is not None else None),
         "source_signal_count": len(signal.source_signal_ids),
         "evidence_node_count": len(evidence_nodes),
         "decision_assignment_id": (decision_metadata["assignment_id"]
                                    if decision_metadata is not None else None),
-        "decision_reference_price": (_exact_decimal(decision_metadata["reference_price"],
-                                                     field="signal.decision_reference_price")
+        "decision_reference_price": ((decision_metadata["reference_price"] if exact_prices else
+            _exact_decimal(decision_metadata["reference_price"], field="signal.decision_reference_price"))
                                      if decision_metadata is not None else None),
         "decision_status": (decision_metadata["status"]
                             if decision_metadata is not None else None),
@@ -1933,6 +1941,7 @@ def strategy_signal_batch(
         sequence, sequence, source_cursor, run_status, (event,),
         signals=(detail,), signal_sources=sources,
         signal_evidence_nodes=evidence_nodes,
+        exact_signal_prices=exact_prices,
     )
 
 

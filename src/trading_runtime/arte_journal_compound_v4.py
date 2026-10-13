@@ -384,6 +384,7 @@ def prepare_compound_v4_families(
         "oms_tactic_steps": STEP_TABLE,
     }
     base_names = {_v4_family_table(name) for name, _, _, _ in _FAMILIES}
+    base_names.add("trading_strategy_signal_exact_price_v2")
     extra: dict[str, list[dict[str, Any]]] = {
         name: [] for name in table_for_key.values()
     }

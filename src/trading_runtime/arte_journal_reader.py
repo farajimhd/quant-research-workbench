@@ -283,11 +283,12 @@ def load_typed_event_page(
     details: dict[tuple[str, str], dict[str, Any]] = {}
     for family, identities in by_family.items():
         physical_family = family
-        if exact_prices and family in {"trading_execution_v1", "trading_order_command_v1", "trading_oms_group_state_v1"}:
+        if exact_prices and family in {"trading_execution_v1", "trading_order_command_v1",
+                "trading_oms_group_state_v1", "trading_strategy_signal_v1", "trading_strategy_signal_v2"}:
             from .trading_price_contracts import PRICE_FAMILIES
             physical_family = PRICE_FAMILIES[family][0]
         contract = (_CONTRACTS["trading_strategy_signal_v1"]
-                    if family == "trading_strategy_signal_v2" else _CONTRACTS[physical_family])
+                    if family == "trading_strategy_signal_v2" and physical_family == family else _CONTRACTS[physical_family])
         columns = ",".join(column for column, _ in contract.columns)
         ids = ",".join(f"toUUID({_literal(value)})" for value in sorted(identities))
         rows = _rows(client,
@@ -299,7 +300,7 @@ def load_typed_event_page(
             raise RuntimeError(f"Typed event page has missing or duplicate {family} rows")
         for raw in rows:
             hash_contract = ("trading_strategy_signal_v1"
-                             if family == "trading_strategy_signal_v2" else physical_family)
+                             if family == "trading_strategy_signal_v2" and physical_family == family else physical_family)
             detail = _verified_row(hash_contract, raw)
             if physical_family != family:
                 from .trading_price_contracts import transform_price_fields

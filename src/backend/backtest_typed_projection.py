@@ -201,7 +201,8 @@ def project_pending_backtest_v4_prefix(
                 continue
             completion_base = project_journal_record(completion, run_month=run_month,
                 attempt_id=attempt, batch_id=completion.record_id, prior_batch_id=prior_batch_id,
-                source_cursor=source_cursor, expected_config=expected_config, expected_mode="backtest")
+                source_cursor=source_cursor, expected_config=expected_config, expected_mode="backtest",
+                exact_signal_prices=exact_oms_prices)
             completed = RuleDecisionBasisBatch.from_pending_completion(journal, completion, completion_base)
             _check_rule_decision_qualification(completed, rule_decision_qualifications[completion.record_id])
             for child in completed.intents:
@@ -434,7 +435,8 @@ def project_pending_backtest_v4_prefix(
                 fixed_market_execution_plan=fixed_market_execution_plan,
                 expected_market_start=expected_market_start,
                 committed_order_lineage=order_lineage,
-                **({"exact_order_prices": True, "exact_execution_prices": True} if exact_oms_prices else {}))
+                **({"exact_order_prices": True, "exact_execution_prices": True,
+                    "exact_signal_prices": True} if exact_oms_prices else {}))
             if progress_state is not None:
                 from src.backend.typed_backtest_progress import project_backtest_progress
                 typed_progress = project_backtest_progress(

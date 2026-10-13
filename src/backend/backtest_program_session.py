@@ -11,6 +11,36 @@ import asyncio
 from itertools import islice
 
 
+def program_terminal_cutoff(session_end, simulation_config, evaluation_interval_ms):
+    """Last closing window that leaves an activation-eligible final bar.
+
+    OMS may first cancel a remaining acquisition, then request the reduction
+    on the next programme clock. Reserve that clock as well as broker activation
+    and the final bar; this provides an opportunity, never a guaranteed fill.
+    """
+    from datetime import datetime, timezone
+    from decimal import Decimal, ROUND_CEILING
+    from src.trading_runtime.simulated_broker import SimulationConfig
+    if (not isinstance(session_end, datetime) or session_end.tzinfo is None
+            or session_end.utcoffset() is None or type(simulation_config) is not SimulationConfig
+            or type(evaluation_interval_ms) is not int or evaluation_interval_ms != 1000
+            or simulation_config.liquidity_resolution_ms not in (100, 1000)):
+        raise ValueError("Programme closing window requires its native clock and broker contract")
+    resolution_us = simulation_config.liquidity_resolution_ms * 1000
+    activation_us = int((Decimal(str(simulation_config.new_order_activation_delay_ms)) * 1000)
+        .to_integral_value(rounding=ROUND_CEILING))
+    # The 1s broker checks activation at bar start; the 100ms broker checks
+    # activation at the completed boundary, while submission precedes bar start.
+    lead_us = (resolution_us + activation_us if simulation_config.liquidity_resolution_ms == 1000
+        else max(resolution_us, activation_us))
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    delta = session_end.astimezone(timezone.utc) - epoch
+    end_us = (delta.days * 86400 + delta.seconds) * 1000000 + delta.microseconds
+    step_us = evaluation_interval_ms * 1000
+    cutoff_us = ((end_us - lead_us) // step_us - 1) * step_us
+    return epoch + timedelta(microseconds=cutoff_us)
+
+
 @dataclass(frozen=True)
 class PreparedProgramCohortWork:
     first_bucket: int
@@ -88,7 +118,7 @@ async def run_prepared_program_session(controller, cohorts, *, initial_packet=No
                 raise RuntimeError("Programme session ownership changed before its next cohort")
             result = await controller.run_fenced_program_cohort(unit.blocks, unit.population, unit.projection,
                 **unit.scope, first_bucket=unit.first_bucket, stop_bucket=unit.stop_bucket,
-                initial_packet=packet, terminal=terminal and index == len(work) - 1)
+                initial_packet=packet, terminal=terminal)
             packet = result.policy_packet
             liquidity += result.liquidity_boundaries
             clocks += result.source_clocks

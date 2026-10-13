@@ -152,6 +152,8 @@ def select_program_proposal(release: ProgramRelease, boundary: ProgramBoundary, 
             stage, action, at, boundary.ticker, quantity, boundary.close, cash, stop,
             reason or f"program:{stage}")
     if not position.position_open:
+        if terminal and management.pending_acquisition:
+            return (proposal("exit", "cancel_entry", reason="program:cancel_pending_acquisition"),)
         if terminal or management.pending_acquisition or not boundary.eligible or not enabled("entry"):
             return ()
         stop = boundary.initial_stop

@@ -40,7 +40,8 @@ def assert_multiple_entry_fill_geometry(actor, executions):
         quantity = sum(Decimal(str(row.size)) for row in buys)
         average = sum(Decimal(str(row.size)) * Decimal(str(row.price)) for row in buys) / quantity
         position = actor.position_for("assignment")
-        assert position.quantity == quantity and position.average_price == average
+        remaining = quantity - sum(Decimal(str(row.size)) for row in executions if row.side in ("S", "SELL"))
+        assert position.quantity == remaining and position.average_price == (average if remaining else 0)
         assert position.fees == sum(Decimal(str(row.commission)) for row in executions)
         assert average != average.quantize(Decimal("0.0000000001"))
 
@@ -238,7 +239,7 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                     from src.backend.backtest_program_session import PreparedProgramCohortWork
                     from src.backend.backtest_market_data import market_day_boundary
                     start_at = market_day_boundary(day, first_bucket * 1000 - 14400000)
-                    stop_at = market_day_boundary(day, (first_bucket + 4) * 1000 - 14400000)
+                    stop_at = market_day_boundary(day, (first_bucket + 8) * 1000 - 14400000)
                     controller.definition = replace(controller.definition,
                         start_time=start_at.timetz().replace(tzinfo=None),
                         end_time=stop_at.timetz().replace(tzinfo=None))
@@ -247,13 +248,25 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                     async def session_read(*args, **kwargs):
                         if calls:
                             calls.append(kwargs)
-                            return {"ABC": ()}
+                            closing_rows = []
+                            for offset in (7,):
+                                market, _ = block.row_for("listing", ordinal + offset)
+                                row = second_bar(market["boundary_at"])
+                                price = round(market["reference_close"] * 10000)
+                                row.update(ticker="ABC", ask_int=price, bid_int=price - 1,
+                                    close_int=price, high_int=price + 1, low_int=price - 1,
+                                    ask_size=0, bid_size=5000)
+                                if resolution == 100:
+                                    row.update(resolution_ms=100,
+                                        bucket_index=(row["bucket_index"] + 1) * 10 - 1)
+                                closing_rows.append(row)
+                            return {"ABC": tuple(closing_rows)}
                         return await read(*args, **kwargs)
                     monkeypatch.setattr(liquidity, "read_fixed_liquidity_cohort_async" if resolution == 100
                         else "read_liquidity_cohort_async", session_read)
                     work = (PreparedProgramCohortWork(
-                        first_bucket, first_bucket + 3, {"assignment": block}, population, projection, unit_scope),
-                        PreparedProgramCohortWork(first_bucket + 3, first_bucket + 4,
+                        first_bucket, first_bucket + 7, {"assignment": block}, population, projection, unit_scope),
+                        PreparedProgramCohortWork(first_bucket + 7, first_bucket + 8,
                             {"assignment": block}, population, projection, unit_scope))
                     if fenced == "launch":
                         from hashlib import sha256
@@ -351,7 +364,7 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                         await asyncio.wait_for(controller._task, timeout=20)
                         if player is not None:
                             await player
-                            assert dispatch_count == 4 and paused.is_set()
+                            assert dispatch_count == 8 and paused.is_set()
                         assert controller.status == "completed", controller.error
                         assert persisted.tables.get("trading_execution_exact_price_v1")
                         assert not persisted.tables.get("trading_execution_v1")
@@ -369,14 +382,14 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                             row.snapshot["checkpoint_sequence"] for row in broker_checkpoints]
                         assert len(account_checkpoints) == 3
                         assert [item.snapshot["boundary_ms"] for item in broker_checkpoints] == [
-                            (first_bucket + offset) * 1000 - 14400000 for offset in (2, 3, 4)]
+                            (first_bucket + offset) * 1000 - 14400000 for offset in (2, 7, 8)]
                         return
                     session = await controller.run_prepared_program_session(work, terminal=True)
                     assert session.status == "evaluated" and session.completed_cohorts == 2
                     assert persisted.tables.get("trading_execution_exact_price_v1")
                     assert not persisted.tables.get("trading_execution_v1")
-                    assert session.source_clocks == session.qualified_decisions == 4
-                    assert session.liquidity_boundaries == (40 if resolution == 100 else 4)
+                    assert session.source_clocks == session.qualified_decisions == 8
+                    assert session.liquidity_boundaries == (80 if resolution == 100 else 8)
                     assert not controller._program_session_active
                     from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
                     # Extend this in-memory SQL fixture with the cursor/event
@@ -399,7 +412,7 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                     monkeypatch.setattr(persisted, "execute", cursor_read)
                     cursor = load_latest_backtest_cursor(persisted, load_verified_v4_prefix(persisted, controller.run_id))
                     assert controller._journal_publisher._source_cursor == f"{cursor['session_date']}:{cursor['boundary_ms']}"
-                    assert cursor["boundary_ms"] == (first_bucket + 4) * 1000 - 14400000
+                    assert cursor["boundary_ms"] == (first_bucket + 8) * 1000 - 14400000
                     assert cursor["market_sequence"] == cursor["boundary_ms"] // resolution
                     assert len(calls) == 2
                     assert controller._journal_publisher.fenced_sequence == session.policy_packet.journal_sequence
@@ -477,12 +490,12 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                     monkeypatch.setattr(controller._runtime, "finish", owned_finish)
                     terminal = await controller.finish_prepared_program_session(status="completed")
                     assert terminal.status == controller.status == "completed"
-                    assert any(position.position_open for position in controller._program_strategy.execution_state.positions.values())
-                    assert terminal.financial_metrics is None
-                    assert terminal.financial_metrics_unavailable == "Actual filled positions remain open"
+                    assert not any(position.position_open for position in controller._program_strategy.execution_state.positions.values())
+                    assert terminal.financial_metrics == controller._program_strategy.execution_state.terminal_financial_metrics()
+                    assert not terminal.financial_metrics_unavailable
                     financials = controller.snapshot()["program_terminal_financials"]
                     assert financials["verified_sequence"] == terminal.last_sequence
-                    assert financials["metrics"] is None
+                    assert financials["metrics"]["net_pnl"] == str(terminal.financial_metrics["net_pnl"])
                     assert financials["unavailable_reason"] == terminal.financial_metrics_unavailable
                     assert controller._runtime_finished
                     assert terminal.last_sequence > session.policy_packet.journal_sequence

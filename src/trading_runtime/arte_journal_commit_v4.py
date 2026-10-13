@@ -637,8 +637,14 @@ def _load_verified_details_v4(
         details[name] = identities
         if name in ENTRY_FREEZE_FAMILIES:
             related_rows[name] = rows
-        if name in {RULE_BASIS.name, RULE_INTENT.name, "trading_strategy_signal_v2"}:
+        if name in {RULE_BASIS.name, RULE_INTENT.name}:
             related_rows[name] = rows
+        if name == "trading_strategy_signal_v2":
+            related_rows[name] = (*related_rows.get(name, ()), *rows)
+        if name == "trading_strategy_signal_exact_price_v2":
+            from .trading_price_rows import restore_exact_price_row
+            related_rows["trading_strategy_signal_v2"] = (*related_rows.get("trading_strategy_signal_v2", ()),
+                *(restore_exact_price_row("trading_strategy_signal_v2", row, stored_utc=True) for row in rows))
         if name in {"trading_event_v1", "trading_strategy_intent_v1",
                     ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, FAILURE.name, PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name, LIQUIDITY_FADE_FAILURE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name, ENTRY_ACTIVITY.name, ENTRY_SPREAD_RISK.name,
                     ACKNOWLEDGEMENT.name,

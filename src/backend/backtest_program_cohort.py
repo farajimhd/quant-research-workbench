@@ -186,6 +186,9 @@ async def run_prepared_program_cohort(controller, blocks, population, projection
     if controller._stop_requested:
         return ProgramCohortResult("stopped", 0, 0, 0, initial_packet)
     resolution = runtime.broker.config.liquidity_resolution_ms
+    from .backtest_program_session import program_terminal_cutoff
+    closing_at = program_terminal_cutoff(controller.definition.session_end, runtime.broker.config,
+        actor.program_release.header["evaluation_interval_ms"]) if terminal else None
     broker, config, manager, portfolio, journal = (runtime.broker, runtime.config,
         runtime.order_manager, runtime.portfolio, runtime.journal)
     definition = controller.definition
@@ -276,7 +279,7 @@ async def run_prepared_program_cohort(controller, blocks, population, projection
             results = await controller.dispatch_prepared_program_clock(blocks, population, at=at,
                 assignment_order=order, execution_policy=execution_policy,
                 protection_profiles=protection_profiles_at(at), outside_rth=outside_rth,
-                terminal=terminal and boundary == through, qualify=True,
+                terminal=terminal and at >= closing_at, qualify=True,
                 policy_blocks=replay_blocks,
                 maximum_events=maximum_events, initial_packet=packet)
             for _, result in results:

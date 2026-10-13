@@ -459,6 +459,7 @@ def test_runtime_splits_known_fee_and_shared_projection_preserves_it() -> None:
     runtime = object.__new__(TradingRuntime)
     runtime.run_id = "live:DU1"
     runtime.journal = CapturingJournal()
+    runtime.strategy = None  # This fixture exercises the non-programme financial projection.
     execution = replace(_execution({**source(), "commission": 1.25}),
                         raw={**source(), "commission": 1.25})
     runtime._record_executions((execution,))
@@ -542,6 +543,33 @@ def test_signal_sources_are_normalized_without_dropping_metadata() -> None:
     )
     with pytest.raises(ValueError, match="do not match"):
         _sealed_families(invalid)
+
+
+@pytest.mark.parametrize("price", [10.001000000000001, 1.2300000190734863, 0.10000000000000002])
+def test_exact_signal_prices_survive_shared_sealing_without_decimal_rounding(price):
+    from src.trading_runtime.trading_price_rows import restore_exact_price_row
+    signal = StrategySignal("signal-1", "breakout", "TEST", AT, "enter_long", "bullish",
+        .75, .9, "entry_ready", ("source-a",), "1s", price)
+    args = dict(run_id="backtest:DU1", run_month=date(2026, 8, 1), account_id="DU1",
+        strategy_id="strategy-1", strategy_revision=7,
+        attempt_id="00000000-0000-0000-0000-000000000004",
+        batch_id="00000000-0000-0000-0000-000000000005",
+        prior_batch_id="00000000-0000-0000-0000-000000000000",
+        sequence=1, source_cursor="signal-1", run_status="running", recorded_at=AT)
+    with pytest.raises(ValueError, match="losslessly"):
+        strategy_signal_batch(signal, **args)
+    batch = strategy_signal_batch(signal, exact_prices=True, **args)
+    with pytest.raises(ValueError, match="audited V4"):
+        publish_typed_batch(None, batch)
+    families = dict(_sealed_families(batch))
+    assert not families.get("trading_strategy_signal_v1")
+    sealed, = families["trading_strategy_signal_exact_price_v1"]
+    assert "invalidation_price" not in sealed and type(sealed["invalidation_price_bits"]) is int
+    restored = restore_exact_price_row("trading_strategy_signal_v1", sealed)
+    assert restored["invalidation_price"].hex() == price.hex()
+    with pytest.raises(ValueError, match="hash mismatch"):
+        restore_exact_price_row("trading_strategy_signal_v1", {**sealed,
+            "invalidation_price_bits": sealed["invalidation_price_bits"] + 1})
 
 
 def test_generic_signal_evidence_cannot_be_published() -> None:

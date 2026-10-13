@@ -179,7 +179,8 @@ async def qualify_pending_program_decision(controller, candidate, record_id, rec
         raise ValueError("Pending completion changed during native qualification")
     base = project_journal_record(completion, run_month=publisher.run_month,
         attempt_id=publisher.attempt_id, batch_id=parent["batch_id"],
-        prior_batch_id=publisher._batch_id, source_cursor=publisher._source_cursor)
+        prior_batch_id=publisher._batch_id, source_cursor=publisher._source_cursor,
+        expected_mode="backtest", exact_signal_prices=publisher.exact_oms_prices)
     envelope = QualifiedRuleDecisionBatch(RuleDecisionBasisBatch.from_pending_completion(journal, completion, base),
                                          qualified)
     retain_qualified_rule_decision(publisher, envelope)
@@ -229,7 +230,8 @@ async def qualify_captured_pending_program_decision(controller, candidate, recor
         raise ValueError("Pending completion changed during captured qualification")
     base = project_journal_record(completion, run_month=publisher.run_month,
         attempt_id=publisher.attempt_id, batch_id=parent["batch_id"],
-        prior_batch_id=publisher._batch_id, source_cursor=publisher._source_cursor)
+        prior_batch_id=publisher._batch_id, source_cursor=publisher._source_cursor,
+        expected_mode="backtest", exact_signal_prices=publisher.exact_oms_prices)
     envelope = QualifiedRuleDecisionBatch(RuleDecisionBasisBatch.from_pending_completion(journal, completion, base),
         qualified)
     retain_qualified_rule_decision(publisher, envelope)
