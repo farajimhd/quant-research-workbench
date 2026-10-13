@@ -57,7 +57,7 @@ def execution_membership(snapshot,days,*,maximum_sessions=250000):
             by_security.setdefault(security,set()).add(listing)
             sessions.append(MarketSession(day,listing,row.ticker))
     sessions=tuple(sorted(sessions,key=lambda s:(s.listing_key,s.day)))
-    result=dict(ready=bool(sessions) and not partial,sessions=sessions,
+    result=dict(ready=bool(sessions) and not partial,days=days,sessions=sessions,
         security_listings={k:tuple(sorted(v)) for k,v in sorted(by_security.items())},
         security_issuers=dict(sorted(issuers.items())),partial=tuple(partial),excluded_intervals=dict(excluded),
         source_hash=snapshot['source_hash'])

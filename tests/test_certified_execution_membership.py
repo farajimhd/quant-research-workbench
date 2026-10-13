@@ -37,6 +37,24 @@ def test_partial_day_is_explicit_blocker_and_never_expanded_to_full_session():
     assert [s.day for s in result['sessions']]==[date(2026,1,5)]
 
 
+def test_float_price_assignment_uses_historical_listing_and_reports_absence():
+    from pipelines.certified_research.planning import assign_float_price_sessions
+    from pipelines.certified_research.contracts import digest
+    days=(date(2026,1,2),date(2026,1,5),date(2026,1,6))
+    old=interval(last='2026-01-05');new=interval('NEW','new_listing','2026-01-05','2026-01-06')
+    membership=execution_membership(snapshot(old,new),days)
+    context=dict(measurements=(days[1],),sessions=days,fundamentals_hash='c'*64,price_gap_days=7,sec_age_days=520)
+    context['context_hash']=digest(context)
+    issuer=identity_key(ISSUER,'issuer')
+    result=assign_float_price_sessions(membership,{issuer:context})
+    assert result['price_sessions'][identity_key(LISTING,'listing')]==(days[0],)
+    assert result['price_sessions'][identity_key(LISTING,'new_listing')]==(days[1],)
+    assert result['unavailable'][0]['day']==days[2]
+    incomplete=dict(membership,days=(days[0],days[2]))
+    with pytest.raises(ValueError,match='cover all'):
+        assign_float_price_sessions(incomplete,{issuer:context})
+
+
 def test_competing_security_listings_and_metadata_overflow_fail_closed():
     with pytest.raises(ValueError,match='Competing market listings'):
         execution_membership(snapshot(interval(),interval('SECOND','second')),(date(2026,1,2),))

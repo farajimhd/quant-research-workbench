@@ -40,6 +40,40 @@ def price_context_days(target_days,issuer_contexts):
     return tuple(sorted(needed))
 
 
+def assign_float_price_sessions(membership,issuer_contexts):
+    """Assign price demands through dated security/listing ownership.
+
+    This consumes membership expanded over all requested context dates. Missing
+    listed sessions are retained as explicit unavailable demands, never assigned
+    to a current symbol. Callers must handle context-only historical listings
+    without inventing a new indicator/V7 genesis.
+    """
+    from .contracts import digest
+    if not membership.get('ready') or not membership.get('days'):
+        raise ValueError('Float-price assignment requires admitted expanded dated membership')
+    issuers=membership['security_issuers']
+    if set(issuer_contexts)-set(issuers.values()):
+        raise ValueError('Float-price context has an unrelated issuer')
+    requested=price_context_days(membership['days'],issuer_contexts)
+    if set(requested)-set(membership['days']):
+        raise ValueError('Dated membership does not cover all float-price context dates')
+    owners={listing:security for security,listings in membership['security_listings'].items() for listing in listings}
+    context_days={k:set(v['sessions']) for k,v in issuer_contexts.items()}
+    demands={};covered=set()
+    for session in membership['sessions']:
+        security=owners[session.listing_key];issuer=issuers[security]
+        if session.day in context_days.get(issuer,()):
+            demands.setdefault(session.listing_key,set()).add(session.day)
+            covered.add((security,session.day))
+    unavailable=tuple(dict(security_key=security,issuer_key=issuer,day=day,reason='no_admitted_listing_session')
+        for security,issuer in sorted(issuers.items()) for day in issuer_contexts.get(issuer,{}).get('sessions',())
+        if (security,day) not in covered)
+    result=dict(price_sessions={k:tuple(sorted(v)) for k,v in sorted(demands.items())},unavailable=unavailable,
+        membership_hash=membership['membership_hash'],context_hashes={k:v['context_hash'] for k,v in sorted(issuer_contexts.items())})
+    result['assignment_hash']=digest(result)
+    return result
+
+
 @dataclass(frozen=True)
 class MarketSession:
     day: date
