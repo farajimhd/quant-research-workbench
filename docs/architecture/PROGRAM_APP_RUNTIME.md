@@ -157,6 +157,13 @@ before committing the completed receipts through the shared checkpoint writer.
 Verified completed work is skipped; uncheckpointed output is an explicit
 recovery blocker, never blindly reinserted or overwritten. Technical/seed
 stages, final certificate publication and consumer admission remain required.
+`market_day_predecessor.MarketDayPredecessorLedger` replaces producer-side
+SQLite candidate discovery with explicit immutable current checkpoints and
+fully audited parent receipts. Parent headers and receipt families must match
+their final fences and calculation/rule profile. The target-bound numerical
+reader rejects same-day and future parent access. Missing or ambiguous parent
+declarations block preparation; they never silently select a newer mutable
+build timestamp or infer bootstrap state.
 
 Managed app shutdown disposes an unused staged programme handoff before closing
 its policy reader. It drains runtime background-task and typed journal cleanup,
