@@ -11,6 +11,7 @@ import sys
 
 
 sys.dont_write_bytecode = True
+os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -55,7 +56,15 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--reload", action="store_true")
+    parser.add_argument("--approved-program-startup-plan")
+    parser.add_argument("--approved-program-startup-plan-sha256")
     args = parser.parse_args()
+    if bool(args.approved_program_startup_plan) != bool(args.approved_program_startup_plan_sha256):
+        parser.error('Programme startup requires both the approved runtime plan and its SHA256')
+    if args.approved_program_startup_plan_sha256:
+        import re
+        if re.fullmatch('[0-9a-f]{64}', args.approved_program_startup_plan_sha256) is None:
+            parser.error('Programme startup SHA256 must be 64 lowercase hexadecimal characters')
     _apply_service_environment()
 
     # pip-system-certs replaces ssl.SSLContext at interpreter startup on some
@@ -69,13 +78,21 @@ def main() -> int:
 
     import uvicorn
 
+    app_target = 'src.backend.app:app'
+    factory_options = {}
+    if args.approved_program_startup_plan:
+        os.environ['PROGRAM_APP_STARTUP_PLAN'] = args.approved_program_startup_plan
+        os.environ['PROGRAM_APP_STARTUP_PLAN_SHA256'] = args.approved_program_startup_plan_sha256
+        app_target = 'src.backend.program_app_bootstrap:create_app'
+        factory_options['factory'] = True
     uvicorn.run(
-        "src.backend.app:app",
+        app_target,
         host=args.host,
         port=args.port,
         lifespan="on",
         reload=args.reload,
         reload_dirs=[str(REPO_ROOT / "src")] if args.reload else None,
+        **factory_options,
     )
     return 0
 

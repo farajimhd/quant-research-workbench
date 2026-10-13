@@ -586,24 +586,28 @@ SERVICE_REGISTRY: dict[str, dict[str, str]] = {
 @asynccontextmanager
 async def application_lifespan(_app: FastAPI):
     from src.backend.program_app_startup import start_program_app_selection
-    await start_program_app_selection(_app)
-    from src.backend.live_strategy_runtime_service import LIVE_STRATEGY_RUNTIME
-    from src.backend.market_discovery_runtime_service import MARKET_DISCOVERY_RUNTIME
-    LIVE_STRATEGY_RUNTIME.start()
-    MARKET_DISCOVERY_RUNTIME.start()
+    from src.backend.program_app_bootstrap import close_managed_program_startup
     try:
-        yield
+        await start_program_app_selection(_app)
+        from src.backend.live_strategy_runtime_service import LIVE_STRATEGY_RUNTIME
+        from src.backend.market_discovery_runtime_service import MARKET_DISCOVERY_RUNTIME
+        LIVE_STRATEGY_RUNTIME.start()
+        MARKET_DISCOVERY_RUNTIME.start()
+        try:
+            yield
+        finally:
+            from src.backend.backtest_history_performance import history_performance
+            from src.backend.backtest_review_loading import review_loading
+            await review_loading.close()
+            await history_performance.close()
+            MARKET_DISCOVERY_RUNTIME.stop()
+            LIVE_STRATEGY_RUNTIME.stop()
+            _CANVAS_PROFILE_READ_EXECUTOR.shutdown(wait=True, cancel_futures=True)
+            _CANVAS_PROFILE_WRITE_EXECUTOR.shutdown(wait=True, cancel_futures=True)
+            _BACKTEST_HISTORY_READ_EXECUTOR.shutdown(wait=True, cancel_futures=True)
+            close_trading_journal()
     finally:
-        from src.backend.backtest_history_performance import history_performance
-        from src.backend.backtest_review_loading import review_loading
-        await review_loading.close()
-        await history_performance.close()
-        MARKET_DISCOVERY_RUNTIME.stop()
-        LIVE_STRATEGY_RUNTIME.stop()
-        _CANVAS_PROFILE_READ_EXECUTOR.shutdown(wait=True, cancel_futures=True)
-        _CANVAS_PROFILE_WRITE_EXECUTOR.shutdown(wait=True, cancel_futures=True)
-        _BACKTEST_HISTORY_READ_EXECUTOR.shutdown(wait=True, cancel_futures=True)
-        close_trading_journal()
+        await close_managed_program_startup(_app)
 
 
 app = FastAPI(title="Quant Research Workbench API", version="1.0.0", lifespan=application_lifespan)

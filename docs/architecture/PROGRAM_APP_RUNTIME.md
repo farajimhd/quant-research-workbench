@@ -54,6 +54,34 @@ which reports configuration, not input coverage or successful authentication.
 Every input request still checks grants, physical placement and its cold seal.
 The gateway's other historical routes retain their existing credentials.
 
+## Normal app startup
+
+The normal `scripts/run_backend.py` launcher supports the paired explicit
+`--approved-program-startup-plan` and
+`--approved-program-startup-plan-sha256` arguments. Without them its original
+app target remains unchanged. With them, the Uvicorn factory returns the same
+app, routes and lifespan and defers file, database and Keeper I/O to owned
+workers during startup. Reload starts a new worker with the same pinned plan.
+
+The bounded runtime approval file has exactly these fields:
+
+| Field | Meaning |
+|---|---|
+| `contract` | `approved-program-app-startup-v1` |
+| `approved_selections` | Map of central configuration UUIDs to approved content hashes |
+| `executors` | Approved `strategy_id`, `revision`, `expected_content_hash`, `expected_code_hash`, `expected_winner_hash` references |
+| `concurrency` | Explicit admitted cold-read bound from 1 through 6 |
+
+This file holds approval references only. It cannot override cash, fees,
+programs, market inputs, OMS or broker settings. The supplied SHA256 pins its
+exact bytes; it is an integrity check, not a signature or automatic permission.
+Read-only central release verification completes before code registration.
+Central selection and portfolio-policy/Keeper receipts are then verified before
+background services start. Startup owns and closes only its policy read
+session; externally supplied services retain their existing ownership contract.
+No publisher, journal writer, input producer, run or live admission is started
+by programme selection setup. Service startup still needs operator approval.
+
 ## Operator boundary
 
 `scripts/clickhouse/plan_program_app_principals.py` is review-only. Its eight
