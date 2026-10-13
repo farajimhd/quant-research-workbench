@@ -15,9 +15,11 @@ def test_program_plan_preserves_legacy_and_uses_central_contracts():
     tables = {table.name for table in STAGED_TABLES}
     assert plan.principal == "backtest_v4_program_runner"
     assert plan.insert_arte == rule_decision_write_tables()
-    from src.trading_runtime.trading_price_contracts import exact_price_storage_contracts
-    exact = {table.name for table in exact_price_storage_contracts()}
-    assert len(exact) == 11
+    from src.trading_runtime.trading_price_contracts import program_exact_price_storage_contracts, exact_price_storage_contracts
+    exact = {table.name for table in program_exact_price_storage_contracts()}
+    assert len(exact) == 10
+    assert len(exact_price_storage_contracts()) == 11
+    assert 'trading_strategy_signal_exact_price_v1' not in plan.select_arte | plan.insert_arte
     from src.trading_runtime.arte_entry_acquisition_freeze import FAMILY_NAMES
     from src.trading_runtime.backtest_journal_price_contract import PRICE_CONTRACT
     from src.trading_runtime.columnar_strategy_schema import BROKER
