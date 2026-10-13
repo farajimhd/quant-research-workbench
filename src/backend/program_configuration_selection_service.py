@@ -145,6 +145,33 @@ class ProgramConfigurationSelectionService:
                 or current["selection_hash"] != selection.header["content_hash"]):
             raise RuntimeError("Programme launch changed its reviewed central selection")
 
+    async def preflight(self, run_service, *, configuration_revision, sessions,
+            start_time, end_time, initial_cash):
+        """Describe existing prepared coverage only for the exact reviewed scope."""
+        from datetime import time
+        from src.trading_runtime.journal_contract import canonical_json
+        controller = await self.staged_controller(run_service)
+        definition = controller.definition
+        revision = definition.configuration_revision
+        if (type(sessions) is not tuple or sessions != (definition.session_date,)
+                or definition.final_session_date not in (None, definition.session_date)
+                or start_time != definition.start_time or end_time != (definition.end_time or time(20))
+                or type(initial_cash) not in (int, float) or initial_cash != definition.initial_cash
+                or configuration_revision.get("revision_id") != revision["revision_id"]
+                or configuration_revision.get("selection_hash") != revision["selection_hash"]
+                or configuration_revision.get("content_hash") != revision["content_hash"]
+                or canonical_json(configuration_revision.get("payload")) != canonical_json(revision["payload"])):
+            raise ValueError("Programme preflight differs from its prepared session or reviewed configuration")
+        days = [day.isoformat() for day in sessions]
+        return dict(schema_version=1, mode="backtest", ready=True, strategy_run_ready=True,
+            prepared_run_id=controller.run_id, execution_interval=definition.execution_interval,
+            window=dict(sessions=days, session_count=len(days), start=days[0], end=days[-1]),
+            market_data_plan=deepcopy(definition.market_data_plan),
+            causal_v7_plan=deepcopy(definition.causal_v7_plan),
+            checks=[dict(id="prepared_programme_funnel", label="Prepared programme funnel", status="ready",
+                required=True, summary="Certified inputs and native typed launch ownership verified.",
+                evidence=controller.run_id)], coverage={}, gateway={"source": "qmd_history_certified"})
+
 
 def install_program_configuration_selection_service(service):
     """Operator-authorized startup hook; no public HTTP installation endpoint."""

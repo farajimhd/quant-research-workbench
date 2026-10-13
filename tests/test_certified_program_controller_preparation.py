@@ -85,6 +85,15 @@ def test_certified_selection_prepares_native_service_controller_without_starting
                 assert await selector.stage_controller(service, controller) is controller
                 assert selector._prepared is retained
                 assert await selector.staged_controller(service) is controller
+                from datetime import time
+                scope = dict(configuration_revision=revision, sessions=(definition.session_date,),
+                    start_time=definition.start_time, end_time=definition.end_time or time(20),
+                    initial_cash=definition.initial_cash)
+                preflight = await selector.preflight(service, **scope)
+                assert preflight["prepared_run_id"] == controller.run_id and preflight["strategy_run_ready"] is True
+                assert preflight["execution_interval"] == "100ms"
+                with pytest.raises(ValueError, match="prepared session"):
+                    await selector.preflight(service, **{**scope, "initial_cash": definition.initial_cash + 1})
                 assert not service._runs and controller._task is None
             assert not service._runs and controller._task is None
             revision["selection_hash"] = "f" * 64
