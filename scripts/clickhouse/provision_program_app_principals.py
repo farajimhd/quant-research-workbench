@@ -76,14 +76,19 @@ def effective_grants(client, plan):
     return frozenset(actual)
 
 
-def apply_with_clients(*, admin, plans, credential_factory, client_factory, emit=print):
+def apply_with_clients(*, admin, plans, credential_factory, client_factory, emit=print, storage_audit=None):
     """Audit every existing account before creating or granting any account."""
     if admin.execute('SELECT currentUser()').strip() in {p.principal for p in plans}:
         raise ValueError('Provisioning requires a distinct operator authority')
-    for database in ('arte', 'q_live'):
-        contracts = tuple({(t.database, t.name): t for t in
-            (*HISTORY, *OPENING, *LIQUIDITY, *RELEASE, *SELECTION) if t.database == database}.values())
-        storage_preflight(admin, tables=contracts)
+    if storage_audit is not None:
+        if not callable(storage_audit):
+            raise ValueError('Principal provisioning requires its explicit storage auditor')
+        storage_audit(admin)
+    else:
+        for database in ('arte', 'q_live'):
+            contracts = tuple({(t.database, t.name): t for t in
+                (*HISTORY, *OPENING, *LIQUIDITY, *RELEASE, *SELECTION) if t.database == database}.values())
+            storage_preflight(admin, tables=contracts)
     present = {}
     for p in plans:
         count = admin.execute(f"SELECT count() FROM system.users WHERE name='{p.principal}' FORMAT TabSeparated").strip()
