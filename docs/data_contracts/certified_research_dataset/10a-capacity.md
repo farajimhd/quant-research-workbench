@@ -4,6 +4,14 @@
 
 Separate measured disk space, provisional estimates and unknown export costs.
 
+### Implemented pilot-based gate
+
+`capacity.admission` now projects additional writes only from explicitly selected, recipe-compatible `PilotRate` evidence. Persisted bytes scale with completed comparable pilot units; staging/merge peaks scale with the pilot's measured **active** units and the planned concurrency. Exact decimal arithmetic rounds upward and applies a declared safety factor (default 1.25). Missing/incompatible rates block admission.
+
+Both workload disks require explicit reserve bytes and physical-volume grouping. For a shared volume the gate sums write demands and reserves, uses the minimum reported free/unreserved capacity and never adds free-space figures. Distinct physical volumes retain separate budgets. The certificate hashes demands, pilot evidence and current inventory evidence. Pilot certification/representativeness, verified physical topology and final launcher enforcement remain unfinished; supplying a rate object alone is not measured qualification.
+
+October 13 read-only inventory: `bars_v1` 6,284,476,332 physical rows / 155.95 GiB compressed; `liquidity_100ms_v1` 4,569,302,628 rows / 224.76 GiB compressed. Unreserved logical space was 4,660.15 GiB on `live_market_ssd` and 1,399.20 GiB on `sip_raw_ssd`. These are current physical observations, not rates for the new normalized schemas. New-schema campaign projection remains unqualified pending the representative pilot, context scope and staging inventory.
+
 ## On this page
 
 - [Capacity estimates and admission](#capacity-estimates-and-admission)
