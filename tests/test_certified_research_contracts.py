@@ -1107,8 +1107,10 @@ class ClickHouseIntegration(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'Membership changed, duplicated'):publisher.receipt(snapshot)
 
     def test_concrete_sec_and_derived_handlers_run_through_campaign_controller(self):
+        from types import SimpleNamespace
+        from pipelines.certified_research.launch import ExecutionLaunch
         dataset=str(uuid.uuid4());start=date(2026,1,1);end=date(2026,10,2)
-        config=c.CampaignConfig(start,end,workers=2)
+        config=c.CampaignConfig(start,end,database=self.database,workers=2)
         common=dict(entity_key=9918,start='2025-01-01',end=str(end))
         plans=(PlannedUnit(Unit('sec','fundamentals',(),config.query_memory_bytes),dict(common,cik='320193',source_hash='a'*64)),
             PlannedUnit(Unit('derived','derived_fundamentals',('sec',),config.query_memory_bytes),common))
@@ -1123,8 +1125,14 @@ class ClickHouseIntegration(unittest.TestCase):
         claim=Claim();registry=ReferenceHandlers(dataset,self.database,claim,
             lambda:self.builder.Client(self.args,persistent=False),lambda:None,plans,dictionary_claim_factory=dictionary)
         producers,verifiers=registry.registry()
-        campaign=Campaign(self.client.query,self.database,claim,dataset,config,plans,'a'*64,lambda:None,producers,verifiers)
-        result=campaign.run();self.assertEqual(result['status'],'complete',str(result['errors']))
+        def capacity(plan_hash,units):
+            certificate=dict(status='admitted',plan_hash=plan_hash,fixture=True)
+            return dict(certificate,certificate_hash=c.digest(certificate))
+        runtime=SimpleNamespace(dataset=dataset,database=self.database,claim=claim,request=None,engine=None)
+        launch=ExecutionLaunch(self.client.query,config,dataset,plans,'a'*64,claim,
+            lambda:self.builder.Client(self.args,persistent=False),lambda:None,capacity,dictionary,runtime)
+        campaign=launch.controller
+        result=launch.run();self.assertEqual(result['status'],'complete',str(result['errors']))
         self.assertEqual(result['seal']['units'],2)
         self.assertEqual(dictionary_events.count('acquire'),2);self.assertEqual(dictionary_events.count('close'),2)
         dictionary_events.clear()

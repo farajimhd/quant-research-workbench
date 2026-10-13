@@ -4,6 +4,12 @@
 
 ## Implemented controller core
 
+`ExecutionLaunch` now combines the concrete market, reference, activity and universe registries into one `Campaign` executor. Acquisition, initial-seed and corporate/allocation stages must supply registered application handlers; missing handlers stop construction, and competing product authorities are rejected. Nothing in stored arguments is executed as code.
+
+Before `run`, the entry point checks ownership/source guards and a fingerprinted capacity-admission certificate bound to the exact plan hash. Blocked, corrupted or wrong-plan admission prevents writes. `verify` performs authority verification without requesting future write headroom. A bounded live fixture exercised SEC→derived-fundamental publication and sealing through this assembly; its capacity certificate was synthetic test evidence, not a production-scale pilot.
+
+Final CLI `run/resume/verify` routing, prerequisite acquisition/admission and representative pilot measurement remain unfinished. The assembled controller does not make an incomplete source/universe/seed graph executable.
+
 `Campaign` freezes the launch configuration, source epoch and bounded unit arguments. The ClickHouse plan stores normalized numeric unit/dependency IDs, product names and argument hashes. Dataset definitions and unit rows are immutable: changed, extra, missing-on-verification or duplicated metadata fails closed.
 
 Campaign identity includes dates and resource budgets. `CampaignConfig.calculation_hash` separately identifies semantic feature selections, so extending dates or changing workers does not by itself change that calculation component. Compatibility still requires algorithm/rule/calendar versions, source lineage and exact predecessor evidence. The calculation hash alone is not a checkpoint certificate; automatic compatibility discovery and the complete V7 recipe binding remain unfinished.
