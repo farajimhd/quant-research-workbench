@@ -7,10 +7,10 @@ from decimal import Decimal,ROUND_CEILING
 import re
 
 READ_PRODUCTS=frozenset(('canonical_source','technical_seed','v7_seed','sec_acquisition',
-    'short_volume_acquisition','short_interest_acquisition'))
+    'short_volume_acquisition','short_interest_acquisition','corporate_actions','float_allocation','reported_supply'))
 WRITE_PRODUCTS=frozenset(('market_aggregate','technical','v7','activity','universe','fundamentals',
     'derived_fundamentals','regular_prices','float_supply','short_volume','short_interest','short_pressure',
-    'identity_observation','corporate_actions','float_allocation','reported_supply'))
+    'identity_observation'))
 
 
 def plan_demands(config,plans):

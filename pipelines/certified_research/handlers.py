@@ -167,6 +167,40 @@ class IndicatorSeedHandlers(V7SeedHandlers):
     def registry(self):return {'technical_seed':self.producer},{'technical_seed':self.verifier}
 
 
+class ReferenceAuthorityHandlers:
+    """Reuse qualified current-dataset reference scopes without fabrication."""
+    PRODUCTS=('corporate_actions','float_allocation','reported_supply')
+    def __init__(self,dataset_id,database,claim,client_factory,source_guard):
+        self.dataset=dataset_id;self.database=database;self.claim=claim;self.clients=client_factory;self.guard=source_guard
+
+    def execute(self,plan,parents,stop=None):
+        from . import schema
+        if stop is not None and stop.is_set():raise InterruptedError('Reference authority verification stopped')
+        args=plan.arguments
+        if plan.unit.product not in self.PRODUCTS or set(args)!={'entity_key','start','end','receipt'}:
+            raise ValueError('Reference prerequisite requires an explicit certified receipt locator')
+        row=args['receipt']
+        scope=ReferenceScope(self.dataset,2,int(args['entity_key']),plan.unit.product,
+            date.fromisoformat(args['start']),date.fromisoformat(args['end']),row['parent_hash'],facts.catalog_hash())
+        if (str(row['dataset_id'])!=self.dataset or int(row['entity_kind'])!=2
+                or int(row['entity_key'])!=scope.entity_key or row['family']!=scope.family
+                or str(row['range_start'])!=str(scope.start) or str(row['range_end'])!=str(scope.end)
+                or row['catalog_hash']!=scope.catalog_hash):
+            raise ValueError('Reference authority identity/range/catalog differs; cross-dataset import requires a separate certified producer')
+        client=self.clients()
+        try:
+            self.claim.check();self.guard()
+            schema.verify_storage(client.query,self.database,require_tables=True)
+            actual=ReferencePublisher(client.query,self.database,self.claim).receipt(scope)
+            if actual is None or actual!=row:raise ValueError('Reference prerequisite differs from independently verified stored authority')
+            self.claim.check();self.guard();return actual
+        finally:client.close()
+
+    def producer(self,plan,parents,stop):return self.execute(plan,parents,stop)
+    def verifier(self,plan,parents):return self.execute(plan,parents)
+    def registry(self):return {p:self.producer for p in self.PRODUCTS},{p:self.verifier for p in self.PRODUCTS}
+
+
 class ActivityHandlers:
     """Concurrent SQL windows consuming shared current/context liquidity."""
     def __init__(self,dataset_id,database,claim,client_factory,source_guard,plans):

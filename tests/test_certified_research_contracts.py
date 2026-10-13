@@ -1357,6 +1357,14 @@ class ClickHouseIntegration(unittest.TestCase):
                 def close(self):real.close()
             return Client()
         handlers=ReferenceHandlers(dataset,self.database,Claim(),factory,lambda:None,(*plans,supply))
+        from pipelines.certified_research.handlers import ReferenceAuthorityHandlers
+        authorities=ReferenceAuthorityHandlers(dataset,self.database,Claim(),factory,lambda:None)
+        for family in authorities.PRODUCTS:
+            source_scope=parent_scopes[family]
+            locator=PlannedUnit(Unit(family,family),dict(entity_key=security,start=str(source_scope.start),
+                end=str(source_scope.end),receipt=parents[family]))
+            self.assertEqual(authorities.verifier(locator,{}),parents[family])
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
         handlers.producer(supply,parents,Event());receipt=handlers.verifier(supply,parents)
         def read(name,at):
             return self.client.query(facts.lookup_sql(self.database,dataset,[(2,security)],[float_data.key(name)],at,

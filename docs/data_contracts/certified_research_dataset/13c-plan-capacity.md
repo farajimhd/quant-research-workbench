@@ -4,7 +4,7 @@
 
 ## What the guard counts
 
-`capacity.plan_demands()` derives write-unit counts from every unit in the assembled execution graph. Market aggregation covers shared bars/liquidity; technical units cover indicators/state; V7 units cover checkpoints. Reference, universe, identity observations and corporate/allocation outputs retain their own measured product categories.
+`capacity.plan_demands()` derives write-unit counts from every unit in the assembled execution graph. Market aggregation covers shared bars/liquidity; technical units cover indicators/state; V7 units cover checkpoints. Reference calculations, universe and identity observations retain their own measured product categories. Existing corporate/allocation/supply scope handoffs are read-only; new acquisition/import stages require separately classified write products.
 
 Read-only prepared-source and checkpoint roots add no product writes, but **every planned unit contributes to `campaign_metadata` demand**. Its pilot must include immutable definitions/plan rows, progress and root-seal overhead. Unknown products block admission rather than being omitted. Acquisition/migration stages outside the frozen derived graph need their own qualified capacity contract; they are not silently treated as read-only.
 
