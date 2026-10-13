@@ -24,10 +24,30 @@ from pipelines.certified_research import producer
 from pipelines.certified_research import reference_producer,reference_sql,short_sql,universe,fundamentals,float_data,price_inputs
 from pipelines.certified_research.reference_publication import ReferenceScope,ReferencePublisher
 from pipelines.certified_research.campaign import Campaign,PlannedUnit,status as campaign_status
-from pipelines.certified_research.handlers import ReferenceHandlers
+from pipelines.certified_research.handlers import ReferenceHandlers,MarketHandlers
+from pipelines.certified_research.planning import MarketSession,market_units
 
 
 class Contracts(unittest.TestCase):
+    def test_market_plan_parallel_consumers_have_independent_chronological_state(self):
+        config=c.CampaignConfig(date(2026,1,2),date(2026,1,5))
+        days=(config.start,config.end)
+        sessions=[MarketSession(day,1,'TEST') for day in days]
+        planned=market_units(config,sessions,source_parents={d:('reporting:'+str(d),) for d in days},
+            universe_parent='universe',seed_parents={1:('indicator-seed','v7-seed')})
+        first,technical,v7,later,later_technical,later_v7=(p.unit for p in planned)
+        self.assertEqual(first.parents,('reporting:2026-01-02','universe'))
+        self.assertEqual(technical.parents,(first.key,'indicator-seed'))
+        self.assertEqual(v7.parents,(first.key,'v7-seed'))
+        self.assertNotIn(technical.key,later.parents)
+        self.assertEqual(later_technical.parents,(later.key,technical.key))
+        self.assertEqual(later_v7.parents,(later.key,v7.key))
+        with self.assertRaisesRegex(ValueError,'seed prerequisites'):
+            market_units(config,sessions,source_parents={d:('source',) for d in days},universe_parent='universe',seed_parents={})
+        with self.assertRaisesRegex(ValueError,'Duplicate listing/session'):
+            market_units(config,sessions+sessions,source_parents={d:('source',) for d in days},
+                universe_parent='universe',seed_parents={1:('indicator-seed','v7-seed')})
+
     def test_scheduler_large_verified_resume_and_failed_chain_are_linear_and_nonrecursive(self):
         size=10000
         units=tuple(Unit(str(i),'stage',(str(i-1),) if i else (),1) for i in range(size))
@@ -654,6 +674,49 @@ class ClickHouseIntegration(unittest.TestCase):
         resumed=producer.run_market(request,factory,Claim(),lambda:None,engine,database=self.database,fixture_source=source_sql)
         self.assertEqual(resumed['status'],'complete')
         self.assertFalse(any(s.startswith('INSERT INTO') for s in logs))
+
+    def test_market_campaign_global_pool_shared_scan_seal_and_resume(self):
+        from tests.test_streaming_level_book import engine
+        day=date(2026,8,21);dataset=str(uuid.uuid4());memory=128*1024**2
+        config=c.CampaignConfig(day,day,workers=2,query_memory_bytes=memory,global_memory_bytes=2*memory)
+        base=market.MarketUnit(dataset,day,'TEST',93,str(uuid.uuid4()))
+        rules=({'token_id':1,'modifier_int':0,'update_last':1,'update_high_low':1,'update_volume':1},)
+        request=producer.MarketRequest(base,config.content_hash,'b'*64,rules,{},'c'*64,'d'*64,
+                                       boundaries(day)['REGULAR'],True)
+        source_sql=(f"SELECT toUInt64({market_day_sql.bounds(day,'04:05:00')}+number*100000) sip_timestamp_us,"
+            'toUInt64(number) ordinal,toUInt8(71) event_meta,toUInt32(10000) price_primary_int,'
+            'toUInt32(0) price_secondary_int,toFloat32(5) size_primary,toFloat32(0) size_secondary,'
+            +','.join(f'toUInt8(0) condition_token_{i}' for i in range(1,6))+' FROM numbers(3)')
+        args=dict(day=str(day),listing_key=93,ticker='TEST');logs=[];lock=Lock()
+        plans=tuple(PlannedUnit(Unit(key,kind,parents,memory),dict(args)) for key,kind,parents in
+            (('shared','market_aggregate',()),('indicators','technical',('shared',)),('levels','v7',('shared',))))
+        class Claim:
+            def check(self):pass
+        def factory():
+            real=self.builder.Client(self.args,persistent=False)
+            class Client:
+                def query(self,sql,*args,**kwargs):
+                    with lock:logs.append(sql[:100])
+                    return real.query(sql,*args,**kwargs)
+                def close(self):real.close()
+            return Client()
+        claim=Claim();registry=MarketHandlers(dataset,self.database,claim,factory,lambda:None,
+            lambda plan,parents:request,lambda plan,parents:engine(),fixture_source=source_sql)
+        producers,verifiers=registry.registry()
+        campaign=Campaign(self.client.query,self.database,claim,dataset,config,plans,'b'*64,lambda:None,producers,verifiers)
+        result=campaign.run()
+        self.assertEqual(result['status'],'complete',str(result['errors']))
+        self.assertTrue(result['seal']['root_hash'])
+        self.assertEqual(sum(sql.startswith(f'INSERT INTO {self.database}.research_stage_liquidity_v1') for sql in logs),1)
+        logs.clear();resumed=campaign.run()
+        self.assertEqual(resumed['seal'],result['seal'])
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+        bad=replace(plans[0],arguments=dict(args,listing_key=94))
+        with self.assertRaisesRegex(ValueError,'immutable campaign scope'):registry.request(bad,{})
+        with self.assertRaisesRegex(ValueError,'exact certified shared'):
+            registry.verifier(plans[1],{})
+        with self.assertRaisesRegex(ValueError,'exact certified shared'):
+            registry.verifier(plans[1],{'shared':dict(result['results']['shared'],output_hash='f'*64)})
     @classmethod
     def setUpClass(cls):
         sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))

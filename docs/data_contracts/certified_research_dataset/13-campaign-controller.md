@@ -22,7 +22,15 @@ Keeper suspension/loss invalidates the writer permanently, including a reconnect
 
 ## Verification and remaining integration
 
-Concrete reference registration now connects SEC facts, derived fundamentals, short families and float supply to the controller's producer/verifier contracts. Each call owns its ClickHouse client. A real AAPL SEC→derived campaign successfully published its root seal and resumed through those concrete handlers. Regular-price, allocation and corporate producers still require full planning/registration, together with market/source acquisition and repair orchestration.
+Concrete reference registration now connects SEC facts, derived fundamentals, short families and float supply to the controller's producer/verifier contracts. Each call owns its ClickHouse client. A real AAPL SEC→derived campaign successfully published its root seal and resumed through those concrete handlers. Regular-price, allocation and corporate producers still require full planning/registration, together with source acquisition and repair orchestration.
+
+### Shared market execution
+
+`MarketHandlers` registers aggregation, technical indicators and V7 as campaign units in the same global worker/memory pool. It does not start a nested executor. One canonical aggregation builds shared staging; bars and liquidity are independently published/read back before the aggregate unit can certify. Its output hash binds both product receipts. Indicators and V7 then run independently and require the exact verified aggregate parent. V7 alone fetches its bounded bar input; SQL consumers remain in ClickHouse.
+
+The standalone market pilot uses the same stage implementations. An isolated live ClickHouse campaign verifies one aggregate insert, a root seal, no-insert sealed resume, immutable request-scope checks and rejection of missing or altered shared parent evidence. This qualifies the execution wiring, not all-universe scan throughput. Request/engine factories still need full launch-time calendar, identity, context and certified predecessor discovery.
+
+`planning.market_units` makes the execution edges explicit: each admitted listing/session waits for certified source/reporting repair and the universe; indicators and V7 both wait for its shared aggregate. Indicator sessions form their own predecessor chain, and V7 sessions form a separate chain. Later aggregation can run ahead within resource limits. The first session requires certified seed/genesis units for both stateful products; missing seeds or duplicated listing/session membership stop planning. The caller must still derive the complete admitted session set and prerequisite units from actual authority.
 
 Historical reporting repair no longer hydrates or reconstructs imported flatfiles. It requires source-bound staged sidecars, checks the stored mapping against canonical authority and retains sidecars after success. Live tests cover classification parity, low-bit/quote preservation, monthly bounds, idempotent mutation and mapping-tamper rejection. Missing sidecars block the repair; they require an explicit ingestion-owned versioned path.
 

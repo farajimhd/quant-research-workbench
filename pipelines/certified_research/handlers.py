@@ -8,10 +8,88 @@ from __future__ import annotations
 
 from datetime import date
 
-from . import facts,reference_producer,float_data
+from . import facts,reference_producer,float_data,producer
+from .contracts import digest
+from .execution import Unit
+from .publication import Publisher,Scope
 from .reference_publication import ReferenceScope,ReferencePublisher
 
 PRODUCTS=('fundamentals','derived_fundamentals','short_volume','short_interest','float_supply')
+MARKET_PRODUCTS=('market_aggregate','technical','v7')
+
+
+class MarketHandlers:
+    """One source aggregate followed by concurrent consumers in one global pool.
+
+    Request/engine factories must resolve certified context, calendar and rule
+    contracts. They are launcher-owned functions, never serialized plan code.
+    Aggregation certifies both bars and liquidity before releasing consumers;
+    staging data and successful SQL are never campaign authority.
+    """
+    def __init__(self,dataset_id,database,claim,client_factory,source_guard,request_factory,engine_factory,
+                 *,fixture_source=None):
+        if fixture_source is not None and not database.startswith('certified_research_test_'):
+            raise ValueError('Fixture source overrides are forbidden outside isolated test namespaces')
+        self.dataset=dataset_id;self.database=database;self.claim=claim;self.client_factory=client_factory
+        self.source_guard=source_guard;self.request_factory=request_factory;self.engine_factory=engine_factory
+        self.fixture_source=fixture_source
+
+    def request(self,plan,parents):
+        if plan.unit.product not in MARKET_PRODUCTS:raise ValueError('Unregistered market product')
+        request=self.request_factory(plan,parents);args=plan.arguments
+        if (not isinstance(request,producer.MarketRequest) or request.unit.dataset_id!=self.dataset
+                or str(request.unit.day)!=args['day'] or request.unit.listing_key!=args['listing_key']
+                or request.unit.ticker!=args['ticker']):
+            raise ValueError('Market request does not match immutable campaign scope')
+        return request
+
+    def receipts(self,request,query):
+        publisher=Publisher(query,self.database,self.claim);base=request.unit
+        found={kind:publisher.receipt(Scope(self.dataset,base.day,base.listing_key,kind,request.parent(kind)))
+               for kind in ('bars','broker_100ms')}
+        if any(r is None for r in found.values()):return None
+        return dict(output_hash=digest({k:r['output_hash'] for k,r in sorted(found.items())}),receipts=found)
+
+    @staticmethod
+    def shared_parent(parents,combined):
+        candidates=[r for r in parents.values() if 'receipts' in r]
+        if len(candidates)!=1 or candidates[0]!=combined:
+            raise ValueError('Consumer requires its exact certified shared market parent')
+
+    def verifier(self,plan,parents):
+        request=self.request(plan,parents);client=self.client_factory()
+        try:
+            self.claim.check();self.source_guard()
+            combined=self.receipts(request,client.query)
+            if plan.unit.product=='market_aggregate' or combined is None:return combined
+            self.shared_parent(parents,combined)
+            bars=combined['receipts']['bars'];base=request.unit
+            scope=Scope(self.dataset,base.day,base.listing_key,plan.unit.product,
+                        request.parent(plan.unit.product,(bars['output_hash'],)))
+            return Publisher(client.query,self.database,self.claim).receipt(scope)
+        finally:client.close()
+
+    def producer(self,plan,parents,stop):
+        if stop.is_set():raise InterruptedError('Market unit stopped before execution')
+        request=self.request(plan,parents)
+        _,handler=producer.market_execution(request,self.client_factory,self.claim,self.source_guard,
+            lambda:self.engine_factory(plan,parents),database=self.database,
+            query_memory_bytes=plan.unit.memory_bytes,fixture_source=self.fixture_source)
+        if plan.unit.product=='market_aggregate':
+            stage=handler(Unit('aggregate','aggregate'),{},stop)
+            # Low-cost publication follows the shared scan; no nested executor.
+            for key,kind in (('bars','bars'),('liquidity','broker_100ms')):
+                handler(Unit(key,kind),{'aggregate':stage},stop)
+        else:
+            client=self.client_factory()
+            try:combined=self.receipts(request,client.query)
+            finally:client.close()
+            if combined is None:raise ValueError('Certified shared bars/liquidity are missing')
+            self.shared_parent(parents,combined)
+            handler(Unit(plan.unit.product,plan.unit.product),{'bars':combined['receipts']['bars']},stop)
+
+    def registry(self):
+        return ({kind:self.producer for kind in MARKET_PRODUCTS},{kind:self.verifier for kind in MARKET_PRODUCTS})
 
 
 class ReferenceHandlers:

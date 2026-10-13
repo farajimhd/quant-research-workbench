@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from threading import Event
 from uuid import uuid4
 
 from . import market,v7,schema
@@ -63,14 +62,13 @@ def indicator_state(query,database,unit,attempt,prior,*,bar_attempt):
     return result
 
 
-def run_market(request: MarketRequest,client_factory,claim,source_guard,engine_factory,*,database='arte',
-               workers=2,memory_bytes=4*1024**3,query_memory_bytes=2*1024**3,stop=None,progress=None,
-               fixture_source=None):
-    """Producer reads market rows only once for V7; SQL consumers stay in CH."""
+def market_execution(request: MarketRequest,client_factory,claim,source_guard,engine_factory,*,database='arte',
+                     query_memory_bytes=2*1024**3,fixture_source=None):
+    """Expose stages to either the bounded pilot or the campaign's global pool."""
     identifier(database)
     if fixture_source is not None and not database.startswith('certified_research_test_'):
         raise ValueError('Fixture source overrides are forbidden outside isolated test namespaces')
-    stop=stop or Event();base=request.unit
+    base=request.unit
     def handler(u,parents,stop):
         client=client_factory()
         try:
@@ -136,5 +134,14 @@ def run_market(request: MarketRequest,client_factory,claim,source_guard,engine_f
            Unit('liquidity','broker_100ms',('aggregate',),query_memory_bytes),
            Unit('technical','technical',('bars',),query_memory_bytes),
            Unit('v7','v7',('bars',),query_memory_bytes))
+    return units,handler
+
+
+def run_market(request: MarketRequest,client_factory,claim,source_guard,engine_factory,*,database='arte',
+               workers=2,memory_bytes=4*1024**3,query_memory_bytes=2*1024**3,stop=None,progress=None,
+               fixture_source=None):
+    """Bounded standalone pilot using the exact campaign stage implementations."""
+    units,handler=market_execution(request,client_factory,claim,source_guard,engine_factory,database=database,
+        query_memory_bytes=query_memory_bytes,fixture_source=fixture_source)
     return execute(units,{p:handler for p in ('aggregate','bars','broker_100ms','technical','v7')},
                    workers=workers,memory_bytes=memory_bytes,stop=stop,progress=progress)
