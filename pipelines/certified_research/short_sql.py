@@ -9,8 +9,57 @@ from __future__ import annotations
 from datetime import date
 from uuid import UUID
 
-from .contracts import identifier,literal
+from .contracts import identifier,literal,digest
 from .facts import catalog,UNITS
+
+
+def publication_coverage(query,start,end,family,*,sessions=None,maximum_rows=10000):
+    """Qualify Gateway acquisition coverage; bootstrap trust is not certification.
+
+    Gateway intervals have exclusive right endpoints. Only compact acquisition
+    metadata leaves ClickHouse; source-row clocks are checked separately by
+    ``short_audit``. No missing day is inferred from an absence of observations.
+    """
+    from .source import exchange_sessions
+    if (type(start) is not date or type(end) is not date or start>end
+            or family not in ('short_volume','short_interest')
+            or type(maximum_rows) is not int or not 1<=maximum_rows<=100000):
+        raise ValueError('Invalid short coverage scope')
+    required=tuple(exchange_sessions(start,end) if sessions is None else sessions)
+    if len(set(required))!=len(required) or any(type(d) is not date or not start<=d<=end for d in required):
+        raise ValueError('Invalid required short measurement sessions')
+    kind,system=('finra_short_volume:CNMS','finra') if family=='short_volume' else ('massive_short_interest','massive')
+    rows=query('SELECT coverage_id,coverage_start_date,coverage_end_date,status,rows_read,rows_written,rows_failed,'
+        'source_object,source_run_id,finished_at_utc FROM q_live.market_reference_publication_coverage_v1 FINAL '
+        f'WHERE coverage_kind={literal(kind)} AND source_system={literal(system)} '
+        f'AND coverage_start_date<=toDate({literal(end)}) AND coverage_end_date>toDate({literal(start)}) '
+        f'ORDER BY coverage_start_date,coverage_end_date,coverage_id LIMIT {maximum_rows+1}')
+    if len(rows)>maximum_rows:raise ValueError('Short coverage exceeds metadata bound')
+    seen=set();intervals=[];proof=[]
+    for row in rows:
+        key=row['coverage_id']
+        if not key or key in seen:raise ValueError('Short acquisition coverage identity is missing or duplicated')
+        seen.add(key)
+        if row['status'] not in ('completed','covered_empty'):continue
+        left=date.fromisoformat(str(row['coverage_start_date']));right=date.fromisoformat(str(row['coverage_end_date']))
+        counts=tuple(int(row[k]) for k in ('rows_read','rows_written','rows_failed'))
+        if (left>=right or any(n<0 for n in counts) or counts[2] or row['finished_at_utc'] is None
+                or not row['source_object'] or not row['source_run_id']
+                or (row['status']=='covered_empty' and counts[:2]!=(0,0))):
+            raise ValueError('Short acquisition coverage has invalid completion evidence')
+        intervals.append((left,right))
+        proof.append({k:v for k,v in row.items() if k!='finished_at_utc'})
+    # Linear merge and walk over sorted dates; no day-by-coverage nested scan.
+    merged=[]
+    for left,right in sorted(intervals):
+        if merged and left<=merged[-1][1]:merged[-1]=(merged[-1][0],max(right,merged[-1][1]))
+        else:merged.append((left,right))
+    missing=[];index=0
+    for day in sorted(required):
+        while index<len(merged) and merged[index][1]<=day:index+=1
+        if index==len(merged) or not merged[index][0]<=day<merged[index][1]:missing.append(day)
+    return dict(ready=not missing,missing=tuple(missing),required_sessions=len(required),
+        coverage_hash=digest(dict(family=family,start=start,end=end,required=sorted(required),proof=proof)))
 
 
 def clock_inventory(query,start,end):

@@ -1,6 +1,6 @@
 """One execution controller for market, reference and acquisition registries."""
 from .campaign import Campaign,load_plan
-from .handlers import MarketHandlers,ReferenceHandlers,ActivityHandlers,UniverseHandlers,CanonicalSourceHandlers
+from .handlers import MarketHandlers,ReferenceHandlers,ActivityHandlers,UniverseHandlers,CanonicalSourceHandlers,PreparedShortSourceHandlers
 from .contracts import digest
 from . import installation
 
@@ -56,6 +56,7 @@ class ExecutionLaunch:
                 or market_runtime.claim is not claim):
             raise ValueError('Market runtime ownership/dataset differs from execution launch')
         registries=(CanonicalSourceHandlers(claim,client_factory,source_guard),
+            PreparedShortSourceHandlers(dataset_id,config.database,claim,client_factory,source_guard),
             MarketHandlers(dataset_id,config.database,claim,client_factory,source_guard,
                         market_runtime.request,market_runtime.engine),
             ReferenceHandlers(dataset_id,config.database,claim,client_factory,source_guard,self.plans,

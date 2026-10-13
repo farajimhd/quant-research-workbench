@@ -45,6 +45,46 @@ class CanonicalSourceHandlers:
     def registry(self):return {'canonical_source':self.producer},{'canonical_source':self.verifier}
 
 
+class PreparedShortSourceHandlers:
+    """Certify already acquired short inputs, without implicit provider access."""
+    def __init__(self,dataset_id,database,claim,client_factory,source_guard):
+        self.dataset=dataset_id;self.database=database;self.claim=claim
+        self.clients=client_factory;self.guard=source_guard
+
+    def execute(self,plan,parents,stop=None):
+        from . import short_sql,schema
+        if stop is not None and stop.is_set():raise InterruptedError('Short source verification stopped')
+        family=plan.unit.product.removesuffix('_acquisition')
+        if plan.unit.product not in ('short_volume_acquisition','short_interest_acquisition') or set(plan.arguments)!={'entity_key','start','end','source_hash','coverage_hash'}:
+            raise ValueError('Invalid prepared short source unit')
+        args=plan.arguments;start=date.fromisoformat(args['start']);end=date.fromisoformat(args['end'])
+        client=self.clients()
+        try:
+            self.claim.check();self.guard()
+            schema.verify_auxiliary_storage(client.query,'q_live',
+                ('market_'+family+'_v1','market_reference_publication_coverage_v1'))
+            coverage=short_sql.publication_coverage(client.query,start,end,family)
+            if not coverage['ready']:raise ValueError('Short acquisition coverage is missing required measurement sessions')
+            if coverage['coverage_hash']!=args['coverage_hash']:raise ValueError('Frozen short acquisition coverage changed')
+            rows=client.query(short_sql.short_audit(self.database,self.dataset,int(args['entity_key']),start,end,family))
+            if len(rows)!=1:raise ValueError('Short source audit is ambiguous')
+            audit=rows[0]
+            if int(audit['n'])!=int(audit['unique_events']) or any(int(audit[k]) for k in
+                    ('unknown_public_time','invalid_public_time','missing_evidence')):
+                raise ValueError('Short source lacks unambiguous original public-time evidence')
+            if audit['source_hash']!=args['source_hash']:raise ValueError('Frozen short observations changed')
+            self.claim.check();self.guard()
+            return dict(product=plan.unit.product,entity_key=int(args['entity_key']),source_hash=audit['source_hash'],
+                coverage_hash=coverage['coverage_hash'],output_hash=digest(dict(product=plan.unit.product,**args)))
+        finally:client.close()
+
+    def producer(self,plan,parents,stop):return self.execute(plan,parents,stop)
+    def verifier(self,plan,parents):return self.execute(plan,parents)
+    def registry(self):
+        products=('short_volume_acquisition','short_interest_acquisition')
+        return {p:self.producer for p in products},{p:self.verifier for p in products}
+
+
 class ActivityHandlers:
     """Concurrent SQL windows consuming shared current/context liquidity."""
     def __init__(self,dataset_id,database,claim,client_factory,source_guard,plans):
