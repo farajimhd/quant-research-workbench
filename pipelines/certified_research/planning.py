@@ -90,7 +90,7 @@ class MarketSession:
                 or self.source_ticker.upper()!=self.ticker.upper()):raise ValueError('Invalid dated source spelling')
 
 
-def market_units(config: CampaignConfig,sessions,*,source_parents,universe_parent,seed_parents,corporate_parents,state_start_dates=None):
+def market_units(config: CampaignConfig,sessions,*,source_parents,universe_parent,seed_parents,corporate_parents,state_start_dates=None,price_only_listings=()):
     """Compile source/repair→aggregate→activity,indicators,V7 dependencies.
 
     Callers supply only admitted dated sessions and already planned source,
@@ -101,6 +101,10 @@ def market_units(config: CampaignConfig,sessions,*,source_parents,universe_paren
     """
     sessions=tuple(sorted(sessions,key=lambda s:(s.listing_key,s.day)))
     if not sessions:raise ValueError('No admitted market sessions')
+    price_only_listings=set(price_only_listings)
+    if (price_only_listings-{s.listing_key for s in sessions}
+            or any(s.day>=config.start for s in sessions if s.listing_key in price_only_listings)):
+        raise ValueError('Price-only listings must have exclusively earlier context sessions')
     state_start_dates={} if state_start_dates is None else dict(state_start_dates)
     if set(state_start_dates)-{s.listing_key for s in sessions}:raise ValueError('State start belongs to an unplanned listing')
     target_first={}
@@ -120,6 +124,12 @@ def market_units(config: CampaignConfig,sessions,*,source_parents,universe_paren
         sources=tuple(source_parents.get(session.day,()))
         if not sources or len(set(sources))!=len(sources):raise ValueError('Certified source/repair prerequisites are missing or duplicated')
         for key in sources:unit_id(key)
+        if session.listing_key in price_only_listings:
+            args=dict(day=str(session.day),listing_key=session.listing_key,ticker=session.ticker)
+            if session.source_ticker is not None:args['source_ticker']=session.source_ticker
+            result.append(PlannedUnit(Unit(f'market:{session.listing_key}:{session.day}:aggregate','market_aggregate',
+                tuple(dict.fromkeys((*sources,universe_parent))),config.query_memory_bytes),args))
+            continue
         predecessors=prior.get(session.listing_key,seed_parents.get(session.listing_key))
         if not isinstance(predecessors,tuple) or len(predecessors)!=2 or not all(predecessors):
             raise ValueError('Certified indicator/V7 seed prerequisites are missing')
@@ -151,7 +161,7 @@ def market_units(config: CampaignConfig,sessions,*,source_parents,universe_paren
 
 def program_units(config,sessions,issuers,securities,*,prerequisites,source_parents,
                   universe_parent,seed_parents,corporate_parents,security_listings,
-                  fundamental_start,price_start,short_start,state_start_dates=None):
+                  fundamental_start,price_start,short_start,state_start_dates=None,price_only_listings=()):
     """Join acquisition/repair, shared market and reference work in one DAG.
 
     ``security_listings`` is the certified security-to-listing relationship,
@@ -184,7 +194,7 @@ def program_units(config,sessions,issuers,securities,*,prerequisites,source_pare
         raise ValueError('Market sessions do not cover the certified security/listing relationships')
     market=market_units(config,sessions,source_parents=source_parents,
         universe_parent=universe_parent,seed_parents=seed_parents,corporate_parents=corporate_parents,
-        state_start_dates=state_start_dates)
+        state_start_dates=state_start_dates,price_only_listings=price_only_listings)
     aggregates={s.security_key:[] for s in securities}
     for plan in market:
         if plan.unit.product=='market_aggregate' and date.fromisoformat(plan.arguments['day'])>=price_start:

@@ -115,3 +115,19 @@ def test_initial_assembly_joins_frozen_recipe_sources_and_prepared_lanes():
     with pytest.raises(ValueError,match='required canonical'):
         initial_plan.assemble(config,dict(prepared,required_source_days=(date(2025,12,31),day)),canonical,
             reporting,frozen['definition'],rules,**arguments)
+
+
+def test_price_only_historical_listing_reuses_aggregate_without_state_genesis():
+    arguments=inputs();early=date(2025,12,31)
+    arguments['sessions']+=(MarketSession(early,12,'OLD'),)
+    arguments['security_listings']={101:(11,12)}
+    arguments['price_start']=early;arguments['source_parents'][early]=('repair',)
+    arguments['securities']=(replace(arguments['securities'][0],market_parents=()),)
+    plans=program_units(**arguments,price_only_listings=(12,))
+    lane=[p for p in plans if p.arguments.get('listing_key')==12]
+    assert len(lane)==1 and lane[0].unit.product=='market_aggregate'
+    assert lane[0].unit.parents==('repair','universe')
+    prices=next(p for p in plans if p.unit.product=='regular_prices')
+    assert lane[0].unit.key in prices.unit.parents
+    with pytest.raises(ValueError,match='exclusively earlier'):
+        program_units(**arguments,price_only_listings=(11,12))

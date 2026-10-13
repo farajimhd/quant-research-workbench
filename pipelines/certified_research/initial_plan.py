@@ -41,7 +41,7 @@ def run(query,config,dataset_id,assembled,claim,client_factory,dictionary_claim_
 
 def assemble(config,prepared,canonical,reporting,definition,rules,issuers,securities,*,
              prerequisites,universe_parent,corporate_parents,security_listings,
-             fundamental_start,price_start,short_start):
+             fundamental_start,price_start,short_start,price_context_sessions=()):
     """No reads or writes; acquisition/repair must finish before this freeze.
 
     Metadata, source roots, state seeds, market consumers and reference products
@@ -56,15 +56,20 @@ def assemble(config,prepared,canonical,reporting,definition,rules,issuers,securi
     if not lanes or any(p['recipe_hash']!=frozen['recipe_hash'] for p in lanes.values()):
         raise ValueError('Prepared market recipe differs from initial plan')
     roots,source_parents=source.certified_units(canonical,reporting)
-    required=set(prepared['required_source_days'])
+    price_context_sessions=tuple(price_context_sessions)
+    prepared_listings={s.listing_key for s in prepared['sessions']}
+    if any(s.listing_key in prepared_listings for s in price_context_sessions):
+        raise ValueError('Additional price-only sessions overlap prepared state listings')
+    required=set(prepared['required_source_days'])|{s.day for s in price_context_sessions}
     if required-set(source_parents):
         raise ValueError('Initial plan lacks required canonical context or seed source days')
-    plans=planning.program_units(config,prepared['sessions'],issuers,securities,
+    plans=planning.program_units(config,(*prepared['sessions'],*price_context_sessions),issuers,securities,
         prerequisites=(*tuple(prerequisites),*metadata,*roots,*prepared['seed_units']),
         source_parents=source_parents,universe_parent=universe_parent,
         seed_parents=prepared['seed_parents'],corporate_parents=corporate_parents,
         security_listings=security_listings,fundamental_start=fundamental_start,
-        price_start=price_start,short_start=short_start,state_start_dates=prepared['state_start_dates'])
+        price_start=price_start,short_start=short_start,state_start_dates=prepared['state_start_dates'],
+        price_only_listings={s.listing_key for s in price_context_sessions})
     # Validate the frozen recipe before any aggregate consumer is scheduled.
     plans=tuple(replace(p,unit=replace(p.unit,parents=(*p.unit.parents,'calculation_recipe')))
         if p.unit.product=='market_aggregate' else p for p in plans)
