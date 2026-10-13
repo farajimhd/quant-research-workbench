@@ -167,3 +167,26 @@ def load(query,context_start,end,anchor_date,*,database='q_live',maximum_rows=10
     result['source_census']=census
     result['source_rows']=rows # Bounded provenance metadata, never event/bar rows.
     return result
+
+
+def repair_inventory(snapshot):
+    """Expose independent missing inputs; the first rejection is not the whole job."""
+    rejected={r['listing_id'] for r in snapshot['rejected']};groups={};seen=set()
+    for row in snapshot['source_rows']:
+        listing=row['listing_id']
+        if listing not in rejected:continue
+        gaps=[]
+        if not row.get('security_id') or not row.get('issuer_id'):gaps.append('canonical_identity')
+        if not row.get('list_date'):gaps.append('listing_lifecycle')
+        if not row.get('symbol_interval_id') or row.get('interval_mapping')!='mapped':gaps.append('dated_symbol_mapping')
+        if row.get('history_status')!='completed' or row.get('history_mapping')!='mapped':gaps.append('ticker_history_binding')
+        if row.get('mapping_issue'):gaps.append('open_mapping_issue')
+        for gap in gaps:
+            key=(listing,gap)
+            if key in seen:continue
+            seen.add(key);groups.setdefault(gap,[]).append(listing)
+    return dict(counts={k:len(v) for k,v in sorted(groups.items())},
+        dependencies={'dated_symbol_mapping':('canonical_identity','listing_lifecycle','ticker_history_binding'),
+                      'universe_admission':('dated_symbol_mapping','open_mapping_issue')},
+        owner='Reference Gateway',inspection_only=True,
+        evidence_hash=digest({k:sorted(v) for k,v in sorted(groups.items())}))

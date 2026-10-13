@@ -156,6 +156,7 @@ def main(argv=None):
             result['universe_preflight']=dict(ready=historical['ready'],intervals=len(historical['intervals']),
                 rejected=len(historical['rejected']),rejection_counts=historical['rejection_counts'],
                 outside_scope=historical['outside_scope'],source_hash=historical['source_hash'])
+            result['universe_repair_requirements']=universe.repair_inventory(historical)
             result['short_publication_preflight']=short_sql.clock_inventory(
                 lambda sql:client.query(sql+' SETTINGS readonly=1'),args.start_date,end)
             inv=source.inventory(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.start_date,end)

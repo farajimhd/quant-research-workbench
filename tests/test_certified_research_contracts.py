@@ -30,6 +30,13 @@ from pipelines.certified_research.universe_publication import UniversePublisher
 
 
 class Contracts(unittest.TestCase):
+    def test_universe_repair_inventory_exposes_all_dependencies_without_duplicate_jobs(self):
+        row=dict(listing_id='listing:1',security_id='security:1',issuer_id='issuer:1',list_date=None,
+            symbol_interval_id='',interval_mapping='',history_status='',history_mapping='',mapping_issue=False)
+        report=universe.repair_inventory(dict(rejected=[dict(listing_id='listing:1')],source_rows=[row,row]))
+        self.assertEqual(report['counts'],dict(dated_symbol_mapping=1,listing_lifecycle=1,ticker_history_binding=1))
+        self.assertTrue(report['inspection_only']);self.assertIn('listing_lifecycle',report['dependencies']['dated_symbol_mapping'])
+
     def test_plan_marks_unresolved_inputs_blocked_instead_of_inspected(self):
         from scripts.prepare_certified_research import qualify_plan
         result=dict(source_plan=dict(missing_sources=[],incomplete_sources=[],missing_reporting=['2026-01-02']),

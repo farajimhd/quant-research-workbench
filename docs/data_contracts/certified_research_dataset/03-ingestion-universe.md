@@ -63,6 +63,8 @@ Preserve counts/notional/volume by rejection reason, source date and unit. Exist
 
 ## Historical universe and reference dimensions
 
+Plan output now reports independent Reference Gateway repair requirements. A first rejection such as `missing_dated_symbol_mapping` can also hide missing listing lifecycle or history binding. Counts deduplicate listing/stage jobs. Identity/listing/history evidence must precede dated symbol reconstruction; admission is rerun afterward. The inventory is inspection only and does not infer historical dates or launch a broad history download. Live samples of rejected January listings had null listing dates and absent interval/history fields, confirming the need for this ordering.
+
 ### Prepared reference forms
 
 Forms: immutable dated identity/listing intervals; broker-conid evidence; pre-open membership certificates; small per-session listing dictionaries; corporate-action intervals; session calendar.
