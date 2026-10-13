@@ -85,20 +85,24 @@ class CompletedMarketDayLedger:
         object.__setattr__(self, 'seeds', MappingProxyType(seeds))
 
     def _require_scope(self, build_id, day, ticker):
+        day = day.isoformat() if type(day) is date else day
         if build_id != self.build_id or (day, ticker) not in self._scope_keys:
             raise ValueError('Market-day checkpoint lookup is outside its immutable scope')
+        return day
 
     def unit(self, build_id, day, ticker, stage):
-        self._require_scope(build_id, day, ticker)
+        day = self._require_scope(build_id, day, ticker)
         if stage not in STAGES:
             raise ValueError('Unknown market-day checkpoint stage')
         row = self.units.get((day, ticker, stage))
-        return None if row is None else {**row, 'status': 'complete'}
+        return None if row is None else {name: row[name] for name in
+            ('attempt_id', 'source_hash', 'output_rows', 'output_hash')} | {'status': 'complete'}
 
     def seed(self, build_id, day, ticker):
-        self._require_scope(build_id, day, ticker)
+        day = self._require_scope(build_id, day, ticker)
         row = self.seeds.get((day, ticker))
-        return None if row is None else dict(row)
+        return None if row is None else {name: row[name] for name in
+            ('attempt_id', 'mode', 'predecessor_date', 'prior_build_id', 'prior_state_hash')}
 
 
 async def load_completed_market_day_ledger(reader_factory, build_id, scopes):

@@ -3,6 +3,7 @@ import asyncio
 from copy import deepcopy
 from hashlib import sha256
 import json
+from datetime import date
 from threading import get_ident
 
 import pytest
@@ -47,6 +48,9 @@ def test_completed_checkpoint_assembles_native_certificate_without_disk():
     copy = ledger.unit(build, DAY, 'TEST', 'bars')
     copy['output_rows'] = 100
     assert ledger.unit(build, DAY, 'TEST', 'bars')['output_rows'] == 0
+    assert ledger.unit(build, date.fromisoformat(DAY), 'TEST', 'bars')['output_rows'] == 0
+    assert set(ledger.unit(build, DAY, 'TEST', 'bars')) == {
+        'status', 'attempt_id', 'source_hash', 'output_rows', 'output_hash'}
 
 
 def test_missing_or_duplicate_receipts_never_become_a_completed_build():

@@ -150,6 +150,13 @@ completed-receipt view satisfies the existing certificate assembler's ledger
 interface. These unfinished producer receipts never admit consumers: the full
 native inventory and final Keeper fence are still required. No legacy builder
 cutover, schema publication or market production is enabled by this source.
+`pipelines.market_sip.events.current_market_day_bars` executes the current
+canonical broker/base-bar/rollup stages using the shared numeric SQL and source
+verification functions. It verifies outputs and unchanged canonical input
+before committing the completed receipts through the shared checkpoint writer.
+Verified completed work is skipped; uncheckpointed output is an explicit
+recovery blocker, never blindly reinserted or overwritten. Technical/seed
+stages, final certificate publication and consumer admission remain required.
 
 Managed app shutdown disposes an unused staged programme handoff before closing
 its policy reader. It drains runtime background-task and typed journal cleanup,
