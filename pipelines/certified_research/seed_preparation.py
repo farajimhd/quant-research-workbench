@@ -103,10 +103,22 @@ def prepare_universe(client_factory,config,claim,source_guard,membership,recipe_
     This phase prepares metadata, not a dataset certification seal.
     """
     from .execution import execute
+    from .source import resolve_spellings
     from threading import Lock
     if not membership.get('ready'):raise ValueError('Universe preparation requires admitted execution membership')
     if type(maximum_listings) is not int or not 1<=maximum_listings<=65536:
         raise ValueError('Invalid universe preparation listing bound')
+    stop=stop if stop is not None else Event()
+    def spelling_guard():
+        if stop.is_set():raise InterruptedError('Source spelling preparation stopped')
+        claim.check();source_guard()
+    spelling_guard()
+    reader=client_factory()
+    try:
+        resolved=resolve_spellings(reader.query,membership['sessions'],guard=spelling_guard)
+    finally:reader.close()
+    membership=dict(membership,sessions=resolved['sessions'],membership_hash=digest(dict(
+        membership=membership['membership_hash'],source_index=resolved['evidence_hash'])))
     grouped={}
     targets={s.listing_key for s in membership['sessions'] if config.start<=s.day<=config.end}
     if not targets or len(targets)>maximum_listings:raise ValueError('Universe preparation target is empty or exceeds listing bound')
@@ -155,6 +167,7 @@ def prepare_universe(client_factory,config,claim,source_guard,membership,recipe_
     parents={key:value['seed_parents'][key] for key,value in prepared.items()} if ready else {}
     starts={key:value['state_start_dates'][key] for key,value in prepared.items()} if ready else {}
     output=dict(ready=ready,status='ready' if ready else 'interrupted' if result['status']=='interrupted' else 'blocked',
+        source_spelling_evidence=resolved['evidence_hash'],absent_source_sessions=resolved['absent'],
         prepared=prepared,blocked={int(k):v for k,v in blocked.items()},failed=failed,
         states={int(k):('prepared' if v=='certified' else 'blocked' if k in blocked else v) for k,v in result['units'].items()},
         seed_units=seeds,seed_parents=parents,state_start_dates=starts,

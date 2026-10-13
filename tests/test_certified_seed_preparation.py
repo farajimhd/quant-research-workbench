@@ -102,10 +102,11 @@ def test_whole_universe_preparation_uses_private_clients_and_exposes_no_partial_
             preparation_hash=str(key)*32,seed_units=(PlannedUnit(Unit('seed'+str(key),'v7_seed'),{}),),
             seed_parents={key:('indicator'+str(key),'v7'+str(key))},state_start_dates={key:(config.start,config.start)},
             required_source_days=(config.start,),sessions=history)
-    with patch('pipelines.certified_research.seed_preparation.prepare_listing',side_effect=prepare):
+    with patch('pipelines.certified_research.seed_preparation.prepare_listing',side_effect=prepare),patch(
+            'pipelines.certified_research.source.resolve_spellings',return_value=dict(sessions=sessions,evidence_hash='c'*64,absent=())):
         result=prepare_universe(factory,config,SimpleNamespace(check=Mock()),Mock(),membership,{},(),{}, {},progress=events.append)
     assert result['ready']==(not incomplete)
-    assert len(clients)==2 and all(client.close.call_count==1 for client in clients)
+    assert len(clients)==3 and all(client.close.call_count==1 for client in clients)
     assert all('certified' not in event['counts'] for event in events)
     assert sum(events[-1]['counts'].values())==2
     if incomplete:

@@ -63,6 +63,49 @@ def require_exact_symbol(query,day,ticker,*,source_ticker=None):
     return bool(rows)
 
 
+def resolve_spellings(query,sessions,*,guard,batch_size=1024,maximum_sessions=250000):
+    """Freeze unique case-only source matches in bounded metadata batches."""
+    from dataclasses import replace
+    from itertools import islice
+    if (type(batch_size) is not int or not 1<=batch_size<=2048 or type(maximum_sessions) is not int
+            or not 1<=maximum_sessions<=1000000):raise ValueError('Invalid source spelling metadata bounds')
+    sessions=tuple(islice(sessions,maximum_sessions+1))
+    if len(sessions)>maximum_sessions:raise ValueError('Source spelling discovery exceeds session bound')
+    owners={};keys=set()
+    for session in sessions:
+        key=(session.day,session.ticker.upper());pair=(session.listing_key,session.day)
+        if pair in keys or key in owners:raise ValueError('Competing admitted source-symbol assignments')
+        keys.add(pair);owners[key]=session
+    records={};ordered=sorted(owners);guard()
+    for offset in range(0,len(ordered),batch_size):
+        batch=ordered[offset:offset+batch_size];requested=set(batch)
+        predicate=','.join(f'(toDate({literal(day)}),{literal(ticker)})' for day,ticker in batch)
+        rows=query('SELECT source_date,ticker,event_count FROM market_sip_compact.events_ticker_day_index FINAL '
+            f'WHERE (source_date,upper(ticker)) IN ({predicate}) ORDER BY source_date,ticker LIMIT {2*len(batch)+1}')
+        if len(rows)>2*len(batch):raise ValueError('Source spelling result exceeds ambiguity bound')
+        for row in rows:
+            day=date.fromisoformat(str(row['source_date']));key=(day,row['ticker'].upper())
+            if key not in requested or key in records:raise ValueError('Ambiguous or out-of-scope canonical source spelling')
+            if int(row['event_count'])<=0:raise ValueError('Canonical source index has invalid event count')
+            records[key]=dict(source_date=str(day),ticker=row['ticker'],event_count=int(row['event_count']))
+        guard()
+    mapped=[];spellings={};absent=[]
+    for session in sessions:
+        row=records.get((session.day,session.ticker.upper()))
+        if row is None:
+            if session.source_ticker is not None and session.source_ticker!=session.ticker:
+                raise ValueError('Frozen source spelling has no canonical day evidence')
+            absent.append((session.listing_key,session.day));mapped.append(session);continue
+        raw=row['ticker']
+        if session.source_ticker is not None and session.source_ticker!=raw:raise ValueError('Frozen source spelling changed')
+        if raw!=session.ticker:spellings[(session.listing_key,session.day)]=raw
+        mapped.append(replace(session,source_ticker=raw if raw!=session.ticker else None))
+    evidence=sorted(records.values(),key=lambda r:(r['source_date'],r['ticker']))
+    return dict(sessions=tuple(mapped),source_spellings=spellings,absent=tuple(absent),
+        evidence_hash=digest(dict(version='case-source-index-v1',records=evidence,
+            requested=[dict(day=d,ticker=t,listing=owners[(d,t)].listing_key) for d,t in ordered])))
+
+
 def inventory(query,start: date,end: date,*,sessions=None):
     if type(start) is not date or type(end) is not date or start>end:
         raise ValueError('Invalid source inventory range')

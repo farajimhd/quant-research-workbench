@@ -38,3 +38,16 @@ def test_explicit_spelling_selects_raw_symbol_but_keeps_identity_and_binds_linea
     assert mapped.parent('bars')!=ordinary.parent('bars')
     assert ordinary.parent('bars')==replace(mapped,unit=replace(unit,source_ticker='ABRPD')).parent('bars')
     with pytest.raises(ValueError):require_exact_symbol(query,day,'ABRPD',source_ticker='OTHER')
+
+
+def test_batched_discovery_freezes_unique_spellings_without_event_reads():
+    from pipelines.certified_research.source import resolve_spellings
+    from pipelines.certified_research.planning import MarketSession
+    day=date(2026,1,2);sessions=(MarketSession(day,1,'ABRPD'),MarketSession(day,2,'TEST'))
+    query=Mock(return_value=[dict(source_date=str(day),ticker='ABRpD',event_count=10)])
+    guard=Mock();result=resolve_spellings(query,sessions,guard=guard)
+    assert result['source_spellings']=={(1,day):'ABRpD'}
+    assert result['sessions'][0].source_ticker=='ABRpD' and result['absent']==((2,day),)
+    assert query.call_count==1 and 'events_2026' not in query.call_args.args[0]
+    query.return_value.append(dict(source_date=str(day),ticker='ABRPD',event_count=10))
+    with pytest.raises(ValueError,match='Ambiguous'):resolve_spellings(query,sessions,guard=guard)
