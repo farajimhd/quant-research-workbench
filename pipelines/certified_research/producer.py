@@ -117,6 +117,9 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
                 query(market.normalized_insert(unit,'technical',database),read=False)
             elif u.product=='v7':
                 engine=engine_factory()
+                if isinstance(engine,v7.StartAuthority):engine=engine.check(request.prior_v7_hash)
+                elif not database.startswith('certified_research_test_'):
+                    raise ValueError('V7 production requires certified start-state authority')
                 rows=query(v7.bars_sql(base.dataset_id,bar_receipt['attempt_id'],base.listing_key,base.day,database))
                 origin=v7.input_origin_hash(request.dataset_hash,base.ticker,base.listing_key,base.day)
                 binding=CheckpointBinding(request.dataset_hash,origin,request.prior_v7_hash,base.ticker,base.day)

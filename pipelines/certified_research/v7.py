@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date,datetime,time,timezone
+from dataclasses import dataclass
 from hashlib import sha256
 from uuid import UUID
 import msgpack
@@ -10,6 +11,35 @@ from src.market_engine.streaming_level_book import StreamingLevelBook
 from src.market_engine.historical_level_checkpoint import digest as book_digest
 from .checkpoints import CheckpointBinding,boundaries,encode,restore,NY
 from .contracts import literal,identifier,TRADE_POLICY,digest,REPORTING_REVISION
+
+
+@dataclass(frozen=True)
+class StartAuthority:
+    """A private engine plus the verified predecessor used to construct it."""
+    engine: StreamingLevelBook
+    predecessor_hash: str
+    initial_state_hash: str
+
+    def check(self,expected):
+        if (self.predecessor_hash!=expected or self.engine.checkpoint(copy_state=False)['hash']!=self.initial_state_hash):
+            raise ValueError('V7 start state differs from its certified predecessor or was mutated')
+        return self.engine
+
+    @classmethod
+    def rollover(cls,checkpoint,day,*,split_factor=1.,split_evidence=()):
+        previous=restore(checkpoint['payload'],checkpoint['state_hash'],checkpoint['binding'],
+                         expected_boundary_us=checkpoint['boundary_us'])
+        engine=next_day_engine(previous,day,previous_checkpoint=checkpoint,
+            split_factor=split_factor,split_evidence=split_evidence)
+        return cls(engine,checkpoint['state_hash'],engine.checkpoint(copy_state=False)['hash'])
+
+    @classmethod
+    def genesis(cls,engine,certificate_hash):
+        # The launcher must independently certify the explicit context origin.
+        CheckpointBinding(certificate_hash,'0'*64,'0'*64,engine.ticker,date.fromisoformat(engine.session))
+        if engine.rows or engine.pending or engine.bars_processed or engine.as_of!=engine.start:
+            raise ValueError('Genesis authority requires an untouched empty engine')
+        return cls(engine,certificate_hash,engine.checkpoint(copy_state=False)['hash'])
 
 
 def input_origin_hash(recipe_hash,ticker,listing_key,day):
@@ -27,7 +57,8 @@ def next_day_engine(previous: StreamingLevelBook,day: date,*,previous_checkpoint
         raise ValueError('Prior V7 state is incompatible or contains legacy seed lineage')
     if previous_checkpoint['boundary']!='AH' or previous_checkpoint['boundary_us']!=round(previous.end*1_000_000):
         raise ValueError('Day rollover requires the certified prior AH boundary')
-    restored=restore(previous_checkpoint['payload'],previous_checkpoint['state_hash'],previous_checkpoint['binding'])
+    restored=restore(previous_checkpoint['payload'],previous_checkpoint['state_hash'],previous_checkpoint['binding'],
+                     expected_boundary_us=previous_checkpoint['boundary_us'])
     if restored.checkpoint()!=previous.checkpoint():raise ValueError('Prior engine differs from its AH checkpoint')
     seed=previous.historical_checkpoint(previous.checkpoint()['hash'])
     # This conversion was produced from causal full state, not retrospective

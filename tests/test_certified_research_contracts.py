@@ -30,6 +30,21 @@ from pipelines.certified_research.universe_publication import UniversePublisher
 
 
 class Contracts(unittest.TestCase):
+    def test_v7_start_authority_binds_predecessor_and_rejects_mutated_state(self):
+        from tests.test_streaming_level_book import engine,bars
+        state=engine();authority=v7.StartAuthority.genesis(state,'a'*64)
+        self.assertIs(authority.check('a'*64),state)
+        with self.assertRaisesRegex(ValueError,'certified predecessor'):authority.check('b'*64)
+        state.update(bars(state)[0])
+        with self.assertRaisesRegex(ValueError,'mutated'):authority.check('a'*64)
+        with self.assertRaisesRegex(ValueError,'untouched empty'):v7.StartAuthority.genesis(state,'a'*64)
+        binding=CheckpointBinding('a'*64,'b'*64,'c'*64,'TEST',date(2026,8,21))
+        outputs,_=v7.generate(engine(),bars(engine()),binding)
+        rolled=v7.StartAuthority.rollover(outputs[-1],date(2026,8,24))
+        self.assertEqual(rolled.check(outputs[-1]['state_hash']).session,'2026-08-24')
+        forged=dict(outputs[0],boundary='AH',boundary_us=outputs[-1]['boundary_us'])
+        with self.assertRaisesRegex(ValueError,'encoded boundary'):v7.StartAuthority.rollover(forged,date(2026,8,24))
+
     def test_v7_boundary_payload_does_not_depend_on_later_bars(self):
         from tests.test_streaming_level_book import engine,bars
         a=engine();day=date.fromisoformat(a.session)
@@ -931,7 +946,8 @@ class ClickHouseIntegration(unittest.TestCase):
                     return real.query(sql,*args,**kw)
                 def close(self):real.close()
             return Client()
-        result=producer.run_market(request,factory,Claim(),lambda:None,engine,
+        def start_authority():return v7.StartAuthority.genesis(engine(),request.prior_v7_hash)
+        result=producer.run_market(request,factory,Claim(),lambda:None,start_authority,
                                    database=self.database,fixture_source=source_sql)
         self.assertEqual(result['status'],'complete',str(result['errors']))
         self.assertEqual(sum(s.startswith(f'INSERT INTO {self.database}.research_stage_liquidity_v1') for s in logs),1)
@@ -944,7 +960,7 @@ class ClickHouseIntegration(unittest.TestCase):
             request.dataset_hash,request.prior_v7_hash,unit.ticker,'AH',regular_close=request.regular_close)
         self.assertEqual(checkpoint['boundary'],'AH');self.assertEqual(state.ticker,unit.ticker)
         logs.clear()
-        resumed=producer.run_market(request,factory,Claim(),lambda:None,engine,database=self.database,fixture_source=source_sql)
+        resumed=producer.run_market(request,factory,Claim(),lambda:None,start_authority,database=self.database,fixture_source=source_sql)
         self.assertEqual(resumed['status'],'complete')
         self.assertFalse(any(s.startswith('INSERT INTO') for s in logs))
 
@@ -980,7 +996,7 @@ class ClickHouseIntegration(unittest.TestCase):
                 def close(self):real.close()
             return Client()
         claim=Claim();registry=MarketHandlers(dataset,self.database,claim,factory,lambda:None,
-            lambda plan,parents:request,lambda plan,parents:engine(),fixture_source=source_sql)
+            lambda plan,parents:request,lambda plan,parents:v7.StartAuthority.genesis(engine(),request.prior_v7_hash),fixture_source=source_sql)
         producers,verifiers=registry.registry()
         reference=ReferenceHandlers(dataset,self.database,claim,factory,lambda:None,plans)
         rp,rv=reference.registry();producers.update(rp);verifiers.update(rv)
