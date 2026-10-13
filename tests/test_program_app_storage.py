@@ -24,6 +24,9 @@ def test_inventory_reuses_unique_normalized_contracts():
     assert 'trading_strategy_signal_exact_price_v1' not in {table.name for table in contracts}
     assert 'trading_oms_observation_snapshot_v1' not in {table.name for table in contracts}
     assert 'trading_strategy_one_oms_observation_snapshot_v1' in {table.name for table in contracts}
+    from pipelines.market_sip.events.liquidity_resolution_sql import TABLES as liquidity
+    assert set(liquidity) <= set(contracts)
+    assert all(table.database == 'arte' for table in liquidity)
 
 
 def test_apply_requires_explicit_confirmation():
