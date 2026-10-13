@@ -15,6 +15,7 @@ from pipelines.certified_research.publication import SourceClaim,insert_rows
 
 TABLE='historical_rest_reporting_stage_v1'
 RECEIPTS='historical_rest_reporting_receipt_v1'
+TICKER_PATTERN=r'[A-Za-z0-9._-]{1,32}'
 
 
 def receipt_table():
@@ -89,7 +90,7 @@ def normalize(item):
 
 
 class TradePages:
-    def __init__(self,api_key,*,base_url='https://api.massive.com',page_limit=1000,max_pages=10000,fetch=None):
+    def __init__(self,api_key,*,base_url='https://api.massive.com',page_limit=1000,max_pages=10000,fetch=None,source_bounds=None):
         origin=urlsplit(base_url)
         if (origin.scheme!='https' or not origin.hostname or origin.username or origin.password or origin.query
                 or origin.fragment or origin.path not in ('','/')):raise ValueError('Invalid REST provider origin')
@@ -97,11 +98,17 @@ class TradePages:
                 or not 1<=page_limit<=4096 or not 1<=max_pages<=10000):raise ValueError('Invalid bounded REST acquisition')
         self.key=api_key;self.base=base_url.rstrip('/');self.origin=(origin.scheme,origin.netloc)
         self.limit=page_limit;self.max_pages=max_pages;self.fetch=fetch
+        if source_bounds is not None and (not isinstance(source_bounds,tuple) or len(source_bounds)!=2
+                or any(type(v) is not int for v in source_bounds) or not 0<source_bounds[0]<=source_bounds[1]<=(2**64-1000)//1000
+                or source_bounds[1]-source_bounds[0]>2*86400*10**6):
+            raise ValueError('Invalid certified REST source bounds')
+        self.source_bounds=source_bounds
 
     def pages(self,ticker,day,stop):
-        if type(day) is not date or not re.fullmatch(r'[A-Z0-9._-]{1,32}',ticker):raise ValueError('Invalid REST ticker/date')
+        if type(day) is not date or not re.fullmatch(TICKER_PATTERN,ticker):raise ValueError('Invalid REST ticker/date')
         path='/v3/trades/'+quote(ticker,safe='')
         first=int(datetime.combine(day,time(),timezone.utc).timestamp())*10**9;end=first+86400*10**9
+        if self.source_bounds is not None:first=self.source_bounds[0]*1000;end=(self.source_bounds[1]+1)*1000
         url=self.base+path+'?'+urlencode({'timestamp.gte':first,'timestamp.lt':end,'order':'asc','sort':'timestamp','limit':self.limit})
         visited=set();last_sip=0
         for page in range(self.max_pages):
@@ -125,7 +132,7 @@ class TradePages:
             items=payload.get('results',[])
             if not isinstance(items,list) or len(items)>self.limit:raise ValueError('REST reporting page exceeded its row bound')
             rows=[normalize(item) for item in items]
-            if any(not first<=row['sip_timestamp_ns']<end for row in rows):raise ValueError('REST reporting page left its UTC source day')
+            if any(not first<=row['sip_timestamp_ns']<end for row in rows):raise ValueError('REST reporting page left its certified source range or UTC source day')
             if any(row['sip_timestamp_ns']<last_sip for row in rows):raise ValueError('REST reporting order regressed')
             if rows:
                 if any(a['sip_timestamp_ns']>b['sip_timestamp_ns'] for a,b in zip(rows,rows[1:])):raise ValueError('REST reporting page is unordered')
@@ -149,8 +156,12 @@ def source_projection(database,acquisition_id,ticker,day):
 
 
 def encoded_projection(args,database,acquisition_id,ticker,day):
+    from copy import copy
     from pipelines.market_sip.flatfiles.download_update_events import raw_event_union_sql
-    return raw_event_union_sql(args,None,trade_only=True,include_reporting_reason=True,include_reporting_evidence=True,
+    # The REST source is already exactly scoped. The file-import ticker option
+    # uppercases symbols and must not rewrite case-sensitive source identities.
+    encoding_args=copy(args);encoding_args.tickers=''
+    return raw_event_union_sql(encoding_args,None,trade_only=True,include_reporting_reason=True,include_reporting_evidence=True,
         trade_source_sql=source_projection(database,acquisition_id,ticker,day))
 
 
@@ -178,6 +189,74 @@ def _stored(query,database,where):
     return evidence['n'],digest(evidence)
 
 
+def day_inputs(query,database,claim,guard,acquisition_id,source,provider_hash,*,target=None,maximum_tickers=100000):
+    """Verify every canonical ticker's acquired input in two grouped SQL scans.
+
+    Counts and hashes leave ClickHouse; market rows do not. A complete input
+    set still requires full encoded-field reconciliation and flag certification.
+    """
+    identifier(database);UUID(acquisition_id)
+    day=date.fromisoformat(str(source['source_date']))
+    target=target or f'market_sip_compact.events_{day.year}'
+    target_db,target_table=target.split('.');identifier(target_db);identifier(target_table)
+    fixture=database.startswith('certified_research_test_') and target_db==database
+    if (not isinstance(claim,SourceClaim) or (not fixture and (database!='q_live' or target!=f'market_sip_compact.events_{day.year}'))
+            or type(maximum_tickers) is not int or not 1<=maximum_tickers<=100000
+            or not isinstance(provider_hash,str) or not re.fullmatch('[0-9a-f]{64}',provider_hash)):
+        raise ValueError('Invalid whole-day acquisition ownership or bounds')
+    first=int(source['first_sip_timestamp_us']);last=int(source['last_sip_timestamp_us']);expected=int(source['trade_event_rows'])
+    if not 0<first<=last or expected<0:raise ValueError('Invalid canonical source-day bounds')
+    source_hash=digest({k:v for k,v in source.items() if k!='updated_at'})
+    policy='live_market_ssd' if fixture else 'sip_raw_ssd'
+    def fenced():
+        claim.check();guard()
+        mutations=query(f'SELECT count() n FROM system.mutations WHERE database={literal(target_db)} AND table={literal(target_table)} AND NOT is_done')
+        if len(mutations)!=1 or int(mutations[0]['n']):raise ValueError('Canonical mutations block whole-day acquisition validation')
+    fenced()
+    routing=query(f'SELECT disk_name FROM system.storage_policies ARRAY JOIN disks AS disk_name WHERE policy_name={literal(policy)}')
+    metadata=query(f'SELECT storage_policy FROM system.tables WHERE database={literal(target_db)} AND name={literal(target_table)}')
+    parts=query(f'SELECT DISTINCT disk_name FROM system.parts WHERE active AND database={literal(target_db)} AND table={literal(target_table)}')
+    if (not routing or any(r['disk_name']!=policy for r in routing) or metadata!=[dict(storage_policy=policy)]
+            or any(r['disk_name']!=policy for r in parts)):
+        raise ValueError('Canonical acquisition target is absent or misplaced')
+    for table in (staging_table(),receipt_table()):_verify_table(query,database,table)
+    dates=(f"event_date BETWEEN toDate(fromUnixTimestamp64Micro(toInt64({first}),'UTC')) "
+           f"AND toDate(fromUnixTimestamp64Micro(toInt64({last}),'UTC'))")
+    canonical=query(f'SELECT ticker,count() n FROM {target} WHERE {dates} AND sip_timestamp_us BETWEEN {first} AND {last} '
+        f'AND bitAnd(event_meta,1)=1 GROUP BY ticker ORDER BY ticker LIMIT {maximum_tickers+1}')
+    if len(canonical)>maximum_tickers:raise ValueError('Whole-day ticker metadata exceeds its bound')
+    census={r['ticker']:int(r['n']) for r in canonical}
+    if sum(census.values())!=expected:raise ValueError('Canonical trade census differs from source-day certificate')
+    where=f'acquisition_id=toUUID({literal(acquisition_id)}) AND source_date=toDate({literal(day)})'
+    receipts=query(f'SELECT * FROM {database}.{RECEIPTS} WHERE {where} ORDER BY ticker LIMIT {maximum_tickers+1}')
+    if len(receipts)>maximum_tickers:raise ValueError('Whole-day receipt metadata exceeds its bound')
+    by_ticker={}
+    for receipt in receipts:
+        proof=dict(receipt);fingerprint=proof.pop('receipt_hash')
+        if (receipt['ticker'] in by_ticker or receipt['ticker'] not in census or digest(proof)!=fingerprint
+                or receipt['source_hash']!=source_hash or receipt['provider_hash']!=provider_hash
+                or int(receipt['pages'])<1 or int(receipt['rows'])<census[receipt['ticker']]):
+            raise ValueError('Whole-day acquisition receipt is duplicated, unplanned or incompatible')
+        by_ticker[receipt['ticker']]=receipt
+    if set(by_ticker)!=set(census):raise ValueError('Whole-day acquisition lacks canonical ticker receipts')
+    fields=','.join(c.name for c in staging_table().columns)
+    sums=','.join(f'sum(reinterpretAsUInt64(substring(h,{offset},8))) h{i}' for i,offset in enumerate((1,9,17,25)))
+    staged=query(f'SELECT ticker,count() n,uniqExact(tuple(page_index,row_index)) unique_rows,{sums} '
+        f'FROM (SELECT ticker,page_index,row_index,SHA256(toString(tuple({fields}))) h FROM {database}.{TABLE} WHERE {where}) '
+        f'GROUP BY ticker ORDER BY ticker LIMIT {maximum_tickers+1}')
+    if len(staged)>maximum_tickers or {r['ticker'] for r in staged}!=set(census):
+        raise ValueError('Whole-day staged ticker coverage differs')
+    for row in staged:
+        receipt=by_ticker[row['ticker']];evidence={k:int(v) for k,v in row.items() if k!='ticker'}
+        if evidence['n']!=evidence['unique_rows'] or evidence['n']!=int(receipt['rows']) or digest(evidence)!=receipt['stored_hash']:
+            raise ValueError('Whole-day sealed acquisition inputs changed')
+    fenced()
+    proof=dict(source_date=str(day),source_hash=source_hash,acquisition_id=acquisition_id,provider_hash=provider_hash,
+        tickers=len(census),canonical_trades=expected,acquired_rows=sum(int(r['rows']) for r in receipts),
+        ticker_inputs=[dict(ticker=t,canonical_trades=census[t],receipt_hash=by_ticker[t]['receipt_hash']) for t in sorted(census)])
+    return dict(proof,input_hash=digest(proof),canonical_certified=False)
+
+
 def acquire(query,database,claim,guard,provider,acquisition_id,ticker,day,source_hash,stop,*,progress=None):
     """Seal acquired inputs, then resume using SQL fingerprints without HTTP.
 
@@ -188,13 +267,15 @@ def acquire(query,database,claim,guard,provider,acquisition_id,ticker,day,source
     identifier(database);UUID(acquisition_id)
     if (not isinstance(claim,SourceClaim) or (database!='q_live' and not database.startswith('certified_research_test_'))
             or not isinstance(source_hash,str) or not re.fullmatch('[0-9a-f]{64}',source_hash) or type(day) is not date
-            or not re.fullmatch(r'[A-Z0-9._-]{1,32}',ticker)):
+            or not re.fullmatch(TICKER_PATTERN,ticker)):
         raise ValueError('Invalid REST acquisition ownership or source binding')
     if stop.is_set():raise InterruptedError('REST reporting acquisition stopped')
+    if provider.source_bounds is None:raise ValueError('Sealed acquisition requires certified SIP source bounds')
     claim.check();guard()
     for table in (staging_table(),receipt_table()):_verify_table(query,database,table)
     provider_hash=digest(dict(version='original-rest-reporting-v1',origin=provider.base,
-        page_limit=provider.limit,max_pages=provider.max_pages,columns=[vars(c) for c in staging_table().columns]))
+        page_limit=provider.limit,max_pages=provider.max_pages,source_bounds=provider.source_bounds,
+        columns=[vars(c) for c in staging_table().columns]))
     where=f'acquisition_id=toUUID({literal(acquisition_id)}) AND source_date=toDate({literal(day)}) AND ticker={literal(ticker)}'
     def read():
         receipts=query(f'SELECT * FROM {database}.{RECEIPTS} WHERE {where}')

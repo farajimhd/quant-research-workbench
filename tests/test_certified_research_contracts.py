@@ -758,7 +758,8 @@ class ClickHouseIntegration(unittest.TestCase):
         records=[dict(sip_timestamp=first+n*1000,participant_timestamp=part,sequence_number=n+1,
             price=1.2345,size=10,decimal_size='10.125',exchange=11,tape=3,conditions=[]) for n,part in
             enumerate((first-1000000,None,first-11*10**9))]
-        provider=rest.TradePages('fixture',fetch=Mock(return_value=dict(status='OK',results=records)))
+        provider=rest.TradePages('fixture',source_bounds=(first//1000,(first+2000)//1000),
+            fetch=Mock(return_value=dict(status='OK',results=records)))
         acquisition=str(uuid.uuid4());logs=[]
         def query(sql,*args,**kwargs):logs.append(sql);return self.client.query(sql,*args,**kwargs)
         acquired=rest.stage(query,self.database,Claim(),lambda:None,provider,acquisition,'REST',date(2026,1,2),Event())
@@ -772,28 +773,44 @@ class ClickHouseIntegration(unittest.TestCase):
         self.assertEqual(rest.stage(query,self.database,Claim(),lambda:None,provider,acquisition,'REST',date(2026,1,2),Event()),acquired)
         self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
         self.client.query(rest.receipt_table().ddl(self.database),read=False)
-        receipt=rest.acquire(query,self.database,Claim(),lambda:None,provider,acquisition,'REST',date(2026,1,2),'a'*64,Event())
+        source=dict(source_date='2026-01-02',first_sip_timestamp_us=first//1000,last_sip_timestamp_us=(first+2000)//1000,trade_event_rows=3)
+        source_hash=c.digest(source)
+        receipt=rest.acquire(query,self.database,Claim(),lambda:None,provider,acquisition,'REST',date(2026,1,2),source_hash,Event())
         provider.fetch.reset_mock();logs.clear()
-        self.assertEqual(rest.acquire(query,self.database,Claim(),lambda:None,provider,acquisition,'REST',date(2026,1,2),'a'*64,Event()),receipt)
+        self.assertEqual(rest.acquire(query,self.database,Claim(),lambda:None,provider,acquisition,'REST',date(2026,1,2),source_hash,Event()),receipt)
         provider.fetch.assert_not_called()
         self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
         with self.assertRaisesRegex(ValueError,'binding differs'):
             rest.acquire(query,self.database,Claim(),lambda:None,provider,acquisition,'REST',date(2026,1,2),'b'*64,Event())
         self.client.query(f"ALTER TABLE {self.database}.{rest.TABLE} UPDATE price='2' WHERE acquisition_id=toUUID('{acquisition}') AND row_index=0 SETTINGS mutations_sync=2",read=False)
         with self.assertRaisesRegex(ValueError,'inputs changed'):
-            rest.acquire(query,self.database,Claim(),lambda:None,provider,acquisition,'REST',date(2026,1,2),'a'*64,Event())
+            rest.acquire(query,self.database,Claim(),lambda:None,provider,acquisition,'REST',date(2026,1,2),source_hash,Event())
         provider.fetch.assert_not_called()
         self.client.query(f"ALTER TABLE {self.database}.{rest.TABLE} UPDATE price='1.2345' WHERE acquisition_id=toUUID('{acquisition}') AND row_index=0 SETTINGS mutations_sync=2",read=False)
         with patch.object(sys,'argv',['updater','--start-date','2026-01-02','--end-date','2026-01-02','--skip-bars']):
             args=updater.parse_args()
+        args.tickers='UNRELATED'
         encoded=rest.encoded_projection(args,self.database,acquisition,'REST',date(2026,1,2))
+        self.assertNotIn('UNRELATED',encoded);self.assertEqual(args.tickers,'UNRELATED')
         self.assertNotIn('file(',encoded)
         fields=['sip_timestamp_us','price_primary_int','price_secondary_int','size_primary','size_secondary',
             'exchange_primary','exchange_secondary',*[f'condition_token_{n}' for n in range(1,6)],'event_date']
         target=self.database+'.rest_canonical_'+uuid.uuid4().hex
         self.client.query(f"CREATE TABLE {target} ENGINE=MergeTree ORDER BY (ticker,ordinal) SETTINGS storage_policy='live_market_ssd' AS "
             f"SELECT ticker,row_number() OVER (ORDER BY sip_timestamp_us,sequence_number) ordinal,bitAnd(event_meta,63) event_meta,{','.join(fields)} FROM ({encoded})",read=False)
-        source=dict(source_date='2026-01-02',first_sip_timestamp_us=first//1000,last_sip_timestamp_us=(first+2000)//1000,trade_event_rows=3)
+        def day_inputs():return rest.day_inputs(query,self.database,Claim(),lambda:None,acquisition,source,receipt['provider_hash'],target=target)
+        logs.clear();complete=day_inputs()
+        self.assertEqual(complete['canonical_trades'],3);self.assertEqual(complete['tickers'],1)
+        self.assertFalse(complete['canonical_certified'])
+        self.assertEqual(sum('GROUP BY ticker' in sql and 'historical_rest_reporting_stage_v1' in sql for sql in logs),1)
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+        self.client.query(f"ALTER TABLE {self.database}.{rest.RECEIPTS} DELETE WHERE acquisition_id=toUUID('{acquisition}') SETTINGS mutations_sync=2",read=False)
+        with self.assertRaisesRegex(ValueError,'lacks canonical ticker receipts'):day_inputs()
+        insert_rows(self.client.query,self.database,rest.RECEIPTS,[{k:v for k,v in receipt.items() if k!='canonical_certified'}])
+        self.client.query(f"ALTER TABLE {self.database}.{rest.TABLE} UPDATE price='2' WHERE acquisition_id=toUUID('{acquisition}') AND row_index=0 SETTINGS mutations_sync=2",read=False)
+        with self.assertRaisesRegex(ValueError,'inputs changed'):day_inputs()
+        self.client.query(f"ALTER TABLE {self.database}.{rest.TABLE} UPDATE price='1.2345' WHERE acquisition_id=toUUID('{acquisition}') AND row_index=0 SETTINGS mutations_sync=2",read=False)
+        self.assertEqual(day_inputs(),complete)
         clock='rest_ns_'+uuid.uuid4().hex;coverage='rest_coverage_'+uuid.uuid4().hex
         reconciled=ns.reconciled_projection(encoded,target,'2026-01-02',c.digest(source),fields,
             first_sip_us=source['first_sip_timestamp_us'],last_sip_us=source['last_sip_timestamp_us'],repair_reporting_flags=True)

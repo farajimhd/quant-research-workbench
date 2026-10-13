@@ -15,6 +15,23 @@ def trade(sip=1000000123,sequence=1):
 
 
 class RestReportingAcquisition(TestCase):
+    def test_source_ticker_case_is_preserved(self):
+        fetch=Mock(return_value=dict(status='OK',results=[trade()]))
+        list(TradePages('key',fetch=fetch).pages('ABRpD',date(2026,1,2),Event()))
+        self.assertEqual(urlsplit(fetch.call_args.args[0]).path,'/v3/trades/ABRpD')
+
+    def test_certified_range_includes_after_hours_past_utc_midnight(self):
+        late=BASE+25*3600*10**9+8183297123
+        fetch=Mock(return_value=dict(status='OK',results=[dict(trade(),sip_timestamp=late)]))
+        provider=TradePages('key',source_bounds=(BASE//1000,(late//1000)),fetch=fetch)
+        rows=list(provider.pages('TEST',date(2026,1,2),Event()))
+        self.assertEqual(rows[0][1][0]['sip_timestamp_ns'],late)
+        params=parse_qs(urlsplit(fetch.call_args.args[0]).query)
+        self.assertEqual(params['timestamp.lt'],[str((late//1000+1)*1000)])
+        fetch.return_value=dict(status='OK',results=[dict(trade(),sip_timestamp=(late//1000+1)*1000)])
+        with self.assertRaisesRegex(ValueError,'certified source range'):
+            list(provider.pages('TEST',date(2026,1,2),Event()))
+
     def test_complete_bounded_pages_preserve_nanoseconds_fractional_size_and_unknown_clock(self):
         fetch=Mock(side_effect=[dict(status='OK',results=[trade()],next_url='https://api.massive.com/v3/trades/TEST?cursor=next'),
                                 dict(status='OK',results=[trade(1000001123,2)])])
