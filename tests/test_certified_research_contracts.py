@@ -772,6 +772,36 @@ class Contracts(unittest.TestCase):
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
 
+    def test_fresh_cli_real_source_gate_blocks_before_campaign_publication(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch,Mock
+        from contextlib import redirect_stderr
+        from io import StringIO
+        from scripts import prepare_certified_research as cli
+        from pipelines.certified_research import installation
+        dataset=str(uuid.uuid4());database=self.database
+        class Dictionary:
+            dictionary_database=database
+            def __init__(self,*args):pass
+            def check(self):pass
+            def close(self):pass
+        keeper=SimpleNamespace(client=Mock(),close=Mock())
+        errors=StringIO()
+        with redirect_stderr(errors),patch('pipelines.certified_research.capacity_profile.load',return_value={}),\
+             patch('pipelines.certified_research.capacity_profile.factory',return_value=Mock()),\
+             patch('src.trading_runtime.keeper_session.open_workstation_keeper_session',return_value=keeper),\
+             patch('pipelines.certified_research.publication.DictionaryClaim',Dictionary),\
+             patch('pipelines.certified_research.publication.SourceClaim',return_value=Mock()),\
+             patch('pipelines.certified_research.publication.KeeperClaim',return_value=Mock()),\
+             patch('pipelines.certified_research.acquisition.prepare_sources'):
+            result=cli.main(['launch','--database',database,'--dataset-id',dataset,'--capacity-profile','fixture.json',
+                '--start-date','2026-01-02','--end-date','2026-01-02','--context-start-date','2025-12-01',
+                '--fundamental-start-date','2024-01-01','--env-file',str(self.builder.ROOT/'.env')])
+        self.assertEqual(result,2)
+        self.assertIn('Canonical source/reporting prerequisites',errors.getvalue())
+        self.assertEqual(int(self.client.query(f"SELECT count() n FROM {database}.research_dataset_v1 WHERE dataset_id=toUUID('{dataset}')")[0]['n']),0)
+        self.assertEqual(int(self.client.query(f"SELECT count() n FROM {database}.research_campaign_seal_v1 WHERE dataset_id=toUUID('{dataset}')")[0]['n']),0)
+
     def test_short_snapshot_discovery_matches_published_membership_exactly(self):
         from datetime import timezone
         from pipelines.certified_research.identity import ListingInterval,identity_key,SECURITY

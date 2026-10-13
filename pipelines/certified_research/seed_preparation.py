@@ -11,6 +11,47 @@ from .execution import Unit
 from .recipe import verify_definition
 
 
+def discover_adjustment_contexts(query,config,dataset_id,claim,source_guard,membership,prerequisites,
+                                 corporate_parents,source_days,*,stop=None,maximum_candidates=128):
+    """Independently resolve corporate hashes for bounded prior V7 candidates."""
+    from . import adjustments
+    from .contracts import literal
+    from .reference_publication import ReferenceScope
+    from .facts import catalog_hash
+    stop=Event() if stop is None else stop
+    if not membership.get('ready') or type(maximum_candidates) is not int or not 1<=maximum_candidates<=1024:
+        raise ValueError('Invalid adjustment-context discovery scope')
+    def guard():
+        if stop.is_set():raise InterruptedError('Adjustment-context discovery stopped')
+        claim.check();source_guard()
+    days=tuple(d for d in source_days if d<config.start)
+    if not days:return {}
+    targets={s.listing_key for s in membership['sessions'] if config.start<=s.day<=config.end}
+    if not targets:raise ValueError('Adjustment discovery has no target listings')
+    guard();limit=len(targets)*maximum_candidates
+    rows=query(f'SELECT listing_key,session_date FROM {config.database}.research_unit_receipt_v1 '
+        f"WHERE product='v7' AND status=1 AND listing_key IN ({','.join(map(str,sorted(targets)))}) "
+        f"AND session_date IN ({','.join('toDate('+literal(d)+')' for d in days)}) "
+        f'GROUP BY listing_key,session_date ORDER BY listing_key,session_date DESC LIMIT {limit+1}')
+    if len(rows)>limit:raise ValueError('Adjustment-context metadata exceeds candidate bound')
+    plans={p.unit.key:p for p in prerequisites};counts={};result={}
+    for row in rows:
+        listing=int(row['listing_key']);day=date.fromisoformat(str(row['session_date']))
+        counts[listing]=counts.get(listing,0)+1
+        if listing not in targets or day not in days or counts[listing]>maximum_candidates:
+            raise ValueError('Adjustment-context candidates are outside their bound')
+        plan=plans.get(corporate_parents.get(listing));args={} if plan is None else plan.arguments
+        if plan is None or plan.unit.product!='corporate_actions':raise ValueError('Candidate lacks certified corporate history')
+        receipt=args['receipt']
+        scope=ReferenceScope(dataset_id,2,int(args['entity_key']),'corporate_actions',date.fromisoformat(args['start']),
+            date.fromisoformat(args['end']),receipt['parent_hash'],catalog_hash())
+        previous=context.preceding_sessions(day,1)[0]
+        guard()
+        resolved=adjustments.resolve(query,config.database,claim,scope,listing,previous,day)
+        result.setdefault(listing,{})[day]=resolved.evidence_hash
+    guard();return result
+
+
 def prepare_listing(query,config,claim,source_guard,admitted_sessions,recipe_definition,rules,
                     day_sources,adjustment_hashes,*,indicator_dataset=None,v7_dataset=None,
                     stop=None,maximum_candidates=128,maximum_sessions=4096,price_sessions=()):

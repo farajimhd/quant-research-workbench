@@ -23,6 +23,47 @@ def test_execution_parser_requires_frozen_dataset_and_qualified_profile():
             '--capacity-profile','pilot.json','--acquire-missing'])
 
 
+def test_fresh_launch_requires_explicit_context_and_retains_acquisition_controls():
+    common=['launch','--dataset-id','00000000-0000-0000-0000-000000000001','--capacity-profile','pilot.json']
+    with pytest.raises(SystemExit):launcher.parse_args(common)
+    args=launcher.parse_args([*common,'--end-date','2026-01-02','--context-start-date','2025-12-01',
+        '--fundamental-start-date','2024-01-01','--recover-retained-reporting'])
+    assert args.command=='launch' and args.recover_retained_reporting
+
+
+@pytest.mark.parametrize('explicit_end',(False,True))
+def test_fresh_cli_orders_schema_source_preparation_and_execution_and_closes_owners(explicit_end):
+    inspection=Mock();client=Mock();client.query.return_value=[dict(n=0)];client.clean_error.side_effect=str
+    keeper=SimpleNamespace(client=Mock(),close=Mock());source_claim=Mock();claim=Mock();dictionary=Mock();paths=Mock()
+    inspection.query.return_value=[dict(last_day='2026-01-02')]
+    stages=[]
+    def installed(*args):stages.append('schema')
+    def acquired(*args,**kwargs):
+        stages.append('sources');assert kwargs['recover_retained_reporting']
+        assert args[2].end==date(2026,1,2)
+    def fresh(*args,**kwargs):stages.append('fresh');return dict(status='blocked',errors={'inputs':ValueError('missing authority')},seal=None)
+    with patch('scripts.build_market_day.Client',side_effect=[inspection,client]),\
+         patch('pipelines.certified_research.capacity_profile.load',return_value={}),\
+         patch('pipelines.certified_research.capacity_profile.factory',return_value=Mock()),\
+         patch('pipelines.market_sip.flatfiles.download_update_events.load_env_files'),\
+         patch('src.trading_runtime.keeper_session.open_workstation_keeper_session',return_value=keeper),\
+         patch('pipelines.certified_research.publication.SourceClaim',return_value=source_claim),\
+         patch('pipelines.certified_research.publication.KeeperClaim',return_value=claim),\
+         patch('pipelines.certified_research.publication.DictionaryClaim',return_value=dictionary),\
+         patch('pipelines.certified_research.acquisition.IngestionPaths',return_value=paths),\
+         patch('pipelines.certified_research.installation.install',side_effect=installed),\
+         patch('pipelines.certified_research.acquisition.prepare_sources',side_effect=acquired),\
+         patch('pipelines.certified_research.fresh_execution.run',side_effect=fresh):
+        argv=['launch','--dataset-id','00000000-0000-0000-0000-000000000001',
+            '--capacity-profile','pilot.json','--context-start-date','2025-12-01',
+            '--fundamental-start-date','2024-01-01','--recover-retained-reporting']
+        if explicit_end:argv.extend(('--end-date','2026-01-02'))
+        code=launcher.main(argv)
+    assert code==2 and stages==['schema','sources','fresh']
+    for owner in (dictionary,source_claim,claim,keeper,client,inspection):owner.close.assert_called_once()
+    paths.validate.assert_called_once()
+
+
 def test_launch_selections_share_one_configuration_and_cannot_omit_v7_input():
     args=launcher.parse_args(['plan','--end-date','2026-01-05','--volume-windows-seconds','10,60,3600',
         '--short-windows-sessions','5,20','--resolutions-ms','1000,60000'])

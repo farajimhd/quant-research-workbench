@@ -13,6 +13,7 @@ workers, memory limits, rules or recipes with current CLI defaults.
 | Command | Required input | Result |
 |---|---|---|
 | `prepare-sources` | End date; optional requirement-derived context start | Existing updater/import and canonical reporting prerequisite checks |
+| `launch` | New dataset UUID, explicit source/SEC context bounds, qualified capacity profile; optional end date defaults to latest canonical source | Schema checks/install, canonical preparation, retained-reference discovery, context assembly and admitted initial execution |
 | `stored-plan` | Dataset UUID | Read-only plan and resource inspection |
 | `run` / `resume` | Dataset UUID and qualified capacity profile path | Admission, bounded dependency execution, receipt reuse and seal |
 | `status` | Dataset UUID | Persisted progress inspection |
@@ -128,11 +129,23 @@ measurement-price discovery, expanded canonical/reporting context, dated
 membership, compatible state discovery and price-only histories to the assembler.
 It remains read-only and requires supplied reference source locators.
 
-**Automatic fresh-plan discovery/publication is not yet connected to CLI `run`.**
-Do not mistake the installed-plan execution path for a complete first launch.
-The remaining integration must discover/freeze all source, universe, SEC,
-short, corporate/allocation and seed requirements; derive float price context;
-qualify capacity; and call initial execution before saved resume is applicable.
+`launch` connects the first-launch path separately from stored `run/resume`.
+It requires `--context-start-date` and `--fundamental-start-date`; these are
+explicit available-history bounds, not proof of adequate context. Preparation
+derives the actual intervening sessions and float-price requirements within
+the certified history. Missing earlier evidence still blocks.
+
+Acquisition and retained-reporting controls are supported on `launch`, with
+the same disabled-by-default provider acquisition and SSD reserve settings as
+`prepare-sources`. Existing dataset definitions reject `launch` and require
+`resume`; claims and signal handlers close/restore on every outcome. The launch
+does not publish a partial plan when required reference authorities are missing.
+
+Prior V7 candidates get independently resolved corporate-adjustment hashes;
+their stored hashes are not adopted as evidence. Compatible state discovery
+still verifies concrete recipe/source/receipt bindings. Missing initial genesis,
+legacy qualification or rename bridges remain blockers. Creating missing
+reference authorities and measuring production capacity remain unfinished.
 
 The bounded real CLI resume test supplies source/runtime ownership and capacity
 fixture seams. It proves stored-plan execution wiring, readback and cleanup;

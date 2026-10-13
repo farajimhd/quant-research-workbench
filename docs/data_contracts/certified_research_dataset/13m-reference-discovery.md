@@ -46,7 +46,8 @@ Storage placement, coverage, identity and clock failures block the result.
 Runtime handlers independently recheck the frozen source fingerprints after
 membership publication, before downstream reference facts can certify.
 
-The complete fresh CLI launch, creation/acquisition of missing reference
-authorities, automatic adjustment/initial-state qualification and measured
-production capacity remain unfinished. Existing source discovery does not
-make the currently incomplete January–October inputs certifiable.
+The `launch` CLI now connects discovery, preparation and admitted execution.
+It independently resolves adjustment hashes for prior V7 candidates. Creation
+and acquisition of missing reference authorities, initial-state qualification
+and measured production capacity remain unfinished. Existing source discovery
+does not make the currently incomplete January–October inputs certifiable.

@@ -3,8 +3,8 @@
 
 This entry point is under implementation. Inspection and saved verification
 do not start a campaign. Source preparation owns bounded acquisition/reporting
-repair. Run/resume execute an installed immutable plan after qualified capacity
-admission; automatic initial-plan discovery remains under implementation.
+repair. Launch discovers/prepares a new graph; run/resume execute an installed
+immutable plan. All routes require qualified capacity and complete authority.
 """
 from __future__ import annotations
 
@@ -26,12 +26,13 @@ from pipelines.certified_research import contracts,schema,source,short_sql,campa
 
 def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('schema','install-schema','preflight','plan','status','stored-plan','prepare-sources','verify','run','resume'))
+    p.add_argument('command',choices=('schema','install-schema','preflight','plan','status','stored-plan','prepare-sources','verify','launch','run','resume'))
     p.add_argument('--dataset-id',type=UUID)
     p.add_argument('--database',default='arte')
     p.add_argument('--start-date',type=date.fromisoformat,default=date(2026,1,1))
     p.add_argument('--end-date',type=date.fromisoformat)
     p.add_argument('--context-start-date',type=date.fromisoformat,help='Explicit earlier source prerequisite bound; target start is unchanged')
+    p.add_argument('--fundamental-start-date',type=date.fromisoformat,help='Fresh-launch SEC context coverage bound')
     p.add_argument('--universe-anchor-date',type=date.fromisoformat,default=date.today(),help='Last allowed 2026-onward conid observation date')
     p.add_argument('--env-file',type=Path,default=ROOT/'.env')
     p.add_argument('--capacity-profile',type=Path,help='Bounded metadata configuration containing externally qualified pilot rates; required for run/resume')
@@ -63,13 +64,15 @@ def parse_args(argv=None):
     args=p.parse_args(argv)
     if args.staging_reserve_gib<0 or args.staging_chunk_gib<0 or not 0<=args.staging_reserve_fraction<1:
         p.error('Invalid SSD staging reserve or chunk bound')
-    if args.recover_retained_reporting and args.command!='prepare-sources':
+    if args.recover_retained_reporting and args.command not in ('prepare-sources','launch'):
         p.error('--recover-retained-reporting belongs to prepare-sources')
     try:contracts.identifier(args.database)
     except ValueError as error:p.error(str(error))
     if args.command!='schema' and args.format=='sql':p.error('SQL format is for schema inspection only')
-    if args.command in ('status','stored-plan','verify','run','resume') and args.dataset_id is None:p.error(args.command+' requires --dataset-id')
-    if args.command in ('run','resume') and args.capacity_profile is None:p.error(args.command+' requires --capacity-profile')
+    if args.command in ('status','stored-plan','verify','launch','run','resume') and args.dataset_id is None:p.error(args.command+' requires --dataset-id')
+    if args.command in ('launch','run','resume') and args.capacity_profile is None:p.error(args.command+' requires --capacity-profile')
+    if args.command=='launch' and any(v is None for v in (args.context_start_date,args.fundamental_start_date)):
+        p.error('launch requires --context-start-date and --fundamental-start-date')
     if args.command=='prepare-sources' and (args.end_date is None or args.format!='text'):
         p.error('prepare-sources requires --end-date and uses text progress')
     if args.hydrate_missing_trades:p.error('Imported-day reporting repair cannot hydrate flatfiles; G-to-D staging belongs to acquisition')
@@ -148,7 +151,7 @@ def main(argv=None):
     args.max_threads=args.query_threads;args.max_memory_gb=args.query_memory_gib;args.query_timeout=45
     client=builder.Client(args,persistent=False)
     try:
-        if args.command in ('run','resume'):
+        if args.command in ('launch','run','resume'):
             from contextlib import closing
             from types import SimpleNamespace
             from threading import Event
@@ -156,8 +159,8 @@ def main(argv=None):
             import time
             from pipelines.market_sip.flatfiles.download_update_events import load_env_files
             from src.trading_runtime.keeper_session import open_workstation_keeper_session
-            from pipelines.certified_research.publication import KeeperClaim,DictionaryClaim
-            from pipelines.certified_research import saved_execution,capacity_profile
+            from pipelines.certified_research.publication import KeeperClaim,DictionaryClaim,SourceClaim
+            from pipelines.certified_research import saved_execution,capacity_profile,fresh_execution
             profile=capacity_profile.load(args.capacity_profile)
             load_env_files([args.env_file],verbose=False)
             stop=Event();last=[0.];counts={}
@@ -171,19 +174,49 @@ def main(argv=None):
                 options=SimpleNamespace(env_file=args.env_file,max_threads=config.query_threads,
                     max_memory_gb=config.query_memory_bytes/1024**3,query_timeout=45)
                 return builder.Client(options,persistent=False)
-            saved=campaign.load_plan(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database,str(args.dataset_id))
+            saved=None if args.command=='launch' else campaign.load_plan(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database,str(args.dataset_id))
+            if saved is None:
+                end=args.end_date
+                if end is None:
+                    frontier=client.query('SELECT max(source_date) last_day FROM market_sip_compact.events_source_day_stats FINAL')[0]['last_day']
+                    if not frontier or str(frontier)=='1970-01-01':raise ValueError('No canonical source frontier; select an explicit acquisition end date')
+                    end=date.fromisoformat(str(frontier))
+                config=campaign_config(args,end)
+            else:config=saved.config
             inspection_client=client
-            client=factory(saved.config)
+            client=factory(config)
             inspection_client.close()
             original=signal.getsignal(signal.SIGINT)
             signal.signal(signal.SIGINT,lambda *unused:stop.set())
             try:
                 with closing(open_workstation_keeper_session()) as keeper:
+                    if args.command=='launch':
+                        paths=acquisition.IngestionPaths(args.env_file,args.runtime_root,args.cache_root,args.archive_root,args.clickhouse_cache_root)
+                        paths.validate()
+                        dictionary=DictionaryClaim(keeper.client,args.database)
+                        try:installation.install(client.query,args.database,dictionary)
+                        finally:dictionary.close()
+                        existing=client.query(f'SELECT count() n FROM {args.database}.research_dataset_v1 '
+                            f"WHERE dataset_id=toUUID('{args.dataset_id}')")[0]['n']
+                        if int(existing):raise ValueError('Dataset already has a frozen definition; use resume')
+                        source_claim=SourceClaim(keeper.client)
+                        try:
+                            acquisition.prepare_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),paths,config,source_claim,
+                                stop,acquire_missing=args.acquire_missing,stage_archive=args.stage_archive,context_start=args.context_start_date,
+                                writer_query=client.query,recover_retained_reporting=args.recover_retained_reporting,
+                                staging_reserve_bytes=args.staging_reserve_gib*1024**3,staging_reserve_fraction=args.staging_reserve_fraction,
+                                staging_chunk_bytes=args.staging_chunk_gib*1024**3)
+                        finally:source_claim.close()
                     claim=KeeperClaim(keeper.client,str(args.dataset_id))
                     try:
-                        result=saved_execution.run(client.query,args.database,str(args.dataset_id),claim,factory,
-                            lambda:DictionaryClaim(keeper.client,args.database),capacity_profile.factory(client.query,profile),
-                            stop=stop,progress=progress)
+                        dictionary_factory=lambda:DictionaryClaim(keeper.client,args.database)
+                        admission=capacity_profile.factory(client.query,profile)
+                        if args.command=='launch':
+                            result=fresh_execution.run(client.query,config,str(args.dataset_id),claim,factory,
+                                dictionary_factory,admission,context_start=args.context_start_date,fundamental_start=args.fundamental_start_date,
+                                anchor_date=args.universe_anchor_date,stop=stop,progress=progress)
+                        else:result=saved_execution.run(client.query,args.database,str(args.dataset_id),claim,factory,
+                            dictionary_factory,admission,stop=stop,progress=progress)
                     finally:claim.close()
             finally:signal.signal(signal.SIGINT,original)
             if not counts and result['status']=='complete' and result.get('seal'):
@@ -312,8 +345,11 @@ def main(argv=None):
             print(f"Storage checked | {result['storage']['tables']} existing research tables | {result['storage']['parts']} part groups")
             print(f"Status: {result['status']} | {result['reason']}")
         return 2 if result['status']=='blocked' else 0
+    except InterruptedError:
+        print('Preparation interrupted; rerun launch before plan publication, or resume an already frozen dataset.',file=sys.stderr)
+        return 130
     except Exception as error:
-        label='Verification failed: ' if args.command=='verify' else 'Execution failed: ' if args.command in ('run','resume') else 'Preflight failed: '
+        label='Verification failed: ' if args.command=='verify' else 'Execution failed: ' if args.command in ('launch','run','resume') else 'Preflight failed: '
         print(label+client.clean_error(error),file=sys.stderr)
         return 2
     except KeyboardInterrupt:

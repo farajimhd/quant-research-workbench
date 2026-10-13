@@ -9,7 +9,7 @@ from .execution import Unit,execute
 
 
 def discover_and_prepare(query,config,dataset_id,claim,client_factory,source_guard,canonical,reporting,definition,rules,*,
-                         fundamental_start,short_start,anchor_date,adjustment_hashes,
+                         fundamental_start,short_start,anchor_date,adjustment_hashes=None,
                          indicator_datasets=None,v7_datasets=None,stop=None,progress=None):
     """Compose reference discovery and preparation without caller-built locators."""
     from . import reference_discovery
@@ -23,6 +23,10 @@ def discover_and_prepare(query,config,dataset_id,claim,client_factory,source_gua
         canonical['expected'],fundamental_start=fundamental_start,short_start=short_start,stop=stop,progress=progress)
     if not references['ready']:
         return dict(ready=False,phase='reference-authorities',missing_authorities=references['missing_authorities'])
+    if adjustment_hashes is None:
+        adjustment_hashes=seed_preparation.discover_adjustment_contexts(query,config,dataset_id,claim,
+            source_guard,references['membership'],references['prerequisites'],references['corporate_parents'],
+            canonical['expected'],stop=stop)
     authority=PlannedUnit(Unit('universe','universe'),dict(context_start=str(start),end=str(config.end),
         anchor_date=str(anchor_date),source_hash=snapshot['source_hash']))
     assembled=prepare(query,config,claim,client_factory,source_guard,canonical,reporting,definition,rules,

@@ -42,10 +42,10 @@ The lower-level coordinator accepts supplied reference source locators and
 fundamental coverage bounds. [Retained reference discovery](13m-reference-discovery.md)
 now supplies those locators through `discover_and_prepare`. Missing reference
 authority creation/acquisition, initial
-genesis/legacy checkpoint qualification, production capacity measurements and
-the fresh CLI launch route remain unfinished. Existing `run/resume` execute
-installed immutable plans. This page does not claim the full first launch is
-ready.
+genesis/legacy checkpoint qualification and production capacity measurements
+remain unfinished. `launch` now connects this preparation to first execution;
+existing `run/resume` execute installed immutable plans. Missing prerequisites
+block launch before a campaign definition or seal is published.
 
 Focused tests exercise graph assembly, earlier price-only listings, source and
 identity drift, missing seeds, short context and interruption. A real read-only
