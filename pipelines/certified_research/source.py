@@ -13,6 +13,19 @@ def exchange_sessions(start: date,end: date):
     return tuple(day.date() for day in mcal.get_calendar('XNYS').schedule(start_date=start,end_date=end).index)
 
 
+def market_day_hashes(canonical,reporting):
+    """Bind each market day to canonical AND reporting evidence, not future days."""
+    if canonical['missing'] or canonical['incomplete'] or reporting['missing'] or reporting['mutating']:
+        raise ValueError('Market day bindings require complete frozen source/reporting prerequisites')
+    result={}
+    for day in canonical['expected']:
+        key=str(day);source_hash=canonical['source_hashes'].get(key);proof=reporting['verified'].get(key)
+        if not source_hash or proof is None or proof['source_digest']!=source_hash:
+            raise ValueError('Market day reporting evidence differs from canonical source')
+        result[day]=digest(dict(version='canonical-reporting-day-input-v1',day=day,canonical=source_hash,reporting=proof))
+    return result
+
+
 def inventory(query,start: date,end: date,*,sessions=None):
     if type(start) is not date or type(end) is not date or start>end:
         raise ValueError('Invalid source inventory range')

@@ -18,6 +18,10 @@ These readers connect certified outputs to chronological continuation. Initial g
 
 Corporate-history acquisition/coverage admission, price-adjustment graph units and complete request assembly remain unfinished. This resolver does not turn the existing undated corporate snapshots into historical public evidence.
 
+`MarketRuntime` now supplies shared request and engine methods for all planned market dates. It verifies full-session dated listing membership, frozen day source bindings, corporate receipts and certified predecessor dependencies; clients and restored engines remain private to each call. Technical and V7 branches resolve their own predecessor independently. `planning.market_units` requires a corporate-history parent for both branches, while aggregation remains independent of stateful consumers. `source.market_day_hashes` combines each day's canonical and reporting evidence, including native-clock fingerprints, without depending on future source days.
+
+The bounded live test exercises request resolution and AH engine restoration from real fixture receipts. The full launcher still needs initial seed/genesis/rename producers, complete corporate acquisition and admission, combined plan installation, and measured production-scale qualification.
+
 ## On this page
 
 - [Context planner](#context-planner)

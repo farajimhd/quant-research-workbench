@@ -24,7 +24,7 @@ class MarketSession:
             raise ValueError('Invalid dated market session')
 
 
-def market_units(config: CampaignConfig,sessions,*,source_parents,universe_parent,seed_parents):
+def market_units(config: CampaignConfig,sessions,*,source_parents,universe_parent,seed_parents,corporate_parents):
     """Compile source/repair→aggregate→activity,indicators,V7 dependencies.
 
     Callers supply only admitted dated sessions and already planned source,
@@ -50,12 +50,15 @@ def market_units(config: CampaignConfig,sessions,*,source_parents,universe_paren
         if not isinstance(predecessors,tuple) or len(predecessors)!=2 or not all(predecessors):
             raise ValueError('Certified indicator/V7 seed prerequisites are missing')
         for key in predecessors:unit_id(key)
+        corporate=corporate_parents.get(session.listing_key)
+        if not corporate:raise ValueError('Certified corporate adjustment prerequisite is missing')
+        unit_id(corporate)
         prefix=f'market:{session.listing_key}:{session.day}'
         aggregate=prefix+':aggregate';technical=prefix+':technical';v7=prefix+':v7'
         args=dict(day=str(session.day),listing_key=session.listing_key,ticker=session.ticker)
         dependencies=tuple(dict.fromkeys((*sources,universe_parent)))
         for key,kind,parents in ((aggregate,'market_aggregate',dependencies),
-                (technical,'technical',(aggregate,predecessors[0])),(v7,'v7',(aggregate,predecessors[1]))):
+                (technical,'technical',(aggregate,predecessors[0],corporate)),(v7,'v7',(aggregate,predecessors[1],corporate))):
             result.append(PlannedUnit(Unit(key,kind,parents,config.query_memory_bytes),dict(args)))
         starts,keys=liquidity.setdefault(session.listing_key,([],[]))
         stamp=int(datetime.combine(session.day,time(4),ZoneInfo('America/New_York')).timestamp())

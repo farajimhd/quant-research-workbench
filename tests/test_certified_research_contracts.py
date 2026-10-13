@@ -72,9 +72,12 @@ class Contracts(unittest.TestCase):
                     status='complete',details=json.dumps(details))]
             return []
         first=source.reporting_inventory(query,inputs)
+        inputs.update(missing=(),incomplete=())
+        before=source.market_day_hashes(inputs,first)
         details['evidence_hash']='c'*64
         second=source.reporting_inventory(query,inputs)
         self.assertNotEqual(first['content_hash'],second['content_hash'])
+        self.assertNotEqual(before[day],source.market_day_hashes(inputs,second)[day])
         details.pop('evidence_hash')
         with self.assertRaisesRegex(ValueError,'fingerprint migration'):
             source.reporting_inventory(query,inputs)
@@ -439,21 +442,21 @@ class Contracts(unittest.TestCase):
         days=(config.start,config.end)
         sessions=[MarketSession(day,1,'TEST') for day in days]
         planned=market_units(config,sessions,source_parents={d:('reporting:'+str(d),) for d in days},
-            universe_parent='universe',seed_parents={1:('indicator-seed','v7-seed')})
+            universe_parent='universe',seed_parents={1:('indicator-seed','v7-seed')},corporate_parents={1:'corporate'})
         first,technical,v7,activity_first,later,later_technical,later_v7,activity_later=(p.unit for p in planned)
         self.assertEqual(first.parents,('reporting:2026-01-02','universe'))
-        self.assertEqual(technical.parents,(first.key,'indicator-seed'))
-        self.assertEqual(v7.parents,(first.key,'v7-seed'))
+        self.assertEqual(technical.parents,(first.key,'indicator-seed','corporate'))
+        self.assertEqual(v7.parents,(first.key,'v7-seed','corporate'))
         self.assertNotIn(technical.key,later.parents)
-        self.assertEqual(later_technical.parents,(later.key,technical.key))
-        self.assertEqual(later_v7.parents,(later.key,v7.key))
+        self.assertEqual(later_technical.parents,(later.key,technical.key,'corporate'))
+        self.assertEqual(later_v7.parents,(later.key,v7.key,'corporate'))
         self.assertEqual(activity_first.parents,(first.key,))
         self.assertEqual(activity_later.parents,(first.key,later.key))
         with self.assertRaisesRegex(ValueError,'seed prerequisites'):
-            market_units(config,sessions,source_parents={d:('source',) for d in days},universe_parent='universe',seed_parents={})
+            market_units(config,sessions,source_parents={d:('source',) for d in days},universe_parent='universe',seed_parents={},corporate_parents={1:'corporate'})
         with self.assertRaisesRegex(ValueError,'Duplicate listing/session'):
             market_units(config,sessions+sessions,source_parents={d:('source',) for d in days},
-                universe_parent='universe',seed_parents={1:('indicator-seed','v7-seed')})
+                universe_parent='universe',seed_parents={1:('indicator-seed','v7-seed')},corporate_parents={1:'corporate'})
 
     def test_scheduler_large_verified_resume_and_failed_chain_are_linear_and_nonrecursive(self):
         size=10000
@@ -1415,6 +1418,8 @@ class ClickHouseIntegration(unittest.TestCase):
     def test_executable_market_dag_shared_aggregate_and_verified_resume(self):
         from pipelines.certified_research import indicator_state
         from pipelines.certified_research import market_context
+        from pipelines.certified_research import recipe
+        from pipelines.certified_research.market_runtime import MarketRuntime
         from tests.test_streaming_level_book import engine
         from threading import Lock
         rules=({'token_id':1,'modifier_int':0,'update_last':1,'update_high_low':1,'update_volume':1},)
@@ -1423,7 +1428,8 @@ class ClickHouseIntegration(unittest.TestCase):
             'toUInt64(number) ordinal,toUInt8(if(number=0,6,71)) event_meta,toUInt32(if(number=0,10200,10000)) price_primary_int,'
             'toUInt32(if(number=0,9800,0)) price_secondary_int,toFloat32(5) size_primary,toFloat32(20) size_secondary,'
             +','.join(f'toUInt8(0) condition_token_{i}' for i in range(1,6))+' FROM numbers(3)')
-        request=producer.MarketRequest(unit,'a'*64,'b'*64,rules,{},'c'*64,'d'*64,boundaries(day)['REGULAR'],True)
+        frozen=recipe.market_recipe(c.CampaignConfig(day,date(2026,8,24)),rules)
+        request=producer.MarketRequest(unit,frozen['hash'],'b'*64,rules,{},'c'*64,'d'*64,boundaries(day)['REGULAR'],True,frozen['definition'])
         class Claim:
             def check(self):pass
         logs=[];lock=Lock()
@@ -1477,6 +1483,21 @@ class ClickHouseIntegration(unittest.TestCase):
         certified_roll.check(checkpoint['state_hash'],adjustment_hash=continuation['adjustment'].evidence_hash)
         with self.assertRaisesRegex(ValueError,'corporate adjustment'):
             certified_roll.check(checkpoint['state_hash'],adjustment_hash='a'*64)
+        runtime=MarketRuntime(unit.dataset_id,self.database,Claim(),factory,lambda:None,frozen['definition'],rules,
+            {day:request.source_hash,date(2026,8,24):'e'*64})
+        next_args=dict(day='2026-08-24',listing_key=unit.listing_key,ticker=unit.ticker)
+        technical_plan=PlannedUnit(Unit('resolved-technical','technical'),next_args)
+        v7_plan=PlannedUnit(Unit('resolved-v7','v7'),next_args)
+        corp_receipt=publisher.receipt(corporate)
+        resolved_technical=runtime.request(technical_plan,dict(previous=technical,corporate=corp_receipt))
+        self.assertEqual(resolved_technical.prior_indicators,loaded['state'])
+        self.assertEqual(resolved_technical.prior_indicator_hash,technical['output_hash'])
+        resolved_v7=runtime.request(v7_plan,dict(previous=structural,corporate=corp_receipt))
+        self.assertEqual(resolved_v7.prior_v7_hash,checkpoint['state_hash'])
+        runtime.engine(v7_plan,dict(previous=structural,corporate=corp_receipt)).check(
+            resolved_v7.prior_v7_hash,adjustment_hash=resolved_v7.adjustment_hash)
+        with self.assertRaisesRegex(ValueError,'Exactly one'):
+            runtime.request(technical_plan,dict(previous=technical))
         with self.assertRaisesRegex(ValueError,'corporate adjustment'):
             market_context.structural(self.client.query,self.database,Claim(),structural,unit.listing_key,
                 date(2026,8,24),unit.ticker,request.dataset_hash,{day:request.source_hash},split_factor=1.,split_evidence=())
