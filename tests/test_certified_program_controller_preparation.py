@@ -86,6 +86,38 @@ def test_certified_selection_prepares_native_service_controller_without_starting
                 assert await selector.stage_controller(service, controller) is controller
                 assert selector._prepared is retained
                 assert await selector.staged_controller(service) is controller
+                from src.backend.replay_run_service import ReplayRunCapacityError
+                capacity = service.max_resident_runs
+                service.max_resident_runs = 1
+                service._runs["occupied"] = SimpleNamespace(status="running")
+                try:
+                    with pytest.raises(ReplayRunCapacityError, match="capacity is full"):
+                        await selector.launch_controller(service, controller)
+                    assert selector._prepared is retained and selector._launching is None
+                    assert controller._task is None and controller.status == "created"
+                finally:
+                    service._runs.pop("occupied")
+                    service.max_resident_runs = capacity
+                entered, release_launch = asyncio.Event(), asyncio.Event()
+                async def waiting_launch(owned):
+                    assert owned is controller
+                    entered.set()
+                    await release_launch.wait()
+                    raise ReplayRunCapacityError("capacity is full")
+                with monkeypatch.context() as waiting:
+                    waiting.setattr(service, "launch_prepared_program_controller", waiting_launch)
+                    pending = asyncio.create_task(selector.launch_controller(service, controller))
+                    try:
+                        await asyncio.wait_for(entered.wait(), timeout=5)
+                        with pytest.raises(ReplayRunCapacityError, match="already in progress"):
+                            await selector.launch_controller(service, controller)
+                        with pytest.raises(ValueError, match="already in progress"):
+                            await selector.staged_controller(service)
+                    finally:
+                        release_launch.set()
+                        with pytest.raises(ReplayRunCapacityError):
+                            await pending
+                    assert selector._prepared is retained and selector._launching is None
                 from datetime import time
                 scope = dict(configuration_revision=revision, sessions=(definition.session_date,),
                     start_time=definition.start_time, end_time=definition.end_time or time(20),

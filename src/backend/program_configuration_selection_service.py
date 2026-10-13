@@ -32,6 +32,7 @@ class ProgramConfigurationSelectionService:
             policy_dispatch=policy_dispatch, concurrency=concurrency))
         self._prepared_lock = Lock()
         self._prepared = None
+        self._launching = None
 
     async def snapshot(self, candidate_id, run_plan_id=""):
         if type(candidate_id) is not str or not candidate_id.startswith("strategy-configuration:"):
@@ -88,10 +89,25 @@ class ProgramConfigurationSelectionService:
         caller. This adds no alternative engine, journal or publication path.
         """
         await self._review_controller(run_service, controller)
+        from .replay_run_service import ReplayRunCapacityError
         with self._prepared_lock:
-            if self._prepared is not None and self._prepared == (run_service, controller):
-                self._prepared = None
-        return await run_service.launch_prepared_program_controller(controller)
+            if self._launching is not None:
+                raise ReplayRunCapacityError("Programme launch is already in progress")
+            claim = self._launching = (run_service, controller)
+        retain = False
+        try:
+            return await run_service.launch_prepared_program_controller(controller)
+        except ReplayRunCapacityError:
+            # Native capacity rejection precedes start; review may retry the
+            # same prepared identity after capacity becomes available.
+            retain = controller._task is None and controller.status == "created"
+            raise
+        finally:
+            with self._prepared_lock:
+                if not retain and self._prepared == claim:
+                    self._prepared = None
+                if self._launching is claim:
+                    self._launching = None
 
     async def stage_controller(self, run_service, controller):
         """Retain one fully prepared native handoff without admission or start."""
@@ -99,6 +115,8 @@ class ProgramConfigurationSelectionService:
         await self._review_controller(run_service, controller)
         await require_bound_program_start(controller)
         with self._prepared_lock:
+            if self._launching is not None:
+                raise RuntimeError("Cannot stage a programme while launch is in progress")
             if self._prepared is not None and self._prepared != (run_service, controller):
                 raise RuntimeError("App already retains another prepared programme handoff")
             if self._prepared is None:
@@ -110,13 +128,15 @@ class ProgramConfigurationSelectionService:
         from .backtest_program_launch import require_bound_program_start
         with self._prepared_lock:
             prepared = self._prepared
+            if self._launching is not None:
+                raise ValueError("Programme launch is already in progress")
         if prepared is None or prepared[0] is not run_service:
             raise ValueError("Programme Backtest has no bound native launch prepared for this app")
         controller = prepared[1]
         await self._review_controller(run_service, controller)
         await require_bound_program_start(controller)
         with self._prepared_lock:
-            if self._prepared is not prepared:
+            if self._prepared is not prepared or self._launching is not None:
                 raise RuntimeError("Prepared programme handoff changed during app review")
         return controller
 
