@@ -30,6 +30,33 @@ from pipelines.certified_research.universe_publication import UniversePublisher
 
 
 class Contracts(unittest.TestCase):
+    def test_ingestion_archive_copy_is_atomic_contained_and_restart_safe(self):
+        from tempfile import TemporaryDirectory
+        from hashlib import sha256
+        from pipelines.market_sip.flatfiles import archive_staging
+        runtime=Path('D:/TradingML/runtimes')
+        self.assertTrue(runtime.is_dir(),'Required runtime root is unavailable')
+        with TemporaryDirectory(prefix='certified-archive-test-',dir=runtime) as directory:
+            root=Path(directory);archive=root/'archive';cache=root/'cache';archive.mkdir();cache.mkdir()
+            source_file=archive/'source.gz';data=os.urandom(9*1024**2);source_file.write_bytes(data)
+            output=cache/'output.gz';logs=[]
+            result=archive_staging.copy_file(source_file,output,archive,cache,len(data),progress=lambda n,total:logs.append(n))
+            self.assertEqual(result['sha256'],sha256(data).hexdigest());self.assertEqual(output.read_bytes(),data)
+            self.assertEqual(logs[-1],len(data))
+            self.assertEqual(archive_staging.copy_file(source_file,output,archive,cache,len(data))['status'],'cached')
+            stop=Event()
+            with self.assertRaises(InterruptedError):
+                archive_staging.copy_file(source_file,cache/'stopped.gz',archive,cache,len(data),stop=stop,
+                    progress=lambda *args:stop.set())
+            self.assertFalse((cache/'stopped.gz').exists());self.assertFalse(list(cache.glob('*.part')))
+            with self.assertRaisesRegex(ValueError,'escapes'):
+                archive_staging.copy_file(source_file,root/'outside.gz',archive,cache,len(data))
+            self.assertEqual(archive_staging.copy_file(archive/'absent.gz',cache/'absent.gz',archive,cache,1)['status'],'archive_missing')
+            with self.assertRaisesRegex(ValueError,'D SSD'):archive_staging.validate_roots(Path('G:/archive'),Path('G:/cache'))
+        paths=acquisition.IngestionPaths(Path('fixture.env'))
+        command=acquisition.updater_command(paths,date(2026,1,2),date(2026,1,2),stage_archive=True)
+        self.assertIn('--archive-root-win',command);self.assertIn(str(paths.archive),command)
+
     def test_certified_updater_resume_never_reads_flatfiles_and_requires_sidecars(self):
         from unittest.mock import patch
         from pipelines.market_sip.flatfiles import download_update_events as updater

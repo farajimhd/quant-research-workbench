@@ -52,15 +52,16 @@ def contiguous_ranges(days):
     return tuple(result)
 
 
-def updater_command(paths: IngestionPaths,start: date,end: date,*,workers=4,threads=2,memory_gib=2):
+def updater_command(paths: IngestionPaths,start: date,end: date,*,workers=4,threads=2,memory_gib=2,stage_archive=False):
     if start>end or not 1<=workers<=8 or not 1<=threads<=8 or not 1<=memory_gib<=32:
         raise ValueError('Invalid bounded acquisition limits')
-    return (sys.executable,'-B',str(ROOT/'pipelines/market_sip/flatfiles/download_update_events.py'),
+    command=(sys.executable,'-B',str(ROOT/'pipelines/market_sip/flatfiles/download_update_events.py'),
             '--start-date',str(start),'--end-date',str(end),'--env-file',str(paths.env_file),
             '--flatfiles-root-win',str(paths.cache),'--flatfiles-root-ch',paths.clickhouse_cache,
             '--output-root-win',str(paths.runtime/'acquisition'),'--storage-policy',SOURCE_STORAGE_POLICY,
             '--download-workers',str(workers),'--max-threads',str(threads),'--max-memory-usage',f'{memory_gib}G',
             '--skip-bars','--progress-layout','text','--no-progress-screen')
+    return command+(('--archive-root-win',str(paths.archive)) if stage_archive else ())
 
 
 def reporting_command(paths: IngestionPaths,start: date,end: date,*,hydrate=False,threads=2,memory_gib=2):

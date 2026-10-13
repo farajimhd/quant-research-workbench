@@ -24,6 +24,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from pipelines.market_sip.events.trade_reporting_flags import reporting_flags, reason_sql, flags_sql, REVISION as TRADE_REPORTING_REVISION
+from pipelines.market_sip.flatfiles import archive_staging
 
 from pipelines.market_sip.benchmarks.clickhouse_compact_schema_codec_benchmark import (  # noqa: E402
     QUOTE_SCHEMA_STRING,
@@ -328,6 +329,7 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--flatfiles-root-win", default=str(DEFAULT_FLATFILES_ROOT_WIN))
+    parser.add_argument("--archive-root-win",type=Path,help="Optionally stage new-source G archive files into the D cache")
     parser.add_argument("--flatfiles-root-ch", default=default_clickhouse_file_root())
     parser.add_argument("--storage-policy", default=default_storage_policy())
     parser.add_argument(
@@ -4306,6 +4308,23 @@ def main() -> None:
                 raise RuntimeError('Certified source requires a versioned migration, not force-day-rebuild')
             certified_dates={day.source_date for day in certified_days}
             download_days=[day for day in days if day.source_date not in certified_dates]
+            if args.archive_root_win is not None:
+                archive_staging.validate_roots(args.archive_root_win,Path(args.flatfiles_root_win))
+                reporter.set_stage('stage archive on D SSD')
+                for day in download_days:
+                    for job in (day.quote_job,day.trade_job):
+                        archive_job=normalize_download_job_destination(job,args.archive_root_win)
+                        last_report=[0.]
+                        def staging_progress(stage,written,total):
+                            if time.monotonic()-last_report[0]>=5 or written==total:
+                                last_report[0]=time.monotonic()
+                                reporter.log(f'archive {stage} {job.kind}:{day.source_date} {written:,}/{total:,} bytes')
+                        result=archive_staging.copy_file(archive_job.destination,job.destination,args.archive_root_win,
+                            Path(args.flatfiles_root_win),int(job.remote_size or 0),
+                            progress=lambda n,total:staging_progress('copy',n,total),
+                            verify_progress=lambda n,total:staging_progress('verify',n,total))
+                        reporter.log(f"archive {job.kind}:{day.source_date} {result['status']} bytes={result['bytes']}")
+                        append_jsonl(report_path,dict(type='archive_stage',source_date=day.source_date,kind=job.kind,**result))
             reporter.total_bytes=sum(int(day.quote_job.remote_size or 0)+int(day.trade_job.remote_size or 0) for day in download_days)
             for day in certified_days:
                 for job in (day.quote_job,day.trade_job):
