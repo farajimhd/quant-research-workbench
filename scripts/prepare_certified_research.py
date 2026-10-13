@@ -38,7 +38,7 @@ def parse_args(argv=None):
     p.add_argument('--query-memory-gib',type=int,default=2)
     p.add_argument('--global-memory-gib',type=int,default=16)
     p.add_argument('--format',choices=('text','json','sql'),default='text')
-    p.add_argument('--acquire-missing',action='store_true',help='Acquire missing appendable sources before freezing the derived plan')
+    p.add_argument('--acquire-missing',action='store_true',help='Opt in to the existing flatfile downloader after Massive resubscription; acquire missing appendable sources before plan freeze')
     p.add_argument('--stage-archive',action='store_true',help='Stage new-source G files on D inside the canonical updater')
     p.add_argument('--runtime-root',type=Path,default=acquisition.RUNTIME/'certified-research')
     p.add_argument('--cache-root',type=Path,default=acquisition.CACHE)
