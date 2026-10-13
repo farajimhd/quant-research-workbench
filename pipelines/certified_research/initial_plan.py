@@ -1,5 +1,6 @@
 """Join prepared lanes and certified sources into one executable plan graph."""
 from dataclasses import replace
+from datetime import date
 
 from . import planning,runtime_plan,source
 from .contracts import digest
@@ -63,13 +64,28 @@ def assemble(config,prepared,canonical,reporting,definition,rules,issuers,securi
     required=set(prepared['required_source_days'])|{s.day for s in price_context_sessions}
     if required-set(source_parents):
         raise ValueError('Initial plan lacks required canonical context or seed source days')
+    prerequisites=tuple(prerequisites);issuers=tuple(issuers)
+    by_key={p.unit.key:p for p in prerequisites}
+    reference_end=planning.reference_coverage_end(config.end)
+    for issuer in issuers:
+        if len(issuer.source_parents)!=1:
+            raise ValueError('Initial fundamentals require one exact frozen SEC input scope')
+        parent=by_key.get(issuer.source_parents[0]);args={} if parent is None else parent.arguments
+        if (parent is None or parent.unit.product!='sec_acquisition'
+                or args.get('entity_key')!=issuer.issuer_key or args.get('source_hash')!=issuer.source_hash
+                or str(args.get('cik','')).lstrip('0')!=issuer.cik.lstrip('0')
+                or not args.get('start') or not args.get('end')
+                or date.fromisoformat(args['start'])>fundamental_start
+                or date.fromisoformat(args['end'])<reference_end):
+            raise ValueError('Initial SEC input identity or availability coverage differs')
     plans=planning.program_units(config,(*prepared['sessions'],*price_context_sessions),issuers,securities,
         prerequisites=(*tuple(prerequisites),*metadata,*roots,*prepared['seed_units']),
         source_parents=source_parents,universe_parent=universe_parent,
         seed_parents=prepared['seed_parents'],corporate_parents=corporate_parents,
         security_listings=security_listings,fundamental_start=fundamental_start,
         price_start=price_start,short_start=short_start,state_start_dates=prepared['state_start_dates'],
-        price_only_listings={s.listing_key for s in price_context_sessions})
+        price_only_listings={s.listing_key for s in price_context_sessions},
+        reference_end=reference_end)
     # Validate the frozen recipe before any aggregate consumer is scheduled.
     plans=tuple(replace(p,unit=replace(p.unit,parents=(*p.unit.parents,'calculation_recipe')))
         if p.unit.product=='market_aggregate' else p for p in plans)

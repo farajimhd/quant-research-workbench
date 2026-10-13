@@ -101,6 +101,10 @@ def test_initial_assembly_joins_frozen_recipe_sources_and_prepared_lanes():
     frozen=recipe.market_recipe(config,rules)
     seeds=tuple(p for p in arguments['prerequisites'] if p.unit.product in ('technical_seed','v7_seed'))
     arguments['prerequisites']=tuple(p for p in arguments['prerequisites'] if p not in seeds and p.unit.key not in ('fetch','repair'))
+    arguments['prerequisites']=tuple(replace(p,arguments=dict(p.arguments,end='2026-01-03'))
+        if p.unit.product in ('corporate_actions','float_allocation') else p for p in arguments['prerequisites'])
+    arguments['prerequisites']=tuple(replace(p,arguments=dict(entity_key=1,cik='123',source_hash='c'*64,
+        start='2026-01-02',end='2026-01-03')) if p.unit.product=='sec_acquisition' else p for p in arguments['prerequisites'])
     prepared=dict(ready=True,blocked={},failed={},prepared={11:dict(recipe_hash=recipe.verify_definition(frozen['definition'],rules))},
         sessions=arguments.pop('sessions'),seed_units=seeds,seed_parents=arguments.pop('seed_parents'),
         state_start_dates={11:(day,day)},required_source_days=(day,),preparation_hash='e'*64)
@@ -112,6 +116,7 @@ def test_initial_assembly_joins_frozen_recipe_sources_and_prepared_lanes():
     aggregate='market:11:2026-01-02:aggregate'
     assert by_key[aggregate].unit.parents==('source:2026-01-02','universe','calculation_recipe')
     assert by_key['security:101:prices'].unit.parents==(aggregate,)
+    assert by_key['issuer:1:fundamentals'].arguments['end']=='2026-01-03'
     with pytest.raises(ValueError,match='required canonical'):
         initial_plan.assemble(config,dict(prepared,required_source_days=(date(2025,12,31),day)),canonical,
             reporting,frozen['definition'],rules,**arguments)
@@ -131,3 +136,12 @@ def test_price_only_historical_listing_reuses_aggregate_without_state_genesis():
     assert lane[0].unit.key in prices.unit.parents
     with pytest.raises(ValueError,match='exclusively earlier'):
         program_units(**arguments,price_only_listings=(11,12))
+
+
+def test_reference_coverage_follows_exclusive_ah_boundary_across_dst():
+    from pipelines.certified_research.planning import reference_coverage_end
+    assert reference_coverage_end(date(2026,1,2))==date(2026,1,3)
+    assert reference_coverage_end(date(2026,7,2))==date(2026,7,2)
+    arguments=inputs()
+    with pytest.raises(ValueError,match='certified range differs'):
+        program_units(**arguments,reference_end=date(2026,1,3))

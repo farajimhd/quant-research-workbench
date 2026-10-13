@@ -2,13 +2,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass,replace
-from datetime import date,datetime,time
+from datetime import date,datetime,time,timedelta,timezone
 from bisect import bisect_left
 from zoneinfo import ZoneInfo
 
 from .campaign import PlannedUnit,unit_id
 from .contracts import CampaignConfig
 from .execution import Unit
+
+
+def reference_coverage_end(session_end):
+    """Last UTC date touched by the exclusive 20:00 New York AH boundary."""
+    if type(session_end) is not date:raise ValueError('Reference coverage requires a session date')
+    boundary=datetime.combine(session_end,time(20),ZoneInfo('America/New_York')).astimezone(timezone.utc)
+    return (boundary-timedelta(microseconds=1)).date()
 
 
 def price_context_days(target_days,issuer_contexts):
@@ -162,7 +169,7 @@ def market_units(config: CampaignConfig,sessions,*,source_parents,universe_paren
 
 def program_units(config,sessions,issuers,securities,*,prerequisites,source_parents,
                   universe_parent,seed_parents,corporate_parents,security_listings,
-                  fundamental_start,price_start,short_start,state_start_dates=None,price_only_listings=()):
+                  fundamental_start,price_start,short_start,state_start_dates=None,price_only_listings=(),reference_end=None):
     """Join acquisition/repair, shared market and reference work in one DAG.
 
     ``security_listings`` is the certified security-to-listing relationship,
@@ -208,7 +215,7 @@ def program_units(config,sessions,issuers,securities,*,prerequisites,source_pare
         linked.append(replace(security,market_parents=shared))
     reference=reference_units(config,issuers,linked,prerequisites=(*prerequisites,*market),
         universe_parent=universe_parent,fundamental_start=fundamental_start,
-        price_start=price_start,short_start=short_start)
+        price_start=price_start,short_start=short_start,reference_end=reference_end)
     result=(*prerequisites,*market,*reference)
     validate(tuple(p.unit for p in result),config.global_memory_bytes)
     return result
@@ -285,7 +292,7 @@ def program_from_universe(config,snapshot,days,issuers,securities,*,prerequisite
 
 
 def reference_units(config,issuers,securities,*,prerequisites,universe_parent,
-                    fundamental_start,price_start,short_start):
+                    fundamental_start,price_start,short_start,reference_end=None):
     """Build one issuer calculation shared by all its securities.
 
     Prerequisites include acquisition/certification units, shared market
@@ -293,6 +300,9 @@ def reference_units(config,issuers,securities,*,prerequisites,universe_parent,
     ranges come from requirement planning, not an arbitrary common lookback.
     The returned units join the market graph's single global executor.
     """
+    reference_end=config.end if reference_end is None else reference_end
+    if type(reference_end) is not date or not config.end<=reference_end<=config.end+timedelta(days=1):
+        raise ValueError('Invalid reference availability coverage end')
     if any(type(d) is not date or d>config.start for d in (fundamental_start,price_start,short_start)):
         raise ValueError('Reference context ranges must include the target start')
     if price_start<date(2019,1,2) or (config.end-short_start).days>1000:
@@ -326,13 +336,13 @@ def reference_units(config,issuers,securities,*,prerequisites,universe_parent,
         result.append(plan);prior[key]=plan
         return key
     for issuer in issuers:
-        common=dict(entity_key=issuer.issuer_key,start=str(fundamental_start),end=str(config.end))
+        common=dict(entity_key=issuer.issuer_key,start=str(fundamental_start),end=str(reference_end))
         reported=add(f'issuer:{issuer.issuer_key}:fundamentals','fundamentals',
             tuple(dict.fromkeys((*parents(issuer.source_parents,'sec_acquisition'),universe_parent))),
             dict(common,cik=issuer.cik,source_hash=issuer.source_hash))
         add(f'issuer:{issuer.issuer_key}:derived','derived_fundamentals',(reported,),dict(common))
     for security in securities:
-        common=dict(entity_key=security.security_key,start=str(config.start),end=str(config.end))
+        common=dict(entity_key=security.security_key,start=str(config.start),end=str(reference_end))
         if not security.market_parents:raise ValueError('Reference price dependencies require the shared market graph')
         price_parents=parents(security.market_parents,'market_aggregate');days=[]
         for key in price_parents:
@@ -350,7 +360,7 @@ def reference_units(config,issuers,securities,*,prerequisites,universe_parent,
         for key in external:
             args=prior[key].arguments
             if (int(args.get('entity_key',0))!=security.security_key
-                    or date.fromisoformat(args['start'])>config.start or date.fromisoformat(args['end'])<config.end):
+                    or date.fromisoformat(args['start'])>config.start or date.fromisoformat(args['end'])<reference_end):
                 raise ValueError('Float prerequisite identity or certified range differs')
         add(f'security:{security.security_key}:float','float_supply',
             (f'issuer:{security.issuer_key}:fundamentals',prices,*external),dict(common,issuer_key=security.issuer_key))
