@@ -6,6 +6,8 @@
 
 `Campaign` freezes the launch configuration, source epoch and bounded unit arguments. The ClickHouse plan stores normalized numeric unit/dependency IDs, product names and argument hashes. Dataset definitions and unit rows are immutable: changed, extra, missing-on-verification or duplicated metadata fails closed.
 
+Campaign identity includes dates and resource budgets. `CampaignConfig.calculation_hash` separately identifies semantic feature selections, so extending dates or changing workers does not by itself change that calculation component. Compatibility still requires algorithm/rule/calendar versions, source lineage and exact predecessor evidence. The calculation hash alone is not a checkpoint certificate; automatic compatibility discovery and the complete V7 recipe binding remain unfinished.
+
 The scheduler uses topological dependency accounting and a heap of ready memory reservations. It does not scan the entire graph after each completion. Incremental progress counters avoid repeated full-state recounts. Independent consumers run concurrently within worker and memory budgets; failed parents block descendants. Long chains are processed iteratively, without recursion.
 
 Each registered producer has an independent authority verifier. A successful function return cannot certify a unit. Resume reads actual persisted product receipts and output fingerprints. Progress history is diagnostic, not proof of data readiness.

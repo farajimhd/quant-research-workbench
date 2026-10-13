@@ -30,6 +30,13 @@ from pipelines.certified_research.universe_publication import UniversePublisher
 
 
 class Contracts(unittest.TestCase):
+    def test_calculation_selection_is_independent_of_range_and_resource_identity(self):
+        original=c.CampaignConfig(date(2026,1,2),date(2026,1,5))
+        extended=replace(original,end=date(2026,10,2),workers=2,query_threads=4)
+        self.assertNotEqual(original.content_hash,extended.content_hash)
+        self.assertEqual(original.calculation_hash,extended.calculation_hash)
+        self.assertNotEqual(original.calculation_hash,replace(original,volume_windows_seconds=(10,60,120)).calculation_hash)
+
     def test_reference_dictionary_claim_covers_only_shared_insert_and_always_releases(self):
         events=[]
         class Claim:

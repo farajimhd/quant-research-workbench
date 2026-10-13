@@ -86,3 +86,19 @@ class CampaignConfig:
     @property
     def content_hash(self):
         return digest(self.identity())
+
+    def calculation_identity(self):
+        """Semantic feature selection, independent of campaign range/resources.
+
+        This is one component of a state compatibility certificate. Algorithm,
+        rule, calendar, source and predecessor versions remain independently
+        required; this hash alone never authorizes checkpoint reuse.
+        """
+        return dict(version='research-calculation-selection-v1',trade_policy=TRADE_POLICY,
+            reporting_revision=REPORTING_REVISION,volume_windows_seconds=self.volume_windows_seconds,
+            short_windows_sessions=self.short_windows_sessions,resolutions_ms=self.resolutions_ms,
+            checkpoints=self.checkpoints)
+
+    @property
+    def calculation_hash(self):
+        return digest(self.calculation_identity())
