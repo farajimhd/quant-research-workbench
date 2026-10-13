@@ -62,6 +62,24 @@ def test_operator_stop_prevents_discovery():
     arguments['query'].assert_not_called()
 
 
+@pytest.mark.parametrize('present',(True,False))
+def test_float_price_context_is_retained_without_extending_state_replay(present):
+    arguments=inputs();early=date(2025,12,31);technical,structural=found(date(2026,1,2))
+    arguments['day_sources'][early]='e'*64
+    if present:arguments['admitted_sessions']+=(MarketSession(early,11,'TEST'),)
+    with patch('pipelines.certified_research.seed_preparation.verify_definition',return_value='a'*64),patch(
+            'pipelines.certified_research.indicator_state.discover',return_value=technical),patch(
+            'pipelines.certified_research.v7.discover',return_value=structural):
+        result=prepare_listing(**arguments,price_sessions=(early,))
+    assert early in result['required_source_days']
+    assert result['ready']==present
+    if present:
+        assert early in {s.day for s in result['sessions']}
+        assert result['state_start_dates']=={11:(date(2026,1,5),date(2026,1,5))}
+    else:
+        assert result['missing_membership']==(early,) and not result['seed_parents']
+
+
 def test_metadata_bound_rejects_before_discovery_without_truncating():
     arguments=inputs()
     with pytest.raises(ValueError,match='metadata bound'):prepare_listing(**arguments,maximum_sessions=1)

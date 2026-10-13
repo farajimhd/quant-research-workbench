@@ -13,7 +13,7 @@ from .recipe import verify_definition
 
 def prepare_listing(query,config,claim,source_guard,admitted_sessions,recipe_definition,rules,
                     day_sources,adjustment_hashes,*,indicator_dataset=None,v7_dataset=None,
-                    stop=None,maximum_candidates=128,maximum_sessions=4096):
+                    stop=None,maximum_candidates=128,maximum_sessions=4096,price_sessions=()):
     """Prepare one listing's lane; the global launcher combines returned units.
 
     Sessions must come from certified execution membership and include the
@@ -25,6 +25,10 @@ def prepare_listing(query,config,claim,source_guard,admitted_sessions,recipe_def
     if stop.is_set():raise InterruptedError('Seed preparation stopped')
     if type(maximum_sessions) is not int or not 1<=maximum_sessions<=65536:
         raise ValueError('Invalid listing preparation metadata bound')
+    price_sessions=tuple(islice(price_sessions,maximum_sessions+1))
+    if (len(price_sessions)>maximum_sessions or any(type(d) is not date or d<date(2019,1,2) or d>config.end for d in price_sessions)
+            or len(set(price_sessions))!=len(price_sessions)):
+        raise ValueError('Invalid or excessive float-price session demands')
     supplied=tuple(islice(admitted_sessions,maximum_sessions+1))
     if len(supplied)>maximum_sessions:raise ValueError('Listing preparation exceeds session metadata bound')
     sessions=tuple(sorted(supplied,key=lambda s:s.day))
@@ -58,7 +62,7 @@ def prepare_listing(query,config,claim,source_guard,admitted_sessions,recipe_def
         indicator_seed=context.StateSeed(technical['session'],technical['dependency']['output_hash'],True) if technical else None,
         v7_seed=context.StateSeed(structural['session'],structural['checkpoint']['state_hash'],True) if structural else None)
     blocked=list(demand['blocked']);by_day={s.day:s for s in sessions}
-    needed=tuple(sorted(set((*demand['targets'],*demand['market_context']))))
+    needed=tuple(sorted(set((*demand['targets'],*demand['market_context'],*price_sessions))))
     missing_membership=tuple(d for d in needed if d not in by_day)
     missing_source=tuple(d for d in needed if d not in sources)
     if missing_membership:blocked.append('Required dated membership is missing for '+str(len(missing_membership))+' market sessions')
@@ -95,7 +99,7 @@ def prepare_listing(query,config,claim,source_guard,admitted_sessions,recipe_def
 def prepare_universe(client_factory,config,claim,source_guard,membership,recipe_definition,rules,
                      day_sources,adjustment_hashes,*,indicator_datasets=None,v7_datasets=None,
                      stop=None,progress=None,maximum_listings=8192,maximum_candidates=128,
-                     maximum_sessions=4096):
+                     maximum_sessions=4096,price_sessions=None):
     """One bounded preparation pool; no nested pools and no database writers.
 
     Independent listing preparations have private clients. A blocked listing
@@ -109,6 +113,8 @@ def prepare_universe(client_factory,config,claim,source_guard,membership,recipe_
     if type(maximum_listings) is not int or not 1<=maximum_listings<=65536:
         raise ValueError('Invalid universe preparation listing bound')
     targets={s.listing_key for s in membership['sessions'] if config.start<=s.day<=config.end}
+    price_sessions={} if price_sessions is None else dict(price_sessions)
+    if set(price_sessions)-targets:raise ValueError('Float-price demand belongs to an unplanned target listing')
     if not targets or len(targets)>maximum_listings:raise ValueError('Universe preparation target is empty or exceeds listing bound')
     indicator_datasets=indicator_datasets or {};v7_datasets=v7_datasets or {}
     for selection in (adjustment_hashes,indicator_datasets,v7_datasets):
@@ -136,7 +142,7 @@ def prepare_universe(client_factory,config,claim,source_guard,membership,recipe_
             value=prepare_listing(client.query,config,claim,source_guard,grouped[listing],recipe_definition,rules,
                 day_sources,adjustment_hashes.get(listing,{}),indicator_dataset=indicator_datasets.get(listing),
                 v7_dataset=v7_datasets.get(listing),stop=signal,maximum_candidates=maximum_candidates,
-                maximum_sessions=maximum_sessions)
+                maximum_sessions=maximum_sessions,price_sessions=price_sessions.get(listing,()))
             if not value['ready']:
                 with lock:blocked[unit.key]=value
                 raise Blocked('; '.join(value['blocked']))
