@@ -30,6 +30,19 @@ from pipelines.certified_research.universe_publication import UniversePublisher
 
 
 class Contracts(unittest.TestCase):
+    def test_v7_boundary_payload_does_not_depend_on_later_bars(self):
+        from tests.test_streaming_level_book import engine,bars
+        a=engine();day=date.fromisoformat(a.session)
+        origin=v7.input_origin_hash('a'*64,a.ticker,91,day)
+        binding=CheckpointBinding('a'*64,origin,'b'*64,a.ticker,day)
+        early=bars(a)
+        later=dict(early[-1],t=int(boundaries(day)['REGULAR'].timestamp())+60,open=2.,close=2.,high=2.,low=2.)
+        first,_=v7.generate(engine(),early,binding)
+        extended,_=v7.generate(engine(),(*early,later),binding)
+        self.assertEqual(first[0]['payload'],extended[0]['payload'])
+        self.assertEqual(first[1]['payload'],extended[1]['payload'])
+        self.assertNotEqual(first[2]['payload'],extended[2]['payload'])
+
     def test_capacity_inventory_preserves_exact_bytes_and_does_not_fabricate_projection(self):
         from pipelines.certified_research import capacity
         def query(sql):
@@ -925,6 +938,11 @@ class ClickHouseIntegration(unittest.TestCase):
         bar=result['results']['bars'];technical=result['results']['technical']
         state=producer.indicator_state(self.client.query,self.database,unit,technical['attempt_id'],{},bar_attempt=bar['attempt_id'])
         self.assertEqual(set(state),set(market_day_sql.FRAMES));self.assertTrue(all(s['close']==1 for s in state.values()))
+        bar_scope=Scope(unit.dataset_id,day,unit.listing_key,'bars',request.parent('bars'))
+        checkpoint_scope=Scope(unit.dataset_id,day,unit.listing_key,'v7',request.parent('v7',(bar['output_hash'],)))
+        checkpoint,state=v7.load_from_bars(self.client.query,self.database,Claim(),checkpoint_scope,bar_scope,
+            request.dataset_hash,request.prior_v7_hash,unit.ticker,'AH',regular_close=request.regular_close)
+        self.assertEqual(checkpoint['boundary'],'AH');self.assertEqual(state.ticker,unit.ticker)
         logs.clear()
         resumed=producer.run_market(request,factory,Claim(),lambda:None,engine,database=self.database,fixture_source=source_sql)
         self.assertEqual(resumed['status'],'complete')

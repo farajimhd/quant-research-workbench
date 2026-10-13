@@ -37,7 +37,7 @@ class MarketRequest:
             raise ValueError('Indicator predecessor is absent; explicit bootstrap proof is required')
 
     def parent(self,product,parents=()):
-        return digest(dict(version='research-market-producer-v1',dataset_hash=self.dataset_hash,
+        return digest(dict(version='research-market-v7-prefix-v2' if product=='v7' else 'research-market-producer-v1',dataset_hash=self.dataset_hash,
             source=self.source_hash,rules=digest(self.rules),product=product,
             predecessor=self.prior_indicator_hash if product=='technical' else self.prior_v7_hash if product=='v7' else '',
             parents=parents))
@@ -118,7 +118,8 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
             elif u.product=='v7':
                 engine=engine_factory()
                 rows=query(v7.bars_sql(base.dataset_id,bar_receipt['attempt_id'],base.listing_key,base.day,database))
-                binding=CheckpointBinding(request.dataset_hash,bar_receipt['output_hash'],request.prior_v7_hash,base.ticker,base.day)
+                origin=v7.input_origin_hash(request.dataset_hash,base.ticker,base.listing_key,base.day)
+                binding=CheckpointBinding(request.dataset_hash,origin,request.prior_v7_hash,base.ticker,base.day)
                 outputs,_=v7.generate(engine,v7.decode_bars(rows),binding,regular_close=request.regular_close)
                 expected={k:int(v) for k,v in query(v7.expected_evidence_sql(outputs,base.dataset_id,unit.attempt_id,
                     base.listing_key,base.day,regular_close=request.regular_close))[0].items()}

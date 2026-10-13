@@ -9,7 +9,15 @@ import msgpack
 from src.market_engine.streaming_level_book import StreamingLevelBook
 from src.market_engine.historical_level_checkpoint import digest as book_digest
 from .checkpoints import CheckpointBinding,boundaries,encode,restore,NY
-from .contracts import literal,identifier,TRADE_POLICY
+from .contracts import literal,identifier,TRADE_POLICY,digest,REPORTING_REVISION
+
+
+def input_origin_hash(recipe_hash,ticker,listing_key,day):
+    """Prefix origin contains no future session rows or full-day bar digest."""
+    CheckpointBinding(recipe_hash,'0'*64,'0'*64,ticker,day)
+    if type(listing_key) is not int or not 0<listing_key<2**64:raise ValueError('Invalid V7 listing identity')
+    return digest(dict(version='causal-v7-input-origin-v1',recipe=recipe_hash,ticker=ticker,
+        listing=listing_key,session=day,trade_policy=TRADE_POLICY,reporting_revision=REPORTING_REVISION))
 
 
 def next_day_engine(previous: StreamingLevelBook,day: date,*,previous_checkpoint,
@@ -76,6 +84,35 @@ def decode_bars(rows):
     return tuple(dict(t=int(r['close_us'])//1_000_000,open=int(r['open_int'])/10000.,
                       high=int(r['high_int'])/10000.,low=int(r['low_int'])/10000.,
                       close=int(r['close_int'])/10000.,volume=float(r['volume'])) for r in rows)
+
+
+def load_from_bars(query,database,claim,scope,bar_scope,recipe_hash,predecessor_hash,ticker,boundary,*,regular_close=None):
+    """Derive expected prefix/chain from certified bars, then restore authority."""
+    from .publication import Publisher
+    if (bar_scope.product!='bars' or bar_scope.dataset_id!=scope.dataset_id
+            or bar_scope.listing_key!=scope.listing_key or bar_scope.session_date!=scope.session_date):
+        raise ValueError('Checkpoint bar authority differs in date/identity')
+    cuts=boundaries(scope.session_date,regular_close)
+    if boundary not in cuts:raise ValueError('Invalid checkpoint boundary')
+    publisher=Publisher(query,database,claim);bars=publisher.receipt(bar_scope)
+    if bars is None:raise ValueError('Checkpoint source bars are not certified')
+    cut=round(cuts[boundary].timestamp()*1_000_000)
+    sql=bars_sql(scope.dataset_id,bars['attempt_id'],scope.listing_key,scope.session_date,database)
+    rows=query(f'SELECT * FROM ({sql}) WHERE close_us<={cut} ORDER BY close_us LIMIT 57601')
+    if len(rows)>57600:raise ValueError('Checkpoint source exceeds bounded 1s session input')
+    decoded=iter(decode_bars(rows));current=next(decoded,None)
+    prefix=sha256(bytes.fromhex(input_origin_hash(recipe_hash,ticker,scope.listing_key,scope.session_date)))
+    parent=predecessor_hash;result=None;previous_time=None
+    for name,close in cuts.items():
+        while current is not None and current['t']<=close.timestamp():
+            if previous_time is not None and current['t']<=previous_time:raise ValueError('Checkpoint bars are repeated or unordered')
+            prefix.update(msgpack.packb(current,use_bin_type=True));previous_time=current['t'];current=next(decoded,None)
+        binding=CheckpointBinding(recipe_hash,prefix.hexdigest(),parent,ticker,scope.session_date)
+        result=load_checkpoint(query,database,claim,scope,binding,name,regular_close=regular_close)
+        parent=result[0]['state_hash']
+        if name==boundary:break
+    if publisher.receipt(bar_scope)!=bars:raise ValueError('Checkpoint bar authority changed during restore')
+    return result
 
 
 def load_checkpoint(query,database,claim,scope,binding,boundary,*,regular_close=None):
