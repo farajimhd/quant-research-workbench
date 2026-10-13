@@ -2493,6 +2493,7 @@ def drop_test_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> 
     prefix = f"{str(args.test_table_prefix).strip()}_"
     tables = [
         args.reporting_ns_table,args.reporting_ns_table+'_stage',
+        args.reporting_ns_table+'_coverage',
         args.events_table,
         args.manifest_table,
         args.continuity_table,
@@ -2873,7 +2874,9 @@ def capture_reporting_ns(client,args,day,raw_stats,report_path,reporter=None):
     if len(source_rows)!=1:raise RuntimeError('New-source reporting evidence requires a unique source certificate')
     source_digest=digest({k:v for k,v in source_rows[0].items() if k!='updated_at'})
     client.execute(reporting_evidence.ddl(db,table));client.execute(reporting_evidence.ddl(db,stage,stage=True))
-    def query(sql):return [json.loads(line) for line in client.execute(sql+' FORMAT JSONEachRow').splitlines() if line]
+    def query(sql,*,read=True):
+        if not read:return client.execute(sql)
+        return [json.loads(line) for line in client.execute(sql+' FORMAT JSONEachRow').splitlines() if line]
     verify_auxiliary_storage(query,db,(table,stage))
     where=f'source_date=toDate({sql_string(day.source_date)})'
     # This unsealed staging is acquisition-owned, never historical read authority.
@@ -2899,6 +2902,9 @@ def capture_reporting_ns(client,args,day,raw_stats,report_path,reporter=None):
             f'EXCEPT ALL SELECT {columns} FROM {quote_ident(db)}.{quote_ident(right)} WHERE {where})')[0]
         if int(difference['n']):raise RuntimeError('Persisted original reporting evidence is incomplete or changed')
     verify_auxiliary_storage(query,db,(table,stage))
+    reporting_evidence.certify(query,db,args.database+'.'+args.events_table,day.source_date,source_digest,
+        raw_stats.first_sip_timestamp_us,raw_stats.last_sip_timestamp_us,raw_stats.trade_rows,table=table,
+        coverage=table+'_coverage' if args.test_mode else 'historical_trade_reporting_coverage_v1')
     append_jsonl(report_path,dict(type='original_reporting_evidence',source_date=day.source_date,
         revision=reporting_evidence.VERSION,source_digest=source_digest,counts=counts,table=db+'.'+table))
 

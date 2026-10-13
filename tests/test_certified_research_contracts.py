@@ -581,6 +581,28 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_native_ns_reporting_certificate_recomputes_flags_and_reuses_verified_evidence(self):
+        from pipelines.market_sip.events import reporting_evidence
+        table='native_ns_'+uuid.uuid4().hex;target='native_events_'+uuid.uuid4().hex;day=date(2026,1,2)
+        self.client.query(reporting_evidence.ddl(self.database,table),read=False)
+        self.client.query(f'CREATE TABLE {self.database}.{target} (ticker String,ordinal UInt64,event_meta UInt8,sip_timestamp_us UInt64) '
+            "ENGINE=MergeTree ORDER BY (ticker,ordinal) SETTINGS storage_policy='live_market_ssd'",read=False)
+        first=int(self.client.query("SELECT toUInt64(toUnixTimestamp64Micro(toDateTime64('2026-01-02 10:00:00',6,'America/New_York'))) t")[0]['t'])
+        self.client.query(f"INSERT INTO {self.database}.{target} VALUES ('TEST',1,65,{first}),('TEST',2,1,{first+1})",read=False)
+        insert_rows(self.client.query,self.database,table,[dict(source_date=str(day),ticker='TEST',ordinal=n,
+            sip_timestamp_ns=(first+n-1)*1000+123,participant_timestamp_ns=first*1000-1000 if n==1 else None,
+            reporting_condition_entries=[],reporting_reason=0 if n==1 else 8,source_digest='a'*64) for n in (1,2)])
+        logs=[]
+        def query(sql,*args,**kwargs):logs.append(sql);return self.client.query(sql,*args,**kwargs)
+        counts=reporting_evidence.certify(query,self.database,self.database+'.'+target,day,'a'*64,first,first+1,2,table=table)
+        self.assertEqual((counts['timely'],counts['unknown'],counts['bad']),(1,1,0))
+        logs.clear()
+        self.assertEqual(reporting_evidence.certify(query,self.database,self.database+'.'+target,day,'a'*64,first,first+1,2,table=table),counts)
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+        self.client.query(f"ALTER TABLE {self.database}.{target} UPDATE event_meta=65 WHERE ordinal=2 SETTINGS mutations_sync=2",read=False)
+        with self.assertRaisesRegex(ValueError,'does not match complete'):
+            reporting_evidence.certify(query,self.database,self.database+'.'+target,day,'a'*64,first,first+1,2,table=table)
+
     def test_original_reporting_ns_projection_reconciles_canonical_fields_and_preserves_unknowns(self):
         from pipelines.market_sip.events import reporting_evidence
         table='ns_canonical_'+uuid.uuid4().hex

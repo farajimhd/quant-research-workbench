@@ -1,8 +1,72 @@
 """Compact original-clock evidence preserved by new-day canonical ingestion."""
 from pipelines.certified_research.contracts import identifier,literal
+from .trade_reporting_flags import reason_sql,flags_sql,REVISION
 
 TABLE='historical_trade_reporting_ns_v1'
 VERSION='original-reporting-nanosecond-evidence-v1'
+
+
+def coverage_ddl(database='q_live',table='historical_trade_reporting_coverage_v1'):
+    identifier(database);identifier(table)
+    return f"""CREATE TABLE IF NOT EXISTS {database}.{table} (
+      source_date Date CODEC(ZSTD(1)),revision String CODEC(ZSTD(1)),source_digest String CODEC(ZSTD(1)),
+      status String CODEC(ZSTD(1)),raw_table String CODEC(ZSTD(1)),map_table String CODEC(ZSTD(1)),
+      details String CODEC(ZSTD(1)),updated_at DateTime64(6,'UTC') CODEC(Delta(8),ZSTD(1))
+    ) ENGINE=ReplacingMergeTree(updated_at) ORDER BY (source_date,revision)
+    SETTINGS storage_policy='live_market_ssd',default_compression_codec='ZSTD(1)'"""
+
+
+def certification_sql(target,evidence,day,source_digest,first_sip_us,last_sip_us):
+    if len(source_digest)!=64 or any(c not in '0123456789abcdef' for c in source_digest):raise ValueError('Source digest is invalid')
+    if type(first_sip_us) is not int or type(last_sip_us) is not int or not 0<first_sip_us<=last_sip_us:
+        raise ValueError('Certified SIP bounds are invalid')
+    for value in (target,evidence):
+        db,name=value.split('.');identifier(db);identifier(name)
+    computed=reason_sql("arrayStringConcat(reporting_condition_entries,',')",
+        "ifNull(toString(participant_timestamp_ns),'')",'toString(sip_timestamp_ns)')
+    expected=flags_sql('r.expected_reason')
+    return f"""WITH evaluated AS (
+      SELECT *,toUInt8(1) present,{computed} expected_reason FROM {evidence}
+      WHERE source_date=toDate({literal(day)})
+    ) SELECT count() n,uniqExact(tuple(e.ticker,e.ordinal)) unique_keys,
+      countIf(e.present!=1 OR r.present!=1 OR intDiv(r.sip_timestamp_ns,1000)!=e.sip_timestamp_us
+        OR r.source_digest!={literal(source_digest)} OR r.reporting_reason!=r.expected_reason
+        OR bitAnd(e.event_meta,192)!={expected}) bad,
+      countIf({expected}=64) timely,countIf({expected}=192) delayed,countIf({expected}=0) unknown
+    FROM (SELECT *,toUInt8(1) present FROM {target}
+      WHERE sip_timestamp_us BETWEEN {int(first_sip_us)} AND {int(last_sip_us)} AND bitAnd(event_meta,1)=1) e
+    FULL OUTER JOIN evaluated r USING(ticker,ordinal)
+    SETTINGS join_algorithm='full_sorting_merge',join_use_nulls=0"""
+
+
+def certify(query,database,target,day,source_digest,first_sip_us,last_sip_us,expected_trades,*,table=TABLE,coverage='historical_trade_reporting_coverage_v1'):
+    """Publish native reporting coverage only after independent NS/flag checks."""
+    import json
+    from datetime import datetime,timezone
+    from pipelines.certified_research.schema import verify_auxiliary_storage
+    from pipelines.certified_research.publication import insert_rows
+    identifier(database);identifier(table)
+    if type(expected_trades) is not int or expected_trades<0:raise ValueError('Expected source trade count is invalid')
+    verify_auxiliary_storage(query,database,(table,))
+    counts={k:int(v) for k,v in query(certification_sql(target,database+'.'+table,day,source_digest,first_sip_us,last_sip_us))[0].items()}
+    if counts['n']!=expected_trades or counts['unique_keys']!=expected_trades or counts['bad']:
+        raise ValueError('Native reporting evidence does not match complete canonical source')
+    identifier(coverage)
+    query(coverage_ddl(database,coverage),read=False);verify_auxiliary_storage(query,database,(coverage,table))
+    rows=query(f'SELECT source_digest,status,details FROM {database}.{coverage} FINAL '
+        f'WHERE source_date=toDate({literal(day)}) AND revision={literal(REVISION)}')
+    details=json.dumps(dict(counts=counts,evidence_version=VERSION),sort_keys=True)
+    wanted=dict(source_digest=source_digest,status='complete',details=details)
+    if rows:
+        if rows!=[wanted]:raise ValueError('Existing reporting certificate differs from native evidence')
+        return counts
+    insert_rows(query,database,coverage,[dict(source_date=str(day),revision=REVISION,**wanted,
+        raw_table=database+'.'+table,map_table=database+'.'+table,
+        updated_at=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f'))])
+    if query(f'SELECT source_digest,status,details FROM {database}.{coverage} FINAL '
+        f'WHERE source_date=toDate({literal(day)}) AND revision={literal(REVISION)}')!=[wanted]:
+        raise ValueError('Native reporting certificate insert is uncertain')
+    return counts
 
 
 def ddl(database='q_live',table=TABLE,*,stage=False):
