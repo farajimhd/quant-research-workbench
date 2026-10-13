@@ -9,6 +9,7 @@ import re
 from .contracts import digest,identifier,literal
 from .publication import evidence_sql,insert_rows
 from .schema import TABLES
+from .facts import FACT_KEY
 
 
 @dataclass(frozen=True)
@@ -48,7 +49,7 @@ class ReferencePublisher:
     def evidence(self,scope,attempt):
         table=next(t for t in TABLES if t.name=='research_facts_v1')
         rows=self.query(evidence_sql(table,f'SELECT * FROM {self.database}.research_facts_v1 WHERE '
-                    +scope.rows_where(attempt),'tuple(metric_key,unit_key,period_start,period_end,available_at,revision)'))
+                    +scope.rows_where(attempt),FACT_KEY))
         if len(rows)!=1:raise ValueError('Reference evidence is ambiguous')
         proof={k:int(v) for k,v in rows[0].items()}
         if proof['n']!=proof['unique_keys']:raise ValueError('Duplicate reference fact keys')

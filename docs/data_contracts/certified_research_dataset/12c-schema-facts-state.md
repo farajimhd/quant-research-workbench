@@ -6,7 +6,7 @@ All tables use `MergeTree`, `live_market_ssd` and lossless per-column compressio
 
 ## research_facts_v1
 
-**Order:** `dataset_id, entity_kind, entity_key, attempt_id, metric_key, available_at, period_end, revision`. **Partition:** `toYYYYMM(available_at)`.
+**Order:** `dataset_id, entity_kind, entity_key, attempt_id, metric_key, unit_key, basis_unit_key, taxonomy_key, available_at, period_end, revision`. **Partition:** `toYYYYMM(available_at)`.
 
 | Column | Type | Codec |
 | --- | --- | --- |
@@ -18,10 +18,14 @@ All tables use `MergeTree`, `live_market_ssd` and lossless per-column compressio
 | `period_start` | `Nullable(Date)` | `ZSTD(1)` |
 | `period_end` | `Nullable(Date)` | `ZSTD(1)` |
 | `context_kind` | `UInt8` | `ZSTD(1)` |
+| `fiscal_year` | `UInt16` | `ZSTD(1)` |
+| `fiscal_period` | `LowCardinality(String)` | `ZSTD(1)` |
+| `taxonomy_key` | `UInt8` | `ZSTD(1)` |
 | `available_at` | `DateTime64(6,'UTC')` | `Delta(8),ZSTD(1)` |
 | `revision` | `UInt32` | `T64,ZSTD(1)` |
 | `value` | `Nullable(Float64)` | `ZSTD(1)` |
 | `unit_key` | `UInt16` | `ZSTD(1)` |
+| `basis_unit_key` | `UInt16` | `ZSTD(1)` |
 | `status` | `UInt8` | `ZSTD(1)` |
 | `precision` | `UInt8` | `ZSTD(1)` |
 | `confidence` | `UInt8` | `ZSTD(1)` |
@@ -49,6 +53,15 @@ All tables use `MergeTree`, `live_market_ssd` and lossless per-column compressio
 | `unit_key` | `UInt16` | `ZSTD(1)` |
 | `symbol` | `LowCardinality(String)` | `ZSTD(1)` |
 | `kind` | `UInt8` | `ZSTD(1)` |
+
+## research_taxonomy_v1
+
+**Order:** `taxonomy_key`. **Partition:** `tuple()`.
+
+| Column | Type | Codec |
+| --- | --- | --- |
+| `taxonomy_key` | `UInt8` | `ZSTD(1)` |
+| `name` | `LowCardinality(String)` | `ZSTD(1)` |
 
 ## research_v7_checkpoint_v1
 

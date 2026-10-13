@@ -21,11 +21,20 @@ from pipelines.certified_research import source,acquisition
 from pipelines.certified_research import v7
 from pipelines.certified_research import context
 from pipelines.certified_research import producer
-from pipelines.certified_research import reference_producer,reference_sql,short_sql,universe
+from pipelines.certified_research import reference_producer,reference_sql,short_sql,universe,fundamentals
 from pipelines.certified_research.reference_publication import ReferenceScope,ReferencePublisher
 
 
 class Contracts(unittest.TestCase):
+    def test_formula_catalog_is_complete_and_source_arithmetic_drift_blocks_publication(self):
+        from unittest.mock import patch
+        self.assertEqual(len(fundamentals.definitions()),19)
+        self.assertEqual({m.name for m in facts.catalog() if m.name.startswith('derived.')},
+                         {'derived.'+f.name for f in fundamentals.definitions()})
+        self.assertEqual(fundamentals.app_contract()['source_arithmetic_hash'],fundamentals.APP_ARITHMETIC_BASELINE)
+        with patch.object(fundamentals,'APP_ARITHMETIC_BASELINE','0'*64):
+            with self.assertRaisesRegex(ValueError,'arithmetic changed'):fundamentals.contract_hash()
+
     def test_historical_universe_preserves_renames_and_delisting_and_reports_unresolved_dates(self):
         base=dict(listing_id='listing:1',security_id='security:1',issuer_id='issuer:1',conids=['91'],
             exchange_code='XNYS',currency_code='USD',listing_status='inactive',list_date='2024-01-01',
@@ -148,10 +157,12 @@ class Contracts(unittest.TestCase):
         self.assertEqual(facts.catalog_hash(),facts.catalog_hash())
         at=facts.conservative_date_availability(date(2026,1,2))
         self.assertEqual(at,datetime(2026,1,3,tzinfo=timezone.utc))
-        row=dict(dataset_id=str(uuid.uuid4()),entity_kind=1,entity_key=1,metric_key=2,revision=0,
-                 available_at=at,evidence_hash='a'*64,confidence=100,status=1,precision=2,unit_key=1,value=123.)
+        row=dict(dataset_id=str(uuid.uuid4()),attempt_id=str(uuid.uuid4()),entity_kind=1,entity_key=1,metric_key=2,revision=0,
+                 available_at=at,evidence_hash='a'*64,confidence=100,status=1,precision=2,unit_key=1,basis_unit_key=1,
+                 taxonomy_key=1,context_kind=0,fiscal_year=2026,fiscal_period='FY',value=123.)
         facts.verify_fact(row)
-        for fields in (dict(available_at=at.replace(tzinfo=None)),dict(value=float('nan')),dict(status=2),dict(evidence_hash='missing')):
+        for fields in (dict(available_at=at.replace(tzinfo=None)),dict(value=float('nan')),dict(status=2),dict(evidence_hash='missing'),
+                       dict(basis_unit_key=0),dict(taxonomy_key=4),dict(confidence=True),dict(metric_key=2**32)):
             with self.assertRaises(ValueError):facts.verify_fact(dict(row,**fields))
     def test_dated_membership_removes_delisted_and_otc_without_future_births(self):
         from datetime import timezone,timedelta
@@ -280,6 +291,93 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_real_sec_to_derived_chain_uses_original_fiscal_context_in_clickhouse(self):
+        dataset=str(uuid.uuid4());key=993
+        class Claim:
+            def check(self):pass
+        parent_scope=ReferenceScope(dataset,1,key,'fundamentals',date(2025,1,1),date(2026,10,2),'a'*64,facts.catalog_hash())
+        before=time.monotonic()
+        parent=reference_producer.run_sec(parent_scope,'320193',facts.catalog(),self.client.query,Claim(),lambda:None,database=self.database)
+        scope=ReferenceScope(dataset,1,key,'derived_fundamentals',parent_scope.start,parent_scope.end,
+            reference_producer.derived_parent_hash(parent),facts.catalog_hash())
+        result=reference_producer.run_derived(scope,parent_scope,self.client.query,Claim(),lambda:None,database=self.database)
+        self.assertGreater(int(parent['output_rows']),0);self.assertGreater(int(result['output_rows']),0)
+        audit=self.client.query(f"SELECT countIf(status=1) valid,countIf(fiscal_period='FY') annual,"
+            f"countIf(status=1 AND context_kind=0) unknown_context_valid FROM {self.database}.research_facts_v1 "
+            f"WHERE attempt_id=toUUID('{result['attempt_id']}')")[0]
+        self.assertGreater(int(audit['valid']),0);self.assertGreater(int(audit['annual']),0)
+        self.assertEqual(int(audit['unknown_context_valid']),0)
+        self.assertLess(time.monotonic()-before,45) # Same bounded client budget as the campaign queries.
+
+    def test_all_nineteen_derived_formulas_are_causal_aligned_and_resume_without_inserts(self):
+        from datetime import timezone
+        dataset=str(uuid.uuid4());attempt=str(uuid.uuid4());key=994
+        parent_scope=ReferenceScope(dataset,1,key,'fundamentals',date(2025,1,1),date(2026,3,1),'a'*64,facts.catalog_hash())
+        class Claim:
+            def check(self):pass
+        def row(label,value,year=2024,instant=False,stamp='2025-02-10 12:00:00.000000',revision=0):
+            unit=2 if 'shares' in label else 1
+            return dict(dataset_id=dataset,attempt_id=attempt,entity_kind=1,entity_key=key,metric_key=fundamentals.metric(label),
+                period_start=None if instant else f'{year}-01-01',period_end=f'{year}-12-31',context_kind=1 if instant else 2,
+                fiscal_year=year,fiscal_period='FY',taxonomy_key=1,available_at=stamp,revision=revision,value=float(value),
+                unit_key=unit,basis_unit_key=unit,status=1,precision=1,confidence=90,reason='',evidence_hash=c.digest((label,value,year,stamp)))
+        current={'Revenue':100,'Gross profit':40,'Operating income':20,'Net income':10,'Operating cash flow':30,
+            'Capital expenditure':-5,'Interest expense':2,'Research & development':4,'SG&A expense':8,
+            'Weighted average basic shares':100,'Weighted average diluted shares':105}
+        balances={'Assets':200,"Stockholders' equity":100,'Current assets':60,'Current liabilities':30,
+                  'Cash':25,'Total borrowings':50,'Debt current component':20,'Debt noncurrent component':30}
+        rows=[row(label,value) for label,value in current.items()]+[row(label,value,instant=True) for label,value in balances.items()]
+        rows += [row('Revenue',80,2023),row('Net income',4,2023),row('Weighted average basic shares',90,2023)]
+        rows += [row('Gross profit',50,stamp='2025-05-10 12:00:00.000000',revision=1)]
+        rows += [dict(row('Revenue',1000,2025,stamp='2025-05-10 12:00:00.000000'),
+                      period_end='2025-03-31',fiscal_period='Q1')]
+        rows += [row('Cash',25,2025,True,'2026-02-10 12:00:00.000000'),
+                 row('Debt current component',20,2025,True,'2026-02-10 12:00:00.000000')]
+        rows += [dict(row('Gross profit',999,2025,stamp='2026-02-20 12:00:00.000000'),period_start=None,context_kind=0)]
+        rows += [dict(row('Revenue',value,year),unit_key=8,basis_unit_key=8,taxonomy_key=2)
+                 for value,year in ((200,2024),(150,2023))]
+        insert_rows(self.client.query,self.database,'research_facts_v1',rows)
+        publisher=ReferencePublisher(self.client.query,self.database,Claim())
+        parent=publisher.publish(parent_scope,attempt,publisher.evidence(parent_scope,attempt))
+        scope=ReferenceScope(dataset,1,key,'derived_fundamentals',parent_scope.start,parent_scope.end,
+            reference_producer.derived_parent_hash(parent),facts.catalog_hash())
+        logs=[]
+        def query(sql,*args,**kw):logs.append(sql);return self.client.query(sql,*args,**kw)
+        receipt=reference_producer.run_derived(scope,parent_scope,query,Claim(),lambda:None,database=self.database)
+        def read(at):
+            return {next(f.name for f in fundamentals.definitions() if f.key==int(r['metric_key'])):r
+                for r in self.client.query(facts.lookup_sql(self.database,dataset,[(1,key)],
+                    [f.key for f in fundamentals.definitions()],at,basis_units=(1,2),taxonomies=(1,)))}
+        expected={'free_cash_flow':25,'gross_margin':40,'operating_margin':20,'net_margin':10,'free_cash_flow_margin':25,
+            'return_on_assets':5,'return_on_equity':10,'working_capital':30,'current_ratio':2,'debt_to_equity':.5,
+            'net_debt':25,'interest_coverage':10,'revenue_growth':25,'earnings_growth':150,'share_growth':100/9,
+            'dilution':5,'cash_conversion':3,'research_intensity':4,'sga_intensity':8}
+        self.assertFalse(read(datetime(2025,2,10,11,tzinfo=timezone.utc)))
+        initial=read(datetime(2025,2,10,12,tzinfo=timezone.utc));self.assertEqual(set(initial),set(expected))
+        for name,value in expected.items():
+            self.assertAlmostEqual(initial[name]['value'],value,msg=name)
+        self.assertEqual(initial['return_on_assets']['reason'],'point_in_time_approximation')
+        revised=read(datetime(2025,5,11,tzinfo=timezone.utc));self.assertEqual(revised['gross_margin']['value'],50.)
+        self.assertEqual(revised['revenue_growth']['value'],25.) # FY policy is not replaced by an unmatched quarter.
+        late=read(datetime(2026,2,11,tzinfo=timezone.utc));self.assertIsNone(late['net_debt']['value'])
+        self.assertEqual(late['net_debt']['reason'],'missing_or_invalid_aligned_inputs')
+        self.assertEqual(late['gross_margin']['value'],50.) # Later unknown-context filing is still hidden.
+        unknown=read(datetime(2026,2,21,tzinfo=timezone.utc))['gross_margin']
+        self.assertIsNone(unknown['value']);self.assertEqual(unknown['reason'],'unknown_primary_context')
+        native=self.client.query(facts.lookup_sql(self.database,dataset,[(1,key)],
+            [next(f.key for f in fundamentals.definitions() if f.name=='revenue_growth')],
+            datetime(2025,5,11,tzinfo=timezone.utc),units=(6,),basis_units=(8,),taxonomies=(2,)))
+        self.assertEqual(len(native),1);self.assertAlmostEqual(native[0]['value'],100/3)
+        absent=self.client.query(facts.lookup_sql(self.database,dataset,[(1,key)],
+            [next(f.key for f in fundamentals.definitions() if f.name=='gross_margin')],
+            datetime(2025,5,11,tzinfo=timezone.utc),basis_units=(8,),taxonomies=(2,)))[0]
+        self.assertIsNone(absent['value']);self.assertEqual(absent['reason'],'missing_primary_input')
+        self.assertEqual(int(absent['precision']),1)
+        self.assertLess(int(receipt['output_rows']),19*3) # Change records, not repeated unchanged snapshots.
+        logs.clear()
+        self.assertEqual(reference_producer.run_derived(scope,parent_scope,query,Claim(),lambda:None,database=self.database),receipt)
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+
     def test_gateway_historical_universe_read_path_is_bounded_and_preserves_diagnostics(self):
         result=universe.load(lambda sql:self.client.query(sql+' SETTINGS readonly=1'),
             date(2025,1,1),date(2026,10,2),date(2026,10,12))

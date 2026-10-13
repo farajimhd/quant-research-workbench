@@ -11,7 +11,7 @@ from uuid import UUID
 import re
 
 from .contracts import identifier,literal
-from .facts import catalog,UNITS,CURRENCY_UNITS
+from .facts import catalog,UNITS,CURRENCY_UNITS,TAXONOMIES,FACT_KEY
 from .publication import evidence_sql
 from .schema import TABLES
 
@@ -97,12 +97,12 @@ def sec_projection(dataset_id,attempt_id,entity_key,cik,start: date,end: date,*,
              OR (m.unit_key=5 AND f.unit_code IN ({share_units})))
     ), checked AS (
       SELECT *,uniqExact(tuple(value,source_context_kind)) OVER
-        (PARTITION BY metric_key,unit_key,period_start_date,period_end_date,public_at,priority) value_versions
+        (PARTITION BY metric_key,unit_key,taxonomy,period_start_date,period_end_date,public_at,priority) value_versions
       FROM eligible WHERE toDate(public_at) BETWEEN toDate({literal(start)}) AND toDate({literal(end)})
     ), ranked AS (
       SELECT * FROM checked
       ORDER BY metric_key,period_end_date,public_at,priority,company_fact_id,source_content_sha256,source_record
-      LIMIT 1 BY metric_key,unit_key,period_start_date,period_end_date,public_at
+      LIMIT 1 BY metric_key,unit_key,taxonomy,period_start_date,period_end_date,public_at
     ) """
     if provenance:
         return prefix+"""SELECT DISTINCT proof_hash evidence_hash,'sec' source_system,
@@ -114,11 +114,13 @@ def sec_projection(dataset_id,attempt_id,entity_key,cik,start: date,end: date,*,
     return prefix+f"""SELECT toUUID({literal(dataset_id)}) dataset_id,toUUID({literal(attempt_id)}) attempt_id,
       toUInt8(1) entity_kind,toUInt64({entity_key}) entity_key,metric_key,
       period_start_date period_start,period_end_date period_end,source_context_kind context_kind,
+      ifNull(fiscal_year,toUInt16(0)) fiscal_year,ifNull(fiscal_period,'') fiscal_period,
+      toUInt8(transform(taxonomy,['us-gaap','ifrs-full','dei'],[1,2,3],0)) taxonomy_key,
       toDateTime64(public_at,6,'UTC') available_at,toUInt32(0) revision,
-      if(isFinite(r.value) AND r.versions<=1 AND r.value_versions=1,toNullable(r.value),CAST(NULL AS Nullable(Float64))) value,
-      unit_key,toUInt8(if(isFinite(r.value) AND r.versions<=1 AND r.value_versions=1,1,3)) status,toUInt8(public_precision) precision,
-      toUInt8(if(public_precision=1,90,70)) confidence,
-      multiIf(r.versions>1,'ambiguous_acceptance_clock',r.value_versions>1,'conflicting_source_values',NOT isFinite(r.value),'nonfinite_source_value',
+      if(taxonomy_key!=0 AND isFinite(r.value) AND r.versions<=1 AND r.value_versions=1,toNullable(r.value),CAST(NULL AS Nullable(Float64))) value,
+      unit_key,unit_key basis_unit_key,toUInt8(if(taxonomy_key=0,2,if(isFinite(r.value) AND r.versions<=1 AND r.value_versions=1,1,3))) status,toUInt8(public_precision) precision,
+      toUInt8(if(taxonomy_key=0,0,if(public_precision=1,90,70))) confidence,
+      multiIf(taxonomy_key=0,'unsupported_reported_taxonomy',r.versions>1,'ambiguous_acceptance_clock',r.value_versions>1,'conflicting_source_values',NOT isFinite(r.value),'nonfinite_source_value',
               source_context_kind=0,'period_start_not_preserved_by_source','') reason,proof_hash evidence_hash{extras}
     FROM ranked r"""
 
@@ -131,7 +133,7 @@ def sec_insert(database,*args,**kw):
 
 def sec_expected(*args,**kw):
     table=next(t for t in TABLES if t.name=='research_facts_v1')
-    return evidence_sql(table,sec_projection(*args,**kw),'tuple(metric_key,unit_key,period_start,period_end,available_at,revision)')
+    return evidence_sql(table,sec_projection(*args,**kw),FACT_KEY)
 
 
 def sec_provenance_insert(database,*args,**kw):

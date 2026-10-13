@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 from uuid import uuid4
-from . import schema,reference_sql,short_sql
-from .contracts import identifier,literal
+from . import schema,reference_sql,short_sql,fundamentals
+from .contracts import identifier,literal,digest
 from .reference_publication import ReferencePublisher
 from .publication import evidence_sql
+from .facts import FACT_KEY,UNITS
 
 STAGING='research_stage_reference_v1'
 
@@ -51,6 +52,25 @@ def run_short(scope,query,claim,source_guard,*,database='arte',source_database='
             scope.start,scope.end,scope.family,source_database=source_database,wide=True))
 
 
+def derived_parent_hash(receipt):
+    return digest(dict(fundamentals=receipt['output_hash'],formula_contract=fundamentals.contract_hash()))
+
+
+def run_derived(scope,parent_scope,query,claim,source_guard,*,database='arte'):
+    claim.check();source_guard();schema.verify_storage(query,database,require_tables=True)
+    schema.verify_auxiliary_storage(query,database,(STAGING,))
+    if (scope.entity_kind!=1 or scope.family!='derived_fundamentals' or parent_scope.family!='fundamentals'
+            or (scope.dataset_id,scope.entity_key)!=(parent_scope.dataset_id,parent_scope.entity_key)
+            or parent_scope.start>scope.start or parent_scope.end<scope.end):
+        raise ValueError('Invalid derived-to-reported fundamental dependency')
+    parent=ReferencePublisher(query,database,claim).receipt(parent_scope)
+    if parent is None:raise ValueError('Reported fundamental predecessor is not certified')
+    if scope.parent_hash!=derived_parent_hash(parent):raise ValueError('Derived fundamental dependency changed')
+    return _materialize(scope,query,claim,source_guard,database,
+        lambda attempt:fundamentals.projection(database,scope.dataset_id,attempt,scope.entity_key,
+            parent['attempt_id'],scope.start,scope.end,wide=True))
+
+
 def _materialize(scope,query,claim,source_guard,database,projection_factory):
     publisher=ReferencePublisher(query,database,claim)
     previous=publisher.receipt(scope)
@@ -63,8 +83,14 @@ def _materialize(scope,query,claim,source_guard,database,projection_factory):
     fact_table=next(t for t in schema.TABLES if t.name=='research_facts_v1')
     names=','.join(c.name for c in fact_table.columns)
     normalized=f'SELECT {names} FROM {database}.{STAGING} WHERE {where}'
+    units=','.join(str(v) for v in sorted(set(UNITS.values())))
+    invalid=query(f'SELECT countIf(status NOT IN (1,2,3) OR precision NOT IN (1,2) OR confidence>100 '
+        f'OR unit_key NOT IN ({units}) OR basis_unit_key NOT IN ({units}) OR taxonomy_key NOT IN (0,1,2,3) '
+        "OR (status=1 AND ifNull(isFinite(value),0)=0) OR (status!=1 AND (value IS NOT NULL OR empty(reason))) "
+        f"OR NOT match(evidence_hash,'^[0-9a-f]{{64}}$')) bad FROM ({normalized})")
+    if int(invalid[0]['bad']):raise ValueError('Reference producer emitted invalid value/unit/availability states')
     expected={k:int(v) for k,v in query(evidence_sql(fact_table,normalized,
-                'tuple(metric_key,unit_key,period_start,period_end,available_at,revision)'))[0].items()}
+                FACT_KEY))[0].items()}
     if expected['n']!=expected['unique_keys']:raise ValueError('Reference normalization produced ambiguous fact keys')
     proof_columns='evidence_hash,source_system,source_record,source_hash,proof'
     proof=(f'SELECT DISTINCT {proof_columns} FROM {database}.{STAGING} WHERE {where}')
@@ -76,11 +102,11 @@ def _materialize(scope,query,claim,source_guard,database,projection_factory):
     mismatch=query(f'SELECT count() bad FROM ({proof}) p LEFT JOIN {database}.research_provenance_v1 e '
                    'ON p.evidence_hash=e.evidence_hash WHERE e.source_system!=p.source_system OR '
                    'e.source_record!=p.source_record OR e.source_hash!=p.source_hash OR e.proof!=p.proof')
-    if int(mismatch[0]['bad']):raise ValueError('SEC provenance conflicts with existing evidence')
+    if int(mismatch[0]['bad']):raise ValueError('Reference provenance conflicts with existing evidence')
     duplicates=query(f'SELECT e.evidence_hash FROM {database}.research_provenance_v1 e '
                      f'WHERE evidence_hash IN (SELECT evidence_hash FROM ({proof})) '
                      'GROUP BY evidence_hash HAVING count()!=1 LIMIT 1')
-    if duplicates:raise ValueError('SEC provenance is missing or duplicated')
+    if duplicates:raise ValueError('Reference provenance is missing or duplicated')
     query(f'INSERT INTO {database}.research_facts_v1 ({names}) '+normalized,read=False)
     source_guard();claim.check()
     return publisher.publish(scope,attempt,expected)

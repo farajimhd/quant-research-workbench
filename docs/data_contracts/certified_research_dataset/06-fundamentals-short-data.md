@@ -36,6 +36,8 @@ SEC catalog baseline is the union of `ticker_facts_service.FUNDAMENTAL_TAGS` and
 
 Existing derived metrics: free cash flow; gross/operating/net/FCF margins; ROA/ROE; working capital; current ratio; debt/equity; net debt; interest coverage; revenue/earnings/basic-share growth; dilution spread; cash conversion; R&D and SG&A intensity. Preserve current approximation labels, period alignment and invalid-denominator rules. Financial-strength scores remain separately versioned derived heuristics, never reported facts. Market cap cannot indiscriminately multiply one listing price by issuer-wide shares; require compatible class basis or a dated reported snapshot.
 
+The [implemented 19-formula catalog](06a-derived-fundamentals.md) gives exact arithmetic, alignment, source-version and unavailable-state rules. The certified kernel strengthens the old helper's partial-debt fallback: a reported total or both aligned components are required. Currency/framework bases remain separate. Float resolution and the full campaign controller are still under implementation.
+
 ### Float resolution and qualifications
 
 Float resolution reuses provider-first logic, qualified SEC public-float estimation, outstanding-share upper bound, then unavailable. `EntityPublicFloat` is USD market value, not shares. Estimated float requires measurement-aligned unadjusted regular price, applicable known splits, unique issuer/class bridge, acceptable age, and consistency with outstanding shares. Multi-class allocation is unavailable without evidence; an upper bound is not an actual float. Preserve reported/estimated/upper-bound/unavailable and conflict states.
