@@ -6,7 +6,7 @@ from datetime import date,datetime,timezone
 from hashlib import sha256
 import json
 import re
-from uuid import UUID,uuid4
+from uuid import UUID,uuid4,uuid5,NAMESPACE_URL
 
 from .contracts import digest,identifier,literal
 from .schema import TABLES,verify_storage
@@ -68,6 +68,14 @@ class KeeperClaim:
         if not self.invalidated and self.client.connected and self.client.client_id==self.session and self.lock.is_acquired:
             self.lock.release()
         if hasattr(self.client,'remove_listener'):self.client.remove_listener(self.listener)
+
+
+class DictionaryClaim(KeeperClaim):
+    """Serialize shared identity/provenance writes across dataset writers."""
+    def __init__(self,client,database,*,owner=None):
+        self.dictionary_database=identifier(database)
+        resource=str(uuid5(NAMESPACE_URL,'certified-research-dictionaries-v1:'+database))
+        super().__init__(client,resource,owner=owner)
 
 
 def insert_rows(query,database,table,rows,*,maximum_rows=4096,maximum_bytes=8*1024**2):

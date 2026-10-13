@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from datetime import date
 
-from . import facts,reference_producer,float_data,producer,price_inputs
+from . import facts,reference_producer,float_data,producer,price_inputs,universe
+from .universe_publication import UniversePublisher
 from .contracts import digest
 from .execution import Unit
 from .publication import Publisher,Scope
@@ -16,6 +17,37 @@ from .reference_publication import ReferenceScope,ReferencePublisher
 
 PRODUCTS=('fundamentals','derived_fundamentals','short_volume','short_interest','regular_prices','float_supply')
 MARKET_PRODUCTS=('market_aggregate','technical','v7')
+
+
+class UniverseHandlers:
+    """Gateway reconstruction and publication as one certified prerequisite."""
+    def __init__(self,dataset_id,database,claim,client_factory,dictionary_claim_factory,source_guard):
+        self.dataset=dataset_id;self.database=database;self.claim=claim;self.client_factory=client_factory
+        self.dictionary_claim_factory=dictionary_claim_factory;self.source_guard=source_guard
+
+    def execute(self,plan,*,write,stop=None):
+        if plan.unit.product!='universe':raise ValueError('Wrong universe product')
+        if stop is not None and stop.is_set():raise InterruptedError('Universe unit stopped before execution')
+        client=self.client_factory();dictionary=None
+        try:
+            self.claim.check();self.source_guard();args=plan.arguments
+            start=date.fromisoformat(args['context_start']);end=date.fromisoformat(args['end'])
+            anchor=date.fromisoformat(args['anchor_date'])
+            snapshot=universe.load(client.query,start,end,anchor)
+            if snapshot['source_hash']!=args['source_hash']:raise ValueError('Frozen Gateway source epoch changed')
+            if not snapshot['ready']:
+                raise ValueError('Historical universe requires evidence repair: '+str(snapshot['rejection_counts']))
+            dictionary=self.dictionary_claim_factory()
+            publisher=UniversePublisher(client.query,self.database,self.dataset,self.claim,dictionary,self.source_guard)
+            if write:return publisher.publish(snapshot,start,end,anchor)
+            return publisher.receipt(snapshot)
+        finally:
+            if dictionary is not None:dictionary.close()
+            client.close()
+
+    def producer(self,plan,parents,stop):return self.execute(plan,write=True,stop=stop)
+    def verifier(self,plan,parents):return self.execute(plan,write=False)
+    def registry(self):return {'universe':self.producer},{'universe':self.verifier}
 
 
 class MarketHandlers:

@@ -24,11 +24,31 @@ from pipelines.certified_research import producer
 from pipelines.certified_research import reference_producer,reference_sql,short_sql,universe,fundamentals,float_data,price_inputs
 from pipelines.certified_research.reference_publication import ReferenceScope,ReferencePublisher
 from pipelines.certified_research.campaign import Campaign,PlannedUnit,status as campaign_status
-from pipelines.certified_research.handlers import ReferenceHandlers,MarketHandlers
+from pipelines.certified_research.handlers import ReferenceHandlers,MarketHandlers,UniverseHandlers
 from pipelines.certified_research.planning import MarketSession,market_units
+from pipelines.certified_research.universe_publication import UniversePublisher
 
 
 class Contracts(unittest.TestCase):
+    def test_universe_repair_gate_precedes_dictionary_ownership_and_closes_client(self):
+        from unittest.mock import patch
+        class Claim:
+            def check(self):pass
+        class Client:
+            closed=False
+            def query(self,*args):raise AssertionError('Unexpected query')
+            def close(self):self.closed=True
+        client=Client()
+        def dictionary():raise AssertionError('Unresolved source must not acquire a writer')
+        handlers=UniverseHandlers(str(uuid.uuid4()),'arte',Claim(),lambda:client,dictionary,lambda:None)
+        plan=PlannedUnit(Unit('universe','universe'),dict(context_start='2025-01-01',end='2026-10-02',
+            anchor_date='2026-10-12',source_hash='a'*64))
+        with patch('pipelines.certified_research.universe.load',return_value=dict(source_hash='a'*64,
+                ready=False,rejection_counts={'missing_listing_start':1})):
+            with self.assertRaisesRegex(ValueError,'Historical universe requires evidence repair'):
+                handlers.producer(plan,{},Event())
+        self.assertTrue(client.closed)
+
     def test_market_plan_parallel_consumers_have_independent_chronological_state(self):
         config=c.CampaignConfig(date(2026,1,2),date(2026,1,5))
         days=(config.start,config.end)
@@ -332,6 +352,37 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_universe_publication_resumes_partial_membership_and_rechecks_authority(self):
+        from datetime import timezone,timedelta
+        from hashlib import sha256
+        dataset=str(uuid.uuid4());start=datetime(2026,1,2,tzinfo=timezone.utc)
+        proof='["gateway","'+dataset+'"]';proof_hash=sha256(proof.encode()).hexdigest()
+        active=ListingInterval('listing:'+dataset,'security:'+dataset,'issuer:'+dataset,'TEST',91,
+            start,start+timedelta(days=1),'US','NASDAQ','USD','STK',True,True,False,False,proof_hash)
+        dead=replace(active,listed=False,valid_from=active.valid_to,valid_to=active.valid_to+timedelta(days=1))
+        snapshot=dict(ready=True,rejected=(),intervals=(active,dead),source_hash='a'*64)
+        class Claim:
+            def check(self):pass
+        dictionary=Claim();dictionary.dictionary_database=self.database;logs=[]
+        def query(sql,*args,**kwargs):logs.append(sql);return self.client.query(sql,*args,**kwargs)
+        publisher=UniversePublisher(query,self.database,dataset,Claim(),dictionary,lambda:None)
+        fixture=(f'SELECT {c.literal(active.listing_id)} listing_id,{c.literal(proof)} source_proof,'
+                 f'{c.literal(proof_hash)} evidence_hash')
+        insert_rows(query,self.database,'research_membership_v1',[active.row(dataset)])
+        self.assertIsNone(publisher.receipt(snapshot))
+        receipt=publisher.publish(snapshot,date(2026,1,2),date(2026,1,3),date(2026,10,12),fixture_projection=fixture)
+        self.assertEqual(receipt['intervals'],2)
+        self.assertEqual(len(membership_at(query,self.database,dataset,start)),1)
+        self.assertFalse(membership_at(query,self.database,dataset,active.valid_to))
+        logs.clear()
+        self.assertEqual(publisher.publish(snapshot,date(2026,1,2),date(2026,1,3),date(2026,10,12),fixture_projection=fixture),receipt)
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+        with self.assertRaisesRegex(ValueError,'Unresolved historical'):
+            publisher.publish(dict(snapshot,ready=False,rejected=({'reason':'missing_listing_start'},)),
+                date(2026,1,2),date(2026,1,3),date(2026,10,12),fixture_projection=fixture)
+        insert_rows(query,self.database,'research_membership_v1',[dead.row(dataset)])
+        with self.assertRaisesRegex(ValueError,'Membership changed, duplicated'):publisher.receipt(snapshot)
+
     def test_concrete_sec_and_derived_handlers_run_through_campaign_controller(self):
         dataset=str(uuid.uuid4());start=date(2026,1,1);end=date(2026,10,2)
         config=c.CampaignConfig(start,end,workers=2)

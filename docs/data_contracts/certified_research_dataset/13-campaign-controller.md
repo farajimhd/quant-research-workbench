@@ -10,6 +10,12 @@ The scheduler uses topological dependency accounting and a heap of ready memory 
 
 Each registered producer has an independent authority verifier. A successful function return cannot certify a unit. Resume reads actual persisted product receipts and output fingerprints. Progress history is diagnostic, not proof of data readiness.
 
+## Dated universe prerequisite
+
+`UniverseHandlers` loads the Reference Gateway identity/lifecycle graph against the frozen source hash. Unresolved historical mappings block publication. `UniversePublisher` writes normalized identities and half-open membership intervals, with Gateway proofs copied server-side into compressed provenance. Publication requires both dataset ownership and a separate global dictionary claim so concurrent datasets cannot race shared identity/provenance inserts.
+
+Partial membership resumes by inserting only missing expected intervals. Changed, duplicated or unplanned intervals fail closed. Authority verification rechecks dictionaries and source-proof hashes; a complete resume performs no inserts. Live ClickHouse coverage includes partial restart, dated removal, no-insert resume and duplicate/unresolved rejection. Historical mapping repair and full launch-time prerequisite discovery remain to be integrated.
+
 ## Final seal and restart
 
 The final root hashes the immutable plan, frozen source and all independently verified unit outputs. It is inserted only after every unit verifies, then read back exactly. A previously sealed campaign resumes without inserts and rechecks the complete authority chain. Changed outputs or duplicate seals are rejected.
