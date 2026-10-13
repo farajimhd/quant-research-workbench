@@ -7,6 +7,10 @@ each year.
 
 ## 2026
 
+### [2026-10-13 - V7 through V16 optimization archive handoff](docs/codex/chat-summaries/2026/CHAT-20261011-1305-v7-v16-optimization-handoff.md)
+
+TASK-0223. Records V7 concentration/speed review, V8 qualification fixes, V9-V14 objective/session experiments, V15 random/family-uniform search and final V16 independent global/local paths. V16 source 5e7d86976 pushed/deployed; 55 tests and bounded exact CPU/GPU checks passed. Continuous 36-day indicators complete. V15 stopped at generation37; fresh 1024-candidate V16 runs generation1 with separate terminal/W&B observers. Immutable net-profit ranks and validation training-rank sort delivered. Real-session rules are about 20% slower than fresh V15 in the first four days; complete-generation speed and first validation publication remain unverified. Preserve causal checks, no validation feedback, random initialization and stopped predecessors. No later holdout found; request withdrawn. Running V16 remains active through chat archive; no monitor restart.
+
 ### [2026-10-10 - V6 materialization and V7 lightweight optimization handoff](docs/codex/chat-summaries/2026/CHAT-20261008-UNKNOWN-v6-v7-optimization-handoff.md)
 
 TASK-0223. Supersedes V5 continuation: V5 and slow V6 optimization/profile stopped; monitors paused. All30 causal compact/level inputs and 332-channel persisted histories completed. V6 retains detailed financial replay; separate V7 assumes $1,000 entries/$200 adds, five lifecycle programs, causal quote snapshots and minimal position accounting. Commits 56b9706c8/aec2121b8 pushed; 43 focused tests and bounded workstation CPU/CUDA parity passed. Full-session qualification, enriched-feature persistence, full-wall profiling and final V7 parameters remain open. No full V7 optimization or sealed validation. Partial early tool evidence; exact runtime authorities and old V6 resume-order defect documented.
