@@ -61,7 +61,8 @@ rule-quality.json and terminal/W&B scalar diagnostics. Semantic caches are bound
 Session panels retain full profits/scores and append local trimmed profits,
 other-session loss penalties, drawdowns and risk/capital hours. Candidate rows
 include global/local removed profit, concentration diagnostics and known rule-gate
-observation counts (add counts are zero when policy forbids additions). These
+observation counts through one register-only CUDA reduction with five integer
+outputs per candidate (add counts are zero when policy forbids additions). These
 counts precede position-state and age eligibility;
 they are not executed-order counts. Objective view is O; financial ranks remain
 based on full net profit. Reporter network work stays outside the optimizer.

@@ -113,8 +113,9 @@ class Worker:
                         progress=lambda e:self.emit(day,stage='Evaluate rules',candidate_offset=offset,
                             rule_tiles=e['tiles'],total_rule_tiles=e['total_tiles']))
                     from .genome import STAGES
-                    signal_counts={f'signal_observations_{stage}':torch.count_nonzero(gates & (1<<bit),dim=(1,2))
-                                   for bit,stage in enumerate(STAGES)}
+                    from .signal_counts import count as count_signals
+                    counts=count_signals(gates)
+                    signal_counts={f'signal_observations_{stage}':counts[:,bit] for bit,stage in enumerate(STAGES)}
                     # Effective identity ignores add rules when policy forbids
                     # additions; diagnostics must share that same authority.
                     signal_counts['signal_observations_add']*=torch.tensor([m.policy.maximum_adds>0 for m in members],device=device)

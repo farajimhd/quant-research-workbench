@@ -6,6 +6,20 @@ from research.vectorized_backtest.v17.features import CATALOG
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA workstation gate')
+def test_signal_counts_exact_without_gate_sized_allocation():
+    from research.vectorized_backtest.v17.signal_counts import count
+    generator=torch.Generator().manual_seed(17)
+    gates=torch.randint(0,32,(17,4096,64),dtype=torch.uint8,generator=generator).cuda()
+    expected=torch.stack([torch.count_nonzero(gates & (1<<bit),dim=(1,2)) for bit in range(5)],1)
+    actual=count(gates);assert torch.equal(actual,expected)
+    # Once compiled, the retained output is exactly five int64 values/candidate.
+    torch.cuda.synchronize();torch.cuda.reset_peak_memory_stats()
+    before=torch.cuda.memory_allocated();actual=count(gates);torch.cuda.synchronize()
+    assert actual.numel()*actual.element_size()==17*5*8
+    assert torch.cuda.max_memory_allocated()-before<4096
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA workstation gate')
 def test_fused_numeric_rolling_values_exact():
     from research.vectorized_backtest.v17.fused_program import FusedPrograms
     i=next(i for i,f in enumerate(CATALOG) if f.unit=='ratio')

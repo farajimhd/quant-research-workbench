@@ -49,17 +49,28 @@ def qualify(a):
     write_json(out/'tests.json',dict(status='passed',source_sha256=source_hash()))
     rng=np.random.default_rng(172237);members,report=initialize(rng,1024);pop=[m.payload() for m in members]
     frozen=dict(population=pop,population_sha256=digest(pop),initialization=report);write_json(out/'population.json',frozen)
+    old_root=out/'v16'
+    if a.baseline_profile:
+        old_root=a.baseline_profile.parent
+        baseline=json.loads(a.baseline_profile.read_text())
+        assert baseline['source_sha256']==stop['active']['source_sha256']
+        assert baseline['population_sha256']==frozen['population_sha256']
+        assert baseline['days']==['2026-08-13','2026-08-27'] and baseline['result_reuse'] is False
+        for generation,hashes in enumerate(baseline['session_receipts'],1):
+            for day,h in hashes.items():assert file_hash(old_root/f'generation-{generation:04d}'/day/'receipt.json')==h
+        print('PROFILE v16 reused: identical source, population, dates and verified receipts',flush=True)
     for engine,source in (('v16',a.baseline_code),('v17',code)):
+        if engine=='v16' and a.baseline_profile:continue
         command=[sys.executable,'-B','-u',str(Path(__file__).resolve()),'--worker','--engine',engine,'--code',str(source),
             '--population',str(out/'population.json'),'--campaign',str(a.campaign),'--output',str(out/engine)]
         print('PROFILE',engine,flush=True)
         with (out/(engine+'.log')).open('w') as log:subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,check=True)
-    old=json.loads((out/'v16/profile.json').read_text());new=json.loads((out/'v17/profile.json').read_text())
+    old=json.loads((old_root/'profile.json').read_text());new=json.loads((out/'v17/profile.json').read_text())
     assert old['population_sha256']==new['population_sha256'] and old['days']==new['days']
     ordered=[]
     for generation in (1,2):
         for day in old['days']:
-            left=json.loads((out/'v16'/f'generation-{generation:04d}'/day/'receipt.json').read_text())['metrics']
+            left=json.loads((old_root/f'generation-{generation:04d}'/day/'receipt.json').read_text())['metrics']
             right=json.loads((out/'v17'/f'generation-{generation:04d}'/day/'receipt.json').read_text())['metrics']
             for key in left:
                 if left[key]!=right[key]:raise ValueError(f'Exact accounting mismatch: {generation}/{day}/{key}')
@@ -75,6 +86,7 @@ def qualify(a):
     receipt=dict(status='passed' if ratio<=1.05 else 'speed_gate_failed',source_sha256=source_hash(),baseline_source_sha256=old['source_sha256'],baseline_checkpoint_sha256=stop['checkpoint_sha256'],
         population_sha256=frozen['population_sha256'],days=old['days'],exact_accounting_parity=True,warm_v16_seconds=old['wall_seconds'][1],warm_v17_seconds=new['wall_seconds'][1],ratio=ratio,
         maximum_ratio=1.05,objective_and_reproduction_seconds=overhead,mutation_requested=div['mutation_requested_fields'],mutation_applied=div['mutation_applied_fields'],
+        baseline_profile_sha256=file_hash(old_root/'profile.json'),baseline_profile=str(old_root/'profile.json'),
         full_generation_with_validation_qualified=False,scope='1024 identical strategies; two complete training sessions; batch512/two workers; cold/warm; no result reuse')
     write_json(out/'qualification.json',receipt);print(json.dumps(receipt),flush=True)
     return 0 if receipt['status']=='passed' else 2
@@ -83,7 +95,7 @@ def qualify(a):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('campaign','output'):p.add_argument('--'+name,type=Path,required=True)
-    for name in ('baseline-code','stop-receipt','code','population'):p.add_argument('--'+name,type=Path)
+    for name in ('baseline-code','stop-receipt','code','population','baseline-profile'):p.add_argument('--'+name,type=Path)
     p.add_argument('--worker',action='store_true');p.add_argument('--engine',choices=('v16','v17'))
     a=p.parse_args()
     if a.worker:
