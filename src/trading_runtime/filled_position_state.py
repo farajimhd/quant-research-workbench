@@ -33,6 +33,20 @@ def _number(value, *, positive=False) -> Decimal:
     return value
 
 
+def _price_number(value) -> Decimal:
+    """Keep the native binary64 price projection separate from decimal money."""
+    from .trading_price_codec import encode_trading_price
+    if not isinstance(value, Decimal) or not value.is_finite() or value <= 0:
+        raise ValueError("Fill price requires a finite positive Decimal projection")
+    if value >= Decimal(10) ** 28:
+        raise ValueError("Fill price exceeds the ledger magnitude bound")
+    native = float(value)
+    encode_trading_price(native)
+    if Decimal(str(native)) != value:
+        raise ValueError("Fill price differs from its exact native binary64 projection")
+    return value
+
+
 def _clock(at):
     if not isinstance(at, datetime) or at.tzinfo is None or at.utcoffset() is None:
         raise ValueError("Execution state needs timezone-aware clocks")
@@ -169,7 +183,7 @@ class FilledPositionState:
             raise TypeError("Execution projection accepts only typed fill facts")
         _clock(fact.filled_at)
         _number(fact.quantity, positive=True)
-        _number(fact.price, positive=True)
+        _price_number(fact.price)
         if any(not isinstance(value, str) or not value for value in (
                 fact.execution_id, fact.order_id, fact.intent_id, *fact.key, fact.ticker)):
             raise ValueError("Fill identity and attribution are required")

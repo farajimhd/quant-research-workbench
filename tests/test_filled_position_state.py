@@ -181,3 +181,49 @@ def test_real_broker_fill_is_used_instead_of_order_reference_price():
         pos = state.apply_fee(FeeFact(actual.execution_id, D(str(actual.commission)), "USD"))
         assert pos.fees == 1 and pos.net_realized_pnl == -1
     asyncio.run(run())
+
+
+def test_actual_passive_broker_price_retains_float64_precision_in_fill_ledger():
+    from src.trading_runtime.runtime import RunMode
+    from src.trading_runtime.simulated_broker import SimulationConfig, SimulatedBrokerAdapter
+    from src.trading_runtime.ibkr_schema import OrderRequest
+    from tests.test_simulated_broker_liquidity_bar import START as BROKER_START, bar
+    price = 10.000000000000002
+    async def run():
+        broker = SimulatedBrokerAdapter(["TEST"], SimulationConfig(), mode=RunMode.BACKTEST,
+            initial_time=BROKER_START, fixed_bar_mode=True)
+        await broker.initialize()
+        await broker.place_orders("TEST", [OrderRequest(acctId="TEST", conid=1, cOID="precise-entry",
+            ticker="AAPL", orderType="LMT", side="BUY", quantity=1, price=price)])
+        at = BROKER_START + timedelta(milliseconds=100)
+        row = bar(at, ask=10.01, execution_price_levels=((10., 100),))
+        actual, = await broker.on_liquidity_bar(row, at=at)
+        assert actual.price.hex() == price.hex()
+        state = FilledPositionState()
+        fact = replace(fill(), execution_id=actual.execution_id, order_id=actual.order_id,
+            ticker=actual.symbol, account_id=actual.account, filled_at=actual.trade_time,
+            quantity=D(str(actual.size)), price=D(str(actual.price)))
+        position = state.apply_fill(fact)
+        assert position.average_price == D(str(price)) and position.average_price != D("10")
+        state.apply_fee(FeeFact(actual.execution_id, D(str(actual.commission)), "USD"))
+        assert state.pending_fee_count == 0
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("price", [D("NaN"), D("Infinity"), D("-1"), D("0"),
+    D("1e28"), D("1e-900"), D("10.000000000000001")])
+def test_exact_price_projection_rejects_invalid_or_rounded_values(price):
+    state = FilledPositionState()
+    with pytest.raises(ValueError):
+        state.apply_fill(replace(fill(), price=price))
+    assert not state.positions and state.pending_fee_count == 0
+
+
+def test_exact_prices_do_not_change_decimal_quantity_or_fee_contracts():
+    state = FilledPositionState()
+    with pytest.raises(ValueError, match="Decimal"):
+        state.apply_fill(replace(fill(), quantity=D("1.00000000001")))
+    state.apply_fill(replace(fill(), price=D("10.000000000000002")))
+    with pytest.raises(ValueError, match="Decimal"):
+        state.apply_fee(FeeFact("e1", D(".00000000001"), "USD"))
+    assert state.pending_fee_count == 1
