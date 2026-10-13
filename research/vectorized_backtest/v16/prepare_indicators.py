@@ -17,8 +17,9 @@ from research.vectorized_backtest.v6.torch_backtest.runtime import require_runti
 from research.vectorized_backtest.v6.torch_backtest.compact_prepare import KEY_STRIDE
 from research.vectorized_backtest.v6.torch_backtest.splits import price_factor,VERSION as SPLIT_VERSION
 from research.vectorized_backtest.v4.torch_backtest.source import arte_source as authority,arte_sql
-from research.vectorized_backtest.v4.torch_backtest.encoding.config import DEFAULT_EXCLUDED_TICKERS
+from .indicator_identity import population_map
 from research.rl_trading.v1.common import digest
+from research.rl_trading.v6.source import require_reporting_coverage
 
 
 def prepare(training,validation,output,workers=4):
@@ -56,18 +57,13 @@ def prepare(training,validation,output,workers=4):
     first=sessions[days[0]];source=authority.load_build(first['source_manifest'],first['source_ledger'],[date.fromisoformat(d) for d in days])
     c=authority.reader(threads=1);storage=authority.storage_check(c)
     if source['definition']['plan']['requested']!=days:raise ValueError('Continuous bank requires the full consecutive certified source sequence')
-    mapping={};split={};split_hashes={}
+    mapping={};split={};split_hashes={};scope_proofs={}
     last_needed={i:max(d for d,identity in requests if identity==i) for i in listing_set}
     for day in days:
         write_json(output/'status.json',dict(status='running',stage='Verify certified universe and splits',day=day,total_days=len(days)))
         session=sessions[day]
+        require_reporting_coverage(source,date.fromisoformat(day))
         if session['source_manifest']!=first['source_manifest'] or session['source_ledger']!=first['source_ledger']:raise ValueError('Mixed bar authorities')
-        wanted={r['ticker'] for r in compact_members[day] if r['listing_id'] in listing_set and day<=last_needed[r['listing_id']]}
-        subset=dict(source,units={**source['units'],day:{t:u for t,u in source['units'][day].items() if t in wanted}})
-        try:population,_=authority.population(c,subset,date.fromisoformat(day),diagnostic_directory=output/'population-audit'/day,
-            excluded_tickers=DEFAULT_EXCLUDED_TICKERS,regular_us_exchanges_only=True) if wanted else ([],None)
-        except ValueError as error:raise ValueError(f'{day}: certified indicator universe: {error}') from error
-        mapping[day]={r['listing_id']:r['ticker'] for r in population if r['listing_id'] in listing_set and day<=last_needed[r['listing_id']]}
         canonical=json.loads(Path(session['identity_map']).read_text(encoding='utf-8-sig'))
         bank_root=Path(session['feature_root']);bank=json.loads((bank_root/'complete.json').read_text(encoding='utf-8-sig'));plan=json.loads((bank_root/'plan.json').read_text(encoding='utf-8-sig'))
         if canonical['bank_certificate_sha256']!=file_hash(Path(session['feature_root'])/'complete.json') or canonical['bank_certificate_sha256']!=bank_certificates[day]:
@@ -76,7 +72,9 @@ def prepare(training,validation,output,workers=4):
         if (plan['hash']!=digest({k:v for k,v in plan.items() if k!='hash'}) or bank.get('status')!='complete' or bank['plan_hash']!=plan['hash']
                 or plan['source_build_id']!=source['build_id'] or plan['source_definition_hash']!=source['definition_hash']
                 or plan['population_snapshot_hash']!=saved_snapshot or canonical.get('population_snapshot_hash',saved_snapshot)!=saved_snapshot):raise ValueError('Feature identity source snapshot changed')
-        if any(canonical['listing_to_ticker'].get(i)!=t for i,t in mapping[day].items()):raise ValueError('Continuous state differs from certified feature identity')
+        if any(canonical['listing_to_ticker'].get(r['listing_id'])!=r['ticker'] for r in compact_members[day]):raise ValueError('Compact input listing identity changed')
+        population,scope_proofs[day]=population_map(c,source,date.fromisoformat(day),canonical['listing_to_ticker'])
+        mapping[day]={i:t for i,t in population.items() if i in listing_set and day<=last_needed[i]}
         identity_hashes[day]=file_hash(Path(session['identity_map']))
         path=Path(session['split_certificate']);value=json.loads(path.read_text(encoding='utf-8-sig'))
         receipt=json.loads((Path(next(v['inputs'] for v in datasets.values() if day in v['days']))/day/'complete.json').read_text(encoding='utf-8-sig'))
@@ -150,7 +148,7 @@ def prepare(training,validation,output,workers=4):
         arrays[day].flush();path=output/day/'values.npy'
         write_json(output/day/'complete.json',dict(status='complete',version=VERSION,definition=definition,input_sha256=bases[day],
             values_sha256=file_hash(path),shape=list(arrays[day].shape),split_sha256=split_hashes[day],identity_map_sha256=identity_hashes[day],
-            predecessor_receipt_sha256=previous_hash,source_proofs=proof['units'],required_rows=target_counts[day],prepared_rows=counts_done[day],validation_opened=day in datasets['validation']['days']))
+            predecessor_receipt_sha256=previous_hash,source_proofs=proof['units'],scope_proof=scope_proofs[day],required_rows=target_counts[day],prepared_rows=counts_done[day],validation_opened=day in datasets['validation']['days']))
         previous_hash=file_hash(output/day/'complete.json')
     for role,dataset in datasets.items():
         dataset=dict(dataset,indicator_root=str(output),indicator_receipts={d:file_hash(output/d/'complete.json') for d in dataset['days']})

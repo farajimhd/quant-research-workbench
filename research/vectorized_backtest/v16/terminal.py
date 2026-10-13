@@ -35,8 +35,8 @@ def render(status, *, width=110, height=38, now=None, view='financial'):
         f"Generation {status.get('generation',0)} | {status.get('evaluation_split','training')} | "
         f"{status.get('stage','Preparing')} | {status.get('validation_status','pending')}",style='cyan'))
     table=Table(expand=True,padding=(0,0),show_edge=False)
-    columns=[('Validation net\nprofit rank',10),('Candidate ID',29),('Training net\nprofit rank',10),('Training net\nprofit $',12)] if validation else [('Training net\nprofit rank',10),('Candidate ID',29)]
-    if session_view:columns=[('Session',10),('Session net\nprofit rank',10),('Session\nscore $',10),('Session\nprofit $',10)]+columns
+    columns=[('Validation\nnet profit\nrank',10),('Candidate ID',29),('Training\nnet profit\nrank',10),('Training\nnet profit $',12)] if validation else [('Training\nnet profit\nrank',10),('Candidate ID',29)]
+    if session_view:columns=[('Session',10),('Session\nnet profit\nrank',10),('Session\nscore $',10),('Session\nprofit $',10)]+columns
     columns += [('Global\nscore $',10),('Net profit\n$',10),('Trimmed\nprofit $',10)]
     if metric_width>=125:columns += [('Worst-trade\ntail loss $',11),('Profitable\nsessions %',10),('Active\nsessions',8),('Complexity\nnodes',10)]
     if metric_width>=175:columns += [('Worst-session\nmean profit $',13),('Completed\npositions',10),('Profitable\npositions %',10)]
