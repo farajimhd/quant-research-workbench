@@ -15,7 +15,10 @@ from research.vectorized_backtest.v6.torch_backtest.runtime import write_json
 
 def ranking_page_size(height, status=None):
     lanes=len((status or {}).get('session_paths',{}))
-    return max(1,min(50,height-25-max(0,2*lanes-2)))
+    progress=max(5,3+2*lanes) if lanes else 5
+    detail=10 if height>=36 else 5
+    messages=5 if height>=30 else 3
+    return max(1,min(50,height-(2+progress+6+detail+2+messages+1)))
 
 
 def render(status, *, width=110, height=38, now=None, view='financial'):
@@ -71,12 +74,17 @@ def render(status, *, width=110, height=38, now=None, view='financial'):
         details.add_column();details.add_column()
         if view=='objective':
             components=m.get('objective_components',{})
-            for name in ('trimmed_profit','session_tail_reward','drawdown_penalty','stop_risk_penalty','capital_time_penalty'):
-                if name in components:details.add_row(name.replace('_',' '),f'{components[name]:,.2f}')
-            details.add_row('Session / position profit removed',f"{m.get('global_session_trim_removed',0):,.2f} / {m.get('local_trade_trim_removed',0):,.2f}")
-            details.add_row('Local other-session loss penalty',f"{m.get('local_other_session_loss_penalty',0):,.2f}")
             counts=status.get('rule_quality_rejections',{})
-            details.add_row('Rejected rules / ineffective edits',f"{sum(v for k,v in counts.items() if k!='ineffective_edit'):,} / {counts.get('ineffective_edit',0):,}")
+            if height>=36:
+                for name in ('trimmed_profit','session_tail_reward','drawdown_penalty','stop_risk_penalty','capital_time_penalty'):
+                    if name in components:details.add_row(name.replace('_',' '),f'{components[name]:,.2f}')
+                details.add_row('Session / position profit removed',f"{m.get('global_session_trim_removed',0):,.2f} / {m.get('local_trade_trim_removed',0):,.2f}")
+                details.add_row('Local other-session loss penalty',f"{m.get('local_other_session_loss_penalty',0):,.2f}")
+                details.add_row('Rejected rules / ineffective edits',f"{sum(v for k,v in counts.items() if k!='ineffective_edit'):,} / {counts.get('ineffective_edit',0):,}")
+            else:
+                details.add_row('Session-trim profit / tail reward',f"{m.get('trimmed_profit',0):,.1f} / {components.get('session_tail_reward',0):,.1f}")
+                details.add_row('Local other-session loss penalty',f"{m.get('local_other_session_loss_penalty',0):,.1f}")
+                details.add_row('Rejected rules / ineffective edits',f"{sum(v for k,v in counts.items() if k!='ineffective_edit'):,} / {counts.get('ineffective_edit',0):,}")
         else:
             fields=[('Active / zero-trade sessions',f"{int(m.get('active_sessions',0))} / {int(m.get('zero_trade_sessions',0))}"),
                 ('Profitable active sessions',f"{100*m.get('profitable_active_fraction',0):.1f}%"),
@@ -86,8 +94,9 @@ def render(status, *, width=110, height=38, now=None, view='financial'):
                 ('Session shortfall / concentration $',f"{m.get('session_shortfall',0):,.2f} / {m.get('session_concentration_dollars',0):,.2f}"),
                 ('Largest-session share of positive profit',f"{100*m.get('best_day_gross_positive_share',0):.1f}%")]
             if validation:fields.append(('Sessions with exact cached results',str(int(m.get('reused_sessions',0)))))
-            for name,value in fields:details.add_row(name,value)
+            for name,value in (fields if height>=36 else fields[:3]):details.add_row(name,value)
         layout['metrics'].update(Panel(details,title=selected.get('candidate_id','Candidate diagnostics')))
+        layout['metrics'].size=10 if height>=36 else 5
     layout['keys'].update(Text('F train | V validation | 1 session/score | 2 net profit | 3 session profit | 4 training rank | N/B pages | O objective | Q exit'))
     return layout
 
