@@ -29,24 +29,31 @@ flowchart TD
  B --> V[Causal V7 updates and PM/regular/AH checkpoints]
  B --> E[Execution tape and capacity evidence]
  U --> R
- R --> F[Certify facts, short volume/interest and corporate actions]
- B --> D[Resolve price-dependent float/fundamentals]
+ R --> F[Certify SEC facts, short volume/interest, corporate and allocation evidence]
+ F --> DF[Issuer derived fundamentals; no price dependency]
+ B --> DP[Certified regular-close prices]
+ DP --> D[Security float/supply estimates]
  F --> D
+ F --> SP[Public-as-of short-volume session windows]
  I --> C[Shared causal feature assembly and rank views]
  V --> C
  F --> C
  D --> C
- C --> RL[RL sparse banks; optional separate label compilation]
- C --> O[Optimization compact/history/cache adapters]
- E --> RL
- E --> O
- RL --> Z[Product and consumer certification; immutable publication]
- O --> Z
+ DF --> Z[Common ClickHouse product certification and immutable publication]
+ SP --> Z
+ C --> Z
+ E --> Z
+ Z -.-> RL[External RL consumers; no training/shards in this campaign]
+ Z -.-> O[External optimization consumers; no exports/caches in this campaign]
 ```
 
 ### When stages can overlap
 
 Some reference facts can certify before prices; float estimates and derived ratios wait for their specific dependencies. V7, indicators and execution projections consume the same completed bounded bar/aggregate unit concurrently. Units advance as soon as prerequisites certify; do not wait for all January–October bars before starting consumers. Current global active-mutation guards require canonical mutations to finish before market writers; do not silently relax them to partition-local guards.
+
+The implemented `planning.reference_units` adds issuer fundamentals once per durable issuer and shares that parent across its admitted securities. Derived issuer fundamentals wait only for reported facts. Security float waits for reported facts, that security's shared-bar regular prices, certified corporate coverage and class allocation (plus reported supply if selected). Short-pressure windows wait for short-volume certification; short interest can proceed independently. Missing evidence is a failed/blocked prerequisite, not an omitted feature. A failed allocation blocks the affected float branch while other securities and independent short products continue.
+
+Fundamental, price and short publication context starts are explicit outputs of requirement planning; they need not be the same date. The compiler checks identity, product and range compatibility and rejects competing price listings for a security/session. Existing bounded reference producers limit price parents to 1,000 sessions and short-pressure source ranges to 1,000 calendar days; longer campaigns require explicit partitioned execution rather than a silent truncation. Acquisition/corporate/allocation authorities must be supplied as planned certified units with registered handlers. This compiler does not make their unfinished production acquisition paths or the full launcher ready.
 
 ### ClickHouse shared computation
 
@@ -54,7 +61,7 @@ ClickHouse data plane: read canonical events with predicate/projection pushdown;
 
 ### Bounded CPU computation and data reuse
 
-CPU plane: V7's chronological fits/pending state, consumer encoding, label compilation and account replay use bounded processes near ClickHouse, vectorized NumPy/Polars kernels and Arrow/native batches. Fetch compact inputs once per unit, not per bar/level. Share within a worker or through bounded immutable shared buffers; fan-out should not serialize a huge dataset separately to each worker. Persist V7 updates once and project consumer slots without replaying the same stream twice. Qualify those projections against the current stream.
+CPU plane: V7's chronological fits/pending state use bounded workers near ClickHouse and vectorized NumPy/Polars kernels where applicable. Fetch compact inputs once per unit, not per bar/level. Share within a worker or through bounded immutable shared buffers; fan-out should not serialize a huge dataset separately to each worker. Consumer encoding, label compilation, account replay and training remain outside this campaign.
 
 ### Chronological dependencies and resource budgets
 

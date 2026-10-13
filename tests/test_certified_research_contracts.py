@@ -25,11 +25,54 @@ from pipelines.certified_research import reference_producer,reference_sql,short_
 from pipelines.certified_research.reference_publication import ReferenceScope,ReferencePublisher
 from pipelines.certified_research.campaign import Campaign,PlannedUnit,status as campaign_status
 from pipelines.certified_research.handlers import ReferenceHandlers,MarketHandlers,UniverseHandlers,ActivityHandlers
-from pipelines.certified_research.planning import MarketSession,market_units
+from pipelines.certified_research.planning import MarketSession,market_units,IssuerInput,SecurityInput,reference_units
 from pipelines.certified_research.universe_publication import UniversePublisher
 
 
 class Contracts(unittest.TestCase):
+    def test_reference_graph_shares_issuer_and_blocks_float_on_all_required_inputs(self):
+        config=c.CampaignConfig(date(2026,1,1),date(2026,1,9),workers=4)
+        prerequisite=[PlannedUnit(Unit('universe','universe'),{}),
+            PlannedUnit(Unit('sec_fetch','sec_acquisition',('universe',)),{})]
+        securities=[]
+        for key in (101,102):
+            market_key=f'market{key}';corp=f'corporate{key}';alloc=f'allocate{key}'
+            prerequisite.append(PlannedUnit(Unit(market_key,'market_aggregate',('universe',)),
+                dict(day='2026-01-02',listing_key=key,ticker='TEST')))
+            for name,product in ((corp,'corporate_actions'),(alloc,'float_allocation')):
+                prerequisite.append(PlannedUnit(Unit(name,product,('universe',)),
+                    dict(entity_key=key,start='2025-01-01',end='2026-01-09')))
+            for family in ('volume','interest'):
+                prerequisite.append(PlannedUnit(Unit(f'{family}{key}','short_'+family+'_acquisition',('universe',)),{}))
+            securities.append(SecurityInput(key,11,(market_key,),corp,alloc,'a'*64,'b'*64,
+                (f'volume{key}',),(f'interest{key}',)))
+        issuers=(IssuerInput(11,'320193','c'*64,('sec_fetch',)),)
+        kwargs=dict(prerequisites=prerequisite,universe_parent='universe',fundamental_start=date(2024,1,1),
+            price_start=date(2025,1,1),short_start=date(2025,11,1))
+        plans=reference_units(config,issuers,securities,**kwargs)
+        self.assertEqual(sum(p.unit.product=='fundamentals' for p in plans),1)
+        self.assertEqual(sum(p.unit.product=='derived_fundamentals' for p in plans),1)
+        all_plans=(*prerequisite,*plans);completed=set();guard=Lock()
+        def handler(unit,parents,stop):
+            with guard:
+                self.assertTrue(set(unit.parents)<=completed)
+                completed.add(unit.key)
+            return dict(output_hash=c.digest(unit.key))
+        kinds={p.unit.product:handler for p in all_plans}
+        result=execute(tuple(p.unit for p in all_plans),kinds,workers=4,memory_bytes=config.global_memory_bytes)
+        self.assertEqual(result['status'],'complete',str(result['errors']))
+        failed_key='allocate101'
+        def failing(unit,parents,stop):
+            if unit.key==failed_key:raise ValueError('allocation not certified')
+            return dict(output_hash=c.digest(unit.key))
+        failed=execute(tuple(p.unit for p in all_plans),{kind:failing for kind in kinds},workers=4,memory_bytes=config.global_memory_bytes)
+        self.assertEqual(failed['units']['security:101:float'],'blocked')
+        self.assertEqual(failed['units']['security:102:float'],'certified')
+        self.assertEqual(failed['units']['security:101:short_pressure'],'certified')
+        with self.assertRaisesRegex(ValueError,'identity'):
+            wrong=[replace(p,arguments=dict(p.arguments,entity_key=999)) if p.unit.key==failed_key else p for p in prerequisite]
+            reference_units(config,issuers,securities,**dict(kwargs,prerequisites=wrong))
+
     def test_universe_repair_inventory_exposes_all_dependencies_without_duplicate_jobs(self):
         row=dict(listing_id='listing:1',security_id='security:1',issuer_id='issuer:1',list_date=None,
             symbol_interval_id='',interval_mapping='',history_status='',history_mapping='',mapping_issue=False)
