@@ -79,3 +79,29 @@ def require_ready(query,source,reporting):
     if fresh['missing'] or fresh['mutating'] or fresh['content_hash']!=reporting['content_hash']:
         raise ValueError('Reporting prerequisites changed or became mutating after plan freeze')
     return digest(dict(source=source['content_hash'],reporting=reporting['content_hash']))
+
+
+def clock_evidence_inventory(query,start,end):
+    """Describe existing clock inputs without treating microsecond fallback as NS evidence."""
+    if type(start) is not date or type(end) is not date or start>end:raise ValueError('Invalid clock evidence range')
+    names=('historical_event_execution_clock_v1','historical_event_execution_clock_rest_v2')
+    values=','.join(literal(n) for n in names)
+    columns=query(f"SELECT table,name,type FROM system.columns WHERE database='q_live' AND table IN ({values}) ORDER BY table,position")
+    policies=query(f"SELECT name,storage_policy FROM system.tables WHERE database='q_live' AND name IN ({values}) ORDER BY name")
+    parts=query(f"SELECT table,disk_name,sum(rows) rows,sum(data_compressed_bytes) compressed_bytes FROM system.parts "
+        f"WHERE active AND database='q_live' AND table IN ({values}) GROUP BY table,disk_name ORDER BY table,disk_name")
+    for row in parts:
+        row['rows']=int(row['rows']);row['compressed_bytes']=int(row['compressed_bytes'])
+    coverage=[]
+    available={r['name'] for r in policies}
+    for name in names:
+        if name not in available:continue
+        coverage_table=name.replace('execution_clock_','execution_clock_coverage_')
+        exists=query(f"SELECT count() n FROM system.tables WHERE database='q_live' AND name={literal(coverage_table)}")[0]['n']
+        if not int(exists):continue
+        rows=query(f'SELECT source_date,count() ticker_certificates,sum(trade_count) trades,sum(clock_count) clocks '
+            f'FROM q_live.{coverage_table} FINAL WHERE source_date BETWEEN toDate({literal(start)}) AND toDate({literal(end)}) '
+            'GROUP BY source_date ORDER BY source_date')
+        coverage.append(dict(table=coverage_table,days=rows))
+    return dict(columns=columns,policies=policies,parts=parts,coverage=coverage,reporting_ready=False,
+        reason='Microsecond execution clocks with SIP fallback do not prove original participant-clock validity or nanosecond threshold edges. Reporting repair requires certified full reporting evidence; these counts alone cannot certify it.')

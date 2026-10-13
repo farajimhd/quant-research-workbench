@@ -41,6 +41,8 @@ The updater also builds legacy macro/daily-session bars by default. For this uni
 
 ### Sidecar storage placement
 
+The October 12 live audit found microsecond-only `historical_event_execution_clock_v1` and `historical_event_execution_clock_rest_v2` schemas, with 1,267,591,761 and 1,208,692 physical rows respectively. The original updater substitutes SIP time when participant time is absent, so those sidecars cannot distinguish missing original clocks from valid equal clocks or resolve nanosecond threshold edges. AAPL's January 2 clock-coverage row was absent. These are input gaps, not permission to infer timely trades. The launcher `plan` now reports clock columns, placement, physical sizes and dated coverage, explicitly without reporting certification. Existing recovery code can reacquire REST evidence; broad reporting integration must preserve full clock/condition evidence in ingestion-owned ClickHouse sidecars and independently reconcile it to canonical events.
+
 Audit optional execution-clock sidecar ownership separately: the current updater DDL passes the common storage-policy argument to its clock sidecars too. Integration must enforce the appropriate explicit workload policy for each table and verify actual parts; one global storage-policy override is not proof that all source and operational products are correctly placed.
 
 ### Earlier-range extension and source repair

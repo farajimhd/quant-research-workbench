@@ -140,6 +140,8 @@ def main(argv=None):
                 missing_reporting=[str(d) for d in reporting['missing']],source_hash=inv['content_hash'],
                 reporting_hash=reporting['content_hash'],acquire_missing=args.acquire_missing,
                 hydrate_missing_trades=args.hydrate_missing_trades)
+            result['reporting_clock_evidence']=source.clock_evidence_inventory(
+                lambda sql:client.query(sql+' SETTINGS readonly=1'),args.start_date,end)
         if args.format=='json':print(json.dumps(result,indent=2,default=str))
         else:
             summary=result['source']

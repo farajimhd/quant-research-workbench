@@ -30,6 +30,17 @@ from pipelines.certified_research.universe_publication import UniversePublisher
 
 
 class Contracts(unittest.TestCase):
+    def test_microsecond_clock_inventory_never_claims_reporting_readiness(self):
+        def query(sql):
+            if 'system.columns' in sql:return [dict(table='historical_event_execution_clock_v1',name='execution_timestamp_us',type='UInt64')]
+            if 'system.parts' in sql:return [dict(table='historical_event_execution_clock_v1',disk_name='live_market_ssd',rows='12',compressed_bytes='100')]
+            if 'count() n' in sql:return [dict(n=1)]
+            if 'system.tables' in sql:return [dict(name='historical_event_execution_clock_v1',storage_policy='live_market_ssd')]
+            return [dict(source_date='2026-01-02',ticker_certificates=1,trades='12',clocks='12')]
+        result=source.clock_evidence_inventory(query,date(2026,1,2),date(2026,1,2))
+        self.assertFalse(result['reporting_ready']);self.assertEqual(result['parts'][0]['rows'],12)
+        self.assertEqual(result['coverage'][0]['table'],'historical_event_execution_clock_coverage_v1')
+
     def test_activity_context_cannot_omit_an_exchange_session(self):
         dataset=str(uuid.uuid4());attempt=str(uuid.uuid4())
         scopes=[Scope(dataset,day,91,'broker_100ms','a'*64) for day in (date(2026,8,21),date(2026,8,25))]
@@ -553,6 +564,14 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_live_clock_evidence_preflight_reports_precision_limit_without_reading_events(self):
+        queries=[]
+        def query(sql):queries.append(sql);return self.client.query(sql+' SETTINGS readonly=1')
+        result=source.clock_evidence_inventory(query,date(2026,1,2),date(2026,1,5))
+        self.assertFalse(result['reporting_ready'])
+        self.assertTrue(any(r['name']=='execution_timestamp_us' for r in result['columns']))
+        self.assertFalse(any('FROM market_sip_compact.events_' in sql for sql in queries))
+
     def test_configurable_activity_windows_use_elapsed_time_and_certified_context(self):
         from pipelines.certified_research import activity
         dataset=str(uuid.uuid4());attempt=str(uuid.uuid4());day=date(2026,8,21)
