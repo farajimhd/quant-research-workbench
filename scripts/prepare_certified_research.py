@@ -20,12 +20,12 @@ sys.dont_write_bytecode=True
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
-from pipelines.certified_research import contracts,schema,source,short_sql,campaign,acquisition,capacity,universe
+from pipelines.certified_research import contracts,schema,source,short_sql,campaign,acquisition,capacity,universe,installation
 
 
 def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('schema','preflight','plan','status','stored-plan','prepare-sources'))
+    p.add_argument('command',choices=('schema','install-schema','preflight','plan','status','stored-plan','prepare-sources'))
     p.add_argument('--dataset-id',type=UUID)
     p.add_argument('--database',default='arte')
     p.add_argument('--start-date',type=date.fromisoformat,default=date(2026,1,1))
@@ -105,20 +105,32 @@ def qualify_plan(result):
 def main(argv=None):
     args=parse_args(argv)
     if args.command=='schema':
-        if args.format=='sql':print(';\n\n'.join(schema.ddl(args.database))+';')
+        catalog=installation.catalog(args.database)
+        if args.format=='sql':print(';\n\n'.join(t.ddl(args.database) for _,t in catalog)+';')
         elif args.format=='json':
-            print(json.dumps(dict(schema_hash=schema.schema_hash(),tables=[
-                dict(name=t.name,order=t.order,partition=t.partition,columns=[vars(c) for c in t.columns])
-                for t in schema.TABLES]),indent=2))
+            print(json.dumps(installation.manifest(args.database),indent=2))
         else:
-            print(f'Compact research schema | {len(schema.TABLES)} tables | live_market_ssd')
-            for t in schema.TABLES:print(f'  {t.name}: {len(t.columns)} columns, explicit lossless codecs')
+            print(f'Compact research schema | {len(catalog)} tables | live_market_ssd')
+            for group,t in catalog:print(f'  {group}: {t.name} | {len(t.columns)} columns, explicit lossless codecs')
             print('Use --format sql for exact DDL or --format json for the column catalog.')
         return 0
     from scripts import build_market_day as builder
     args.max_threads=args.query_threads;args.max_memory_gb=args.query_memory_gib;args.query_timeout=45
     client=builder.Client(args,persistent=False)
     try:
+        if args.command=='install-schema':
+            from contextlib import closing
+            from pipelines.market_sip.flatfiles.download_update_events import load_env_files
+            from src.trading_runtime.keeper_session import open_workstation_keeper_session
+            from pipelines.certified_research.publication import DictionaryClaim
+            load_env_files([args.env_file],verbose=False)
+            with closing(open_workstation_keeper_session()) as keeper:
+                claim=DictionaryClaim(keeper.client,args.database)
+                try:result=installation.install(client.query,args.database,claim)
+                finally:claim.close()
+            if args.format=='json':print(json.dumps(result,indent=2))
+            else:print(f"Schema verified | {result['tables']} tables | {result['created']} created | live_market_ssd")
+            return 0
         if args.command=='prepare-sources':
             from contextlib import closing
             from threading import Event

@@ -12,6 +12,12 @@ The user narrowed delivery to ClickHouse common data only: no training banks/sha
 
 Run `python -B scripts/prepare_certified_research.py schema --format sql` for exact DDL, or `--format json` for the column catalog. Every published column has an explicit lossless codec; tables use monthly/yearly or compact dictionary partitions and `live_market_ssd`.
 
+The catalog includes **28 derived-data tables**: 20 published tables, one dated listing-observation acquisition table and seven private staging tables. Text/JSON output groups these by purpose. The published `schema_hash` retains its existing meaning; `installation_hash` additionally covers acquisition and staging definitions. Canonical event/reporting tables remain owned by the SIP updater and its migrations.
+
+`python -B scripts/prepare_certified_research.py install-schema --database arte` installs missing derived tables in an existing database under the global database dictionary claim. It checks every existing table's engine, keys, types, explicit codecs, storage policy and actual part placement **before creating anything**, then verifies the complete installation. An exact repeat performs no creation writes. It does not publish data or authorize campaign execution.
+
+Existing private market staging created with table-default compression differs from the explicit per-column contract. The installer rejects this difference; it does not reinterpret it as an exact match, alter tables or delete parts. Such installations require an explicit migration before this command can proceed. Fresh installations use the explicit compact definitions throughout.
+
 ## Relationship map
 
 - Dataset metadata is stored once in `research_dataset_v1`. Market rows reference its UUID.

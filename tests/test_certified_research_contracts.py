@@ -742,6 +742,39 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_complete_schema_installation_is_exact_and_no_write_on_resume(self):
+        from pipelines.certified_research import installation
+        from pipelines.certified_research.publication import DictionaryClaim
+        database='certified_research_test_'+uuid.uuid4().hex
+        self.client.query('CREATE DATABASE '+database,read=False)
+        self.addCleanup(lambda:self.client.query('DROP DATABASE '+database,read=False))
+        for ddl in market.staging_ddl(database):self.client.query(ddl,read=False)
+        class FixtureClaim(DictionaryClaim):
+            def __init__(inner):inner.dictionary_database=database
+            def check(inner):pass
+        logs=[]
+        def query(sql,*args,**kwargs):logs.append(sql);return self.client.query(sql,*args,**kwargs)
+        # Existing kernel staging uses table-default compression rather than
+        # explicit per-column codecs. The installer must reject that drift.
+        with self.assertRaisesRegex(ValueError,'column/codec'):
+            installation.install(query,database,FixtureClaim())
+        self.assertFalse(any(sql.startswith('CREATE ') for sql in logs))
+        for name in market.STAGING.values():
+            self.assertEqual(self.client.query(f'SELECT count() n FROM {database}.{name}')[0]['n'],0)
+            self.client.query(f'DROP TABLE {database}.{name}',read=False)
+        logs.clear()
+        result=installation.install(query,database,FixtureClaim())
+        self.assertEqual(result['tables'],28)
+        self.assertEqual(installation.verify(query,database,require_tables=True)['installation_hash'],result['installation_hash'])
+        logs.clear()
+        self.assertEqual(installation.install(query,database,FixtureClaim())['created'],0)
+        self.assertFalse(any(sql.startswith('CREATE ') for sql in logs))
+        self.client.query(f'ALTER TABLE {database}.research_listing_observation_v1 MODIFY COLUMN active UInt16 CODEC(ZSTD(1))',read=False)
+        logs.clear()
+        with self.assertRaisesRegex(ValueError,'column/codec'):
+            installation.install(query,database,FixtureClaim())
+        self.assertFalse(any(sql.startswith('CREATE ') for sql in logs))
+
     def test_historical_identity_publication_is_compact_exact_and_restart_safe(self):
         from pipelines.certified_research import historical_identity as historical
         class Claim:
@@ -1023,7 +1056,7 @@ class ClickHouseIntegration(unittest.TestCase):
             "['5','13','30','31','32','33'] reporting_condition_entries,toUInt8(if(number=0,0,8)) reporting_reason FROM numbers(2)")
         sql=reporting_evidence.reconciled_projection(raw,self.database+'.'+table,'2026-01-02','a'*64,
             ['sip_timestamp_us'],first_sip_us=1000000,last_sip_us=1000001)
-        rows=self.client.query(sql)
+        rows=sorted(self.client.query(sql),key=lambda row:int(row['ordinal']))
         self.assertEqual(len(rows),2);self.assertFalse(any(int(r['mismatch']) or int(r['ambiguous']) for r in rows))
         self.assertEqual(int(rows[0]['sip_timestamp_ns']),1000000123)
         self.assertIsNone(rows[1]['participant_timestamp_ns'])
