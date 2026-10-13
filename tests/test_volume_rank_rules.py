@@ -40,3 +40,41 @@ def test_ranking_is_independent_between_boundaries():
                                pl.col("available_at") + pl.duration(seconds=1))
     actual = select_volume_universe(pl.concat([first, later]), VolumeUniverseRule(30, 1, .8, 50))
     assert actual["listing_id"].to_list() == ["a", "a"]
+
+
+def test_frozen_top10_matches_original_search_across_ties_and_elapsed_windows():
+    import numpy as np
+    from research.vectorized_backtest.v6.torch_backtest.materialize import rolling_volume, rank_indices
+    # Synthetic qualification only: integer SIP share volumes, complete elapsed
+    # clocks, listing identities sorted independently of ticker spelling.
+    clocks, listings = 93, 18
+    volumes = np.random.default_rng(223).integers(0, 20, size=(clocks, listings)).astype(np.float64)
+    volumes[:3] = 0
+    volumes[:, 6:15] = volumes[:, 5:6]  # tie extends across the tenth-place cutoff
+    volumes[:, 16:] = 100000  # ineligible prices must not occupy ranking slots
+    prices = np.full(listings, 10.)
+    prices[0], prices[1], prices[16], prices[17] = .8, 50., .79, 50.01
+    eligible = np.flatnonzero((prices >= .8) & (prices <= 50.))
+    reference, scores = rank_indices(volumes[:, eligible], None, 30, 10)
+    rolling = rolling_volume(volumes, 30)
+    start = datetime(2026, 8, 3, 8, tzinfo=timezone.utc)
+    records = [dict(listing_id=f'listing-{column:02}', ticker=f'T{listings-column:02}',
+        boundary_at=start + timedelta(seconds=clock + 1),
+        available_at=start + timedelta(seconds=clock + 1),
+        prior_close_available_at=start - timedelta(days=3),
+        adjusted_prior_close=prices[column], rolling_volume=rolling[clock, column],
+        volume_window_seconds=30)
+        for clock in range(clocks) for column in range(listings)]
+    actual = select_volume_universe(pl.DataFrame(records).reverse(), VolumeUniverseRule(30, 10, .8, 50))
+    for clock in range(clocks):
+        observed = actual.filter(pl.col('boundary_at') == start + timedelta(seconds=clock + 1))
+        keep = reference[clock] >= 0
+        expected = [f'listing-{eligible[column]:02}' for column in reference[clock, keep]]
+        assert observed['listing_id'].to_list() == expected
+        assert observed['rolling_volume'].to_list() == scores[clock, keep].tolist()
+    assert actual.filter(pl.col('boundary_at') <= start + timedelta(seconds=3)).is_empty()
+    for cutoff in (4, 30, 31, 62):
+        end = start + timedelta(seconds=cutoff)
+        short = select_volume_universe(pl.DataFrame(records).filter(pl.col('boundary_at') <= end),
+            VolumeUniverseRule(30, 10, .8, 50))
+        assert short.equals(actual.filter(pl.col('boundary_at') <= end))
