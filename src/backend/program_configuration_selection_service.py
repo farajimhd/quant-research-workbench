@@ -199,6 +199,21 @@ class ProgramConfigurationSelectionService:
                 raise RuntimeError("Prepared programme handoff changed during app review")
         return controller
 
+    async def prepared_resume_controller(self, run_service, run_id):
+        """Select only a matching staged cold handoff, without legacy reads."""
+        from .program_controller_recovery import require_recovered_program_controller
+        if program_configuration_selection_service() is not self:
+            raise ValueError("Programme resume requires its installed app authority")
+        with self._prepared_lock:
+            prepared = self._prepared
+            if prepared is None or prepared[0] is not run_service or prepared[1].run_id != run_id:
+                return None
+        controller = await self.staged_controller(run_service)
+        if controller is not prepared[1] or controller.run_id != run_id:
+            raise RuntimeError("Prepared programme resume handoff changed during review")
+        require_recovered_program_controller(controller)
+        return controller
+
     async def _review_controller(self, run_service, controller):
         from .replay_run_service import ReplayRunService, ReplayRunController
         from .backtest_program_journal_bootstrap import _configuration_hash

@@ -10489,6 +10489,13 @@ class ReplayRunService:
         resident = self._runs.get(normalized)
         if resident is not None and resident.status not in TERMINAL_REPLAY_STATUSES and getattr(resident, 'review_only', False) is not True:
             raise ValueError("Historical run is already resident and active")
+        if self.allow_typed_backtest_resume:
+            from .program_configuration_selection_service import program_configuration_selection_service
+            selector = program_configuration_selection_service()
+            if selector is not None:
+                prepared = await selector.prepared_resume_controller(self, normalized)
+                if prepared is not None:
+                    return await selector.launch_controller(self, prepared)
         run_dir = (self.runtime_root / normalized).resolve()
         if self.runtime_root != run_dir and self.runtime_root not in run_dir.parents:
             raise ValueError("Historical run directory escaped the runtime root")
@@ -10654,6 +10661,8 @@ class ReplayRunService:
             context = load_typed_run_context(journal, run_id)
             saved = load_backtest_definition(journal, run_id, run_context=context)
         parent = saved["definition"]
+        if str(parent["configuration_revision_id"]).startswith("strategy-configuration:"):
+            raise ValueError("Programme resume requires its prepared cold controller handoff")
         session = date.fromisoformat(context["session_date"])
         with closing(v3_client("read")) as market:
             if market.execute("SELECT getSetting('readonly')").strip() != "1":

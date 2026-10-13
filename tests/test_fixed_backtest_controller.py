@@ -27,6 +27,13 @@ DAY = "2026-08-18"
 RUN = "00000000-0000-0000-0000-000000000001"
 
 
+def _controller_without_runtime():
+    """Manual numbered-path stub with the real constructor programme default."""
+    controller = object.__new__(ReplayRunController)
+    controller._program_strategy = None
+    return controller
+
+
 def test_numbered_strategy_one_uses_its_persisted_product_evidence_not_legacy_profile():
     legacy = {
         "strategy_profile": {"parameters": {
@@ -59,7 +66,7 @@ def test_backtest_start_rejects_before_legacy_journal_or_disk_write(tmp_path, mo
     from src.backend import backtest_journal_clickhouse, replay_run_service
     from src.backend.backtest_market_data import FIXED_EXECUTION_BLOCKER
 
-    controller = object.__new__(ReplayRunController)
+    controller = _controller_without_runtime()
     controller.definition = SimpleNamespace(
         archived_review_only=False, mode=RunMode.BACKTEST,
         execution_interval="100ms",
@@ -136,7 +143,7 @@ def test_numbered_empty_candidate_definition_requires_exact_seal_without_v7():
 def test_admitted_backtest_start_creates_no_local_authority(tmp_path, monkeypatch):
     from src.backend import replay_run_service
 
-    controller = object.__new__(ReplayRunController)
+    controller = _controller_without_runtime()
     controller.definition = SimpleNamespace(
         archived_review_only=False, mode=RunMode.BACKTEST,
         execution_interval="100ms",
@@ -193,7 +200,7 @@ def test_fixed_v4_runtime_installs_typed_images_without_legacy_recovery(monkeypa
         portfolio_image, {"schema_version": 4}, oms_image,
         StrategyOneManagementState(100, (), (), ()),
         StrategyOneEvidenceState(100, (), (), ()))
-    controller = object.__new__(ReplayRunController)
+    controller = _controller_without_runtime()
     controller.run_id = RUN
     controller.definition = SimpleNamespace(
         mode=RunMode.BACKTEST, execution_mode="strategy",
@@ -417,7 +424,7 @@ def test_strategy_one_resumed_tape_starts_after_verified_cursor(monkeypatch):
 
 
 def test_strategy_one_engine_skips_legacy_signal_and_frame_preparation():
-    controller = object.__new__(ReplayRunController)
+    controller = _controller_without_runtime()
     controller.definition = SimpleNamespace(
         mode=RunMode.BACKTEST, execution_interval="100ms",
         configuration_revision={"payload": {"strategy": {"strategy_number": 1}}})
@@ -446,7 +453,7 @@ def test_strategy_one_engine_skips_legacy_signal_and_frame_preparation():
 
 
 def test_resumed_strategy_one_engine_reuses_fenced_lane_without_new_genesis():
-    controller = object.__new__(ReplayRunController)
+    controller = _controller_without_runtime()
     controller.definition = SimpleNamespace(
         mode=RunMode.BACKTEST, execution_interval="100ms",
         configuration_revision={"payload": {"strategy": {"strategy_number": 1}}})
@@ -767,7 +774,7 @@ def test_fixed_boundary_never_reads_or_journals_historical_watchlist():
 def test_fixed_engine_opens_clickhouse_journal_before_any_sqlite(monkeypatch):
     from src.backend import replay_run_service
 
-    controller = object.__new__(ReplayRunController)
+    controller = _controller_without_runtime()
     controller.definition = SimpleNamespace(mode=RunMode.BACKTEST,
                                             execution_interval="100ms")
     controller.status = "created"
