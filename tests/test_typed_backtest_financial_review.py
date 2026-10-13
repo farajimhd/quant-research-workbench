@@ -59,6 +59,8 @@ def test_typed_financial_review_rejects_wrong_mode(monkeypatch) -> None:
 
 def test_comparison_collects_exact_native_pages_without_skipping_fees(monkeypatch):
     _stub(monkeypatch)
+    saved = {"definition": {"start_local_ms": 14400000, "end_local_ms": 14400100}}
+    monkeypatch.setattr(review, "load_backtest_definition", lambda *_a, **_k: saved)
     prefix = SimpleNamespace(status="completed", last_sequence=120)
     monkeypatch.setattr(review, "load_verified_v4_prefix", lambda *_: prefix)
     monkeypatch.setattr(review, "load_committed_execution_page", lambda _client, _prefix,
@@ -71,6 +73,8 @@ def test_comparison_collects_exact_native_pages_without_skipping_fees(monkeypatc
     assert [row["sequence"] for row in evidence["fills"]] == [10, 11]
     assert [row["sequence"] for row in evidence["commissions"]] == [100, 101, 102]
     assert evidence["complete"] is True
+    assert evidence["requested_window_completed"] is True
+    assert evidence["session_window"] == saved["definition"]
     with pytest.raises(ValueError, match="row bound"):
         review.load_typed_backtest_financial_evidence(object(), "run-1", page_size=2, maximum_rows=4)
     prefixes = iter((prefix, SimpleNamespace(status="completed", last_sequence=121)))
@@ -99,6 +103,32 @@ def test_exact_financial_review_requires_verified_v4_and_exact_fills(monkeypatch
     monkeypatch.setattr(review, "load_committed_commission_page", lambda *_args, **_kwargs: ())
     page = review.load_typed_backtest_financial_page(object(), "run-1", exact_prices=True)
     assert page["fills"][0]["price"].hex() == price.hex()
+
+
+@pytest.mark.parametrize("failure", ["early", "late", "definition", "prefix"])
+def test_comparison_requires_saved_end_and_unchanged_final_authorities(monkeypatch, failure):
+    _stub(monkeypatch)
+    prefix = SimpleNamespace(status="completed", last_sequence=120, last_batch_id="sealed")
+    monkeypatch.setattr(review, "load_verified_v4_prefix", lambda *_: prefix)
+    saved = {"definition": {"start_local_ms": 14400000, "end_local_ms": 14400100}}
+    reads = []
+    def definition(*args, **kwargs):
+        reads.append(1)
+        if len(reads) == 2:
+            if failure == "definition":
+                return {"definition": {"start_local_ms": 14400000, "end_local_ms": 14400200}}
+            if failure == "prefix":
+                monkeypatch.setattr(review, "load_verified_v4_prefix", lambda *_:
+                    SimpleNamespace(status="completed", last_sequence=120, last_batch_id="foreign"))
+        return saved
+    monkeypatch.setattr(review, "load_backtest_definition", definition)
+    monkeypatch.setattr(review, "load_committed_execution_page", lambda *_a, **_k: ())
+    monkeypatch.setattr(review, "load_committed_commission_page", lambda *_a, **_k: ())
+    if failure in {"early", "late"}:
+        monkeypatch.setattr(review, "load_latest_backtest_cursor", lambda *_:
+            dict(session_date="2026-08-18", boundary_ms=99 if failure == "early" else 101))
+    with pytest.raises((ValueError, RuntimeError), match="saved session window|saved run definition|committed run evidence"):
+        review.load_typed_backtest_financial_evidence(object(), "run-1", page_size=500, maximum_rows=100)
 
 
 @pytest.mark.parametrize("flag", [1, None, "true"])

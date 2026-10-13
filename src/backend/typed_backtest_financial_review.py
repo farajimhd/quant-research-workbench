@@ -12,6 +12,8 @@ from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
 
 from src.trading_runtime.arte_journal_projection import load_latest_backtest_cursor
 from src.trading_runtime.arte_backtest_snapshot_anchor import load_terminal_backtest_snapshot
+from src.trading_runtime.arte_backtest_definition import load_backtest_definition
+from .backtest_market_data import SESSION_OPEN_OFFSET_MS
 from src.trading_runtime.arte_journal_writer import (
     load_committed_commission_page, load_committed_execution_page,
     load_committed_prefix, load_typed_run_context,
@@ -77,6 +79,8 @@ def load_typed_backtest_financial_evidence(client, run_id, *, page_size, maximum
     fills, fees = [], []
     fill_cursor = fee_cursor = 0
     identity = None
+    saved = None
+    selected_prefix = None
     while True:
         page = load_typed_backtest_financial_page(client, run_id,
             after_fill_sequence=fill_cursor, after_commission_sequence=fee_cursor,
@@ -85,6 +89,17 @@ def load_typed_backtest_financial_evidence(client, run_id, *, page_size, maximum
                    page["cursor"], page["accounts"])
         if page["status"] != "completed" or page["cursor"] is None:
             raise ValueError("Financial comparison requires completed market-cursor evidence")
+        if saved is None:
+            saved = deepcopy(load_backtest_definition(client, run_id, run_context=page["run"]))
+            selected_prefix = load_verified_v4_prefix(client, run_id)
+            if (selected_prefix is None or selected_prefix.status != page["status"]
+                    or selected_prefix.last_sequence != page["committed_sequence"]):
+                raise RuntimeError("Financial comparison changed its committed run evidence")
+        parent = saved["definition"]
+        expected_end = parent["end_local_ms"] - SESSION_OPEN_OFFSET_MS
+        if (page["cursor"]["boundary_ms"] != expected_end
+                or parent["start_local_ms"] >= parent["end_local_ms"]):
+            raise ValueError("Financial comparison cursor did not complete its saved session window")
         if identity is not None and current != identity:
             raise RuntimeError("Financial comparison changed its committed run evidence")
         identity = deepcopy(current)
@@ -100,6 +115,14 @@ def load_typed_backtest_financial_evidence(client, run_id, *, page_size, maximum
         fees.extend(page["commissions"])
         fill_cursor, fee_cursor = page["next_fill_sequence"], page["next_commission_sequence"]
         if page["complete"]:
-            return {**page, "fills": tuple(fills), "commissions": tuple(fees)}
+            if load_backtest_definition(client, run_id, run_context=page["run"]) != saved:
+                raise RuntimeError("Financial comparison changed its saved run definition")
+            final_prefix = load_verified_v4_prefix(client, run_id)
+            if final_prefix != selected_prefix:
+                raise RuntimeError("Financial comparison changed its committed run evidence")
+            return {**page, "fills": tuple(fills), "commissions": tuple(fees),
+                "requested_window_completed": True,
+                "session_window": {"start_local_ms": parent["start_local_ms"],
+                    "end_local_ms": parent["end_local_ms"]}}
         if not page["fills"] and not page["commissions"]:
             raise RuntimeError("Financial comparison pagination made no progress")
