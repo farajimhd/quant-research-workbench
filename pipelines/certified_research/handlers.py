@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from . import facts,reference_producer,float_data,producer,price_inputs,universe,activity
+from . import facts,reference_producer,float_data,producer,price_inputs,universe,activity,source
 from .universe_publication import UniversePublisher
 from .contracts import digest
 from .execution import Unit
@@ -17,6 +17,32 @@ from .reference_publication import ReferenceScope,ReferencePublisher
 
 PRODUCTS=('fundamentals','derived_fundamentals','short_volume','short_interest','regular_prices','float_supply','short_pressure')
 MARKET_PRODUCTS=('market_aggregate','technical','v7')
+
+
+class CanonicalSourceHandlers:
+    """Recheck prepared daily source/reporting certificates without writing."""
+    def __init__(self,claim,client_factory,source_guard):
+        self.claim=claim;self.clients=client_factory;self.guard=source_guard
+
+    def execute(self,plan,parents,stop=None):
+        if stop is not None and stop.is_set():raise InterruptedError('Source verification stopped')
+        if plan.unit.product!='canonical_source' or parents or set(plan.arguments)!={'day','source_hash'}:
+            raise ValueError('Invalid canonical source verification unit')
+        day=date.fromisoformat(plan.arguments['day']);client=self.clients()
+        try:
+            self.claim.check();self.guard()
+            canonical=source.inventory(client.query,day,day,sessions=(day,))
+            reporting=source.reporting_inventory(client.query,canonical)
+            current=source.market_day_hashes(canonical,reporting)[day]
+            if current!=plan.arguments['source_hash']:
+                raise ValueError('Frozen daily canonical/reporting authority changed')
+            self.claim.check();self.guard()
+            return dict(product='canonical_source',day=str(day),source_hash=current,output_hash=current)
+        finally:client.close()
+
+    def producer(self,plan,parents,stop):return self.execute(plan,parents,stop)
+    def verifier(self,plan,parents):return self.execute(plan,parents)
+    def registry(self):return {'canonical_source':self.producer},{'canonical_source':self.verifier}
 
 
 class ActivityHandlers:

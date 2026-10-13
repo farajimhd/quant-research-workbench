@@ -4,12 +4,37 @@ from unittest import TestCase
 from unittest.mock import Mock,patch
 from uuid import uuid4
 from pipelines.certified_research.launch import ExecutionLaunch,combine_registries
-from pipelines.certified_research.campaign import PlannedUnit
+from pipelines.certified_research.campaign import PlannedUnit,StoredPlan
 from pipelines.certified_research.execution import Unit
 from pipelines.certified_research.contracts import CampaignConfig,digest
 
 
 class ExecutionLaunchTests(TestCase):
+    def test_stored_launch_preserves_configuration_and_checks_graph_before_capacity_or_writes(self):
+        dataset=str(uuid4());claim=SimpleNamespace(check=Mock());guard=Mock();query=Mock()
+        config=CampaignConfig(date(2026,1,2),date(2026,1,5),workers=2)
+        runtime=SimpleNamespace(dataset=dataset,database='arte',claim=claim,request=Mock(),engine=Mock())
+        plans=(PlannedUnit(Unit('bars','market_aggregate'),dict(day='2026-01-02',listing_key=1,ticker='TEST')),)
+        capacity=Mock()
+        original=ExecutionLaunch(query,config,dataset,plans,'a'*64,claim,Mock(),guard,capacity,Mock(),runtime)
+        saved=StoredPlan(dataset,config,plans,'a'*64,original.controller.plan_hash)
+        factory=Mock(return_value=runtime)
+        with patch('pipelines.certified_research.launch.load_plan',return_value=saved) as loader:
+            restored=ExecutionLaunch.from_stored(query,'arte',dataset,claim,Mock(),guard,capacity,Mock(),factory,
+                maximum_units=99,maximum_metadata_bytes=8192)
+            loader.assert_called_once_with(query,'arte',dataset,maximum_units=99,maximum_metadata_bytes=8192)
+            factory.assert_called_once_with(saved)
+            self.assertIs(restored.config,config)
+            self.assertEqual(restored.controller.plan_hash,original.controller.plan_hash)
+            query.assert_not_called();capacity.assert_not_called()
+            # Runtime initialization cannot alter frozen plan arguments unnoticed.
+            def changed(plan):
+                plan.units[0].arguments['ticker']='CHANGED'
+                return runtime
+            with self.assertRaisesRegex(ValueError,'immutable stored plan'):
+                ExecutionLaunch.from_stored(query,'arte',dataset,claim,Mock(),guard,capacity,Mock(),changed)
+            query.assert_not_called();capacity.assert_not_called()
+
     def test_admission_binds_exact_plan_and_prevents_writes_on_failure(self):
         dataset=str(uuid4());claim=SimpleNamespace(check=Mock());guard=Mock();query=Mock()
         config=CampaignConfig(date(2026,1,2),date(2026,1,2))

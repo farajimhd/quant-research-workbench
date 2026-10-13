@@ -1,6 +1,6 @@
 """One execution controller for market, reference and acquisition registries."""
-from .campaign import Campaign
-from .handlers import MarketHandlers,ReferenceHandlers,ActivityHandlers,UniverseHandlers
+from .campaign import Campaign,load_plan
+from .handlers import MarketHandlers,ReferenceHandlers,ActivityHandlers,UniverseHandlers,CanonicalSourceHandlers
 from .contracts import digest
 from . import installation
 
@@ -23,6 +23,29 @@ class ExecutionLaunch:
     External registries are typed application handlers for acquisition, seed
     and corporate/allocation stages, never code embedded in plan arguments.
     """
+    @classmethod
+    def from_stored(cls,query,database,dataset_id,claim,client_factory,source_guard,
+                    capacity_guard,dictionary_claim_factory,runtime_factory,*,
+                    prerequisite_registries=(),maximum_units=1_000_000,
+                    maximum_metadata_bytes=256*1024**2):
+        """Restore handlers against the immutable ClickHouse plan, without writes.
+
+        Runtime construction receives the validated stored configuration and
+        dependency graph. Current command-line dates or resource defaults never
+        replace them. The regular run/verify gates remain mandatory afterward.
+        """
+        claim.check();source_guard()
+        saved=load_plan(query,database,dataset_id,maximum_units=maximum_units,
+            maximum_metadata_bytes=maximum_metadata_bytes)
+        runtime=runtime_factory(saved)
+        launch=cls(query,saved.config,saved.dataset_id,saved.units,saved.source_hash,
+            claim,client_factory,source_guard,capacity_guard,dictionary_claim_factory,
+            runtime,prerequisite_registries=prerequisite_registries)
+        if launch.controller.plan_hash!=saved.plan_hash:
+            raise ValueError('Restored execution differs from its immutable stored plan')
+        claim.check();source_guard()
+        return launch
+
     def __init__(self,query,config,dataset_id,plans,source_hash,claim,client_factory,source_guard,
                  capacity_guard,dictionary_claim_factory,market_runtime,*,prerequisite_registries=()):
         if not callable(capacity_guard):raise ValueError('Execution requires qualified capacity admission')
@@ -32,7 +55,8 @@ class ExecutionLaunch:
         if (market_runtime.dataset!=dataset_id or market_runtime.database!=config.database
                 or market_runtime.claim is not claim):
             raise ValueError('Market runtime ownership/dataset differs from execution launch')
-        registries=(MarketHandlers(dataset_id,config.database,claim,client_factory,source_guard,
+        registries=(CanonicalSourceHandlers(claim,client_factory,source_guard),
+            MarketHandlers(dataset_id,config.database,claim,client_factory,source_guard,
                         market_runtime.request,market_runtime.engine),
             ReferenceHandlers(dataset_id,config.database,claim,client_factory,source_guard,self.plans,
                 dictionary_claim_factory=dictionary_claim_factory),

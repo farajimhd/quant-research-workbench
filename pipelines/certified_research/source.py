@@ -26,6 +26,21 @@ def market_day_hashes(canonical,reporting):
     return result
 
 
+def certified_units(canonical,reporting):
+    """Expose already prepared source days as verifiable execution roots.
+
+    Acquisition and global canonical migrations finish before freezing a
+    derived plan. These roots verify their resulting daily authorities; they
+    never open files or implicitly invoke a provider or migration.
+    """
+    from .campaign import PlannedUnit
+    from .execution import Unit
+    hashes=market_day_hashes(canonical,reporting)
+    plans=tuple(PlannedUnit(Unit('source:'+str(day),'canonical_source'),
+        dict(day=str(day),source_hash=value)) for day,value in sorted(hashes.items()))
+    return plans,{date.fromisoformat(p.arguments['day']):(p.unit.key,) for p in plans}
+
+
 def inventory(query,start: date,end: date,*,sessions=None):
     if type(start) is not date or type(end) is not date or start>end:
         raise ValueError('Invalid source inventory range')
