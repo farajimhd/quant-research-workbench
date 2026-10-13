@@ -2,7 +2,8 @@
 
 These inert contracts do not install tables or grant restart admission. The
 legacy codec supplies fingerprint shape validation and pure actor restoration;
-no legacy table or Keeper namespace is read or written. Quantity bits here are
+The unchanged snapshot-root relation is reused; typed detail rows and the
+Keeper namespace remain separately scoped. Quantity bits here are
 OMS deduplication observations, not a replacement for financial quantity ledgers.
 Zero follows the existing shared scalar codec's canonical positive-zero rule.
 """
@@ -20,7 +21,7 @@ from .trading_price_codec import encode_trading_price, decode_trading_price
 
 _NUMBERS = ("filled_quantity", "remaining_quantity", "average_fill_price",
             "limit_price", "stop_price")
-ROOT = replace(codec.ROOT, name="trading_oms_observation_snapshot_v1")
+ROOT = replace(codec.ROOT, name="trading_strategy_one_oms_observation_snapshot_v1")
 OBSERVATION = replace(codec.OBSERVATION, name="trading_oms_observation_v1",
     columns=tuple((name + "_bits", "UInt64") if name in _NUMBERS else (name, kind)
                   for name, kind in codec.OBSERVATION.columns))

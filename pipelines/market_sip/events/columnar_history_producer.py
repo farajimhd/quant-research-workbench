@@ -177,9 +177,9 @@ def insert_history_rows(writer, table, rows):
         raise ValueError("History insertion requires bounded centrally declared children")
     if table == c.VALUE:
         columns = ",".join("`" + name + "`" for name, _ in table.columns)
-        writer.execute(f"INSERT INTO `arte`.`{table.name}` ({columns}) " + value_insert_projection(rows))
+        writer.execute(f"INSERT INTO `q_live`.`{table.name}` ({columns}) " + value_insert_projection(rows))
     else:
-        insert_json_each_row(writer, "arte", table.name, [n for n, _ in table.columns], wire_records(table, rows))
+        insert_json_each_row(writer, "q_live", table.name, [n for n, _ in table.columns], wire_records(table, rows))
 
 
 def publish_history(reader, writer, source, *, ownership, code_hash):
@@ -209,7 +209,7 @@ def publish_history(reader, writer, source, *, ownership, code_hash):
         ownership.assert_owner()
         return "skipped_verified"
     for table in (c.FIELD, c.CLOCK, c.VALUE):
-        if _rows(reader, f"SELECT derivation_attempt_id FROM arte.{table.name} "
+        if _rows(reader, f"SELECT derivation_attempt_id FROM q_live.{table.name} "
                 f"WHERE {scope_sql(scope, attempt=False)} LIMIT 1", 1):
             raise ValueError("Unsealed history attempt requires operator reconciliation")
     prepared = materialize_history(reader, source, scope, code_hash=code_hash)
@@ -228,7 +228,7 @@ def publish_history(reader, writer, source, *, ownership, code_hash):
     if read_seal(reader, scope):
         raise ValueError("History coverage appeared during exclusive publication")
     ownership.assert_owner()
-    insert_json_each_row(writer, "arte", c.COVERAGE.name, [n for n, _ in c.COVERAGE.columns],
+    insert_json_each_row(writer, "q_live", c.COVERAGE.name, [n for n, _ in c.COVERAGE.columns],
         wire_records(c.COVERAGE, [header]))
     certificate = certify_history_product(reader, scope, source.fields, parents, expected_content_hash=header["content_hash"])
     if dict(certificate.header) != header:
@@ -248,7 +248,7 @@ def _verify_children_before_seal(reader, prepared):
         # Offset is safe only inside this exclusive immutable publication unit;
         # the full key/count audit detects conflicting or duplicate children.
         while True:
-            rows = _rows(reader, f"SELECT * FROM arte.{table.name} WHERE {predicate} "
+            rows = _rows(reader, f"SELECT * FROM q_live.{table.name} WHERE {predicate} "
                 f"ORDER BY {order} LIMIT 1024 OFFSET {offset}", 1024)
             actual = [c.restore_record(table, row) for row in rows]
             if actual != list(islice(expected, len(rows))):
@@ -259,7 +259,7 @@ def _verify_children_before_seal(reader, prepared):
                     raise ValueError("History child INSERT readback is incomplete")
                 break
         summary = _rows(reader, f"SELECT count() AS row_count,uniqExact({key}) AS unique_keys "
-            f"FROM arte.{table.name} WHERE {predicate}", 1)
+            f"FROM q_live.{table.name} WHERE {predicate}", 1)
         if (len(summary) != 1 or int(summary[0]["row_count"]) != offset
                 or int(summary[0]["unique_keys"]) != offset):
             raise ValueError("History publication children contain extra or duplicate keys")

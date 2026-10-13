@@ -9,9 +9,12 @@ from src.trading_runtime.rule_decision_basis_schema import STAGED_TABLES
 
 def test_program_write_catalog_is_exact_extension_without_legacy_mutation():
     original = writer.v4_journal_write_tables()
+    from src.trading_runtime.trading_price_contracts import program_exact_price_storage_contracts
+    exact = {table.name for table in program_exact_price_storage_contracts()}
+    assert len(exact) == 10
     from src.trading_runtime.trading_price_contracts import exact_price_storage_contracts
-    exact = {table.name for table in exact_price_storage_contracts()}
-    assert len(exact) == 11
+    assert len(exact_price_storage_contracts()) == 11
+    assert 'trading_strategy_signal_exact_price_v1' not in exact
     assert exact.isdisjoint(original)
     from src.trading_runtime.arte_entry_acquisition_freeze import FAMILY_NAMES
     from src.trading_runtime.backtest_journal_price_contract import PRICE_CONTRACT

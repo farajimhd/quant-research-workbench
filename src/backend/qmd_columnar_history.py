@@ -34,7 +34,7 @@ def permission_preflight(client, *, writable=False):
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", user) is None:
         raise ValueError("QMD history principal is invalid")
     targets = {t.name for t in c.TABLES}
-    required = {("arte", name) for name in targets}
+    required = {("q_live", name) for name in targets}
     required |= {("system", name) for name in (
         "storage_policies", "tables", "columns", "parts", "data_skipping_indices")}
     reads, writes = set(), set()
@@ -47,7 +47,7 @@ def permission_preflight(client, *, writable=False):
         for privilege in {v.strip() for v in match.group(1).split(",")}:
             if privilege == "SELECT":
                 reads.add(table)
-            elif privilege == "INSERT" and writable and table[0] == "arte" and table[1] in targets:
+            elif privilege == "INSERT" and writable and table[0] == "q_live" and table[1] in targets:
                 writes.add(table[1])
             else:
                 raise ValueError("QMD history principal has unauthorized write or DDL authority")
@@ -70,7 +70,7 @@ def scope_sql(scope, *, attempt=True):
 
 
 def read_seal(reader, scope):
-    rows = _rows(reader, f"SELECT * FROM arte.{c.COVERAGE.name} "
+    rows = _rows(reader, f"SELECT * FROM q_live.{c.COVERAGE.name} "
         f"WHERE {scope_sql(scope, attempt=False)} LIMIT 2", 2)
     if len(rows) > 1:
         raise ValueError("QMD history coverage is ambiguous")
@@ -142,7 +142,7 @@ def certify_history_product(reader, scope, fields, parents, *, expected_content_
             or not len(fields) <= header["value_row_count"] <= len(fields) * scope.clock_count):
         raise ValueError("QMD history coverage differs from the pinned product")
     predicate = scope_sql(scope)
-    field_rows = _rows(reader, f"SELECT * FROM arte.{c.FIELD.name} WHERE {predicate} ORDER BY field_id LIMIT 605", 605)
+    field_rows = _rows(reader, f"SELECT * FROM q_live.{c.FIELD.name} WHERE {predicate} ORDER BY field_id LIMIT 605", 605)
     field_rows = [c.restore_record(c.FIELD, row) for row in field_rows]
     expected_fields = [{**scope.prefix(), "field_id": f.field_id, "field_name": f.name, "unit": f.unit} for f in fields]
     if field_rows != expected_fields:
@@ -150,7 +150,7 @@ def certify_history_product(reader, scope, fields, parents, *, expected_content_
     clocks, values = [], []
     for first in range(scope.first_bucket, scope.stop_bucket, 1024):
         stop = min(first + 1024, scope.stop_bucket)
-        rows = _rows(reader, f"SELECT * FROM arte.{c.CLOCK.name} WHERE {predicate} "
+        rows = _rows(reader, f"SELECT * FROM q_live.{c.CLOCK.name} WHERE {predicate} "
             f"AND bucket_index>={first} AND bucket_index<{stop} ORDER BY bucket_index LIMIT 1025", 1025)
         if len(rows) != stop - first:
             raise ValueError("QMD history completed clocks are missing or duplicate")
@@ -164,7 +164,7 @@ def certify_history_product(reader, scope, fields, parents, *, expected_content_
     for field in fields:
         first = 0
         while first < scope.clock_count:
-            rows = _rows(reader, f"SELECT * FROM arte.{c.VALUE.name} WHERE {predicate} "
+            rows = _rows(reader, f"SELECT * FROM q_live.{c.VALUE.name} WHERE {predicate} "
                 f"AND field_id={field.field_id} AND first_ordinal>={first} AND first_ordinal<{scope.clock_count} "
                 "ORDER BY first_ordinal LIMIT 1024", 1024)
             rows = [c.restore_record(c.VALUE, row) for row in rows]
@@ -188,7 +188,7 @@ def certify_history_product(reader, scope, fields, parents, *, expected_content_
             (c.CLOCK, prepared.clocks.height, "bucket_index"),
             (c.VALUE, prepared.values.height, "(field_id,first_ordinal)")):
         summary = _rows(reader, f"SELECT count() AS row_count,uniqExact({key}) AS unique_keys "
-            f"FROM arte.{table.name} WHERE {predicate}", 1)
+            f"FROM q_live.{table.name} WHERE {predicate}", 1)
         if (len(summary) != 1 or int(summary[0]["row_count"]) != count
                 or int(summary[0]["unique_keys"]) != count):
             raise ValueError("QMD history children contain extra or duplicate keys")

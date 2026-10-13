@@ -21,7 +21,7 @@ from src.trading_runtime.columnar_program_actor import AssignedProgramStrategy
 def release_for(pin, *, minimum_age_seconds=None):
     spec, _, kwargs = bundle()
     field = pin.fields[0]
-    contract = InputField(field.name, field.unit, "arte.qmd_causal_history_value_v1",
+    contract = InputField(field.name, field.unit, "q_live.qmd_causal_history_value_v1",
         pin.scope.product_revision, 1000)
     program = RuleProgram((N(O.FEATURE, field=field.name), N(O.LAG, left=0, window=60),
         N(O.CONSTANT, literal=0., unit=field.unit), N(O.GREATER, left=1, right=2)), 3)

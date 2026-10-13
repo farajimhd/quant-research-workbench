@@ -31,6 +31,12 @@ def exact_price_storage_contracts():
     return tuple(_EXACT_PRICE_CONTRACTS.values())
 
 
+def program_exact_price_storage_contracts():
+    """Current Backtest V4 uses the v2 signal family; retain legacy catalogues."""
+    return tuple(table for table in exact_price_storage_contracts()
+                 if table.name != "trading_strategy_signal_exact_price_v1")
+
+
 def exact_price_contracts(base_contracts):
     """Derive closed, named scalar schemas and retain every nonprice field."""
     result = {}

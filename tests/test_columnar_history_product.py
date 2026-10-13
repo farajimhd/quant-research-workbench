@@ -146,7 +146,7 @@ def test_producer_output_feeds_shared_vectorized_rule_evaluator_without_rebuildi
                                  producer_code_hash="a" * 64)
     frame = expand(prepared, first_ordinal=0, stop_ordinal=scope.clock_count)
     name = "history.attention_mean.58"
-    contracts = {name: InputField(name, "dollars", "arte.qmd_causal_history_value_v1", scope.product_revision, 1000)}
+    contracts = {name: InputField(name, "dollars", "q_live.qmd_causal_history_value_v1", scope.product_revision, 1000)}
     rule = RuleProgram((RuleNode(Operation.FEATURE, field=name),
         RuleNode(Operation.CONSTANT, literal=20., unit="dollars"),
         RuleNode(Operation.GREATER, left=0, right=1)), 2)

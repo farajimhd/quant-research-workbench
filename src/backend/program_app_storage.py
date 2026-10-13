@@ -21,7 +21,7 @@ def program_app_storage_contracts():
         for table in (*CURSOR_TABLES, *OCCURRENCE_TABLES, *DISPATCH_TABLES))
     contracts = {}
     for table in (*tables, *source):
-        prior = contracts.setdefault(table.name, table)
+        prior = contracts.setdefault((table.database, table.name), table)
         if prior != table:
             raise ValueError('Programme app storage has conflicting central contracts: ' + table.name)
     return tuple(contracts.values())

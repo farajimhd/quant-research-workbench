@@ -31,7 +31,7 @@ def _permission(reader):
     user = reader.execute("SELECT currentUser()").strip()
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", user) is None:
         raise ValueError("QMD opening reader identity is invalid")
-    required = {("arte", t.name) for t in c.TABLES}
+    required = {("q_live", t.name) for t in c.TABLES}
     required |= {("system", n) for n in (
         "storage_policies", "tables", "columns", "parts", "data_skipping_indices")}
     reads = set()
@@ -51,7 +51,7 @@ def _scope(scope):
 
 
 def _seal(reader, scope):
-    rows = _rows(reader, f"SELECT * FROM arte.{c.COVERAGE.name} WHERE {_scope(scope)} LIMIT 2", 2)
+    rows = _rows(reader, f"SELECT * FROM q_live.{c.COVERAGE.name} WHERE {_scope(scope)} LIMIT 2", 2)
     if len(rows) != 1:
         raise ValueError("QMD opening reference coverage is missing or ambiguous")
     header = c.restore_record(c.COVERAGE, rows[0])
@@ -94,7 +94,7 @@ def certify_opening_reference(reader, scope, *, expected_content_hash=None):
         raise ValueError("QMD opening reference differs from the pinned release/run product")
     attempt = header["reference_attempt_id"]
     predicate = _scope(scope) + f" AND reference_attempt_id=toUUID({literal(attempt)})"
-    identities = _rows(reader, f"SELECT listing_id,ticker FROM arte.{c.REFERENCE.name} "
+    identities = _rows(reader, f"SELECT listing_id,ticker FROM q_live.{c.REFERENCE.name} "
         f"WHERE {predicate} ORDER BY listing_id LIMIT 25001", 25001)
     if (len(identities) != len(scope.tickers)
             or tuple(sorted(r["ticker"] for r in identities)) != scope.tickers
@@ -106,7 +106,7 @@ def certify_opening_reference(reader, scope, *, expected_content_hash=None):
         for table, target, bound, order in (
             (c.REFERENCE, references, 129, "listing_id"),
             (c.SPLIT, children, 4097, "listing_id,source_ordinal")):
-            rows = _rows(reader, f"SELECT * FROM arte.{table.name} WHERE {predicate} "
+            rows = _rows(reader, f"SELECT * FROM q_live.{table.name} WHERE {predicate} "
                 f"AND listing_id IN ({names}) ORDER BY {order} LIMIT {bound}", bound)
             if len(rows) >= bound:
                 raise ValueError("QMD opening reference children exceed their certified bound")
@@ -118,7 +118,7 @@ def certify_opening_reference(reader, scope, *, expected_content_hash=None):
     for table, target, key in ((c.REFERENCE, references, "listing_id"),
                                (c.SPLIT, children, "(listing_id,source_ordinal)")):
         summary = _rows(reader, f"SELECT count() AS row_count,uniqExact({key}) AS unique_keys "
-            f"FROM arte.{table.name} WHERE {predicate}", 1)
+            f"FROM q_live.{table.name} WHERE {predicate}", 1)
         if (len(summary) != 1 or int(summary[0]["row_count"]) != len(target)
                 or int(summary[0]["unique_keys"]) != len(target)):
             raise ValueError("QMD opening reference children contain extra or duplicate keys")

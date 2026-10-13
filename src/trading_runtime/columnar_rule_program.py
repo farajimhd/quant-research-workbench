@@ -58,7 +58,7 @@ class InputField:
                 or not isinstance(self.unit, str) or len(self.unit) > 32
                 or not isinstance(self.product, str) or len(self.product) > 128
                 or re.fullmatch(r"[a-z][a-z0-9_.]*", self.name or "") is None or not self.unit
-                or re.fullmatch(r"arte\.[a-z][a-z0-9_]*", self.product or "") is None
+                or re.fullmatch(r"(?:arte|q_live)\.[a-z][a-z0-9_]*", self.product or "") is None
                 or re.fullmatch(r"[0-9a-f]{64}", self.revision or "") is None
                 or type(self.resolution_ms) is not int
                 or self.resolution_ms < 100 or self.resolution_ms % 100):

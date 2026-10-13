@@ -491,10 +491,10 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
         QueryPlanDefinition(
             "qmd.certified-volume-population.v1", "qmd_history_gateway",
             "src.backend.qmd_columnar_population:read_population_window",
-            ("arte.qmd_causal_history_clock_v1", "arte.qmd_opening_price_reference_v1"),
+            ("q_live.qmd_causal_history_clock_v1", "q_live.qmd_opening_price_reference_v1"),
             "certified effective listing_id and ticker in the complete opening population",
             "completed elapsed-second boundary", "completed boundary and prior opening-known reference",
-            "arte.qmd_causal_history_coverage_v1,arte.qmd_opening_price_reference_coverage_v1",
+            "q_live.qmd_causal_history_coverage_v1,q_live.qmd_opening_price_reference_coverage_v1",
         ),
         QueryPlanDefinition(
             "qmd.scanner.snapshot.v1",
@@ -1800,9 +1800,9 @@ def _fields() -> tuple[FieldDefinition, ...]:
 
     for field_id, value_type, unit, column, source_path, calculation in (
         ("market.opening_prior_regular_close", "number", "currency", "opening_prior_regular_close",
-         "arte.qmd_opening_price_reference_v1", "Certified prior regular-session closing trade adjusted by opening-known split terms."),
+         "q_live.qmd_opening_price_reference_v1", "Certified prior regular-session closing trade adjusted by opening-known split terms."),
         ("market.rolling_share_volume", "number", "shares", "rolling_share_volume",
-         "arte.qmd_causal_history_clock_v1", "Producer-owned elapsed share-volume window including the current completed second; window length is pinned by the run contract."),
+         "q_live.qmd_causal_history_clock_v1", "Producer-owned elapsed share-volume window including the current completed second; window length is pinned by the run contract."),
     ):
         rows.append(_field(field_id, "qmd_certified_population", "qmd_history_gateway", source_path,
             "qmd.certified-volume-population.v1", value_type=value_type, unit=unit,

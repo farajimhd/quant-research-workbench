@@ -60,8 +60,11 @@ class TableContract:
     partition: str
     order: str
     allow_nullable_key: bool = False
+    database: str = "arte"
 
     def __post_init__(self) -> None:
+        if self.database not in {"arte", "q_live"}:
+            raise ValueError("Typed operational contracts require an explicit supported database")
         # Journal evidence must have an explicit relational contract. Reject
         # catchall payloads at definition time, not only in a schema test.
         forbidden_types = re.compile(
@@ -88,7 +91,7 @@ class TableContract:
         if self.allow_nullable_key:
             settings += ", allow_nullable_key = 1"
         return (
-            f"CREATE TABLE IF NOT EXISTS arte.{self.name} (\n    {columns}\n) "
+            f"CREATE TABLE IF NOT EXISTS {self.database}.{self.name} (\n    {columns}\n) "
             f"ENGINE = MergeTree PARTITION BY {self.partition} "
             f"ORDER BY ({self.order}) SETTINGS {settings}"
         )
@@ -1809,6 +1812,10 @@ def _rows(client: Any, query: str) -> list[dict[str, Any]]:
 
 def storage_preflight(client: Any, *, tables: tuple[TableContract, ...] = TABLES) -> None:
     """Verify the exact typed schema and physical placement without writes."""
+    databases = {table.database for table in tables}
+    if len(databases) != 1:
+        raise ValueError("Typed storage audit requires one nonempty database scope")
+    database = next(iter(databases))
     policies = _rows(client,
         "SELECT disks FROM system.storage_policies "
         "WHERE policy_name='live_market_ssd' FORMAT JSONEachRow")
@@ -1817,7 +1824,7 @@ def storage_preflight(client: Any, *, tables: tuple[TableContract, ...] = TABLES
     names = ",".join(f"'{table.name}'" for table in tables)
     actual_tables = _rows(client,
         "SELECT name,engine,storage_policy,partition_key,sorting_key FROM system.tables "
-        f"WHERE database='arte' AND name IN ({names}) FORMAT JSONEachRow")
+        f"WHERE database='{database}' AND name IN ({names}) FORMAT JSONEachRow")
     by_name = {row["name"]: row for row in actual_tables}
     if set(by_name) != {table.name for table in tables}:
         raise ValueError("Typed journal tables are missing")
@@ -1832,7 +1839,7 @@ def storage_preflight(client: Any, *, tables: tuple[TableContract, ...] = TABLES
                     "MergeTree", STORAGE_POLICY, table.partition, declared_order):
             raise ValueError(f"Typed journal layout differs: {table.name}")
     actual_columns = _rows(client,
-        "SELECT table,name,type FROM system.columns WHERE database='arte' "
+        f"SELECT table,name,type FROM system.columns WHERE database='{database}' "
         f"AND table IN ({names}) ORDER BY table,position FORMAT JSONEachRow")
     for table in tables:
         columns = tuple((row["name"], row["type"])
@@ -1843,7 +1850,7 @@ def storage_preflight(client: Any, *, tables: tuple[TableContract, ...] = TABLES
                if any(column == "batch_id" for column, _ in table.columns)}
     indexes = _rows(client,
         "SELECT table,name,type,expr,granularity FROM system.data_skipping_indices "
-        f"WHERE database='arte' AND table IN ({names}) FORMAT JSONEachRow")
+        f"WHERE database='{database}' AND table IN ({names}) FORMAT JSONEachRow")
     if (len(indexes) != len(indexed)
             or {row["table"] for row in indexes} != indexed
             or any((row["name"], row["type"], row["expr"], int(row["granularity"]))
@@ -1851,7 +1858,7 @@ def storage_preflight(client: Any, *, tables: tuple[TableContract, ...] = TABLES
                    for row in indexes)):
         raise ValueError("Typed journal batch lookup indexes are missing or incompatible")
     bad_parts = _rows(client,
-        "SELECT table,disk_name FROM system.parts WHERE database='arte' "
+        f"SELECT table,disk_name FROM system.parts WHERE database='{database}' "
         f"AND table IN ({names}) AND active AND disk_name!='live_market_ssd' "
         "LIMIT 1 FORMAT JSONEachRow")
     if bad_parts:
@@ -1859,7 +1866,7 @@ def storage_preflight(client: Any, *, tables: tuple[TableContract, ...] = TABLES
     if indexed:
         indexed_names = ",".join(f"'{name}'" for name in sorted(indexed))
         missing_index_parts = _rows(client,
-            "SELECT table,name FROM system.parts WHERE database='arte' "
+            f"SELECT table,name FROM system.parts WHERE database='{database}' "
             f"AND table IN ({indexed_names}) AND active "
             "AND secondary_indices_compressed_bytes=0 LIMIT 1 FORMAT JSONEachRow")
         if missing_index_parts:

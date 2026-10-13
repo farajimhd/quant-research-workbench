@@ -78,10 +78,10 @@ class Client:
         if query == "SELECT currentUser()":
             return user
         if query == "SHOW GRANTS FINAL":
-            scopes = [("arte", t.name) for t in c.TABLES]
+            scopes = [("q_live", t.name) for t in c.TABLES]
             scopes += [("system", n) for n in ("storage_policies", "tables", "columns", "parts", "data_skipping_indices")]
             return "\n".join([*(f"GRANT SELECT ON {db}.{n} TO {user}" for db, n in scopes),
-                *(f"GRANT INSERT ON arte.{t.name} TO {user}" for t in c.TABLES if self.writer)])
+                *(f"GRANT INSERT ON q_live.{t.name} TO {user}" for t in c.TABLES if self.writer)])
         if "FROM system.storage_policies" in query:
             return encode([dict(disks=["live_market_ssd"])])
         if "FROM system.tables" in query:
@@ -98,7 +98,7 @@ class Client:
             return encode([dict(disk_name="default")]) if self.store.bad_disk else ""
         if query.startswith("INSERT"):
             assert self.writer
-            name = re.search(r"INSERT INTO `arte`\.`([a-z0-9_]+)`", query).group(1)
+            name = re.search(r"INSERT INTO `q_live`\.`([a-z0-9_]+)`", query).group(1)
             self.store.writes.append(name)
             if name == c.VALUE.name:
                 rows = []
@@ -117,7 +117,7 @@ class Client:
         if "FROM arte.bars_v1 " in query:
             rows = list(self.store.bars)
         else:
-            name = next((t.name for t in c.TABLES if f"FROM arte.{t.name} " in query), None)
+            name = next((t.name for t in c.TABLES if f"FROM q_live.{t.name} " in query), None)
             if name is None:
                 raise AssertionError(query)
             rows = list(self.store.records[name])

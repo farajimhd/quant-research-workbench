@@ -26,10 +26,10 @@ def source(monkeypatch):
         open_rules={stage: rule(698) for stage in compiler.STAGES}, minimum_age={"exit": 10})
     monkeypatch.setattr(compiler, "WINNER_SEMANTIC_HASH",
         sha256(json.dumps(program, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
-    fields = {name: InputField(name, unit, "arte.qmd_causal_history_value_v1", "a" * 64, 1000)
+    fields = {name: InputField(name, unit, "q_live.qmd_causal_history_value_v1", "a" * 64, 1000)
               for name, unit in compiler.WINNER_FIELDS.values()}
     fields[compiler.STOP_FIELD] = InputField(compiler.STOP_FIELD, "price",
-        "arte.qmd_causal_history_value_v1", "a" * 64, 1000)
+        "q_live.qmd_causal_history_value_v1", "a" * 64, 1000)
     reference = OptimizationReference(24, compiler.WINNER_SHA256, 872, program,
         dict(entry_dollars=1000., add_dollars=200., fee_per_share=.005, minimum_order_fee=1., cost_bps=0.), {})
     universe = dict(version="v6-volume-market-blocks-v1", window=30, top_n=10, minimum_close=.8, maximum_close=50)

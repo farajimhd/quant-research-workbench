@@ -54,11 +54,11 @@ class Client:
             return "writer" if self.writer else "reader"
         if query == "SHOW GRANTS FINAL":
             user = "writer" if self.writer else "reader"
-            scopes = [("arte", t.name) for t in c.TABLES] + [("arte", "bars_v1"),
+            scopes = [("q_live", t.name) for t in c.TABLES] + [("arte", "bars_v1"),
                 ("q_live", "id_symbol_interval_v1"), ("q_live", "market_stock_split_v1")]
             scopes += [("system", n) for n in ("storage_policies", "tables", "columns", "parts", "data_skipping_indices")]
             return "\n".join([*(f"GRANT SELECT ON {db}.{n} TO {user}" for db, n in scopes),
-                *(f"GRANT INSERT ON arte.{t.name} TO {user}" for t in c.TABLES if self.writer)])
+                *(f"GRANT INSERT ON q_live.{t.name} TO {user}" for t in c.TABLES if self.writer)])
         if "FROM system.storage_policies" in query:
             return encode([dict(disks=["live_market_ssd"])])
         if "FROM system.tables" in query:
@@ -83,14 +83,14 @@ class Client:
                 inserted_at="2026-08-03 07:00:00.000000", source_content_sha256="4" * 64)])
         if query.startswith("INSERT"):
             assert self.writer
-            table = re.search(r"INSERT INTO `arte`\.`([a-z0-9_]+)`", query).group(1)
+            table = re.search(r"INSERT INTO `q_live`\.`([a-z0-9_]+)`", query).group(1)
             self.store.writes.append(table)
             self.store.records[table].extend(json.loads(row) for row in query.split("\n")[1:])
             if self.store.failure == table:
                 raise RuntimeError("ambiguous INSERT")
             return ""
         for t in c.TABLES:
-            if f"FROM arte.{t.name} " in query:
+            if f"FROM q_live.{t.name} " in query:
                 rows = self.store.records[t.name]
                 match = re.search(r"reference_attempt_id=toUUID\('([^']+)'\)", query)
                 if match:

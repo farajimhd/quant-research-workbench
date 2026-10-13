@@ -7,7 +7,7 @@ never infers missing source coverage or fetches a private research feature bank.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 import re
 import math
@@ -52,6 +52,7 @@ COVERAGE = TableContract("qmd_causal_history_coverage_v1", PREFIX + (
     ("value_content_hash", "FixedString(64)"), ("content_hash", "FixedString(64)"),
     ("certified_at", "DateTime64(6, 'UTC')")),
     "toYYYYMM(session_date)", ORDER)
+FIELD, CLOCK, VALUE, COVERAGE = tuple(replace(table, database="q_live") for table in (FIELD, CLOCK, VALUE, COVERAGE))
 TABLES = (FIELD, CLOCK, VALUE, COVERAGE)
 VALUE_FRAME_SCHEMA = {"field_id": pl.UInt32, "first_ordinal": pl.UInt32,
     "stop_ordinal": pl.UInt32, "value": pl.Float32, "value_bits": pl.UInt32, "valid": pl.UInt8}

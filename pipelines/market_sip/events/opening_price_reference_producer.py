@@ -311,7 +311,7 @@ def _scope(source):
 
 
 def _coverage(reader, source):
-    rows = _rows(reader, f"SELECT * FROM arte.{contract.COVERAGE.name} WHERE {_scope(source)} LIMIT 2", bound=2)
+    rows = _rows(reader, f"SELECT * FROM q_live.{contract.COVERAGE.name} WHERE {_scope(source)} LIMIT 2", bound=2)
     if len(rows) > 1:
         raise ValueError("Opening reference has multiple publication seals")
     return [contract.restore_record(contract.COVERAGE, row) for row in rows]
@@ -326,7 +326,7 @@ def _readback(reader, source, table, attempt):
         names = ",".join(literal(v.listing_id) for v in source.listings[offset:offset + 128])
         batch_bound = 129 if table == contract.REFERENCE else 4097
         order = "listing_id" + (",source_ordinal" if table == contract.SPLIT else "")
-        rows = _rows(reader, f"SELECT * FROM arte.{table.name} WHERE {_scope(source)} "
+        rows = _rows(reader, f"SELECT * FROM q_live.{table.name} WHERE {_scope(source)} "
             f"AND reference_attempt_id=toUUID({literal(attempt)}) AND listing_id IN ({names}) "
             f"ORDER BY {order} LIMIT {batch_bound}", bound=batch_bound)
         if len(rows) >= batch_bound:
@@ -338,7 +338,7 @@ def _readback(reader, source, table, attempt):
         raise ValueError("Opening reference readback exceeds its population bound")
     key = "listing_id" if table == contract.REFERENCE else "(listing_id,source_ordinal)"
     summaries = _rows(reader, f"SELECT count() AS row_count,uniqExact({key}) AS unique_keys "
-        f"FROM arte.{table.name} WHERE {_scope(source)} "
+        f"FROM q_live.{table.name} WHERE {_scope(source)} "
         f"AND reference_attempt_id=toUUID({literal(attempt)})", bound=1)
     if (len(summaries) != 1 or int(summaries[0]["row_count"]) != len(output)
             or int(summaries[0]["unique_keys"]) != len(output)):
@@ -431,7 +431,7 @@ def publish_opening_reference(reader, writer, source, *, ownership, code_hash):
         ownership.assert_owner()
         return "skipped_verified"
     for table in (contract.REFERENCE, contract.SPLIT):
-        if _rows(reader, f"SELECT reference_attempt_id FROM arte.{table.name} "
+        if _rows(reader, f"SELECT reference_attempt_id FROM q_live.{table.name} "
                  f"WHERE {_scope(source)} LIMIT 1", bound=1):
             raise ValueError("Unsealed opening-reference attempt requires operator reconciliation")
     attempt = str(uuid4())
@@ -440,7 +440,7 @@ def publish_opening_reference(reader, writer, source, *, ownership, code_hash):
     for table, records in ((contract.SPLIT, children), (contract.REFERENCE, references)):
         for offset in range(0, len(records), 128):
             ownership.assert_owner()
-            insert_json_each_row(writer, "arte", table.name, [n for n, _ in table.columns],
+            insert_json_each_row(writer, "q_live", table.name, [n for n, _ in table.columns],
                                  _wire_records(table, records[offset:offset + 128]))
         actual = _readback(reader, source, table, attempt)
         if actual != records:
@@ -463,7 +463,7 @@ def publish_opening_reference(reader, writer, source, *, ownership, code_hash):
     header["content_hash"] = contract.content_hash(header)
     header["certified_at"] = datetime.now(timezone.utc)
     ownership.assert_owner()
-    insert_json_each_row(writer, "arte", contract.COVERAGE.name,
+    insert_json_each_row(writer, "q_live", contract.COVERAGE.name,
                          [n for n, _ in contract.COVERAGE.columns], _wire_records(contract.COVERAGE, [header]))
     final = _coverage(reader, source)
     if len(final) != 1 or final[0] != header:
@@ -478,7 +478,7 @@ def publication_permission_preflight(client, *, writable):
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", user) is None:
         raise ValueError("Opening reference principal is invalid")
     target = {t.name for t in contract.TABLES}
-    required = {("arte", n) for n in target | {"bars_v1"}}
+    required = {("q_live", n) for n in target} | {("arte", "bars_v1")}
     required |= {("q_live", n) for n in ("id_symbol_interval_v1", "market_stock_split_v1")}
     required |= {("system", n) for n in (
         "storage_policies", "tables", "columns", "parts", "data_skipping_indices")}
@@ -492,7 +492,7 @@ def publication_permission_preflight(client, *, writable):
         for privilege in {v.strip() for v in match.group(1).split(",")}:
             if privilege == "SELECT":
                 reads.add(scope)
-            elif privilege == "INSERT" and writable and scope[0] == "arte" and scope[1] in target:
+            elif privilege == "INSERT" and writable and scope[0] == "q_live" and scope[1] in target:
                 writes.add(scope[1])
             else:
                 raise ValueError("Opening reference principal has unauthorized write/DDL authority")

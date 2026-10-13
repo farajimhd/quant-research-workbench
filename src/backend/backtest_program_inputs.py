@@ -250,7 +250,7 @@ def preflight_program_feature_catalog(release, pins):
         catalog = {field.name: field for field in pin.fields}
         for name, field in release.fields.items():
             if (name not in catalog or field.unit != catalog[name].unit
-                    or field.product != "arte.qmd_causal_history_value_v1"
+                    or field.product != "q_live.qmd_causal_history_value_v1"
                     or field.revision != pin.scope.product_revision or field.resolution_ms != 1000):
                 raise ValueError("Program field differs from its producer-owned history contract")
 
@@ -360,7 +360,7 @@ def preflight_program_cohort_inputs(release, pins, population_pin, listing_by_as
         catalog = {field.name: field for field in pin.fields}
         for name, field in release.fields.items():
             if (name not in catalog or field.unit != catalog[name].unit
-                    or field.product != "arte.qmd_causal_history_value_v1"
+                    or field.product != "q_live.qmd_causal_history_value_v1"
                     or field.revision != pin.scope.product_revision or field.resolution_ms != 1000):
                 raise ValueError("Programme field differs from its certified history contract")
         preflight_program_history_packets(release, pin, first_ordinal=first_ordinal,

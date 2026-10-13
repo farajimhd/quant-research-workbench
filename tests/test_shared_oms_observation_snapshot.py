@@ -31,7 +31,8 @@ def test_exact_native_fingerprint_survives_shared_codec(kind):
     restored = tuple(float(child[name]) for name in module._NUMBERS)
     assert tuple(value.hex() for value in restored) == tuple(value.hex() for value in numbers)
     assert child["fingerprint_kind"] == kind
-    assert all("strategy_one" not in table.name for table in module.TABLES)
+    assert module.ROOT.name == "trading_strategy_one_oms_observation_snapshot_v1"
+    assert "strategy_one" not in module.OBSERVATION.name
     assert all(kind == "UInt64" for name, kind in module.OBSERVATION.columns
                if name.endswith("_bits"))
     with pytest.raises(TypeError):
@@ -124,7 +125,7 @@ def test_shared_reader_uses_only_bounded_central_selects(monkeypatch, quoted):
     assert checks == [module.TABLES]
     assert len(queries) == 3
     assert all(query.startswith("SELECT ") and " LIMIT " in query
-        and "strategy_one" not in query for query in queries)
+        and ("strategy_one" not in query or f"FROM arte.{module.ROOT.name} " in query) for query in queries)
 
 
 @pytest.mark.parametrize("failure", ["missing", "duplicate", "movement", "foreign", "repeated_field"])

@@ -6,7 +6,7 @@ No strategy installs or writes these centrally owned tables.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timezone
 from hashlib import sha256
 from functools import lru_cache
@@ -53,6 +53,7 @@ COVERAGE = TableContract("qmd_opening_price_reference_coverage_v1", PREFIX + (
     ("reference_content_hash", "FixedString(64)"), ("split_content_hash", "FixedString(64)"),
     ("content_hash", "FixedString(64)"), ("certified_at", "DateTime64(6, 'UTC')")),
     "toYYYYMM(session_date)", "source_build_id,session_date,reference_attempt_id")
+REFERENCE, SPLIT, COVERAGE = tuple(replace(table, database="q_live") for table in (REFERENCE, SPLIT, COVERAGE))
 TABLES = (REFERENCE, SPLIT, COVERAGE)
 
 

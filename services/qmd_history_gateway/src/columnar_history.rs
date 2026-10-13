@@ -339,8 +339,8 @@ where
         .join(",");
     let preflight = query(format!("SELECT \
       (SELECT count() FROM system.storage_policies WHERE policy_name='live_market_ssd' AND disks=['live_market_ssd']) AS policy_count,\
-      (SELECT count() FROM system.tables WHERE database='arte' AND name IN ({tables}) AND engine='MergeTree' AND storage_policy='live_market_ssd') AS table_count,\
-      (SELECT count() FROM system.parts WHERE database='arte' AND table IN ({tables}) AND active AND disk_name!='live_market_ssd') AS bad_parts FORMAT JSONEachRow")).await?;
+      (SELECT count() FROM system.tables WHERE database='q_live' AND name IN ({tables}) AND engine='MergeTree' AND storage_policy='live_market_ssd') AS table_count,\
+      (SELECT count() FROM system.parts WHERE database='q_live' AND table IN ({tables}) AND active AND disk_name!='live_market_ssd') AS bad_parts FORMAT JSONEachRow")).await?;
     #[derive(Deserialize)]
     struct Placement {
         policy_count: u64,
@@ -361,7 +361,7 @@ where
     // The coverage query omits the attempt so a conflicting successor seal
     // cannot hide behind the request's pinned attempt ID.
     let seal_predicate = scope_sql(&request.scope, false);
-    let seal_sql = format!("SELECT * FROM arte.qmd_causal_history_coverage_v1 WHERE {seal_predicate} LIMIT 2 FORMAT JSONEachRow");
+    let seal_sql = format!("SELECT * FROM q_live.qmd_causal_history_coverage_v1 WHERE {seal_predicate} LIMIT 2 FORMAT JSONEachRow");
     let before = query(seal_sql.clone()).await?;
     let mut headers = rows::<HistoryCoverage>(&before, 2)?;
     if headers.len() != 1 {
@@ -378,12 +378,12 @@ where
     let n = (request.stop_ordinal - request.first_ordinal) as usize;
     let first_bucket = request.scope.first_bucket + request.first_ordinal;
     let stop_bucket = request.scope.first_bucket + request.stop_ordinal;
-    let field_sql = format!("SELECT field_id,field_name,unit FROM arte.qmd_causal_history_field_v1 WHERE {predicate} AND field_id IN ({ids}) ORDER BY field_id LIMIT {} FORMAT JSONEachRow", request.field_ids.len() + 1);
-    let clock_sql = format!("SELECT bucket_index,source_known,observed,extremes_valid,reference_close,share_volume,execution_notional,rolling_volume FROM arte.qmd_causal_history_clock_v1 WHERE {predicate} AND bucket_index>={first_bucket} AND bucket_index<{stop_bucket} ORDER BY bucket_index LIMIT {} FORMAT JSONEachRow", n + 1);
+    let field_sql = format!("SELECT field_id,field_name,unit FROM q_live.qmd_causal_history_field_v1 WHERE {predicate} AND field_id IN ({ids}) ORDER BY field_id LIMIT {} FORMAT JSONEachRow", request.field_ids.len() + 1);
+    let clock_sql = format!("SELECT bucket_index,source_known,observed,extremes_valid,reference_close,share_volume,execution_notional,rolling_volume FROM q_live.qmd_causal_history_clock_v1 WHERE {predicate} AND bucket_index>={first_bucket} AND bucket_index<{stop_bucket} ORDER BY bucket_index LIMIT {} FORMAT JSONEachRow", n + 1);
     let value_sql = format!("SELECT field_id,first_ordinal,stop_ordinal,value_bits,valid,\
       toUInt8(if(valid=0,isNull(value) AND isNull(value_bits),\
       isNotNull(value) AND isNotNull(value_bits) AND reinterpretAsUInt32(ifNull(value,toFloat32(0)))=ifNull(value_bits,toUInt32(0)))) AS bits_consistent \
-      FROM arte.qmd_causal_history_value_v1 WHERE {predicate} AND field_id IN ({ids}) \
+      FROM q_live.qmd_causal_history_value_v1 WHERE {predicate} AND field_id IN ({ids}) \
       AND first_ordinal<{} AND stop_ordinal>{} ORDER BY field_id,first_ordinal LIMIT {} FORMAT JSONEachRow", request.stop_ordinal, request.first_ordinal, request.field_ids.len() * n + 1);
     // A certified activity-only product carries dense clocks and zero fields.
     // Do not issue feature reads or derive private features for that population.
@@ -639,20 +639,20 @@ mod tests {
             collected.lock().unwrap().push(sql.clone());
             let body = if sql.contains("FROM system.storage_policies") {
                 json!({"policy_count":1,"table_count":4,"bad_parts":if case == "disk" {1} else {0}}).to_string()
-            } else if sql.contains("FROM arte.qmd_causal_history_coverage_v1") {
+            } else if sql.contains("FROM q_live.qmd_causal_history_coverage_v1") {
                 let count = seals.fetch_add(1, Ordering::SeqCst);
                 let body = serde_json::to_string(&h).unwrap();
                 if case == "missing-seal" { String::new() }
                 else if case == "ambiguous-seal" { format!("{body}\n{body}") }
                 else if case == "changing-seal" && count > 0 { format!("{body}\n") }
                 else { body }
-            } else if sql.contains("FROM arte.qmd_causal_history_field_v1") {
+            } else if sql.contains("FROM q_live.qmd_causal_history_field_v1") {
                 json!({"field_id":326,"field_name":"history.attention_mean.58","unit":"dollars"}).to_string()
-            } else if sql.contains("FROM arte.qmd_causal_history_clock_v1") {
+            } else if sql.contains("FROM q_live.qmd_causal_history_clock_v1") {
                 (0..2).map(|i| json!({"bucket_index":34200 + if case == "duplicate-clock" {0} else {i},
                     "source_known":1,"observed":1,"extremes_valid":1,"reference_close":10.,
                     "share_volume":1.,"execution_notional":3.,"rolling_volume":i+1}).to_string()).collect::<Vec<_>>().join("\n")
-            } else if sql.contains("FROM arte.qmd_causal_history_value_v1") {
+            } else if sql.contains("FROM q_live.qmd_causal_history_value_v1") {
                 json!({"field_id":326,"first_ordinal":if case == "interval-gap" {1} else {0},"stop_ordinal":100,
                     "value_bits":if case == "infinite-bits" {0x7f800000u32} else {(-0f32).to_bits()},
                     "valid":1,"bits_consistent":if case == "value-drift" {0} else {1}}).to_string()
@@ -664,8 +664,8 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|sql| sql.contains("FROM arte.qmd_causal_history_field_v1")
-                    || sql.contains("FROM arte.qmd_causal_history_value_v1")));
+                .any(|sql| sql.contains("FROM q_live.qmd_causal_history_field_v1")
+                    || sql.contains("FROM q_live.qmd_causal_history_value_v1")));
         }
         if case == "valid" && std::env::var("QUALIFY_HISTORY_SQL_PROBE").as_deref() == Ok("1") {
             let root = std::path::Path::new("D:/TradingML/runtimes/task-0223-app");

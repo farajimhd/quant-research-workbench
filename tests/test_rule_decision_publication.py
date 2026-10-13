@@ -8,8 +8,8 @@ from src.trading_runtime.rule_decision_basis_schema import STAGED_TABLES
 def test_opt_in_catalog_preserves_original_v4_and_declares_shared_tables_once():
     original = writer.v4_storage_contracts()
     combined = module.rule_decision_storage_contracts()
-    from src.trading_runtime.trading_price_contracts import exact_price_storage_contracts
-    exact = exact_price_storage_contracts()
+    from src.trading_runtime.trading_price_contracts import program_exact_price_storage_contracts
+    exact = program_exact_price_storage_contracts()
     from src.trading_runtime.arte_entry_acquisition_freeze import TABLES as freeze
     from src.trading_runtime.backtest_journal_price_contract import PRICE_CONTRACT
     from src.trading_runtime.columnar_strategy_schema import BROKER

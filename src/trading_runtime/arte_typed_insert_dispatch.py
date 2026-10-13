@@ -81,7 +81,7 @@ _OMS_OBSERVATION_TABLES = frozenset({
     "trading_strategy_one_oms_observation_v2",
 })
 _SHARED_OMS_OBSERVATION_TABLES = frozenset({
-    "trading_oms_observation_snapshot_v1",
+    "trading_strategy_one_oms_observation_snapshot_v1",
     "trading_oms_observation_v1",
 })
 
@@ -1325,7 +1325,7 @@ class TypedInsertDispatch:
             previous=previous, head_type=OmsObservationHead,
             head_path=ManagedSharedOmsObservationHeadReader.path(run_id),
             tables=_SHARED_OMS_OBSERVATION_TABLES,
-            root_table="trading_oms_observation_snapshot_v1",
+            root_table="trading_strategy_one_oms_observation_snapshot_v1",
             token_factory=_oms_observation_token, label="Shared OMS observation")
 
     def assert_snapshot_head(self, *, run_id: str, account_id: str,
