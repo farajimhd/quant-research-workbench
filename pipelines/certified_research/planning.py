@@ -1,7 +1,7 @@
 """Execution dependencies for certified market sessions, without nested pools."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass,replace
 from datetime import date,datetime,time
 from bisect import bisect_left
 from zoneinfo import ZoneInfo
@@ -68,6 +68,59 @@ def market_units(config: CampaignConfig,sessions,*,source_parents,universe_paren
             dict(args,windows=config.volume_windows_seconds)))
         prior[session.listing_key]=(technical,v7)
     return tuple(result)
+
+
+def program_units(config,sessions,issuers,securities,*,prerequisites,source_parents,
+                  universe_parent,seed_parents,corporate_parents,security_listings,
+                  fundamental_start,price_start,short_start):
+    """Join acquisition/repair, shared market and reference work in one DAG.
+
+    ``security_listings`` is the certified security-to-listing relationship,
+    including historical renames. Price inputs reuse the market aggregates;
+    callers must not supply a second independently calculated price graph.
+    All prerequisites remain explicit certified units, including first-state
+    seeds and source repair. This compiler performs no acquisition or writes.
+    """
+    from .execution import validate
+    if any(type(d) is not date or d>config.start for d in (fundamental_start,price_start,short_start)):
+        raise ValueError('Reference context ranges must include the target start')
+    prerequisites=tuple(prerequisites);sessions=tuple(sessions)
+    securities=tuple(securities)
+    existing={p.unit.key:p for p in prerequisites}
+    if len(existing)!=len(prerequisites):raise ValueError('Duplicate prerequisite keys')
+    if universe_parent not in existing or existing[universe_parent].unit.product!='universe':
+        raise ValueError('Certified universe prerequisite is missing')
+    if set(security_listings)!={s.security_key for s in securities}:
+        raise ValueError('Security/listing relationships do not match admitted securities')
+    owners={}
+    for security,listing_keys in security_listings.items():
+        listing_keys=tuple(listing_keys)
+        if not listing_keys or len(set(listing_keys))!=len(listing_keys):
+            raise ValueError('Security listing history is empty or duplicated')
+        for listing in listing_keys:
+            if type(listing) is not int or not 0<listing<2**64 or listing in owners:
+                raise ValueError('Listing has an invalid or competing security owner')
+            owners[listing]=security
+    if {s.listing_key for s in sessions}!=set(owners):
+        raise ValueError('Market sessions do not cover the certified security/listing relationships')
+    market=market_units(config,sessions,source_parents=source_parents,
+        universe_parent=universe_parent,seed_parents=seed_parents,corporate_parents=corporate_parents)
+    aggregates={s.security_key:[] for s in securities}
+    for plan in market:
+        if plan.unit.product=='market_aggregate' and date.fromisoformat(plan.arguments['day'])>=price_start:
+            aggregates[owners[plan.arguments['listing_key']]].append(plan.unit.key)
+    linked=[]
+    for security in securities:
+        shared=tuple(aggregates[security.security_key])
+        if security.market_parents and set(security.market_parents)!=set(shared):
+            raise ValueError('Security price inputs differ from the shared market aggregates')
+        linked.append(replace(security,market_parents=shared))
+    reference=reference_units(config,issuers,linked,prerequisites=(*prerequisites,*market),
+        universe_parent=universe_parent,fundamental_start=fundamental_start,
+        price_start=price_start,short_start=short_start)
+    result=(*prerequisites,*market,*reference)
+    validate(tuple(p.unit for p in result),config.global_memory_bytes)
+    return result
 
 
 @dataclass(frozen=True)
