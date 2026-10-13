@@ -111,3 +111,73 @@ def test_changed_profile_is_rejected_before_connection(monkeypatch, url, user, p
         pytest.fail('Created connection for a different private profile'))
     with pytest.raises(ValueError, match='managed profile'):
         profiles.program_app_reader_factory('release_reader')()
+
+
+@pytest.mark.parametrize('role', sorted(profiles._WRITE_ROLES))
+def test_writer_factories_use_only_the_selected_private_profile(monkeypatch, role):
+    from src.trading_runtime import arte_journal_writer, clickhouse_transport
+    from research.mlops import clickhouse
+    from src.backend.qmd_columnar_history_transport import _owned_worker
+    opened = []
+    main = get_ident()
+    principal = profiles.PROGRAM_APP_PRINCIPALS[role]
+    def credentials(prefix, path):
+        assert get_ident() != main
+        assert prefix == principal.upper() + '_CLICKHOUSE_'
+        return 'http://DESKTOP-SAAI85T:18123', principal, 'synthetic-private'
+    monkeypatch.setattr(arte_journal_writer, '_dedicated_clickhouse_credentials', credentials)
+    monkeypatch.setattr(clickhouse_transport, 'workstation_ipv4_transport', lambda _: 'http://192.168.1.218:18123')
+    class Client:
+        def __init__(self, url, user, password, **kwargs):
+            opened.append((user, kwargs))
+        def close(self):
+            opened.append('closed')
+    monkeypatch.setattr(clickhouse, 'ClickHouseHttpClient', Client)
+    limits = dict(max_threads=2, max_memory_usage=1024, max_execution_time=30,
+        max_result_rows=10, max_result_bytes=2048)
+    factory = profiles.program_app_writer_factory(role, query_limits=limits)
+    limits['max_threads'] = 999
+    assert not opened
+    def owned():
+        client = factory()
+        client.close()
+    asyncio.run(_owned_worker(owned))
+    assert opened[0][0] == principal
+    settings = opened[0][1]['default_query_params']
+    assert settings['max_threads'] == 2 and 'readonly' not in settings
+    assert settings['max_bytes_before_external_sort'] == 0
+    assert settings['max_bytes_before_external_group_by'] == 0
+    assert opened[-1] == 'closed'
+
+
+@pytest.mark.parametrize('role', ['market_input_reader', 'journal_reader', 'unknown'])
+def test_writer_roles_cannot_substitute_read_or_admin_authority(role):
+    with pytest.raises(ValueError):
+        profiles.program_app_writer_factory(role, query_limits={})
+
+
+def test_bounded_producer_reader_keeps_readonly_and_no_spill(monkeypatch):
+    opened = []
+    monkeypatch.setattr(profiles, '_open_managed_client', lambda principal, **kwargs:
+        opened.append((principal, kwargs)))
+    limits = dict(max_threads=2, max_memory_usage=1024, max_execution_time=30,
+        max_result_rows=10, max_result_bytes=2048)
+    factory = profiles.program_app_reader_factory('market_input_reader', query_limits=limits)
+    limits['max_memory_usage'] = 999
+    assert not opened
+    factory()
+    assert opened[0][0] == 'program_market_input_reader'
+    settings = opened[0][1]['settings']
+    assert settings['readonly'] == '1' and settings['max_memory_usage'] == 1024
+    assert settings['max_bytes_before_external_sort'] == 0
+
+
+@pytest.mark.parametrize('limits', [{}, {'readonly': 0}, dict(max_threads=True,
+    max_memory_usage=1024, max_execution_time=30, max_result_rows=10, max_result_bytes=2048)])
+def test_invalid_query_settings_fail_before_private_credentials(limits, monkeypatch):
+    monkeypatch.setattr(profiles, '_open_managed_client', lambda *args, **kwargs:
+        pytest.fail('Opened invalid managed connection'))
+    with pytest.raises(ValueError):
+        profiles.program_app_reader_factory('market_input_reader', query_limits=limits)
+    with pytest.raises(ValueError):
+        profiles.program_app_writer_factory('history_publisher', query_limits=limits)
