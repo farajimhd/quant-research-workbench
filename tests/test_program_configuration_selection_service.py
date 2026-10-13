@@ -45,9 +45,7 @@ def test_selection_snapshot_and_current_configuration_boundary_use_approved_pins
 
 def test_current_http_configuration_options_include_certified_programme(monkeypatch):
     _, revision, reads = installed(monkeypatch)
-    old = dict(revision_id="legacy", revision=1, label="Legacy", content_hash="a" * 64,
-               run_plan_id="old", available_run_plans=[])
-    monkeypatch.setattr(legacy, "certified_configuration_options", lambda candidate_id: (old, (old,)))
+    monkeypatch.setattr(legacy, "certified_configuration_options", lambda candidate_id: pytest.fail("Unrelated legacy catalogue read"))
     monkeypatch.setattr(configuration, "trading_journal", lambda: pytest.fail("SQLite fallback"))
     from src.backend.app import app
     async def run():
@@ -58,9 +56,32 @@ def test_current_http_configuration_options_include_certified_programme(monkeypa
         result = response.json()
         assert result["candidate_id"] == revision["revision_id"]
         assert result["run_plan_id"] == revision["run_plan_id"]
-        assert [row["candidate_id"] for row in result["candidates"]] == ["legacy", revision["revision_id"]]
+        assert [row["candidate_id"] for row in result["candidates"]] == [revision["revision_id"]]
     asyncio.run(run())
     assert len(reads) == 1
+
+
+def test_default_options_preserve_numbered_catalogue_and_include_programme(monkeypatch):
+    _, revision, _ = installed(monkeypatch)
+    old = dict(revision_id="legacy", revision=1, label="Legacy", content_hash="a" * 64,
+               run_plan_id="old", available_run_plans=[])
+    calls = []
+    def numbered(candidate_id):
+        calls.append(candidate_id)
+        return old, (old,)
+    monkeypatch.setattr(legacy, "certified_configuration_options", numbered)
+    result = configuration.backtest_configuration_options()
+    assert calls == [""]
+    assert result["candidate_id"] == "legacy"
+    assert [row["candidate_id"] for row in result["candidates"]] == ["legacy", revision["revision_id"]]
+
+
+def test_unapproved_programme_options_fail_without_legacy_reads(monkeypatch):
+    _, _, reads = installed(monkeypatch)
+    monkeypatch.setattr(legacy, "certified_configuration_options", lambda *_: pytest.fail("legacy read"))
+    with pytest.raises(ValueError, match="not approved"):
+        configuration.backtest_configuration_options("strategy-configuration:00000000-0000-0000-0000-000000000063")
+    assert reads == []
 
 
 def test_uninstalled_programme_selection_fails_before_any_legacy_read(monkeypatch):

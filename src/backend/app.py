@@ -585,6 +585,8 @@ SERVICE_REGISTRY: dict[str, dict[str, str]] = {
 
 @asynccontextmanager
 async def application_lifespan(_app: FastAPI):
+    from src.backend.program_app_startup import start_program_app_selection
+    await start_program_app_selection(_app)
     from src.backend.live_strategy_runtime_service import LIVE_STRATEGY_RUNTIME
     from src.backend.market_discovery_runtime_service import MARKET_DISCOVERY_RUNTIME
     LIVE_STRATEGY_RUNTIME.start()

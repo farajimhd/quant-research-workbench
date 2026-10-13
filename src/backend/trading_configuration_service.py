@@ -408,15 +408,22 @@ def backtest_configuration_options(candidate_id: str = "") -> dict[str, Any]:
     programme = str(candidate_id).startswith("strategy-configuration:")
     if programme and service is None:
         raise ValueError("Programme configuration selection is not installed")
-    revision, options = certified_configuration_options("" if programme else candidate_id)
-    if service is not None:
+    if programme and candidate_id.removeprefix("strategy-configuration:") not in service.pins:
+        raise ValueError("Programme configuration selection is not approved for this app")
+    if programme:
+        # An explicitly selected central programme has an independent authority.
+        # Do not require an unrelated legacy catalogue to admit this selection.
         import asyncio
         program_options = asyncio.run(service.options())
-        options = (*options, *program_options)
-    if programme:
+        options = program_options
         revision = next((row for row in program_options if row["revision_id"] == candidate_id), None)
         if revision is None:
             raise ValueError("Programme configuration selection is not approved for this app")
+    else:
+        revision, options = certified_configuration_options(candidate_id)
+        if service is not None:
+            import asyncio
+            options = (*options, *asyncio.run(service.options()))
     return {"candidates": [{"candidate_id": row["revision_id"],
                             "candidate_revision": row["revision"], "label": row["label"],
                             "content_hash": row["content_hash"]} for row in options],
