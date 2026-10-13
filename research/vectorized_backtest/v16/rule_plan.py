@@ -78,11 +78,13 @@ class RulePlan:
                 lookup = {old: new for new, old in enumerate(columns)}
                 mapped = [Program(tuple(replace(n, feature=lookup[n.feature]) if n.op == Op.FEATURE else n
                                         for n in p.nodes), p.output) for p in selected]
+                # Feature projection changes indices, not the language's units.
+                # Constant-only subexpressions need no feature of their unit.
                 if self.device.type=='cuda':
                     from .fused_program import FusedPrograms
-                    packed = FusedPrograms(mapped, [CATALOG[i] for i in columns], device)
+                    packed = FusedPrograms(mapped, [CATALOG[i] for i in columns], device, literal_catalog=CATALOG)
                 else:
-                    packed = TorchPrograms(mapped, [CATALOG[i] for i in columns], device)
+                    packed = TorchPrograms(mapped, [CATALOG[i] for i in columns], device, literal_catalog=CATALOG)
                 self.groups.append(dict(bit=bit, sparse=sparse, candidates=torch.tensor(indices, device=device),
                                         columns=columns, program=packed, unique_count=len(selected), expand=torch.tensor(expand,device=device), extent=max(extents[i] for i in indices)))
         self.captures = OrderedDict()

@@ -74,8 +74,8 @@ def instruction(X,K,V,M,OPS,A,B,FI,W,C,ACTIVE,rows,candles,features,candidates,i
 
 
 class FusedPrograms(TorchPrograms):
-    def __init__(self,programs,catalog,device,output_unit='bool'):
-        super().__init__(programs,catalog,device,output_unit=output_unit)
+    def __init__(self,programs,catalog,device,output_unit='bool',*,literal_catalog=None):
+        super().__init__(programs,catalog,device,output_unit=output_unit,literal_catalog=literal_catalog)
         from .program import Node
         rows=[[p.nodes[i] if i<len(p.nodes) else Node(Op.CONSTANT) for p in programs] for i in range(self.width)]
         # Do not change candidate ordering or moving-mean scan batch shapes.

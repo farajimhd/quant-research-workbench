@@ -33,11 +33,11 @@ class Program:
     nodes:tuple[Node,...]
     output:int
 
-    def validate(self, catalog, *, output_unit='bool', maximum_nodes=MAX_NODES):
+    def validate(self, catalog, *, output_unit='bool', maximum_nodes=MAX_NODES, literal_catalog=None):
         if not 1<=len(self.nodes)<=maximum_nodes or not 0<=self.output<len(self.nodes):
             raise ValueError('Program length/output exceeds declared envelope')
         units=[]; history=[]
-        literal_units={f.unit for f in catalog}|{'bool','ratio'}
+        literal_units={f.unit for f in (catalog if literal_catalog is None else literal_catalog)}|{'bool','ratio'}
         for i,node in enumerate(self.nodes):
             op=Op(node.op)
             if not math.isfinite(node.value) or node.window not in WINDOWS:
@@ -105,8 +105,8 @@ class TorchPrograms:
     Evaluate a contiguous listing chunk including at most 119 preceding rows.
     Masks propagate through NOT/OR: missing evidence is never true evidence.
     """
-    def __init__(self,programs,catalog,device='cpu',output_unit='bool',specialize_windows=True,specialize_pointwise=True):
-        for p in programs:p.validate(catalog,output_unit=output_unit)
+    def __init__(self,programs,catalog,device='cpu',output_unit='bool',specialize_windows=True,specialize_pointwise=True,*,literal_catalog=None):
+        for p in programs:p.validate(catalog,output_unit=output_unit,literal_catalog=literal_catalog)
         self.programs=programs;self.device=torch.device(device);self.width=max(len(p.nodes) for p in programs)
         self.specialize_windows=specialize_windows
         self.specialize_pointwise=specialize_pointwise
