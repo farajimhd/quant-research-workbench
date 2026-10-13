@@ -139,3 +139,14 @@ def test_plan_pins_exact_database_and_schema(tmp_path):
     plan.write_text(json.dumps(rows))
     with pytest.raises(ValueError, match='changed contract'):
         operator.approved_scope(plan, contracts)
+
+
+def test_explicit_url_accepts_only_managed_workstation_ipv4_listener(monkeypatch):
+    monkeypatch.setattr(operator.socket, 'getaddrinfo', lambda *args:
+        [(2, 1, 6, '', ('192.168.1.218', 18123))])
+    assert operator.validate_workstation_url('http://192.168.1.218:18123/') == 'http://192.168.1.218:18123'
+    for url in ('http://127.0.0.1:18123', 'http://DESKTOP-SAAI85T:18123',
+                'http://192.168.1.218:8123', 'http://user:secret@192.168.1.218:18123',
+                'http://192.168.1.218:18123/?readonly=0'):
+        with pytest.raises(ValueError, match='workstation IPv4'):
+            operator.validate_workstation_url(url)

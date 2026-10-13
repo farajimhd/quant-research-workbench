@@ -10,7 +10,9 @@ from hashlib import sha256
 import os
 from pathlib import Path
 import platform
+import socket
 import sys
+from urllib.parse import urlsplit
 
 os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
 sys.dont_write_bytecode = True
@@ -19,6 +21,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.backend.program_app_storage import program_app_storage_contracts
 from src.trading_runtime.arte_journal_schema import storage_preflight
 from src.trading_runtime.arte_journal_writer import _rows, _literal
+
+
+def validate_workstation_url(url):
+    parsed = urlsplit(url)
+    addresses = {item[4][0] for item in socket.getaddrinfo('DESKTOP-SAAI85T', 18123, socket.AF_INET, socket.SOCK_STREAM)}
+    if (parsed.scheme != 'http' or parsed.hostname not in addresses
+            or parsed.port != 18123 or parsed.username is not None or parsed.password is not None
+            or parsed.path not in {'', '/'} or parsed.query or parsed.fragment):
+        raise ValueError('Storage endpoint must be an explicit workstation IPv4 address on managed port 18123')
+    return url.rstrip('/')
 
 
 def audit_contracts(client, contracts):
@@ -94,6 +106,10 @@ def prepare_with_client(client, *, apply, emit=print, approved=None):
     return 0
 
 
+def emit_progress(value):
+    print(value, flush=True)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_mutually_exclusive_group()
@@ -101,6 +117,7 @@ def main(argv=None):
     actions.add_argument('--apply', action='store_true', help='Create missing central contracts after approval')
     parser.add_argument('--confirm-program-app-storage', action='store_true')
     parser.add_argument('--approved-plan', help='Previously reviewed operational JSON list of exact table DDL hashes')
+    parser.add_argument('--url', help='Explicit workstation IPv4 URL on port 18123; required for audit/apply')
     parser.add_argument('--show-ddl', action='store_true', help='Print declared DDL in plan-only mode')
     args = parser.parse_args(argv)
     if args.apply and not args.confirm_program_app_storage:
@@ -109,6 +126,8 @@ def main(argv=None):
         parser.error('--apply requires --approved-plan to bound creation and safe restart')
     if args.approved_plan and not args.apply:
         parser.error('--approved-plan is available only with --apply')
+    if (args.audit or args.apply) and not args.url:
+        parser.error('--audit/--apply requires --url for the verified workstation IPv4 listener')
     contracts = program_app_storage_contracts()
     if not args.audit and not args.apply:
         print(f'PLAN ONLY | {len(contracts)} central contracts | Workload policy: live_market_ssd')
@@ -125,14 +144,14 @@ def main(argv=None):
         if platform.node().upper() != 'DESKTOP-SAAI85T' or not SECRET_ROOT.is_dir():
             print('STORAGE BLOCKED | Run on DESKTOP-SAAI85T with its managed secret root.', file=sys.stderr)
             return 1
-        client = _admin_client('http://DESKTOP-SAAI85T:18123')
+        client = _admin_client(validate_workstation_url(args.url))
         if args.audit:
             client.default_query_params['readonly'] = '1'
             settings = _rows(client, "SELECT value FROM system.settings WHERE name='readonly' FORMAT JSONEachRow")
             if len(settings) != 1 or str(settings[0].get('value')) != '1':
                 raise ValueError('Read-only audit setting was not established')
         scope = approved_scope(args.approved_plan, contracts) if args.apply else None
-        prepare_with_client(client, apply=args.apply, approved=scope)
+        prepare_with_client(client, apply=args.apply, approved=scope, emit=emit_progress)
         return 0
     except KeyboardInterrupt:
         print('INTERRUPTED | Rerun the audit; verified existing contracts are preserved.', file=sys.stderr)
