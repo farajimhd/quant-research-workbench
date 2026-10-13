@@ -742,6 +742,63 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_rest_clocks_reconcile_then_repair_without_flatfile_access(self):
+        from pipelines.market_sip.events import rest_reporting_acquisition as rest,reporting_evidence as ns,native_reporting_repair as repair
+        from pipelines.certified_research.publication import SourceClaim
+        from pipelines.market_sip.flatfiles import download_update_events as updater
+        from unittest.mock import patch,Mock
+        from threading import Event
+        from datetime import datetime,timezone
+        import time
+        class Claim(SourceClaim):
+            def __init__(self):pass
+            def check(self):pass
+        self.client.query(rest.staging_table().ddl(self.database),read=False)
+        first=int(datetime(2026,1,2,tzinfo=timezone.utc).timestamp())*10**9+20*10**9
+        records=[dict(sip_timestamp=first+n*1000,participant_timestamp=part,sequence_number=n+1,
+            price=1.2345,size=10,decimal_size='10.125',exchange=11,tape=3,conditions=[]) for n,part in
+            enumerate((first-1000000,None,first-11*10**9))]
+        provider=rest.TradePages('fixture',fetch=Mock(return_value=dict(status='OK',results=records)))
+        acquisition=str(uuid.uuid4());logs=[]
+        def query(sql,*args,**kwargs):logs.append(sql);return self.client.query(sql,*args,**kwargs)
+        acquired=rest.stage(query,self.database,Claim(),lambda:None,provider,acquisition,'REST',date(2026,1,2),Event())
+        self.assertEqual(acquired['rows'],3);self.assertFalse(acquired['canonical_certified'])
+        # Recover a partial page using its exact row indices; retain good rows.
+        self.client.query(f"ALTER TABLE {self.database}.{rest.TABLE} DELETE WHERE acquisition_id=toUUID('{acquisition}') AND row_index=2 SETTINGS mutations_sync=2",read=False)
+        progress=[]
+        self.assertEqual(rest.stage(query,self.database,Claim(),lambda:None,provider,acquisition,'REST',date(2026,1,2),Event(),progress=progress.append),acquired)
+        self.assertEqual(progress[0]['status'],'published');self.assertEqual(progress[0]['total_rows'],3)
+        logs.clear()
+        self.assertEqual(rest.stage(query,self.database,Claim(),lambda:None,provider,acquisition,'REST',date(2026,1,2),Event()),acquired)
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+        with patch.object(sys,'argv',['updater','--start-date','2026-01-02','--end-date','2026-01-02','--skip-bars']):
+            args=updater.parse_args()
+        encoded=rest.encoded_projection(args,self.database,acquisition,'REST',date(2026,1,2))
+        self.assertNotIn('file(',encoded)
+        fields=['sip_timestamp_us','price_primary_int','price_secondary_int','size_primary','size_secondary',
+            'exchange_primary','exchange_secondary',*[f'condition_token_{n}' for n in range(1,6)],'event_date']
+        target=self.database+'.rest_canonical_'+uuid.uuid4().hex
+        self.client.query(f"CREATE TABLE {target} ENGINE=MergeTree ORDER BY (ticker,ordinal) SETTINGS storage_policy='live_market_ssd' AS "
+            f"SELECT ticker,row_number() OVER (ORDER BY sip_timestamp_us,sequence_number) ordinal,bitAnd(event_meta,63) event_meta,{','.join(fields)} FROM ({encoded})",read=False)
+        source=dict(source_date='2026-01-02',first_sip_timestamp_us=first//1000,last_sip_timestamp_us=(first+2000)//1000,trade_event_rows=3)
+        clock='rest_ns_'+uuid.uuid4().hex;coverage='rest_coverage_'+uuid.uuid4().hex
+        reconciled=ns.reconciled_projection(encoded,target,'2026-01-02',c.digest(source),fields,
+            first_sip_us=source['first_sip_timestamp_us'],last_sip_us=source['last_sip_timestamp_us'],repair_reporting_flags=True)
+        rows=self.client.query(reconciled)
+        self.assertEqual(len(rows),3);self.assertFalse(any(int(r['mismatch']) or int(r['ambiguous']) for r in rows))
+        self.client.query(ns.ddl(self.database,clock),read=False)
+        self.client.query(f'INSERT INTO {self.database}.{clock} SELECT * EXCEPT(mismatch,ambiguous) FROM ({reconciled})',read=False)
+        frozen=ns.evidence_hash(query,self.database+'.'+clock,date(2026,1,2))
+        def step():return repair.step(query,source,frozen,Claim(),lambda:None,database=self.database,table=clock,target=target,coverage=coverage)
+        result=step()
+        for _ in range(200):
+            if result['status']=='complete':break
+            time.sleep(.1);result=step()
+        self.assertEqual(result['status'],'complete')
+        flags=self.client.query(f'SELECT bitAnd(event_meta,192) flags,size_primary FROM {target} ORDER BY ordinal')
+        self.assertEqual([int(row['flags']) for row in flags],[64,0,192])
+        self.assertTrue(all(float(row['size_primary'])==10.125 for row in flags))
+
     def test_complete_schema_installation_is_exact_and_no_write_on_resume(self):
         from pipelines.certified_research import installation
         from pipelines.certified_research.publication import DictionaryClaim

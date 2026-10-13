@@ -1334,11 +1334,17 @@ def flatfile_trade_correction_filter_sql(args: argparse.Namespace) -> str:
     return f"\nAND toUInt8(greatest(0, least(15, toInt16OrZero(correction)))) NOT IN ({values})"
 
 
-def raw_event_union_sql(args: argparse.Namespace, day: DayFiles, *, include_execution_timestamp: bool = False, trade_only: bool = False, include_reporting_reason: bool = False, include_reporting_evidence: bool = False) -> str:
+def raw_event_union_sql(args: argparse.Namespace, day: DayFiles | None, *, include_execution_timestamp: bool = False, trade_only: bool = False, include_reporting_reason: bool = False, include_reporting_evidence: bool = False, trade_source_sql: str | None = None) -> str:
     if include_reporting_evidence and not (trade_only and include_reporting_reason):
         raise ValueError('Full reporting evidence requires trade-only reporting reasons')
-    quote_path = windows_path_to_clickhouse_path(Path(day.quote_job.destination), Path(args.flatfiles_root_win), args.flatfiles_root_ch)
-    trade_path = windows_path_to_clickhouse_path(Path(day.trade_job.destination), Path(args.flatfiles_root_win), args.flatfiles_root_ch)
+    if trade_source_sql is not None:
+        if not trade_only or not trade_source_sql.strip():raise ValueError('ClickHouse trade projection requires trade-only input')
+        quote_path=trade_path=''
+        trade_input=f'({trade_source_sql})'
+    else:
+        quote_path = windows_path_to_clickhouse_path(Path(day.quote_job.destination), Path(args.flatfiles_root_win), args.flatfiles_root_ch)
+        trade_path = windows_path_to_clickhouse_path(Path(day.trade_job.destination), Path(args.flatfiles_root_win), args.flatfiles_root_ch)
+        trade_input=f"file({sql_string(trade_path)}, 'CSVWithNames', {sql_string(TRADE_SCHEMA_STRING)})"
     bid_price = "toFloat64OrZero(bid_price)"
     ask_price = "toFloat64OrZero(ask_price)"
     trade_price = "toFloat64OrZero(price)"
@@ -1484,7 +1490,7 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles, *, include_exec
             arrayElement(splitByChar(',', conditions), 3) AS condition_raw_3,
             arrayElement(splitByChar(',', conditions), 4) AS condition_raw_4,
             arrayElement(splitByChar(',', conditions), 5) AS condition_raw_5
-        FROM file({sql_string(trade_path)}, 'CSVWithNames', {sql_string(TRADE_SCHEMA_STRING)})
+        FROM {trade_input}
         WHERE {trade_clean_predicate(args)}{raw_ticker_filter}
     ) AS t
     LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc1 ON tc1.modifier_int = t.condition_code_1
