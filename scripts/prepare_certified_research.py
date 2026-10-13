@@ -3,7 +3,8 @@
 
 This entry point is under implementation. Inspection and saved verification
 do not start a campaign. Source preparation owns bounded acquisition/reporting
-repair; derived campaign execution is not yet enabled.
+repair. Run/resume execute an installed immutable plan after qualified capacity
+admission; automatic initial-plan discovery remains under implementation.
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ from pipelines.certified_research import contracts,schema,source,short_sql,campa
 
 def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('schema','install-schema','preflight','plan','status','stored-plan','prepare-sources','verify'))
+    p.add_argument('command',choices=('schema','install-schema','preflight','plan','status','stored-plan','prepare-sources','verify','run','resume'))
     p.add_argument('--dataset-id',type=UUID)
     p.add_argument('--database',default='arte')
     p.add_argument('--start-date',type=date.fromisoformat,default=date(2026,1,1))
@@ -33,6 +34,7 @@ def parse_args(argv=None):
     p.add_argument('--context-start-date',type=date.fromisoformat,help='Explicit earlier source prerequisite bound; target start is unchanged')
     p.add_argument('--universe-anchor-date',type=date.fromisoformat,default=date.today(),help='Last allowed 2026-onward conid observation date')
     p.add_argument('--env-file',type=Path,default=ROOT/'.env')
+    p.add_argument('--capacity-profile',type=Path,help='Bounded metadata configuration containing externally qualified pilot rates; required for run/resume')
     p.add_argument('--workers',type=int,default=4)
     p.add_argument('--query-threads',type=int,default=2)
     p.add_argument('--query-memory-gib',type=int,default=2)
@@ -49,11 +51,13 @@ def parse_args(argv=None):
     try:contracts.identifier(args.database)
     except ValueError as error:p.error(str(error))
     if args.command!='schema' and args.format=='sql':p.error('SQL format is for schema inspection only')
-    if args.command in ('status','stored-plan','verify') and args.dataset_id is None:p.error(args.command+' requires --dataset-id')
+    if args.command in ('status','stored-plan','verify','run','resume') and args.dataset_id is None:p.error(args.command+' requires --dataset-id')
+    if args.command in ('run','resume') and args.capacity_profile is None:p.error(args.command+' requires --capacity-profile')
     if args.command=='prepare-sources' and (args.end_date is None or args.format!='text'):
         p.error('prepare-sources requires --end-date and uses text progress')
     if args.hydrate_missing_trades:p.error('Imported-day reporting repair cannot hydrate flatfiles; G-to-D staging belongs to acquisition')
     if args.command=='verify' and (args.acquire_missing or args.stage_archive):p.error('verify is read-only; acquisition flags belong to prepare-sources')
+    if args.command in ('run','resume') and (args.acquire_missing or args.stage_archive):p.error('Frozen execution cannot acquire sources; use prepare-sources before freezing the plan')
     return args
 
 
@@ -119,6 +123,55 @@ def main(argv=None):
     args.max_threads=args.query_threads;args.max_memory_gb=args.query_memory_gib;args.query_timeout=45
     client=builder.Client(args,persistent=False)
     try:
+        if args.command in ('run','resume'):
+            from contextlib import closing
+            from types import SimpleNamespace
+            from threading import Event
+            import signal
+            import time
+            from pipelines.market_sip.flatfiles.download_update_events import load_env_files
+            from src.trading_runtime.keeper_session import open_workstation_keeper_session
+            from pipelines.certified_research.publication import KeeperClaim,DictionaryClaim
+            from pipelines.certified_research import saved_execution,capacity_profile
+            profile=capacity_profile.load(args.capacity_profile)
+            load_env_files([args.env_file],verbose=False)
+            stop=Event();last=[0.];counts={}
+            def progress(change):
+                counts.clear();counts.update(change['counts'])
+                now=time.monotonic()
+                if args.format=='text' and now-last[0]>=1:
+                    print('Execution | '+' | '.join(f'{k}={v}' for k,v in sorted(counts.items())),flush=True)
+                    last[0]=now
+            def factory(config):
+                options=SimpleNamespace(env_file=args.env_file,max_threads=config.query_threads,
+                    max_memory_gb=config.query_memory_bytes/1024**3,query_timeout=45)
+                return builder.Client(options,persistent=False)
+            saved=campaign.load_plan(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database,str(args.dataset_id))
+            inspection_client=client
+            client=factory(saved.config)
+            inspection_client.close()
+            original=signal.getsignal(signal.SIGINT)
+            signal.signal(signal.SIGINT,lambda *unused:stop.set())
+            try:
+                with closing(open_workstation_keeper_session()) as keeper:
+                    claim=KeeperClaim(keeper.client,str(args.dataset_id))
+                    try:
+                        result=saved_execution.run(client.query,args.database,str(args.dataset_id),claim,factory,
+                            lambda:DictionaryClaim(keeper.client,args.database),capacity_profile.factory(client.query,profile),
+                            stop=stop,progress=progress)
+                    finally:claim.close()
+            finally:signal.signal(signal.SIGINT,original)
+            if not counts and result['status']=='complete' and result.get('seal'):
+                counts=dict(queued=0,active=0,reused=int(result['seal']['units']),failed=0,blocked=0,interrupted=0)
+            summary=dict(status=result['status'],counts=counts,seal=result.get('seal'),
+                failures={k:client.clean_error(v)[:256] for k,v in list(result['errors'].items())[:20]},
+                failed_units=len(result['errors']))
+            if args.format=='json':print(json.dumps(summary,indent=2,default=str))
+            else:
+                print(f"Execution {summary['status']} | failed={summary['failed_units']} | "+
+                    (str(summary['seal']['root_hash']) if summary['seal'] else 'unsealed'))
+                for key,reason in summary['failures'].items():print(f'  {key}: {reason}')
+            return 0 if result['status']=='complete' else 130 if result['status']=='interrupted' else 2
         if args.command=='verify':
             from contextlib import closing
             from types import SimpleNamespace
@@ -225,10 +278,12 @@ def main(argv=None):
             print(f"Status: {result['status']} | {result['reason']}")
         return 2 if result['status']=='blocked' else 0
     except Exception as error:
-        print(('Verification failed: ' if args.command=='verify' else 'Preflight failed: ')+client.clean_error(error),file=sys.stderr)
+        label='Verification failed: ' if args.command=='verify' else 'Execution failed: ' if args.command in ('run','resume') else 'Preflight failed: '
+        print(label+client.clean_error(error),file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         print('Verification interrupted; rerun verify to recheck stored authority.' if args.command=='verify' else
+            'Execution interrupted; resume the same immutable dataset after checking status.' if args.command in ('run','resume') else
             'Source preparation interrupted; verify canonical receipts before resume.',file=sys.stderr)
         return 130
     finally:client.close()

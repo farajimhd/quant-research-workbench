@@ -1297,6 +1297,27 @@ class ClickHouseIntegration(unittest.TestCase):
                 lambda frozen,units:capacity)
             self.assertEqual(resumed['seal'],published['seal'])
             self.assertFalse(any(sql.startswith(('INSERT INTO','ALTER TABLE','CREATE TABLE')) for sql in logs))
+            # Real launcher branch -> stored-plan adapter -> actual CH authority
+            # verification. Ownership and capacity remain explicit fixture seams.
+            import io,json
+            from contextlib import redirect_stdout
+            from unittest.mock import Mock
+            from scripts import prepare_certified_research as launcher
+            keeper=SimpleNamespace(client=Mock(),close=Mock())
+            keeper_claim=SimpleNamespace(check=lambda:None,close=Mock())
+            initial_runtime.claim=keeper_claim
+            output=io.StringIO()
+            with patch('src.trading_runtime.keeper_session.open_workstation_keeper_session',return_value=keeper), \
+                    patch('pipelines.certified_research.publication.KeeperClaim',return_value=keeper_claim), \
+                    patch('pipelines.certified_research.capacity_profile.load',return_value={}), \
+                    patch('pipelines.certified_research.capacity_profile.factory',return_value=lambda *args:capacity),redirect_stdout(output):
+                code=launcher.main(['resume','--dataset-id',initial_dataset,'--database',self.database,
+                    '--capacity-profile','fixture.json','--format','json'])
+            self.assertEqual(code,0,output.getvalue())
+            summary=json.loads(output.getvalue())
+            self.assertEqual(summary['seal'],published['seal'])
+            self.assertEqual(summary['counts']['reused'],len(initial_plans))
+            keeper_claim.close.assert_called_once();keeper.close.assert_called_once()
 
     def test_campaign_publishes_only_verified_authorities_and_detects_tampering_on_resume(self):
         dataset=str(uuid.uuid4());day=date(2026,1,2)
