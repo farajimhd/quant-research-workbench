@@ -181,6 +181,36 @@ def test_cold_definition_reconstructs_only_exact_certified_rows():
                 "price_level_plan_token": "0" * 64}})
 
 
+@pytest.mark.parametrize("drift", [None, "review", "market", "missing", "legacy"])
+def test_programme_cold_definition_preserves_reviewed_evaluation_interval(drift):
+    revision = {"revision_id": "strategy-configuration:00000000-0000-0000-0000-000000000001",
+                "content_hash": "a" * 64}
+    if drift == "legacy": revision["revision_id"] = "revision-1"
+    original = _definition(configuration_revision=revision, execution_interval="1s",
+        experimental_structure_book="", market_data_plan={
+            **_definition().market_data_plan, "execution_interval": {"milliseconds": 1000}})
+    saved = prepare_backtest_definition("run-1", original, run_month=RUN_MONTH)
+    context = {"run_id": "run-1", "mode": "backtest", "run_month": RUN_MONTH.isoformat(),
+        "session_date": "2026-08-18", "evaluation_interval_ms": 1000,
+        "configuration_hash": "a" * 64, "market_plan_token": "c" * 64}
+    preflight = {"ready": True, "strategy_run_ready": True, "execution_interval": "1s",
+        "checks": [{"status": "ready", "required": True}],
+        "window": {"sessions": ["2026-08-18"]},
+        "market_data_plan": original.market_data_plan, "causal_v7_plan": original.causal_v7_plan}
+    if drift == "review": preflight["execution_interval"] = "100ms"
+    if drift == "missing": preflight.pop("execution_interval")
+    if drift == "market":
+        preflight["market_data_plan"] = {**original.market_data_plan,
+            "execution_interval": {"milliseconds": 100}}
+    if drift:
+        with pytest.raises(RuntimeError, match="certified authority"):
+            reconstruct_backtest_definition_from_arte(saved, context, revision, preflight)
+    else:
+        recovered = reconstruct_backtest_definition_from_arte(saved, context, revision, preflight)
+        assert recovered.execution_interval == "1s"
+        assert prepare_backtest_definition("run-1", recovered, run_month=RUN_MONTH) == saved
+
+
 @pytest.mark.parametrize("corruption", [None, "market", "v7", "check", "run_ready", "normalized"])
 def test_saved_review_keeps_native_guards_and_cannot_authorize_execution(monkeypatch, corruption):
     from types import SimpleNamespace

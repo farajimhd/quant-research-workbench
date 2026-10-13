@@ -443,6 +443,19 @@ def _reconstruct_backtest_definition(
     market = dict(preflight.get("market_data_plan") or {})
     v7 = dict(preflight.get("causal_v7_plan") or {})
     checks = tuple(preflight.get("checks") or ())
+    programme = str(configuration_revision.get("revision_id") or "").startswith("strategy-configuration:")
+    interval_ready = type(interval_ms) is int and interval_ms == 100
+    if programme:
+        from src.backend.backtest_market_data import ExecutionInterval
+        try:
+            reviewed_interval = ExecutionInterval.parse(preflight.get("execution_interval"))
+        except (TypeError, ValueError):
+            interval_ready = False
+        else:
+            interval_ready = (type(interval_ms) is int and 100 <= interval_ms < 2**32
+                and interval_ms % 100 == 0 and reviewed_interval.kind == "fixed"
+                and reviewed_interval.milliseconds == interval_ms
+                and dict(market.get("execution_interval") or {}).get("milliseconds") == interval_ms)
     if (run_context.get("mode") != "backtest"
             or parent.get("run_id") != run_context.get("run_id")
             or parent.get("run_month") != month.isoformat()
@@ -450,7 +463,7 @@ def _reconstruct_backtest_definition(
                configuration_revision.get("revision_id")
             or run_context.get("configuration_hash") !=
                configuration_revision.get("content_hash")
-            or type(interval_ms) is not int or interval_ms != 100
+            or not interval_ready
             or (_source_authority is None and preflight.get("ready") is not True)
             or (_source_authority is None and preflight.get("strategy_run_ready") is not True)
             or not checks or any(row.get("status") != "ready"
