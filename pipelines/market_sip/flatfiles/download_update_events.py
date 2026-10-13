@@ -25,6 +25,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from pipelines.market_sip.events.trade_reporting_flags import reporting_flags, reason_sql, flags_sql, REVISION as TRADE_REPORTING_REVISION
 from pipelines.market_sip.flatfiles import archive_staging
+from pipelines.market_sip.events import reporting_evidence
 
 from pipelines.market_sip.benchmarks.clickhouse_compact_schema_codec_benchmark import (  # noqa: E402
     QUOTE_SCHEMA_STRING,
@@ -330,6 +331,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--flatfiles-root-win", default=str(DEFAULT_FLATFILES_ROOT_WIN))
     parser.add_argument("--archive-root-win",type=Path,help="Optionally stage new-source G archive files into the D cache")
+    parser.add_argument('--reporting-ns-table',default=reporting_evidence.TABLE)
     parser.add_argument("--flatfiles-root-ch", default=default_clickhouse_file_root())
     parser.add_argument("--storage-policy", default=default_storage_policy())
     parser.add_argument(
@@ -1332,7 +1334,9 @@ def flatfile_trade_correction_filter_sql(args: argparse.Namespace) -> str:
     return f"\nAND toUInt8(greatest(0, least(15, toInt16OrZero(correction)))) NOT IN ({values})"
 
 
-def raw_event_union_sql(args: argparse.Namespace, day: DayFiles, *, include_execution_timestamp: bool = False, trade_only: bool = False, include_reporting_reason: bool = False) -> str:
+def raw_event_union_sql(args: argparse.Namespace, day: DayFiles, *, include_execution_timestamp: bool = False, trade_only: bool = False, include_reporting_reason: bool = False, include_reporting_evidence: bool = False) -> str:
+    if include_reporting_evidence and not (trade_only and include_reporting_reason):
+        raise ValueError('Full reporting evidence requires trade-only reporting reasons')
     quote_path = windows_path_to_clickhouse_path(Path(day.quote_job.destination), Path(args.flatfiles_root_win), args.flatfiles_root_ch)
     trade_path = windows_path_to_clickhouse_path(Path(day.trade_job.destination), Path(args.flatfiles_root_win), args.flatfiles_root_ch)
     bid_price = "toFloat64OrZero(bid_price)"
@@ -1381,6 +1385,9 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles, *, include_exec
     )
     trade_execution_expression = quote_execution_expression
     reporting_column = ", t.reporting_reason AS reporting_reason" if include_reporting_reason else ""
+    evidence_columns=(',t.sip_timestamp_ns,t.participant_timestamp_ns,t.reporting_condition_entries' if include_reporting_evidence else '')
+    evidence_expressions=("toUInt64OrZero(sip_timestamp) sip_timestamp_ns,toUInt64OrNull(participant_timestamp) participant_timestamp_ns,"
+        "arrayMap(x -> trimBoth(x),splitByChar(',',conditions)) reporting_condition_entries," if include_reporting_evidence else '')
     quote_sql = f"""
     SELECT
         q.ticker AS ticker,
@@ -1452,7 +1459,7 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles, *, include_exec
         {condition_token_expr("tc3")} AS condition_token_3,
         {condition_token_expr("tc4")} AS condition_token_4,
         {condition_token_expr("tc5")} AS condition_token_5,
-        t.event_date AS event_date{trade_execution_column}{reporting_column}
+        t.event_date AS event_date{trade_execution_column}{reporting_column}{evidence_columns}
     FROM
     (
         SELECT
@@ -1465,6 +1472,7 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles, *, include_exec
             conditions,
             {trade_flags} AS trade_flags,
             {reason_sql()} AS reporting_reason,
+            {evidence_expressions}
             {event_date_expr_from_us("intDiv(toUInt64OrZero(sip_timestamp), 1000)")} AS event_date,{trade_execution_expression}
             {condition_code_expr(1)} AS condition_code_1,
             {condition_code_expr(2)} AS condition_code_2,
@@ -2438,6 +2446,7 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
     args.execution_clock_database = args.database
     args.execution_clock_table = f"{prefix}_{run_id}_execution_clock"
     args.execution_clock_coverage_table = f"{prefix}_{run_id}_execution_clock_coverage"
+    args.reporting_ns_table=f'{prefix}_{run_id}_reporting_ns'
     args.macro_bars_table = f"{prefix}_{run_id}_macro_bars_by_time_symbol"
     args.daily_session_bars_table = f"{prefix}_{run_id}_daily_session_bars"
     args.daily_session_bars_manifest_table = f"{prefix}_{run_id}_daily_session_manifest"
@@ -2483,6 +2492,7 @@ def drop_test_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> 
         return
     prefix = f"{str(args.test_table_prefix).strip()}_"
     tables = [
+        args.reporting_ns_table,args.reporting_ns_table+'_stage',
         args.events_table,
         args.manifest_table,
         args.continuity_table,
@@ -2848,6 +2858,49 @@ SETTINGS join_use_nulls = 1
 def source_filter_key(args: argparse.Namespace) -> str:
     codes = ",".join(f"{code:02d}" for code in parse_trade_correction_codes(getattr(args, "drop_trade_correction_codes", "")))
     return f"flatfile_direct_events_v{SOURCE_DAY_STATS_VERSION}|drop_trade_correction_codes={codes}|condition_slots={CONDITION_TOKEN_SLOTS}"
+
+
+def capture_reporting_ns(client,args,day,raw_stats,report_path,reporter=None):
+    """New-source-only preservation before the canonical day is certified."""
+    from pipelines.certified_research.contracts import digest
+    from pipelines.certified_research.schema import verify_auxiliary_storage
+    if latest_day_status(client,args,DayJob(day.source_date,build_step_for_date(day.source_date)))=='ok':
+        raise RuntimeError('Original reporting capture cannot reopen a certified source day')
+    db=args.execution_clock_database;table=args.reporting_ns_table;stage=table+'_stage'
+    source_rows=[json.loads(line) for line in client.execute(
+        f'SELECT * FROM {quote_ident(args.database)}.{quote_ident(args.source_day_stats_table)} FINAL '
+        f'WHERE source_date=toDate({sql_string(day.source_date)}) FORMAT JSONEachRow').splitlines() if line]
+    if len(source_rows)!=1:raise RuntimeError('New-source reporting evidence requires a unique source certificate')
+    source_digest=digest({k:v for k,v in source_rows[0].items() if k!='updated_at'})
+    client.execute(reporting_evidence.ddl(db,table));client.execute(reporting_evidence.ddl(db,stage,stage=True))
+    def query(sql):return [json.loads(line) for line in client.execute(sql+' FORMAT JSONEachRow').splitlines() if line]
+    verify_auxiliary_storage(query,db,(table,stage))
+    where=f'source_date=toDate({sql_string(day.source_date)})'
+    # This unsealed staging is acquisition-owned, never historical read authority.
+    client.execute(f'ALTER TABLE {quote_ident(db)}.{quote_ident(stage)} DELETE WHERE {where} SETTINGS mutations_sync=2')
+    fields=['sip_timestamp_us','price_primary_int','price_secondary_int','size_primary','size_secondary',
+        'exchange_primary','exchange_secondary']+[f'condition_token_{n}' for n in range(1,6)]+['event_date']
+    sql=reporting_evidence.reconciled_projection(raw_event_union_sql(args,day,trade_only=True,
+        include_reporting_reason=True,include_reporting_evidence=True),args.database+'.'+args.events_table,
+        day.source_date,source_digest,fields,first_sip_us=raw_stats.first_sip_timestamp_us,last_sip_us=raw_stats.last_sip_timestamp_us)
+    sql+=',max_threads=1'
+    _run_profiled_with_reporter(client,'reporting_ns_stage_'+day.source_date,
+        f'INSERT INTO {quote_ident(db)}.{quote_ident(stage)} '+sql,reporter,day=day.source_date,stage='reporting-ns',detail='original clocks and full conditions')
+    counts=query(f'SELECT count() n,countIf(mismatch OR ambiguous) bad FROM {quote_ident(db)}.{quote_ident(stage)} WHERE {where}')[0]
+    if int(counts['n'])!=raw_stats.trade_rows or int(counts['bad']):
+        raise RuntimeError('Original reporting evidence differs from canonical rows or has ambiguous ordering')
+    columns='source_date,ticker,ordinal,sip_timestamp_ns,participant_timestamp_ns,reporting_condition_entries,reporting_reason,source_digest'
+    existing=query(f'SELECT count() n FROM {quote_ident(db)}.{quote_ident(table)} WHERE {where}')[0]
+    if int(existing['n'])==0:
+        client.execute(f'INSERT INTO {quote_ident(db)}.{quote_ident(table)} ({columns}) '
+            f'SELECT {columns} FROM {quote_ident(db)}.{quote_ident(stage)} WHERE {where}')
+    for left,right in ((stage,table),(table,stage)):
+        difference=query(f'SELECT count() n FROM (SELECT {columns} FROM {quote_ident(db)}.{quote_ident(left)} WHERE {where} '
+            f'EXCEPT ALL SELECT {columns} FROM {quote_ident(db)}.{quote_ident(right)} WHERE {where})')[0]
+        if int(difference['n']):raise RuntimeError('Persisted original reporting evidence is incomplete or changed')
+    verify_auxiliary_storage(query,db,(table,stage))
+    append_jsonl(report_path,dict(type='original_reporting_evidence',source_date=day.source_date,
+        revision=reporting_evidence.VERSION,source_digest=source_digest,counts=counts,table=db+'.'+table))
 
 
 def certified_source_day_stats(client, args, day):
@@ -3934,6 +3987,7 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
         index_profile = rebuild_day_ticker_index(client, args, day, job.build_step, report_path, reason="events_inserted")
         if reporter is not None:
             reporter.task_done(f"{day.source_date}:index:events_inserted", "ok", seconds=float(index_profile.wall_seconds), rows=index_profile.written_rows, detail="events inserted")
+        capture_reporting_ns(client,args,day,raw_stats,report_path,reporter)
         insert_day_manifest(client, args, job, status="ok", run_id=run_id, profile=profile)
         append_jsonl(
             report_path,

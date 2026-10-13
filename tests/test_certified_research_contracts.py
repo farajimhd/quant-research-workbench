@@ -30,6 +30,23 @@ from pipelines.certified_research.universe_publication import UniversePublisher
 
 
 class Contracts(unittest.TestCase):
+    def test_native_reporting_evidence_builder_has_no_sip_fallback_and_rejects_certified_capture(self):
+        from unittest.mock import patch
+        from pipelines.market_sip.flatfiles import download_update_events as updater
+        with patch.object(sys,'argv',['updater','--start-date','2026-01-02','--end-date','2026-01-02','--skip-bars']):
+            args=updater.parse_args()
+        root=Path(args.flatfiles_root_win)
+        quote=updater.DownloadJob('quotes','2026-01-02','quotes.csv.gz',str(root/'quotes.csv.gz'),1)
+        trade=updater.DownloadJob('trades','2026-01-02','trades.csv.gz',str(root/'trades.csv.gz'),1)
+        day=updater.DayFiles('2026-01-02',quote,trade)
+        sql=updater.raw_event_union_sql(args,day,trade_only=True,include_reporting_reason=True,include_reporting_evidence=True)
+        self.assertIn('toUInt64OrNull(participant_timestamp)',sql)
+        self.assertIn('reporting_condition_entries',sql)
+        self.assertNotIn('AS execution_timestamp_us',sql)
+        with patch.object(updater,'latest_day_status',return_value='ok'):
+            with self.assertRaisesRegex(RuntimeError,'cannot reopen a certified'):
+                updater.capture_reporting_ns(None,args,day,None,Path('unused.jsonl'))
+
     def test_microsecond_clock_inventory_never_claims_reporting_readiness(self):
         def query(sql):
             if 'system.columns' in sql:return [dict(table='historical_event_execution_clock_v1',name='execution_timestamp_us',type='UInt64')]
@@ -564,6 +581,28 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_original_reporting_ns_projection_reconciles_canonical_fields_and_preserves_unknowns(self):
+        from pipelines.market_sip.events import reporting_evidence
+        table='ns_canonical_'+uuid.uuid4().hex
+        self.client.query(f'CREATE TABLE {self.database}.{table} (ticker String,ordinal UInt64,event_meta UInt8,sip_timestamp_us UInt64) '
+            "ENGINE=MergeTree ORDER BY (ticker,ordinal) SETTINGS storage_policy='live_market_ssd'",read=False)
+        self.client.query(f"INSERT INTO {self.database}.{table} VALUES ('TEST',1,65,1000000),('TEST',2,1,1000001)",read=False)
+        raw=("SELECT 'TEST' ticker,number+1 sequence_number,toUInt8(if(number=0,65,1)) event_meta,"
+            "toUInt64(1000000+number) sip_timestamp_us,toUInt64(1000000000+number*1000+123) sip_timestamp_ns,"
+            "if(number=0,toNullable(toUInt64(999999123)),CAST(NULL AS Nullable(UInt64))) participant_timestamp_ns,"
+            "['5','13','30','31','32','33'] reporting_condition_entries,toUInt8(if(number=0,0,8)) reporting_reason FROM numbers(2)")
+        sql=reporting_evidence.reconciled_projection(raw,self.database+'.'+table,'2026-01-02','a'*64,
+            ['sip_timestamp_us'],first_sip_us=1000000,last_sip_us=1000001)
+        rows=self.client.query(sql)
+        self.assertEqual(len(rows),2);self.assertFalse(any(int(r['mismatch']) or int(r['ambiguous']) for r in rows))
+        self.assertEqual(int(rows[0]['sip_timestamp_ns']),1000000123)
+        self.assertIsNone(rows[1]['participant_timestamp_ns'])
+        self.assertEqual(len(rows[0]['reporting_condition_entries']),6)
+        self.client.query(reporting_evidence.ddl(self.database),read=False)
+        self.client.query(f'INSERT INTO {self.database}.{reporting_evidence.TABLE} SELECT * EXCEPT(mismatch,ambiguous) FROM ({sql})',read=False)
+        stored=self.client.query(f'SELECT participant_timestamp_ns FROM {self.database}.{reporting_evidence.TABLE} ORDER BY ordinal')
+        self.assertEqual(stored[1]['participant_timestamp_ns'],None)
+
     def test_live_clock_evidence_preflight_reports_precision_limit_without_reading_events(self):
         queries=[]
         def query(sql):queries.append(sql);return self.client.query(sql+' SETTINGS readonly=1')
