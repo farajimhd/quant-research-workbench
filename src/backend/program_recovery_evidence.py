@@ -6,6 +6,7 @@ from threading import Lock
 from .program_saved_definition import load_program_saved_definition, reconstruct_program_saved_definition
 from .program_checkpoint_recovery import recover_program_financial_checkpoint
 from .backtest_market_data import market_day_boundary, SESSION_OPEN_OFFSET_MS
+from .backtest_v4_run_context import historical_strategy_one_portfolio_profiles
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,10 @@ async def load_program_recovery_evidence(client_factory, run_id, *, expected_cod
     if ({profile.account_id for profile in profiles} != set(definition.context["account_ids"])
             or len(profiles) != len(definition.context["account_ids"])):
         raise ValueError("Programme recovery profiles differ from the committed run accounts")
+    expected_profiles, _ = historical_strategy_one_portfolio_profiles(
+        run_definition.configuration_revision["payload"])
+    if profiles != expected_profiles:
+        raise ValueError("Programme recovery profiles differ from the committed portfolio configuration")
     financial = await recover_program_financial_checkpoint(owned_factory, prefix=definition.prefix,
         broker_contract=broker_contract, broker_head_reader=broker_head_reader,
         observation_head_reader=observation_head_reader, profiles=profiles,

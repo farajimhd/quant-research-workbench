@@ -1,5 +1,6 @@
 """Composition guards; native attested readers have their own integration tests."""
 import asyncio
+from dataclasses import asdict, replace
 from datetime import date, timedelta
 from types import SimpleNamespace
 
@@ -10,14 +11,24 @@ from src.backend.program_saved_definition import ProgramSavedDefinitionEvidence
 from src.backend.program_checkpoint_recovery import ProgramFinancialCheckpoint
 from src.backend.backtest_market_data import market_day_boundary
 from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+from src.trading_runtime.portfolio import PortfolioPolicy
+from src.backend.backtest_v4_run_context import historical_strategy_one_portfolio_profiles
 
 
-@pytest.mark.parametrize("failure", [None, "accounts", "clock", "moved", "source"])
+@pytest.mark.parametrize("failure", [None, "accounts", "policy", "allocation", "mandate",
+    "disabled", "currency", "clock", "moved", "source"])
 def test_recovery_join_preserves_common_prefix_accounts_and_session_clock(monkeypatch, failure):
+    payload = dict(strategy=dict(strategy_id="programme"),
+        accounts=dict(bindings=[dict(account_key="research", modes=["backtest"],
+            portfolio_policy_id="central")]),
+        portfolio=dict(policies=[asdict(PortfolioPolicy(policy_id="central"))], mandates=[], groups=[]))
+    profiles, _ = historical_strategy_one_portfolio_profiles(payload)
+    account_id = profiles[0].account_id
     prefix = V4CommittedPrefix("run", 10, "batch", "cursor", "running", ("batch",))
     definition = ProgramSavedDefinitionEvidence(prefix,
-        dict(account_ids=("account",), session_date="2026-08-03"),
-        dict(definition=dict(start_local_ms=14400000, end_local_ms=72000000)), {"content_hash": "a" * 64})
+        dict(account_ids=(account_id,), session_date="2026-08-03"),
+        dict(definition=dict(start_local_ms=14400000, end_local_ms=72000000)),
+        {"content_hash": "a" * 64, "payload": payload})
     reads, financial_calls = [], []
     async def read(factory, run_id, *, expected_code_hash):
         reads.append(run_id)
@@ -32,7 +43,7 @@ def test_recovery_join_preserves_common_prefix_accounts_and_session_clock(monkey
         return ProgramFinancialCheckpoint(prefix, object(), object(), object(), at)
     monkeypatch.setattr(joined, "load_program_saved_definition", read)
     monkeypatch.setattr(joined, "recover_program_financial_checkpoint", financial)
-    reconstructed = object()
+    reconstructed = SimpleNamespace(configuration_revision=definition.revision)
     async def source_preflight(evidence):
         assert evidence is definition
         if failure == "source": raise ValueError("source readiness failed")
@@ -42,11 +53,19 @@ def test_recovery_join_preserves_common_prefix_accounts_and_session_clock(monkey
         return reconstructed
     monkeypatch.setattr(joined, "reconstruct_program_saved_definition", reconstruct)
     async def run():
+        changes = {
+            "accounts": dict(account_id="other"),
+            "policy": dict(policy=replace(profiles[0].policy, maximum_open_positions=7)),
+            "allocation": dict(strategy_allocations={"programme": 0.5}),
+            "mandate": dict(strategy_mandates={"programme": {"enabled": False}}),
+            "disabled": dict(enabled=False), "currency": dict(base_currency="CAD"),
+        }.get(failure, {})
+        supplied = (replace(profiles[0], **changes),)
         kwargs = dict(expected_code_hash="a" * 64, broker_contract=object(), broker_head_reader=object(),
-            observation_head_reader=object(), profiles=(SimpleNamespace(account_id="other" if failure == "accounts" else "account"),),
+            observation_head_reader=object(), profiles=supplied,
             broker_read_concurrency=2, source_preflight=source_preflight)
         if failure:
-            with pytest.raises((ValueError, RuntimeError), match="accounts|session window|moved|source readiness"):
+            with pytest.raises((ValueError, RuntimeError), match="accounts|portfolio configuration|session window|moved|source readiness"):
                 await joined.load_program_recovery_evidence(lambda: None, "run", **kwargs)
         else:
             result = await joined.load_program_recovery_evidence(lambda: None, "run", **kwargs)
@@ -54,4 +73,5 @@ def test_recovery_join_preserves_common_prefix_accounts_and_session_clock(monkey
             assert result.run_definition is reconstructed
             assert len(reads) == 2
     asyncio.run(run())
-    assert len(financial_calls) == (0 if failure in ("accounts", "source") else 1)
+    assert len(financial_calls) == (0 if failure in ("accounts", "source", "policy", "allocation", "mandate",
+        "disabled", "currency") else 1)
