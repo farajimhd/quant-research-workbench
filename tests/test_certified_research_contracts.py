@@ -629,6 +629,9 @@ class ClickHouseIntegration(unittest.TestCase):
                 datetime(2026,1,day,22,tzinfo=timezone.utc),windows)
             return self.client.query(sql)
         original=read(7,(2,3,20));corrected=read(9,(2,3))
+        self.assertTrue(all(r['window_end']=='2026-01-06' for r in original))
+        with self.assertRaisesRegex(ValueError,'outside its certified'):
+            read(10,(2,3))
         unavailable=read(1,(2,3))
         self.assertTrue(all(r['ratio'] is None and r['reason']=='no_public_short_volume' for r in unavailable))
         self.assertAlmostEqual(original[0]['ratio'],.25);self.assertAlmostEqual(original[1]['ratio'],.2)

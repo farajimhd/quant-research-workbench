@@ -16,6 +16,8 @@ def snapshot_sql(query,database,claim,parent,cutoff,windows=(20,)):
     identifier(database)
     if parent.family!='short_volume' or parent.entity_kind!=2 or cutoff.tzinfo is None:
         raise ValueError('Short pressure requires a public-time security short-volume parent')
+    if not parent.start<=cutoff.astimezone(timezone.utc).date()<=parent.end:
+        raise ValueError('Short-pressure cutoff is outside its certified public-time range')
     if (not windows or tuple(sorted(set(windows)))!=windows or len(windows)>32
             or any(type(n) is not int or not 0<n<=1000 for n in windows)):
         raise ValueError('Invalid bounded session windows')
@@ -40,7 +42,8 @@ def snapshot_sql(query,database,claim,parent,cutoff,windows=(20,)):
       observations AS (SELECT c.1 day,c.2 ordinal,p.shorts shorts,p.totals totals,p.metrics metrics
         FROM calendar LEFT JOIN paired p ON p.period_end=c.1),
       terminal AS (SELECT maxIf(ordinal,metrics>0) last FROM observations)
-    SELECT window_sessions,countIf(metrics=2 AND shorts.2=1 AND totals.2=1) observed_sessions,
+    SELECT window_sessions,if(max(last)>0,toNullable(maxIf(day,ordinal=last)),CAST(NULL AS Nullable(Date))) window_end,
+      countIf(metrics=2 AND shorts.2=1 AND totals.2=1) observed_sessions,
       if(observed_sessions=window_sessions AND sumIf(totals.1,totals.2=1)>0,
         sumIf(shorts.1,shorts.2=1)/sumIf(totals.1,totals.2=1),CAST(NULL AS Nullable(Float64))) ratio,
       toUInt8(observed_sessions=window_sessions) context_ready,

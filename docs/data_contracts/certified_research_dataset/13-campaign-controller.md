@@ -28,6 +28,8 @@ Reference campaign producers require global dictionary ownership for shared prov
 
 ## Operator inspection
 
+Short-pressure snapshots expose `window_end` separately from the requested cutoff and reject cutoffs outside the parent's certified public-time range. This makes the latest published measurement date explicit; consumers must not interpret an older report as current-day evidence. Source publication freshness/coverage and persistent output registration remain required for the complete campaign.
+
 `short_pressure.snapshot_sql` computes configurable CNMS rolling volume ratios inside ClickHouse from independently certified short-volume facts. Windows count exchange sessions, not available observations; missing/invalid dates withhold the ratio. Latest revisions are selected only when their public clocks are at or before the requested cutoff. Units and measurement contexts are checked. Live coverage demonstrates 2/3/20-session results, unavailable initial context and a correction that changes only later as-of values. Persistent short-pressure publication and campaign registration remain unfinished.
 
 `plan` now includes the Gateway historical-universe admission audit, with an explicit `--universe-anchor-date`. It summarizes admitted intervals, rejection counts and frozen evidence hash. Unresolved source/reporting, universe, short-publication or corporate-vintage inputs produce `status=blocked`, actionable blockers and exit code 2. Unfinished full execution also blocks admission. A live January 2 plan reported 4,295 intervals, 2,634 unresolved intervals and 20,024 short-volume rows without public-time evidence; it made no writes. These counts are a date/anchor-specific audit, not completed historical coverage.
