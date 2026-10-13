@@ -30,6 +30,14 @@ Standard boundaries are 09:30, calendar regular close (normally 16:00), and supp
 
 New history: prior AH → PM → checkpoint PM → regular → checkpoint regular → AH → checkpoint AH. Backfill: compatible prior AH → shared PM/regular bars → same kernel → missing PM/regular checkpoints. Preserve existing AH unless equivalence proves reuse; old retrospective/legacy state is not an acceptable causal shortcut. Repair/rebuild prerequisite state first when incompatible. Consumer constructors currently requiring a prior-date seed need explicit same-day full-state restore support.
 
+### Concrete calculation identity and rollover
+
+The implemented `recipe.market_recipe` binds market SQL, continuous indicator calculations, causal V7/Student-t algorithms, trade-condition rules, numerical package versions and explicit V7 settings/prominence/coverage. Executable AST fingerprints ignore comments, docstrings and formatting. Some shared module fingerprints deliberately cover their helper functions conservatively. The definition round-trips through JSON for ClickHouse persistence.
+
+Campaign dates and resource limits do not change this state identity. Rolling activity and short-window choices have their own product recipes; changing them does not require resetting EMA/Wilder/V7 state. Source, calendar, predecessor, identity and split evidence remain separate requirements; a recipe match alone cannot certify a seed. Selected-frame execution is still unfinished and fails closed rather than silently producing an unrequested frame set.
+
+Production market writes and campaign resume verification require a concrete recipe matching the loaded algorithms/rules. The V7 producer also checks the actual engine parameters. Day rollover reconstructs the next engine with the certified predecessor's settings, discovery prominence and coverage, preserving custom settings instead of returning to defaults. Same-day restoration continues to restore the full encoded state without rollover.
+
 ### What else AH initialization needs
 
 Regular-close V7 state alone does not initialize AH research: indicator, VWAP/extrema, rolling activity/rank and relevant market state need compatible session-start sidecars too. Account/positions/order state belongs to a scenario-specific replay checkpoint, not universal market data.

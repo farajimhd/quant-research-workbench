@@ -28,6 +28,7 @@ class MarketRequest:
     prior_v7_hash: str
     regular_close: datetime
     bootstrap_indicators: bool=False
+    recipe_definition: dict|None=None
 
     def __post_init__(self):
         for value in (self.dataset_hash,self.source_hash,self.prior_indicator_hash,self.prior_v7_hash):
@@ -64,10 +65,20 @@ def indicator_state(query,database,unit,attempt,prior,*,bar_attempt):
     return result
 
 
+def validate_recipe(request,database):
+    if request.recipe_definition is None:
+        if not database.startswith('certified_research_test_'):
+            raise ValueError('Production market execution requires the frozen concrete state recipe')
+    else:
+        from .recipe import verify_definition
+        if verify_definition(request.recipe_definition,request.rules)!=request.dataset_hash:
+            raise ValueError('Market request hash differs from its frozen state recipe')
+
+
 def market_execution(request: MarketRequest,client_factory,claim,source_guard,engine_factory,*,database='arte',
                      query_memory_bytes=2*1024**3,fixture_source=None):
     """Expose stages to either the bounded pilot or the campaign's global pool."""
-    identifier(database)
+    identifier(database);validate_recipe(request,database)
     if fixture_source is not None and not database.startswith('certified_research_test_'):
         raise ValueError('Fixture source overrides are forbidden outside isolated test namespaces')
     base=request.unit
@@ -122,6 +133,9 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
                 if isinstance(engine,v7.StartAuthority):engine=engine.check(request.prior_v7_hash)
                 elif not database.startswith('certified_research_test_'):
                     raise ValueError('V7 production requires certified start-state authority')
+                if request.recipe_definition is not None:
+                    from .recipe import verify_engine
+                    verify_engine(engine,request.recipe_definition)
                 rows=query(v7.bars_sql(base.dataset_id,bar_receipt['attempt_id'],base.listing_key,base.day,database))
                 origin=v7.input_origin_hash(request.dataset_hash,base.ticker,base.listing_key,base.day)
                 binding=CheckpointBinding(request.dataset_hash,origin,request.prior_v7_hash,base.ticker,base.day)

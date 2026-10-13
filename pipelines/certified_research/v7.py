@@ -70,8 +70,11 @@ def next_day_engine(previous: StreamingLevelBook,day: date,*,previous_checkpoint
     seed['checkpoint_hash']=book_digest({k:v for k,v in seed.items() if k!='checkpoint_hash'})
     start=datetime.combine(day,time(4),NY).timestamp()
     end=datetime.combine(day,time(20),NY).timestamp()
+    from src.market_engine.historical_session_levels import Settings
     return StreamingLevelBook(seed,ticker=previous.ticker,session=day.isoformat(),start=start,end=end,
-                              split_factor=split_factor,split_evidence=split_evidence)
+                              split_factor=split_factor,split_evidence=split_evidence,
+                              settings=Settings(**previous.settings),discovery_prominence=previous.discovery_prominence,
+                              coverage=previous.coverage)
 
 
 def generate(engine: StreamingLevelBook,rows,binding: CheckpointBinding,*,regular_close=None,restore_each=False):

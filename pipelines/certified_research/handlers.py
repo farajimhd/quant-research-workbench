@@ -111,6 +111,7 @@ class MarketHandlers:
                 or str(request.unit.day)!=args['day'] or request.unit.listing_key!=args['listing_key']
                 or request.unit.ticker!=args['ticker']):
             raise ValueError('Market request does not match immutable campaign scope')
+        producer.validate_recipe(request,self.database)
         return request
 
     def receipts(self,request,query):

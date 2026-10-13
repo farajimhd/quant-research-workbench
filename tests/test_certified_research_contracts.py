@@ -107,6 +107,44 @@ class Contracts(unittest.TestCase):
         forged=dict(outputs[0],boundary='AH',boundary_us=outputs[-1]['boundary_us'])
         with self.assertRaisesRegex(ValueError,'encoded boundary'):v7.StartAuthority.rollover(forged,date(2026,8,24))
 
+    def test_market_state_recipe_ignores_campaign_resources_and_preserves_v7_parameters(self):
+        from pipelines.certified_research import recipe
+        from tests.test_streaming_level_book import engine,bars
+        config=c.CampaignConfig(date(2026,1,1),date(2026,1,9))
+        rules=({'token_id':1,'modifier_int':0,'update_high_low':1,'update_last':1,'update_volume':1},)
+        original=recipe.market_recipe(config,rules)
+        import json
+        self.assertEqual(recipe.verify_definition(json.loads(json.dumps(original['definition'])),rules),original['hash'])
+        unit=market.MarketUnit(str(uuid.uuid4()),date(2026,1,2),'TEST',991,str(uuid.uuid4()))
+        request=producer.MarketRequest(unit,original['hash'],'b'*64,rules,{},'c'*64,'d'*64,
+            boundaries(unit.day)['REGULAR'],True,original['definition'])
+        producer.validate_recipe(request,'arte')
+        stale=json.loads(json.dumps(original['definition']));stale['algorithms']['ema']='f'*64
+        with self.assertRaisesRegex(ValueError,'loaded algorithms'):
+            producer.validate_recipe(replace(request,recipe_definition=stale),'arte')
+        with self.assertRaisesRegex(ValueError,'frozen concrete'):
+            producer.validate_recipe(replace(request,recipe_definition=None),'arte')
+        extended=replace(config,end=date(2026,9,30),workers=2,volume_windows_seconds=(20,120),short_windows_sessions=(30,))
+        self.assertEqual(original['hash'],recipe.market_recipe(extended,rules)['hash'])
+        from src.market_engine.historical_session_levels import Settings
+        custom=replace(Settings(),noise_multiple=7.,reaction_seconds=90)
+        configured=recipe.market_recipe(config,rules,settings=custom,discovery_prominence=.12,coverage=.7)
+        self.assertNotEqual(original['hash'],configured['hash'])
+        changed=(dict(rules[0],update_volume=0),)
+        self.assertNotEqual(original['hash'],recipe.market_recipe(config,changed)['hash'])
+        with self.assertRaisesRegex(ValueError,'all supported frames'):
+            recipe.market_recipe(replace(config,resolutions_ms=(1000,)),rules)
+        with self.assertRaisesRegex(ValueError,'exact integers'):
+            recipe.market_recipe(config,(dict(rules[0],update_volume=1.5),))
+        stream=engine();stream.settings=recipe.parameters(custom)['settings'];stream.discovery_prominence=.12;stream.coverage=.7
+        binding=CheckpointBinding(configured['hash'],'b'*64,'c'*64,stream.ticker,date.fromisoformat(stream.session))
+        outputs,_=v7.generate(stream,bars(stream),binding)
+        rolled=v7.StartAuthority.rollover(outputs[-1],date(2026,8,24)).engine
+        recipe.verify_engine(rolled,configured['definition'])
+        self.assertEqual(rolled.settings,stream.settings)
+        with self.assertRaisesRegex(ValueError,'parameters'):
+            recipe.verify_engine(rolled,original['definition'])
+
     def test_v7_boundary_payload_does_not_depend_on_later_bars(self):
         from tests.test_streaming_level_book import engine,bars
         a=engine();day=date.fromisoformat(a.session)
@@ -1255,13 +1293,15 @@ class ClickHouseIntegration(unittest.TestCase):
             indicator_state.load(self.client.query,self.database,Claim(),next_scope,request.dataset_hash,technical['output_hash'])
 
     def test_market_campaign_global_pool_shared_scan_seal_and_resume(self):
+        from pipelines.certified_research import recipe
         from tests.test_streaming_level_book import engine
         day=date(2026,8,21);dataset=str(uuid.uuid4());memory=128*1024**2
         config=c.CampaignConfig(day,day,workers=2,query_memory_bytes=memory,global_memory_bytes=2*memory)
         base=market.MarketUnit(dataset,day,'TEST',93,str(uuid.uuid4()))
         rules=({'token_id':1,'modifier_int':0,'update_last':1,'update_high_low':1,'update_volume':1},)
-        request=producer.MarketRequest(base,config.content_hash,'b'*64,rules,{},'c'*64,'d'*64,
-                                       boundaries(day)['REGULAR'],True)
+        frozen=recipe.market_recipe(config,rules)
+        request=producer.MarketRequest(base,frozen['hash'],'b'*64,rules,{},'c'*64,'d'*64,
+                                       boundaries(day)['REGULAR'],True,frozen['definition'])
         source_sql=(f"SELECT toUInt64({market_day_sql.bounds(day,'09:30:00')}+number*100000) sip_timestamp_us,"
             'toUInt64(number) ordinal,toUInt8(71) event_meta,toUInt32(10000) price_primary_int,'
             'toUInt32(0) price_secondary_int,toFloat32(5) size_primary,toFloat32(0) size_secondary,'
