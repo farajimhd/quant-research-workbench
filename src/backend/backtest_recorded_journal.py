@@ -73,23 +73,32 @@ def _recorded_read_scope(scope, run_id):
                 _SCOPES[key] = (lock, users-1)
 
 
-def verify_recorded_chain(commits, families, rows_by_family, run_id):
-    """Independently hash every persisted scalar; validate every family seal."""
-    by_batch = defaultdict(list)
+def _recorded_detail_hashes(rows_by_family, run_id, *, expected_batch=None):
     details = defaultdict(lambda: defaultdict(list))
-    for family in families:
-        by_batch[str(family['batch_id'])].append(family)
+    events = defaultdict(list)
     for name, rows in rows_by_family.items():
         for row in rows:
             content = {key: value for key, value in row.items() if key != 'content_hash'}
-            digest = sha256(canonical_json(_canonical_typed_content(name, content, stored_utc=True)).encode()).hexdigest()
-            if row['run_id'] != run_id or row['content_hash'] != digest:
+            canonical = _canonical_typed_content(name, content, stored_utc=True)
+            digest = sha256(canonical_json(canonical).encode()).hexdigest()
+            if (row['run_id'] != run_id or row['content_hash'] != digest
+                    or expected_batch is not None and str(row['batch_id']) != expected_batch):
                 raise ValueError('Recorded journal detail differs from its scalar seal')
             details[str(row['batch_id'])][name].append((str(UUID(row['record_id'])), digest))
+            if name == 'trading_event_v1':
+                events[str(row['batch_id'])].append(canonical)
+    return details, events
+
+
+def verify_recorded_chain(commits, families, rows_by_family, run_id):
+    """Verify every seal; a callable detail loader retains only one batch."""
+    by_batch = defaultdict(list)
+    for family in families:
+        by_batch[str(family['batch_id'])].append(family)
+    streamed = callable(rows_by_family)
+    details, events_by_batch = ({}, {}) if streamed else _recorded_detail_hashes(rows_by_family, run_id)
     previous, sequence, status, ids = str(UUID(int=0)), 0, 'running', []
-    events_by_batch = defaultdict(list)
-    for event in rows_by_family.get('trading_event_v1', []):
-        events_by_batch[str(event['batch_id'])].append(event)
+    verified_event_count = 0
     if not commits:
         raise ValueError('Saved run has no committed journal')
     for commit in commits:
@@ -101,15 +110,24 @@ def verify_recorded_chain(commits, families, rows_by_family, run_id):
                 or commit['source_cursor'].lstrip().startswith(('{', '['))
                 or commit['status'] not in {'running', 'completed', 'stopped', 'failed'}):
             raise ValueError('Recorded journal chain is forked or not contiguous')
-        verify_commit_v4(commit, by_batch.pop(identity, []), details.pop(identity, {}))
-        if sorted(event['sequence'] for event in events_by_batch.pop(identity, [])) != list(range(commit['first_sequence'], commit['last_sequence']+1)):
+        selected_families = by_batch.pop(identity, [])
+        if streamed:
+            batch_rows = rows_by_family(identity, selected_families)
+            details, events_by_batch = _recorded_detail_hashes(batch_rows, run_id, expected_batch=identity)
+            del batch_rows
+        verify_commit_v4(commit, selected_families, details.pop(identity, {}))
+        selected_events = events_by_batch.pop(identity, [])
+        if sorted(event['sequence'] for event in selected_events) != list(range(commit['first_sequence'], commit['last_sequence']+1)):
             raise ValueError('Recorded journal batch event sequences differ from its commit')
+        verified_event_count += len(selected_events)
+        del selected_events
         previous, sequence, status = identity, commit['last_sequence'], commit['status']
         ids.append(identity)
     if by_batch or details or status not in {'completed', 'stopped', 'failed'}:
         raise ValueError('Recorded journal has unfenced rows or is not terminal')
-    events = rows_by_family.get('trading_event_v1', [])
-    if sorted(row['sequence'] for row in events) != list(range(1, sequence+1)):
+    events = () if streamed else rows_by_family.get('trading_event_v1', [])
+    if (verified_event_count != sequence
+            or not streamed and sorted(int(row['sequence']) for row in events) != list(range(1, sequence+1))):
         raise ValueError('Recorded journal event sequences are incomplete or repeated')
     return V4CommittedPrefix(run_id, sequence, previous, commits[-1]['source_cursor'], status, tuple(ids))
 
@@ -125,7 +143,7 @@ def load_recorded_attestation(client, run_id):
     if versions.backend_source_fingerprint() != versions.LOADED_BACKEND_FINGERPRINT:
         raise RuntimeError('Saved journal reader source changed after startup; restart the backend')
     context = load_typed_run_context(client, normalized)
-    require_recorded_strategy(context)
+    programme = require_recorded_strategy(context)
     _require_declared_read_profile(client, context)
     with _recorded_read_scope(_client_scope(client), normalized):
         for key in _CACHE.candidate_keys(_client_scope(client), normalized):
@@ -150,19 +168,34 @@ def load_recorded_attestation(client, run_id):
                     or type(count) is not int or not 1<=count<=65536):
                 raise ValueError('Recorded journal names an invalid family')
             counts[name] += count
-        if sum(counts.values())>200000:
+        if programme is None and sum(counts.values())>200000:
             raise ValueError('Recorded journal details exceed the interactive budget')
         from src.trading_runtime.arte_rising_momentum_entry_v4 import MOMENTUM, momentum_select_columns, decode_momentum_row
         from src.trading_runtime.arte_initial_momentum_entry_v4 import INITIAL_MOMENTUM, initial_momentum_select_columns, decode_initial_momentum_row
         special = {MOMENTUM.name: (momentum_select_columns, decode_momentum_row),
                    INITIAL_MOMENTUM.name: (initial_momentum_select_columns, decode_initial_momentum_row)}
-        specs = tuple((name, tuple(column for column, _ in _CONTRACTS[name].columns), count)
-                      for name, count in counts.items() if name not in special)
-        rows = _batched_detail_rows_v4(client, specs, filters)
-        for name, count in counts.items():
-            if name in special:
-                columns_fn, decoder = special[name]
-                rows[name] = [decoder(row) for row in _rows(client, f'SELECT {columns_fn()} FROM arte.{name} {filters}LIMIT {count+1} FORMAT JSONEachRow')]
+        def read_details(selected_counts, selected_filters):
+            if sum(selected_counts.values()) > 200000:
+                raise ValueError('Recorded journal batch details exceed the interactive budget')
+            specs = tuple((name, tuple(column for column, _ in _CONTRACTS[name].columns), count)
+                          for name, count in selected_counts.items() if name not in special)
+            result = _batched_detail_rows_v4(client, specs, selected_filters)
+            for name, count in selected_counts.items():
+                if name in special:
+                    columns_fn, decoder = special[name]
+                    result[name] = [decoder(row) for row in _rows(client,
+                        f'SELECT {columns_fn()} FROM arte.{name} {selected_filters}LIMIT {count+1} FORMAT JSONEachRow')]
+            return result
+        if programme is not None:
+            def rows(identity, selected_families):
+                selected_counts = defaultdict(int)
+                for family in selected_families:
+                    selected_counts[family['family_name']] += family['row_count']
+                selected_filters = (f'WHERE run_id={_literal(normalized)} '
+                    f'AND batch_id=toUUID({_literal(identity)}) ')
+                return read_details(selected_counts, selected_filters)
+        else:
+            rows = read_details(counts, filters)
         prefix = verify_recorded_chain(commits, families, rows, normalized)
         cursor = load_latest_backtest_cursor(client, prefix)
         if (cursor is None and prefix.source_cursor != 'start' or cursor is not None and (

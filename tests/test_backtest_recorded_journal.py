@@ -62,7 +62,8 @@ def test_only_explicit_recorded_reads_use_the_read_workload_lane():
 
 
 @pytest.mark.parametrize('damage', ['scalar', 'missing_row', 'duplicate_row', 'family', 'chain', 'running', 'sequence'])
-def test_recorded_reader_rejects_corruption_and_incomplete_fences(damage):
+@pytest.mark.parametrize('streamed', [False, True])
+def test_recorded_reader_rejects_corruption_and_incomplete_fences(damage, streamed):
     commits, families, rows, run = deepcopy(fixture())
     event = rows['trading_event_v1'][0]
     if damage == 'scalar':
@@ -82,7 +83,105 @@ def test_recorded_reader_rejects_corruption_and_incomplete_fences(damage):
     else:
         event['sequence'] = 2
     with pytest.raises(ValueError):
-        recorded.verify_recorded_chain(commits, families, rows, run)
+        recorded.verify_recorded_chain(commits, families,
+            (lambda identity, selected: rows) if streamed else rows, run)
+
+
+def test_streamed_recorded_chain_matches_the_complete_reader():
+    commits, families, rows, run = fixture()
+    calls = []
+    def read(identity, selected):
+        calls.append((identity, selected))
+        return rows
+    assert recorded.verify_recorded_chain(commits, families, read, run) == recorded.verify_recorded_chain(
+        commits, families, rows, run)
+    assert calls == [(commits[0]['batch_id'], families)]
+
+
+@pytest.mark.parametrize('streamed', [False, True])
+def test_recorded_sequences_use_verified_uint64_values(streamed):
+    commits, families, rows, run = fixture()
+    rows['trading_event_v1'][0]['sequence'] = str(rows['trading_event_v1'][0]['sequence'])
+    result = recorded.verify_recorded_chain(commits, families,
+        (lambda *_: rows) if streamed else rows, run)
+    assert result.last_sequence == 1
+
+
+def test_streamed_recorded_chain_rejects_foreign_batch_rows():
+    commits, families, rows, run = fixture()
+    rows['trading_event_v1'][0]['batch_id'] = '00000000-0000-0000-0000-000000000099'
+    with pytest.raises(ValueError, match='scalar seal'):
+        recorded.verify_recorded_chain(commits, families, lambda *_: rows, run)
+
+
+def test_programme_attestation_streams_more_than_aggregate_row_budget(monkeypatch):
+    """Real scalar/family verification; financial anchors use explicit test seams."""
+    from uuid import UUID, uuid4
+    from types import SimpleNamespace
+    from weakref import ref
+    from tests.test_program_strategy_registry import installed
+    from src.trading_runtime.arte_journal_writer import typed_row
+    from src.trading_runtime import arte_backtest_snapshot_anchor, arte_backtest_definition, arte_journal_projection
+    from src.backend import backtest_v4_saved_review
+    registration, _, _ = installed(monkeypatch)
+    options = source()
+    run = str(uuid4())
+    prototype = dict(options['sealed_families'][0][1][0])
+    prototype.pop('content_hash')
+    commits, families = [], []
+    class Row(dict): pass
+    def batch_rows(index):
+        rows = []
+        for offset in range(4096):
+            content = {**prototype, 'run_id': run, 'batch_id': str(UUID(int=index + 100)),
+                'sequence': index * 4096 + offset + 1,
+                'record_id': str(UUID(int=index * 4096 + offset + 100000))}
+            sealed = typed_row('trading_event_v1', content)
+            rows.append(Row({**_canonical_typed_content('trading_event_v1', content),
+                'content_hash': sealed['content_hash']}))
+        return rows
+    for index in range(50):
+        rows = batch_rows(index)
+        commit, selected = prepare_commit_v4(**{**options, 'run_id': run,
+            'batch_id': str(UUID(int=index + 100)),
+            'prior_batch_id': str(UUID(int=index + 99)) if index else str(UUID(int=0)),
+            'first_sequence': index * 4096 + 1, 'last_sequence': (index + 1) * 4096,
+            'status': 'completed' if index == 49 else 'running', 'source_cursor': 'start',
+            'sealed_families': (('trading_event_v1', rows),)})
+        commits.append(commit)
+        families.extend(selected)
+    del rows
+    context = dict(run_id=run, mode='backtest', strategy_id=registration.strategy_id,
+        strategy_revision=registration.revision, code_hash=registration.expected_code_hash,
+        evaluation_interval_ms=1000, account_ids=('A',), session_date='2026-08-18')
+    monkeypatch.setattr(recorded, 'load_typed_run_context', lambda *_: context)
+    def inventory(_, sql):
+        return families if 'trading_commit_family_v4' in sql else commits
+    monkeypatch.setattr(recorded, '_rows', inventory)
+    previous_row, reads = None, []
+    def details(_, specs, filters):
+        nonlocal previous_row
+        assert previous_row is None or previous_row() is None
+        assert len(filters) < 200 and 'batch_id=toUUID(' in filters
+        assert len(specs) == 1 and specs[0][0] == 'trading_event_v1' and specs[0][2] == 4096
+        index = len(reads)
+        assert str(UUID(int=index + 100)) in filters
+        rows = batch_rows(index)
+        previous_row = ref(rows[0])
+        reads.append(index)
+        return {'trading_event_v1': rows}
+    monkeypatch.setattr(recorded, '_batched_detail_rows_v4', details)
+    monkeypatch.setattr(arte_journal_projection, 'load_latest_backtest_cursor', lambda *_: None)
+    monkeypatch.setattr(arte_backtest_snapshot_anchor, 'load_terminal_backtest_snapshot',
+        lambda *args, **kwargs: dict(state_hash='a' * 64, state_revision=204800, snapshot_at='2026-08-18T20:00:00Z'))
+    monkeypatch.setattr(arte_backtest_definition, 'load_committed_initial_cash', lambda *args, **kwargs: 100000.)
+    monkeypatch.setattr(backtest_v4_saved_review, '_terminal_financial_accounts', lambda *_: {})
+    monkeypatch.setattr(recorded, '_head_matches', lambda *_: True)
+    client = SimpleNamespace(base_url='http://synthetic', user='synthetic-programme', password='synthetic',
+        program_decision_profile=True)
+    evidence = recorded.load_recorded_attestation(client, run)
+    assert evidence['prefix'].status == 'completed' and evidence['prefix'].last_sequence == 204800
+    assert reads == list(range(50)) and previous_row() is None
 
 
 @pytest.mark.parametrize("exact", [False, True])
