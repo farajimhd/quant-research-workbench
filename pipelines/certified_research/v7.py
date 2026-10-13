@@ -195,7 +195,47 @@ def authority(request,bars,query,database,claim):
     if receipt is None:return None
     return dict(receipt,state_context=dict(recipe_hash=request.dataset_hash,source_hash=request.source_hash,
         predecessor_hash=request.prior_v7_hash,ticker=base.ticker,regular_close=request.regular_close.isoformat(),
-        bars_parent_hash=request.parent('bars')))
+        bars_parent_hash=request.parent('bars'),adjustment_hash=request.adjustment_hash))
+
+
+def verify_seed(query,database,claim,parent,recipe_hash,source_hash,rules):
+    """Verify an explicit causal seed locator against independent frozen inputs.
+
+    Locator context is untrusted until its bars and V7 receipt lineage match,
+    and the AH payload has passed certified-bar prefix/chain reconstruction.
+    Retrospective daily books are not accepted by this full-state reader.
+    """
+    from .publication import Publisher,Scope
+    from .producer import MarketRequest
+    from .market import MarketUnit
+    from .price_inputs import calendar_close
+    identifier(database)
+    if parent.get('product')!='v7':raise ValueError('Seed must reference causal V7 authority')
+    day=date.fromisoformat(str(parent['session_date']));context=parent.get('state_context',{})
+    required={'recipe_hash','source_hash','predecessor_hash','ticker','regular_close','bars_parent_hash','adjustment_hash'}
+    if set(context)!=required or context['recipe_hash']!=recipe_hash or context['source_hash']!=source_hash:
+        raise ValueError('V7 seed recipe/source context differs from frozen authority')
+    close=calendar_close(day)
+    if datetime.fromisoformat(context['regular_close'])!=close:raise ValueError('V7 seed calendar boundary differs')
+    if not context['adjustment_hash'] and not database.startswith('certified_research_test_'):
+        raise ValueError('V7 seed requires certified corporate adjustment lineage')
+    unit=MarketUnit(str(parent['dataset_id']),day,context['ticker'],int(parent['listing_key']),str(parent['attempt_id']))
+    request=MarketRequest(unit,recipe_hash,source_hash,tuple(rules),{},'0'*64,context['predecessor_hash'],close,
+        True,adjustment_hash=context['adjustment_hash'])
+    if request.parent('bars')!=context['bars_parent_hash']:raise ValueError('V7 seed bar lineage differs')
+    publisher=Publisher(query,database,claim)
+    bars_scope=Scope(unit.dataset_id,day,unit.listing_key,'bars',context['bars_parent_hash'])
+    bars=publisher.receipt(bars_scope)
+    if bars is None:raise ValueError('V7 seed bars are not certified')
+    expected=request.parent('v7',(bars['output_hash'],))
+    if expected!=parent['parent_hash']:raise ValueError('V7 seed receipt lineage differs')
+    scope=Scope(unit.dataset_id,day,unit.listing_key,'v7',expected)
+    receipt=publisher.receipt(scope)
+    locator={k:v for k,v in parent.items() if k!='state_context'}
+    if receipt is None or receipt!=locator:raise ValueError('V7 seed locator differs from stored authority')
+    checkpoint,_=load_from_bars(query,database,claim,scope,bars_scope,recipe_hash,
+        context['predecessor_hash'],unit.ticker,'AH',regular_close=close)
+    return dict(receipt,state_context=dict(context)),checkpoint
 
 
 def projection_sql(outputs,dataset_id,attempt_id,listing_key,day,*,include_payload=True,regular_close=None):

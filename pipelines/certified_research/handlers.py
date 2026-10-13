@@ -113,6 +113,60 @@ class PreparedSecSourceHandlers:
     def registry(self):return {'sec_acquisition':self.producer},{'sec_acquisition':self.verifier}
 
 
+class V7SeedHandlers:
+    """Explicit compatible causal checkpoint locators; no historical replay."""
+    def __init__(self,database,claim,client_factory,source_guard,market_runtime):
+        self.database=database;self.claim=claim;self.clients=client_factory
+        self.guard=source_guard;self.runtime=market_runtime
+
+    def execute(self,plan,parents,stop=None):
+        from . import v7
+        if stop is not None and stop.is_set():raise InterruptedError('V7 seed verification stopped')
+        if plan.unit.product!='v7_seed' or set(plan.arguments)!={'dependency'}:
+            raise ValueError('V7 seed requires an explicit causal dependency locator')
+        parent=plan.arguments['dependency'];day=date.fromisoformat(str(parent['session_date']))
+        source_hash=self.runtime.sources.get(day)
+        if source_hash is None:raise ValueError('V7 seed source day is outside frozen canonical/reporting context')
+        client=self.clients()
+        try:
+            self.claim.check();self.guard()
+            dependency,_=v7.verify_seed(client.query,self.database,self.claim,parent,
+                self.runtime.recipe_hash,source_hash,self.runtime.rules)
+            self.claim.check();self.guard();return dependency
+        finally:client.close()
+
+    def producer(self,plan,parents,stop):return self.execute(plan,parents,stop)
+    def verifier(self,plan,parents):return self.execute(plan,parents)
+    def registry(self):return {'v7_seed':self.producer},{'v7_seed':self.verifier}
+
+
+class IndicatorSeedHandlers(V7SeedHandlers):
+    """Restore only the eight persisted frames from an explicit state locator."""
+    def execute(self,plan,parents,stop=None):
+        from . import indicator_state
+        if stop is not None and stop.is_set():raise InterruptedError('Indicator seed verification stopped')
+        if plan.unit.product!='technical_seed' or set(plan.arguments)!={'dependency'}:
+            raise ValueError('Indicator seed requires an explicit causal dependency locator')
+        parent=plan.arguments['dependency'];receipt=parent.get('state_receipt',parent)
+        context=parent.get('state_context',{});day=date.fromisoformat(str(receipt['session_date']))
+        source_hash=self.runtime.sources.get(day)
+        if (source_hash is None or context.get('recipe_hash')!=self.runtime.recipe_hash
+                or context.get('source_hash')!=source_hash or context.get('rules_hash')!=digest(self.runtime.rules)):
+            raise ValueError('Indicator seed differs from frozen recipe/source/rules context')
+        scope=Scope(str(receipt['dataset_id']),day,int(receipt['listing_key']),'technical_state',receipt['parent_hash'])
+        client=self.clients()
+        try:
+            self.claim.check();self.guard()
+            loaded=indicator_state.load(client.query,self.database,self.claim,scope,self.runtime.recipe_hash,
+                context['predecessor_hash'],source_hash=source_hash,rules_hash=digest(self.runtime.rules))
+            if loaded is None or loaded['receipt']!=receipt:raise ValueError('Indicator seed differs from certified state authority')
+            self.claim.check();self.guard()
+            return dict(receipt,state_receipt=receipt,state_context=dict(context))
+        finally:client.close()
+
+    def registry(self):return {'technical_seed':self.producer},{'technical_seed':self.verifier}
+
+
 class ActivityHandlers:
     """Concurrent SQL windows consuming shared current/context liquidity."""
     def __init__(self,dataset_id,database,claim,client_factory,source_guard,plans):

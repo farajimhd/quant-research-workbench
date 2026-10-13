@@ -1736,6 +1736,23 @@ class ClickHouseIntegration(unittest.TestCase):
         result=campaign.run()
         self.assertEqual(result['status'],'complete',str(result['errors']))
         self.assertTrue(result['seal']['root_hash'])
+        seed,checkpoint=v7.verify_seed(self.client.query,self.database,claim,result['results']['levels'],
+            request.dataset_hash,request.source_hash,rules)
+        self.assertEqual(seed,result['results']['levels'])
+        self.assertEqual(checkpoint['boundary'],'AH')
+        from types import SimpleNamespace
+        from pipelines.certified_research.handlers import V7SeedHandlers,IndicatorSeedHandlers
+        runtime=SimpleNamespace(recipe_hash=request.dataset_hash,sources={day:request.source_hash},rules=rules)
+        seed_registry=V7SeedHandlers(self.database,claim,factory,lambda:None,runtime)
+        seed_plan=PlannedUnit(Unit('seed','v7_seed'),dict(dependency=seed))
+        self.assertEqual(seed_registry.verifier(seed_plan,{}),seed)
+        indicator_registry=IndicatorSeedHandlers(self.database,claim,factory,lambda:None,runtime)
+        indicator_plan=PlannedUnit(Unit('indicator_seed','technical_seed'),dict(dependency=result['results']['indicators']))
+        carried=indicator_registry.verifier(indicator_plan,{})
+        self.assertEqual(carried['state_receipt'],result['results']['indicators']['state_receipt'])
+        invalid=dict(seed,state_context=dict(seed['state_context'],predecessor_hash='f'*64))
+        with self.assertRaisesRegex(ValueError,'receipt lineage differs'):
+            v7.verify_seed(self.client.query,self.database,claim,invalid,request.dataset_hash,request.source_hash,rules)
         prices=self.client.query(f"SELECT value,status FROM {self.database}.research_facts_v1 "
             f"WHERE attempt_id=toUUID('{result['results']['prices']['attempt_id']}')")
         self.assertEqual(prices,[dict(value=1.,status=1)])
