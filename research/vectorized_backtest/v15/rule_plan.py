@@ -66,24 +66,25 @@ class RulePlan:
             programs = [simplify(r[stage]) for r in rules]
             extents = [p.validate(CATALOG)['history'][p.output] for p in programs]
             # Trail can change a held stop even without an execution observation.
-            # Bound padding workspace: simple atoms do not inherit the largest
-            # evolved rule width in the batch. Packing remains vectorized.
             for sparse in (True, False):
-                for low,high in ((0,4),(4,32)):
-                    indices = [i for i, extent in enumerate(extents) if low < len(programs[i].nodes) <= high and (extent == 0 and stage != 'trail') == sparse]
-                    if not indices: continue
-                    selected = [];lookup_program={};expand=[]
-                    for i in indices:
-                        key=programs[i]
-                        if key not in lookup_program:lookup_program[key]=len(selected);selected.append(key)
-                        expand.append(lookup_program[key])
-                    columns = sorted({n.feature for p in selected for n in p.nodes if n.op == Op.FEATURE}) or [0]
-                    lookup = {old: new for new, old in enumerate(columns)}
-                    mapped = [Program(tuple(replace(n, feature=lookup[n.feature]) if n.op == Op.FEATURE else n
-                                            for n in p.nodes), p.output) for p in selected]
+                indices = [i for i, extent in enumerate(extents) if (extent == 0 and stage != 'trail') == sparse]
+                if not indices: continue
+                selected = [];lookup_program={};expand=[]
+                for i in indices:
+                    key=programs[i]
+                    if key not in lookup_program:lookup_program[key]=len(selected);selected.append(key)
+                    expand.append(lookup_program[key])
+                columns = sorted({n.feature for p in selected for n in p.nodes if n.op == Op.FEATURE}) or [0]
+                lookup = {old: new for new, old in enumerate(columns)}
+                mapped = [Program(tuple(replace(n, feature=lookup[n.feature]) if n.op == Op.FEATURE else n
+                                        for n in p.nodes), p.output) for p in selected]
+                if self.device.type=='cuda':
+                    from .fused_program import FusedPrograms
+                    packed = FusedPrograms(mapped, [CATALOG[i] for i in columns], device)
+                else:
                     packed = TorchPrograms(mapped, [CATALOG[i] for i in columns], device)
-                    self.groups.append(dict(bit=bit, sparse=sparse, candidates=torch.tensor(indices, device=device),
-                                            columns=columns, program=packed, unique_count=len(selected), expand=torch.tensor(expand,device=device), extent=max(extents[i] for i in indices)))
+                self.groups.append(dict(bit=bit, sparse=sparse, candidates=torch.tensor(indices, device=device),
+                                        columns=columns, program=packed, unique_count=len(selected), expand=torch.tensor(expand,device=device), extent=max(extents[i] for i in indices)))
         self.captures = OrderedDict()
         self.capture_bytes = 0
         self.maximum_capture_bytes = int(maximum_capture_gib*1024**3)

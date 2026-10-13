@@ -27,8 +27,9 @@ Search-space changes:
 - Exit/add/reduce/trail minimum ages sample zero or 1..300 seconds, and mutate.
   Entry age stays zero because the evaluator ignores it while flat. Execution
   sizing, fees, top10 and certified input rules remain fixed run constraints.
-- Pack <=4-node and >4-node rules separately, avoiding padding every simple atom
-  to the largest evolved rule. Exact evaluator output parity remains mandatory.
+- Fuse pointwise, lag/difference and crossing dispatch into one CUDA instruction
+  kernel per DAG row. Preserve the exact existing Torch rolling reductions and
+  their rounding order. CPU uses the original evaluator; CUDA gates must match it.
 
 Minimize each session cost: -session_profit - .25*mean(other sessions profit)
 + .05*drawdown + .005*risk_dollar_hours + .0004*capital_dollar_hours.

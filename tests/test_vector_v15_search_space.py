@@ -2,6 +2,7 @@
 from dataclasses import asdict
 import numpy as np
 import torch
+import pytest
 from research.vectorized_backtest.v15.features import CATALOG
 from research.vectorized_backtest.v15.genome import sample,condition,mutate,crossover,effective_rules,STAGES
 from research.vectorized_backtest.v15.search_space import GROUPS,feature_index,semantic,threshold
@@ -73,3 +74,20 @@ def test_crossover_recombines_individual_policy_parameters():
     for c in children:
         c.validate()
         assert all(getattr(c.policy,k) in (getattr(a.policy,k),getattr(b.policy,k)) for k in independent)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA qualification runs on workstation')
+@pytest.mark.parametrize('shape',[(129,len(CATALOG)),(2,257,len(CATALOG))])
+def test_fused_cuda_matches_original_with_missing_and_boundary_values(shape):
+    from research.vectorized_backtest.v15.fused_program import FusedPrograms
+    rng=np.random.default_rng(89)
+    members=sample(rng,128)
+    x=torch.from_numpy(rng.normal(size=shape).astype(np.float32)).cuda()
+    valid=torch.from_numpy(rng.random(size=shape)>.15).cuda()
+    x.reshape(-1)[::17]=0.;x.reshape(-1)[::29]=float('inf');x.reshape(-1)[::31]=float('nan')
+    for stage in STAGES:
+        programs=[effective_rules(m)[stage] for m in members]
+        old=TorchPrograms(programs,CATALOG,'cuda');new=FusedPrograms(programs,CATALOG,'cuda')
+        expected,known=old(x,valid);actual,mask=new(x,valid)
+        torch.testing.assert_close(actual,expected,rtol=0,atol=0)
+        torch.testing.assert_close(mask,known,rtol=0,atol=0)

@@ -39,7 +39,9 @@ def main():
             sync();construct=perf_counter()-start;start=perf_counter()
             for i,(values,known) in enumerate(inputs):
                 actual=plan.execute(i,values,known)
-                expected,mask=plan.groups[i]['program'](values,known)
+                g=plan.groups[i]
+                reference=TorchPrograms(g['program'].programs,[CATALOG[j] for j in g['columns']],args.device)
+                expected,mask=reference(values,known)
                 torch.testing.assert_close(actual,(expected!=0)&mask,rtol=0,atol=0)
             sync();cold=perf_counter()-start
             samples=[]
