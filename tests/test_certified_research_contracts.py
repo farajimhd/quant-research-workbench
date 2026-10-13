@@ -24,6 +24,7 @@ from pipelines.certified_research import producer
 from pipelines.certified_research import reference_producer,reference_sql,short_sql,universe,fundamentals,float_data,price_inputs
 from pipelines.certified_research.reference_publication import ReferenceScope,ReferencePublisher
 from pipelines.certified_research.campaign import Campaign,PlannedUnit,status as campaign_status
+from pipelines.certified_research.handlers import ReferenceHandlers
 
 
 class Contracts(unittest.TestCase):
@@ -126,8 +127,9 @@ class Contracts(unittest.TestCase):
         cmd=acquisition.updater_command(paths,start,end)
         self.assertIn('--skip-bars',cmd);self.assertIn('sip_raw_ssd',cmd)
         self.assertNotIn('--force-day-delete',cmd)
-        reporting=acquisition.reporting_command(paths,start,end,hydrate=True)
-        self.assertIn('--hydrate-missing-trades',reporting)
+        with self.assertRaisesRegex(ValueError,'cannot hydrate'):acquisition.reporting_command(paths,start,end,hydrate=True)
+        reporting=acquisition.reporting_command(paths,start,end)
+        self.assertNotIn('--hydrate-missing-trades',reporting);self.assertNotIn('--flatfiles-root-win',reporting)
         self.assertEqual(acquisition.contiguous_ranges([end,start,start]),((start,start),(end,end)))
         self.assertTrue(str(paths.cache).startswith('\\\\DESKTOP-SAAI85T\\Workstation-D'))
         from unittest.mock import patch
@@ -136,7 +138,7 @@ class Contracts(unittest.TestCase):
         with patch.object(sys,'argv',list(cmd[2:])):
             parsed=updater.parse_args()
         self.assertTrue(parsed.skip_bars);self.assertEqual(parsed.env_file,[paths.env_file])
-        self.assertTrue(migration.parse_args(list(reporting[3:])).hydrate_missing_trades)
+        self.assertFalse(migration.parse_args(list(reporting[3:])).hydrate_missing_trades)
         with patch.object(updater,'load_env_files',return_value=['fixture.env']) as loader,patch.object(Path,'is_file',return_value=True):
             self.assertEqual(updater.load_updater_environment(['--env-file','fixture.env']),['fixture.env'])
             loader.assert_called_once_with([Path('fixture.env')],verbose=True)
@@ -310,6 +312,22 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_concrete_sec_and_derived_handlers_run_through_campaign_controller(self):
+        dataset=str(uuid.uuid4());start=date(2026,1,1);end=date(2026,10,2)
+        config=c.CampaignConfig(start,end,workers=2)
+        common=dict(entity_key=9918,start='2025-01-01',end=str(end))
+        plans=(PlannedUnit(Unit('sec','fundamentals',(),config.query_memory_bytes),dict(common,cik='320193',source_hash='a'*64)),
+            PlannedUnit(Unit('derived','derived_fundamentals',('sec',),config.query_memory_bytes),common))
+        class Claim:
+            def check(self):pass
+        claim=Claim();registry=ReferenceHandlers(dataset,self.database,claim,
+            lambda:self.builder.Client(self.args,persistent=False),lambda:None,plans)
+        producers,verifiers=registry.registry()
+        campaign=Campaign(self.client.query,self.database,claim,dataset,config,plans,'a'*64,lambda:None,producers,verifiers)
+        result=campaign.run();self.assertEqual(result['status'],'complete',str(result['errors']))
+        self.assertEqual(result['seal']['units'],2)
+        self.assertEqual(campaign.run()['seal'],result['seal'])
+
     def test_campaign_publishes_only_verified_authorities_and_detects_tampering_on_resume(self):
         dataset=str(uuid.uuid4());day=date(2026,1,2)
         config=c.CampaignConfig(day,day,workers=2,query_memory_bytes=64*1024**2,global_memory_bytes=128*1024**2)

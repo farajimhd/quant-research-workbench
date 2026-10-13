@@ -55,6 +55,12 @@ Forms: immutable dated identity/listing intervals; broker-conid evidence; pre-op
 
 Reference Gateway publication currently requires active listing and symbol, positive conid, USD, US exchange, non-OTC venue, supported STK/STOCK/STOCKS, durable issuer identity, no duplicate durable issuer identifier and no open mapping issues. Contract resolution also enforces compatible unique contracts and exchange/security identity evidence. Reconcile predicate differences between graph admission, universe publication and consumer scope before freezing one shared rule revision.
 
+### Current reporting repair authority
+
+Imported-day reporting repair now reads only canonical events and existing source-bound ClickHouse sidecars. `backfill_trade_reporting_flags.py` refuses flatfile hydration and raw-file reconstruction before file access or mutation. It requires staged/mutating sidecar certificates, verifies counts, placement, canonical equality and the persisted mapping, and retains authoritative evidence after completion. Missing sidecars require an explicit ingestion-owned versioned acquisition/migration path; the campaign cannot reopen retained files. G→D staging remains available only to the canonical acquisition/import owner while importing new source days.
+
+The older flatfile-repair procedure is superseded by this authority rule. Existing certified days remain reusable; unresolved legacy clock fields block strict derivation rather than receiving invented timeliness.
+
 ### Historical reconstruction process
 
 Build the historical listing census from dated source evidence, symbol/event intervals and listings including delisted securities. Resolve provider/SEC/broker identities and apply rules on the corresponding date. Current conid evidence may establish a mapping only with explicit validity evidence; do not claim historical broker execution eligibility from conid existence alone. Unresolved cases remain visible and block strict membership certification. IPOs, delistings, OTC transfers, relistings, symbol changes and share-class changes require distinct intervals.

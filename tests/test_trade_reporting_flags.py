@@ -52,26 +52,25 @@ class FlagsTests(unittest.TestCase):
         a=migration.parse_args(['--start-date','2026-08-01','--end-date','2026-09-30','--plan-only'])
         self.assertEqual(str(a.end_date),'2026-09-30')
 
-    def test_certified_archive_hydration_is_atomic_and_repeatable(self):
-        runtime=Path('D:/TradingML/runtimes')
-        with tempfile.TemporaryDirectory(dir=runtime,prefix='reporting-flags-test-') as root:
-            a=migration.parse_args(['--start-date','2026-08-03','--end-date','2026-08-03','--hydrate-missing-trades'])
-            a.archive_flatfiles_root_win=Path(root)/'archive'
-            a.cache_flatfiles_root_win=Path(root)/'cache'
-            relative=Path('trades_v1/2026/08/2026-08-03.csv.gz')
-            source=a.archive_flatfiles_root_win/relative
-            source.parent.mkdir(parents=True)
-            source.write_bytes(b'certified gzip bytes')
-            stat=source.stat()
-            certificate=dict(source_date='2026-08-03',trade_file_size=stat.st_size,trade_file_mtime_ns=stat.st_mtime_ns)
-            migration.hydrate_trade(a,certificate)
-            target=a.cache_flatfiles_root_win/relative
-            self.assertEqual(target.read_bytes(),source.read_bytes())
-            self.assertEqual(target.stat().st_mtime_ns,stat.st_mtime_ns)
-            migration.hydrate_trade(a,certificate)
-            target.write_bytes(b'bad')
-            with self.assertRaisesRegex(ValueError,'differs from source certificate'):
-                migration.hydrate_trade(a,certificate)
+    def test_historical_repair_cannot_reopen_imported_flatfiles(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        with patch.object(Path,'is_file',side_effect=AssertionError('file access forbidden')):
+            with self.assertRaisesRegex(ValueError,'cannot reopen'):
+                migration.hydrate_trade(SimpleNamespace(),{})
+            with self.assertRaisesRegex(ValueError,'fallback is forbidden'):
+                migration.raw_sql(SimpleNamespace(),{})
+        with self.assertRaises(SystemExit):
+            migration.parse_args(['--start-date','2026-08-03','--end-date','2026-08-03','--hydrate-missing-trades'])
+
+    def test_missing_sidecar_fails_before_file_access_or_mutation(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        progress=SimpleNamespace(skipped=0)
+        source=dict(source_date='2026-08-03')
+        with patch.object(migration,'latest',return_value=None),patch.object(migration,'hydrate_trade',side_effect=AssertionError('file access')):
+            with self.assertRaisesRegex(ValueError,'sidecars are required'):
+                migration.process_day(None,SimpleNamespace(),source,progress)
 
     def test_source_day_bounds_cover_utc_midnight(self):
         source=dict(source_date='2026-09-18',first_sip_timestamp_us=ns('2026-09-18T08:00:00')//1000,
@@ -83,13 +82,16 @@ class FlagsTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('TRADE_FLAGS_CLICKHOUSE_TEST')=='1','real ClickHouse opt-in')
 class ClickHouseTests(unittest.TestCase):
     def setUp(self):
-        self.c=migration.Client(migration.parse_args(['--start-date','2026-09-18','--end-date','2026-09-18']))
+        self.c=migration.Client(migration.parse_args(['--start-date','2026-09-18','--end-date','2026-09-18',
+            '--env-file',str(Path(__file__).resolve().parents[1]/'.env'),'--query-timeout','45','--max-threads','2','--max-memory-gb','2']),persistent=False)
         prefix='q_live.trade_reporting_test_'+uuid.uuid4().hex[:12]
         self.raw,self.target,self.mapping=prefix+'_raw',prefix+'_events',prefix+'_map'
 
     def tearDown(self):
-        for table in (self.mapping+'c',self.mapping+'b',self.mapping,self.raw,self.target):
-            self.c.query(f'DROP TABLE IF EXISTS {table}',read=False)
+        try:
+            for table in (self.mapping+'c',self.mapping+'b',self.mapping,self.raw,self.target):
+                self.c.query(f'DROP TABLE IF EXISTS {table}',read=False)
+        finally:self.c.close()
 
     def test_sql_python_parity(self):
         for conditions,p,s,expected in CASES:
@@ -104,11 +106,15 @@ class ClickHouseTests(unittest.TestCase):
         self.c.query(f"CREATE TABLE {self.raw} ENGINE=MergeTree ORDER BY (ticker,sip_timestamp_us,sequence_number) SETTINGS storage_policy='live_market_ssd' AS SELECT * EXCEPT(event_meta,ordinal),toUInt8(multiIf(ordinal=1,65,ordinal=2,195,17)) event_meta,ordinal sequence_number,toUInt8(multiIf(ordinal=1,0,ordinal=2,1,8)) reporting_reason FROM {self.target} e WHERE bitAnd(e.event_meta,1)=1",read=False)
         self.c.query(f"CREATE TABLE {self.mapping} ENGINE=MergeTree ORDER BY (ticker,ordinal) SETTINGS storage_policy='live_market_ssd' AS {migration.map_select(self.raw,self.target,'2026-09-18')}",read=False)
         self.assertEqual(self.c.query(f'SELECT count() n,sum(mismatch) bad FROM {self.mapping}')[0],dict(n=3,bad=0))
+        self.assertEqual(self.c.query(migration.mapping_integrity_sql(self.raw,self.target,self.mapping,'2026-09-18'))[0]['bad'],0)
         before=migration.unchanged_digest(self.c,self.target,'2026-09-18')
         self.c.query(migration.mutation_sql(self.target,self.mapping,'2026-09-18').replace('mutations_sync=0','mutations_sync=2'),read=False)
         self.assertEqual(migration.verify(self.c,self.target,self.mapping,'2026-09-18'),3)
         self.assertEqual(migration.unchanged_digest(self.c,self.target,'2026-09-18'),before)
         self.assertEqual(self.c.query(f'SELECT event_meta FROM {self.target} ORDER BY ordinal'),[{'event_meta':m} for m in (65,195,17,0)])
+        self.c.query(f'ALTER TABLE {self.mapping} UPDATE expected_meta=65 WHERE ordinal=2 SETTINGS mutations_sync=2',read=False)
+        self.assertGreater(self.c.query(migration.mapping_integrity_sql(self.raw,self.target,self.mapping,'2026-09-18'))[0]['bad'],0)
+        self.c.query(f'ALTER TABLE {self.mapping} UPDATE expected_meta=195 WHERE ordinal=2 SETTINGS mutations_sync=2',read=False)
         # Reapply is idempotent, and a missing source row cannot pass reconciliation.
         self.c.query(migration.mutation_sql(self.target,self.mapping,'2026-09-18').replace('mutations_sync=0','mutations_sync=2'),read=False)
         self.c.query(f'ALTER TABLE {self.raw} DELETE WHERE sequence_number=2 SETTINGS mutations_sync=2',read=False)

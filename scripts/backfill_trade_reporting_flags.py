@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ingestion-owned, explicitly authorized v1 canonical reporting-flags migration.
+"""Canonical/sidecar-only v1 reporting-flags migration for imported SIP days.
 
 Inclusive --start-date/--end-date; --plan-only writes nothing. Ctrl+C preserves
 the map and coverage; rerun the same command to resume. No raw event is deleted.
@@ -9,15 +9,12 @@ import argparse
 import copy
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
-import hashlib
 import json
+import re
 import os
 from pathlib import Path
-import shutil
 import sys
 import time
-import uuid
-from types import SimpleNamespace
 
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 sys.dont_write_bytecode = True
@@ -25,8 +22,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.build_market_day import Client, DEFAULT_ENV, Progress, digest
 from pipelines.market_sip.events.market_day_sql import literal as lit
 from pipelines.market_sip.events.trade_reporting_flags import REVISION
-from pipelines.market_sip.flatfiles import download_update_events as ingest
-from pipelines.market_sip.flatfiles.download_massive_sip_flatfiles import DownloadJob
 
 DB = "q_live"
 COVERAGE = DB + ".historical_trade_reporting_coverage_v1"
@@ -75,7 +70,7 @@ def parse_args(argv=None):
     p.add_argument("--archive-flatfiles-root-win", type=Path, default=ARCHIVE)
     p.add_argument("--cache-flatfiles-root-win", type=Path, default=CACHE)
     p.add_argument("--hydrate-missing-trades", action="store_true",
-                   help="Copy certified missing trade gzip files from archive to ClickHouse's D cache")
+                   help="Deprecated: historical repair cannot hydrate imported flatfiles")
     p.add_argument("--max-threads", type=int, default=4)
     p.add_argument("--tickers-per-batch", type=int, default=200)
     p.add_argument("--max-memory-gb", type=float, default=8)
@@ -86,6 +81,8 @@ def parse_args(argv=None):
     a = p.parse_args(argv)
     if a.end_date < a.start_date or a.max_threads < 1 or a.tickers_per_batch < 1 or not 0 < a.max_memory_gb <= 32 or a.query_timeout < 1:
         p.error("Invalid range or resource limit")
+    if a.hydrate_missing_trades:
+        p.error('Historical repair cannot hydrate imported flatfiles; use canonical ingestion-owned sidecars')
     return a
 
 
@@ -163,51 +160,8 @@ def source_plan(c,a):
     return rows, missing
 
 
-def hydrate_trade(a,source):
-    """Restore a certified gzip into CH's allowed file root, atomically."""
-    day=source['source_date']
-    relative=Path('trades_v1')/day[:4]/day[5:7]/(day+'.csv.gz')
-    target=a.cache_flatfiles_root_win/relative
-    expected_size=int(source['trade_file_size'])
-    expected_mtime=int(source['trade_file_mtime_ns'])
-    if target.is_file():
-        stat=target.stat()
-        if stat.st_size!=expected_size or stat.st_mtime_ns!=expected_mtime:
-            raise ValueError(f'{day}: existing trade cache differs from source certificate')
-        return
-    if not a.hydrate_missing_trades:
-        raise ValueError(f'{day}: trade flatfile absent from ClickHouse D cache; pass --hydrate-missing-trades after checking archive')
-    archived=a.archive_flatfiles_root_win/relative
-    if not archived.is_file():
-        raise ValueError(f'{day}: trade flatfile absent from archive')
-    stat=archived.stat()
-    if stat.st_size!=expected_size or stat.st_mtime_ns!=expected_mtime:
-        raise ValueError(f'{day}: archive trade file differs from source certificate')
-    target.parent.mkdir(parents=True,exist_ok=True)
-    temporary=target.with_name(target.name+'.reporting-flags.part')
-    temporary.unlink(missing_ok=True)
-    source_hash=hashlib.sha256()
-    try:
-        with archived.open('rb') as source_file, temporary.open('wb') as dest:
-            while chunk:=source_file.read(8*1024*1024):
-                source_hash.update(chunk)
-                dest.write(chunk)
-            dest.flush();os.fsync(dest.fileno())
-        shutil.copystat(archived,temporary)
-        copied_hash=hashlib.sha256()
-        with temporary.open('rb') as copy:
-            while chunk:=copy.read(8*1024*1024):
-                copied_hash.update(chunk)
-        stat=temporary.stat()
-        if (stat.st_size!=expected_size or stat.st_mtime_ns!=expected_mtime or
-                copied_hash.digest()!=source_hash.digest()):
-            raise ValueError(f'{day}: copied trade file failed size/time/checksum verification')
-        if target.exists():
-            raise ValueError(f'{day}: trade cache appeared during copy; refusing replacement')
-        temporary.replace(target)
-        print(f'{day} | restored certified trade gzip to ClickHouse cache ({expected_size:,} bytes)',flush=True)
-    finally:
-        temporary.unlink(missing_ok=True)
+def hydrate_trade(a, source):
+    raise ValueError('Historical reporting repair cannot reopen imported flatfiles; require an ingestion-certified ClickHouse sidecar')
 
 
 def where_day(day):
@@ -221,12 +175,7 @@ def where_day(day):
 
 
 def raw_sql(a, source):
-    day = source['source_date']
-    args = SimpleNamespace(database='market_sip_compact', condition_token_reference_table='event_condition_token_reference',
-        flatfiles_root_win=a.flatfiles_root_win,flatfiles_root_ch=a.flatfiles_root_ch,
-        drop_trade_correction_codes='07,08,10,11',tickers='')
-    files = ingest.DayFiles(day,DownloadJob('quotes',day,'',source['quote_file_path']),DownloadJob('trades',day,'',source['trade_file_path']))
-    return ingest.raw_event_union_sql(args,files,trade_only=True,include_reporting_reason=True)
+    raise ValueError('Historical raw-file fallback is forbidden; use the canonical importer to publish a versioned sidecar')
 
 
 def evidence_tuple(alias):
@@ -245,6 +194,13 @@ def map_select(raw, target, day, tickers=None):
     FULL OUTER JOIN (SELECT *,toUInt8(1) AS present,row_number() OVER (PARTITION BY ticker ORDER BY sip_timestamp_us,sequence_number) AS trade_rank
                     FROM {raw} WHERE 1=1{ticker_filter}) r ON e.ticker=r.ticker AND e.trade_rank=r.trade_rank
     SETTINGS join_algorithm='full_sorting_merge', join_use_nulls=0"""
+
+
+def mapping_integrity_sql(raw,target,mapping,source):
+    return ("SELECT count() bad FROM (SELECT *,toUInt8(1) present FROM ("+map_select(raw,target,source)+")) e "
+        f"FULL OUTER JOIN (SELECT *,toUInt8(1) present FROM {mapping}) m USING (ticker,ordinal) "
+        "WHERE e.present!=1 OR m.present!=1 OR e.expected_meta!=m.expected_meta OR e.reason!=m.reason OR e.mismatch!=m.mismatch "
+        "SETTINGS join_algorithm='full_sorting_merge',join_use_nulls=0")
 
 
 def mutation_sql(target, mapping, day):
@@ -347,9 +303,12 @@ def process_day(c,a,source,progress):
     if previous and previous['status']=='complete':
         progress.skipped += 1
         return
-    hydrate_trade(a,source)
-    raw = previous['raw_table'] if previous else DB+'.trade_reporting_raw_'+day.replace('-','')+'_'+uuid.uuid4().hex[:12]
-    mapping = previous['map_table'] if previous else raw.replace('_raw_','_map_')
+    if not previous or previous['status'] not in ('staged','mutating'):
+        raise ValueError(f'{day}: ingestion-certified ClickHouse reporting sidecars are required; flatfile fallback is forbidden')
+    raw = previous['raw_table']
+    mapping = previous['map_table']
+    if any(not re.fullmatch(r'q_live\.trade_reporting_(raw|map)_[0-9]{8}_[0-9a-f]{12}',name) for name in (raw,mapping)):
+        raise ValueError(f'{day}: unsupported sidecar namespace; explicit canonical migration required')
     details = json.loads(previous['details']) if previous else {}
     status = previous['status'] if previous else 'started'
     if previous:
@@ -357,47 +316,20 @@ def process_day(c,a,source,progress):
     def checkpoint(state):
         record(c,day,source_digest,state,raw,mapping,details)
     progress.update(day+' | reconcile source')
-    if status not in ('staged','mutating','complete'):
-        # Interrupted inserts can be partial; rebuild staging only, never canonical data.
-        checkpoint('started')
-        c.query(f"DROP TABLE IF EXISTS {mapping}",read=False)
-        present=c.query(f"SELECT name FROM system.tables WHERE database='q_live' AND name={lit(raw.split('.')[1])}")
-        if present:
-            placement(c,raw,'live_market_ssd')
-            n=c.query(f"SELECT count() n FROM {raw}")[0]['n']
-            if n!=int(source['trade_event_rows']):
-                c.query(f"DROP TABLE {raw}",read=False)
-                present=[]
-        if not present:
-            c.query(f"CREATE TABLE {raw} ENGINE=MergeTree ORDER BY (ticker,sip_timestamp_us,sequence_number) SETTINGS storage_policy='live_market_ssd' AS {raw_sql(a,source)}",read=False)
-        placement(c,raw,'live_market_ssd')
-        raw_stats=c.query(f"SELECT count() n,min(sip_timestamp_us) lo,max(sip_timestamp_us) hi,countIf(bitAnd(reporting_reason,1)>0) explicit,countIf(bitAnd(reporting_reason,2)>0) prior_date,countIf(bitAnd(reporting_reason,4)>0) lag,countIf(bitAnd(reporting_reason,8)>0) unknown_clock FROM {raw}")[0]
-        if (raw_stats['n']!=int(source['trade_event_rows']) or
-            raw_stats['lo']<int(source['first_sip_timestamp_us']) or raw_stats['hi']>int(source['last_sip_timestamp_us'])):
-            raise ValueError(f"{day}: raw count/timestamp bounds differ from source certificate")
-        duplicates = c.query(f"""SELECT ticker FROM {raw}
-          GROUP BY ticker,sip_timestamp_us,sequence_number HAVING count()>1 LIMIT 1
-          SETTINGS max_bytes_before_external_group_by=268435456""")
-        if duplicates:
-            raise ValueError(f"{day}: ambiguous raw trade ordering")
-        details['source_reasons']=raw_stats
-        tickers=[r['ticker'] for r in c.query(f"SELECT DISTINCT ticker FROM {raw} ORDER BY ticker")]
-        for offset in range(0,len(tickers),a.tickers_per_batch):
-            batch=tickers[offset:offset+a.tickers_per_batch]
-            if offset==0 or offset//1000!=(offset-a.tickers_per_batch)//1000:
-                progress.update(f"{day} | map tickers {offset+1}-{offset+len(batch)}/{len(tickers)}")
-            selection=map_select(raw,target,source,batch)
-            if offset==0:
-                c.query(f"CREATE TABLE {mapping} ENGINE=MergeTree ORDER BY (ticker,ordinal) SETTINGS storage_policy='live_market_ssd' AS {selection}",read=False)
-            else:
-                c.query(f"INSERT INTO {mapping} {selection}",read=False)
-        placement(c,mapping,'live_market_ssd')
-        matched=c.query(f"SELECT count() n,sum(mismatch) bad,countIf(bitAnd(expected_meta,192)=192) delayed,countIf(bitAnd(expected_meta,192)=0) unknown FROM {mapping}")[0]
-        target_count=c.query(f"SELECT count() n FROM {target} WHERE {where_day(source)}")[0]['n']
-        if matched['n']!=raw_stats['n'] or target_count!=raw_stats['n'] or matched['bad']:
-            raise ValueError(f"{day}: full source-to-canonical reconciliation failed: {matched}")
-        details['counts']=matched
-        checkpoint('staged')
+    # Existing sidecars are input authority, not disposable reconstruction caches.
+    placement(c,raw,'live_market_ssd')
+    placement(c,mapping,'live_market_ssd')
+    expected=int(details.get('counts',{}).get('n',-1))
+    if expected!=int(source['trade_event_rows']) or int(details.get('counts',{}).get('bad',-1))!=0:
+        raise ValueError(f'{day}: sidecar certificate counts do not match canonical source')
+    reconciled=c.query('SELECT count() n,sum(mismatch) bad FROM ('+map_select(raw,target,source)+')')[0]
+    if int(reconciled['n'])!=expected or int(reconciled['bad'])!=0:
+        raise ValueError(f'{day}: sidecar-to-canonical integrity changed')
+    unique=c.query(f'SELECT count() n,uniqExact(tuple(ticker,ordinal)) unique_rows FROM {mapping}')[0]
+    if int(unique['n'])!=expected or int(unique['unique_rows'])!=expected:
+        raise ValueError(f'{day}: mapping is incomplete or duplicated')
+    if int(c.query(mapping_integrity_sql(raw,target,mapping,source))[0]['bad']):
+        raise ValueError(f'{day}: persisted reporting mapping differs from source/canonical authority')
     if a.stage_only:
         placement(c,raw,'live_market_ssd')
         placement(c,mapping,'live_market_ssd')
@@ -435,9 +367,7 @@ def process_day(c,a,source,progress):
         raise ValueError(f"{day}: integrity verification failed")
     placement(c,target,'sip_raw_ssd')
     checkpoint('complete')
-    # Retain the compact coverage certificate; temporary evidence is safe to remove now.
-    for table in (raw,mapping):
-        c.query(f"DROP TABLE {table}",read=False)
+    # Retain authoritative sidecars for restart, audit and future versioned repairs.
     progress.completed+=1
 
 

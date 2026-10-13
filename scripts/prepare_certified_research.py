@@ -36,12 +36,13 @@ def parse_args(argv=None):
     p.add_argument('--global-memory-gib',type=int,default=16)
     p.add_argument('--format',choices=('text','json','sql'),default='text')
     p.add_argument('--acquire-missing',action='store_true',help='Include missing-source acquisition in the frozen plan')
-    p.add_argument('--hydrate-missing-trades',action='store_true',help='Include verified G-to-D reporting migration staging')
+    p.add_argument('--hydrate-missing-trades',action='store_true',help='Deprecated: imported-day repair requires canonical sidecars')
     args=p.parse_args(argv)
     try:contracts.identifier(args.database)
     except ValueError as error:p.error(str(error))
     if args.command!='schema' and args.format=='sql':p.error('SQL format is for schema inspection only')
     if args.command=='status' and args.dataset_id is None:p.error('status requires --dataset-id')
+    if args.hydrate_missing_trades:p.error('Imported-day reporting repair cannot hydrate flatfiles; G-to-D staging belongs to acquisition')
     return args
 
 

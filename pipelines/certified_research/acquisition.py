@@ -64,15 +64,14 @@ def updater_command(paths: IngestionPaths,start: date,end: date,*,workers=4,thre
 
 
 def reporting_command(paths: IngestionPaths,start: date,end: date,*,hydrate=False,threads=2,memory_gib=2):
+    if hydrate:raise ValueError('Historical reporting repair cannot hydrate imported flatfiles; certified sidecars are required')
     if start>end or not 1<=threads<=8 or not 1<=memory_gib<=32:
         raise ValueError('Invalid reporting migration limits')
     command=(sys.executable,'-B',str(ROOT/'scripts/backfill_trade_reporting_flags.py'),
              '--start-date',str(start),'--end-date',str(end),'--env-file',str(paths.env_file),
-             '--runtime',str(paths.runtime/'reporting'),'--flatfiles-root-win',str(paths.cache),
-             '--flatfiles-root-ch',paths.clickhouse_cache,'--archive-flatfiles-root-win',str(paths.archive),
-             '--cache-flatfiles-root-win',str(paths.cache),'--max-threads',str(threads),
+             '--runtime',str(paths.runtime/'reporting'),'--max-threads',str(threads),
              '--max-memory-gb',str(memory_gib),'--progress','text')
-    return command+(('--hydrate-missing-trades',) if hydrate else ())
+    return command
 
 
 def run_ingestion(command,paths: IngestionPaths,stop,*,emit=print):
