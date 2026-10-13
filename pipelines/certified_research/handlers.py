@@ -8,13 +8,13 @@ from __future__ import annotations
 
 from datetime import date
 
-from . import facts,reference_producer,float_data,producer
+from . import facts,reference_producer,float_data,producer,price_inputs
 from .contracts import digest
 from .execution import Unit
 from .publication import Publisher,Scope
 from .reference_publication import ReferenceScope,ReferencePublisher
 
-PRODUCTS=('fundamentals','derived_fundamentals','short_volume','short_interest','float_supply')
+PRODUCTS=('fundamentals','derived_fundamentals','short_volume','short_interest','regular_prices','float_supply')
 MARKET_PRODUCTS=('market_aggregate','technical','v7')
 
 
@@ -97,11 +97,41 @@ class ReferenceHandlers:
         self.dataset=dataset_id;self.database=database;self.claim=claim;self.client_factory=client_factory
         self.source_guard=source_guard;self.plans={p.unit.key:p for p in plans}
 
+    def bar_parents(self,parents):
+        if not parents or len(parents)>1000:raise ValueError('Regular prices require bounded shared market parents')
+        result=[]
+        for key,combined in parents.items():
+            plan=self.plans[key];args=plan.arguments
+            if plan.unit.product!='market_aggregate':raise ValueError('Wrong regular-price parent product')
+            receipt=combined['receipts']['bars']
+            scope=Scope(self.dataset,date.fromisoformat(args['day']),int(args['listing_key']),'bars',receipt['parent_hash'])
+            if (receipt['dataset_id']!=scope.dataset_id or str(receipt['session_date'])!=str(scope.session_date)
+                    or int(receipt['listing_key'])!=scope.listing_key or receipt['product']!='bars'):
+                raise ValueError('Regular-price receipt does not match planned market scope')
+            result.append((scope,receipt))
+        result.sort(key=lambda pair:(pair[0].session_date,pair[0].listing_key))
+        if len({p.session_date for p,_ in result})!=len(result):raise ValueError('Competing regular-price listing/day parents')
+        return result
+
+    def received_scope(self,plan,receipt):
+        """Resolve dynamic parent lineage from certified output, not empty inputs."""
+        args=plan.arguments;kind=1 if plan.unit.product in ('fundamentals','derived_fundamentals') else 2
+        scope=ReferenceScope(self.dataset,kind,int(args['entity_key']),plan.unit.product,
+            date.fromisoformat(args['start']),date.fromisoformat(args['end']),receipt['parent_hash'],facts.catalog_hash())
+        if (receipt['dataset_id']!=scope.dataset_id or int(receipt['entity_kind'])!=scope.entity_kind
+                or int(receipt['entity_key'])!=scope.entity_key or receipt['family']!=scope.family
+                or str(receipt['range_start'])!=str(scope.start) or str(receipt['range_end'])!=str(scope.end)
+                or receipt['catalog_hash']!=scope.catalog_hash):
+            raise ValueError('Reference parent receipt does not match immutable campaign scope')
+        return scope
+
     def scope(self,plan,parents):
         args=plan.arguments;kind=1 if plan.unit.product in ('fundamentals','derived_fundamentals') else 2
         if plan.unit.product=='derived_fundamentals':
             if len(parents)!=1:raise ValueError('Derived fundamentals require one certified reported parent')
             parent=next(iter(parents.values()));parent_hash=reference_producer.derived_parent_hash(parent)
+        elif plan.unit.product=='regular_prices':
+            parent_hash=price_inputs.parent_hash(self.bar_parents(parents))
         elif plan.unit.product=='float_supply':
             families={self.plans[k].unit.product:v for k,v in parents.items()}
             if len(families)!=len(parents):raise ValueError('Competing float parent families')
@@ -130,8 +160,12 @@ class ReferenceHandlers:
                 reference_producer.run_derived(scope,parent_scope,query,self.claim,self.source_guard,database=self.database)
             elif plan.unit.product in ('short_volume','short_interest'):
                 reference_producer.run_short(scope,query,self.claim,self.source_guard,database=self.database)
+            elif plan.unit.product=='regular_prices':
+                reference_producer.run_regular_prices(scope,[s for s,_ in self.bar_parents(parents)],query,
+                    self.claim,self.source_guard,database=self.database)
             elif plan.unit.product=='float_supply':
-                scopes={self.plans[key].unit.product:self.scope(self.plans[key],{}) for key in parents}
+                scopes={self.plans[key].unit.product:self.received_scope(self.plans[key],receipt)
+                        for key,receipt in parents.items()}
                 reference_producer.run_float(scope,int(args['issuer_key']),scopes,query,self.claim,self.source_guard,database=self.database)
         finally:client.close()
 
@@ -139,7 +173,11 @@ class ReferenceHandlers:
         client=self.client_factory()
         try:
             self.claim.check();self.source_guard()
-            return ReferencePublisher(client.query,self.database,self.claim).receipt(self.scope(plan,parents))
+            scope=self.scope(plan,parents)
+            if plan.unit.product=='regular_prices':
+                reference_producer.regular_price_parents(scope,[s for s,_ in self.bar_parents(parents)],
+                    client.query,self.claim,database=self.database)
+            return ReferencePublisher(client.query,self.database,self.claim).receipt(scope)
         finally:client.close()
 
     def registry(self):

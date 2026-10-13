@@ -107,6 +107,16 @@ def run_regular_prices(scope,bar_scopes,query,claim,source_guard,*,database='art
     claim.check();source_guard();schema.verify_storage(query,database,require_tables=True)
     schema.verify_auxiliary_storage(query,database,(STAGING,))
     if scope.entity_kind!=2 or scope.family!='regular_prices':raise ValueError('Price facts require a security scope')
+    parents=regular_price_parents(scope,bar_scopes,query,claim,database=database)
+    return _materialize(scope,query,claim,source_guard,database,
+        lambda attempt:price_inputs.projection(database,scope.dataset_id,attempt,scope.entity_key,parents,wide=True))
+
+
+def regular_price_parents(scope,bar_scopes,query,claim,*,database='arte'):
+    """Reverify market authority and dated membership on production AND resume."""
+    if (scope.entity_kind!=2 or scope.family!='regular_prices' or not 1<=len(bar_scopes)<=1000
+            or len({p.session_date for p in bar_scopes})!=len(bar_scopes)):
+        raise ValueError('Regular prices require one bounded bar parent per session')
     publisher=Publisher(query,database,claim);parents=[]
     for parent_scope in sorted(bar_scopes,key=lambda p:p.session_date):
         if (parent_scope.dataset_id!=scope.dataset_id or parent_scope.product!='bars'
@@ -122,8 +132,7 @@ def run_regular_prices(scope,bar_scopes,query,claim,source_guard,*,database='art
         if int(binding[0]['n'])!=1:raise ValueError('Regular-price listing/security membership is absent or ambiguous')
         parents.append((parent_scope,receipt))
     if scope.parent_hash!=price_inputs.parent_hash(parents):raise ValueError('Regular-price source/calendar dependency changed')
-    return _materialize(scope,query,claim,source_guard,database,
-        lambda attempt:price_inputs.projection(database,scope.dataset_id,attempt,scope.entity_key,parents,wide=True))
+    return parents
 
 
 def _materialize(scope,query,claim,source_guard,database,projection_factory):

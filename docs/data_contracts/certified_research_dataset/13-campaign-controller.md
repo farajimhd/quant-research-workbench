@@ -22,7 +22,9 @@ Keeper suspension/loss invalidates the writer permanently, including a reconnect
 
 ## Verification and remaining integration
 
-Concrete reference registration now connects SEC facts, derived fundamentals, short families and float supply to the controller's producer/verifier contracts. Each call owns its ClickHouse client. A real AAPL SEC→derived campaign successfully published its root seal and resumed through those concrete handlers. Regular-price, allocation and corporate producers still require full planning/registration, together with source acquisition and repair orchestration.
+Concrete reference registration now connects SEC facts, derived fundamentals, short families, regular-session prices and float supply to the controller's producer/verifier contracts. Each call owns its ClickHouse client. A real AAPL SEC→derived campaign successfully published its root seal and resumed through those concrete handlers. Allocation and corporate producers still require full planning/registration, together with source acquisition and repair orchestration.
+
+Regular-price units consume bounded shared-market parents and verify their listing/date/bar receipts. They recheck dated security membership during production and authority verification, including sealed resume. Float parent scopes come from actual certified reference receipts, so calendar/bar-derived price lineage is preserved rather than being recomputed with empty dependencies. An integrated market→regular-price ClickHouse fixture publishes the expected price and root seal, resumes without inserts, and rejects ambiguous membership and mismatched parent identity. Global universe evidence still belongs in the frozen campaign source guard.
 
 ### Shared market execution
 

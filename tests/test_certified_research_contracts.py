@@ -440,8 +440,18 @@ class ClickHouseIntegration(unittest.TestCase):
             parents[family]=publisher.publish(parent_scope,attempt,publisher.evidence(parent_scope,attempt))
         scope=ReferenceScope(dataset,2,security,'float_supply',date(2025,1,1),date(2026,9,30),float_data.parent_hash(parents),facts.catalog_hash())
         logs=[]
-        def query(sql,*args,**kw):logs.append(sql);return self.client.query(sql,*args,**kw)
-        receipt=reference_producer.run_float(scope,issuer,parent_scopes,query,Claim(),lambda:None,database=self.database)
+        plans=tuple(PlannedUnit(Unit(family,family),dict(entity_key=p.entity_key,start=str(p.start),end=str(p.end)))
+                    for family,p in parent_scopes.items())
+        supply=PlannedUnit(Unit('supply','float_supply',tuple(parents)),
+            dict(entity_key=security,issuer_key=issuer,start=str(scope.start),end=str(scope.end)))
+        def factory():
+            real=self.builder.Client(self.args,persistent=False)
+            class Client:
+                def query(self,sql,*args,**kwargs):logs.append(sql);return real.query(sql,*args,**kwargs)
+                def close(self):real.close()
+            return Client()
+        handlers=ReferenceHandlers(dataset,self.database,Claim(),factory,lambda:None,(*plans,supply))
+        handlers.producer(supply,parents,Event());receipt=handlers.verifier(supply,parents)
         def read(name,at):
             return self.client.query(facts.lookup_sql(self.database,dataset,[(2,security)],[float_data.key(name)],at,
                 units=(2,),basis_units=(2,),taxonomies=(0,)))[0]
@@ -463,7 +473,8 @@ class ClickHouseIntegration(unittest.TestCase):
         self.assertIsNone(allocation_expired['value'])
         self.assertEqual(allocation_expired['reason'],'unqualified_issuer_security_allocation')
         logs.clear()
-        self.assertEqual(reference_producer.run_float(scope,issuer,parent_scopes,query,Claim(),lambda:None,database=self.database),receipt)
+        handlers.producer(supply,parents,Event())
+        self.assertEqual(handlers.verifier(supply,parents),receipt)
         self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
 
     def test_real_sec_to_derived_chain_uses_original_fiscal_context_in_clickhouse(self):
@@ -683,13 +694,19 @@ class ClickHouseIntegration(unittest.TestCase):
         rules=({'token_id':1,'modifier_int':0,'update_last':1,'update_high_low':1,'update_volume':1},)
         request=producer.MarketRequest(base,config.content_hash,'b'*64,rules,{},'c'*64,'d'*64,
                                        boundaries(day)['REGULAR'],True)
-        source_sql=(f"SELECT toUInt64({market_day_sql.bounds(day,'04:05:00')}+number*100000) sip_timestamp_us,"
+        source_sql=(f"SELECT toUInt64({market_day_sql.bounds(day,'09:30:00')}+number*100000) sip_timestamp_us,"
             'toUInt64(number) ordinal,toUInt8(71) event_meta,toUInt32(10000) price_primary_int,'
             'toUInt32(0) price_secondary_int,toFloat32(5) size_primary,toFloat32(0) size_secondary,'
             +','.join(f'toUInt8(0) condition_token_{i}' for i in range(1,6))+' FROM numbers(3)')
         args=dict(day=str(day),listing_key=93,ticker='TEST');logs=[];lock=Lock()
         plans=tuple(PlannedUnit(Unit(key,kind,parents,memory),dict(args)) for key,kind,parents in
             (('shared','market_aggregate',()),('indicators','technical',('shared',)),('levels','v7',('shared',))))
+        plans+=(PlannedUnit(Unit('prices','regular_prices',('shared',),memory),
+            dict(entity_key=94,start=str(day),end=str(day))),)
+        insert_rows(self.client.query,self.database,'research_membership_v1',[
+            dict(dataset_id=dataset,listing_key=93,security_key=94,issuer_key=95,ticker='TEST',conid=91,
+                valid_from=str(day)+' 00:00:00.000000',valid_to=str(day)+' 23:59:59.999999',
+                eligible=1,reason='',evidence_hash='a'*64)])
         class Claim:
             def check(self):pass
         def factory():
@@ -703,10 +720,17 @@ class ClickHouseIntegration(unittest.TestCase):
         claim=Claim();registry=MarketHandlers(dataset,self.database,claim,factory,lambda:None,
             lambda plan,parents:request,lambda plan,parents:engine(),fixture_source=source_sql)
         producers,verifiers=registry.registry()
+        reference=ReferenceHandlers(dataset,self.database,claim,factory,lambda:None,plans)
+        rp,rv=reference.registry();producers.update(rp);verifiers.update(rv)
         campaign=Campaign(self.client.query,self.database,claim,dataset,config,plans,'b'*64,lambda:None,producers,verifiers)
         result=campaign.run()
         self.assertEqual(result['status'],'complete',str(result['errors']))
         self.assertTrue(result['seal']['root_hash'])
+        prices=self.client.query(f"SELECT value,status FROM {self.database}.research_facts_v1 "
+            f"WHERE attempt_id=toUUID('{result['results']['prices']['attempt_id']}')")
+        self.assertEqual(prices,[dict(value=1.,status=1)])
+        self.assertEqual(reference.received_scope(plans[-1],result['results']['prices']),
+                         reference.scope(plans[-1],{'shared':result['results']['shared']}))
         self.assertEqual(sum(sql.startswith(f'INSERT INTO {self.database}.research_stage_liquidity_v1') for sql in logs),1)
         logs.clear();resumed=campaign.run()
         self.assertEqual(resumed['seal'],result['seal'])
@@ -717,6 +741,13 @@ class ClickHouseIntegration(unittest.TestCase):
             registry.verifier(plans[1],{})
         with self.assertRaisesRegex(ValueError,'exact certified shared'):
             registry.verifier(plans[1],{'shared':dict(result['results']['shared'],output_hash='f'*64)})
+        with self.assertRaisesRegex(ValueError,'immutable campaign scope'):
+            reference.received_scope(plans[-1],dict(result['results']['prices'],entity_key=95))
+        insert_rows(self.client.query,self.database,'research_membership_v1',[
+            dict(dataset_id=dataset,listing_key=93,security_key=94,issuer_key=95,ticker='TEST',conid=91,
+                valid_from=str(day)+' 00:00:00.000000',valid_to=str(day)+' 23:59:59.999999',
+                eligible=1,reason='',evidence_hash='b'*64)])
+        with self.assertRaisesRegex(ValueError,'membership is absent or ambiguous'):campaign.run()
     @classmethod
     def setUpClass(cls):
         sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
