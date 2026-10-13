@@ -9,7 +9,7 @@ import ast,inspect,textwrap,re
 from pipelines.market_sip.events import market_day_sql as core
 from src.market_engine import streaming_level_book as book,reaction_band,reaction_center,derived_trade_policy,historical_level_checkpoint
 from src.market_engine.historical_session_levels import Settings
-from . import indicators,checkpoints,v7,source
+from . import indicators,checkpoints,v7,source,adjustments
 from .contracts import digest,TRADE_POLICY,REPORTING_REVISION
 
 
@@ -73,6 +73,7 @@ def market_recipe(config,rules,*,settings=Settings(),discovery_prominence=None,c
         input_origin=v7.input_origin_hash,boundaries=checkpoints.boundaries,encode=checkpoints.encode,
         restore=checkpoints.restore,reaction_band=reaction_band,reaction_center=reaction_center,
         checkpoint_digest=historical_level_checkpoint.digest,exchange_sessions=source.exchange_sessions,
+        corporate_adjustment=adjustments.resolve,indicator_price_adjustment=adjustments.indicator_state,
         eligible_completed_second=derived_trade_policy.eligible_completed_second)
     definition=dict(version='certified-market-state-recipe-v1',trade_policy=TRADE_POLICY,
         reporting_revision=REPORTING_REVISION,frames=list(core.FRAMES),ema_periods=list(core.EMAS),

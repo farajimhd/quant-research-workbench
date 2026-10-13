@@ -19,10 +19,13 @@ class StartAuthority:
     engine: StreamingLevelBook
     predecessor_hash: str
     initial_state_hash: str
+    adjustment_hash: str=''
 
-    def check(self,expected):
+    def check(self,expected,*,adjustment_hash=''):
         if (self.predecessor_hash!=expected or self.engine.checkpoint(copy_state=False)['hash']!=self.initial_state_hash):
             raise ValueError('V7 start state differs from its certified predecessor or was mutated')
+        if adjustment_hash and self.adjustment_hash!=adjustment_hash:
+            raise ValueError('V7 start state differs from its certified corporate adjustment')
         return self.engine
 
     @classmethod

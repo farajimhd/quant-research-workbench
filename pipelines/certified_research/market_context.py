@@ -32,7 +32,17 @@ def indicators(query,database,claim,parent,listing_key,day,recipe_hash,day_sourc
     return loaded['state']
 
 
-def structural(query,database,claim,parent,listing_key,day,ticker,recipe_hash,day_sources,*,split_factor,split_evidence):
+def indicator_continuation(query,database,claim,parent,listing_key,day,recipe_hash,day_sources,rules,corporate_scope):
+    """Resolve and scale a predecessor together with its adjustment lineage."""
+    from .adjustments import resolve,indicator_state as scale
+    state=indicators(query,database,claim,parent,listing_key,day,recipe_hash,day_sources,rules)
+    previous=date.fromisoformat(str(parent['session_date']))
+    adjustment=resolve(query,database,claim,corporate_scope,listing_key,previous,day)
+    return dict(state=scale(state,adjustment),predecessor_hash=parent['output_hash'],adjustment=adjustment)
+
+
+def structural(query,database,claim,parent,listing_key,day,ticker,recipe_hash,day_sources,*,
+               corporate_scope=None,split_factor=None,split_evidence=()):
     """Restore prior AH and roll once; adjustments require certified evidence.
 
     Split resolution belongs to the corporate evidence producer. Even a
@@ -42,6 +52,13 @@ def structural(query,database,claim,parent,listing_key,day,ticker,recipe_hash,da
     previous,context=_context(parent,listing_key,day,recipe_hash,day_sources)
     if parent['product']!='v7' or context['ticker']!=ticker:
         raise ValueError('V7 predecessor ticker/product differs; a certified rename transition is required')
+    adjustment=None
+    if corporate_scope is not None:
+        from .adjustments import resolve
+        adjustment=resolve(query,database,claim,corporate_scope,listing_key,previous,day)
+        split_factor=adjustment.factor;split_evidence=(adjustment.evidence_hash,)
+    elif not database.startswith('certified_research_test_'):
+        raise ValueError('Certified corporate adjustment scope is required')
     if not split_evidence:raise ValueError('Certified corporate adjustment coverage is required')
     close=price_inputs.calendar_close(previous)
     if datetime.fromisoformat(context['regular_close'])!=close:
@@ -50,4 +67,8 @@ def structural(query,database,claim,parent,listing_key,day,ticker,recipe_hash,da
     bars=Scope(scope.dataset_id,previous,listing_key,'bars',context['bars_parent_hash'])
     checkpoint,_=v7.load_from_bars(query,database,claim,scope,bars,recipe_hash,
         context['predecessor_hash'],ticker,'AH',regular_close=close)
-    return v7.StartAuthority.rollover(checkpoint,day,split_factor=split_factor,split_evidence=split_evidence)
+    authority=v7.StartAuthority.rollover(checkpoint,day,split_factor=split_factor,split_evidence=split_evidence)
+    if adjustment is not None:
+        from dataclasses import replace
+        authority=replace(authority,adjustment_hash=adjustment.evidence_hash)
+    return authority

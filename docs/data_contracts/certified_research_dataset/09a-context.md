@@ -12,6 +12,12 @@ Understand how launch parameters determine earlier data and compatible predecess
 
 These readers connect certified outputs to chronological continuation. Initial genesis/rename/adjustment producers and the complete launcher's request assembly remain unfinished; callback-based fixture execution does not prove that full production path ready.
 
+`adjustments.resolve` now verifies a corporate-history receipt and dated listing/security membership, selecting executions and revisions publicly available by 04:00 New York. It covers effective dates after the prior session through the new session, including intervening weekends. Invalid contexts/ratios and unconfirmed pending announcements block continuation. An empty certified history can yield factor one only under the upstream complete-history coverage contract; a publication-range receipt by itself cannot prove that contract.
+
+`indicator_continuation` applies the resolved price factor once to EMA/MACD, close, ATR and gain/loss state; sample counts stay unchanged. The structural reader requires the corporate scope in production and binds the same adjustment proof to its rollover authority. Technical/V7 request lineage has an explicit adjustment hash; V7 lineage also binds the regular-close boundary. Causal adjustment evidence excludes full-history receipt hashes and provenance metadata, so later unavailable actions do not alter earlier checkpoint state; the full receipt remains a separate dependency for source certification.
+
+Corporate-history acquisition/coverage admission, price-adjustment graph units and complete request assembly remain unfinished. This resolver does not turn the existing undated corporate snapshots into historical public evidence.
+
 ## On this page
 
 - [Context planner](#context-planner)

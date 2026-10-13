@@ -7,7 +7,7 @@ ownership checks are mandatory before every receipt.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime,timezone
 from uuid import uuid4
 
 from . import market,v7,schema,indicators,indicator_state as state_publication
@@ -29,6 +29,7 @@ class MarketRequest:
     regular_close: datetime
     bootstrap_indicators: bool=False
     recipe_definition: dict|None=None
+    adjustment_hash: str=''
 
     def __post_init__(self):
         for value in (self.dataset_hash,self.source_hash,self.prior_indicator_hash,self.prior_v7_hash):
@@ -36,13 +37,16 @@ class MarketRequest:
         if self.regular_close.tzinfo is None or not self.rules:raise ValueError('Calendar close/rules are required')
         if not self.prior_indicators and not self.bootstrap_indicators:
             raise ValueError('Indicator predecessor is absent; explicit bootstrap proof is required')
+        if self.adjustment_hash and (len(self.adjustment_hash)!=64 or any(c not in '0123456789abcdef' for c in self.adjustment_hash)):
+            raise ValueError('Invalid corporate adjustment dependency hash')
 
     def parent(self,product,parents=()):
         version='research-market-v7-prefix-v2' if product=='v7' else 'research-market-continuous-wilder-v2' if product=='technical' else 'research-market-producer-v1'
         return digest(dict(version=version,dataset_hash=self.dataset_hash,
             source=self.source_hash,rules=digest(self.rules),product=product,
             predecessor=self.prior_indicator_hash if product=='technical' else self.prior_v7_hash if product=='v7' else '',
-            parents=parents))
+            parents=parents,regular_close=self.regular_close.astimezone(timezone.utc).isoformat() if product=='v7' else '',
+            adjustment=self.adjustment_hash if product in ('technical','v7') else ''))
 
 
 def indicator_state(query,database,unit,attempt,prior,*,bar_attempt):
@@ -65,7 +69,9 @@ def indicator_state(query,database,unit,attempt,prior,*,bar_attempt):
     return result
 
 
-def validate_recipe(request,database):
+def validate_recipe(request,database,*,product=None):
+    if product in ('technical','v7') and not request.adjustment_hash and not database.startswith('certified_research_test_'):
+        raise ValueError('Production state continuation requires certified adjustment lineage')
     if request.recipe_definition is None:
         if not database.startswith('certified_research_test_'):
             raise ValueError('Production market execution requires the frozen concrete state recipe')
@@ -87,6 +93,7 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
         try:
             query=client.query
             claim.check();source_guard()
+            validate_recipe(request,database,product=u.product)
             if stop.is_set():raise InterruptedError('Producer stopped before starting a stage')
             publisher=Publisher(query,database,claim)
             schema.verify_auxiliary_storage(query,database,tuple(market.STAGING.values()))
@@ -130,7 +137,7 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
                 query(market.normalized_insert(unit,'technical',database),read=False)
             elif u.product=='v7':
                 engine=engine_factory()
-                if isinstance(engine,v7.StartAuthority):engine=engine.check(request.prior_v7_hash)
+                if isinstance(engine,v7.StartAuthority):engine=engine.check(request.prior_v7_hash,adjustment_hash=request.adjustment_hash)
                 elif not database.startswith('certified_research_test_'):
                     raise ValueError('V7 production requires certified start-state authority')
                 if request.recipe_definition is not None:

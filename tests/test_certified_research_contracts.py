@@ -736,6 +736,55 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_corporate_adjustment_uses_public_execution_evidence_and_scales_state(self):
+        from pipelines.certified_research import adjustments,indicators
+        class Claim:
+            def check(self):pass
+        def prepared(records):
+            dataset=str(uuid.uuid4());attempt=str(uuid.uuid4());security=9901;listing=9902
+            scope=ReferenceScope(dataset,2,security,'corporate_actions',date(2025,12,1),date(2026,1,9),'a'*64,facts.catalog_hash())
+            rows=[]
+            for name,value,available,revision in records:
+                rows.append(dict(dataset_id=dataset,attempt_id=attempt,entity_kind=2,entity_key=security,
+                    metric_key=float_data.key(name),value=value,period_start=None,period_end='2026-01-03',
+                    context_kind=1,fiscal_year=0,fiscal_period='',taxonomy_key=0,available_at=available,revision=revision,
+                    unit_key=3,basis_unit_key=3,status=1,precision=1,confidence=90,reason='',evidence_hash=c.digest((name,value,available,revision))))
+            if rows:insert_rows(self.client.query,self.database,'research_facts_v1',rows)
+            publisher=ReferencePublisher(self.client.query,self.database,Claim())
+            publisher.publish(scope,attempt,publisher.evidence(scope,attempt))
+            insert_rows(self.client.query,self.database,'research_membership_v1',[
+                dict(dataset_id=dataset,listing_key=listing,security_key=security,issuer_key=9903,ticker='TEST',conid=1,
+                    valid_from='2025-12-01 00:00:00.000000',valid_to='2026-01-10 00:00:00.000000',eligible=1,reason='',evidence_hash='b'*64)])
+            return scope,listing
+        def resolve(records):
+            scope,listing=prepared(records)
+            return adjustments.resolve(self.client.query,self.database,Claim(),scope,listing,date(2026,1,2),date(2026,1,5))
+        execute='corporate.executed_split_ratio';announce='corporate.announced_split_ratio'
+        split=resolve([(execute,2.,'2026-01-03 12:00:00.000000',0)])
+        self.assertEqual(split.factor,.5)
+        future=resolve([(execute,2.,'2026-01-03 12:00:00.000000',0),(execute,3.,'2026-01-08 12:00:00.000000',1)])
+        self.assertEqual(future.evidence_hash,split.evidence_hash)
+        self.assertNotEqual(future.parent_hash,split.parent_hash)
+        corrected=resolve([(execute,2.,'2026-01-03 12:00:00.000000',0),(execute,3.,'2026-01-05 08:00:00.000000',1)])
+        self.assertAlmostEqual(corrected.factor,1/3)
+        with self.assertRaisesRegex(ValueError,'execution confirmation'):
+            resolve([(announce,2.,'2026-01-03 11:00:00.000000',0),(execute,2.,'2026-01-05 14:00:00.000000',0)])
+        negative=resolve([]);self.assertEqual(negative.factor,1.)
+        self.assertNotEqual(negative.evidence_hash,split.evidence_hash)
+        state={f:{name:20 if name=='sample_count' else 10. for name in indicators.STATE_FIELDS} for f in market_day_sql.FRAMES}
+        scaled=adjustments.indicator_state(state,split)
+        self.assertEqual(scaled[1000]['sample_count'],20);self.assertEqual(scaled[1000]['close'],5.)
+        self.assertEqual(scaled[1000]['avg_gain']/scaled[1000]['avg_loss'],state[1000]['avg_gain']/state[1000]['avg_loss'])
+        self.assertEqual(state[1000]['close'],10.)
+        base=market.MarketUnit(str(uuid.uuid4()),date(2026,1,5),'TEST',9902,str(uuid.uuid4()))
+        rules=({'token_id':1,'modifier_int':0,'update_high_low':1,'update_last':1,'update_volume':1},)
+        request=producer.MarketRequest(base,'a'*64,'b'*64,rules,{},'c'*64,'d'*64,boundaries(base.day)['REGULAR'],True,
+            adjustment_hash=split.evidence_hash)
+        changed=replace(request,adjustment_hash=corrected.evidence_hash)
+        self.assertEqual(request.parent('bars'),changed.parent('bars'))
+        self.assertNotEqual(request.parent('technical'),changed.parent('technical'))
+        self.assertNotEqual(request.parent('v7'),changed.parent('v7'))
+
     def test_native_reporting_repair_preserves_fields_resumes_and_fails_closed(self):
         from pipelines.certified_research import source as source_contract
         from pipelines.market_sip.events import reporting_evidence as ns,native_reporting_repair as repair
@@ -1411,6 +1460,20 @@ class ClickHouseIntegration(unittest.TestCase):
         roll=market_context.structural(self.client.query,self.database,Claim(),structural,unit.listing_key,
             date(2026,8,24),unit.ticker,request.dataset_hash,{day:request.source_hash},split_factor=1.,split_evidence=('a'*64,))
         self.assertEqual(roll.predecessor_hash,checkpoint['state_hash'])
+        corporate=ReferenceScope(unit.dataset_id,2,9927,'corporate_actions',date(2026,8,20),date(2026,8,25),'e'*64,facts.catalog_hash())
+        publisher=ReferencePublisher(self.client.query,self.database,Claim());empty=str(uuid.uuid4())
+        publisher.publish(corporate,empty,publisher.evidence(corporate,empty))
+        insert_rows(self.client.query,self.database,'research_membership_v1',[
+            dict(dataset_id=unit.dataset_id,listing_key=unit.listing_key,security_key=9927,issuer_key=9928,ticker=unit.ticker,conid=1,
+                valid_from='2026-08-20 00:00:00.000000',valid_to='2026-08-26 00:00:00.000000',eligible=1,reason='',evidence_hash='f'*64)])
+        continuation=market_context.indicator_continuation(self.client.query,self.database,Claim(),technical,unit.listing_key,
+            date(2026,8,24),request.dataset_hash,{day:request.source_hash},rules,corporate)
+        self.assertEqual(continuation['state'],loaded['state'])
+        certified_roll=market_context.structural(self.client.query,self.database,Claim(),structural,unit.listing_key,
+            date(2026,8,24),unit.ticker,request.dataset_hash,{day:request.source_hash},corporate_scope=corporate)
+        certified_roll.check(checkpoint['state_hash'],adjustment_hash=continuation['adjustment'].evidence_hash)
+        with self.assertRaisesRegex(ValueError,'corporate adjustment'):
+            certified_roll.check(checkpoint['state_hash'],adjustment_hash='a'*64)
         with self.assertRaisesRegex(ValueError,'corporate adjustment'):
             market_context.structural(self.client.query,self.database,Claim(),structural,unit.listing_key,
                 date(2026,8,24),unit.ticker,request.dataset_hash,{day:request.source_hash},split_factor=1.,split_evidence=())
