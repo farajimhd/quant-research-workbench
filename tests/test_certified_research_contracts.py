@@ -13,7 +13,7 @@ from pipelines.certified_research import contracts as c, schema as s
 from pipelines.certified_research.checkpoints import CheckpointBinding, boundaries, encode, restore
 from pipelines.market_sip.events import market_day_sql
 from pipelines.certified_research.execution import Unit,execute
-from pipelines.certified_research import market
+from pipelines.certified_research import market,activity
 from pipelines.certified_research.publication import Scope,Publisher,KeeperClaim,insert_rows
 from pipelines.certified_research.identity import ListingInterval,validate_intervals,identity_key,ensure_identity,ensure_identities,membership_at,LISTING
 from pipelines.certified_research import facts
@@ -24,12 +24,20 @@ from pipelines.certified_research import producer
 from pipelines.certified_research import reference_producer,reference_sql,short_sql,universe,fundamentals,float_data,price_inputs
 from pipelines.certified_research.reference_publication import ReferenceScope,ReferencePublisher
 from pipelines.certified_research.campaign import Campaign,PlannedUnit,status as campaign_status
-from pipelines.certified_research.handlers import ReferenceHandlers,MarketHandlers,UniverseHandlers
+from pipelines.certified_research.handlers import ReferenceHandlers,MarketHandlers,UniverseHandlers,ActivityHandlers
 from pipelines.certified_research.planning import MarketSession,market_units
 from pipelines.certified_research.universe_publication import UniversePublisher
 
 
 class Contracts(unittest.TestCase):
+    def test_activity_context_cannot_omit_an_exchange_session(self):
+        dataset=str(uuid.uuid4());attempt=str(uuid.uuid4())
+        scopes=[Scope(dataset,day,91,'broker_100ms','a'*64) for day in (date(2026,8,21),date(2026,8,25))]
+        output=Scope(dataset,date(2026,8,25),91,'activity','b'*64)
+        with self.assertRaisesRegex(ValueError,'missing exchange sessions'):
+            activity.projection(output,attempt,(10,60),[(scope,dict(attempt_id=attempt)) for scope in scopes])
+        with self.assertRaises(ValueError):activity.windows_contract((60,10))
+
     def test_v7_start_authority_binds_predecessor_and_rejects_mutated_state(self):
         from tests.test_streaming_level_book import engine,bars
         state=engine();authority=v7.StartAuthority.genesis(state,'a'*64)
@@ -246,13 +254,15 @@ class Contracts(unittest.TestCase):
         sessions=[MarketSession(day,1,'TEST') for day in days]
         planned=market_units(config,sessions,source_parents={d:('reporting:'+str(d),) for d in days},
             universe_parent='universe',seed_parents={1:('indicator-seed','v7-seed')})
-        first,technical,v7,later,later_technical,later_v7=(p.unit for p in planned)
+        first,technical,v7,activity_first,later,later_technical,later_v7,activity_later=(p.unit for p in planned)
         self.assertEqual(first.parents,('reporting:2026-01-02','universe'))
         self.assertEqual(technical.parents,(first.key,'indicator-seed'))
         self.assertEqual(v7.parents,(first.key,'v7-seed'))
         self.assertNotIn(technical.key,later.parents)
         self.assertEqual(later_technical.parents,(later.key,technical.key))
         self.assertEqual(later_v7.parents,(later.key,v7.key))
+        self.assertEqual(activity_first.parents,(first.key,))
+        self.assertEqual(activity_later.parents,(first.key,later.key))
         with self.assertRaisesRegex(ValueError,'seed prerequisites'):
             market_units(config,sessions,source_parents={d:('source',) for d in days},universe_parent='universe',seed_parents={})
         with self.assertRaisesRegex(ValueError,'Duplicate listing/session'):
@@ -543,6 +553,39 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_configurable_activity_windows_use_elapsed_time_and_certified_context(self):
+        from pipelines.certified_research import activity
+        dataset=str(uuid.uuid4());attempt=str(uuid.uuid4());day=date(2026,8,21)
+        class Claim:
+            def check(self):pass
+        parent=Scope(dataset,day,991,'broker_100ms','a'*64)
+        rows=[dict(dataset_id=dataset,attempt_id=attempt,session_date=str(day),listing_key=991,
+            resolution_ms=100,bucket_index=bucket,volume=volume,notional=volume*10,trade_count=1,
+            execution_volume=volume,execution_notional=volume*10) for bucket,volume in
+            ((4*3600*10+5,7.),(9*3600*10,2.),(9*3600*10+50,3.),(9*3600*10+200,5.))]
+        insert_rows(self.client.query,self.database,'research_liquidity_v1',rows)
+        publisher=Publisher(self.client.query,self.database,Claim())
+        receipt=publisher.publish(parent,attempt,expected=publisher.evidence(parent,attempt))
+        windows=(10,60,120)
+        output=Scope(dataset,day,991,'activity',activity.parent_hash(windows,[(parent,receipt)]))
+        plans=(PlannedUnit(Unit('shared','market_aggregate'),dict(day=str(day),listing_key=991,ticker='TEST')),
+            PlannedUnit(Unit('activity','activity',('shared',)),dict(day=str(day),listing_key=991,windows=windows)))
+        handlers=ActivityHandlers(dataset,self.database,Claim(),lambda:self.builder.Client(self.args,persistent=False),lambda:None,plans)
+        inputs={'shared':dict(receipts={'broker_100ms':receipt})}
+        handlers.producer(plans[-1],inputs,Event());result=handlers.verifier(plans[-1],inputs)
+        facts_rows=self.client.query(f"SELECT window_seconds,volume,trade_count,context_ready FROM {self.database}.research_activity_v1 "
+            f"WHERE attempt_id=toUUID('{result['attempt_id']}') AND bucket_index={9*3600*10+200} ORDER BY window_seconds")
+        self.assertEqual([r['volume'] for r in facts_rows],[5.,10.,10.])
+        self.assertEqual([int(r['trade_count']) for r in facts_rows],[1,3,3])
+        self.assertTrue(all(int(r['context_ready'])==1 for r in facts_rows))
+        early=self.client.query(f"SELECT volume,context_ready FROM {self.database}.research_activity_v1 "
+            f"WHERE attempt_id=toUUID('{result['attempt_id']}') AND bucket_index={4*3600*10+5}")
+        self.assertTrue(all(r['volume'] is None and int(r['context_ready'])==0 for r in early))
+        logs=[]
+        def query(sql,*args,**kwargs):logs.append(sql);return self.client.query(sql,*args,**kwargs)
+        self.assertEqual(activity.run(output,windows,[parent],query,Claim(),lambda:None,database=self.database),result)
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+
     def test_live_capacity_metadata_covers_source_bytes_and_designated_disks(self):
         from pipelines.certified_research import capacity
         result=capacity.inventory(lambda sql:self.client.query(sql+' SETTINGS readonly=1'))
@@ -983,6 +1026,7 @@ class ClickHouseIntegration(unittest.TestCase):
             (('shared','market_aggregate',()),('indicators','technical',('shared',)),('levels','v7',('shared',))))
         plans+=(PlannedUnit(Unit('prices','regular_prices',('shared',),memory),
             dict(entity_key=94,start=str(day),end=str(day))),)
+        plans+=(PlannedUnit(Unit('activity','activity',('shared',),memory),dict(args,windows=(10,60))),)
         insert_rows(self.client.query,self.database,'research_membership_v1',[
             dict(dataset_id=dataset,listing_key=93,security_key=94,issuer_key=95,ticker='TEST',conid=91,
                 valid_from=str(day)+' 00:00:00.000000',valid_to=str(day)+' 23:59:59.999999',
@@ -1002,6 +1046,8 @@ class ClickHouseIntegration(unittest.TestCase):
         producers,verifiers=registry.registry()
         reference=ReferenceHandlers(dataset,self.database,claim,factory,lambda:None,plans)
         rp,rv=reference.registry();producers.update(rp);verifiers.update(rv)
+        activity_handlers=ActivityHandlers(dataset,self.database,claim,factory,lambda:None,plans)
+        ap,av=activity_handlers.registry();producers.update(ap);verifiers.update(av)
         campaign=Campaign(self.client.query,self.database,claim,dataset,config,plans,'b'*64,lambda:None,producers,verifiers)
         result=campaign.run()
         self.assertEqual(result['status'],'complete',str(result['errors']))
@@ -1009,8 +1055,9 @@ class ClickHouseIntegration(unittest.TestCase):
         prices=self.client.query(f"SELECT value,status FROM {self.database}.research_facts_v1 "
             f"WHERE attempt_id=toUUID('{result['results']['prices']['attempt_id']}')")
         self.assertEqual(prices,[dict(value=1.,status=1)])
-        self.assertEqual(reference.received_scope(plans[-1],result['results']['prices']),
-                         reference.scope(plans[-1],{'shared':result['results']['shared']}))
+        self.assertEqual(reference.received_scope(plans[-2],result['results']['prices']),
+                         reference.scope(plans[-2],{'shared':result['results']['shared']}))
+        self.assertGreater(int(result['results']['activity']['output_rows']),0)
         self.assertEqual(sum(sql.startswith(f'INSERT INTO {self.database}.research_stage_liquidity_v1') for sql in logs),1)
         logs.clear();resumed=campaign.run()
         self.assertEqual(resumed['seal'],result['seal'])
@@ -1022,7 +1069,7 @@ class ClickHouseIntegration(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'exact certified shared'):
             registry.verifier(plans[1],{'shared':dict(result['results']['shared'],output_hash='f'*64)})
         with self.assertRaisesRegex(ValueError,'immutable campaign scope'):
-            reference.received_scope(plans[-1],dict(result['results']['prices'],entity_key=95))
+            reference.received_scope(plans[-2],dict(result['results']['prices'],entity_key=95))
         insert_rows(self.client.query,self.database,'research_membership_v1',[
             dict(dataset_id=dataset,listing_key=93,security_key=94,issuer_key=95,ticker='TEST',conid=91,
                 valid_from=str(day)+' 00:00:00.000000',valid_to=str(day)+' 23:59:59.999999',
@@ -1044,7 +1091,7 @@ class ClickHouseIntegration(unittest.TestCase):
             cls.client.query('CREATE DATABASE '+cls.database,read=False)
             cls.created=True
             for ddl in (*s.ddl(cls.database),*market_day_sql.ddl(cls.database),*market.staging_ddl(cls.database),
-                        reference_producer.staging_table().ddl(cls.database),float_data.staging_table().ddl(cls.database)):
+                        reference_producer.staging_table().ddl(cls.database),float_data.staging_table().ddl(cls.database),activity.staging_table().ddl(cls.database)):
                 cls.client.query(ddl,read=False)
         except BaseException:
             cls.tearDownClass()

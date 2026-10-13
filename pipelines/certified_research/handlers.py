@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from . import facts,reference_producer,float_data,producer,price_inputs,universe
+from . import facts,reference_producer,float_data,producer,price_inputs,universe,activity
 from .universe_publication import UniversePublisher
 from .contracts import digest
 from .execution import Unit
@@ -17,6 +17,44 @@ from .reference_publication import ReferenceScope,ReferencePublisher
 
 PRODUCTS=('fundamentals','derived_fundamentals','short_volume','short_interest','regular_prices','float_supply')
 MARKET_PRODUCTS=('market_aggregate','technical','v7')
+
+
+class ActivityHandlers:
+    """Concurrent SQL windows consuming shared current/context liquidity."""
+    def __init__(self,dataset_id,database,claim,client_factory,source_guard,plans):
+        self.dataset=dataset_id;self.database=database;self.claim=claim;self.client_factory=client_factory
+        self.source_guard=source_guard;self.plans={p.unit.key:p for p in plans}
+
+    def inputs(self,plan,parents):
+        if plan.unit.product!='activity':raise ValueError('Wrong activity product')
+        scopes=[]
+        for key,result in parents.items():
+            parent=self.plans[key]
+            if parent.unit.product!='market_aggregate':raise ValueError('Activity requires shared market parents')
+            row=result['receipts']['broker_100ms'];args=parent.arguments
+            scope=Scope(self.dataset,date.fromisoformat(args['day']),int(args['listing_key']),'broker_100ms',row['parent_hash'])
+            if (row['dataset_id']!=self.dataset or str(row['session_date'])!=str(scope.session_date)
+                    or int(row['listing_key'])!=scope.listing_key or row['product']!='broker_100ms'):
+                raise ValueError('Activity receipt differs from its planned identity/date')
+            scopes.append(scope)
+        return scopes
+
+    def execute(self,plan,parents,*,write,stop=None):
+        if stop is not None and stop.is_set():raise InterruptedError('Activity stopped before execution')
+        client=self.client_factory()
+        try:
+            self.claim.check();self.source_guard();args=plan.arguments;windows=tuple(args['windows'])
+            scopes=self.inputs(plan,parents);verified=activity.source_parents(client.query,self.database,self.claim,scopes)
+            scope=Scope(self.dataset,date.fromisoformat(args['day']),int(args['listing_key']),'activity',activity.parent_hash(windows,verified))
+            if write:return activity.run(scope,windows,scopes,client.query,self.claim,self.source_guard,database=self.database)
+            # Validate completeness/identity even when there is already a receipt.
+            activity.projection(scope,'00000000-0000-0000-0000-000000000001',windows,verified,self.database)
+            return Publisher(client.query,self.database,self.claim).receipt(scope)
+        finally:client.close()
+
+    def producer(self,plan,parents,stop):return self.execute(plan,parents,write=True,stop=stop)
+    def verifier(self,plan,parents):return self.execute(plan,parents,write=False)
+    def registry(self):return {'activity':self.producer},{'activity':self.verifier}
 
 
 class UniverseHandlers:

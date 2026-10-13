@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date,datetime,time
+from bisect import bisect_left
+from zoneinfo import ZoneInfo
 
 from .campaign import PlannedUnit,unit_id
 from .contracts import CampaignConfig
@@ -23,7 +25,7 @@ class MarketSession:
 
 
 def market_units(config: CampaignConfig,sessions,*,source_parents,universe_parent,seed_parents):
-    """Compile source/repair→aggregate→indicators,V7 with separate state chains.
+    """Compile source/repair→aggregate→activity,indicators,V7 dependencies.
 
     Callers supply only admitted dated sessions and already planned source,
     universe and certified-context units. A source parent means acquisition
@@ -33,7 +35,9 @@ def market_units(config: CampaignConfig,sessions,*,source_parents,universe_paren
     """
     sessions=tuple(sorted(sessions,key=lambda s:(s.listing_key,s.day)))
     if not sessions:raise ValueError('No admitted market sessions')
-    unit_id(universe_parent);seen=set();prior={};result=[]
+    from .activity import windows_contract
+    windows_contract(config.volume_windows_seconds)
+    unit_id(universe_parent);seen=set();prior={};result=[];liquidity={}
     for session in sessions:
         pair=(session.listing_key,session.day)
         if pair in seen:raise ValueError('Duplicate listing/session; resolve symbol membership first')
@@ -53,5 +57,11 @@ def market_units(config: CampaignConfig,sessions,*,source_parents,universe_paren
         for key,kind,parents in ((aggregate,'market_aggregate',dependencies),
                 (technical,'technical',(aggregate,predecessors[0])),(v7,'v7',(aggregate,predecessors[1]))):
             result.append(PlannedUnit(Unit(key,kind,parents,config.query_memory_bytes),dict(args)))
+        starts,keys=liquidity.setdefault(session.listing_key,([],[]))
+        stamp=int(datetime.combine(session.day,time(4),ZoneInfo('America/New_York')).timestamp())
+        starts.append(stamp);keys.append(aggregate)
+        first=max(0,bisect_left(starts,stamp-max(config.volume_windows_seconds))-1)
+        result.append(PlannedUnit(Unit(prefix+':activity','activity',tuple(keys[first:]),config.query_memory_bytes),
+            dict(args,windows=config.volume_windows_seconds)))
         prior[session.listing_key]=(technical,v7)
     return tuple(result)

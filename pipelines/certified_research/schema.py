@@ -88,6 +88,12 @@ TABLES = (
     Table("research_indicators_v1", BUCKET + tuple(c("ema_"+str(p),"Float64") for p in (7,9,12,15,20,26,50)) +
           tuple(c(n,"Float64") for n in ("macd_line","macd_signal","macd_histogram","rsi_14","atr_14","previous_close","avg_gain","avg_loss")) +
           (c("rsi_ready","UInt8"),c("atr_ready","UInt8"),c("sample_count","UInt64","T64,ZSTD(1)")), ORDER, MONTH),
+    Table("research_activity_v1", BUCKET + (c("window_seconds","UInt32","T64,ZSTD(1)"),) +
+          tuple(c(n,"Nullable(Float64)") for n in ("volume","notional")) +
+          (c("trade_count","Nullable(UInt64)"),) +
+          tuple(c(n,"Nullable(Float64)") for n in ("execution_volume","execution_notional")) +
+          (c("context_ready","UInt8"),),
+          ("dataset_id","session_date","listing_key","attempt_id","resolution_ms","window_seconds","bucket_index"),MONTH),
     Table("research_liquidity_v1", BUCKET + PRICES + ACTIVITY +
           tuple(c(n,"UInt64","Delta,ZSTD(1)") for n in ("first_event_us","last_event_us","quote_timestamp_us")) +
           tuple(c(n,"UInt64","T64,ZSTD(1)") for n in ("event_count","source_trade_count","quote_event_count","reporting_delayed_trades","reporting_unknown_trades","reporting_invalid_trades","volume_ineligible_trades","price_ineligible_trades","execution_ineligible_trades","pre_0405_trades","pre_0405_volume_eligible_trades","invalid_trade_values","bid_int","ask_int")) +

@@ -12,7 +12,7 @@ from .contracts import digest,identifier,literal
 from .schema import TABLES,verify_storage
 
 PRODUCTS={'bars':'research_bars_v1','technical':'research_indicators_v1',
-          'broker_100ms':'research_liquidity_v1','v7':'research_v7_checkpoint_v1'}
+          'broker_100ms':'research_liquidity_v1','v7':'research_v7_checkpoint_v1','activity':'research_activity_v1'}
 CERTIFIED=1
 COVERED_EMPTY=2
 
@@ -127,7 +127,7 @@ class Publisher:
         # Four independent UInt64 lanes from each SHA256, bounded aggregate
         # state. This is a multiset fingerprint plus exact key/count checks,
         # not a Merkle proof or an assertion of adversarial collision immunity.
-        key='tuple(boundary)' if scope.product=='v7' else 'tuple(resolution_ms,bucket_index)'
+        key='tuple(boundary)' if scope.product=='v7' else 'tuple(window_seconds,resolution_ms,bucket_index)' if scope.product=='activity' else 'tuple(resolution_ms,bucket_index)'
         if scope.product=='v7':
             valid=self.query(f'SELECT countIf(lower(hex(SHA256(payload)))!=state_hash) bad '
                              f'FROM {self.database}.{table.name} WHERE {scope.where(attempt)}')

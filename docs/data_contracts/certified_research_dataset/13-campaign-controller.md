@@ -28,6 +28,8 @@ Reference campaign producers require global dictionary ownership for shared prov
 
 ## Operator inspection
 
+`ActivityHandlers` registers configurable elapsed-time volume, notional, trade-count and execution-activity windows as a concurrent consumer of shared certified liquidity. The SQL uses one input scan/shared ordering, materializes compressed staging once and publishes normalized rows keyed by window and bucket. Incomplete prefix context produces null values with an explicit readiness flag; missing exchange-session parents block the unit. `market_units` plans this consumer against current/context aggregate units with a bounded elapsed-time context selection. Live coverage checks sparse 10/60/120-second windows, publication, root sealing and no-insert resume. Complete launch-time session admission/context discovery and short-pressure rolling windows are still outstanding.
+
 V7 rollover permits only the next exchange session. Weekend/holiday gaps are allowed; omitted trading sessions require context replay. It cannot silently jump past missing sessions.
 
 The `plan --format json` output includes live active-part row/byte counts, compression ratios, physical bytes per stored row and designated-disk free/unreserved capacity. These are physical storage observations, not logical final-row counts or future campaign estimates. Named disks can share a physical volume; their free capacities must not be summed without volume evidence. Projection remains explicitly unqualified until representative normalized product/session pilot rates and staging/merge headroom are measured.
