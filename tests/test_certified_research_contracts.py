@@ -1753,11 +1753,14 @@ class ClickHouseIntegration(unittest.TestCase):
             v7.discover(competing,self.database,claim,93,date(2026,8,24),request.dataset_hash,rules,contexts)
         selected=v7.discover(self.client.query,self.database,claim,93,date(2026,8,24),request.dataset_hash,rules,contexts,dataset_id=dataset)
         self.assertEqual(selected['dependency'],seed)
-        from pipelines.certified_research.seed_preparation import prepare_listing
+        from pipelines.certified_research.seed_preparation import prepare_universe
         target_day=date(2026,8,24)
-        prepared=prepare_listing(self.client.query,replace(config,start=target_day,end=target_day,database=self.database),claim,lambda:None,
-            (MarketSession(day,93,'TEST'),MarketSession(target_day,93,'TEST')),request.recipe_definition,rules,
-            {day:request.source_hash,target_day:'f'*64},{day:''},indicator_dataset=dataset,v7_dataset=dataset)
+        prepared_universe=prepare_universe(factory,replace(config,start=target_day,end=target_day,database=self.database),claim,lambda:None,
+            dict(ready=True,sessions=(MarketSession(day,93,'TEST'),MarketSession(target_day,93,'TEST')),membership_hash='a'*64),
+            request.recipe_definition,rules,{day:request.source_hash,target_day:'f'*64},{93:{day:''}},
+            indicator_datasets={93:dataset},v7_datasets={93:dataset})
+        self.assertTrue(prepared_universe['ready'],str(prepared_universe['failed']))
+        prepared=prepared_universe['prepared'][93]
         self.assertTrue(prepared['ready'],str(prepared['blocked']))
         self.assertEqual(prepared['state_start_dates'],{93:(target_day,target_day)})
         self.assertEqual(len(prepared['seed_units']),2)
