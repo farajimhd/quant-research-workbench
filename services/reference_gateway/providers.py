@@ -4,7 +4,7 @@ import json
 import ssl
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, date
 from email.utils import parsedate_to_datetime
 from typing import Any, Iterable
 from urllib import error, parse, request
@@ -41,7 +41,9 @@ class MassiveReferenceClient:
     def fetch_active_us_stock_tickers(self) -> MassiveTickerResult:
         return self.fetch_us_stock_tickers(active=True)
 
-    def fetch_us_stock_tickers(self, *, active: bool) -> MassiveTickerResult:
+    def fetch_us_stock_tickers(self, *, active: bool, as_of: date | None = None) -> MassiveTickerResult:
+        if as_of is not None and type(as_of) is not date:
+            raise ValueError('Historical ticker snapshot requires a calendar date')
         params = {
             "market": "stocks",
             "locale": "us",
@@ -51,6 +53,7 @@ class MassiveReferenceClient:
             "order": "asc",
             "apiKey": self.api_key,
         }
+        if as_of is not None:params['date']=as_of.isoformat()
         next_url: str | None = self.base_url + "/v3/reference/tickers?" + parse.urlencode(params)
         pages = 0
         rows: list[dict[str, Any]] = []
@@ -64,8 +67,12 @@ class MassiveReferenceClient:
             next_url = append_api_key(str(raw_next), self.api_key) if raw_next else None
         return MassiveTickerResult(tickers=rows, pages=pages, saturated=bool(next_url))
 
-    def fetch_ticker_overview(self, ticker: str) -> dict[str, Any]:
-        url = self.base_url + "/v3/reference/tickers/" + parse.quote(ticker, safe="") + "?" + parse.urlencode({"apiKey": self.api_key})
+    def fetch_ticker_overview(self, ticker: str, *, as_of: date | None = None) -> dict[str, Any]:
+        if as_of is not None and type(as_of) is not date:
+            raise ValueError('Historical ticker overview requires a calendar date')
+        params={"apiKey": self.api_key}
+        if as_of is not None:params['date']=as_of.isoformat()
+        url = self.base_url + "/v3/reference/tickers/" + parse.quote(ticker, safe="") + "?" + parse.urlencode(params)
         payload = fetch_json(url, user_agent="quant-reference-gateway-massive/1.0", allow_not_found=True)
         result = payload.get("results")
         return result if isinstance(result, dict) else {}

@@ -73,6 +73,14 @@ Preserve counts/notional/volume by rejection reason, source date and unit. Exist
 
 ## Historical universe and reference dimensions
 
+### Dated identity acquisition
+
+Reference Gateway's Massive adapter now accepts `as_of` calendar dates for ticker overviews and all-ticker discovery, including inactive symbols. Existing undated service calls retain their behavior. `historical_identity.normalize` extracts only identity/lifecycle fields and `reconcile` checks stable FIGI and issuer binding; missing/contradictory identity evidence fails closed. Financial fields are excluded from both the certified observation and its evidence hash.
+
+This distinction is required by the [provider's ticker-overview contract](https://massive.com/docs/rest/stocks/overview): the historical query can select SEC information by report-period date, which cannot establish original public availability for fundamentals. A bounded live January 2, 2026 AAPL request returned FIGI `BBG000B9XRY4`, exchange `XNAS` and active status. This verifies the dated API path, not broad historical coverage or a continuous listing interval.
+
+An empty ticker-event history does not prove a listing start. Dated observations prove their requested dates only; historical interval reconstruction must combine verified listing dates, stable identity, dated endpoints and complete intervening change coverage. Persistence, canonical historical mapping and bulk repair orchestration for these observations remain unfinished; the current unresolved universe intervals remain blocked.
+
 Plan output now reports independent Reference Gateway repair requirements. A first rejection such as `missing_dated_symbol_mapping` can also hide missing listing lifecycle or history binding. Counts deduplicate listing/stage jobs. Identity/listing/history evidence must precede dated symbol reconstruction; admission is rerun afterward. The inventory is inspection only and does not infer historical dates or launch a broad history download. Live samples of rejected January listings had null listing dates and absent interval/history fields, confirming the need for this ordering.
 
 ### Prepared reference forms
