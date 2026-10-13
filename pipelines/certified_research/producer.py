@@ -51,10 +51,16 @@ class MarketRequest:
             value['source_spelling']=dict(version='explicit-case-source-v1',ticker=self.unit.source_ticker)
         return digest(value)
 
+    @property
+    def frames(self):
+        from pipelines.market_sip.events.market_day_sql import FRAMES
+        return market.selected_frames(self.recipe_definition['frames'] if self.recipe_definition is not None else FRAMES)
 
-def indicator_state(query,database,unit,attempt,prior,*,bar_attempt):
+
+def indicator_state(query,database,unit,attempt,prior,*,bar_attempt,frames=None):
     """Price-empty frames carry the verified predecessor; no fabricated rows."""
     from pipelines.market_sip.events.market_day_sql import FRAMES
+    frames=market.selected_frames(FRAMES if frames is None else frames)
     names=indicators.STATE_FIELDS
     persisted=tuple(n for n in names if n!='close')
     rows=query(f"SELECT i.resolution_ms resolution_ms,{','.join('argMax(i.'+n+',i.bucket_index) AS '+n for n in persisted)},"
@@ -66,9 +72,9 @@ def indicator_state(query,database,unit,attempt,prior,*,bar_attempt):
                f'AND b.listing_key={unit.listing_key} AND i.attempt_id=toUUID({literal(attempt)}) '
                f'AND b.attempt_id=toUUID({literal(bar_attempt)}) GROUP BY i.resolution_ms')
     result={int(r['resolution_ms']):{n:int(r[n]) if n=='sample_count' else float(r[n]) for n in names} for r in rows}
-    for frame in FRAMES:
+    for frame in frames:
         if frame not in result and frame in prior:result[frame]=dict(prior[frame])
-    if result and set(result)!=set(FRAMES):raise ValueError('Current/prior indicator state lacks a required frame')
+    if result and set(result)!=set(frames):raise ValueError('Current/prior indicator state lacks a required frame')
     return result
 
 
@@ -82,6 +88,7 @@ def validate_recipe(request,database,*,product=None):
         from .recipe import verify_definition
         if verify_definition(request.recipe_definition,request.rules)!=request.dataset_hash:
             raise ValueError('Market request hash differs from its frozen state recipe')
+    indicators.validate_state(request.prior_indicators,request.frames)
 
 
 def market_execution(request: MarketRequest,client_factory,claim,source_guard,engine_factory,*,database='arte',
@@ -109,7 +116,7 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
                 if len(found)==2:return dict(reused=True,receipts=found,attempt=base.attempt_id)
                 unit=market.MarketUnit(base.dataset_id,base.day,base.ticker,base.listing_key,str(uuid4()),base.source_ticker)
                 query(market.aggregate_sql(unit,request.rules,database,source=fixture_source),read=False)
-                for sql in market.bar_queries(unit,database):
+                for sql in market.bar_queries(unit,database,frames=request.frames):
                     claim.check();query(sql,read=False)
                 claim.check();source_guard()
                 return dict(reused=False,unit=unit,receipts=found,attempt=unit.attempt_id)
@@ -117,8 +124,8 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
                 stage=parents['aggregate']
                 if u.product in stage['receipts']:return stage['receipts'][u.product]
                 unit=stage['unit'];scope=Scope(base.dataset_id,base.day,base.listing_key,u.product,request.parent(u.product))
-                expected={k:int(v) for k,v in query(market.expected_evidence_sql(unit,u.product,database))[0].items()}
-                query(market.normalized_insert(unit,u.product,database),read=False)
+                expected={k:int(v) for k,v in query(market.expected_evidence_sql(unit,u.product,database,frames=request.frames))[0].items()}
+                query(market.normalized_insert(unit,u.product,database,frames=request.frames),read=False)
                 source_guard();claim.check()
                 return publisher.publish(scope,unit.attempt_id,expected=expected,
                                          empty_proof=digest(dict(source=request.source_hash,product=u.product)))
@@ -135,9 +142,9 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
                     f'dataset_id=toUUID({literal(base.dataset_id)}) AND session_date=toDate({literal(base.day)}) '
                     f'AND listing_key={base.listing_key} AND attempt_id=toUUID({literal(bar_receipt["attempt_id"])}) '
                     'AND price_valid=1 AND extremes_valid=1')
-                query(indicators.technical_sql(database,unit,source,request.prior_indicators),read=False)
-                expected={k:int(v) for k,v in query(market.expected_evidence_sql(unit,'technical',database))[0].items()}
-                query(market.normalized_insert(unit,'technical',database),read=False)
+                query(indicators.technical_sql(database,unit,source,request.prior_indicators,frames=request.frames),read=False)
+                expected={k:int(v) for k,v in query(market.expected_evidence_sql(unit,'technical',database,frames=request.frames))[0].items()}
+                query(market.normalized_insert(unit,'technical',database,frames=request.frames),read=False)
             elif u.product=='v7':
                 engine=engine_factory()
                 if isinstance(engine,v7.StartAuthority):engine=engine.check(request.prior_v7_hash,adjustment_hash=request.adjustment_hash)

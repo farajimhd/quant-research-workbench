@@ -16,26 +16,28 @@ def scope_for(request,technical):
     return Scope(base.dataset_id,base.day,base.listing_key,'technical_state',parent)
 
 
-def load(query,database,claim,scope,recipe_hash,predecessor_hash,*,source_hash=None,rules_hash=None):
+def load(query,database,claim,scope,recipe_hash,predecessor_hash,*,source_hash=None,rules_hash=None,frames=FRAMES):
     """Verify physical output/receipt before exposing at most eight state rows."""
     if scope.product!='technical_state':raise ValueError('Indicator state scope required')
     if (source_hash is None or rules_hash is None) and not database.startswith('certified_research_test_'):
         raise ValueError('Production indicator state requires current source/rule bindings')
+    from .market import selected_frames
+    frames=selected_frames(frames)
     publisher=Publisher(query,database,claim);receipt=publisher.receipt(scope)
     if receipt is None:return None
     rows=query(f'SELECT * FROM {database}.research_indicator_state_v1 WHERE '+scope.where(receipt['attempt_id']))
-    if (len(rows)!=len(FRAMES) or {int(r['resolution_ms']) for r in rows}!=set(FRAMES)
+    if (len(rows)!=len(frames) or {int(r['resolution_ms']) for r in rows}!=set(frames)
             or any(r['recipe_hash']!=recipe_hash or r['predecessor_hash']!=predecessor_hash
                 or (source_hash is not None and r['source_hash']!=source_hash)
                 or (rules_hash is not None and r['rules_hash']!=rules_hash) for r in rows)):
         raise ValueError('Indicator state recipe, predecessor or frame coverage differs')
     state={int(r['resolution_ms']):{n:int(r[n]) if n=='sample_count' else float(r[n]) for n in STATE_FIELDS} for r in rows}
-    validate(state)
+    validate(state,frames)
     if publisher.receipt(scope)!=receipt:raise ValueError('Indicator state authority changed during load')
     return dict(receipt=receipt,state=state)
 
 
-def discover(query,database,claim,listing_key,before,recipe_hash,rules_hash,source_hashes,*,dataset_id=None):
+def discover(query,database,claim,listing_key,before,recipe_hash,rules_hash,source_hashes,*,dataset_id=None,frames=FRAMES):
     """Find the latest compatible receipt; never resolve competing seeds by recency of insertion.
 
     Caller supplies frozen current source hashes, including earlier context.
@@ -62,16 +64,18 @@ def discover(query,database,claim,listing_key,before,recipe_hash,rules_hash,sour
     source_hash=source_hashes.get(day,source_hashes.get(str(day)))
     if source_hash is None:raise ValueError('Discovered indicator seed requires frozen source context')
     scope=Scope(str(row['dataset_id']),day,listing_key,'technical_state',row['parent_hash'])
-    loaded=load(query,database,claim,scope,recipe_hash,row['predecessor_hash'],source_hash=source_hash,rules_hash=rules_hash)
+    loaded=load(query,database,claim,scope,recipe_hash,row['predecessor_hash'],source_hash=source_hash,rules_hash=rules_hash,frames=frames)
     if loaded is None:raise ValueError('Discovered indicator receipt disappeared')
     dependency=dict(loaded['receipt'],state_receipt=loaded['receipt'],state_context=dict(
         recipe_hash=recipe_hash,source_hash=source_hash,predecessor_hash=row['predecessor_hash'],rules_hash=rules_hash))
     return dict(scope=scope,session=day,dependency=dependency,**loaded)
 
 
-def validate(state):
-    if set(state)!=set(FRAMES):raise ValueError('Indicator state needs every declared frame')
-    validate_state(state)
+def validate(state,frames=FRAMES):
+    from .market import selected_frames
+    frames=selected_frames(frames)
+    if set(state)!=set(frames):raise ValueError('Indicator state needs every declared frame')
+    validate_state(state,frames)
 
 
 def combined(technical,state_receipt,request):
@@ -87,7 +91,7 @@ def authority(request,bars,query,database,claim):
         request.parent('technical',(bars['output_hash'],))))
     if technical is None:return None
     loaded=load(query,database,claim,scope_for(request,technical),request.dataset_hash,request.prior_indicator_hash,
-        source_hash=request.source_hash,rules_hash=digest(request.rules))
+        source_hash=request.source_hash,rules_hash=digest(request.rules),frames=request.frames)
     return combined(technical,loaded['receipt'],request) if loaded else None
 
 
@@ -100,14 +104,14 @@ def publish(request,bars,technical,query,database,claim,source_guard):
     if publisher.receipt(bar_scope)!=bars or publisher.receipt(technical_scope)!=technical:
         raise ValueError('Indicator state requires its exact certified bar/technical parents')
     loaded=load(query,database,claim,scope,request.dataset_hash,request.prior_indicator_hash,
-        source_hash=request.source_hash,rules_hash=digest(request.rules))
+        source_hash=request.source_hash,rules_hash=digest(request.rules),frames=request.frames)
     if loaded:return combined(technical,loaded['receipt'],request)
     state=indicator_state(query,database,request.unit,technical['attempt_id'],request.prior_indicators,
-        bar_attempt=bars['attempt_id'])
-    if not state:state={f:{n:0 if n=='sample_count' else 0. for n in STATE_FIELDS} for f in FRAMES}
-    validate(state);attempt=str(uuid4());table=next(t for t in TABLES if t.name=='research_indicator_state_v1')
+        bar_attempt=bars['attempt_id'],frames=request.frames)
+    if not state:state={f:{n:0 if n=='sample_count' else 0. for n in STATE_FIELDS} for f in request.frames}
+    validate(state,request.frames);attempt=str(uuid4());table=next(t for t in TABLES if t.name=='research_indicator_state_v1')
     selects=[]
-    for frame in FRAMES:
+    for frame in request.frames:
         values=dict(dataset_id=f'toUUID({literal(scope.dataset_id)})',session_date=f'toDate({literal(scope.session_date)})',
             listing_key=f'toUInt64({scope.listing_key})',attempt_id=f'toUUID({literal(attempt)})',
             resolution_ms=f'toUInt32({frame})',recipe_hash=literal(request.dataset_hash),
@@ -124,5 +128,5 @@ def publish(request,bars,technical,query,database,claim,source_guard):
         raise ValueError('Indicator state parents changed during publication')
     receipt=publisher.publish(scope,attempt,expected=expected,empty_proof=scope.parent_hash)
     load(query,database,claim,scope,request.dataset_hash,request.prior_indicator_hash,
-        source_hash=request.source_hash,rules_hash=digest(request.rules))
+        source_hash=request.source_hash,rules_hash=digest(request.rules),frames=request.frames)
     return combined(technical,receipt,request)

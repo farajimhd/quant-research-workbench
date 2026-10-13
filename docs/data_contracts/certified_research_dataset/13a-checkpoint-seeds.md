@@ -21,7 +21,7 @@ The locator's declarations alone never establish compatibility. Retrospective co
 
 ## Indicator authority
 
-`IndicatorSeedHandlers` checks the frozen recipe, source and rule hashes against the locator, then independently validates its `technical_state` receipt and all eight persisted frame states. No historical bar scan is required for indicator restoration. It returns the state receipt as the seed authority; a combined indicator receipt may supply the locator through its `state_receipt` field.
+`IndicatorSeedHandlers` checks the frozen recipe, source and rule hashes against the locator, then independently validates its `technical_state` receipt and the exact selected persisted frame states (eight by default). No historical bar scan is required for indicator restoration. It returns the state receipt as the seed authority; a combined indicator receipt may supply the locator through its `state_receipt` field.
 
 ## Bounded V7 discovery
 

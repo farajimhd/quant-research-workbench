@@ -143,7 +143,7 @@ class V7SeedHandlers:
 
 
 class IndicatorSeedHandlers(V7SeedHandlers):
-    """Restore only the eight persisted frames from an explicit state locator."""
+    """Restore selected persisted frames from an explicit state locator."""
     def execute(self,plan,parents,stop=None):
         from . import indicator_state
         if stop is not None and stop.is_set():raise InterruptedError('Indicator seed verification stopped')
@@ -160,7 +160,8 @@ class IndicatorSeedHandlers(V7SeedHandlers):
         try:
             self.claim.check();self.guard()
             loaded=indicator_state.load(client.query,self.database,self.claim,scope,self.runtime.recipe_hash,
-                context['predecessor_hash'],source_hash=source_hash,rules_hash=digest(self.runtime.rules))
+                context['predecessor_hash'],source_hash=source_hash,rules_hash=digest(self.runtime.rules),
+                frames=self.runtime.definition['frames'])
             if loaded is None or loaded['receipt']!=receipt:raise ValueError('Indicator seed differs from certified state authority')
             self.claim.check();self.guard()
             return dict(receipt,state_receipt=receipt,state_context=dict(context))

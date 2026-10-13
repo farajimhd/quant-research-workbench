@@ -51,8 +51,6 @@ def market_recipe(config,rules,*,settings=Settings(),discovery_prominence=None,c
     this state recipe. The launcher still must verify source and predecessor
     evidence independently; a matching recipe is not a coverage certificate.
     """
-    if tuple(config.resolutions_ms)!=core.FRAMES:
-        raise ValueError('Selected-frame execution is unfinished; state recipe requires all supported frames')
     fields=('token_id','modifier_int','update_high_low','update_last','update_volume')
     normalized=[]
     for row in rules:
@@ -76,7 +74,7 @@ def market_recipe(config,rules,*,settings=Settings(),discovery_prominence=None,c
         corporate_adjustment=adjustments.resolve,indicator_price_adjustment=adjustments.indicator_state,
         eligible_completed_second=derived_trade_policy.eligible_completed_second)
     definition=dict(version='certified-market-state-recipe-v1',trade_policy=TRADE_POLICY,
-        reporting_revision=REPORTING_REVISION,frames=list(core.FRAMES),ema_periods=list(core.EMAS),
+        reporting_revision=REPORTING_REVISION,frames=list(config.resolutions_ms),ema_periods=list(core.EMAS),
         v7_version=book.VERSION,extraction_version=book.EXTRACTION_VERSION,
         band_config=dict(reaction_band.CONFIG),input_policy=derived_trade_policy.POLICY,
         checkpoint_codec=checkpoints.CODEC_VERSION,rules=normalized,

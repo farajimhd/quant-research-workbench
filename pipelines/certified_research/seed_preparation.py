@@ -48,7 +48,7 @@ def prepare_listing(query,config,claim,source_guard,admitted_sessions,recipe_def
         claim.check();source_guard()
     guard()
     technical=indicator_state.discover(query,config.database,claim,listing,first,recipe_hash,digest(rules),
-        sources,dataset_id=indicator_dataset)
+        sources,dataset_id=indicator_dataset,frames=config.resolutions_ms)
     guard()
     prior={s.day:dict(source_hash=sources[s.day],ticker=s.ticker,adjustment_hash=adjustments[s.day])
         for s in sessions if s.day<first and s.day in sources and s.day in adjustments}

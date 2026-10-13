@@ -76,6 +76,18 @@ for their actual context range, independently of fact fingerprints. See
 [SEC acquisition admission](13k-sec-acquisition-admission.md) for the exact rules,
 current August 13 exclusive boundary, and validation evidence.
 
+## Feature selection
+
+`--resolutions-ms` selects persisted bars and continuous indicator-state frames;
+1s is required for causal V7. SQL rollups calculate only selected resolutions
+and their necessary temporary intermediates. The 100ms execution/liquidity
+authority remains required. The default selects all eight supported frames.
+`--volume-windows-seconds` and `--short-windows-sessions` select their respective
+rolling features and determine their context requirements. Resolution selection
+is part of the state recipe; incompatible prior frame sets cannot be reused.
+A bounded two-session ClickHouse test verifies selected bars/indicators, all
+three V7 checkpoints, price-empty state continuity, discovery and receipt reuse.
+
 ## Capacity profile configuration
 
 This is small launch **configuration**, not a market/reference data export. All

@@ -18,24 +18,26 @@ def _context(parent,listing_key,day,recipe_hash,day_sources):
     return previous,context
 
 
-def indicators(query,database,claim,parent,listing_key,day,recipe_hash,day_sources,rules):
-    """Load exactly eight certified state rows, without rereading market bars."""
+def indicators(query,database,claim,parent,listing_key,day,recipe_hash,day_sources,rules,*,frames=None):
+    """Load the selected certified state rows, without rereading market bars."""
+    from pipelines.market_sip.events.market_day_sql import FRAMES
+    frames=FRAMES if frames is None else frames
     previous,context=_context(parent,listing_key,day,recipe_hash,day_sources)
     if parent['product'] not in ('technical','technical_state'):
         raise ValueError('Wrong indicator predecessor product')
     receipt=parent.get('state_receipt',parent)
     scope=Scope(str(receipt['dataset_id']),previous,listing_key,'technical_state',receipt['parent_hash'])
     loaded=indicator_state.load(query,database,claim,scope,recipe_hash,context['predecessor_hash'],
-        source_hash=context['source_hash'],rules_hash=digest(rules))
+        source_hash=context['source_hash'],rules_hash=digest(rules),frames=frames)
     if loaded is None or loaded['receipt']!=receipt:
         raise ValueError('Indicator predecessor differs from its certified dependency')
     return loaded['state']
 
 
-def indicator_continuation(query,database,claim,parent,listing_key,day,recipe_hash,day_sources,rules,corporate_scope):
+def indicator_continuation(query,database,claim,parent,listing_key,day,recipe_hash,day_sources,rules,corporate_scope,*,frames=None):
     """Resolve and scale a predecessor together with its adjustment lineage."""
     from .adjustments import resolve,indicator_state as scale
-    state=indicators(query,database,claim,parent,listing_key,day,recipe_hash,day_sources,rules)
+    state=indicators(query,database,claim,parent,listing_key,day,recipe_hash,day_sources,rules,frames=frames)
     previous=date.fromisoformat(str(parent['session_date']))
     adjustment=resolve(query,database,claim,corporate_scope,listing_key,previous,day)
     return dict(state=scale(state,adjustment),predecessor_hash=parent['output_hash'],adjustment=adjustment)

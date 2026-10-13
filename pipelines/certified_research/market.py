@@ -59,40 +59,52 @@ def aggregate_sql(unit: MarketUnit, rules, database='arte', *, source=None):
                            verified_timely=True,table_names=STAGING,reporting_audit=True)
 
 
-def bar_queries(unit: MarketUnit,database='arte'):
+def selected_frames(frames=core.FRAMES):
+    frames=tuple(frames)
+    if not frames or tuple(sorted(set(frames)))!=frames or any(type(f) is not int or f not in core.FRAMES for f in frames):
+        raise ValueError('Invalid selected market resolutions')
+    return frames
+
+
+def bar_queries(unit: MarketUnit,database='arte',*,frames=core.FRAMES):
+    frames=selected_frames(frames)
     args=(database,unit.dataset_id,unit.day,unit.ticker,unit.attempt_id)
-    return (core.base_sql(*args,table_names=STAGING),
-            core.rollup_sql(*args,100,(1000,5000,10000,30000),table_names=STAGING),
-            core.rollup_sql(*args,30000,(60000,300000,3600000),table_names=STAGING))
+    higher=tuple(f for f in frames if f>=60000)
+    lower=tuple(sorted({f for f in frames if 100<f<=30000}|({30000} if higher else set())))
+    result=[core.base_sql(*args,table_names=STAGING)]
+    if lower:result.append(core.rollup_sql(*args,100,lower,table_names=STAGING))
+    if higher:result.append(core.rollup_sql(*args,30000,higher,table_names=STAGING))
+    return tuple(result)
 
 
-def indicator_sql(unit: MarketUnit,database='arte',*,prior=None):
+def indicator_sql(unit: MarketUnit,database='arte',*,prior=None,frames=core.FRAMES):
     from .indicators import technical_sql
     source=(f'SELECT session_date,resolution_ms,bucket_index,close_int,high_int,low_int '
         f"FROM {core.table(database,'bars',STAGING)} WHERE {unit.where()} AND price_valid=1 AND extremes_valid=1")
-    return technical_sql(database,unit,source,prior or {})
+    return technical_sql(database,unit,source,prior or {},frames=selected_frames(frames))
 
 
-def normalized_insert(unit: MarketUnit, product: str,database='arte'):
+def normalized_insert(unit: MarketUnit, product: str,database='arte',*,frames=core.FRAMES):
     target={'bars':'research_bars_v1','technical':'research_indicators_v1','broker_100ms':'research_liquidity_v1'}[product]
     table=next(t for t in schema.TABLES if t.name==target)
     names=[c.name for c in table.columns]
     return (f"INSERT INTO {identifier(database)}.{target} ({','.join(names)}) "
-            +normalized_projection(unit,product,database))
+            +normalized_projection(unit,product,database,frames=frames))
 
 
-def normalized_projection(unit: MarketUnit,product: str,database='arte'):
+def normalized_projection(unit: MarketUnit,product: str,database='arte',*,frames=core.FRAMES):
     from .publication import PRODUCTS
     table=next(t for t in schema.TABLES if t.name==PRODUCTS[product])
     values=dict(dataset_id='toUUID(build_id)',listing_key=f'toUInt64({unit.listing_key})')
     select=','.join(values.get(c.name,c.name)+' AS '+c.name for c in table.columns)
-    return f"SELECT {select} FROM {core.table(database,product,STAGING)} WHERE {unit.where()}"
+    selection=' AND resolution_ms IN ('+','.join(map(str,selected_frames(frames)))+')' if product in ('bars','technical') else ''
+    return f"SELECT {select} FROM {core.table(database,product,STAGING)} WHERE {unit.where()}"+selection
 
 
-def expected_evidence_sql(unit: MarketUnit,product: str,database='arte'):
+def expected_evidence_sql(unit: MarketUnit,product: str,database='arte',*,frames=core.FRAMES):
     from .publication import PRODUCTS,evidence_sql
     table=next(t for t in schema.TABLES if t.name==PRODUCTS[product])
-    return evidence_sql(table,normalized_projection(unit,product,database),'tuple(resolution_ms,bucket_index)')
+    return evidence_sql(table,normalized_projection(unit,product,database,frames=frames),'tuple(resolution_ms,bucket_index)')
 
 
 def staged_evidence(unit: MarketUnit,product: str,database='arte'):

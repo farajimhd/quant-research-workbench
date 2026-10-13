@@ -231,8 +231,9 @@ class Contracts(unittest.TestCase):
         self.assertNotEqual(original['hash'],configured['hash'])
         changed=(dict(rules[0],update_volume=0),)
         self.assertNotEqual(original['hash'],recipe.market_recipe(config,changed)['hash'])
-        with self.assertRaisesRegex(ValueError,'all supported frames'):
-            recipe.market_recipe(replace(config,resolutions_ms=(1000,)),rules)
+        selected=recipe.market_recipe(replace(config,resolutions_ms=(1000,)),rules)
+        self.assertNotEqual(original['hash'],selected['hash'])
+        self.assertEqual(selected['definition']['frames'],[1000])
         with self.assertRaisesRegex(ValueError,'exact integers'):
             recipe.market_recipe(config,(dict(rules[0],update_volume=1.5),))
         stream=engine();stream.settings=recipe.parameters(custom)['settings'];stream.discovery_prominence=.12;stream.coverage=.7
@@ -770,6 +771,59 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+
+    def test_selected_resolutions_publish_exact_bars_states_and_causal_v7_boundaries(self):
+        from pipelines.certified_research import recipe,indicator_state
+        from tests.test_streaming_level_book import engine
+        day=date(2026,8,21);frames=(1000,60000)
+        unit=market.MarketUnit(str(uuid.uuid4()),day,'TEST',1193,str(uuid.uuid4()))
+        rules=(dict(token_id=1,modifier_int=0,update_last=1,update_high_low=1,update_volume=1),)
+        config=c.CampaignConfig(day,day,database=self.database,resolutions_ms=frames)
+        frozen=recipe.market_recipe(config,rules)
+        request=producer.MarketRequest(unit,frozen['hash'],'a'*64,rules,{},'b'*64,'c'*64,
+            boundaries(day)['REGULAR'],True,frozen['definition'])
+        source=(f"SELECT toUInt64({market_day_sql.bounds(day,'04:05:00')}+number*1000000) sip_timestamp_us,"
+            'toUInt64(number) ordinal,toUInt8(65) event_meta,toUInt32(10000+number) price_primary_int,'
+            'toUInt32(0) price_secondary_int,toFloat32(1) size_primary,toFloat32(0) size_secondary,'
+            +','.join(f'toUInt8(0) condition_token_{i}' for i in range(1,6))+' FROM numbers(3)')
+        class Claim:
+            def check(self):pass
+        factory=lambda:self.builder.Client(self.args,persistent=False)
+        initial=lambda:v7.StartAuthority.genesis(engine(),request.prior_v7_hash)
+        result=producer.run_market(request,factory,Claim(),lambda:None,initial,database=self.database,fixture_source=source)
+        self.assertEqual(result['status'],'complete',str(result['errors']))
+        where=f"dataset_id=toUUID('{unit.dataset_id}')"
+        for name in ('research_bars_v1','research_indicators_v1','research_indicator_state_v1'):
+            actual=self.client.query(f'SELECT DISTINCT resolution_ms FROM {self.database}.{name} WHERE {where} ORDER BY resolution_ms')
+            self.assertEqual(tuple(int(r['resolution_ms']) for r in actual),frames)
+        self.assertEqual([int(r['boundary']) for r in self.client.query(f'SELECT boundary FROM {self.database}.research_v7_checkpoint_v1 WHERE {where} ORDER BY boundary')],[1,2,3])
+        technical=result['results']['technical'];scope=indicator_state.scope_for(request,technical['technical_receipt'])
+        loaded=indicator_state.load(self.client.query,self.database,Claim(),scope,request.dataset_hash,request.prior_indicator_hash,
+            source_hash=request.source_hash,rules_hash=c.digest(rules),frames=frames)
+        self.assertEqual(set(loaded['state']),set(frames))
+        with self.assertRaisesRegex(ValueError,'frame coverage'):
+            indicator_state.load(self.client.query,self.database,Claim(),scope,request.dataset_hash,request.prior_indicator_hash,
+                source_hash=request.source_hash,rules_hash=c.digest(rules))
+        resumed=producer.run_market(request,factory,Claim(),lambda:None,initial,database=self.database,fixture_source=source)
+        self.assertEqual(resumed['status'],'complete')
+        self.assertEqual(resumed['results']['technical'],technical)
+        bar=result['results']['bars']
+        bar_scope=Scope(unit.dataset_id,day,unit.listing_key,'bars',request.parent('bars'))
+        v7_scope=Scope(unit.dataset_id,day,unit.listing_key,'v7',request.parent('v7',(bar['output_hash'],)))
+        checkpoint,_=v7.load_from_bars(self.client.query,self.database,Claim(),v7_scope,bar_scope,
+            request.dataset_hash,request.prior_v7_hash,unit.ticker,'AH',regular_close=request.regular_close)
+        next_day=date(2026,8,24);next_unit=replace(unit,day=next_day,attempt_id=str(uuid.uuid4()))
+        next_request=producer.MarketRequest(next_unit,request.dataset_hash,'d'*64,rules,loaded['state'],
+            technical['output_hash'],checkpoint['state_hash'],boundaries(next_day)['REGULAR'],False,frozen['definition'])
+        quote_source=source.replace(str(market_day_sql.bounds(day,'04:05:00')),str(market_day_sql.bounds(next_day,'04:05:00'))).replace('toUInt8(65) event_meta','toUInt8(6) event_meta')
+        next_result=producer.run_market(next_request,factory,Claim(),lambda:None,
+            lambda:v7.StartAuthority.rollover(checkpoint,next_day),database=self.database,fixture_source=quote_source)
+        self.assertEqual(next_result['status'],'complete',str(next_result['errors']))
+        found=indicator_state.discover(self.client.query,self.database,Claim(),unit.listing_key,date(2026,8,25),
+            request.dataset_hash,c.digest(rules),{day:request.source_hash,next_day:next_request.source_hash},frames=frames)
+        self.assertEqual(found['session'],next_day);self.assertEqual(found['state'],loaded['state'])
+        self.assertEqual(int(next_result['results']['technical']['technical_receipt']['output_rows']),0)
+        self.assertEqual(int(next_result['results']['technical']['state_receipt']['output_rows']),2)
 
     def test_sec_uncovered_acquisition_range_blocks_before_publication(self):
         from pipelines.certified_research import sec_coverage
@@ -2013,7 +2067,7 @@ class ClickHouseIntegration(unittest.TestCase):
         self.assertEqual(len(prepared['seed_units']),2)
         from types import SimpleNamespace
         from pipelines.certified_research.handlers import V7SeedHandlers,IndicatorSeedHandlers
-        runtime=SimpleNamespace(recipe_hash=request.dataset_hash,sources={day:request.source_hash},rules=rules)
+        runtime=SimpleNamespace(recipe_hash=request.dataset_hash,sources={day:request.source_hash},rules=rules,definition=request.recipe_definition)
         seed_registry=V7SeedHandlers(self.database,claim,factory,lambda:None,runtime)
         seed_plan=PlannedUnit(Unit('seed','v7_seed'),dict(dependency=seed))
         self.assertEqual(seed_registry.verifier(seed_plan,{}),seed)

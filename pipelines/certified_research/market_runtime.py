@@ -57,7 +57,7 @@ class MarketRuntime:
             if plan.unit.product=='technical':
                 parent=self.one(parents,lambda r:r.get('product') in ('technical','technical_state'),'indicator state')
                 continuation=market_context.indicator_continuation(client.query,self.database,self.claim,parent,listing,day,
-                    self.recipe_hash,self.sources,self.rules,self.corporate(parents,client.query))
+                    self.recipe_hash,self.sources,self.rules,self.corporate(parents,client.query),frames=self.definition['frames'])
                 prior=continuation['state'];indicator_hash=continuation['predecessor_hash']
                 adjustment_hash=continuation['adjustment'].evidence_hash
             elif plan.unit.product=='v7':

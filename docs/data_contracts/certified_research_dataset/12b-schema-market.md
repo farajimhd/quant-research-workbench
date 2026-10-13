@@ -74,7 +74,7 @@ All tables use `MergeTree`, `live_market_ssd` and lossless per-column compressio
 | `macd_signal`, `close`, `atr_14`, `avg_gain`, `avg_loss` | `Float64` | `ZSTD(1)` |
 | `sample_count` | `UInt64` | `T64,ZSTD(1)` |
 
-Exactly eight compact rows represent the final state of one session. Price-empty frames carry their predecessor unchanged; a never-initialized frame has zero state and zero sample count, which is an explicit unready state rather than a synthetic bar. This preserves unfinished Wilder warmup as well as ready EMA/MACD/RSI/ATR state.
+One compact row per selected resolution represents the final state of one session (eight by default). The frozen recipe identifies the exact selected set; loaders reject extra or missing frame states. Price-empty frames carry their predecessor unchanged; a never-initialized frame has zero state and zero sample count, which is an explicit unready state rather than a synthetic bar. This preserves unfinished Wilder warmup as well as ready EMA/MACD/RSI/ATR state.
 
 Execution: certify bars → calculate/certify technical rows → publish/certify state against those exact parent receipts. The campaign's technical authority combines both receipts; a technical-row receipt alone no longer completes that unit. Interrupted state publication can resume without reaggregating events. The state is independently fingerprinted and verified for every declared frame and its recipe/source/rule/predecessor bindings before loading.
 
