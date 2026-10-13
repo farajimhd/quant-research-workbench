@@ -89,6 +89,33 @@ def test_entry_intent_reason_is_not_relabelled_as_exit(monkeypatch):
     assert evidence.managed_exit_evidence(None, NS(run_id=RUN), [execution()]) == {}
 
 
+@pytest.mark.parametrize("exact", [False, True])
+def test_managed_exit_uses_selected_native_command_reader(monkeypatch, exact):
+    from src.backend import backtest_v4_saved_review as review
+    from src.trading_runtime import arte_journal_writer as writer
+    managed_fixture(monkeypatch)
+    original = review._complete_detail_rows
+    calls = []
+    def commands(*args, **scope):
+        calls.append(scope)
+        return original(*args)
+    monkeypatch.setattr(writer, "load_committed_order_command_page", commands)
+    def complete(reader, client, prefix):
+        return reader(client, prefix, after_sequence=0, limit=500)
+    monkeypatch.setattr(review, "_complete_detail_rows", complete)
+    result = evidence.managed_exit_evidence(None, NS(run_id=RUN), [execution()], exact_prices=exact)
+    assert result["fill"]["reason"] == "strategy_two_session_exit"
+    assert calls == [dict(after_sequence=0, limit=500, **({"exact_prices": True} if exact else {}))]
+
+
+@pytest.mark.parametrize("flag", [1, None, "true"])
+def test_exit_attribution_rejects_ambiguous_price_mode(flag):
+    with pytest.raises(ValueError, match="explicit boolean"):
+        evidence.managed_exit_evidence(None, None, (), exact_prices=flag)
+    with pytest.raises(ValueError, match="explicit boolean"):
+        evidence.attach_exit_evidence(None, None, (), (), exact_prices=flag)
+
+
 def test_broker_drawdown_rejects_incomplete_or_wrong_cursor_and_labels_limits(monkeypatch):
     from src.backend import backtest_v4_saved_review as review, typed_backtest_review_core as core
     from src.trading_runtime import arte_journal_projection as projection

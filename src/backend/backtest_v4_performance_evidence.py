@@ -23,7 +23,7 @@ def protection_exit_evidence(lifecycle, execution):
             "source": "effective_protection_order", "source_sequence": int(state["sequence"])}
 
 
-def managed_exit_evidence(client, prefix, executions):
+def managed_exit_evidence(client, prefix, executions, *, exact_prices=False):
     """Resolve only exact committed command/context/intent identities, in batches."""
     from src.backend.backtest_v4_saved_review import _complete_detail_rows, _utc_timestamp
     from src.backend.backtest_terminal_v2_fence import _verify_v1_rows
@@ -33,10 +33,16 @@ def managed_exit_evidence(client, prefix, executions):
     )
     from src.trading_runtime.arte_intent_projection import load_committed_strategy_intent_page
 
+    if type(exact_prices) is not bool:
+        raise ValueError("Exit attribution price mode must be an explicit boolean")
     wanted = {(e.account_id, e.client_order_id) for e in executions if e.client_order_id}
     if not wanted:
         return {}
-    commands = _complete_detail_rows(load_committed_order_command_page, client, prefix)
+    command_reader = load_committed_order_command_page
+    if exact_prices:
+        from functools import partial
+        command_reader = partial(command_reader, exact_prices=True)
+    commands = _complete_detail_rows(command_reader, client, prefix)
     selected = [row for row in commands if (row["account_id"], row["client_order_id"]) in wanted]
     command_by_key = {(row["account_id"], row["client_order_id"]): row for row in selected}
     if len(command_by_key) != len(selected):
@@ -96,7 +102,9 @@ def managed_exit_evidence(client, prefix, executions):
     return result
 
 
-def attach_exit_evidence(client, prefix, lifecycles, executions):
+def attach_exit_evidence(client, prefix, lifecycles, executions, *, exact_prices=False):
+    if type(exact_prices) is not bool:
+        raise ValueError("Exit attribution price mode must be an explicit boolean")
     by_id = {row.execution_id: row for row in executions}
     pending = []
     grouped = []
@@ -117,7 +125,8 @@ def attach_exit_evidence(client, prefix, lifecycles, executions):
                 pending.append(first)
             evidence[order] = proof
         grouped.append((lifecycle, exits, orders, evidence))
-    managed = managed_exit_evidence(client, prefix, pending)
+    managed = managed_exit_evidence(client, prefix, pending,
+        **({"exact_prices": True} if exact_prices else {}))
     for lifecycle, exits, orders, evidence in grouped:
         components = []
         for order, fills in orders.items():

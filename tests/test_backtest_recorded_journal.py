@@ -217,10 +217,15 @@ def test_recorded_performance_uses_final_fees_and_the_same_financial_projection(
         assert scope.get("exact_prices", False) is exact
         return fills
     monkeypatch.setattr(recorded, 'load_committed_execution_page', selected_fills)
-    monkeypatch.setattr(evidence, 'attach_exit_evidence', lambda *_: None)
+    # The legacy full-review projection remains a separate comparison reader.
+    calls = []
+    def attach(*args, **scope):
+        calls.append(scope.get('exact_prices', False))
+    monkeypatch.setattr(evidence, 'attach_exit_evidence', attach)
     monkeypatch.setattr(full, '_terminal_attestation', lambda *_: {'prefix': _prefix()})
     result = recorded.project_recorded_performance(Client(), RUN)
     assert result == full.load_v4_performance_report(Client(), RUN)
+    assert calls == [exact, False]
     assert float(result['report']['summary']['net_pnl']) == 8
     monkeypatch.setattr(recorded, 'load_committed_commission_page', lambda *_a, **_k: ())
     with pytest.raises(RuntimeError, match='final fees'):

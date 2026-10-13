@@ -331,7 +331,8 @@ def project_recorded_performance(client, run_id: str, *,
     attach_protection_timelines(
         lifecycles, protection_events, executions, datetime.max.replace(tzinfo=UTC))
     from src.backend.backtest_v4_performance_evidence import attach_exit_evidence
-    attach_exit_evidence(client, prefix, lifecycles, executions)
+    attach_exit_evidence(client, prefix, lifecycles, executions,
+        **({"exact_prices": True} if attestation.get("exact_prices", False) else {}))
     if not _head_matches(client, normalized, prefix):
         raise RuntimeError("Saved Canvas terminal head changed during chart projection")
     # No order lifecycle projection has been asserted yet. Do not turn an
