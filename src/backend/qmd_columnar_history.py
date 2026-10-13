@@ -220,3 +220,60 @@ async def certify_history_product_async(reader_factory, scope, fields, parents, 
         if task.done() and not task.cancelled():
             task.exception()
         raise
+
+
+@dataclass(frozen=True)
+class HistoryPinRequest:
+    """Explicit central product identity; no inferred revision or private bars."""
+    scope: c.HistoryScope
+    fields: tuple[c.HistoryField, ...]
+    parents: c.HistoryParents
+    expected_content_hash: str
+
+    def __post_init__(self):
+        if type(self.scope) is not c.HistoryScope or type(self.parents) is not c.HistoryParents:
+            raise TypeError('History pin request requires native source contracts')
+        c.selected_catalog(self.fields)
+        c.require_hash(self.expected_content_hash)
+        if self.scope.product_revision != c.product_revision(self.fields,
+                self.parents.producer_code_hash, volume_window_seconds=self.parents.volume_window_seconds):
+            raise ValueError('History pin request differs from its producer revision')
+
+
+async def certify_history_pins_async(reader_factory, requests, *, concurrency):
+    """Cold certify a complete input packet with fixed workers and pin-only retention.
+
+    Each worker owns its SELECT-only client and native certification. Full
+    frames are released in that worker before crossing the event-loop boundary.
+    Cancellation drains existing readers; no producer or publication is invoked.
+    """
+    from .qmd_columnar_history_transport import _owned_worker
+    if (not callable(reader_factory) or type(requests) is not tuple
+            or not 1 <= len(requests) <= 25000 or type(concurrency) is not int
+            or not 1 <= concurrency <= 6
+            or any(type(request) is not HistoryPinRequest for request in requests)):
+        raise ValueError('History pin packet requires bounded explicit native requests')
+    identities = [request.scope.listing_id for request in requests]
+    if len(set(identities)) != len(identities):
+        raise ValueError('History pin packet repeats a listing')
+    origin = lambda request: (request.scope.build_id, request.scope.session_date,
+        request.scope.first_bucket, request.scope.stop_bucket, request.scope.product_revision,
+        request.parents.market_plan_hash, request.parents.opening_reference_hash)
+    if any(origin(request) != origin(requests[0]) for request in requests):
+        raise ValueError('History pin packet differs in its certified session or origin')
+    iterator, result = iter(requests), {}
+    def certify(request):
+        reader = reader_factory()
+        try:
+            return certify_history_product(reader, request.scope, request.fields,
+                request.parents, expected_content_hash=request.expected_content_hash).pin()
+        finally:
+            reader.close()
+    async def worker():
+        while (request := next(iterator, None)) is not None:
+            pin = await _owned_worker(certify, request)
+            result[request.scope.listing_id] = pin
+    async with asyncio.TaskGroup() as tasks:
+        for _ in range(min(concurrency, len(requests))):
+            tasks.create_task(worker())
+    return MappingProxyType({identity: result[identity] for identity in sorted(result)})

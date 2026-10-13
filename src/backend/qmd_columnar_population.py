@@ -58,6 +58,34 @@ class CertifiedPopulationPin:
             maximum_prior_close=self.rule.maximum_prior_close))
 
 
+async def certify_population_history_async(opening, rule, requests, *, reader_factory, concurrency):
+    """Load every eligible volume seal through the native bounded cold reader."""
+    from .qmd_columnar_history import HistoryPinRequest, certify_history_pins_async
+    if (type(opening) is not CertifiedOpeningReference or type(rule) is not VolumeUniverseRule
+            or type(requests) is not tuple or any(type(r) is not HistoryPinRequest for r in requests)):
+        raise TypeError('Population loading requires native opening, ranking and history requests')
+    eligible = {row['listing_id']: row for row in opening.resolved_rows()
+        if rule.minimum_prior_close <= row['adjusted_prior_close'] <= rule.maximum_prior_close}
+    if (len(requests) != len(eligible)
+            or {r.scope.listing_id for r in requests} != set(eligible)):
+        raise ValueError('Population requests differ from the complete price-eligible population')
+    for request in requests:
+        row = eligible[request.scope.listing_id]
+        if (request.fields or request.scope.ticker != row['ticker']
+                or request.scope.build_id != opening.scope.build_id
+                or request.scope.session_date != opening.scope.session_date
+                or request.parents.market_plan_hash != opening.scope.market_plan_hash
+                or request.parents.opening_reference_hash != opening.content_hash
+                or request.parents.volume_window_seconds != rule.window_seconds):
+            raise ValueError('Population request differs from its certified opening lineage')
+    if not eligible:
+        if (not callable(reader_factory) or type(concurrency) is not int or not 1 <= concurrency <= 6):
+            raise ValueError('Population loading requires a bounded native reader')
+        return CertifiedPopulationPin(opening, {}, rule)
+    histories = await certify_history_pins_async(reader_factory, requests, concurrency=concurrency)
+    return CertifiedPopulationPin(opening, histories, rule)
+
+
 @dataclass(frozen=True)
 class CertifiedPopulationWindow:
     source_revision: str

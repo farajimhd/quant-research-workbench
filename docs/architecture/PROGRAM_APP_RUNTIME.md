@@ -25,6 +25,13 @@ and lexical listing ties. Its initial entry allowance is $1,000 and each add is
 $200; changing cash parameters creates a new immutable release. Every fill's
 commission and applicable execution cost contributes to app P&L.
 Opening-reference publication requires the entire sealed identity population.
+Cold history preparation can load explicit `HistoryPinRequest` packets through
+`certify_history_pins_async`. Its fixed worker pool owns SELECT-only connections
+and retains only verified pins, releasing complete certification frames before
+returning to the event loop. `certify_population_history_async` checks the full
+price-eligible population and opening lineage before opening those readers.
+These consumers reuse native child-hash/storage verification and never invoke
+a missing-data producer.
 A ticker projection cannot publish an alternative scanner population under the
 same programme. Price eligibility is applied only after complete population
 coverage, before volume ranking; legacy identity readers retain their existing
