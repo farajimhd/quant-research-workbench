@@ -14,6 +14,16 @@ from pipelines.certified_research.contracts import identifier,literal,digest
 from pipelines.certified_research.publication import SourceClaim,insert_rows
 
 TABLE='historical_rest_reporting_stage_v1'
+RECEIPTS='historical_rest_reporting_receipt_v1'
+
+
+def receipt_table():
+    c=schema.c
+    return schema.Table(RECEIPTS,(c('acquisition_id','UUID'),c('source_date','Date'),c('ticker','LowCardinality(String)'),
+        c('source_hash','FixedString(64)'),c('provider_hash','FixedString(64)'),c('rows','UInt64'),c('pages','UInt32'),
+        c('page_input_hash','FixedString(64)'),c('stored_hash','FixedString(64)'),c('receipt_hash','FixedString(64)'),
+        c('completed_at',"DateTime64(6,'UTC')",'Delta,ZSTD(1)')),
+        ('acquisition_id','source_date','ticker'),'toYYYYMM(source_date)')
 
 
 class TransportError(RuntimeError):
@@ -142,6 +152,79 @@ def encoded_projection(args,database,acquisition_id,ticker,day):
     from pipelines.market_sip.flatfiles.download_update_events import raw_event_union_sql
     return raw_event_union_sql(args,None,trade_only=True,include_reporting_reason=True,include_reporting_evidence=True,
         trade_source_sql=source_projection(database,acquisition_id,ticker,day))
+
+
+def _verify_table(query,database,table):
+    schema.verify_auxiliary_storage(query,database,(table.name,))
+    compact=lambda value:value.replace(' ','').replace('`','')
+    metadata=query(f'SELECT engine,sorting_key,partition_key FROM system.tables WHERE database={literal(database)} AND name={literal(table.name)}')
+    if (len(metadata)!=1 or metadata[0]['engine']!='MergeTree' or compact(metadata[0]['sorting_key'])!=','.join(table.order)
+            or compact(metadata[0]['partition_key'])!=compact(table.partition)):
+        raise ValueError('REST reporting table engine/key differs')
+    columns=query(f'SELECT name,type,compression_codec FROM system.columns WHERE database={literal(database)} AND table={literal(table.name)} ORDER BY position')
+    if [(r['name'],compact(r['type']),compact(r['compression_codec'])) for r in columns]!=[
+            (c.name,compact(c.type),'CODEC('+compact(c.codec)+')') for c in table.columns]:
+        raise ValueError('REST reporting table schema/codec differs')
+
+
+def _stored(query,database,where):
+    fields=','.join(c.name for c in staging_table().columns)
+    sums=','.join(f'sum(reinterpretAsUInt64(substring(h,{offset},8))) h{i}' for i,offset in enumerate((1,9,17,25)))
+    rows=query(f'SELECT count() n,uniqExact(tuple(page_index,row_index)) unique_rows,{sums} '
+        f'FROM (SELECT page_index,row_index,SHA256(toString(tuple({fields}))) h FROM {database}.{TABLE} WHERE {where})')
+    if len(rows)!=1:raise ValueError('REST reporting stored fingerprint is ambiguous')
+    evidence={k:int(v) for k,v in rows[0].items()}
+    if evidence['n']!=evidence['unique_rows']:raise ValueError('REST reporting staging is duplicated')
+    return evidence['n'],digest(evidence)
+
+
+def acquire(query,database,claim,guard,provider,acquisition_id,ticker,day,source_hash,stop,*,progress=None):
+    """Seal acquired inputs, then resume using SQL fingerprints without HTTP.
+
+    A sealed input cannot be automatically healed after tampering. Source hash
+    must identify the frozen canonical source-day certificate, not provider keys.
+    This receipt still does not certify reporting coverage or repaired events.
+    """
+    identifier(database);UUID(acquisition_id)
+    if (not isinstance(claim,SourceClaim) or (database!='q_live' and not database.startswith('certified_research_test_'))
+            or not isinstance(source_hash,str) or not re.fullmatch('[0-9a-f]{64}',source_hash) or type(day) is not date
+            or not re.fullmatch(r'[A-Z0-9._-]{1,32}',ticker)):
+        raise ValueError('Invalid REST acquisition ownership or source binding')
+    if stop.is_set():raise InterruptedError('REST reporting acquisition stopped')
+    claim.check();guard()
+    for table in (staging_table(),receipt_table()):_verify_table(query,database,table)
+    provider_hash=digest(dict(version='original-rest-reporting-v1',origin=provider.base,
+        page_limit=provider.limit,max_pages=provider.max_pages,columns=[vars(c) for c in staging_table().columns]))
+    where=f'acquisition_id=toUUID({literal(acquisition_id)}) AND source_date=toDate({literal(day)}) AND ticker={literal(ticker)}'
+    def read():
+        receipts=query(f'SELECT * FROM {database}.{RECEIPTS} WHERE {where}')
+        if not receipts:return None
+        if len(receipts)!=1:raise ValueError('REST reporting acquisition receipt is duplicated')
+        receipt=receipts[0]
+        proof=dict(receipt);fingerprint=proof.pop('receipt_hash')
+        if (digest(proof)!=fingerprint or receipt['source_hash']!=source_hash or receipt['provider_hash']!=provider_hash):
+            raise ValueError('REST reporting acquisition receipt binding differs')
+        count,stored_hash=_stored(query,database,where)
+        if count!=int(receipt['rows']) or stored_hash!=receipt['stored_hash']:
+            raise ValueError('Sealed REST reporting inputs changed')
+        claim.check();guard()
+        return dict(receipt,canonical_certified=False)
+    existing=read()
+    if existing is not None:
+        if progress:progress(dict(status='reused',rows=int(existing['rows']),pages=int(existing['pages']),sealed_input=True))
+        return existing
+    staged=stage(query,database,claim,guard,provider,acquisition_id,ticker,day,stop,progress=progress)
+    count,stored_hash=_stored(query,database,where)
+    if count!=staged['rows']:raise ValueError('REST reporting input count changed before sealing')
+    proof=dict(acquisition_id=acquisition_id,source_date=str(day),ticker=ticker,source_hash=source_hash,
+        provider_hash=provider_hash,rows=count,pages=staged['pages'],page_input_hash=staged['input_hash'],stored_hash=stored_hash,
+        completed_at=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f'))
+    claim.check();guard()
+    if stop.is_set():raise InterruptedError('REST reporting stopped before acquisition seal')
+    insert_rows(query,database,RECEIPTS,[dict(proof,receipt_hash=digest(proof))])
+    verified=read()
+    if verified is None:raise ValueError('REST reporting acquisition receipt insert is uncertain')
+    return verified
 
 
 def stage(query,database,claim,guard,provider,acquisition_id,ticker,day,stop,*,progress=None):

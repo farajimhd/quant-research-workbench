@@ -771,6 +771,19 @@ class ClickHouseIntegration(unittest.TestCase):
         logs.clear()
         self.assertEqual(rest.stage(query,self.database,Claim(),lambda:None,provider,acquisition,'REST',date(2026,1,2),Event()),acquired)
         self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+        self.client.query(rest.receipt_table().ddl(self.database),read=False)
+        receipt=rest.acquire(query,self.database,Claim(),lambda:None,provider,acquisition,'REST',date(2026,1,2),'a'*64,Event())
+        provider.fetch.reset_mock();logs.clear()
+        self.assertEqual(rest.acquire(query,self.database,Claim(),lambda:None,provider,acquisition,'REST',date(2026,1,2),'a'*64,Event()),receipt)
+        provider.fetch.assert_not_called()
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+        with self.assertRaisesRegex(ValueError,'binding differs'):
+            rest.acquire(query,self.database,Claim(),lambda:None,provider,acquisition,'REST',date(2026,1,2),'b'*64,Event())
+        self.client.query(f"ALTER TABLE {self.database}.{rest.TABLE} UPDATE price='2' WHERE acquisition_id=toUUID('{acquisition}') AND row_index=0 SETTINGS mutations_sync=2",read=False)
+        with self.assertRaisesRegex(ValueError,'inputs changed'):
+            rest.acquire(query,self.database,Claim(),lambda:None,provider,acquisition,'REST',date(2026,1,2),'a'*64,Event())
+        provider.fetch.assert_not_called()
+        self.client.query(f"ALTER TABLE {self.database}.{rest.TABLE} UPDATE price='1.2345' WHERE acquisition_id=toUUID('{acquisition}') AND row_index=0 SETTINGS mutations_sync=2",read=False)
         with patch.object(sys,'argv',['updater','--start-date','2026-01-02','--end-date','2026-01-02','--skip-bars']):
             args=updater.parse_args()
         encoded=rest.encoded_projection(args,self.database,acquisition,'REST',date(2026,1,2))
