@@ -1255,9 +1255,9 @@ class ClickHouseIntegration(unittest.TestCase):
         from unittest.mock import patch
         from pipelines.certified_research import saved_execution
         logs=[]
-        def tracked(sql):
+        def tracked(sql,*args,**kwargs):
             logs.append(sql)
-            return self.client.query(sql)
+            return self.client.query(sql,*args,**kwargs)
         def frozen_clients(frozen):
             self.assertEqual(frozen,config)
             return self.builder.Client(self.args,persistent=False)
@@ -1268,6 +1268,35 @@ class ClickHouseIntegration(unittest.TestCase):
         self.assertEqual(resumed['seal'],result['seal'])
         self.assertFalse(any(sql.startswith(('INSERT INTO','ALTER TABLE','CREATE TABLE')) for sql in logs))
         self.assertFalse(dictionary_events)
+
+        # Initial execution uses actual recipe metadata and persisted SEC
+        # products; only canonical bindings/runtime and capacity are fixtures.
+        from pipelines.certified_research import initial_plan,recipe,runtime_plan
+        initial_dataset=str(uuid.uuid4())
+        rules=(dict(token_id=1,modifier_int=0,update_last=1,update_high_low=1,update_volume=1),)
+        frozen=recipe.market_recipe(config,rules)
+        initial_plans=(*runtime_plan.units(config,frozen['definition'],rules),*plans)
+        initial_runtime=SimpleNamespace(dataset=initial_dataset,database=self.database,claim=claim,
+            request=None,engine=None,recipe_hash=frozen['hash'],definition=frozen['definition'],rules=rules)
+        assembled=dict(plans=initial_plans,source_hash='a'*64,recipe_hash=frozen['hash'])
+        with patch('pipelines.certified_research.verification.source_guard',return_value=lambda:None), \
+                patch.object(runtime_plan,'runtime',return_value=initial_runtime):
+            logs.clear()
+            with self.assertRaisesRegex(ValueError,'blocked'):
+                initial_plan.run(tracked,config,initial_dataset,assembled,claim,frozen_clients,dictionary,
+                    lambda frozen,units:lambda *args:dict(status='blocked'))
+            self.assertFalse(any(sql.startswith(('INSERT INTO','ALTER TABLE','CREATE TABLE')) for sql in logs))
+            published=initial_plan.run(tracked,config,initial_dataset,assembled,claim,frozen_clients,dictionary,
+                lambda frozen,units:capacity)
+            self.assertEqual(published['status'],'complete',str(published['errors']))
+            self.assertEqual(published['seal']['units'],len(initial_plans))
+            self.assertEqual({p.unit.key:p for p in load_plan(tracked,self.database,initial_dataset).units},
+                {p.unit.key:p for p in initial_plans})
+            logs.clear()
+            resumed=saved_execution.run(tracked,self.database,initial_dataset,claim,frozen_clients,dictionary,
+                lambda frozen,units:capacity)
+            self.assertEqual(resumed['seal'],published['seal'])
+            self.assertFalse(any(sql.startswith(('INSERT INTO','ALTER TABLE','CREATE TABLE')) for sql in logs))
 
     def test_campaign_publishes_only_verified_authorities_and_detects_tampering_on_resume(self):
         dataset=str(uuid.uuid4());day=date(2026,1,2)
