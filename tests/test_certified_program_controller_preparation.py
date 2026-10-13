@@ -68,6 +68,24 @@ def test_certified_selection_prepares_native_service_controller_without_starting
             assert controller._runtime is None and controller._task is None and controller.status == "created"
             with pytest.raises(RuntimeError, match="prepared typed launch handoff"):
                 await selector.launch_controller(service, controller)
+            with pytest.raises(RuntimeError, match="prepared typed launch handoff"):
+                await selector.stage_controller(service, controller)
+            assert selector._prepared is None
+            with pytest.raises(ValueError, match="no bound native launch"):
+                await selector.staged_controller(service)
+            # Only isolate the slot lifecycle here. The native bound proof's
+            # positive/negative execution cases run in the cohort integration.
+            from src.backend import backtest_program_launch as handoff
+            async def bound(owned):
+                assert owned is controller
+            with monkeypatch.context() as slot:
+                slot.setattr(handoff, "require_bound_program_start", bound)
+                assert await selector.stage_controller(service, controller) is controller
+                retained = selector._prepared
+                assert await selector.stage_controller(service, controller) is controller
+                assert selector._prepared is retained
+                assert await selector.staged_controller(service) is controller
+                assert not service._runs and controller._task is None
             assert not service._runs and controller._task is None
             revision["selection_hash"] = "f" * 64
             before = len(clients)

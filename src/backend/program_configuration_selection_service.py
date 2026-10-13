@@ -6,6 +6,7 @@ This module never discovers credentials, installs releases or starts a run.
 import asyncio
 from copy import deepcopy
 from types import MappingProxyType
+from threading import Lock
 from uuid import UUID
 import re
 
@@ -29,6 +30,8 @@ class ProgramConfigurationSelectionService:
         self.authorities = MappingProxyType(dict(selection_client_factory=selection_client_factory,
             release_client_factory=release_client_factory, policy_client_factory=policy_client_factory,
             policy_dispatch=policy_dispatch, concurrency=concurrency))
+        self._prepared_lock = Lock()
+        self._prepared = None
 
     async def snapshot(self, candidate_id, run_plan_id=""):
         if type(candidate_id) is not str or not candidate_id.startswith("strategy-configuration:"):
@@ -84,11 +87,47 @@ class ProgramConfigurationSelectionService:
         Operational authorization and complete typed preparation belong to the
         caller. This adds no alternative engine, journal or publication path.
         """
+        await self._review_controller(run_service, controller)
+        with self._prepared_lock:
+            if self._prepared is not None and self._prepared == (run_service, controller):
+                self._prepared = None
+        return await run_service.launch_prepared_program_controller(controller)
+
+    async def stage_controller(self, run_service, controller):
+        """Retain one fully prepared native handoff without admission or start."""
+        from .backtest_program_launch import require_bound_program_start
+        await self._review_controller(run_service, controller)
+        await require_bound_program_start(controller)
+        with self._prepared_lock:
+            if self._prepared is not None and self._prepared != (run_service, controller):
+                raise RuntimeError("App already retains another prepared programme handoff")
+            if self._prepared is None:
+                self._prepared = (run_service, controller)
+        return controller
+
+    async def staged_controller(self, run_service):
+        """Recheck the retained native proof before an app preflight can use it."""
+        from .backtest_program_launch import require_bound_program_start
+        with self._prepared_lock:
+            prepared = self._prepared
+        if prepared is None or prepared[0] is not run_service:
+            raise ValueError("Programme Backtest has no bound native launch prepared for this app")
+        controller = prepared[1]
+        await self._review_controller(run_service, controller)
+        await require_bound_program_start(controller)
+        with self._prepared_lock:
+            if self._prepared is not prepared:
+                raise RuntimeError("Prepared programme handoff changed during app review")
+        return controller
+
+    async def _review_controller(self, run_service, controller):
         from .replay_run_service import ReplayRunService, ReplayRunController
         from .backtest_program_journal_bootstrap import _configuration_hash
         from src.trading_runtime.strategy_configuration_selection import StrategyConfigurationSelection
         if (program_configuration_selection_service() is not self
-                or type(run_service) is not ReplayRunService or type(controller) is not ReplayRunController):
+                or type(run_service) is not ReplayRunService or type(controller) is not ReplayRunController
+                or controller.runtime_root != run_service.runtime_root
+                or controller.status != "created" or controller._task is not None):
             raise ValueError("Programme launch requires its installed app authority")
         definition = controller.definition
         revision = definition.configuration_revision
@@ -105,7 +144,6 @@ class ProgramConfigurationSelectionService:
                 or current["content_hash"] != reviewed_hash or _configuration_hash(definition) != reviewed_hash
                 or current["selection_hash"] != selection.header["content_hash"]):
             raise RuntimeError("Programme launch changed its reviewed central selection")
-        return await run_service.launch_prepared_program_controller(controller)
 
 
 def install_program_configuration_selection_service(service):
