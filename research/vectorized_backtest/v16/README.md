@@ -71,6 +71,9 @@ Preparation emits training.json and validation.json for run_search.
 
 Global net-profit rank remains the overall financial table order. Validation adds
 Training net profit and Training net rank; key 4 sorts by training rank. Existing
+Both overall rank values are permanently based on their split's net profit and
+never change when sorting. Session views label their separate session net-profit
+rank explicitly; display position and selection score do not redefine rank.
 session/score, net-profit and session-profit sorts remain keys 1/2/3. All table
 loads/sorts run in the separate observer; pages contain at most 50 rows and the
 observer maximizes its window. The training-only validation shortlist combines

@@ -15,7 +15,7 @@ def initial_state():
     return np.full((8,len(EMA_PERIODS)),np.nan),np.zeros(4,dtype=np.int64)
 
 
-@njit(cache=False)
+@njit(cache=False,nogil=True)
 def calculate(close,high,low,valid,extremes,state,counts,factor,emit):
     """Never reset at day boundaries; invalid bars do not advance recurrences."""
     if factor!=1.:
