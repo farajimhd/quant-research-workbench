@@ -1,7 +1,7 @@
 from datetime import date
 from types import SimpleNamespace
 from unittest import TestCase
-from unittest.mock import Mock
+from unittest.mock import Mock,patch
 from uuid import uuid4
 from pipelines.certified_research.launch import ExecutionLaunch,combine_registries
 from pipelines.certified_research.campaign import PlannedUnit
@@ -19,7 +19,10 @@ class ExecutionLaunchTests(TestCase):
             value=dict(status='admitted',plan_hash=plan_hash,units=len(units))
             return dict(value,certificate_hash=digest(value))
         launch=ExecutionLaunch(query,config,dataset,plans,'a'*64,claim,Mock(),guard,capacity,Mock(),runtime)
+        schema_patch=patch('pipelines.certified_research.launch.installation.verify')
+        schema_check=schema_patch.start();self.addCleanup(schema_patch.stop)
         self.assertEqual(launch.admit()['plan_hash'],launch.controller.plan_hash)
+        schema_check.assert_called_once_with(query,'arte',require_tables=True)
         query.assert_not_called()
         launch.capacity_guard=lambda *args:dict(status='blocked')
         with self.assertRaisesRegex(ValueError,'blocked'):
@@ -31,6 +34,11 @@ class ExecutionLaunchTests(TestCase):
         launch.capacity_guard=lambda h,p:dict(status='admitted',plan_hash=h,certificate_hash='f'*64)
         with self.assertRaisesRegex(ValueError,'fingerprint'):
             launch.admit()
+        launch.capacity_guard=Mock()
+        schema_check.side_effect=ValueError('Installation tables are missing')
+        with self.assertRaisesRegex(ValueError,'missing'):launch.run()
+        launch.capacity_guard.assert_not_called()
+        query.assert_not_called()
 
     def test_registry_conflicts_and_missing_verifiers_fail_before_execution(self):
         callback=Mock()

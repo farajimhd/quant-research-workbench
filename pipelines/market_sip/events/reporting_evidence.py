@@ -102,20 +102,26 @@ def ddl(database='q_live',table=TABLE,*,stage=False):
     SETTINGS storage_policy='live_market_ssd',default_compression_codec='ZSTD(1)'"""
 
 
-def reconciled_projection(raw_sql,target,source_date,source_digest,fields,*,first_sip_us,last_sip_us):
+def reconciled_projection(raw_sql,target,source_date,source_digest,fields,*,first_sip_us,last_sip_us,repair_reporting_flags=False):
     """Rank matches use full canonical-field equality; unmatched rows block sealing.
 
     The updater supplies its own acquisition-owned raw projection. Historical
     callers must supply an ingestion-owned ClickHouse evidence source instead.
     This function never opens a file or invents a clock from SIP time.
+    Historical reporting repair may compare the low six event-meta bits: the
+    two reporting bits are independently recalculated and certified afterward.
+    New-day ingestion retains exact metadata equality by default.
     """
     if len(source_digest)!=64 or any(c not in '0123456789abcdef' for c in source_digest):raise ValueError('Source digest is missing')
     database,table=target.split('.');identifier(database);identifier(table)
     if type(first_sip_us) is not int or type(last_sip_us) is not int or not 0<first_sip_us<=last_sip_us:
         raise ValueError('Certified source SIP bounds are required')
+    if type(repair_reporting_flags) is not bool:raise ValueError('Reporting repair mode must be explicit Boolean')
+    fields=tuple(fields)
+    if len(fields)!=len(set(fields)) or 'event_meta' in fields:raise ValueError('Canonical comparison fields are duplicated')
     for field in fields:identifier(field)
-    columns=['event_meta',*fields]
-    equality='tuple('+','.join('e.'+f for f in columns)+')=tuple('+','.join('r.'+f for f in columns)+')'
+    meta=lambda alias:f'bitAnd({alias}.event_meta,63)' if repair_reporting_flags else f'{alias}.event_meta'
+    equality='tuple('+','.join([meta('e'),*('e.'+f for f in fields)])+')=tuple('+','.join([meta('r'),*('r.'+f for f in fields)])+')'
     return f"""SELECT toDate({literal(source_date)}) source_date,e.ticker ticker,e.ordinal ordinal,
       r.sip_timestamp_ns sip_timestamp_ns,r.participant_timestamp_ns participant_timestamp_ns,
       r.reporting_condition_entries reporting_condition_entries,r.reporting_reason reporting_reason,

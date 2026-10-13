@@ -1066,6 +1066,24 @@ class ClickHouseIntegration(unittest.TestCase):
         stored=self.client.query(f'SELECT participant_timestamp_ns FROM {self.database}.{reporting_evidence.TABLE} ORDER BY ordinal')
         self.assertEqual(stored[1]['participant_timestamp_ns'],None)
 
+    def test_historical_ns_reconciliation_ignores_only_reporting_bits(self):
+        from pipelines.market_sip.events import reporting_evidence
+        table='ns_repair_'+uuid.uuid4().hex
+        self.client.query(f'CREATE TABLE {self.database}.{table} (ticker String,ordinal UInt64,event_meta UInt8,'
+            "sip_timestamp_us UInt64,price_int UInt64) ENGINE=MergeTree ORDER BY (ticker,ordinal) SETTINGS storage_policy='live_market_ssd'",read=False)
+        self.client.query(f"INSERT INTO {self.database}.{table} VALUES ('TEST',1,1,1000000,1234)",read=False)
+        def projection(meta=65,price=1234,repair=False):
+            raw=(f"SELECT 'TEST' ticker,toUInt64(1) sequence_number,toUInt8({meta}) event_meta,toUInt64(1000000) sip_timestamp_us,"
+                f"toUInt64({price}) price_int,toUInt64(1000000123) sip_timestamp_ns,toNullable(toUInt64(999999123)) participant_timestamp_ns,"
+                "CAST([] AS Array(String)) reporting_condition_entries,toUInt8(0) reporting_reason")
+            return reporting_evidence.reconciled_projection(raw,self.database+'.'+table,'2026-01-02','a'*64,
+                ['sip_timestamp_us','price_int'],first_sip_us=1000000,last_sip_us=1000000,repair_reporting_flags=repair)
+        self.assertEqual(int(self.client.query(projection())[0]['mismatch']),1)
+        self.assertEqual(int(self.client.query(projection(repair=True))[0]['mismatch']),0)
+        self.assertEqual(int(self.client.query(projection(meta=67,repair=True))[0]['mismatch']),1)
+        self.assertEqual(int(self.client.query(projection(price=1235,repair=True))[0]['mismatch']),1)
+        with self.assertRaisesRegex(ValueError,'explicit Boolean'):projection(repair=1)
+
     def test_live_clock_evidence_preflight_reports_precision_limit_without_reading_events(self):
         queries=[]
         def query(sql):queries.append(sql);return self.client.query(sql+' SETTINGS readonly=1')
@@ -1738,8 +1756,9 @@ class ClickHouseIntegration(unittest.TestCase):
             s.verify_storage(cls.client.query,cls.database)
             cls.client.query('CREATE DATABASE '+cls.database,read=False)
             cls.created=True
-            for ddl in (*s.ddl(cls.database),*market_day_sql.ddl(cls.database),*market.staging_ddl(cls.database),
-                        reference_producer.staging_table().ddl(cls.database),float_data.staging_table().ddl(cls.database),activity.staging_table().ddl(cls.database)):
+            from pipelines.certified_research import installation
+            for ddl in (*(table.ddl(cls.database) for _,table in installation.catalog(cls.database)),
+                        *market_day_sql.ddl(cls.database)):
                 cls.client.query(ddl,read=False)
         except BaseException:
             cls.tearDownClass()

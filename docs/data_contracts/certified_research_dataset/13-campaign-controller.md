@@ -76,6 +76,10 @@ Production market V7 factories return `StartAuthority`, tying their initial engi
 
 Historical reporting repair no longer hydrates or reconstructs imported flatfiles. It requires source-bound staged sidecars, checks the stored mapping against canonical authority and retains sidecars after success. Live tests cover classification parity, low-bit/quote preservation, monthly bounds, idempotent mutation and mapping-tamper rejection. Missing sidecars block the repair; they require an explicit ingestion-owned versioned path.
 
+Original-nanosecond reconciliation supports an explicit `repair_reporting_flags=True` mode. It compares the low six metadata bits and every supplied canonical comparison field while excluding only the two reporting bits that the native migration repairs. New-day ingestion keeps exact metadata comparison. Mismatched prices, clocks, eligibility bits, missing trades or ambiguous matches still block reconciliation; the native repair independently recomputes reporting reasons and verifies the final flags. This projection does not itself acquire historical clock evidence or publish a certificate.
+
+`ExecutionLaunch` now verifies the full 28-table derived installation before capacity admission or execution, and before read-only authority verification. Missing tables, incompatible codecs/keys or incorrect part placement prevent controller writes. The bounded live reference-controller fixture uses these exact installed schemas; it remains a correctness fixture rather than production capacity evidence.
+
 Tests cover a 10,000-unit reuse/failure chain, real ClickHouse plan/authority/seal publication, read-only sealed resume and rejection after output tampering. Keeper reconnect/session-loss fencing has deterministic coverage.
 
 The local Keeper probe currently lacks the required secure LAN endpoint configuration. No plaintext fallback was used and no production campaign was started. The full launcher must still register all concrete acquisition/repair/reference/market handlers, build their dependency-derived plans and qualify campaign-scale performance. This controller core is not yet the complete launch path.

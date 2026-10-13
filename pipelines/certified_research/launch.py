@@ -2,6 +2,7 @@
 from .campaign import Campaign
 from .handlers import MarketHandlers,ReferenceHandlers,ActivityHandlers,UniverseHandlers
 from .contracts import digest
+from . import installation
 
 
 def combine_registries(registries):
@@ -26,6 +27,7 @@ class ExecutionLaunch:
                  capacity_guard,dictionary_claim_factory,market_runtime,*,prerequisite_registries=()):
         if not callable(capacity_guard):raise ValueError('Execution requires qualified capacity admission')
         self.claim=claim;self.source_guard=source_guard;self.capacity_guard=capacity_guard
+        self.query=query
         self.config=config;self.plans=tuple(plans)
         if (market_runtime.dataset!=dataset_id or market_runtime.database!=config.database
                 or market_runtime.claim is not claim):
@@ -43,6 +45,7 @@ class ExecutionLaunch:
 
     def admit(self):
         self.claim.check();self.source_guard()
+        installation.verify(self.query,self.config.database,require_tables=True)
         certificate=self.capacity_guard(self.controller.plan_hash,self.plans)
         if not isinstance(certificate,dict) or certificate.get('status')!='admitted':
             raise ValueError('Qualified storage admission blocked execution')
@@ -60,4 +63,5 @@ class ExecutionLaunch:
     def verify(self):
         # Verification is read-only and does not consume future write headroom.
         self.claim.check();self.source_guard()
+        installation.verify(self.query,self.config.database,require_tables=True)
         return self.controller.verify()
