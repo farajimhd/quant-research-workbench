@@ -670,6 +670,18 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                     executions=executions, order_manager=controller._runtime.order_manager,
                     maximum_events=1000, last_sequence=basis_sequence, initial_packet=continued)
                 assert unchanged.state_hash == continued.state_hash
+                budget = basis_sequence - 1
+                if budget >= max(len(source_prefix_hashes), len(executions), 1):
+                    limited = rebuild_program_policy_events(actor, (), run_id=controller.run_id,
+                        source_hashes=source_prefix_hashes, blocks=(block,), population=population,
+                        executions=executions, order_manager=controller._runtime.order_manager,
+                        maximum_events=budget, last_sequence=basis_sequence, initial_packet=continued)
+                    assert limited.state_hash == continued.state_hash and limited.journal_sequence == basis_sequence
+                    with pytest.raises(ValueError, match="bounded exact scope"):
+                        rebuild_program_policy_events(actor, (), run_id=controller.run_id,
+                            source_hashes=source_prefix_hashes, blocks=(block,), population=population,
+                            executions=executions, order_manager=controller._runtime.order_manager,
+                            maximum_events=budget, last_sequence=basis_sequence)
                 if previous_basis_packet is not None:
                     advanced = rebuild_program_policy_events(actor,
                         events[previous_basis_packet.journal_sequence:basis_sequence],
@@ -679,6 +691,15 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                     assert advanced.state_hash == basis_packet.state_hash
                     assert advanced.execution_count == basis_packet.execution_count
                     assert advanced.completion_count == basis_packet.completion_count
+                    suffix_budget = max(basis_sequence - previous_basis_packet.journal_sequence,
+                        len(source_prefix_hashes), len(executions), 1)
+                    if suffix_budget < basis_sequence:
+                        bounded_advanced = rebuild_program_policy_events(actor,
+                            events[previous_basis_packet.journal_sequence:basis_sequence],
+                            run_id=controller.run_id, source_hashes=source_prefix_hashes, blocks=(block,),
+                            population=population, executions=executions, order_manager=controller._runtime.order_manager,
+                            maximum_events=suffix_budget, last_sequence=basis_sequence, initial_packet=previous_basis_packet)
+                        assert bounded_advanced.state_hash == advanced.state_hash
                     assert program_policy_fingerprint(previous_basis_packet.actor) == previous_basis_packet.state_hash
                     with pytest.raises(ValueError, match="verified packet"):
                         rebuild_program_policy_events(actor, (), run_id=controller.run_id,

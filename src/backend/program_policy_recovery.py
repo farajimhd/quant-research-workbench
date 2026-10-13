@@ -110,7 +110,7 @@ async def rebuild_owned_pending_program_policy(controller, blocks, population, *
     if initial_packet is not None and type(initial_packet) is not RecoveredProgramPolicy:
         raise ValueError("Owned policy replay requires a sealed continuation packet")
     after = 0 if initial_packet is None else initial_packet.journal_sequence
-    if not 0 <= after <= sequence <= maximum_events:
+    if not 0 <= after <= sequence or sequence - after > maximum_events:
         raise ValueError("Owned policy replay exceeds its declared journal bound")
     blocks = tuple(blocks)
     def require_scope():
@@ -268,7 +268,8 @@ def rebuild_program_policy_events(template, events, *, run_id, source_hashes,
     if (type(template) is not AssignedProgramStrategy
             or type(population) is not CertifiedPopulationWindow
             or type(maximum_events) is not int or maximum_events < 1
-            or type(last_sequence) is not int or not 0 <= last_sequence <= maximum_events):
+            or type(last_sequence) is not int or not 0 <= last_sequence < 2**64
+            or initial_packet is None and last_sequence > maximum_events):
         raise ValueError("Program policy recovery lacks its bounded exact scope")
     source_hashes = tuple(source_hashes)
     if (len(source_hashes) > maximum_events or len(set(source_hashes)) != len(source_hashes)
@@ -338,9 +339,12 @@ def rebuild_program_policy_events(template, events, *, run_id, source_hashes,
             actor.on_broker_executions((execution,), order_manager)
         if program_policy_fingerprint(actor) != before:
             raise ValueError("Program policy continuation changed its prior ledger")
+    if last_sequence - sequence > maximum_events:
+        raise ValueError("Program policy continuation suffix exceeds its declared journal bound")
+    first_sequence = sequence
     for item in events:
         sequence += 1
-        if (sequence > maximum_events or type(item) is not TypedJournalEvent
+        if (sequence - first_sequence > maximum_events or sequence > last_sequence or type(item) is not TypedJournalEvent
                 or item.event["run_id"] != run_id or item.event["sequence"] != sequence):
             raise ValueError("Program policy recovery journal is gapped, foreign or exceeds its bound")
         event, detail = item.event, item.detail
