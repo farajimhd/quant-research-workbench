@@ -4,6 +4,7 @@
 
 ## Verified
 
+- Latest combined opt-in ClickHouse contracts plus initial/saved execution, membership, float, program planning, seed preparation, runtime and capacity suite: **118 passed in 171.76 seconds**. This supersedes narrower checks for those selected modules; it does not qualify a production-scale campaign.
 - Assembled suite without live opt-in: **111 passed, 36 skipped**.
 - Opt-in bounded ClickHouse contracts and SEC suite: **81 passed in 164.53 seconds**.
 - Preparation target/bounds and source-spelling checks after the latest admission-order change: **17 passed**.
@@ -16,6 +17,6 @@ These suites overlap; counts should not be added. The live suite exercises isola
 
 ## Still incomplete
 
-Final plan publication and `run/resume` launcher orchestration; required original-vintage/source qualification and acquisition paths; legacy checkpoint migration/genesis/rename bridges; SEC completeness admission; representative full-universe throughput and qualified storage-rate measurements; full requirement-by-requirement completion audit.
+Automatic complete-plan assembly and CLI `run/resume` orchestration; required original-vintage/source qualification and acquisition paths; legacy checkpoint migration/genesis/rename bridges; SEC completeness admission; representative full-universe throughput and qualified storage-rate measurements; full requirement-by-requirement completion audit. Initial graph and execution adapters now exist and are exercised by bounded fixtures. Fresh campaigns still need float measurement context derived from qualified SEC source evidence before fundamentals have been published; the existing certified-fundamental discovery path alone cannot bootstrap that dependency.
 
 Small correctness fixtures and compressed physical inventory do not qualify production-scale efficiency or capacity. No full campaign has been admitted on this evidence, and the implementation goal remains active.
