@@ -24,7 +24,7 @@ class MarketSession:
             raise ValueError('Invalid dated market session')
 
 
-def market_units(config: CampaignConfig,sessions,*,source_parents,universe_parent,seed_parents,corporate_parents):
+def market_units(config: CampaignConfig,sessions,*,source_parents,universe_parent,seed_parents,corporate_parents,state_start_dates=None):
     """Compile source/repair→aggregate→activity,indicators,V7 dependencies.
 
     Callers supply only admitted dated sessions and already planned source,
@@ -35,6 +35,14 @@ def market_units(config: CampaignConfig,sessions,*,source_parents,universe_paren
     """
     sessions=tuple(sorted(sessions,key=lambda s:(s.listing_key,s.day)))
     if not sessions:raise ValueError('No admitted market sessions')
+    state_start_dates={} if state_start_dates is None else dict(state_start_dates)
+    if set(state_start_dates)-{s.listing_key for s in sessions}:raise ValueError('State start belongs to an unplanned listing')
+    target_first={}
+    for session in sessions:
+        if session.day>=config.start:target_first.setdefault(session.listing_key,session.day)
+    for listing,starts in state_start_dates.items():
+        if not isinstance(starts,tuple) or len(starts)!=2 or any(type(d) is not date or d>target_first.get(listing,config.end) for d in starts):
+            raise ValueError('Indicator/V7 state starts must include the target range')
     from .activity import windows_contract
     windows_contract(config.volume_windows_seconds)
     unit_id(universe_parent);seen=set();prior={};result=[];liquidity={}
@@ -56,23 +64,27 @@ def market_units(config: CampaignConfig,sessions,*,source_parents,universe_paren
         prefix=f'market:{session.listing_key}:{session.day}'
         aggregate=prefix+':aggregate';technical=prefix+':technical';v7=prefix+':v7'
         args=dict(day=str(session.day),listing_key=session.listing_key,ticker=session.ticker)
+        state_starts=state_start_dates.get(session.listing_key,(session.day,session.day))
         dependencies=tuple(dict.fromkeys((*sources,universe_parent)))
         for key,kind,parents in ((aggregate,'market_aggregate',dependencies),
                 (technical,'technical',(aggregate,predecessors[0],corporate)),(v7,'v7',(aggregate,predecessors[1],corporate))):
+            if kind=='technical' and session.day<state_starts[0] or kind=='v7' and session.day<state_starts[1]:continue
             result.append(PlannedUnit(Unit(key,kind,parents,config.query_memory_bytes),dict(args)))
         starts,keys=liquidity.setdefault(session.listing_key,([],[]))
         stamp=int(datetime.combine(session.day,time(4),ZoneInfo('America/New_York')).timestamp())
         starts.append(stamp);keys.append(aggregate)
         first=max(0,bisect_left(starts,stamp-max(config.volume_windows_seconds))-1)
+        if len(keys)-first>1024:raise ValueError('Rolling activity context exceeds the 1024-parent publication bound')
         result.append(PlannedUnit(Unit(prefix+':activity','activity',tuple(keys[first:]),config.query_memory_bytes),
             dict(args,windows=config.volume_windows_seconds)))
-        prior[session.listing_key]=(technical,v7)
+        prior[session.listing_key]=(technical if session.day>=state_starts[0] else predecessors[0],
+            v7 if session.day>=state_starts[1] else predecessors[1])
     return tuple(result)
 
 
 def program_units(config,sessions,issuers,securities,*,prerequisites,source_parents,
                   universe_parent,seed_parents,corporate_parents,security_listings,
-                  fundamental_start,price_start,short_start):
+                  fundamental_start,price_start,short_start,state_start_dates=None):
     """Join acquisition/repair, shared market and reference work in one DAG.
 
     ``security_listings`` is the certified security-to-listing relationship,
@@ -104,7 +116,8 @@ def program_units(config,sessions,issuers,securities,*,prerequisites,source_pare
     if {s.listing_key for s in sessions}!=set(owners):
         raise ValueError('Market sessions do not cover the certified security/listing relationships')
     market=market_units(config,sessions,source_parents=source_parents,
-        universe_parent=universe_parent,seed_parents=seed_parents,corporate_parents=corporate_parents)
+        universe_parent=universe_parent,seed_parents=seed_parents,corporate_parents=corporate_parents,
+        state_start_dates=state_start_dates)
     aggregates={s.security_key:[] for s in securities}
     for plan in market:
         if plan.unit.product=='market_aggregate' and date.fromisoformat(plan.arguments['day'])>=price_start:

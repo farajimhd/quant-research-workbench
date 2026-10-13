@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date,timedelta
+from datetime import date,datetime,time,timedelta,timezone
+from zoneinfo import ZoneInfo
 
 from .contracts import CampaignConfig,digest
 from .source import exchange_sessions
@@ -32,28 +33,52 @@ def preceding_sessions(start,count,*,calendar=exchange_sessions):
     raise ValueError('Context calendar cannot supply the required prior sessions')
 
 
+def elapsed_sessions(first,seconds,*,calendar=exchange_sessions):
+    """Prior complete market days covering the first PM rolling-window origin.
+
+    Windows measure elapsed UTC seconds, including overnight/weekend closure.
+    One earlier exchange session supplies an origin before the cutoff even
+    when it falls on a closed day or before PM. No fixed session count is used.
+    """
+    from .activity import windows_contract
+    windows_contract((seconds,))
+    ny=ZoneInfo('America/New_York')
+    opening=datetime.combine(first,time(4),ny).astimezone(timezone.utc)
+    cutoff=(opening-timedelta(seconds=seconds)).astimezone(ny)
+    # Include the cutoff date only when that session's PM starts before it.
+    boundary=cutoff.date()+timedelta(days=1 if cutoff.time()>=time(4) else 0)
+    origin=preceding_sessions(boundary,1,calendar=calendar)[0]
+    return tuple(calendar(origin,first-timedelta(days=1))),cutoff.astimezone(timezone.utc)
+
+
 def plan(config: CampaignConfig,*,indicator_seed: StateSeed|None=None,v7_seed: StateSeed|None=None,
          rebuild_origin: date|None=None,source_floor=date(2019,1,2),calendar=exchange_sessions):
     targets=calendar(config.start,config.end)
     if not targets:raise ValueError('Target contains no exchange sessions')
     first=targets[0];last=targets[-1]
     prior_market=preceding_sessions(first,1,calendar=calendar) # Current same-clock previous-session RVOL.
+    elapsed,cutoff=elapsed_sessions(first,max(config.volume_windows_seconds),calendar=calendar)
     short=preceding_sessions(first,max(config.short_windows_sessions),calendar=calendar)
     demands=[dict(product='rvol',purpose='same-clock prior-session volume',sessions=prior_market),
-             dict(product='rolling_activity',purpose='elapsed-second windows',seconds=max(config.volume_windows_seconds)),
+             dict(product='rolling_activity',purpose='elapsed-second windows',seconds=max(config.volume_windows_seconds),
+                  earliest_required_at=cutoff,sessions=elapsed),
              dict(product='short_pressure',purpose='publicly available rolling publication inputs',sessions=short)]
-    blocked=[];market=set(prior_market)
+    blocked=[];market=set((*prior_market,*elapsed))
+    if len(elapsed)+1>1024:
+        blocked.append('Rolling activity context exceeds the 1024-parent publication bound')
     for name,seed in (('technical',indicator_seed),('v7',v7_seed)):
         if seed is not None and seed.compatible and seed.session<first:
             later=tuple(d for d in calendar(seed.session,first-timedelta(days=1)) if d>seed.session)
             market.update(later)
             demands.append(dict(product=name,purpose='compatible predecessor plus missing intervening sessions',
-                                seed_session=seed.session,seed_hash=seed.hash,sessions=later))
+                                seed_session=seed.session,seed_hash=seed.hash,sessions=later,
+                                calculation_start=later[0] if later else first))
         elif rebuild_origin is not None:
             if not source_floor<=rebuild_origin<first:
                 raise ValueError('Declared rebuild origin is outside source bounds or not prior to target')
             prefix=calendar(rebuild_origin,first-timedelta(days=1));market.update(prefix)
-            demands.append(dict(product=name,purpose='explicit versioned rebuild prefix',origin=rebuild_origin,sessions=prefix))
+            demands.append(dict(product=name,purpose='explicit versioned rebuild prefix',origin=rebuild_origin,sessions=prefix,
+                                calculation_start=rebuild_origin))
         else:
             blocked.append(name+': compatible prior state or explicit certified rebuild origin required')
     if market and min(market)<source_floor:
