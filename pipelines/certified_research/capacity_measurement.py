@@ -27,25 +27,31 @@ class PhaseObservations:
     def __init__(self,snapshot,*,maximum_samples=1024):
         if not callable(snapshot) or type(maximum_samples) is not int or not 1<=maximum_samples<=4096:
             raise ValueError('Invalid bounded storage observation collector')
-        self.snapshot=snapshot;self.maximum=maximum_samples;self.samples=[];self.lock=Lock()
+        self.snapshot=snapshot;self.maximum=maximum_samples;self.samples=[];self.lock=Lock();self.failed=False
 
     def record(self,product,phase,query):
         if phase not in ('before_write','after_staging','after_publish','after_cleanup'):
             raise ValueError('Unknown storage observation phase')
         identifier(product)
         with self.lock:
-            if len(self.samples)>=self.maximum:raise ValueError('Storage observation bound exceeded; no samples dropped')
-            value=self.snapshot(query)
-            body=dict(value);hash_=body.pop('evidence_hash',None)
-            if hash_!=digest(body) or value.get('upper_bound_proven') is not False:
-                raise ValueError('Invalid observed storage snapshot')
-            if any(type(value.get(name)) is not int or value[name]<0 for name in COUNTERS):
-                raise ValueError('Observed storage counters must be nonnegative exact integers')
-            self.samples.append(dict(sequence=len(self.samples),product=product,phase=phase,snapshot=deepcopy(value)))
+            if self.failed:raise ValueError('Storage capture previously failed; partial history is not a complete observation run')
+            try:
+                if len(self.samples)>=self.maximum:raise ValueError('Storage observation bound exceeded; no samples dropped')
+                value=self.snapshot(query)
+                body=dict(value);hash_=body.pop('evidence_hash',None)
+                if hash_!=digest(body) or value.get('upper_bound_proven') is not False:
+                    raise ValueError('Invalid observed storage snapshot')
+                if any(type(value.get(name)) is not int or value[name]<0 for name in COUNTERS):
+                    raise ValueError('Observed storage counters must be nonnegative exact integers')
+                self.samples.append(dict(sequence=len(self.samples),product=product,phase=phase,snapshot=deepcopy(value)))
+            except BaseException:
+                self.failed=True
+                raise
 
     def result(self):
         with self.lock:
             value=dict(version='phase-observed-storage-v1',samples=tuple(deepcopy(self.samples)),upper_bound_proven=False,
+                capture_status='failed' if self.failed else 'sampled' if self.samples else 'no_samples',
                 observed_maxima={name:max((s['snapshot'][name] for s in self.samples),default=None) for name in COUNTERS})
             return dict(value,evidence_hash=digest(value))
 

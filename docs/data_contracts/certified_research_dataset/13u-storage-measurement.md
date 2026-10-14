@@ -91,6 +91,12 @@ snapshots cannot mutate captured history. Forty focused tests cover collector,
 isolation, CLI capture/cleanup and saved execution. Full reference/cleanup/merge
 coverage and representative peak qualification remain outstanding.
 
+Capture failures are sticky: partial history stays available for diagnosis but
+`capture_status=failed` prevents presenting it as an uninterrupted observation
+run. A reused execution that emits no new samples reports `no_samples`, not a
+zero peak. CLI summaries include execution status separately from capture status;
+neither a successful execution nor a sampled maximum qualifies peak bounds.
+
 ## October 13 physical baseline
 
 A live read-only `system.parts`/disk snapshot returned:

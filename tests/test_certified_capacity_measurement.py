@@ -75,9 +75,20 @@ def test_phase_observations_are_bounded_and_do_not_promote_sampled_maxima():
     assert result['observed_maxima']['staging_bytes']==100 and not result['upper_bound_proven']
     with pytest.raises(ValueError,match='no samples dropped'):observer.record('aggregate','after_cleanup',None)
     assert len(observer.result()['samples'])==2
+    assert observer.result()['capture_status']=='failed'
+    with pytest.raises(ValueError,match='previously failed'):observer.record('aggregate','before_write',None)
     sample['staging_bytes']=999
     result['samples'][0]['snapshot']['staging_bytes']=888
     assert observer.result()['observed_maxima']['staging_bytes']==100
+
+
+def test_failed_snapshot_remains_explicit_and_empty_reuse_is_not_measurement():
+    empty=PhaseObservations(lambda query:None)
+    assert empty.result()['capture_status']=='no_samples'
+    def failure(query):raise RuntimeError('fixture capture failure')
+    observer=PhaseObservations(failure)
+    with pytest.raises(RuntimeError,match='capture failure'):observer.record('aggregate','after_staging',None)
+    assert observer.result()['capture_status']=='failed' and not observer.result()['samples']
 
 
 @pytest.mark.parametrize('invalid',(-1,True,1.5,None))

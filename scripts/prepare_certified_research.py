@@ -355,7 +355,8 @@ def main(argv=None):
             if observations is not None:
                 captured=observations.result()
                 summary['storage_observations']=dict(samples=len(captured['samples']),observed_maxima=captured['observed_maxima'],
-                    evidence_hash=captured['evidence_hash'],upper_bound_proven=False)
+                    evidence_hash=captured['evidence_hash'],capture_status=captured['capture_status'],
+                    execution_status=result['status'],upper_bound_proven=False)
             if args.format=='json':print(json.dumps(summary,indent=2,default=str))
             else:
                 print(f"Execution {summary['status']} | failed={summary['failed_units']} | "+
