@@ -86,6 +86,13 @@ fixture created all three manifest schemas, preserved an entity manifest row,
 and verified SSD placement. The production manifest migration and remaining SEC
 stage writer/runtime audit are still incomplete; no acquisition was started.
 
+[SEC manifest migration](13s-sec-manifest-migration.md) now provides a fixed-scope,
+backup-retaining, raw-version-preserving migration command. Eight unit/regression
+tests and a real cross-partition duplicate-version migration/resume fixture pass.
+Production planning was read-only; the default-policy source manifests have not
+been moved. Maintenance-window execution and remaining SEC stage writer/runtime
+audit remain required before acquisition can be enabled.
+
 1. Close historical identity/reference creation and acquisition gaps, including
    original public corporate/allocation/short evidence and uncovered SEC ranges.
    Existing qualified scopes can already be imported server-side across datasets.

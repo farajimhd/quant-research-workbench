@@ -106,35 +106,42 @@ def inspect(ch: ClickHouse, database: str) -> dict[str, dict]:
         f"FROM system.tables WHERE database={literal(database)}")}
 
 
-def table_digest(ch: ClickHouse, table: str, projection: str, predicate: str = "1") -> dict:
+def table_digest(ch: ClickHouse, table: str, projection: str, predicate: str = "1", *, final=True) -> dict:
     """Verify every row in bounded monthly queries, including unexpected partitions."""
     partitions = sorted(row["p"] for row in ch.rows(
-        f"SELECT DISTINCT _partition_id AS p FROM {table} WHERE {predicate}"))
+        f"SELECT DISTINCT _partition_id AS p FROM {table} WHERE {predicate}"+(' SETTINGS final=0' if not final else '')))
     total, combined = 0, hashlib.sha256()
     for partition in partitions:
         print(f"{table} {partition}: verifying complete partition", flush=True)
         digest = ch.digest(
-            f"SELECT hex(SHA256(toJSONString(tuple({projection})))) AS h FROM {table} FINAL "
-            f"WHERE ({predicate}) AND _partition_id={literal(partition)} ORDER BY h")
+            f"SELECT hex(SHA256(toJSONString(tuple({projection})))) AS h FROM {table}{' FINAL' if final else ''} "
+            f"WHERE ({predicate}) AND _partition_id={literal(partition)} ORDER BY h"+(' SETTINGS final=0' if not final else ''))
         total += digest["rows"]
         combined.update(json.dumps([partition, digest], sort_keys=True, separators=(",", ":")).encode())
         combined.update(b"\n")
     return {"format": "partition-sha256-v1", "rows": total, "sha256": combined.hexdigest()}
 
 
-def ensure_quiet(ch: ClickHouse, database: str) -> None:
+def ensure_quiet(ch: ClickHouse, database: str, table_names=TABLES) -> None:
     # This operation requires a maintenance window, not a best-effort live copy.
-    mutations = ch.rows(f"SELECT table,mutation_id FROM system.mutations WHERE database={literal(database)} AND NOT is_done AND table IN ({','.join(map(literal, TABLES))})")
+    mutations = ch.rows(f"SELECT table,mutation_id FROM system.mutations WHERE database={literal(database)} AND NOT is_done AND table IN ({','.join(map(literal, table_names))})")
     queries = ch.rows("SELECT query_id,query FROM system.processes WHERE query NOT LIKE '%system.processes%'")
     writes = [r["query_id"] for r in queries
               if re.search(r"\b(INSERT|ALTER|TRUNCATE|DROP|EXCHANGE)\b", r["query"], re.I)
-              and any(table in r["query"] for table in TABLES)]
+              and any(table in r["query"] for table in table_names)]
     pending = ch.rows("SELECT query FROM system.asynchronous_inserts")
-    if mutations or writes or any(any(t in r["query"] for t in TABLES) for r in pending):
-        raise RuntimeError("Structural writers, queued inserts, or mutations remain; stop them before migration")
+    if mutations or writes or any(any(t in r["query"] for t in table_names) for r in pending):
+        raise RuntimeError("Scoped writers, queued inserts, or mutations remain; stop them before migration")
 
 
-def migrate(ch: ClickHouse, database: str, runtime: Path, keep: list[str], execute: bool) -> dict:
+def migrate(ch: ClickHouse, database: str, runtime: Path, keep: list[str], execute: bool, *,
+            table_names=TABLES, retain_originals=False, preserve_all_versions=False, reserve_bytes=0) -> dict:
+    table_names=tuple(table_names)
+    if not table_names or len(table_names)!=len(set(table_names)) or type(reserve_bytes) is not int or reserve_bytes<0:
+        raise ValueError('Invalid bounded migration scope/reserve')
+    for name in table_names:identifier(name)
+    options=dict(table_names=list(table_names),retain_originals=retain_originals,preserve_all_versions=preserve_all_versions)
+    final='' if preserve_all_versions else ' FINAL'
     db = identifier(database)
     tables = inspect(ch, database)
     engine = ch.rows(f"SELECT engine FROM system.databases WHERE name={literal(database)}")
@@ -148,32 +155,39 @@ def migrate(ch: ClickHouse, database: str, runtime: Path, keep: list[str], execu
         state = json.loads(state_path.read_text(encoding="utf-8"))
         if state["database"] != database or state["keep_sets"] != keep:
             raise RuntimeError("Migration identity changed; refusing to reuse its journal")
+        defaults=dict(table_names=list(TABLES),retain_originals=False,preserve_all_versions=False)
+        if state.get('options',defaults)!=options:raise RuntimeError('Migration scope/version preservation changed')
     else:
-        state = {"database": database, "keep_sets": keep, "id": uuid.uuid4().hex[:12], "tables": {}}
-        for name in TABLES:
+        state = {"database": database, "keep_sets": keep, "id": uuid.uuid4().hex[:12], "tables": {},'options':options}
+        for name in table_names:
             if name in tables:
                 state["tables"][name] = {"source_uuid": tables[name]["uuid"], "source_policy": tables[name]["storage_policy"],
-                                         "replacement": name + "_ssd_" + state["id"], "partitions": {}}
-    print(f"Retain {len(keep)} required checkpoint sets; migrate {len(state['tables'])} structural tables.", flush=True)
-    print("Live v1/state/events/focus contracts are retained. Other checkpoint sets are excluded.", flush=True)
-    if not state_path.exists() and TABLES[0] in tables:
+                                         "replacement": name + ('_backup_' if retain_originals else '_ssd_') + state["id"], "partitions": {}}
+    print(f"Migrate {len(state['tables'])} explicitly scoped tables; original backups retained={retain_originals}.", flush=True)
+    if table_names==TABLES:print("Live v1/state/events/focus contracts are retained. Other checkpoint sets are excluded.", flush=True)
+    if not state_path.exists() and table_names==TABLES and TABLES[0] in tables:
         state["excluded_sets"] = ch.rows(
             f"SELECT checkpoint_set_id,count() AS rows FROM {db}.{identifier(TABLES[0])} "
             f"WHERE NOT ({retention(TABLES[0], keep)}) GROUP BY checkpoint_set_id")
     if not execute:
         return state
-    capacity = ch.rows("SELECT free_space FROM system.disks WHERE name='live_market_ssd'")
+    capacity = ch.rows("SELECT free_space,unreserved_space FROM system.disks WHERE name='live_market_ssd'")
     estimated = sum(int(tables[n].get("total_bytes") or 0) for n, item in state["tables"].items() if not item.get("complete"))
-    if not capacity or int(capacity[0]["free_space"]) < estimated * 2:
+    if not capacity or min(int(capacity[0]["free_space"]),int(capacity[0]['unreserved_space']))-reserve_bytes < estimated * 2:
         raise RuntimeError("SSD lacks migration capacity plus merge/safety headroom")
     runtime.mkdir(parents=True, exist_ok=True)
     save(state_path, state)
-    ensure_quiet(ch, database)
+    ensure_quiet(ch, database,table_names)
     for name, item in state["tables"].items():
         if item.get("complete"):
-            current = inspect(ch, database).get(name, {})
+            current_tables=inspect(ch, database)
+            current = current_tables.get(name, {})
             if current.get("uuid") != item.get("target_uuid") or current.get("storage_policy") != "live_market_ssd":
                 raise RuntimeError(f"Completed migration no longer matches live table: {name}")
+            if retain_originals and current_tables.get(item['replacement'],{}).get('uuid')!=item['source_uuid']:
+                raise RuntimeError('Completed original backup identity changed')
+            bad=ch.rows(f"SELECT count() n FROM system.parts WHERE active AND database={literal(database)} AND table={literal(name)} AND disk_name!='live_market_ssd'")
+            if int(bad[0]['n']):raise RuntimeError('Completed table parts moved outside SSD')
             continue
         tables = inspect(ch, database)
         replacement = item["replacement"]
@@ -192,6 +206,10 @@ def migrate(ch: ClickHouse, database: str, runtime: Path, keep: list[str], execu
                 ddl = re.sub(r"storage_policy\s*=\s*'[^']+'", "storage_policy = 'live_market_ssd'", ddl)
                 if "storage_policy = 'live_market_ssd'" not in ddl:
                     ddl += (", " if " SETTINGS " in ddl else " SETTINGS ") + "storage_policy = 'live_market_ssd'"
+                if retain_originals:
+                    if re.search(r"default_compression_codec\s*=",ddl):
+                        ddl=re.sub(r"default_compression_codec\s*=\s*'[^']+'","default_compression_codec = 'ZSTD(1)'",ddl)
+                    else:ddl+=", default_compression_codec = 'ZSTD(1)'"
                 if "snapshot_json" in ddl:
                     ddl = re.sub(r"index_granularity\s*=\s*\d+", "index_granularity = 1", ddl)
                 ch.execute(ddl)
@@ -205,7 +223,8 @@ def migrate(ch: ClickHouse, database: str, runtime: Path, keep: list[str], execu
             item["columns"] = columns
             projection = ",".join(map(identifier, columns))
             predicate = retention(name, keep)
-            partitions = ch.rows(f"SELECT DISTINCT _partition_id AS p FROM {source} WHERE {predicate}")
+            partitions = ch.rows(f"SELECT DISTINCT _partition_id AS p FROM {source} WHERE {predicate}"+
+                (' SETTINGS final=0' if preserve_all_versions else ''))
             for partition in partitions:
                 part = partition["p"]
                 print(f"{name} {part}: checking source and existing SSD copy", flush=True)
@@ -213,7 +232,8 @@ def migrate(ch: ClickHouse, database: str, runtime: Path, keep: list[str], execu
                 # Stable, complete row digest; order by digest preserves multiplicity.
                 def fingerprint(table: str) -> dict:
                     selected = condition if table == source else f"_partition_id={literal(part)}"
-                    return ch.digest(f"SELECT hex(SHA256(toJSONString(tuple({projection})))) AS h FROM {table} FINAL WHERE {selected} ORDER BY h")
+                    return ch.digest(f"SELECT hex(SHA256(toJSONString(tuple({projection})))) AS h FROM {table}{final} WHERE {selected} ORDER BY h"+
+                        (' SETTINGS final=0' if preserve_all_versions else ''))
                 before = fingerprint(source)
                 # A copy may have finished before verification or journaling
                 # failed. Reuse it only after the same full-content proof.
@@ -225,15 +245,16 @@ def migrate(ch: ClickHouse, database: str, runtime: Path, keep: list[str], execu
                 print(f"{name} {part}: copying {before['rows']:,} retained rows", flush=True)
                 # Only the journal-owned staging partition may be replaced on retry.
                 ch.execute(f"ALTER TABLE {target} DROP PARTITION ID {literal(part)}")
-                ch.execute(f"INSERT INTO {target} ({projection}) SELECT {projection} FROM {source} FINAL WHERE {condition}")
+                ch.execute(f"INSERT INTO {target} ({projection}) SELECT {projection} FROM {source}{final} WHERE {condition}"+
+                    (' SETTINGS final=0, optimize_on_insert=0' if preserve_all_versions else ''))
                 if fingerprint(target) != before or fingerprint(source) != before:
                     raise RuntimeError(f"Exact row verification failed: {name} {part}; originals retained")
                 item["partitions"][part] = before
                 save(state_path, state)
-            ensure_quiet(ch, database)
+            ensure_quiet(ch, database,table_names)
             # Reconcile the whole retained relation, including empty tables/new partitions.
-            verified = table_digest(ch, source, projection, predicate)
-            if verified != table_digest(ch, target, projection):
+            verified = table_digest(ch, source, projection, predicate,final=not preserve_all_versions)
+            if verified != table_digest(ch, target, projection,final=not preserve_all_versions):
                 raise RuntimeError(f"Final table reconciliation failed: {name}")
             item["verified_digest"] = verified
             save(state_path, state)
@@ -249,7 +270,7 @@ def migrate(ch: ClickHouse, database: str, runtime: Path, keep: list[str], execu
             raise RuntimeError("Post-exchange identity or storage mismatch")
         projection = ",".join(map(identifier, item["columns"]))
         if item["verified_digest"].get("format") == "partition-sha256-v1":
-            actual = table_digest(ch, source, projection)
+            actual = table_digest(ch, source, projection,final=not preserve_all_versions)
         else:
             # Honor an older journal that already exchanged its verified table.
             actual = ch.digest(f"SELECT hex(SHA256(toJSONString(tuple({projection})))) AS h FROM {source} FINAL ORDER BY h")
@@ -258,11 +279,11 @@ def migrate(ch: ClickHouse, database: str, runtime: Path, keep: list[str], execu
         if replacement in tables:
             if tables[replacement]["uuid"] != item["source_uuid"]:
                 raise RuntimeError("Refusing to drop an unrecognized table")
-            ch.execute(f"DROP TABLE {target} SYNC")
+            if not retain_originals:ch.execute(f"DROP TABLE {target} SYNC")
         ch.execute(f"SYSTEM START MERGES {source}")
         item["complete"] = True
         save(state_path, state)
-        print(f"{name}: verified on SSD; replaced stale table dropped", flush=True)
+        print(f"{name}: verified on SSD; original {'retained as backup' if retain_originals else 'dropped'}", flush=True)
     return state
 
 

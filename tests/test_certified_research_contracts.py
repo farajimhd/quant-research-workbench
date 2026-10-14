@@ -780,6 +780,35 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_manifest_storage_migration_preserves_versions_backups_and_resume(self):
+        import tempfile
+        from pathlib import Path
+        from scripts.migrate_structure_checkpoint_storage import migrate,save
+        from scripts.migrate_sec_acquisition_manifest_storage import Adapter
+        name='sec_migration_fixture'
+        self.client.query(f"CREATE TABLE {self.database}.{name} (id UInt64,value String,updated_at DateTime64(3,'UTC')) "
+            "ENGINE=ReplacingMergeTree(updated_at) PARTITION BY toYYYYMM(updated_at) ORDER BY id SETTINGS storage_policy='live_market_ssd'",read=False)
+        self.client.query(f'SYSTEM STOP MERGES {self.database}.{name}',read=False)
+        self.client.query(f"INSERT INTO {self.database}.{name} VALUES (1,'old','2026-01-02 00:00:00')",read=False)
+        self.client.query(f"INSERT INTO {self.database}.{name} VALUES (1,'new','2026-02-03 00:00:00')",read=False)
+        self.assertEqual(self.client.query(f'SELECT count() n FROM {self.database}.{name} SETTINGS final=0')[0]['n'],2)
+        root=Path('D:/TradingML/runtimes');self.assertTrue(root.is_dir())
+        with tempfile.TemporaryDirectory(prefix='sec-manifest-migration-test-',dir=root) as runtime:
+            state=migrate(Adapter(self.client),self.database,Path(runtime),[],True,table_names=(name,),
+                          retain_originals=True,preserve_all_versions=True)
+            item=state['tables'][name]
+            self.assertTrue(item['complete']);self.assertEqual(item['verified_digest']['rows'],2)
+            self.assertEqual(self.client.query(f"SELECT count() n FROM {self.database}.{item['replacement']} SETTINGS final=0")[0]['n'],2)
+            # Simulate an exchange committed before completion journaling.
+            item['complete']=False;item['exchanged']=False
+            save(Path(runtime)/'migration.json',state)
+            resumed=migrate(Adapter(self.client),self.database,Path(runtime),[],True,table_names=(name,),
+                            retain_originals=True,preserve_all_versions=True)
+            self.assertEqual(resumed['tables'][name]['target_uuid'],item['target_uuid'])
+            completed=migrate(Adapter(self.client),self.database,Path(runtime),[],True,table_names=(name,),
+                              retain_originals=True,preserve_all_versions=True)
+            self.assertTrue(completed['tables'][name]['complete'])
+
     def test_sec_acquisition_manifests_bootstrap_on_ssd_and_preserve_rows(self):
         from types import SimpleNamespace
         from pipelines.sec.edgar import sec_filing_entity_backfill as entity
