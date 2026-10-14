@@ -19,7 +19,8 @@ def test_cli_requires_archive_stage_and_chains_fundamental_capture():
     order=[]
     def archives(*args,**kwargs):order.append('archives');return dict(status='complete')
     def fundamentals(*args,**kwargs):order.append('fundamentals');return dict(status='complete',certified=False)
-    with patch('pipelines.certified_research.sec_share_preparation.prepare',return_value=dict(status='complete',captured=1,reused=0)),\
+    with patch('pipelines.certified_research.sec_share_preparation.prepare',return_value=dict(status='complete',captured=1,reused=0,
+            results={'0':{'archive_descriptor':{'document':{}}}})),\
          patch('pipelines.certified_research.capacity_profile.load',return_value={}),\
          patch('pipelines.certified_research.sec_archive_preparation.prepare',side_effect=archives),\
          patch.object(preparation,'prepare',side_effect=fundamentals):

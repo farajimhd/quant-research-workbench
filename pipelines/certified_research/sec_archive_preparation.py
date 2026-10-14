@@ -45,7 +45,7 @@ def receipts(path,archives):
 
 
 def prepare(query,config,requests,claim,dictionary_factory,profile,*,canonical_root,backup_root,cache_root,
-            runtime_root,receipt_ledger,mode,stop,reserve_bytes,reserve_fraction,maximum_chunk_bytes,progress=None):
+            runtime_root,receipt_ledger,mode,stop,reserve_bytes,reserve_fraction,maximum_chunk_bytes,progress=None,prepared_descriptors=None):
     if not isinstance(requests,(tuple,list)) or not 1<=len(requests)<=1000 or len(set(requests))!=len(requests):
         raise ValueError('SEC archive preparation requires up to 1000 unique requested documents')
     if config.global_memory_bytes<sec_share_preparation.MEMORY+config.query_memory_bytes:
@@ -56,11 +56,21 @@ def prepare(query,config,requests,claim,dictionary_factory,profile,*,canonical_r
     # Require measured archive-specific capacity before fetching payloads or writing.
     admit=sec_share_preparation.admission(query,profile,len(requests),1,product=PRODUCT,recipe=recipe_hash())
     guard();admit(0);sources=[];metadata_bytes=0
-    for request in requests:
-        guard();source=sec_share_source.prepare(query,*request,claim,guard)
-        descriptor=dict(document=source['document']);descriptor['prepared_hash']=digest(descriptor)
+    if prepared_descriptors is not None and (not isinstance(prepared_descriptors,(tuple,list)) or len(prepared_descriptors)!=len(requests)):
+        raise ValueError('SEC shared descriptor census differs')
+    for index,request in enumerate(requests):
+        guard()
+        if prepared_descriptors is None:
+            source=sec_share_source.prepare(query,*request,claim,guard)
+            descriptor=dict(document=source['document']);descriptor['prepared_hash']=digest(descriptor)
+            del source
+        else:
+            descriptor=prepared_descriptors[index]
+            body=dict(descriptor);sealed=body.pop('prepared_hash',None)
+            if sealed!=digest(body):raise ValueError('SEC shared descriptor fingerprint differs')
+            if sec_document_lineage.inspect(query,*request,claim,guard)!=descriptor['document']['lineage']:
+                raise ValueError('SEC shared descriptor differs from requested current lineage')
         sources.append(descriptor)
-        del source
         metadata_bytes+=len(json.dumps(descriptor).encode('utf-8'))
         if metadata_bytes>64*1024**2:
             raise ValueError('SEC archive source metadata exceeds 64MiB')

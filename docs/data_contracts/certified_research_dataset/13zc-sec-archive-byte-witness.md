@@ -167,3 +167,13 @@ demand; conflicting evidence fails explicitly. Execution independently rechecks
 reuse rather than trusting the planned exemption. If evidence disappears, fresh
 copy admission still applies. Original G source stats and successful download
 receipts remain required. No throughput claim is made from fixtures.
+
+The unified share-to-archive stage now passes bounded source descriptors in memory.
+The archive stage verifies descriptor fingerprints and current requested lineage
+instead of refetching/reparsing the filing payload. The descriptor carries only
+document/lineage metadata, not payload or observation banks, and is removed from
+the launcher result after handoff. The standalone archive API retains its explicit
+prepare-from-source path when no descriptors are supplied. A focused seam test
+proves the shared path makes zero second calls to the payload preparation routine;
+this is round-trip elimination evidence, not a measured campaign speedup. Fundamental
+catalog extraction still requires its separate bounded payload pass.

@@ -215,7 +215,7 @@ def prepare_sec_share_sources(args,client,config,claim,client_factory,dictionary
     if not args.sec_share_document:return None
     from pipelines.certified_research import sec_share_preparation,capacity_profile
     result=sec_share_preparation.prepare(client.query,config,args.sec_share_document,claim,client_factory,dictionary_factory,
-        capacity_profile.load(args.capacity_profile),stop=stop,progress=progress)
+        capacity_profile.load(args.capacity_profile),stop=stop,progress=progress,retain_descriptors=args.verify_sec_archives)
     if result['status']=='interrupted':raise InterruptedError('SEC candidate source preparation interrupted')
     if result['status']!='complete':
         details='; '.join(f'{key}: {client.clean_error(error)[:200]}' for key,error in list(result['errors'].items())[:8])
@@ -223,6 +223,7 @@ def prepare_sec_share_sources(args,client,config,claim,client_factory,dictionary
     if args.format=='text':print(f'SEC share source candidates | captured={result["captured"]} | reused={result["reused"]} | allocation certified=false',flush=True)
     if args.verify_sec_archives:
         from pipelines.certified_research import sec_archive_preparation
+        descriptors=tuple(result['results'][str(index)].pop('archive_descriptor') for index in range(len(args.sec_share_document)))
         def archive_progress(event):
             if args.format=='text':print(f'SEC archive | {event["phase"]} | {event["archive"]}',flush=True)
         result['archive_evidence']=sec_archive_preparation.prepare(client.query,config,args.sec_share_document,claim,
@@ -231,7 +232,7 @@ def prepare_sec_share_sources(args,client,config,claim,client_factory,dictionary
             cache_root=args.runtime_root/'sec-archive-staging',runtime_root=args.runtime_root,
             receipt_ledger=args.sec_download_receipts,mode=args.sec_public_time_mode,stop=stop,
             reserve_bytes=args.staging_reserve_gib*1024**3,reserve_fraction=args.staging_reserve_fraction,
-            maximum_chunk_bytes=args.staging_chunk_gib*1024**3,progress=archive_progress)
+            maximum_chunk_bytes=args.staging_chunk_gib*1024**3,progress=archive_progress,prepared_descriptors=descriptors)
         if args.prepare_sec_fundamental_evidence:
             from pipelines.certified_research import sec_fundamental_preparation
             def fundamental_progress(event):

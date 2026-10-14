@@ -47,7 +47,7 @@ def admission(query,profile,documents,active,*,product=PRODUCT,recipe=None):
     return admit
 
 
-def prepare(query,config,requests,claim,client_factory,dictionary_factory,profile,*,stop=None,progress=None):
+def prepare(query,config,requests,claim,client_factory,dictionary_factory,profile,*,stop=None,progress=None,retain_descriptors=False):
     if not isinstance(requests,(tuple,list)) or not 1<=len(requests)<=1000:
         raise ValueError('SEC source preparation needs 1 to 1000 explicit documents')
     requests=tuple(request(','.join(r)) for r in requests)
@@ -74,7 +74,11 @@ def prepare(query,config,requests,claim,client_factory,dictionary_factory,profil
             source=sec_share_source.prepare(client.query,*requests[int(unit.key)],claim,guard)
             result=sec_share_capture.capture(client.query,'q_live',source,claim,guard,
                 admission=admission(client.query,profile,len(requests),workers))
-            guard();return dict(result,output_hash=result['prepared_hash'])
+            guard();output=dict(result,output_hash=result['prepared_hash'])
+            if retain_descriptors:
+                descriptor=dict(document=source['document']);descriptor['prepared_hash']=digest(descriptor)
+                output['archive_descriptor']=descriptor
+            return output
         finally:client.close()
     def report(event):
         if progress is None:return

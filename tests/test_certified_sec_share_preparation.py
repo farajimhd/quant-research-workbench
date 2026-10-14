@@ -31,7 +31,7 @@ def test_stage_uses_one_bounded_pool_and_closes_all_owned_clients():
     clients=[];dictionary=SimpleNamespace(dictionary_database='q_live',close=Mock());events=[]
     def factory():
         client=SimpleNamespace(query=Mock(),close=Mock());clients.append(client);return client
-    def prepared(*args,**kwargs):return dict(prepared_hash='c'*64)
+    def prepared(*args,**kwargs):return dict(prepared_hash='c'*64,document={})
     def captured(*args,**kwargs):return dict(prepared_hash='c'*64,inserted_rows=1)
     config=CampaignConfig(date(2026,1,2),date(2026,1,2),workers=4,global_memory_bytes=8*1024**3)
     with patch.object(preparation.capacity,'inventory',return_value=storage()),\
@@ -40,8 +40,9 @@ def test_stage_uses_one_bounded_pool_and_closes_all_owned_clients():
          patch.object(preparation.sec_share_capture,'capture',side_effect=captured):
         result=preparation.prepare(Mock(),config,
             (('320193','0000320193-25-000079','one.htm'),('320193','0000320193-25-000079','two.htm')),
-            Mock(),factory,lambda:dictionary,profile(),progress=events.append)
+            Mock(),factory,lambda:dictionary,profile(),progress=events.append,retain_descriptors=True)
     assert result['status']=='complete' and result['captured']==2 and result['candidate_only']
+    assert all(r['archive_descriptor']['document']=={} for r in result['results'].values())
     assert result['measurements']['peak_reserved_memory_bytes']<=config.global_memory_bytes
     assert len(clients)==2
     for client in clients:client.close.assert_called_once()

@@ -30,13 +30,15 @@ def test_cli_requires_explicit_archive_sources_and_runs_stage_after_candidates()
           '--sec-share-document','320193,0000320193-25-000079,filing.htm','--verify-sec-archives']
     with pytest.raises(SystemExit):parse_args(base)
     args=parse_args(base+['--sec-archive-backup-root','G:/sec','--sec-download-receipts','D:/original.jsonl'])
-    with patch('pipelines.certified_research.sec_share_preparation.prepare',return_value=dict(status='complete',captured=1,reused=0)),\
+    with patch('pipelines.certified_research.sec_share_preparation.prepare',return_value=dict(status='complete',captured=1,reused=0,
+            results={'0':{'archive_descriptor':{'document':{}}}})),\
          patch('pipelines.certified_research.capacity_profile.load',return_value={}),\
          patch.object(preparation,'prepare',return_value=dict(status='complete')) as archive:
         result=prepare_sec_share_sources(args,Mock(),Mock(),Mock(),Mock(),Mock(),Event())
     assert result['archive_evidence']['status']=='complete'
     assert archive.call_args.kwargs['reserve_bytes']==256*1024**3
     assert archive.call_args.kwargs['mode']=='acceptance_checked_day'
+    assert archive.call_args.kwargs['prepared_descriptors']==({'document':{}},)
 
 
 def test_missing_archive_capacity_blocks_before_payload_fetch_or_ddl():
@@ -49,3 +51,19 @@ def test_missing_archive_capacity_blocks_before_payload_fetch_or_ddl():
             receipt_ledger='D:/original.jsonl',mode='acceptance_checked_day',stop=Event(),reserve_bytes=256*1024**3,
             reserve_fraction=.1,maximum_chunk_bytes=256*1024**3)
     source.assert_not_called();install.assert_not_called()
+
+
+def test_shared_descriptor_path_does_not_fetch_or_parse_payload_again():
+    from tests.test_certified_sec_archive_staging_plan import prepared
+    descriptor=prepared('a'*64,'2025-10-31')
+    with patch.object(preparation.sec_share_preparation,'admission',return_value=lambda size:{}),\
+         patch.object(preparation.sec_document_lineage,'inspect',return_value=descriptor['document']['lineage']),\
+         patch.object(preparation.sec_share_source,'prepare') as payload,\
+         patch.object(preparation.sec_archive_staging_plan,'plan',side_effect=ValueError('planning seam')),\
+         pytest.raises(ValueError,match='planning seam'):
+        preparation.prepare(Mock(),CampaignConfig(date(2026,1,2),date(2026,1,2)),
+            (('320193','0000320193-25-000079','filing.htm'),),Mock(),Mock(),{},canonical_root='D:/sec',
+            backup_root='G:/sec',cache_root='D:/TradingML/runtimes/cache',runtime_root='D:/TradingML/runtimes',
+            receipt_ledger='D:/original.jsonl',mode='acceptance_checked_day',stop=Event(),reserve_bytes=256*1024**3,
+            reserve_fraction=.1,maximum_chunk_bytes=256*1024**3,prepared_descriptors=(descriptor,))
+    payload.assert_not_called()
