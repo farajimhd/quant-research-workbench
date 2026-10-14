@@ -156,3 +156,15 @@ an admission counter, not observed process RSS or ClickHouse peak allocation.
 Metrics are returned with execution metadata; they do not generate local data
 exports or qualify a capacity profile. Pair them with phase storage observations
 and representative source sizes before evaluating throughput or headroom.
+
+Failed/reuse-verification units now retain `FailureSnapshot` diagnostics rather
+than original exception objects. Each snapshot has a bounded error type,
+2,048-character message, explicit truncation/original-length metadata, source
+location and at most four 512-character cause summaries. It retains no traceback,
+exception chain or attached producer payload. Worker traceback frames are cleared
+after diagnostics are captured, so failed source/Polars/XML buffers cannot remain
+reachable through the controller's result. Callers needing exception identity
+must use `error_type` metadata instead; execution/failure states remain unchanged.
+A weak-reference test retained the failed result and verified that all eight
+worker payloads were released. This fixes retention, not a claim that reservation
+counters measure actual process RSS.

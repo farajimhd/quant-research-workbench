@@ -33,7 +33,8 @@ def test_failures_are_measured_and_do_not_execute_descendants():
     def handler(unit,parents,stop):raise error
     units=(Unit('bad','bars'),Unit('child','levels',('bad',)))
     result=execute(units,{'bars':handler,'levels':handler})
-    assert result['errors']['bad'] is error
+    assert result['errors']['bad'].error_type=='builtins.ValueError'
+    assert 'producer failed' in str(result['errors']['bad'])
     assert result['units']['child']=='blocked'
     assert result['measurements']['products']['bars']['executed']==1
     assert result['measurements']['products']['bars']['failed']==1

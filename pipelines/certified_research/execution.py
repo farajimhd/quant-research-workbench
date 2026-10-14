@@ -12,6 +12,35 @@ from collections.abc import Callable, Mapping
 from collections import deque,Counter
 from heapq import heapify,heappush,heappop
 from time import perf_counter
+import traceback
+
+
+class FailureSnapshot(RuntimeError):
+    """Bounded diagnostics without worker frames, payloads or exception chains."""
+    def __init__(self,error):
+        try:message=str(error)
+        except Exception:message='[exception message unavailable]'
+        self.error_type=(type(error).__module__+'.'+type(error).__qualname__)[:160]
+        self.original_message_characters=len(message);self.message_truncated=len(message)>2048
+        self.location=None
+        causes=[];seen={id(error)};cause=error.__cause__ or error.__context__
+        while cause is not None and id(cause) not in seen and len(causes)<4:
+            seen.add(id(cause))
+            try:detail=str(cause)
+            except Exception:detail='[exception message unavailable]'
+            causes.append(((type(cause).__module__+'.'+type(cause).__qualname__)[:160],detail[:512],len(detail)>512))
+            traceback.clear_frames(cause.__traceback__)
+            cause=cause.__cause__ or cause.__context__
+        self.causes=tuple(causes);self.cause_chain_truncated=cause is not None
+        frames=error.__traceback__
+        if frames is not None:
+            last=frames
+            while last.tb_next is not None:last=last.tb_next
+            self.location=(last.tb_frame.f_code.co_filename[-256:],last.tb_lineno)
+            traceback.clear_frames(frames)
+        label=self.error_type[:160]
+        if self.message_truncated:label+=f' [message truncated from {len(message)} characters]'
+        super().__init__(label+': '+message[:2048])
 
 
 @dataclass(frozen=True)
@@ -63,7 +92,7 @@ def execute(units: tuple[Unit, ...], handlers: Mapping[str, Callable], *, worker
     def run_handler(unit,parents):
         begin=perf_counter()
         try:return handlers[unit.product](unit,parents,stop),None,perf_counter()-begin
-        except Exception as error:return None,error,perf_counter()-begin
+        except Exception as error:return None,FailureSnapshot(error),perf_counter()-begin
     stop=stop if stop is not None else Event()
     notify=progress or (lambda event:None)
     state={k:'queued' for k in by_key};results={};errors={};active={};reserved=0
@@ -111,7 +140,7 @@ def execute(units: tuple[Unit, ...], handlers: Mapping[str, Callable], *, worker
                         old=reuse(u,parents) if reuse is not None else None
                     except Exception as error:
                         measurements[u.product]['reuse_failed']+=1
-                        errors[key]=error;finish(key,'failed','Existing receipt verification failed');continue
+                        errors[key]=FailureSnapshot(error);finish(key,'failed','Existing receipt verification failed');continue
                     finally:
                         if reuse is not None:measurements[u.product]['reuse_check_seconds']+=perf_counter()-begin
                     if old is not None:
@@ -130,12 +159,14 @@ def execute(units: tuple[Unit, ...], handlers: Mapping[str, Callable], *, worker
                         measured=measurements[u.product];measured['executed']+=1
                         measured['handler_seconds']+=seconds
                         measured['longest_handler_seconds']=max(measured['longest_handler_seconds'],seconds)
-                        if error is not None:raise error
+                        if error is not None:
+                            measured['failed']+=1;errors[u.key]=error
+                            finish(u.key,'failed','Producer failed; inspect bounded error receipt');continue
                         if value is None:raise ValueError('Producer returned no verified receipt')
                         results[u.key]=value;finish(u.key,'certified')
                     except Exception as error:
                         measurements[u.product]['failed']+=1
-                        errors[u.key]=error;finish(u.key,'failed','Producer failed; inspect bounded error receipt')
+                        errors[u.key]=FailureSnapshot(error);finish(u.key,'failed','Producer failed; inspect bounded error receipt')
         except BaseException:
             stop.set()
             for future in active:future.cancel()
