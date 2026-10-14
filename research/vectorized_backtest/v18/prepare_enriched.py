@@ -150,7 +150,12 @@ def _prepare(training,validation,output,workers=4):
     if not 2<=workers<=4:raise ValueError('Use 2 to 4 bounded CPU session workers')
     out=require_runtime(Path(output));datasets={role:read(path) for path,role in ((training,'training'),(validation,'validation'))}
     import psutil
-    if psutil.virtual_memory().available<(workers*16+16)*1024**3:raise MemoryError('Insufficient RAM headroom for bounded CPU workers')
+    minimum=(workers*16+16)*1024**3
+    while psutil.virtual_memory().available<minimum:
+        if (out/'STOP').exists():raise InterruptedError('Cooperative stop while awaiting memory admission')
+        write_json(out/'status.json',dict(status='waiting_for_memory',workers=workers,available_bytes=psutil.virtual_memory().available,
+            required_bytes=minimum,active=[],queued=sum(len(d['days']) for d in datasets.values()),completed=[],failed=[]))
+        time.sleep(10)
     if shutil.disk_usage(out).free<workers*16*1024**3:raise MemoryError('Insufficient disk headroom for parallel disk-backed scratch')
     for role,d in datasets.items():
         if d['version']!='v8-split-manifest-v1' or d['role']!=role or d['days']!=sorted(set(d['days'])):raise ValueError('Explicit sorted split manifests required')
