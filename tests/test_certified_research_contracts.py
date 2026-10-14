@@ -783,7 +783,7 @@ class ClickHouseIntegration(unittest.TestCase):
 
     def test_explicit_origins_run_shared_market_prefix_rollover_and_read_only_resume(self):
         from unittest.mock import patch
-        from pipelines.certified_research import genesis,recipe
+        from pipelines.certified_research import genesis,recipe,runtime_plan,checkpoint_backfill,adjustments,reference_import
         from pipelines.certified_research.handlers import RebuildOriginHandlers
         from pipelines.certified_research.market_runtime import MarketRuntime
         days=(date(2026,1,2),date(2026,1,5));dataset=str(uuid.uuid4());listing=13301;security=13302
@@ -810,7 +810,8 @@ class ClickHouseIntegration(unittest.TestCase):
         scope=ReferenceScope(dataset,2,security,'corporate_actions',days[0],days[1],'a'*64,facts.catalog_hash())
         publisher=ReferencePublisher(self.client.query,self.database,claim);attempt=str(uuid.uuid4())
         corporate=publisher.publish(scope,attempt,publisher.evidence(scope,attempt))
-        roots=[PlannedUnit(Unit('universe','universe'),{}),PlannedUnit(Unit('corporate','corporate_actions'),{})]
+        roots=[*runtime_plan.units(config,frozen['definition'],rules),PlannedUnit(Unit('universe','universe'),{}),
+            PlannedUnit(Unit('corporate','corporate_actions'),dict(entity_key=security,start=str(days[0]),end=str(days[1]),receipt=corporate))]
         roots.extend(PlannedUnit(Unit('source:'+str(day),'canonical_source'),dict(day=str(day),source_hash=sources[day])) for day in days)
         binding=genesis.binding(listing,'TEST',days[0],frozen['hash'],sources[days[0]])
         roots.extend(PlannedUnit(Unit('origin:'+family,family+'_origin',('source:'+str(days[0]),'universe'),memory),
@@ -821,11 +822,11 @@ class ClickHouseIntegration(unittest.TestCase):
         plans=(*roots,*market_plans)
         def fixture(day):
             times=','.join('toUInt64('+str(market_day_sql.bounds(day,clock))+')'
-                for clock in ('04:00:00','09:30:00','16:00:00'))
-            return (f'SELECT arrayJoin([{times}]) sip_timestamp_us,sip_timestamp_us ordinal,'
-                'toUInt8(71) event_meta,toUInt32(10000) price_primary_int,toUInt32(0) price_secondary_int,'
+                for clock in ('04:05:00','09:30:00','16:00:00'))
+            return (f'SELECT arrayJoin([{times}])+number*1000000 sip_timestamp_us,sip_timestamp_us ordinal,'
+                'toUInt8(71) event_meta,toUInt32(10000+abs(toInt64(number%8)-4)*1000) price_primary_int,toUInt32(0) price_secondary_int,'
                 'toFloat32(5) size_primary,toFloat32(0) size_secondary,'
-                +','.join(f'toUInt8(0) condition_token_{i}' for i in range(1,6)))
+                +','.join(f'toUInt8(0) condition_token_{i}' for i in range(1,6))+' FROM numbers(14)')
         runtime=MarketRuntime(dataset,self.database,claim,factory,lambda:None,frozen['definition'],rules,sources)
         handlers=MarketHandlers(dataset,self.database,claim,factory,lambda:None,runtime.request,runtime.engine,
             fixture_source=fixture(days[0]))
@@ -836,7 +837,8 @@ class ClickHouseIntegration(unittest.TestCase):
             return local.producer(plan,parents,stop)
         producers.update({kind:market_producer for kind in ('market_aggregate','technical','v7')})
         for registry in (RebuildOriginHandlers(self.database,claim,factory,lambda:None,runtime,plans),
-                         ActivityHandlers(dataset,self.database,claim,factory,lambda:None,plans)):
+                         ActivityHandlers(dataset,self.database,claim,factory,lambda:None,plans),
+                         runtime_plan.Handlers(config,plans,claim,lambda:None,runtime)):
             p,v=registry.registry();producers.update(p);verifiers.update(v)
         def root(plan,parents):
             if plan.unit.product=='corporate_actions':return corporate
@@ -857,11 +859,57 @@ class ClickHouseIntegration(unittest.TestCase):
                 [(str(day),boundary) for day in days for boundary in (1,2,3)])
             state=self.client.query(f'SELECT sample_count FROM {self.database}.research_indicator_state_v1 '
                 f"WHERE dataset_id=toUUID('{dataset}') AND session_date=toDate('{days[1]}') ORDER BY resolution_ms")
-            self.assertEqual([int(r['sample_count']) for r in state],[6,6])
+            self.assertEqual([int(r['sample_count']) for r in state],[84,6])
+            _,prior_checkpoint=v7.verify_seed(self.client.query,self.database,claim,
+                result['results'][f'market:{listing}:{days[0]}:v7'],frozen['hash'],sources[days[0]],rules)
+            prior_engine=restore(prior_checkpoint['payload'],prior_checkpoint['state_hash'],prior_checkpoint['binding'])
+            self.assertTrue(prior_engine.rows,'Backfill must carry nonempty fitted structural state')
             self.assertEqual(sum(sql.startswith(f'INSERT INTO {self.database}.research_stage_liquidity_v1') for sql in logs),2)
             logs.clear();resumed=campaign.run()
             self.assertEqual(resumed['seal'],result['seal'])
             self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+            # The fresh backfill path loads prior AH and references day-two bars
+            # directly. Its new dataset carries no duplicate bars/liquidity.
+            from pipelines.certified_research.campaign import load_plan
+            from pipelines.certified_research.handlers import V7SeedHandlers,ReferenceAuthorityHandlers,ReferenceImportHandlers
+            saved=load_plan(self.client.query,self.database,dataset);target=str(uuid.uuid4())
+            assembled=checkpoint_backfill.assemble(self.client.query,saved,target,claim,lambda:None,start=days[1])
+            self.assertFalse(any(p.unit.product in ('market_aggregate','technical','activity','v7_origin') for p in assembled['plans']))
+            self.assertEqual(sum(p.unit.product=='v7_seed' for p in assembled['plans']),1)
+            self.assertEqual(sum(p.unit.product=='v7_backfill' for p in assembled['plans']),1)
+            self.client.query(f'INSERT INTO {self.database}.research_membership_v1 SELECT * '
+                f"REPLACE(toUUID('{target}') AS dataset_id) FROM (SELECT * FROM {self.database}.research_membership_v1 WHERE dataset_id=toUUID('{dataset}'))",read=False)
+            target_runtime=MarketRuntime(target,self.database,claim,factory,lambda:None,frozen['definition'],rules,sources)
+            backfill_plans=assembled['plans'];bp={};bv={}
+            for registry in (checkpoint_backfill.Handlers(self.database,claim,factory,lambda:None,target_runtime,backfill_plans),
+                    V7SeedHandlers(self.database,claim,factory,lambda:None,target_runtime),
+                    ReferenceAuthorityHandlers(target,self.database,claim,factory,lambda:None),
+                    ReferenceImportHandlers(target,self.database,claim,factory,lambda:None),
+                    runtime_plan.Handlers(assembled['config'],backfill_plans,claim,lambda:None,target_runtime)):
+                p,v=registry.registry();bp.update(p);bv.update(v)
+            for product in ('canonical_source','universe'):
+                bp[product]=lambda plan,parents,stop:root(plan,parents);bv[product]=root
+            backfill=Campaign(self.client.query,self.database,claim,target,assembled['config'],backfill_plans,
+                saved.source_hash,lambda:None,bp,bv)
+            logs.clear();built=backfill.run()
+            self.assertEqual(built['status'],'complete',str(built['errors']))
+            def hashes(uuid_,day):
+                return self.client.query(f'SELECT boundary,state_hash FROM {self.database}.research_v7_checkpoint_v1 '
+                    f"WHERE dataset_id=toUUID('{uuid_}') AND session_date=toDate('{day}') ORDER BY boundary")
+            self.assertEqual(hashes(target,days[1]),hashes(dataset,days[1]))
+            for table in ('research_bars_v1','research_liquidity_v1'):
+                self.assertEqual(int(self.client.query(f'SELECT count() n FROM {self.database}.{table} '
+                    f"WHERE dataset_id=toUUID('{target}')")[0]['n']),0)
+            self.assertFalse(any('INSERT INTO '+self.database+'.research_stage_liquidity_v1' in sql
+                or 'FROM market_sip_compact.events_' in sql for sql in logs))
+            logs.clear();again=backfill.run()
+            self.assertEqual(again['seal'],built['seal'])
+            self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+            adjustment=adjustments.resolve(self.client.query,self.database,claim,
+                reference_import.target_scope(target,corporate),listing,days[0],days[1]).evidence_hash
+            discovered=v7.discover(self.client.query,self.database,claim,listing,date(2026,1,6),frozen['hash'],rules,
+                {days[1]:dict(source_hash=sources[days[1]],ticker='TEST',adjustment_hash=adjustment)},dataset_id=target)
+            self.assertEqual(discovered['dependency']['state_context']['bars_dataset_id'],dataset)
 
     def test_reference_import_preserves_public_values_restarts_partial_and_reuses_receipt(self):
         from hashlib import sha256

@@ -8,6 +8,14 @@ from unittest.mock import patch,Mock
 
 
 class CapacityAdmission(TestCase):
+    def test_backfill_reuses_v7_profile_and_does_not_charge_for_copying_bars(self):
+        config=CampaignConfig(date(2026,1,2),date(2026,1,2))
+        plans=(PlannedUnit(Unit('bars','certified_bars'),{}),
+            PlannedUnit(Unit('levels','v7_backfill',('bars',),config.query_memory_bytes),{}))
+        value=plan_demands(config,plans)
+        self.assertTrue(value['ready'])
+        self.assertEqual(value['demands'],dict(campaign_metadata=2,v7=1))
+
     def test_plan_demand_includes_metadata_and_never_omits_unknown_writers(self):
         config=CampaignConfig(date(2026,1,2),date(2026,1,2),workers=2)
         plans=(PlannedUnit(Unit('source','canonical_source'),{}),

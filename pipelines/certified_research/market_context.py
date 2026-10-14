@@ -66,9 +66,9 @@ def structural(query,database,claim,parent,listing_key,day,ticker,recipe_hash,da
     if datetime.fromisoformat(context['regular_close'])!=close:
         raise ValueError('Predecessor calendar boundary differs')
     scope=Scope(str(parent['dataset_id']),previous,listing_key,'v7',parent['parent_hash'])
-    bars=Scope(scope.dataset_id,previous,listing_key,'bars',context['bars_parent_hash'])
+    bars=Scope(context.get('bars_dataset_id',scope.dataset_id),previous,listing_key,'bars',context['bars_parent_hash'])
     checkpoint,_=v7.load_from_bars(query,database,claim,scope,bars,recipe_hash,
-        context['predecessor_hash'],ticker,'AH',regular_close=close)
+        context['predecessor_hash'],ticker,'AH',regular_close=close,allow_foreign_bars='bars_dataset_id' in context)
     authority=v7.StartAuthority.rollover(checkpoint,day,split_factor=split_factor,split_evidence=split_evidence)
     if adjustment is not None:
         from dataclasses import replace

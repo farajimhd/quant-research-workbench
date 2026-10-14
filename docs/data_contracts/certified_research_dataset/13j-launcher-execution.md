@@ -14,6 +14,7 @@ workers, memory limits, rules or recipes with current CLI defaults.
 |---|---|---|
 | `prepare-sources` | End date; optional requirement-derived context start | Existing updater/import and canonical reporting prerequisite checks |
 | `launch` | New dataset UUID, explicit source/SEC context bounds, qualified capacity profile; optional end date defaults to latest canonical source | Schema checks/install, canonical preparation, retained-reference discovery, context assembly and admitted initial execution |
+| `backfill-v7` | Compatible source dataset UUID, new target UUID, qualified capacity profile; optional narrower backfill bounds | Reuse certified bars and prior causal AH; publish session checkpoints without event rescans or bar copies |
 | `stored-plan` | Dataset UUID | Read-only plan and resource inspection |
 | `run` / `resume` | Dataset UUID and qualified capacity profile path | Admission, bounded dependency execution, receipt reuse and seal |
 | `status` | Dataset UUID | Persisted progress inspection |
@@ -39,6 +40,11 @@ space planning, reserves, certified cleanup, exact schemas and bounded tests.
 
 See [rebuild origins](13n-rebuild-origins.md) for the optional fresh-launch fallback,
 causal lineage, source/membership admission and two-day ClickHouse validation.
+
+## Session-checkpoint backfill
+
+See [causal session backfill](13p-session-checkpoint-backfill.md) for the typed
+execution graph, prior-AH shortcut, foreign-bar provenance and retention rules.
 
 ## SEC acquisition admission
 

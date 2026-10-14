@@ -126,10 +126,11 @@ def decode_bars(rows):
                       close=int(r['close_int'])/10000.,volume=float(r['volume'])) for r in rows)
 
 
-def load_from_bars(query,database,claim,scope,bar_scope,recipe_hash,predecessor_hash,ticker,boundary,*,regular_close=None):
+def load_from_bars(query,database,claim,scope,bar_scope,recipe_hash,predecessor_hash,ticker,boundary,*,regular_close=None,
+                   allow_foreign_bars=False):
     """Derive expected prefix/chain from certified bars, then restore authority."""
     from .publication import Publisher
-    if (bar_scope.product!='bars' or bar_scope.dataset_id!=scope.dataset_id
+    if (bar_scope.product!='bars' or (bar_scope.dataset_id!=scope.dataset_id and not allow_foreign_bars)
             or bar_scope.listing_key!=scope.listing_key or bar_scope.session_date!=scope.session_date):
         raise ValueError('Checkpoint bar authority differs in date/identity')
     cuts=boundaries(scope.session_date,regular_close)
@@ -137,7 +138,7 @@ def load_from_bars(query,database,claim,scope,bar_scope,recipe_hash,predecessor_
     publisher=Publisher(query,database,claim);bars=publisher.receipt(bar_scope)
     if bars is None:raise ValueError('Checkpoint source bars are not certified')
     cut=round(cuts[boundary].timestamp()*1_000_000)
-    sql=bars_sql(scope.dataset_id,bars['attempt_id'],scope.listing_key,scope.session_date,database)
+    sql=bars_sql(bar_scope.dataset_id,bars['attempt_id'],scope.listing_key,scope.session_date,database)
     rows=query(f'SELECT * FROM ({sql}) WHERE close_us<={cut} ORDER BY close_us LIMIT 57601')
     if len(rows)>57600:raise ValueError('Checkpoint source exceeds bounded 1s session input')
     decoded=iter(decode_bars(rows));current=next(decoded,None)
@@ -197,6 +198,7 @@ def authority(request,bars,query,database,claim):
         predecessor_hash=request.prior_v7_hash,ticker=base.ticker,regular_close=request.regular_close.isoformat(),
         bars_parent_hash=request.parent('bars'),adjustment_hash=request.adjustment_hash)
     if base.source_ticker is not None and base.source_ticker!=base.ticker:context['source_ticker']=base.source_ticker
+    if request.bars_dataset_id and request.bars_dataset_id!=base.dataset_id:context['bars_dataset_id']=request.bars_dataset_id
     return dict(receipt,state_context=context)
 
 
@@ -215,7 +217,8 @@ def verify_seed(query,database,claim,parent,recipe_hash,source_hash,rules):
     if parent.get('product')!='v7':raise ValueError('Seed must reference causal V7 authority')
     day=date.fromisoformat(str(parent['session_date']));context=parent.get('state_context',{})
     required={'recipe_hash','source_hash','predecessor_hash','ticker','regular_close','bars_parent_hash','adjustment_hash'}
-    if set(context) not in (required,required|{'source_ticker'}) or context['recipe_hash']!=recipe_hash or context['source_hash']!=source_hash:
+    if (not required<=set(context) or set(context)-required-{'source_ticker','bars_dataset_id'}
+            or context['recipe_hash']!=recipe_hash or context['source_hash']!=source_hash):
         raise ValueError('V7 seed recipe/source context differs from frozen authority')
     close=calendar_close(day)
     if datetime.fromisoformat(context['regular_close'])!=close:raise ValueError('V7 seed calendar boundary differs')
@@ -223,10 +226,10 @@ def verify_seed(query,database,claim,parent,recipe_hash,source_hash,rules):
         raise ValueError('V7 seed requires certified corporate adjustment lineage')
     unit=MarketUnit(str(parent['dataset_id']),day,context['ticker'],int(parent['listing_key']),str(parent['attempt_id']),context.get('source_ticker'))
     request=MarketRequest(unit,recipe_hash,source_hash,tuple(rules),{},'0'*64,context['predecessor_hash'],close,
-        True,adjustment_hash=context['adjustment_hash'])
+        True,adjustment_hash=context['adjustment_hash'],bars_dataset_id=context.get('bars_dataset_id',''))
     if request.parent('bars')!=context['bars_parent_hash']:raise ValueError('V7 seed bar lineage differs')
     publisher=Publisher(query,database,claim)
-    bars_scope=Scope(unit.dataset_id,day,unit.listing_key,'bars',context['bars_parent_hash'])
+    bars_scope=Scope(request.bars_dataset_id or unit.dataset_id,day,unit.listing_key,'bars',context['bars_parent_hash'])
     bars=publisher.receipt(bars_scope)
     if bars is None:raise ValueError('V7 seed bars are not certified')
     expected=request.parent('v7',(bars['output_hash'],))
@@ -236,7 +239,7 @@ def verify_seed(query,database,claim,parent,recipe_hash,source_hash,rules):
     locator={k:v for k,v in parent.items() if k!='state_context'}
     if receipt is None or receipt!=locator:raise ValueError('V7 seed locator differs from stored authority')
     checkpoint,_=load_from_bars(query,database,claim,scope,bars_scope,recipe_hash,
-        context['predecessor_hash'],unit.ticker,'AH',regular_close=close)
+        context['predecessor_hash'],unit.ticker,'AH',regular_close=close,allow_foreign_bars=bool(request.bars_dataset_id))
     return dict(receipt,state_context=dict(context)),checkpoint
 
 
@@ -295,7 +298,33 @@ def discover(query,database,claim,listing_key,before,recipe_hash,rules,day_conte
         # physical output. Incompatible recipes do not fetch bars or payloads.
         bars=query(f'SELECT * FROM {database}.research_unit_receipt_v1 WHERE '+bars_scope.where()
             +f" AND product='bars' AND parent_hash={literal(bars_scope.parent_hash)}")
-        if not bars:continue
+        if not bars:
+            # Backfilled states reference original bars rather than duplicating
+            # them. The immutable, bounded typed locator supplies that UUID;
+            # recipe/source/receipt checks below still independently qualify it.
+            import json
+            from .checkpoint_backfill import VERSION as backfill_version,assemble
+            from .recipe import code_hash
+            locators=query(f'SELECT arguments,arguments_hash FROM {database}.research_campaign_unit_v1 '
+                f'WHERE dataset_id=toUUID({literal(unit.dataset_id)}) AND product=\'certified_bars\' '
+                f'AND JSONExtractString(arguments,\'day\')={literal(day)} '
+                f'AND JSONExtractUInt(arguments,\'listing_key\')={listing_key} LIMIT 2')
+            if not locators:continue
+            if len(locators)!=1:raise ValueError('Competing backfill bar locators')
+            raw=locators[0]['arguments']
+            if len(raw.encode())>8192 or sha256(raw.encode()).hexdigest()!=locators[0]['arguments_hash']:
+                raise ValueError('Backfill bar locator fingerprint differs')
+            locator=json.loads(raw)
+            if locator.get('version')!=backfill_version or locator.get('algorithm_hash')!=code_hash(assemble):
+                continue
+            request=MarketRequest(unit,recipe_hash,context['source_hash'],tuple(rules),{},'0'*64,
+                candidate['seed_predecessor_hash'],calendar_close(day),True,adjustment_hash=context['adjustment_hash'],
+                bars_dataset_id=str(locator['receipt']['dataset_id']))
+            bars_scope=Scope(request.bars_dataset_id,day,listing_key,'bars',request.parent('bars'))
+            bars=query(f'SELECT * FROM {database}.research_unit_receipt_v1 WHERE '+bars_scope.where()
+                +f" AND product='bars' AND parent_hash={literal(bars_scope.parent_hash)}")
+            if not bars:continue
+            if bars[0]!=locator['receipt']:raise ValueError('Backfill locator differs from its source bar receipt')
         if len(bars)!=1:raise ValueError('Competing V7 source bar receipts')
         if request.parent('v7',(bars[0]['output_hash'],))!=candidate['parent_hash']:continue
         parent={k:v for k,v in candidate.items() if k!='seed_predecessor_hash'}
@@ -303,6 +332,7 @@ def discover(query,database,claim,listing_key,before,recipe_hash,rules,day_conte
             predecessor_hash=request.prior_v7_hash,ticker=unit.ticker,regular_close=request.regular_close.isoformat(),
             bars_parent_hash=request.parent('bars'),adjustment_hash=context['adjustment_hash'])
         if unit.source_ticker is not None and unit.source_ticker!=unit.ticker:parent['state_context']['source_ticker']=unit.source_ticker
+        if request.bars_dataset_id:parent['state_context']['bars_dataset_id']=request.bars_dataset_id
         matches.append((request,parent))
     if not matches:return None
     if len(matches)>1:raise ValueError('Competing compatible V7 predecessors; select an explicit dataset')

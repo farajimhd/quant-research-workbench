@@ -7,11 +7,11 @@ from decimal import Decimal,ROUND_CEILING
 import re
 
 READ_PRODUCTS=frozenset(('condition_rules','calculation_recipe','canonical_source','technical_seed','v7_seed','sec_acquisition',
-    'technical_origin','v7_origin',
+    'technical_origin','v7_origin','certified_bars',
     'short_volume_acquisition','short_interest_acquisition','corporate_actions','float_allocation','reported_supply'))
 WRITE_PRODUCTS=frozenset(('market_aggregate','technical','v7','activity','universe','fundamentals',
     'derived_fundamentals','regular_prices','float_supply','short_volume','short_interest','short_pressure',
-    'identity_observation','reference_import'))
+    'identity_observation','reference_import','v7_backfill'))
 
 
 def plan_demands(config,plans):
@@ -32,6 +32,9 @@ def plan_demands(config,plans):
         if product in READ_PRODUCTS:continue
         if product not in WRITE_PRODUCTS:
             unknown[product]=unknown.get(product,0)+1;continue
+        # Backfill writes the same V7 schema through the same causal producer.
+        # Charge it to the independently qualified V7 storage/peak profile.
+        product='v7' if product=='v7_backfill' else product
         counts[product]=counts.get(product,0)+1
         minimum[product]=min(minimum.get(product,plan.unit.memory_bytes),plan.unit.memory_bytes)
     counts['campaign_metadata']=len(plans)

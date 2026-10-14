@@ -30,8 +30,12 @@ class MarketRequest:
     bootstrap_indicators: bool=False
     recipe_definition: dict|None=None
     adjustment_hash: str=''
+    bars_dataset_id: str=''
 
     def __post_init__(self):
+        if self.bars_dataset_id:
+            from uuid import UUID
+            UUID(self.bars_dataset_id)
         for value in (self.dataset_hash,self.source_hash,self.prior_indicator_hash,self.prior_v7_hash):
             if len(value)!=64 or any(c not in '0123456789abcdef' for c in value):raise ValueError('Invalid producer dependency hash')
         if self.regular_close.tzinfo is None or not self.rules:raise ValueError('Calendar close/rules are required')
@@ -47,6 +51,8 @@ class MarketRequest:
             predecessor=self.prior_indicator_hash if product=='technical' else self.prior_v7_hash if product=='v7' else '',
             parents=parents,regular_close=self.regular_close.astimezone(timezone.utc).isoformat() if product=='v7' else '',
             adjustment=self.adjustment_hash if product in ('technical','v7') else '')
+        if product=='v7' and self.bars_dataset_id and self.bars_dataset_id!=self.unit.dataset_id:
+            value['bars_dataset_id']=self.bars_dataset_id
         if self.unit.source_ticker is not None and self.unit.source_ticker!=self.unit.ticker:
             value['source_spelling']=dict(version='explicit-case-source-v1',ticker=self.unit.source_ticker)
         return digest(value)
@@ -130,6 +136,12 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
                 return publisher.publish(scope,unit.attempt_id,expected=expected,
                                          empty_proof=digest(dict(source=request.source_hash,product=u.product)))
             bar_receipt=parents['bars'];parent=request.parent(u.product,(bar_receipt['output_hash'],))
+            bar_dataset=request.bars_dataset_id or base.dataset_id
+            bar_scope=Scope(bar_dataset,base.day,base.listing_key,'bars',request.parent('bars'))
+            if publisher.receipt(bar_scope)!=bar_receipt:
+                raise ValueError('Market consumer requires its exact certified bar authority')
+            if u.product!='v7' and bar_dataset!=base.dataset_id:
+                raise ValueError('Foreign bar authority is supported only by checkpoint backfill')
             scope=Scope(base.dataset_id,base.day,base.listing_key,u.product,parent)
             old=publisher.receipt(scope)
             if old:
@@ -153,7 +165,7 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
                 if request.recipe_definition is not None:
                     from .recipe import verify_engine
                     verify_engine(engine,request.recipe_definition)
-                rows=query(v7.bars_sql(base.dataset_id,bar_receipt['attempt_id'],base.listing_key,base.day,database))
+                rows=query(v7.bars_sql(bar_dataset,bar_receipt['attempt_id'],base.listing_key,base.day,database))
                 origin=v7.input_origin_hash(request.dataset_hash,base.ticker,base.listing_key,base.day)
                 binding=CheckpointBinding(request.dataset_hash,origin,request.prior_v7_hash,base.ticker,base.day)
                 outputs,_=v7.generate(engine,v7.decode_bars(rows),binding,regular_close=request.regular_close)

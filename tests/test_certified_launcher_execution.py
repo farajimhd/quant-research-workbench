@@ -34,6 +34,43 @@ def test_fresh_launch_requires_explicit_context_and_retains_acquisition_controls
         '--capacity-profile','pilot.json','--rebuild-origin-date','2025-12-01'])
 
 
+def test_backfill_parser_requires_new_target_and_forbids_acquisition():
+    source='00000000-0000-0000-0000-000000000001';target='00000000-0000-0000-0000-000000000002'
+    common=['backfill-v7','--dataset-id',target,'--source-dataset-id',source,'--capacity-profile','pilot.json']
+    args=launcher.parse_args([*common,'--backfill-start-date','2026-01-05'])
+    assert str(args.source_dataset_id)==source and args.backfill_start_date==date(2026,1,5)
+    for flag in ('--acquire-missing','--stage-archive','--recover-retained-reporting'):
+        with pytest.raises(SystemExit):launcher.parse_args([*common,flag])
+    with pytest.raises(SystemExit):launcher.parse_args(['backfill-v7','--dataset-id',source,
+        '--source-dataset-id',source,'--capacity-profile','pilot.json'])
+
+
+def test_backfill_cli_uses_source_plan_resources_without_source_acquisition():
+    source='00000000-0000-0000-0000-000000000001';target='00000000-0000-0000-0000-000000000002'
+    config=CampaignConfig(date(2026,1,2),date(2026,1,5),workers=2,query_threads=3,
+        query_memory_bytes=128*1024**2,global_memory_bytes=512*1024**2)
+    inspection=Mock();client=Mock();client.clean_error.side_effect=str
+    keeper=SimpleNamespace(client=Mock(),close=Mock());claim=Mock()
+    with patch('scripts.build_market_day.Client',side_effect=[inspection,client]) as clients,\
+         patch('pipelines.certified_research.campaign.load_plan',return_value=SimpleNamespace(config=config)) as load,\
+         patch('pipelines.certified_research.capacity_profile.load',return_value={}),\
+         patch('pipelines.certified_research.capacity_profile.factory',return_value=Mock()),\
+         patch('pipelines.market_sip.flatfiles.download_update_events.load_env_files'),\
+         patch('src.trading_runtime.keeper_session.open_workstation_keeper_session',return_value=keeper),\
+         patch('pipelines.certified_research.publication.KeeperClaim',return_value=claim),\
+         patch('pipelines.certified_research.acquisition.prepare_sources') as acquire,\
+         patch('pipelines.certified_research.installation.install') as install,\
+         patch('pipelines.certified_research.checkpoint_backfill.run',return_value=dict(status='blocked',errors={},seal=None)) as run:
+        code=launcher.main(['backfill-v7','--dataset-id',target,'--source-dataset-id',source,
+            '--capacity-profile','pilot.json','--backfill-start-date','2026-01-05'])
+    assert code==2 and load.call_args.args[2]==source
+    assert clients.call_args.args[0].max_threads==3
+    assert run.call_args.args[2:4]==(source,target)
+    assert run.call_args.kwargs['start']==date(2026,1,5)
+    acquire.assert_not_called();install.assert_not_called()
+    for owner in (inspection,client,claim,keeper):owner.close.assert_called_once()
+
+
 @pytest.mark.parametrize('explicit_end',(False,True))
 def test_fresh_cli_orders_schema_source_preparation_and_execution_and_closes_owners(explicit_end):
     inspection=Mock();client=Mock();client.query.return_value=[dict(n=0)];client.clean_error.side_effect=str
