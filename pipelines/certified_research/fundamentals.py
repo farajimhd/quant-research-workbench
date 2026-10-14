@@ -7,6 +7,7 @@ explicit point-in-time approximation; incomplete debt is never called total.
 from __future__ import annotations
 
 import ast
+import inspect
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -17,6 +18,16 @@ from .facts import Metric,CURRENCY_UNITS
 
 VERSION='aligned-public-fundamentals-v1'
 APP_ARITHMETIC_BASELINE='490bbde642e7e3fb259ba83b590d0a355324e498de72683e2a7bd2a88c204416'
+
+# Python 3.13 omits empty AST fields by default. Preserve the reviewed 3.12
+# representation rather than changing the arithmetic seal across interpreters.
+_AST_DUMP_OPTIONS = {'include_attributes': False}
+if 'show_empty' in inspect.signature(ast.dump).parameters:
+    _AST_DUMP_OPTIONS['show_empty'] = True
+
+
+def _formula_ast(node):
+    return ast.dump(node, **_AST_DUMP_OPTIONS)
 
 
 @dataclass(frozen=True)
@@ -71,16 +82,16 @@ def app_contract():
     rows=[]
     for call in values.elts:
         rows.append(dict(name=ast.literal_eval(call.args[0]),unit=ast.literal_eval(call.args[3]),
-            formula=ast.literal_eval(call.args[5]),arithmetic=ast.dump(call.args[2],include_attributes=False)))
+            formula=ast.literal_eval(call.args[5]),arithmetic=_formula_ast(call.args[2])))
     if {r['name'] for r in rows}!={f.name for f in definitions()} or len(rows)!=19:
         raise ValueError('App derived catalog changed; explicit formula alignment is required')
     prefix=[]
     for node in function.body:
-        prefix.append(ast.dump(node,include_attributes=False))
+        prefix.append(_formula_ast(node))
         if isinstance(node,ast.Assign) and node.value is values:break
     helpers=('aligned_values','latest_total_debt','safe_ratio','positive_denominator_ratio',
         'positive_denominator_percent','percent_ratio','comparable_facts','comparable_growth','fact_observations')
-    arithmetic=digest(dict(prefix=prefix,helpers=[ast.dump(n,include_attributes=False) for n in tree.body
+    arithmetic=digest(dict(prefix=prefix,helpers=[_formula_ast(n) for n in tree.body
         if isinstance(n,ast.FunctionDef) and n.name in helpers]))
     if APP_ARITHMETIC_BASELINE is not None and arithmetic!=APP_ARITHMETIC_BASELINE:
         raise ValueError('App formula arithmetic changed; certified implementation must be reviewed/versioned')
