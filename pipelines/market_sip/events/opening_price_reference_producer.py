@@ -48,6 +48,7 @@ class CertifiedOpeningInput:
     identity: CertifiedIdentityPlan
     listings: tuple[contract.OpeningListing, ...]
     population_reference_hash: str
+    listing_basis: str = 'symbol-intervals-v1'
 
     def __post_init__(self):
         if (type(self.market) is not CertifiedMarketDayPlan
@@ -57,6 +58,8 @@ class CertifiedOpeningInput:
                 or type(self.listings) is not tuple or not 1 <= len(self.listings) <= 25000
                 or any(type(v) is not contract.OpeningListing for v in self.listings)):
             raise ValueError("Opening reference needs complete typed certified source plans")
+        if self.listing_basis not in ('symbol-intervals-v1', 'shared-reference-routing-tradability-v1'):
+            raise ValueError('Opening reference requires an explicit declared listing basis')
         regular = contract.previous_regular_session(date.fromisoformat(self.market.sessions[0]))
         if (self.prior_market.sessions != (regular.day.isoformat(),)
                 or self.identity.source_build_id != self.market.build_id
@@ -170,7 +173,7 @@ def _verify_identity_rows(reader, source):
             raise ValueError("Opening listing differs from the sealed market population")
 
 
-def certified_opening_input(reader, market, prior_market):
+def certified_opening_input(reader, market, prior_market, *, listing_basis='symbol-intervals-v1'):
     """Resolve producer inputs through existing sealed population/identity APIs.
 
     No caller supplies its own symbol mapping, current universe or split factor.
@@ -183,6 +186,16 @@ def certified_opening_input(reader, market, prior_market):
     identity = certify_identity_plan(market, client=reader)
     pin = load_reference_pin(reader, market)
     facts = _identity_rows(reader, market, identity)
+    if listing_basis == 'shared-reference-routing-tradability-v1':
+        from .shared_reference_listing_basis import load_listings
+        source_storage_preflight(reader, listing_basis=listing_basis)
+        listings = load_listings(reader, market, facts, read_rows=_rows)
+        source = CertifiedOpeningInput(market, prior_market, identity, listings,
+            contract.content_hash(asdict(pin)), listing_basis)
+        source.verify(reader)
+        return source
+    if listing_basis != 'symbol-intervals-v1':
+        raise ValueError('Unknown opening listing basis')
     listings = []
     for offset in range(0, len(market.tickers), 128):
         names = market.tickers[offset:offset + 128]
@@ -215,6 +228,12 @@ def certified_opening_input(reader, market, prior_market):
 
 
 def _verify_intervals(reader, source):
+    if source.listing_basis == 'shared-reference-routing-tradability-v1':
+        from .shared_reference_listing_basis import load_listings
+        facts = _identity_rows(reader, source.market, source.identity)
+        if load_listings(reader, source.market, facts, read_rows=_rows) != source.listings:
+            raise ValueError('Shared Reference Gateway opening proof changed')
+        return
     expected = {v.identity_interval_id: v for v in source.listings}
     if len(expected) != len(source.listings):
         raise ValueError("Opening intervals are not unique")
@@ -390,14 +409,19 @@ def _wire_records(table, records):
     return converted
 
 
-def source_storage_preflight(reader):
+def source_storage_preflight(reader, *, listing_basis='symbol-intervals-v1'):
     required = {("arte", "bars_v1"), ("q_live", "id_symbol_interval_v1"),
                 ("q_live", "market_stock_split_v1")}
+    if listing_basis == 'shared-reference-routing-tradability-v1':
+        from .shared_reference_listing_basis import TABLES
+        required.update(('q_live', name) for name in TABLES)
+    elif listing_basis != 'symbol-intervals-v1':
+        raise ValueError('Unknown opening storage basis')
     predicate = "(database,name) IN (" + ",".join(
         f"({literal(db)},{literal(name)})" for db, name in sorted(required)) + ")"
     rows = _rows(reader, "SELECT database,name,engine,storage_policy FROM system.tables WHERE "
-                 + predicate, bound=3)
-    if (len(rows) != 3 or {(r["database"], r["name"]) for r in rows} != required
+                 + predicate, bound=len(required))
+    if (len(rows) != len(required) or {(r["database"], r["name"]) for r in rows} != required
             or any(r["storage_policy"] != "live_market_ssd" or r["engine"] not in {
                 "MergeTree", "ReplacingMergeTree"} for r in rows)):
         raise ValueError("Opening input authorities require explicit SSD storage")
@@ -447,7 +471,10 @@ def publish_opening_reference(reader, writer, source, *, ownership, code_hash):
     if read_user == write_user:
         raise ValueError("Opening producer requires isolated read and write principals")
     storage_preflight(reader, tables=contract.TABLES)
-    source_storage_preflight(reader)
+    if source.listing_basis == 'symbol-intervals-v1':
+        source_storage_preflight(reader)
+    else:
+        source_storage_preflight(reader, listing_basis=source.listing_basis)
     ownership.assert_owner()
     source.verify(reader)
     existing = _coverage(reader, source)
@@ -575,7 +602,8 @@ class OpeningReferencePipeline:
         self.skipped_verified = 0
         self._loop = None
 
-    async def publish(self, market, prior_market, *, ownership, code_hash):
+    async def publish(self, market, prior_market, *, ownership, code_hash,
+                      listing_basis='symbol-intervals-v1'):
         if type(market) is not CertifiedMarketDayPlan or len(market.sessions) != 1:
             raise TypeError("Opening producer lane requires a certified single-session plan")
         if type(prior_market) not in (CertifiedMarketDayPlan, CertifiedPriorClosePlan):
@@ -598,7 +626,9 @@ class OpeningReferencePipeline:
                 writer = self.writer_factory()
                 try:
                     publication_permission_preflight(reader, writable=False)
-                    source = certified_opening_input(reader, market, prior_market)
+                    source = (certified_opening_input(reader, market, prior_market)
+                        if listing_basis == 'symbol-intervals-v1' else
+                        certified_opening_input(reader, market, prior_market, listing_basis=listing_basis))
                     status = publish_opening_reference(reader, writer, source,
                         ownership=ownership, code_hash=code_hash)
                     return status, source.scope(code_hash)

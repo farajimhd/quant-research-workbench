@@ -46,8 +46,8 @@ def desired_plans():
     """Separate exact release/selection readers from producer source readers.
 
     Source readers reuse the approved app's existing reference/market read
-    catalogue; their source lineage checks remain mandatory. No existing
-    account receives new grants. All writes target central declared contracts.
+    catalogue; their source lineage checks remain mandatory. Any grant delta
+    requires its reviewed provisioning plan. Writes target central contracts.
     """
     base = existing_read_plan()[0]
     inherited = ({('arte', name) for name in base.select_arte}
@@ -56,7 +56,9 @@ def desired_plans():
     prior_close = scopes(PRIOR_CLOSE)
     release, selection = scopes(RELEASE), scopes(SELECTION)
     opening_parents = frozenset((('arte', 'bars_v1'),
-        ('q_live', 'id_symbol_interval_v1'), ('q_live', 'market_stock_split_v1')))
+        ('q_live', 'id_symbol_interval_v1'), ('q_live', 'market_stock_split_v1'),
+        ('q_live', 'security_routing_fact_v1'), ('q_live', 'security_tradability_fact_v1'),
+        ('q_live', 'feature_tradable_universe_v1')))
     liquidity_parents = frozenset((('arte', 'liquidity_100ms_v1'),
         ('arte', 'liquidity_execution_price_100ms_v1')))
     return (

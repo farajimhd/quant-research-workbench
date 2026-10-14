@@ -92,7 +92,8 @@ class ProgramInputPublication:
 
     async def publish_opening(self, market, prior_market, *, ownership, code_hash):
         return await self._execute(self.opening.publish, market, prior_market,
-            ownership=ownership, code_hash=code_hash)
+            ownership=ownership, code_hash=code_hash,
+            listing_basis='shared-reference-routing-tradability-v1')
 
     async def publish_history(self, source, *, ownership, code_hash):
         return await self._execute(self.history.publish, source,
