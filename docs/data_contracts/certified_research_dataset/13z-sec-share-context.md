@@ -93,3 +93,27 @@ repair. Every result remains `candidate_only=true` and
 replace source-stage qualification, competing-version handling or a verified
 ingestion repair. This supplies concrete inputs for that repair, rather than
 requiring an invented submission hash or version key.
+
+## Composed normalized preparation
+
+`sec_share_source.prepare` now composes candidate lineage inspection, a server
+byte/count census, one bounded payload fetch and extraction, followed by a
+second independent lineage inspection. Missing, oversized, duplicate or changed
+sources fail before candidate records can be returned. No disk exports or source
+table writes are performed.
+
+The returned source form separates one `document` record, distinct `contexts`
+and source-position-ordered `observations`. Context keys bind document identity,
+original context ID, instant date and explicit dimensions. Facts reference the
+shared context key rather than repeating its date/dimensions. Rejected facts
+retain their original context ID, reason and null value/link; no valid context
+is invented. Competing values remain distinct observations. `prepared_hash`
+binds all three forms and their parser/lineage versions. This is a normalized
+in-memory source preparation result, not persisted prepared training data.
+
+The real three-document preparation read 6,418,363 source bytes once each,
+yielding 32 observations and 28 shared contexts. The byte census and independent
+text hashes remain server-side; only the bounded original payload is transferred
+for XML parsing. Every result remains a candidate, with original-vintage and
+allocation qualification false. Durable normalized capture, source qualification,
+dated class mapping and launcher integration remain unfinished.
