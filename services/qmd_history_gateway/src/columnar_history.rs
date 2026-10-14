@@ -447,7 +447,6 @@ fn assemble(
             ]
             .iter()
             .any(|v| !v.is_finite() || *v < 0.)
-            || clock.share_volume.fract() != 0.
             || clock.share_volume > 2f64.powi(53)
             || clock.rolling_volume > 2f64.powi(53)
         {
@@ -651,7 +650,8 @@ mod tests {
             } else if sql.contains("FROM q_live.qmd_causal_history_clock_v1") {
                 (0..2).map(|i| json!({"bucket_index":34200 + if case == "duplicate-clock" {0} else {i},
                     "source_known":1,"observed":1,"extremes_valid":1,"reference_close":10.,
-                    "share_volume":1.,"execution_notional":3.,"rolling_volume":i+1}).to_string()).collect::<Vec<_>>().join("\n")
+                    "share_volume":if case == "fractional-volume" {1.25} else if case == "negative-volume" {-0.25} else if case == "oversized-volume" {2f64.powi(54)} else {1.},
+                    "execution_notional":3.,"rolling_volume":if case == "fractional-volume" {(i+1) as f64 * 1.25} else {(i+1) as f64}}).to_string()).collect::<Vec<_>>().join("\n")
             } else if sql.contains("FROM q_live.qmd_causal_history_value_v1") {
                 json!({"field_id":326,"first_ordinal":if case == "interval-gap" {1} else {0},"stop_ordinal":100,
                     "value_bits":if case == "infinite-bits" {0x7f800000u32} else {(-0f32).to_bits()},
@@ -702,6 +702,13 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn canonical_fractional_volume_is_preserved_exactly() {
+        let response = fixture("fractional-volume").await.unwrap();
+        assert_eq!(response.share_volume, vec![1.25, 1.25]);
+        assert_eq!(response.rolling_volume, vec![1.25, 2.5]);
+    }
+
+    #[tokio::test]
     async fn source_placement_seals_clocks_and_intervals_fail_closed() {
         for case in [
             "disk",
@@ -712,6 +719,8 @@ mod tests {
             "interval-gap",
             "infinite-bits",
             "value-drift",
+            "negative-volume",
+            "oversized-volume",
         ] {
             assert!(fixture(case).await.is_err(), "Corruption must fail: {case}");
         }
