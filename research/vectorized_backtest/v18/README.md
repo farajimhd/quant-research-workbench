@@ -108,9 +108,12 @@ A pending expanded dataset never silently falls back to the old 30/6 split.
 
 ## Deferred launch and strict speed gate
 
-`run_after_v17 --job <runtime-job.json>` waits for V17's successful exit, all
-requested generations, both final seals, released owner lock and exited exact
-controller PID/creation time. Interrupted or failed V17 cannot trigger V18.
+`run_after_v17 --job <runtime-job.json>` normally waits for V17's successful
+completion. The user-requested `stop_when_features_ready=true` handoff instead
+verifies every bound feature certificate before requesting V17's generation-boundary
+STOP. A hashed handoff receipt binds the completed checkpoint, both generation
+seals, released owner lock, and exited controller/worker PID identities. Only
+this explicit handoff permits an interrupted predecessor; arbitrary failures do not.
 A runtime STOP cancels the queue before launch. Pending datasets stay pending.
 
 The queue first runs `qualify_v17`: workstation tests, identical 1024-member
@@ -121,10 +124,15 @@ selection, validation and publication. Both warm median ratios must be <=1.0.
 V18 is not declared as fast until this benchmark passes. Failed qualification
 blocks launch and retains evidence; no wider tolerance or silent feature removal.
 
-`run_train` independently verifies successful V17 completion, qualification,
+`run_train` independently verifies successful V17 completion or the authorized
+sealed handoff receipt, qualification,
 source hash, exact bound manifests, predecessor checkpoint and optimizer ownership.
 It launches a fresh 50-generation V18 population using seed182237. Tests and
 benchmarks do not import selected strategies into the final population.
+The queue monitors the first real generation's seals, financial/risk invariants
+and full wall time against the matched V17 cold generation. Ratio >1.0 or failed
+invariants request a safe V18 STOP and retain `first-generation.json` for diagnosis
+and a fresh, requalified rerun. Fixes remain an agent task, not hidden auto-tuning.
 
 Job fields: `predecessor` (pinned active JSON), `source_sha256`, `commit`,
 `training`, `validation`, `dataset_pending`, `qualification` (fresh runtime
