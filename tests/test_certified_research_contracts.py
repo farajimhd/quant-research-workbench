@@ -523,6 +523,7 @@ class Contracts(unittest.TestCase):
             symbol_interval_id='interval:1',ticker='OLD',valid_from_date='2024-01-01',
             valid_to_date_exclusive='2026-03-01',interval_mapping='mapped',history_status='completed',
             history_mapping='mapped',interval_security_id='security:1',history_security_id='security:1',
+            history_last_success_at_utc='2026-10-03 04:00:00',
             history_listing_id='listing:1',durable_issuer=1,duplicate_issuer=0,mapping_issue=0,
             source_hashes_valid=1,evidence_hash='a'*64)
         new=dict(base,symbol_interval_id='interval:2',ticker='NEW',valid_from_date='2026-03-01',

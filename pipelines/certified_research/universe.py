@@ -112,6 +112,13 @@ def candidates_sql(context_start,end,anchor_date,*,database='q_live',maximum_row
     # listing with conflicting anchors is quarantined, never picked arbitrarily.
     otc=otc_venue_predicate_sql('l.exchange_code','e.acronym','e.mic','e.operating_mic','e.name')
     historical_otc=otc_venue_predicate_sql('f.exchange_code','he.acronym','he.mic','he.operating_mic','he.name')
+    boundary=(f'least(toDate({literal(end+timedelta(days=1))}),'
+        f'ifNull(l.delisted_date,toDate({literal(end+timedelta(days=1))})),'
+        f'ifNull(i.valid_to_date_exclusive,toDate({literal(end+timedelta(days=1))})))')
+    # Once sufficient, later successful refreshes must not invalidate unchanged
+    # historical inputs merely because their operational timestamp advanced.
+    history_cutoff_proof=(f"if(c.last_success_at_utc IS NULL,NULL,least(c.last_success_at_utc,"
+        f"toTimeZone(toDateTime64({boundary},3,'America/New_York'),'UTC')))")
     return f"""WITH anchors AS (
       SELECT listing_id,ibkr_conid,toUInt8(0) historically_tradable FROM {database}.id_listing_v1 FINAL
       WHERE match(ifNull(ibkr_conid,''),'^[1-9][0-9]*$')
@@ -144,6 +151,7 @@ def candidates_sql(context_start,end,anchor_date,*,database='q_live',maximum_row
       i.symbol_interval_id,i.ticker_normalized ticker,i.valid_from_date,i.valid_to_date_exclusive,
       i.security_id interval_security_id,c.security_id history_security_id,c.listing_id history_listing_id,
       i.mapping_status interval_mapping,c.source_status history_status,c.mapping_status history_mapping,
+      c.last_success_at_utc history_last_success_at_utc,
       if(p.historically_tradable,'',multiIf(notEmpty(ifNull(e.iso_country_code,'')) AND upper(e.iso_country_code)!='US','non_us_exchange',
         notEmpty(l.currency_code) AND upper(l.currency_code)!='USD','non_usd_currency',
         notEmpty(s.product_type) AND upper(s.product_type) NOT IN ('STK','STOCK','STOCKS'),'unsupported_product_type',
@@ -157,7 +165,7 @@ def candidates_sql(context_start,end,anchor_date,*,database='q_live',maximum_row
         l.listing_status,l.list_date,l.delisted_date,s.product_type,s.status,e.exchange_id,e.iso_country_code,
         e.acronym,e.mic,e.operating_mic,e.name,i.symbol_interval_id,i.provider_entity_key,i.ticker_normalized,
         i.valid_from_date,i.valid_to_date_exclusive,i.security_id,i.mapping_status,c.security_id,c.listing_id,
-        c.source_status,c.mapping_status,
+        c.source_status,c.mapping_status,{history_cutoff_proof},
         c.source_response_sha256,l.source_content_sha256,s.source_content_sha256,i.source_content_sha256,
         durable_issuer,duplicate_issuer,mapping_issue)) source_proof,
       lower(hex(SHA256(source_proof))) evidence_hash
@@ -218,6 +226,17 @@ def resolve(rows,context_start,end,*,maximum_rows=100000):
         elif interval_start is None:reason='missing_symbol_start'
         elif row.get('security_status')!='active' and listing_end is None:reason='undated_security_inactivation'
         elif row.get('mapping_issue'):reason='open_mapping_issue'
+        else:
+            # A completed response cannot cover sessions after it was obtained.
+            # Closed listing/symbol intervals only need their own earlier cutoff.
+            boundary=min(end+timedelta(days=1),listing_end or end+timedelta(days=1),interval_end or end+timedelta(days=1))
+            raw=row.get('history_last_success_at_utc')
+            try:
+                observed=raw if isinstance(raw,datetime) else datetime.fromisoformat(str(raw).replace('Z','+00:00')) if raw else None
+                if observed is not None:observed=observed.replace(tzinfo=timezone.utc) if observed.tzinfo is None else observed.astimezone(timezone.utc)
+            except (ValueError,TypeError):observed=None
+            if observed is None:reason='unknown_ticker_history_cutoff'
+            elif observed<datetime.combine(boundary,time(),ny).astimezone(timezone.utc):reason='stale_ticker_history'
         if reason:
             rejected.append(dict(listing_id=row['listing_id'],ticker=row.get('ticker',''),reason=reason,evidence_hash=row['evidence_hash']))
             continue

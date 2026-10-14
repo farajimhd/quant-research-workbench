@@ -73,3 +73,39 @@ and no-insert resume. An isolated real ClickHouse fixture rebuilt two intervals
 and then reused them with zero inserts. Canonical binding inputs were controlled
 in that fixture; it does not certify production identity reconstruction.
 No production repair, provider acquisition or full campaign was run.
+
+## Historical membership cutoff and current data blockers
+
+The research universe now binds the qualified history cutoff into its source fingerprint
+and requires ticker-history coverage through the requested New York date boundary.
+Completed status alone cannot qualify later dates. Missing/invalid clocks reject;
+stale responses reject. Closed symbol/listing intervals require only their own
+earlier end boundary, preserving usable historical prefixes and DST semantics.
+The raw response timestamp is checked, but its fingerprint contribution is capped
+at the required boundary. Later successful refreshes therefore do not invalidate
+unchanged historical membership solely because their operational clock advanced.
+
+The October 14 read-only audit for January 1–October 2, 2026 found:
+
+| Condition | Rejected intervals |
+| --- | ---: |
+| Missing dated symbol mapping | 2,509 |
+| History response predates the required cutoff | 4,547 |
+| Missing listing start | 57 |
+| Identity mismatch | 7 |
+| Open mapping issue | 6 |
+| Conflicting/invalid conid anchor | 19 |
+
+Only 75 closed intervals passed this audit; they do not establish full-period
+universe coverage. Within the missing-symbol group, 2,351 have no coverage record
+bound to their listing, 34 need covered-empty origin evidence, 54 need inactive
+lifecycle proof and 70 have source-mapping conflicts. These are repair lanes,
+not proof that all raw history is absent or that a repair can safely proceed.
+
+Retained daily universe observations span June 9–October 5 across 65 dates. No
+historical listing-observation bank or additional overview/detail tables were
+found in ClickHouse. The user confirmed no known additional retained archive.
+This evidence cannot certify the January start or fill missing lifecycle/origin
+dates. Completing historical identity still requires missing dated reference
+evidence and conflict resolution. Provider access remains disabled; no acquisition
+or production identity writes were attempted during this audit.
