@@ -76,6 +76,16 @@ not proof that their existing parts moved. Acquisition-used manifest writers
 require review and explicit restart-safe migration before enablement; unrelated
 application products are not modified by this task.
 
+The entity-archive manifest and rendered-text rebuild/bundle manifest bootstrap
+paths now explicitly use `live_market_ssd` and default ZSTD(1), verifying policy
+and active part placement before/after bootstrap. Their insert paths check the
+target before payload publication. Existing default-policy manifests are not
+altered or overwritten: they block with a verified-migration requirement.
+Fourteen shared storage/manifest unit tests pass, and a real isolated ClickHouse
+fixture created all three manifest schemas, preserved an entity manifest row,
+and verified SSD placement. The production manifest migration and remaining SEC
+stage writer/runtime audit are still incomplete; no acquisition was started.
+
 1. Close historical identity/reference creation and acquisition gaps, including
    original public corporate/allocation/short evidence and uncovered SEC ranges.
    Existing qualified scopes can already be imported server-side across datasets.

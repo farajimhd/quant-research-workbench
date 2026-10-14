@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from pipelines.sec.edgar.sec_filing_archive_rebuild import archive_identity  # noqa: E402
+from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import verify_sec_write_storage
 from pipelines.sec.edgar.sec_filing_text_extract_parts import (  # noqa: E402
     archive_date_from_name,
     decode_sec_bytes,
@@ -233,6 +234,7 @@ def read_header_and_hash(handle: Any) -> tuple[bytes, str, int]:
 
 
 def insert_rows(client: ClickHouseHttpClient, database: str, table: str, rows: list[dict[str, Any]]) -> None:
+    if rows:verify_sec_write_storage(client,database,[table])
     for offset in range(0, len(rows), 10_000):
         body = "\n".join(json.dumps(row, separators=(",", ":"), default=str) for row in rows[offset : offset + 10_000])
         client.execute(
@@ -241,6 +243,7 @@ def insert_rows(client: ClickHouseHttpClient, database: str, table: str, rows: l
 
 
 def create_manifest_table(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
+    verify_sec_write_storage(client,args.database,[args.manifest_table],require_tables=False)
     client.execute(
         f"""CREATE TABLE IF NOT EXISTS {quote_ident(args.database)}.{quote_ident(args.manifest_table)}
         (archive_key String, archive_date Date, archive_path String, archive_size UInt64,
@@ -248,12 +251,13 @@ def create_manifest_table(client: ClickHouseHttpClient, args: argparse.Namespace
          status LowCardinality(String),
          run_id String, error String, updated_at DateTime64(3, 'UTC'))
         ENGINE=ReplacingMergeTree(updated_at) PARTITION BY toYYYYMM(archive_date)
-        ORDER BY archive_key"""
+        ORDER BY archive_key SETTINGS storage_policy='live_market_ssd', default_compression_codec='ZSTD(1)'"""
     )
     client.execute(
         f"ALTER TABLE {quote_ident(args.database)}.{quote_ident(args.manifest_table)} "
         "ADD COLUMN IF NOT EXISTS archive_accession_rows UInt64 DEFAULT 0 AFTER entity_rows"
     )
+    verify_sec_write_storage(client,args.database,[args.manifest_table])
 
 
 def completed_archive_keys(client: ClickHouseHttpClient, args: argparse.Namespace) -> set[str]:

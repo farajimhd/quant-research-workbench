@@ -35,6 +35,7 @@ from pipelines.sec.edgar.sec_source_text_revision_engine import (  # noqa: E402
     revision_engine_matches,
 )
 from pipelines.sec.edgar.sec_parquet_parts import ParquetShardWriter  # noqa: E402
+from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import verify_sec_write_storage
 from pipelines.sec.edgar.sec_filing_text_clickhouse_file_ingest import (  # noqa: E402
     windows_path_to_clickhouse_path,
 )
@@ -675,6 +676,7 @@ def validate_lookup_database(
 
 
 def ensure_manifest_table(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
+    verify_sec_write_storage(client,args.database,[args.manifest_table],require_tables=False)
     client.execute(
         f"""
 CREATE TABLE IF NOT EXISTS {table(args.database, args.manifest_table)}
@@ -695,11 +697,14 @@ CREATE TABLE IF NOT EXISTS {table(args.database, args.manifest_table)}
 )
 ENGINE = ReplacingMergeTree(updated_at_utc)
 ORDER BY (run_id, partition_id)
+SETTINGS storage_policy='live_market_ssd', default_compression_codec='ZSTD(1)'
 """
     )
+    verify_sec_write_storage(client,args.database,[args.manifest_table])
 
 
 def ensure_bundle_manifest_table(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
+    verify_sec_write_storage(client,args.database,[args.bundle_manifest_table],require_tables=False)
     client.execute(
         f"""
 CREATE TABLE IF NOT EXISTS {table(args.database, args.bundle_manifest_table)}
@@ -724,8 +729,10 @@ CREATE TABLE IF NOT EXISTS {table(args.database, args.bundle_manifest_table)}
 )
 ENGINE = ReplacingMergeTree(updated_at_utc)
 ORDER BY (run_id, partition_id, bundle_id)
+SETTINGS storage_policy='live_market_ssd', default_compression_codec='ZSTD(1)'
 """
     )
+    verify_sec_write_storage(client,args.database,[args.bundle_manifest_table])
 
 
 def verify_clickhouse_file_root(client: ClickHouseHttpClient, args: argparse.Namespace, run_root: Path) -> None:
@@ -1935,6 +1942,7 @@ def load_completed_bundles(client: ClickHouseHttpClient, job: PartitionJob) -> s
 
 
 def insert_bundle_manifest(client: ClickHouseHttpClient, job: PartitionJob, result: BundleResult) -> None:
+    verify_sec_write_storage(client,job.database,[job.bundle_manifest_table])
     row = {
         **asdict(result),
         "run_id": job.run_id,
@@ -2003,6 +2011,7 @@ def request_rebuild_stop(run_root: Path, partition_id: int, exc: Exception) -> N
 
 
 def insert_partition_manifest(client: ClickHouseHttpClient, job: PartitionJob, result: PartitionResult) -> None:
+    verify_sec_write_storage(client,job.database,[job.manifest_table])
     row = {
         "run_id": job.run_id,
         "partition_id": result.partition_id,

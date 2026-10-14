@@ -780,6 +780,26 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_sec_acquisition_manifests_bootstrap_on_ssd_and_preserve_rows(self):
+        from types import SimpleNamespace
+        from pipelines.sec.edgar import sec_filing_entity_backfill as entity
+        from pipelines.sec.edgar import sec_filing_text_rendered_v3_rebuild as rendered
+        from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import verify_sec_write_storage
+        args=SimpleNamespace(database=self.database,manifest_table='sec_entity_manifest_fixture',
+                             bundle_manifest_table='sec_bundle_manifest_fixture')
+        entity.create_manifest_table(self.client.http,args)
+        row=dict(archive_key='fixture',archive_date='2026-01-02',archive_path='fixture',archive_size=123,
+            archive_mtime_ns=1,filings=2,entity_rows=2,archive_accession_rows=2,status='ok',run_id='fixture',
+            error='',updated_at='2026-01-03 00:00:00.000')
+        entity.insert_rows(self.client.http,self.database,args.manifest_table,[row])
+        self.assertEqual(self.client.query(f'SELECT archive_key,entity_rows FROM {self.database}.{args.manifest_table} FINAL'),
+                         [dict(archive_key='fixture',entity_rows=2)])
+        args.manifest_table='sec_rendered_manifest_fixture'
+        rendered.ensure_manifest_table(self.client.http,args)
+        rendered.ensure_bundle_manifest_table(self.client.http,args)
+        verify_sec_write_storage(self.client.http,self.database,
+            ['sec_entity_manifest_fixture',args.manifest_table,args.bundle_manifest_table])
+
     def test_collection_real_child_publication_resume_and_authority_tamper(self):
         from types import SimpleNamespace
         from pipelines.certified_research import collection,collection_store
