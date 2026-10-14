@@ -43,6 +43,24 @@ command instead of listing each `--sec-share-document`:
 
 This discovers retained source documents for the explicit cohort; it does not
 automatically choose all forms, infer an issuer context length or certify acquisition
-completeness. Whole-universe cohort scheduling, independent submission reconciliation
+completeness. Whole-universe cohort scheduling, submission snapshot/fragment coverage
 and durable coverage publication remain unfinished. No historical campaign was run
 to test this launcher wiring.
+
+### Independent filing identity check
+
+Add `--reconcile-sec-submissions` to require the retained census to agree with
+`sec_core.sec_bulk_mirror_filing_v3` before source preparation. This inventory
+comes from the bulk submission parser, which reads all submission entries.
+The acceptance overlay cannot substitute for it: its producer filters to an
+existing wanted-accession list.
+
+The gate compares issuer/accession identity, form, filing date and primary document.
+Missing, unconfirmed, conflicting or unresolved entries stop preparation before
+writers start. Both inventories are fingerprinted and rechecked after preparation;
+source changes stop completion while preserving prepared evidence. Discovery without
+this flag remains explicitly uncertified candidate preparation.
+
+Identity agreement alone is insufficient for coverage certification. Bulk snapshot
+freshness, original download receipts and complete referenced submission fragments
+must also be verified. These checks do not download data or certify allocation.

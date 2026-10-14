@@ -77,6 +77,7 @@ def parse_args(argv=None):
         return str(int(value))
     p.add_argument('--sec-census-cik',type=census_cik,action='append',default=[],help='Discover retained primary documents for explicit issuer scope; repeat up to 256 times')
     p.add_argument('--sec-census-forms',type=lambda value:tuple(value.split(',')),help='Explicit comma-separated filing forms for retained document discovery')
+    p.add_argument('--reconcile-sec-submissions',action='store_true',help='Require retained filings to match independent retained bulk submissions; snapshot completeness remains unproven')
     p.add_argument('--measurement-sec-document',type=sec_share_document,action='append',default=[],help='measure-sec-extraction only: CIK,ACCESSION,DOCUMENT_NAME; repeat up to eight times')
     p.add_argument('--compare-sec-bulk',action='store_true',help='measure-sec-extraction only: bounded read-only original/bulk value comparison, without public-time qualification')
     p.add_argument('--verify-sec-archives',action='store_true',help='Verify selected SEC documents against retained G archives and publish public-time evidence; no downloads')
@@ -108,6 +109,8 @@ def parse_args(argv=None):
     p.add_argument('--clickhouse-cache-root',default='/mnt/d/market-data/flatfiles/us_stocks_sip')
     p.add_argument('--hydrate-missing-trades',action='store_true',help='Deprecated: imported-day repair requires canonical sidecars')
     args=p.parse_args(argv)
+    if args.reconcile_sec_submissions and not args.sec_census_cik:
+        p.error('--reconcile-sec-submissions requires --sec-census-cik and --sec-census-forms')
     if args.sec_census_cik or args.sec_census_forms is not None:
         import re
         if (args.command not in ('prepare-sources','launch','launch-collection') or args.sec_share_document
@@ -238,6 +241,8 @@ def prepare_identity(args,claim,client_factory,dictionary_factory,stop,progress=
 
 def prepare_sec_share_sources(args,client,config,claim,client_factory,dictionary_factory,stop,progress=None):
     census=None
+    submission_census=None
+    reconciliation=None
     if args.sec_census_cik:
         from pipelines.certified_research import sec_filing_census
         claim.check()
@@ -246,6 +251,13 @@ def prepare_sec_share_sources(args,client,config,claim,client_factory,dictionary
         claim.check()
         if not census['discovery_ready'] or not census['documents']:
             raise ValueError('Retained SEC filing discovery is not ready: '+str(census['issue_counts']))
+        if args.reconcile_sec_submissions:
+            submission_census=sec_filing_census.inventory(client.query,args.sec_census_cik,args.fundamental_start_date,config.end,
+                forms=args.sec_census_forms,maximum_documents=1000,source='bulk_submissions')
+            claim.check()
+            reconciliation=sec_filing_census.reconcile(census,submission_census)
+            if not reconciliation['identity_reconciled']:
+                raise ValueError('SEC filing identities differ from retained submissions: '+json.dumps(reconciliation,sort_keys=True,default=str))
         args.sec_share_document=[(row['cik'],row['accession'],row['primary_document']) for row in census['documents']]
     if not args.sec_share_document:return None
     from pipelines.certified_research import sec_share_preparation,capacity_profile
@@ -253,6 +265,7 @@ def prepare_sec_share_sources(args,client,config,claim,client_factory,dictionary
         capacity_profile.load(args.capacity_profile),stop=stop,progress=progress,retain_descriptors=args.verify_sec_archives)
     if census is not None:
         result['filing_census']=dict(census_hash=census['census_hash'],source_hash=census['source_hash'],filings=census['filings'],coverage_certified=False)
+        if reconciliation is not None:result['filing_census']['submission_reconciliation']=reconciliation
     if result['status']=='interrupted':raise InterruptedError('SEC candidate source preparation interrupted')
     if result['status']!='complete':
         details='; '.join(f'{key}: {client.clean_error(error)[:200]}' for key,error in list(result['errors'].items())[:8])
@@ -287,6 +300,12 @@ def prepare_sec_share_sources(args,client,config,claim,client_factory,dictionary
         claim.check()
         if after['census_hash']!=census['census_hash']:
             raise ValueError('Retained SEC filing census changed during source preparation; prepared evidence retained')
+        if submission_census is not None:
+            submission_after=sec_filing_census.inventory(client.query,args.sec_census_cik,args.fundamental_start_date,config.end,
+                forms=args.sec_census_forms,maximum_documents=1000,source='bulk_submissions')
+            claim.check()
+            if submission_after['census_hash']!=submission_census['census_hash']:
+                raise ValueError('Independent SEC submission census changed during source preparation; prepared evidence retained')
     return result
 
 

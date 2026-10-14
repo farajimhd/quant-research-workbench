@@ -67,3 +67,17 @@ def test_launcher_census_selects_documents_before_preparation():
          patch('pipelines.certified_research.sec_share_preparation.prepare',return_value=dict(status='complete',captured=1,reused=0)),\
          pytest.raises(ValueError,match='census changed'):
         prepare_sec_share_sources(args,Mock(),SimpleNamespace(end=date(2026,1,2)),Mock(),Mock(),Mock(),Event())
+
+
+def test_launcher_submission_mismatch_blocks_before_any_preparation():
+    base=['prepare-sources','--end-date','2026-01-02','--capacity-profile','pilot.json','--fundamental-start-date','2025-01-01',
+        '--sec-census-cik','320193','--sec-census-forms','10-K','--reconcile-sec-submissions']
+    args=parse_args(base)
+    retained=inventory(query_for([row()]),('320193',),date(2025,1,1),date(2026,1,2),forms=('10-K',))
+    independent=inventory(query_for([]),('320193',),date(2025,1,1),date(2026,1,2),forms=('10-K',),source='bulk_submissions')
+    with patch('pipelines.certified_research.sec_filing_census.inventory',side_effect=[retained,independent]),\
+         patch('pipelines.certified_research.sec_share_preparation.prepare') as prepare,\
+         pytest.raises(ValueError,match='identities differ'):
+        prepare_sec_share_sources(args,Mock(),SimpleNamespace(end=date(2026,1,2)),Mock(),Mock(),Mock(),Event())
+    prepare.assert_not_called()
+    with pytest.raises(SystemExit):parse_args(['prepare-sources','--reconcile-sec-submissions'])
