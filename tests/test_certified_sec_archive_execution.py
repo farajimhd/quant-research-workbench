@@ -50,3 +50,35 @@ def test_unconfirmed_publication_keeps_staged_evidence():
             with pytest.raises(ValueError,match='publication/readback'):
                 execution.execute(plan,sources,receipts,Mock(),Event(),lambda *args:None,Mock(),mode='official_filing_day')
         assert (cache/relative).is_file() and source.is_file()
+
+
+def test_verified_retained_group_skips_copy_and_scan():
+    with TemporaryDirectory(dir='D:/TradingML/runtimes',prefix='sec-archive-reuse-') as directory:
+        root=Path(directory);backup=root/'backup';cache=root/'cache';relative=Path('2025/QTR4/20251031.nc.tar.gz')
+        source=backup/relative;source.parent.mkdir(parents=True);source.write_bytes(b'archive')
+        sources=(prepared('a'*64,'2025-10-31'),)
+        receipts={relative.as_posix():dict(status='downloaded',byte_size=7,sha256=sha256(b'archive').hexdigest())}
+        reuse=Mock(return_value=dict(persisted=True,readback_verified=True,
+            witness_hashes=('a'*64,),qualification_hashes=('b'*64,)))
+        with patch.object(planning.archive_staging,'validate_roots'),\
+             patch.object(execution.archive_staging,'copy_file') as copy,\
+             patch.object(execution.sec_archive_witness,'inspect_archives') as inspect:
+            plan=planning.plan(sources,'D:/market-data/sec_core/daily_archives',backup,cache,root)
+            result=execution.execute(plan,sources,receipts,Mock(),Event(),Mock(),Mock(),mode='official_filing_day',reuse=reuse)
+        assert result['reused']==(relative.as_posix(),)
+        copy.assert_not_called();inspect.assert_not_called()
+
+
+def test_concrete_adapter_binds_original_receipt_and_reuse():
+    from pipelines.certified_research import sec_witness_publication
+    receipt=dict(sha256='a'*64,status='downloaded')
+    publisher=Mock()
+    def run(plan,prepared,receipts,claim,stop,publish,guard,**options):
+        assert options['reuse']==publisher.reuse
+        publish((dict(container_sha256='a'*64),),({'qualification_hash':'b'*64},))
+        return dict(status='complete')
+    with patch.object(sec_witness_publication,'Publisher',return_value=publisher),patch.object(execution,'execute',side_effect=run):
+        result=execution.publish_retained({},(),{'archive':receipt},Mock(),'q_live',Mock(),Event(),Mock(),Mock(),
+            mode='official_filing_day')
+    assert result['status']=='complete'
+    assert publisher.publish.call_args.args[2] is receipt

@@ -9,7 +9,7 @@ from .contracts import digest
 
 
 def execute(plan,prepared,receipts,claim,stop,publish,source_guard,*,mode,
-            reserve_bytes=256*1024**3,reserve_fraction=.10,maximum_chunk_bytes=256*1024**3,progress=None):
+            reserve_bytes=256*1024**3,reserve_fraction=.10,maximum_chunk_bytes=256*1024**3,progress=None,reuse=None):
     """Copy each group once; delete only new owned files after durable readback.
 
     The publication callback must persist and independently verify all witnesses
@@ -48,7 +48,7 @@ def execute(plan,prepared,receipts,claim,stop,publish,source_guard,*,mode,
         if stop.is_set():raise InterruptedError('SEC archive execution stopped; staged evidence retained')
     def emit(phase,group):
         if progress:progress(dict(phase=phase,archive=group['archive_key']))
-    completed=[];preserved=[]
+    completed=[];preserved=[];reused=[]
     for chunk in plan['chunks']['chunks']:
         guard();space=archive_staging.space_budget(cache,reserve_bytes=reserve_bytes,reserve_fraction=reserve_fraction)
         archive_staging.plan_chunks(chunk,space,maximum_chunk_bytes=maximum_chunk_bytes)
@@ -62,6 +62,16 @@ def execute(plan,prepared,receipts,claim,stop,publish,source_guard,*,mode,
             if (receipt is None or receipt.get('status')!='downloaded' or receipt.get('byte_size')!=size
                     or not re.fullmatch('[0-9a-f]{64}',receipt.get('sha256') or '')):
                 raise ValueError('Original successful SEC download receipt is missing or incompatible')
+            documents=tuple(sources[d['document_key']] for d in group['documents'])
+            if reuse is not None:
+                guard();retained=reuse(documents,receipt,mode=mode);guard()
+                if retained is not None:
+                    if (retained.get('persisted') is not True or retained.get('readback_verified') is not True
+                            or len(retained.get('witness_hashes',()))!=len(documents)
+                            or len(retained.get('qualification_hashes',()))!=len(documents)):
+                        raise ValueError('SEC retained group readback is incomplete')
+                    reused.append(name);completed.append(name);emit('reused',group)
+                    continue
             emit('copy',group)
             copied=archive_staging.copy_file(source,target,backup,cache,size,stop=stop,
                 reserve_bytes=reserve_bytes,reserve_fraction=reserve_fraction)
@@ -74,7 +84,6 @@ def execute(plan,prepared,receipts,claim,stop,publish,source_guard,*,mode,
             elif not owned:raise ValueError('SEC backup could not be staged')
             if copied['sha256']!=receipt['sha256']:raise ValueError('SEC staged archive differs from original download digest')
             guard();emit('verify',group)
-            documents=tuple(sources[d['document_key']] for d in group['documents'])
             witnesses=sec_archive_witness.inspect_archives(target,documents,stop=stop,staging_receipt=copied)
             qualifications=tuple(sec_public_archive_time.qualify(w,receipt,mode=mode) for w in witnesses)
             guard();emit('publish',group)
@@ -91,4 +100,21 @@ def execute(plan,prepared,receipts,claim,stop,publish,source_guard,*,mode,
             else:preserved.append(str(target))
             completed.append(name);emit('completed',group)
     return dict(status='complete',completed=tuple(completed),preserved_cached_copies=tuple(preserved),
-        public_time_mode=mode,allocation_certified=False)
+        reused=tuple(reused),public_time_mode=mode,allocation_certified=False)
+
+
+def publish_retained(plan,prepared,receipts,query,database,claim,stop,source_guard,admission,*,mode,**options):
+    """Concrete archive-to-ClickHouse path under caller-owned source/admission guards."""
+    from .sec_witness_publication import Publisher
+    publisher=Publisher(query,database,claim,source_guard,admission)
+    by_digest={}
+    for receipt in receipts.values():
+        key=receipt.get('sha256')
+        if key in by_digest and by_digest[key]!=receipt:
+            raise ValueError('Competing original download receipts for one archive digest')
+        by_digest[key]=receipt
+    def publish(witnesses,qualifications):
+        receipt=by_digest.get(witnesses[0]['container_sha256'])
+        if receipt is None:raise ValueError('Original witness receipt is unavailable')
+        return publisher.publish(witnesses,qualifications,receipt)
+    return execute(plan,prepared,receipts,claim,stop,publish,source_guard,mode=mode,reuse=publisher.reuse,**options)

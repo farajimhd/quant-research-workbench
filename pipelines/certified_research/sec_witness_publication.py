@@ -4,7 +4,7 @@ from email.utils import parsedate_to_datetime
 import json
 
 from . import schema,sec_share_capture,sec_public_archive_time
-from .contracts import literal
+from .contracts import digest,literal
 from .publication import insert_rows,DictionaryClaim
 
 
@@ -66,6 +66,32 @@ class Publisher:
     def __init__(self,query,database,claim,source_guard,admission):
         if not callable(admission):raise ValueError('SEC witness publication requires source-write admission')
         self.query=query;self.database=database;self.claim=claim;self.source_guard=source_guard;self.admission=admission
+
+    def reuse(self,prepared,receipt,*,mode):
+        """Read independently qualified complete evidence; partial groups need execution."""
+        if not isinstance(prepared,(tuple,list)) or not 1<=len(prepared)<=1000:
+            raise ValueError('SEC reuse requires a bounded prepared group')
+        self.claim.check();self.source_guard()
+        sec_share_capture.verify(self.query,self.database,required=True,catalog=tables())
+        witnesses=[];qualified=[]
+        for source in prepared:
+            body=dict(source);fingerprint=body.pop('prepared_hash',None)
+            if fingerprint!=digest(body):raise ValueError('SEC reuse prepared fingerprint differs')
+            document=source['document'];lineage=document['lineage']
+            rows=self.query(f'SELECT proof FROM {self.database}.research_sec_document_archive_time_v1 '
+                f'WHERE document_key={literal(document["document_key"])} '
+                f'AND policy_version={literal(sec_public_archive_time.VERSION)} AND mode={literal(mode)} LIMIT 2')
+            if not rows:return None
+            if len(rows)!=1:raise ValueError('SEC reuse has duplicate retained evidence')
+            proof=json.loads(rows[0]['proof']);witness=proof['witness'];qualification=proof['qualification']
+            if (witness['document_key']!=document['document_key'] or qualification['mode']!=mode
+                    or witness['candidate_hash']!=lineage['candidate_hash']
+                    or witness['document_hash']!=lineage['document']['content_sha256']
+                    or witness['submission_hash']!=lineage['archive_submission_hash']):
+                raise ValueError('SEC reused witness differs from current source lineage')
+            witnesses.append(witness);qualified.append(qualification)
+        # Exact normalized rows, receipt and complete group are independently reread.
+        return self.publish(tuple(witnesses),tuple(qualified),receipt)
 
     def publish(self,witnesses,qualifications,receipt):
         groups=records(witnesses,qualifications,receipt);catalog=tables()

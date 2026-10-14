@@ -111,5 +111,12 @@ This publishes archive/time evidence, not float allocation or fundamental values
 An isolated live ClickHouse fixture verified schema/part placement, two initial
 rows and zero-insert exact restart. Its timing inputs were synthetic sealed test
 evidence; it does not establish production source qualification or period coverage.
-Persisted-group discovery, cache ownership reconciliation, production source admission
+`sec_archive_execution.publish_retained` connects the grouped executor to this
+publisher. On restart it discovers each requested document/policy/mode, validates
+its prepared fingerprint and current candidate/document/submission lineage, then
+independently requalifies the original receipt and verifies the complete normalized
+group. Verified groups skip copying and scanning; incomplete groups follow the
+regular bounded archive path. Conflicting evidence stops execution. Reuse does
+not assume ownership of abandoned cached files or delete them.
+Cache ownership reconciliation, production source admission
 and unified launcher wiring for this executor remain unfinished.
