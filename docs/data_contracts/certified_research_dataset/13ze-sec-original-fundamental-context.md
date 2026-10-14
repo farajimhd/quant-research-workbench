@@ -73,5 +73,17 @@ rows in bounded batches, and independently verifies the complete group. Complete
 groups with missing/conflicting/duplicate rows fail explicitly. An isolated live
 ClickHouse fixture verified partial resume and zero-insert reuse; it used synthetic
 source/time evidence and does not certify a real filing or production capacity.
-CLI execution wiring for these tables and whole-period coverage certificates remain
-unfinished. Production fundamental publication therefore remains blocked.
+The unified launcher now wires this evidence capture through
+`--prepare-sec-fundamental-evidence`, which requires `--verify-sec-archives` and
+explicit selected SEC documents. It runs after completed archive verification,
+uses retained CH document text and published archive/time/download receipts, and
+requires a measured SSD `sec_fundamental_source` rate matching the recipe exported
+in `schema --format json`. It processes one document at a time, checks a 2GiB plus
+query-memory reservation, and rechecks current document lineage, immutable
+archive/time proof and accession-bounded bulk census on each publication guard.
+Missing evidence, changed sources or missing pilot rates stop publication.
+No SEC/Massive request or training export is made by this stage. Guard queries and
+stage throughput have not yet been qualified over a production document selection.
+Whole-period coverage certificates remain unfinished. Production normalized
+fundamental authority and float publication therefore remain blocked; these source
+tables preserve the evidence needed to implement those remaining steps.

@@ -72,6 +72,7 @@ def parse_args(argv=None):
     p.add_argument('--sec-share-document',type=sec_share_document,action='append',default=[],
         help='Retained SEC source candidate: CIK,ACCESSION,DOCUMENT_NAME; requires qualified sec_share_source capacity rate, never certifies allocation')
     p.add_argument('--verify-sec-archives',action='store_true',help='Verify selected SEC documents against retained G archives and publish public-time evidence; no downloads')
+    p.add_argument('--prepare-sec-fundamental-evidence',action='store_true',help='Capture original fundamental contexts and bulk comparisons after archive verification; requires measured sec_fundamental_source capacity')
     p.add_argument('--sec-archive-canonical-root',type=Path,default=Path('D:/market-data/sec_core/daily_archives'))
     p.add_argument('--sec-archive-backup-root',type=Path,help='Existing G backup root containing YEAR/QTRn SEC archives')
     p.add_argument('--sec-download-receipts',type=Path,help='Original downloader JSONL ledger with successful hashes and HTTP Last-Modified')
@@ -98,6 +99,8 @@ def parse_args(argv=None):
     p.add_argument('--clickhouse-cache-root',default='/mnt/d/market-data/flatfiles/us_stocks_sip')
     p.add_argument('--hydrate-missing-trades',action='store_true',help='Deprecated: imported-day repair requires canonical sidecars')
     args=p.parse_args(argv)
+    if args.prepare_sec_fundamental_evidence and not args.verify_sec_archives:
+        p.error('Original fundamental evidence requires --verify-sec-archives and selected documents')
     if args.verify_sec_archives or args.sec_archive_backup_root is not None or args.sec_download_receipts is not None:
         if (not args.verify_sec_archives or not args.sec_share_document or args.sec_archive_backup_root is None
                 or args.sec_download_receipts is None):
@@ -229,6 +232,12 @@ def prepare_sec_share_sources(args,client,config,claim,client_factory,dictionary
             receipt_ledger=args.sec_download_receipts,mode=args.sec_public_time_mode,stop=stop,
             reserve_bytes=args.staging_reserve_gib*1024**3,reserve_fraction=args.staging_reserve_fraction,
             maximum_chunk_bytes=args.staging_chunk_gib*1024**3,progress=archive_progress)
+        if args.prepare_sec_fundamental_evidence:
+            from pipelines.certified_research import sec_fundamental_preparation
+            def fundamental_progress(event):
+                if args.format=='text':print(f'SEC fundamental evidence | {event["completed"]}/{event["total"]} documents | inserted={event["inserted_rows"]}',flush=True)
+            result['fundamental_evidence']=sec_fundamental_preparation.prepare(client.query,config,args.sec_share_document,claim,
+                dictionary_factory,capacity_profile.load(args.capacity_profile),mode=args.sec_public_time_mode,stop=stop,progress=fundamental_progress)
     return result
 
 
@@ -303,7 +312,7 @@ def main(argv=None):
     args=parse_args(argv)
     if args.command=='schema':
         catalog=installation.catalog(args.database)
-        from pipelines.certified_research import sec_share_capture,sec_share_preparation,sec_witness_publication,sec_archive_preparation,sec_fundamental_publication
+        from pipelines.certified_research import sec_share_capture,sec_share_preparation,sec_witness_publication,sec_archive_preparation,sec_fundamental_publication,sec_fundamental_preparation
         source_tables=sec_share_capture.tables()
         archive_tables=sec_witness_publication.tables()
         fundamental_tables=sec_fundamental_publication.tables()
@@ -317,7 +326,8 @@ def main(argv=None):
             manifest['sec_archive_evidence']=dict(database='q_live',product=sec_archive_preparation.PRODUCT,
                 recipe_hash=sec_archive_preparation.recipe_hash(),allocation_certified=False,
                 tables=[dict(name=t.name,order=t.order,partition=t.partition,columns=[vars(c) for c in t.columns]) for t in archive_tables])
-            manifest['sec_fundamental_evidence']=dict(database='q_live',certified=False,
+            manifest['sec_fundamental_evidence']=dict(database='q_live',certified=False,product=sec_fundamental_preparation.PRODUCT,
+                recipe_hash=sec_fundamental_preparation.recipe_hash(),
                 tables=[dict(name=t.name,order=t.order,partition=t.partition,columns=[vars(c) for c in t.columns]) for t in fundamental_tables])
             print(json.dumps(manifest,indent=2))
         else:
