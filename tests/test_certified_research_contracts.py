@@ -1990,6 +1990,10 @@ class ClickHouseIntegration(unittest.TestCase):
         self.assertEqual(measurement['tables'][0]['rows'],2)
         self.assertGreater(measurement['tables'][0]['disk_bytes'],0)
         self.assertFalse(measurement['projection_ready'])
+        from pipelines.certified_research.capacity_measurement import transient_snapshot
+        transient=transient_snapshot(query,self.database,('research_stage_bars_v1',),('research_facts_v1',))
+        self.assertFalse(transient['upper_bound_proven'])
+        self.assertGreaterEqual(transient['staging_bytes'],0)
         inspection=campaign_status(query,self.database,dataset)
         self.assertTrue(inspection['inspection_only']);self.assertEqual(inspection['counts']['certified'],2)
         self.assertEqual(len(campaign.verify()),64)

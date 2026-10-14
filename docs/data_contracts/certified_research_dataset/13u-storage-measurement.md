@@ -37,6 +37,21 @@ The real fixture independently verified the campaign, measured two persisted
 fact rows with positive disk bytes, and retained projection-not-ready status.
 These are measurement-path checks, not representative production pilot rates.
 
+## Transient observation component
+
+`transient_snapshot()` reads bounded declared staging/published table scopes
+from the installation catalog. It reports staging active/inactive bytes,
+inactive output bytes and current merge input/written-uncompressed counters.
+Policy and actual active-part checks still apply. Unknown/duplicate scopes are
+rejected. It fetches metadata only and creates no staging or output rows.
+
+These are instantaneous observations, not maximum reservations or compressed
+merge output measurements. `upper_bound_proven=false` prevents confusing an
+empty/quiet sample with proof that a campaign needs zero transient headroom.
+Continuous/phase-bound capture, representative activity and qualified peak-bound
+conversion remain incomplete. Twelve focused capacity tests and the real
+ClickHouse measurement fixture passed, including the actual merge-counter query.
+
 ## October 13 physical baseline
 
 A live read-only `system.parts`/disk snapshot returned:

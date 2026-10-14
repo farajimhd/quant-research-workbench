@@ -7,6 +7,36 @@ from .contracts import digest,identifier,literal
 VERSION='isolated-certified-persisted-bytes-v1'
 
 
+def transient_snapshot(query,database,staging_tables,output_tables):
+    """Observed transient counters, not a certified upper bound on peaks."""
+    from .installation import catalog
+    identifier(database);staging_tables=tuple(staging_tables);output_tables=tuple(output_tables)
+    selected=(*staging_tables,*output_tables)
+    known={t.name:group for group,t in catalog(database)}
+    if (not selected or len(selected)>64 or len(selected)!=len(set(selected))
+            or any(known.get(t)!='staging' for t in staging_tables)
+            or any(known.get(t)!='published' for t in output_tables)):
+        raise ValueError('Invalid bounded transient measurement scope')
+    schema.verify_auxiliary_storage(query,database,selected)
+    names=','.join(literal(t) for t in selected)
+    rows=query('SELECT table,active,sum(bytes_on_disk) bytes FROM system.parts '
+        f'WHERE database={literal(database)} AND table IN ({names}) GROUP BY table,active ORDER BY table,active')
+    merges=query('SELECT table,sum(total_size_bytes_compressed) input_bytes,sum(bytes_written_uncompressed) written_uncompressed '
+        f'FROM system.merges WHERE database={literal(database)} AND table IN ({names}) GROUP BY table ORDER BY table')
+    if any(r['table'] not in selected or int(r['bytes'])<0 for r in rows):
+        raise ValueError('Invalid transient part counters')
+    if any(r['table'] not in selected or int(r['input_bytes'])<0 or int(r['written_uncompressed'])<0 for r in merges):
+        raise ValueError('Invalid transient merge counters')
+    result=dict(version='observed-transient-storage-v1',database=database,staging_tables=staging_tables,
+        output_tables=output_tables,staging_bytes=sum(int(r['bytes']) for r in rows if r['table'] in staging_tables),
+        output_inactive_bytes=sum(int(r['bytes']) for r in rows if r['table'] in output_tables and not int(r['active'])),
+        merge_input_bytes=sum(int(r['input_bytes']) for r in merges),
+        merge_written_uncompressed_bytes=sum(int(r['written_uncompressed']) for r in merges),
+        upper_bound_proven=False,part_counters=rows,merge_counters=merges)
+    result['evidence_hash']=digest(result)
+    return result
+
+
 def measure(query,database,dataset_id,tables,verify_authority,*,maximum_parts=4096):
     """Measure actual parts only when every stored row belongs to this pilot.
 

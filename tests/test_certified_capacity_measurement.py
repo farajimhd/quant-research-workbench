@@ -1,7 +1,7 @@
 from unittest.mock import patch
 from uuid import uuid4
 import pytest
-from pipelines.certified_research.capacity_measurement import measure
+from pipelines.certified_research.capacity_measurement import measure,transient_snapshot
 
 
 def query_for(dataset,*,mixed=False,changed=False):
@@ -34,6 +34,23 @@ def test_unverified_authority_is_rejected():
     dataset=str(uuid4())
     with patch('pipelines.certified_research.capacity_measurement.schema.verify_auxiliary_storage'):
         with pytest.raises(ValueError,match='verified'):measure(query_for(dataset),'arte',dataset,('research_bars_v1',),lambda:None)
+
+
+def test_transient_snapshot_counts_staging_and_inactive_outputs_without_claiming_peak():
+    def query(sql):
+        if 'system.merges' in sql:return [dict(table='research_bars_v1',input_bytes=500,written_uncompressed=700)]
+        return [dict(table='research_stage_bars_v1',active=1,bytes=100),
+            dict(table='research_stage_bars_v1',active=0,bytes=30),dict(table='research_bars_v1',active=0,bytes=40)]
+    with patch('pipelines.certified_research.capacity_measurement.schema.verify_auxiliary_storage'):
+        result=transient_snapshot(query,'arte',('research_stage_bars_v1',),('research_bars_v1',))
+    assert result['staging_bytes']==130 and result['output_inactive_bytes']==40
+    assert result['merge_input_bytes']==500 and result['merge_written_uncompressed_bytes']==700
+    assert not result['upper_bound_proven']
+
+
+def test_transient_snapshot_rejects_unknown_or_duplicate_scope():
+    with pytest.raises(ValueError):transient_snapshot(None,'arte',('unknown',),())
+    with pytest.raises(ValueError):transient_snapshot(None,'arte',('research_bars_v1',),('research_bars_v1',))
 
 
 def test_measurement_launcher_is_read_only_and_closes_claim(capsys):
