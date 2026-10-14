@@ -62,6 +62,19 @@ def test_identity_certifies_exact_market_population():
     assert all("SELECT" in query and "INSERT" not in query for query in client.queries)
 
 
+def test_identity_accepts_the_existing_certified_rebuild_id_format():
+    client = Client()
+    market = replace(_market(), build_id=BUILD+'-453f5b1cdbc5')
+    plan = certify_identity_plan(market, client=client)
+    assert plan.conid_for('AAA') == 101
+    assert all(market.build_id in sql for sql in client.queries)
+    for suffix in ('-short', '-453f5b1cdbc50', "-453f5b1cdbc5'", '-453F5B1CDBC5'):
+        rejected = Client()
+        with pytest.raises(ValueError, match='literal SQL pin'):
+            certify_identity_plan(replace(_market(), build_id=BUILD+suffix), client=rejected)
+        assert not rejected.queries
+
+
 def test_subset_projects_only_after_verifying_full_identity_seal():
     subset = replace(_market(), tickers=("BBB",), token="subset-market-token")
     plan = certify_identity_plan(subset, client=Client())

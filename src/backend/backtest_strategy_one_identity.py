@@ -20,6 +20,7 @@ from src.trading_runtime.strategy_one_identity_schema import (
 
 
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
+_BUILD = re.compile(r"[0-9a-f]{64}(?:-[0-9a-f]{12})?\Z")
 _UUID = re.compile(r"[0-9a-fA-F-]{36}\Z")
 
 
@@ -64,7 +65,7 @@ def certify_identity_plan(
     if not isinstance(market, CertifiedMarketDayPlan) or len(market.sessions) != 1:
         raise ValueError("Identity certification needs one certified market session")
     build_id, session_date = market.build_id, market.sessions[0]
-    if not _HEX.fullmatch(build_id) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", session_date):
+    if not _BUILD.fullmatch(build_id) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", session_date):
         raise ValueError("Market identity is not safe for a literal SQL pin")
     coverage = [json.loads(line) for line in client.execute(
         "SELECT identity_attempt_id,universe_date,ticker_count,content_hash "
