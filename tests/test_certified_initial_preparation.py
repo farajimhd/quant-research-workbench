@@ -83,12 +83,17 @@ def test_earlier_float_listing_gets_shared_price_aggregate_without_state_rebuild
     context=dict(context,measurements=(early,),sessions=(early,));context['context_hash']=digest({k:v for k,v in context.items() if k!='context_hash'})
     canonical=dict(args['canonical'],expected=(early,args['config'].start),source_hashes={str(early):'d'*64,**args['canonical']['source_hashes']})
     reporting=dict(args['reporting'],verified={str(early):dict(source_digest='d'*64),**args['reporting']['verified']})
+    order=[]
+    preparer=Mock(side_effect=lambda days:order.append('prepare_sources'))
+    def inventory(*args,**kwargs):order.append('inventory');return canonical
     def spellings(query,sessions,guard):guard();return dict(sessions=sessions)
     with patch.object(prep.sec_coverage,'require_ready'),patch.object(prep.source,'require_ready',return_value='b'*64),\
-         patch.object(prep.source,'inventory',return_value=canonical),patch.object(prep.source,'reporting_inventory',return_value=reporting),\
+         patch.object(prep.source,'inventory',side_effect=inventory),patch.object(prep.source,'reporting_inventory',return_value=reporting),\
          patch.object(prep.universe,'load',return_value=snapshot),patch.object(prep.float_data,'source_price_sessions',return_value=context),\
          patch.object(prep.seed_preparation,'prepare_universe',return_value=prepared),patch.object(prep.source,'resolve_spellings',side_effect=spellings):
-        result=prep.prepare(**args)
+        result=prep.prepare(**args,source_preparer=preparer)
+    preparer.assert_called_once_with((early,args['config'].start))
+    assert order[:2]==['prepare_sources','inventory']
     old=identity_key(LISTING,'old-listing')
     lane=[p for p in result['plans'] if p.arguments.get('listing_key')==old]
     assert len(lane)==1 and lane[0].unit.product=='market_aggregate'

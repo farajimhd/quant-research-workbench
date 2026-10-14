@@ -92,3 +92,15 @@ def plan(config: CampaignConfig,*,indicator_seed: StateSeed|None=None,v7_seed: S
                 requirements=demands,blocked=tuple(blocked))
     result['hash']=digest(result)
     return result
+
+
+def preparation_start(config,requested,*,rebuild_origin=None):
+    """Definition-derived source dates; a missing state is never inferred warmup."""
+    if type(requested) is not date or requested>config.start:raise ValueError('Invalid requested source context')
+    demand=plan(config,rebuild_origin=rebuild_origin)
+    fatal=[reason for reason in demand['blocked'] if 'compatible prior state' not in reason]
+    if fatal:raise ValueError('; '.join(fatal))
+    required=(*demand['market_context'],*demand['short_context'],*demand['targets'])
+    start=min((requested,*required))
+    if start<date(2019,1,2):raise ValueError('Source preparation context precedes canonical history')
+    return start

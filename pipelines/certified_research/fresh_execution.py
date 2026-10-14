@@ -6,7 +6,7 @@ from . import context,initial_preparation,initial_plan,recipe,source
 
 
 def prepare(query,config,dataset_id,claim,client_factory,dictionary_claim_factory,capacity_factory,*,
-        context_start,fundamental_start,anchor_date,stop=None,progress=None,rebuild_origin=None):
+        context_start,fundamental_start,anchor_date,stop=None,progress=None,rebuild_origin=None,source_preparer=None):
     """Discover retained inputs and assemble a complete graph without executing it.
 
     Missing reference authorities and compatible initial states remain explicit
@@ -38,7 +38,8 @@ def prepare(query,config,dataset_id,claim,client_factory,dictionary_claim_factor
     short_days=context.preceding_sessions(targets[0],max(config.short_windows_sessions))
     assembled=initial_preparation.discover_and_prepare(query,config,dataset_id,claim,lambda:client_factory(config),
         guard,canonical,reporting,frozen['definition'],rules,fundamental_start=fundamental_start,
-        short_start=min((*short_days,*targets)),anchor_date=anchor_date,stop=stop,progress=progress,rebuild_origin=rebuild_origin)
+        short_start=min((*short_days,*targets)),anchor_date=anchor_date,stop=stop,progress=progress,
+        rebuild_origin=rebuild_origin,source_preparer=source_preparer)
     if not assembled['ready']:
         missing=assembled['missing_authorities']
         return dict(status='blocked',errors={'reference-authorities':ValueError(f'{len(missing)} required reference authority scopes are missing')},
@@ -47,10 +48,10 @@ def prepare(query,config,dataset_id,claim,client_factory,dictionary_claim_factor
 
 
 def run(query,config,dataset_id,claim,client_factory,dictionary_claim_factory,capacity_factory,*,
-        context_start,fundamental_start,anchor_date,stop=None,progress=None,rebuild_origin=None):
+        context_start,fundamental_start,anchor_date,stop=None,progress=None,rebuild_origin=None,source_preparer=None):
     assembled=prepare(query,config,dataset_id,claim,client_factory,dictionary_claim_factory,capacity_factory,
         context_start=context_start,fundamental_start=fundamental_start,anchor_date=anchor_date,
-        stop=stop,progress=progress,rebuild_origin=rebuild_origin)
+        stop=stop,progress=progress,rebuild_origin=rebuild_origin,source_preparer=source_preparer)
     if not assembled.get('ready'):return assembled
     return initial_plan.run(query,config,dataset_id,assembled,claim,client_factory,dictionary_claim_factory,
         capacity_factory,stop=stop,progress=progress)

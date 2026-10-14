@@ -24,7 +24,7 @@ def verify_child_inputs(query,saved):
 
 def prepare(query,config,collection_id,claim,child_claim_factory,client_factory,
             dictionary_claim_factory,capacity_factory,*,context_start,fundamental_start,anchor_date,
-            maximum_issuers=128,maximum_sessions=200000,stop=None,progress=None,rebuild_origin=None):
+            maximum_issuers=128,maximum_sessions=200000,stop=None,progress=None,rebuild_origin=None,source_preparer=None):
     if config.issuer_keys:raise ValueError('Fresh collection requires the complete unscoped config')
     claim.check()
     targets=source.exchange_sessions(config.start,config.end)
@@ -76,7 +76,7 @@ def prepare(query,config,collection_id,claim,child_claim_factory,client_factory,
                 assembled=fresh_execution.prepare(query,child_config,id_,child,client_factory,
                     dictionary_claim_factory,capacity_factory,context_start=context_start,
                     fundamental_start=fundamental_start,anchor_date=anchor_date,
-                    stop=stop,progress=progress,rebuild_origin=rebuild_origin)
+                    stop=stop,progress=progress,rebuild_origin=rebuild_origin,source_preparer=source_preparer)
                 if not assembled.get('ready'):
                     return dict(status='blocked',member=id_,completed=index,total=len(partition['groups']),
                                 missing_authorities=assembled.get('missing_authorities',()))

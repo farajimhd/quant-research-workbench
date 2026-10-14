@@ -10,7 +10,7 @@ from .execution import Unit,execute
 
 def discover_and_prepare(query,config,dataset_id,claim,client_factory,source_guard,canonical,reporting,definition,rules,*,
                          fundamental_start,short_start,anchor_date,adjustment_hashes=None,
-                         indicator_datasets=None,v7_datasets=None,stop=None,progress=None,rebuild_origin=None):
+                         indicator_datasets=None,v7_datasets=None,stop=None,progress=None,rebuild_origin=None,source_preparer=None):
     """Compose reference discovery and preparation without caller-built locators."""
     from . import reference_discovery
     stop=Event() if stop is None else stop
@@ -34,14 +34,14 @@ def discover_and_prepare(query,config,dataset_id,claim,client_factory,source_gua
         references['issuers'],references['securities'],prerequisites=(authority,*references['prerequisites']),
         universe_parent='universe',corporate_parents=references['corporate_parents'],adjustment_hashes=adjustment_hashes,
         fundamental_start=fundamental_start,short_start=short_start,anchor_date=anchor_date,
-        indicator_datasets=indicator_datasets,v7_datasets=v7_datasets,stop=stop,progress=progress,rebuild_origin=rebuild_origin)
+        indicator_datasets=indicator_datasets,v7_datasets=v7_datasets,stop=stop,progress=progress,rebuild_origin=rebuild_origin,source_preparer=source_preparer)
     return dict(assembled,ready=True)
 
 
 def prepare(query,config,claim,client_factory,source_guard,canonical,reporting,definition,rules,
             issuers,securities,*,prerequisites,universe_parent,corporate_parents,adjustment_hashes,
             fundamental_start,short_start,anchor_date,indicator_datasets=None,v7_datasets=None,
-            stop=None,progress=None,maximum_sessions=250000,maximum_issuers=8192,rebuild_origin=None):
+            stop=None,progress=None,maximum_sessions=250000,maximum_issuers=8192,rebuild_origin=None,source_preparer=None):
     """Discover float prices and state context before installing any plan.
 
     Reference source locators must already be certified; their discovery and
@@ -109,6 +109,9 @@ def prepare(query,config,claim,client_factory,source_guard,canonical,reporting,d
     contexts={int(k):v for k,v in result['results'].items()}
     price_days=planning.price_context_days(targets,contexts)
     required=tuple(sorted(set((*canonical['expected'],*price_days))))
+    extra=tuple(day for day in required if day not in canonical['expected'])
+    if extra and source_preparer is not None:
+        guard();source_preparer(required);guard()
     frozen=source.inventory(query,min(required),max(required),sessions=required)
     frozen_reporting=source.reporting_inventory(query,frozen)
     epoch=source.require_ready(query,frozen,frozen_reporting)

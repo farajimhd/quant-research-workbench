@@ -101,6 +101,13 @@ and transition-evidence publication remain incomplete.
 
 ## Next implementation order
 
+Fresh source preparation now expands its context floor from selected rolling
+requirements and declared rebuild origin. Newly discovered float-price sessions
+have an explicit ingestion dependency before expanded source inventory/epoch
+freezing, shared by single and collection launches. Sparse source reads select
+only required dates; broader legacy aggregate fingerprints cannot be silently
+reused. See [source context execution](13y-source-context-execution.md).
+
 The unified launcher now has a guarded `--acquire-sec-missing` handoff to the
 complete existing SEC chain. It propagates explicit context, runtime and bounded
 resource selections, then independently qualifies stage lineage and required

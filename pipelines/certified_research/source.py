@@ -110,11 +110,20 @@ def inventory(query,start: date,end: date,*,sessions=None):
     if type(start) is not date or type(end) is not date or start>end:
         raise ValueError('Invalid source inventory range')
     expected=sessions if sessions is not None else exchange_sessions(start,end)
+    scope=''
+    if sessions is not None:
+        expected=tuple(sessions)
+        if (not expected or tuple(sorted(set(expected)))!=expected
+                or any(type(day) is not date or not start<=day<=end for day in expected)):
+            raise ValueError('Explicit source sessions must be sorted unique dates within the source range')
+        dates=','.join(f'toDate({literal(day)})' for day in expected)
+        scope=f' AND source_date IN ({dates})'
     rows=query('SELECT * FROM market_sip_compact.events_source_day_stats FINAL '
-               f'WHERE source_date BETWEEN toDate({literal(start)}) AND toDate({literal(end)}) ORDER BY source_date')
+               f'WHERE source_date BETWEEN toDate({literal(start)}) AND toDate({literal(end)}){scope} ORDER BY source_date')
     by_day={}
     for row in rows:
         day=date.fromisoformat(row['source_date'])
+        if sessions is not None and day not in expected:raise ValueError('Explicit source read returned an unrequested session')
         if day in by_day:raise ValueError('Ambiguous source-day certificates')
         by_day[day]=row
     missing=tuple(day for day in expected if day not in by_day)
@@ -126,9 +135,13 @@ def inventory(query,start: date,end: date,*,sessions=None):
                    "max(updated_at) OVER (PARTITION BY source_start_date) last_update "
                    "FROM market_sip_compact.events_build_manifest WHERE ticker='__ALL__' "
                    "AND source_start_date=source_end_date AND startsWith(target_table,'events_') "
-                   f"AND source_start_date BETWEEN toDate({literal(start)}) AND toDate({literal(end)})) "
+                   f"AND source_start_date BETWEEN toDate({literal(start)}) AND toDate({literal(end)})"+
+                   (f" AND source_start_date IN ({dates})" if sessions is not None else '')+
+                   ") "
                    "WHERE updated_at=last_update GROUP BY day ORDER BY day")
     states={r['day']:r['statuses'] for r in imported}
+    if sessions is not None and any(day not in {str(value) for value in expected} for day in states):
+        raise ValueError('Explicit import-manifest read returned an unrequested session')
     incomplete=tuple(day for day in expected if day in by_day and states.get(str(day))!=['ok'])
     return dict(expected=expected,rows=by_day,missing=missing,source_hashes=hashes,
                 incomplete=incomplete,import_statuses=states,content_hash=digest(hashes))

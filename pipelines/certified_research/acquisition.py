@@ -122,7 +122,7 @@ def run_ingestion(command,paths: IngestionPaths,stop,*,emit=print,guard=None):
 
 def prepare_sources(query,paths,config,claim,stop,*,acquire_missing=False,stage_archive=False,emit=print,
                     runner=run_ingestion,context_start=None,writer_query=None,recover_retained_reporting=False,
-                    staging_reserve_bytes=256*1024**3,staging_reserve_fraction=.10,staging_chunk_bytes=256*1024**3):
+                    staging_reserve_bytes=256*1024**3,staging_reserve_fraction=.10,staging_chunk_bytes=256*1024**3,sessions=None):
     """Acquire/repair first; freeze the derived campaign only after verification.
 
     Canonical ordinals prohibit filling internal holes through ordinary append.
@@ -143,7 +143,7 @@ def prepare_sources(query,paths,config,claim,stop,*,acquire_missing=False,stage_
     parts=query("SELECT disk_name FROM system.parts WHERE active AND database='market_sip_compact' AND match(table,'^events_[0-9]{4}$') GROUP BY disk_name")
     if any(r['storage_policy']!='sip_raw_ssd' for r in tables) or any(r['disk_name']!='sip_raw_ssd' for r in parts):
         raise ValueError('Canonical source tables/parts are misplaced')
-    inv=source.inventory(query,range_start,config.end)
+    inv=source.inventory(query,range_start,config.end,sessions=sessions)
     if inv['incomplete']:raise ValueError('Incomplete imported days require explicit canonical migration')
     if inv['missing']:
         if not acquire_missing:raise ValueError('Missing source days; acquisition is not selected')
@@ -155,7 +155,7 @@ def prepare_sources(query,paths,config,claim,stop,*,acquire_missing=False,stage_
             command=updater_command(paths,first,last,workers=min(config.workers,8),threads=config.query_threads,
                 memory_bytes=config.query_memory_bytes,stage_archive=stage_archive)
             runner(command,paths,stop,emit=emit,guard=claim.check);guard()
-        inv=source.inventory(query,range_start,config.end)
+        inv=source.inventory(query,range_start,config.end,sessions=sessions)
         if inv['missing'] or inv['incomplete']:raise ValueError('Updater did not certify all required source sessions')
     resume_native_repairs(query,writer_query,inv,claim,stop,emit=emit)
     reporting=source.reporting_inventory(query,inv)

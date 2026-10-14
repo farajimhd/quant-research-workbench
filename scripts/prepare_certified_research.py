@@ -186,7 +186,7 @@ def prepare_identity(args,claim,client_factory,dictionary_factory,stop,progress=
     return result
 
 
-def prepare_retained_symbols(args,client,claim,dictionary_factory,stop,through):
+def prepare_retained_symbols(args,client,claim,dictionary_factory,stop,through,*,context_start=None):
     if not args.repair_retained_symbols:return None
     from services.reference_gateway.retained_symbol_repair import rebuild
     def guard():
@@ -197,7 +197,7 @@ def prepare_retained_symbols(args,client,claim,dictionary_factory,stop,through):
     try:
         if dictionary.dictionary_database!='q_live':raise ValueError('Retained symbol repair requires Gateway dictionary ownership')
         from pipelines.certified_research.historical_identity import load_origins
-        context_start=min(value for value in (args.context_start_date,args.rebuild_origin_date,args.start_date) if value is not None)
+        context_start=min(value for value in (context_start,args.context_start_date,args.rebuild_origin_date,args.start_date) if value is not None)
         result=rebuild(client.http,database='q_live',identifiers=args.retained_figi,
             context_start=context_start,claim=dictionary,execute=True,guard=guard,through=through,
             origin_loader=lambda:load_origins(client.query,args.database,args.identity_point,
@@ -348,6 +348,10 @@ def main(argv=None):
                     end=date.fromisoformat(str(frontier))
                 config=campaign_config(args,end)
             else:config=saved.config
+            source_context=args.context_start_date
+            if args.command in ('launch','launch-collection'):
+                from pipelines.certified_research.context import preparation_start
+                source_context=preparation_start(config,source_context,rebuild_origin=args.rebuild_origin_date)
             observations=None
             if args.observe_storage:
                 from pipelines.certified_research import capacity_measurement
@@ -384,14 +388,15 @@ def main(argv=None):
                         try:
                             prepare_identity(args,source_claim,lambda:factory(config),
                                 lambda:DictionaryClaim(keeper.client,args.database),stop,progress)
-                            prepare_retained_symbols(args,client,source_claim,lambda:DictionaryClaim(keeper.client,'q_live'),stop,config.end)
+                            prepare_retained_symbols(args,client,source_claim,lambda:DictionaryClaim(keeper.client,'q_live'),stop,config.end,
+                                context_start=source_context)
                             from pipelines.certified_research import sec_acquisition
                             sec_acquisition.prepare(client.query,paths,config,source_claim,stop,
                                 fundamental_start=args.fundamental_start_date,acquire_missing=args.acquire_sec_missing,
                                 runtime_root_ch=args.sec_runtime_root_ch,
                                 emit=print if args.format=='text' else lambda text:None)
                             acquisition.prepare_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),paths,config,source_claim,
-                                stop,acquire_missing=args.acquire_missing,stage_archive=args.stage_archive,context_start=args.context_start_date,
+                                stop,acquire_missing=args.acquire_missing,stage_archive=args.stage_archive,context_start=source_context,
                                 writer_query=client.query,recover_retained_reporting=args.recover_retained_reporting,
                                 staging_reserve_bytes=args.staging_reserve_gib*1024**3,staging_reserve_fraction=args.staging_reserve_fraction,
                                 staging_chunk_bytes=args.staging_chunk_gib*1024**3)
@@ -399,23 +404,38 @@ def main(argv=None):
                     claim=KeeperClaim(keeper.client,str(args.dataset_id))
                     try:
                         dictionary_factory=lambda:DictionaryClaim(keeper.client,args.database)
+                        def prepare_discovered_sources(days):
+                            if args.command not in ('launch','launch-collection'):
+                                raise ValueError('Frozen execution cannot prepare newly discovered sources')
+                            claim.check()
+                            source_owner=SourceClaim(keeper.client)
+                            try:
+                                acquisition.prepare_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),paths,config,source_owner,
+                                    stop,context_start=min(days),sessions=days,acquire_missing=args.acquire_missing,
+                                    stage_archive=args.stage_archive,writer_query=client.query,
+                                    recover_retained_reporting=args.recover_retained_reporting,
+                                    staging_reserve_bytes=args.staging_reserve_gib*1024**3,
+                                    staging_reserve_fraction=args.staging_reserve_fraction,
+                                    staging_chunk_bytes=args.staging_chunk_gib*1024**3)
+                            finally:source_owner.close()
+                            claim.check()
                         admission=capacity_profile.factory(client.query,profile)
                         if args.command=='launch-collection':
                             from pipelines.certified_research import collection_preparation,collection_execution
                             prepared=collection_preparation.prepare(client.query,config,str(args.dataset_id),claim,
                                 lambda id_:KeeperClaim(keeper.client,id_),factory,dictionary_factory,admission,
-                                context_start=args.context_start_date,fundamental_start=args.fundamental_start_date,
+                                context_start=source_context,fundamental_start=args.fundamental_start_date,
                                 anchor_date=args.universe_anchor_date,maximum_issuers=args.cohort_max_issuers,
                                 maximum_sessions=args.cohort_max_sessions,stop=stop,progress=progress,
-                                rebuild_origin=args.rebuild_origin_date)
+                                rebuild_origin=args.rebuild_origin_date,source_preparer=prepare_discovered_sources)
                             result=collection_execution.execute(client.query,args.database,str(args.dataset_id),claim,
                                 lambda id_:KeeperClaim(keeper.client,id_),factory,dictionary_factory,
                                 profile=profile,stop=stop,progress=progress) if prepared['status']=='prepared' else prepared
                         elif args.command=='launch':
                             result=fresh_execution.run(client.query,config,str(args.dataset_id),claim,factory,
-                                dictionary_factory,admission,context_start=args.context_start_date,fundamental_start=args.fundamental_start_date,
+                                dictionary_factory,admission,context_start=source_context,fundamental_start=args.fundamental_start_date,
                                 anchor_date=args.universe_anchor_date,stop=stop,progress=progress,
-                                rebuild_origin=args.rebuild_origin_date)
+                                rebuild_origin=args.rebuild_origin_date,source_preparer=prepare_discovered_sources)
                         elif args.command=='backfill-v7':
                             result=checkpoint_backfill.run(client.query,args.database,str(args.source_dataset_id),str(args.dataset_id),
                                 claim,factory,dictionary_factory,admission,stop=stop,progress=progress,
