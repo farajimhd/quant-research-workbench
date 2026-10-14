@@ -19,6 +19,7 @@ class ProgramCohortInputPlan:
     as_of: datetime
     concurrency: int
     maximum_retained_feature_bytes: int | None = None
+    maximum_retained_population_bytes: int | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "pins", MappingProxyType(dict(self.pins)))
@@ -38,6 +39,7 @@ class ProgramPublishedInputRequest:
     as_of: datetime
     concurrency: int
     maximum_retained_feature_bytes: int | None = None
+    maximum_retained_population_bytes: int | None = None
 
 
 async def certify_program_session_input_plan(controller, request, *, reader_factory):
@@ -63,7 +65,9 @@ async def certify_program_session_input_plan(controller, request, *, reader_fact
             or not isinstance(request.as_of, datetime) or request.as_of.tzinfo is None
             or request.as_of.utcoffset() is None
             or (request.maximum_retained_feature_bytes is not None and
-                (type(request.maximum_retained_feature_bytes) is not int or request.maximum_retained_feature_bytes < 1))):
+                (type(request.maximum_retained_feature_bytes) is not int or request.maximum_retained_feature_bytes < 1))
+            or (request.maximum_retained_population_bytes is not None and
+                (type(request.maximum_retained_population_bytes) is not int or request.maximum_retained_population_bytes < 1))):
         raise ValueError('Published programme inputs lack explicit native source and compute bounds')
     release = controller._program_strategy.program_release
     eligible = {row['listing_id']: row for row in request.opening.resolved_rows()
@@ -114,7 +118,8 @@ async def certify_program_session_input_plan(controller, request, *, reader_fact
     preflight_program_feature_catalog(release, pins)
     cohorts = tuple(ProgramCohortInputPlan(pins, population, controller._program_strategy._listings,
         request.first_ordinal, request.stop_ordinal, request.evaluation_block, first, stop,
-        request.as_of, request.concurrency, request.maximum_retained_feature_bytes)
+        request.as_of, request.concurrency, request.maximum_retained_feature_bytes,
+        request.maximum_retained_population_bytes)
         for first, stop in request.cohort_windows)
     return preflight_program_session_inputs(release, cohorts,
         first_bucket=cohorts[0].first_bucket, stop_bucket=cohorts[-1].stop_bucket)
@@ -137,6 +142,9 @@ def preflight_program_session_inputs(release, cohorts, *, first_bucket, stop_buc
         if (cohort.maximum_retained_feature_bytes is not None and
                 (type(cohort.maximum_retained_feature_bytes) is not int or cohort.maximum_retained_feature_bytes < 1)):
             raise ValueError("Programme input plan requires its explicit retained-byte budget")
+        if (cohort.maximum_retained_population_bytes is not None and
+                (type(cohort.maximum_retained_population_bytes) is not int or cohort.maximum_retained_population_bytes < 1)):
+            raise ValueError('Programme input plan requires its explicit population byte budget')
         pins, assignments = preflight_program_cohort_inputs(release, cohort.pins, cohort.population_pin,
             cohort.listing_by_assignment, first_ordinal=cohort.first_ordinal,
             stop_ordinal=cohort.stop_ordinal, evaluation_block=cohort.evaluation_block,
@@ -146,7 +154,8 @@ def preflight_program_session_inputs(release, cohorts, *, first_bucket, stop_buc
         identity = (cohort.population_pin.opening.scope.session_date,
             cohort.population_pin.source_revision, tuple(sorted(assignments.items())),
             tuple(sorted((listing, pin.header["content_hash"]) for listing, pin in pins.items())),
-            cohort.first_ordinal, cohort.evaluation_block, cohort.maximum_retained_feature_bytes)
+            cohort.first_ordinal, cohort.evaluation_block, cohort.maximum_retained_feature_bytes,
+            cohort.maximum_retained_population_bytes)
         if common is not None and identity != common:
             raise ValueError("Programme input plan changed its source, assignments or evaluation origin")
         common, expected = identity, cohort.stop_bucket
@@ -193,7 +202,8 @@ async def prepare_program_session_input_plan(controller, cohorts, *, scopes, his
             scope=prototype.scope, first_ordinal=plan.first_ordinal, stop_ordinal=plan.stop_ordinal,
             evaluation_block=plan.evaluation_block, first_bucket=plan.first_bucket,
             stop_bucket=plan.stop_bucket, as_of=plan.as_of, concurrency=plan.concurrency,
-            history_post=history_post, maximum_retained_feature_bytes=plan.maximum_retained_feature_bytes)
+            history_post=history_post, maximum_retained_feature_bytes=plan.maximum_retained_feature_bytes,
+            maximum_retained_population_bytes=plan.maximum_retained_population_bytes)
         if (controller.definition is not definition or controller._program_strategy is not actor
                 or actor.program_release is not release):
             raise RuntimeError("Programme input-plan controller ownership changed")

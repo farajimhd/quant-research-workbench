@@ -63,6 +63,7 @@ class ProgramConfigurationSelectionService:
                 errors.append(error)
             controller._program_launch_plan = None
             controller._program_feature_cache = None
+            controller._program_population_cache = None
             if errors:
                 raise BaseExceptionGroup('Unused programme handoff cleanup failed', errors)
         await _settle_owned_task(asyncio.create_task(close_owned()))

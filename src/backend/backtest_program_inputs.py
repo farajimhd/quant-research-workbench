@@ -373,13 +373,16 @@ def preflight_program_cohort_inputs(release, pins, population_pin, listing_by_as
 
 async def prepare_program_cohort_inputs(release, pins, population_pin, listing_by_assignment, *,
         first_ordinal, stop_ordinal, evaluation_block, first_bucket, stop_bucket,
-        as_of, concurrency, history_post=None, feature_cache=None):
+        as_of, concurrency, history_post=None, feature_cache=None, population_cache=None):
     """Use the same read-only preflight before bounded QMD/scanner preparation."""
     from .qmd_columnar_population import read_population_window
     from .qmd_gateway_client import qmd_history_post_json
     from .backtest_market_data import market_day_boundary
     from .backtest_program_feature_cache import ProgramFeatureBlockCache
     from .backtest_program_listing_cache import ProgramListingFeatureCache
+    from .backtest_program_population_cache import ProgramPopulationCache
+    if population_cache is not None and type(population_cache) is not ProgramPopulationCache:
+        raise ValueError('Programme preparation requires its built-in population cache')
     partitioned = type(feature_cache) is ProgramListingFeatureCache
     if feature_cache is not None and type(feature_cache) not in (ProgramFeatureBlockCache, ProgramListingFeatureCache):
         raise ValueError("Programme preparation requires its built-in feature cache")
@@ -398,7 +401,8 @@ async def prepare_program_cohort_inputs(release, pins, population_pin, listing_b
         features = group.create_task(prepare_features(release, owned,
             first_ordinal=first_ordinal, stop_ordinal=stop_ordinal,
             evaluation_block=evaluation_block, as_of=as_of, concurrency=concurrency, history_post=post))
-        population = group.create_task(read_population_window(population_pin,
+        read_population = read_population_window if population_cache is None else population_cache.load
+        population = group.create_task(read_population(population_pin,
             first_bucket=first_bucket, stop_bucket=stop_bucket,
             as_of=as_of, concurrency=concurrency, history_post=post))
     block, population = features.result(), population.result()
@@ -429,7 +433,8 @@ async def prepare_program_cohort_inputs(release, pins, population_pin, listing_b
 
 async def prepare_program_cohort_work(controller, pins, population_pin, *, scope,
         first_ordinal, stop_ordinal, evaluation_block, first_bucket, stop_bucket,
-        as_of, concurrency, history_post=None, maximum_retained_feature_bytes=None):
+        as_of, concurrency, history_post=None, maximum_retained_feature_bytes=None,
+        maximum_retained_population_bytes=None):
     """Prepare native scheduler work without changing policy or execution state."""
     from .replay_run_service import ReplayRunController
     from .backtest_program_session import PreparedProgramCohortWork
@@ -465,10 +470,21 @@ async def prepare_program_cohort_work(controller, pins, population_pin, *, scope
     if maximum_retained_feature_bytes is not None and (type(cache) is not ProgramListingFeatureCache
             or cache.maximum_retained_bytes != maximum_retained_feature_bytes):
         raise ValueError("Controller programme preparation changed its retained-byte budget")
+    population_cache = None
+    if maximum_retained_population_bytes is not None:
+        from .backtest_program_population_cache import ProgramPopulationCache
+        population_cache = getattr(controller, '_program_population_cache', None)
+        if population_cache is None:
+            population_cache = controller._program_population_cache = ProgramPopulationCache(
+                maximum_retained_bytes=maximum_retained_population_bytes)
+        elif (type(population_cache) is not ProgramPopulationCache
+                or population_cache.maximum_retained_bytes != maximum_retained_population_bytes):
+            raise ValueError('Controller population preparation changed its retained-byte budget')
     prepared = await prepare_program_cohort_inputs(release, pins, population_pin, listings,
         first_ordinal=first_ordinal, stop_ordinal=stop_ordinal, evaluation_block=evaluation_block,
         first_bucket=first_bucket, stop_bucket=stop_bucket, as_of=as_of,
-        concurrency=concurrency, history_post=history_post, feature_cache=cache)
+        concurrency=concurrency, history_post=history_post, feature_cache=cache,
+        population_cache=population_cache)
     require_owner()
     return PreparedProgramCohortWork(first_bucket, stop_bucket, prepared.blocks,
         prepared.population, prepared.projection, prototype.scope)

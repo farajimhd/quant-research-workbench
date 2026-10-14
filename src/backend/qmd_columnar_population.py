@@ -123,6 +123,28 @@ async def read_population_window(pin: CertifiedPopulationPin, *, first_bucket: i
     workers/tasks exist; there is no task per listing or independent background
     queue. Transport cancellation drains each owned blocking HTTP operation.
     """
+    _preflight_population_window(pin, first_bucket=first_bucket, stop_bucket=stop_bucket,
+        as_of=as_of, concurrency=concurrency)
+    iterator = iter(sorted(pin.histories.items()))
+    results = {}
+    async def worker():
+        while True:
+            item = next(iterator, None)
+            if item is None:
+                return
+            listing, history = item
+            frame = await read_history_window_async(history,
+                first_ordinal=first_bucket - history.scope.first_bucket,
+                stop_ordinal=stop_bucket - history.scope.first_bucket,
+                evaluation_block="scanner-population", as_of=as_of, history_post=history_post)
+            results[listing] = _population_listing_frame(pin, listing, frame)
+    async with asyncio.TaskGroup() as group:
+        for _ in range(min(concurrency, len(pin.histories))):
+            group.create_task(worker())
+    return _population_window(pin, results)
+
+
+def _preflight_population_window(pin, *, first_bucket, stop_bucket, as_of, concurrency):
     if (type(pin) is not CertifiedPopulationPin or type(concurrency) is not int
             or not 1 <= concurrency <= 32 or type(first_bucket) is not int
             or type(stop_bucket) is not int or not 14400 <= first_bucket < stop_bucket <= 72000
@@ -139,27 +161,18 @@ async def read_population_window(pin: CertifiedPopulationPin, *, first_bucket: i
     for history in pin.histories.values():
         window_request(history, first_ordinal=first_bucket - history.scope.first_bucket,
             stop_ordinal=stop_bucket - history.scope.first_bucket, as_of=as_of)
-    iterator = iter(sorted(pin.histories.items()))
-    results = {}
-    async def worker():
-        while True:
-            item = next(iterator, None)
-            if item is None:
-                return
-            listing, history = item
-            frame = await read_history_window_async(history,
-                first_ordinal=first_bucket - history.scope.first_bucket,
-                stop_ordinal=stop_bucket - history.scope.first_bucket,
-                evaluation_block="scanner-population", as_of=as_of, history_post=history_post)
-            reference = pin.opening.rows_by_listing[listing]
-            results[listing] = frame.select("listing_id", "boundary_at", "available_at", "rolling_volume").with_columns(
-                pl.lit(history.scope.ticker).alias("ticker"),
-                pl.lit(reference["available_at"], dtype=pl.Datetime("us", "UTC")).alias("prior_close_available_at"),
-                pl.lit(reference["adjusted_prior_close"], dtype=pl.Float64).alias("adjusted_prior_close"),
-                pl.lit(pin.rule.window_seconds, dtype=pl.UInt32).alias("volume_window_seconds"))
-    async with asyncio.TaskGroup() as group:
-        for _ in range(min(concurrency, len(pin.histories))):
-            group.create_task(worker())
+
+
+def _population_listing_frame(pin, listing, frame):
+    reference = pin.opening.rows_by_listing[listing]
+    return frame.select("listing_id", "boundary_at", "available_at", "rolling_volume").with_columns(
+        pl.lit(pin.histories[listing].scope.ticker).alias("ticker"),
+        pl.lit(reference["available_at"], dtype=pl.Datetime("us", "UTC")).alias("prior_close_available_at"),
+        pl.lit(reference["adjusted_prior_close"], dtype=pl.Float64).alias("adjusted_prior_close"),
+        pl.lit(pin.rule.window_seconds, dtype=pl.UInt32).alias("volume_window_seconds"))
+
+
+def _population_window(pin, results):
     schema = dict(listing_id=pl.String, boundary_at=pl.Datetime("us", "UTC"),
         available_at=pl.Datetime("us", "UTC"), rolling_volume=pl.Float64,
         ticker=pl.String, prior_close_available_at=pl.Datetime("us", "UTC"),

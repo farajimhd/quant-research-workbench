@@ -66,6 +66,7 @@ async def complete_program_app_preparation(run_service, controller, *, cohorts, 
                     selector._prepared = None
         controller._program_launch_plan = None
         controller._program_feature_cache = None
+        controller._program_population_cache = None
         if controller._journal is not None or controller._runtime is not None:
             controller._program_dispatch_failure = exc
             async def close_owned():
@@ -160,6 +161,7 @@ async def complete_recovered_program_app_preparation(run_service, controller, *,
                     raise BaseExceptionGroup("Recovered preparation and worker failed", [exc, worker_error])
         controller._program_launch_plan = None
         controller._program_feature_cache = None
+        controller._program_population_cache = None
         if result is not None:
             assembly, _, runtime = result
             async def close():

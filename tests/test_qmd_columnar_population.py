@@ -94,6 +94,50 @@ def test_population_missing_lineage_and_future_clocks_fail_before_io(population)
             as_of=datetime(2026, 8, 3, 13, 30, 4, tzinfo=UTC), concurrency=2, history_post=forbidden))
 
 
+def test_population_cache_reuses_full_origins_with_exact_window_rankings(population):
+    from src.backend.backtest_program_population_cache import ProgramPopulationCache
+    pin, certificates = population
+    calls = []
+    def post(path, request, timeout):
+        calls.append((request['scope']['ticker'], request['first_ordinal'], request['stop_ordinal']))
+        return response_for(certificates[request['scope']['ticker']],
+            request['first_ordinal'], request['stop_ordinal'])
+    async def run():
+        cache = ProgramPopulationCache(maximum_retained_bytes=1000000)
+        history = next(iter(pin.histories.values()))
+        at = c.completed_clock(history.scope, history.scope.stop_bucket - 1)
+        for first, stop in ((34200, 34202), (34202, 34205)):
+            actual = await cache.load(pin, first_bucket=first, stop_bucket=stop,
+                as_of=at, concurrency=2, history_post=post)
+            assert len(calls) == 2
+            expected = await read_population_window(pin, first_bucket=first, stop_bucket=stop,
+                as_of=at, concurrency=2, history_post=lambda path, request, timeout: response_for(
+                    certificates[request['scope']['ticker']], request['first_ordinal'], request['stop_ordinal']))
+            assert actual.rows.equals(expected.rows) and actual.ranked.equals(expected.ranked)
+            assert actual.source_revision == expected.source_revision
+        assert cache.retained_bytes > 0
+        with pytest.raises(ValueError, match='future completed'):
+            await cache.load(pin, first_bucket=34202, stop_bucket=34205,
+                as_of=datetime(2026, 8, 3, 13, 30, 4, tzinfo=UTC), concurrency=2, history_post=post)
+        assert len(calls) == 2
+    asyncio.run(run())
+
+
+def test_population_cache_budget_failure_never_installs_partial_origins(population):
+    from src.backend.backtest_program_population_cache import ProgramPopulationCache
+    pin, certificates = population
+    async def run():
+        cache = ProgramPopulationCache(maximum_retained_bytes=1)
+        history = next(iter(pin.histories.values()))
+        with pytest.raises(ExceptionGroup):
+            await cache.load(pin, first_bucket=34200, stop_bucket=34205,
+                as_of=c.completed_clock(history.scope, history.scope.stop_bucket - 1), concurrency=2,
+                history_post=lambda path, request, timeout: response_for(
+                    certificates[request['scope']['ticker']], request['first_ordinal'], request['stop_ordinal']))
+        assert cache._key is None and cache._frames is None and cache.retained_bytes == 0
+    asyncio.run(run())
+
+
 def test_population_failure_drains_concurrent_io_and_returns_no_partial_result(population):
     pin, certificates = population
     barrier = Barrier(2)

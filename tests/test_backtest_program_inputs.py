@@ -234,6 +234,19 @@ def test_cohort_preparation_reuses_full_feature_origin_and_bounds_parallel_io(pr
     assert type(partition_controller._program_feature_cache) is ProgramListingFeatureCache
     assert_frame_equal(partition_work[0].blocks["first"].masks, block.masks, check_exact=True)
     assert_frame_equal(partition_work[0].projection.frame, result.projection.frame, check_exact=True)
+    from src.backend.backtest_program_population_cache import ProgramPopulationCache
+    cached_controller = ReplayRunController(partition_controller.definition,
+        program_strategy=actor, program_liquidity_resolution_ms=100)
+    cached_plan = replace(partition_plan, maximum_retained_population_bytes=1000000)
+    cached_work = asyncio.run(prepare_program_session_input_plan(cached_controller, (cached_plan,),
+        scopes=(session_scope,), history_post=post))
+    assert type(cached_controller._program_population_cache) is ProgramPopulationCache
+    assert_frame_equal(cached_work[0].projection.frame, result.projection.frame, check_exact=True)
+    before_cached_repeat = len(calls)
+    repeated_work = asyncio.run(prepare_program_session_input_plan(cached_controller, (cached_plan,),
+        scopes=(session_scope,), history_post=post))
+    assert len(calls) == before_cached_repeat
+    assert_frame_equal(repeated_work[0].projection.frame, result.projection.frame, check_exact=True)
 
 
 def test_prepared_scanner_bridge_keeps_exact_top10_and_rejects_missing_history(prepared_source):

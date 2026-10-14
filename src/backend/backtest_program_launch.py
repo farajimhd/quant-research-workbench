@@ -166,6 +166,7 @@ async def run_bound_program_engine(controller):
         # Session features belong to prepared execution, not retained UI state.
         controller._program_launch_plan = None
         controller._program_feature_cache = None
+        controller._program_population_cache = None
 
 
 async def checkpoint_bound_program_cursor(controller):
