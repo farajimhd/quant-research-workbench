@@ -326,7 +326,7 @@ class Contracts(unittest.TestCase):
         with patch.object(acquisition.IngestionPaths,'validate'),patch.object(acquisition.subprocess,'Popen',return_value=child) as spawn:
             with self.assertRaisesRegex(RuntimeError,'ownership lost'):
                 acquisition.run_ingestion(command,paths,Event(),guard=guard)
-            self.assertEqual(child.terminated,1)
+            self.assertEqual(child.signals,1);self.assertEqual(child.terminated,0)
             self.assertEqual(spawn.call_args.kwargs['env']['PYTHONDONTWRITEBYTECODE'],'1')
         child=Child();stop=Event()
         def launch(*args,**kwargs):stop.set();return child

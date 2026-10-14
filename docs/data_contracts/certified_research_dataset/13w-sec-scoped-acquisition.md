@@ -87,3 +87,14 @@ failure stopped/drained the owned child. Live HTTP settings confirmed one thread
 No provider acquisition or full campaign ran. Missing original fundamental/short
 vintages, historical eligibility reconstruction, legacy V7 qualification and
 representative capacity evidence remain separate dependencies.
+
+The unified acquisition runner now gives every invoked updater or SEC parent
+an owned process group. Interruption or ownership loss first requests graceful
+shutdown and waits up to 10 seconds. If signalling is unavailable or shutdown
+times out, Windows uses `taskkill /T /F` for the owned tree; POSIX uses `SIGKILL`
+for the owned session group. It then waits for the parent to exit. Forced-stop
+errors are surfaced rather than silently allowing derivation to proceed.
+A bounded Windows test verified removal of a real parent and grandchild with
+console signalling unavailable. It invoked no provider. Cooperative child
+shutdown remains the child's responsibility; already submitted ClickHouse
+mutations still require source-receipt reconciliation on resume.

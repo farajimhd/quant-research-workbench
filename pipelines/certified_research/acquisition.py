@@ -80,6 +80,28 @@ def reporting_command(paths: IngestionPaths,start: date,end: date,*,hydrate=Fals
     return command
 
 
+def stop_owned_ingestion(child):
+    """Signal the owned process group, then forcibly drain its process tree."""
+    if child.poll() is not None:return
+    signalled=False
+    try:
+        if os.name=='nt':child.send_signal(signal.CTRL_BREAK_EVENT)
+        else:os.killpg(child.pid,signal.SIGINT)
+        signalled=True
+    except OSError:pass
+    if signalled:
+        try:
+            child.wait(timeout=10);return
+        except subprocess.TimeoutExpired:pass
+    if os.name=='nt':
+        subprocess.run(['taskkill','/PID',str(child.pid),'/T','/F'],
+            stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10,check=True)
+    else:
+        try:os.killpg(child.pid,signal.SIGKILL)
+        except ProcessLookupError:pass
+    child.wait(timeout=10)
+
+
 def run_ingestion(command,paths: IngestionPaths,stop,*,emit=print,guard=None):
     """Own and drain one child. A stopped mutation is reconciled by source gate."""
     paths.validate()
@@ -96,27 +118,21 @@ def run_ingestion(command,paths: IngestionPaths,stop,*,emit=print,guard=None):
     # avoid pipe deadlock or retaining bulk output in memory/history.
     env=dict(os.environ,PYTHONDONTWRITEBYTECODE='1')
     flags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name=='nt' else 0
-    child=subprocess.Popen(command,cwd=ROOT,env=env,creationflags=flags)
+    child=subprocess.Popen(command,cwd=ROOT,env=env,creationflags=flags,start_new_session=os.name!='nt')
     interrupted=False
     try:
         while child.poll() is None:
             if guard:guard()
             if stop.wait(.25):
                 interrupted=True
-                child.send_signal(signal.CTRL_BREAK_EVENT if os.name=='nt' else signal.SIGINT)
-                try:child.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    child.terminate();child.wait(timeout=30)
+                stop_owned_ingestion(child)
                 break
         code=child.wait()
         if interrupted:raise InterruptedError('Acquisition interrupted; source receipts must be reconciled before resume')
         if code:raise RuntimeError(f'Ingestion stage exited {code}; downstream publication is blocked')
         emit('Ingestion process finished; validating canonical source receipts next.')
     except BaseException:
-        if child.poll() is None:
-            child.terminate()
-            try:child.wait(timeout=30)
-            except subprocess.TimeoutExpired:child.kill();child.wait(timeout=30)
+        stop_owned_ingestion(child)
         raise
 
 
