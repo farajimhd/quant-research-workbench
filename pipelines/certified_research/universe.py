@@ -258,7 +258,7 @@ def resolve(rows,context_start,end,*,maximum_rows=100000):
                 source_hash=digest(sorted(r['evidence_hash'] for r in rows)))
 
 
-def load(query,context_start,end,anchor_date,*,database='q_live',maximum_rows=100000,metadata_shards=4):
+def load(query,context_start,end,anchor_date,*,database='q_live',maximum_rows=100000,metadata_shards=4,conid_review_hash=None):
     # Large repeated provenance stays server-side. Publishers can INSERT SELECT
     # it from candidates_sql; planning fetches only compact fields and hashes.
     projection=candidates_sql(context_start,end,anchor_date,database=database,maximum_rows=maximum_rows)
@@ -282,7 +282,17 @@ def load(query,context_start,end,anchor_date,*,database='q_live',maximum_rows=10
     result['source_census']=census
     result['source_rows']=rows # Bounded provenance metadata, never event/bar rows.
     result.update(context_start=context_start,end=end,anchor_date=anchor_date)
+    if conid_review_hash is not None:
+        from . import batch_conid_pool
+        pool=batch_conid_pool.load(query,conid_review_hash,max(context_start,date(2026,1,1)),end)
+        result=batch_conid_pool.attach(result,pool)
     return result
+
+
+def load_for_config(query,context_start,end,anchor_date,config):
+    """Keep legacy datasets unchanged; pinned pools bind every new/resumed read."""
+    options={} if config.conid_review_hash is None else dict(conid_review_hash=config.conid_review_hash)
+    return load(query,context_start,end,anchor_date,**options)
 
 
 def repair_inventory(snapshot):

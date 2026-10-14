@@ -17,8 +17,10 @@ def verify_child_inputs(query,saved):
     if args.get('end')!=str(saved.config.end):raise ValueError('Prepared child universe target end changed')
     if tuple(args.get('issuer_keys',()))!=saved.config.issuer_keys:
         raise ValueError('Prepared child universe selection changed')
-    snapshot=cohorts.select(universe.load(query,date.fromisoformat(args['context_start']),
-        date.fromisoformat(args['end']),date.fromisoformat(args['anchor_date'])),saved.config.issuer_keys)
+    if args.get('conid_review_hash')!=saved.config.conid_review_hash:
+        raise ValueError('Prepared child conid review selection changed')
+    snapshot=cohorts.select(universe.load_for_config(query,date.fromisoformat(args['context_start']),
+        date.fromisoformat(args['end']),date.fromisoformat(args['anchor_date']),saved.config),saved.config.issuer_keys)
     if not snapshot['ready'] or snapshot['source_hash']!=args['source_hash']:
         raise ValueError('Prepared child universe input changed')
 
@@ -37,7 +39,7 @@ def prepare(query,config,collection_id,claim,child_claim_factory,client_factory,
     short_days=context.preceding_sessions(targets[0],max(config.short_windows_sessions))
     start=min((context_start,*short_days,*targets))
     days=source.exchange_sessions(start,config.end)
-    snapshot=universe.load(query,start,config.end,anchor_date)
+    snapshot=universe.load_for_config(query,start,config.end,anchor_date,config)
     if not snapshot['ready']:
         return dict(status='blocked',phase='historical-universe',rejections=snapshot['rejection_counts'],
                     history_dependencies=universe.history_repair_inventory(query,snapshot),execution_started=False)
@@ -53,7 +55,7 @@ def prepare(query,config,collection_id,claim,child_claim_factory,client_factory,
     for index,group in enumerate(partition['groups']):
         claim.check()
         if stop is not None and stop.is_set():raise InterruptedError('Collection preparation interrupted')
-        if universe.load(query,start,config.end,anchor_date)['source_hash']!=partition['full_source_hash']:
+        if universe.load_for_config(query,start,config.end,anchor_date,config)['source_hash']!=partition['full_source_hash']:
             raise ValueError('Full universe changed during collection preparation')
         id_=collection.member_id(collection_id,partition['partition_hash'],index)
         child_config=replace(config,issuer_keys=tuple(group));child=child_claim_factory(id_)
@@ -98,7 +100,7 @@ def prepare(query,config,collection_id,claim,child_claim_factory,client_factory,
             members.append(collection.Member(id_,tuple(group),saved.plan_hash))
         finally:child.close()
     claim.check()
-    if universe.load(query,start,config.end,anchor_date)['source_hash']!=partition['full_source_hash']:
+    if universe.load_for_config(query,start,config.end,anchor_date,config)['source_hash']!=partition['full_source_hash']:
         raise ValueError('Full universe changed before collection install')
     for member in members:
         claim.check()

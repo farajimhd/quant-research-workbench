@@ -63,6 +63,8 @@ class ExecutionLaunch:
         for plan in self.plans:
             if plan.unit.product=='universe' and tuple(plan.arguments.get('issuer_keys',()))!=config.issuer_keys:
                 raise ValueError('Universe issuer cohort differs from the frozen configuration')
+            if plan.unit.product=='universe' and plan.arguments.get('conid_review_hash')!=config.conid_review_hash:
+                raise ValueError('Universe conid review differs from the frozen configuration')
         if (market_runtime.dataset!=dataset_id or market_runtime.database!=config.database
                 or market_runtime.claim is not claim):
             raise ValueError('Market runtime ownership/dataset differs from execution launch')

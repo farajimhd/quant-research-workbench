@@ -30,6 +30,7 @@ def parse_args(argv=None):
     p.add_argument('--publish-conid-mappings',action='store_true',help='reconcile-conids/review-conid-issues: publish an exact retained identity snapshot to q_live; does not alter live admission')
     p.add_argument('--case-details',action='store_true',help='review-conid-issues: show every per-entity decision in text output')
     p.add_argument('--case-ticker',action='append',default=[],help='review-conid-issues: filter displayed decisions by exact wire ticker; does not narrow review or publication')
+    p.add_argument('--conid-review-hash',help='Explicit completed conid case review used by batch universe preparation; never promotes unresolved dated membership')
     p.add_argument('--collection',action='store_true',help='estimate-storage only: inspect a stored collection instead of a single dataset')
     p.add_argument('--dataset-id',type=UUID)
     p.add_argument('--source-dataset-id',type=UUID,help='Qualified source plan/bar dataset for backfill-v7; never modified')
@@ -223,7 +224,8 @@ def campaign_config(args,end):
     return contracts.CampaignConfig(args.start_date,end,database=args.database,workers=args.workers,
         query_threads=args.query_threads,query_memory_bytes=args.query_memory_gib*1024**3,
         global_memory_bytes=args.global_memory_gib*1024**3,volume_windows_seconds=args.volume_windows_seconds,
-        short_windows_sessions=args.short_windows_sessions,resolutions_ms=args.resolutions_ms,issuer_keys=args.issuer_keys)
+        short_windows_sessions=args.short_windows_sessions,resolutions_ms=args.resolutions_ms,issuer_keys=args.issuer_keys,
+        conid_review_hash=args.conid_review_hash)
 
 
 def prepare_identity(args,claim,client_factory,dictionary_factory,stop,progress=None):
@@ -377,8 +379,8 @@ def inspect_sources(query,args):
                     "WHERE database='market_sip_compact' AND startsWith(table,'events_') AND NOT is_done LIMIT 20")
     return dict(status='blocked' if mutations else 'inspected',source=source[0],storage=status,
                 config=config.identity(),plan_hash=config.content_hash,canonical_mutations=len(mutations),
-                campaign_execution_enabled=False,
-                reason='Full campaign handlers are still under implementation')
+                campaign_execution_enabled=True,
+                reason='Source/storage inspection only; launch admission remains independently required')
 
 
 def qualify_plan(result):
@@ -387,16 +389,20 @@ def qualify_plan(result):
     for field in ('missing_sources','incomplete_sources','missing_reporting'):
         if inputs[field]:blocked.append(f'{field}: {len(inputs[field])} sessions')
     if result['canonical_mutations']:blocked.append('canonical source mutations are active')
-    if not membership['ready']:blocked.append(f"historical universe: {membership['rejected']} unresolved intervals")
+    if not membership['ready']:blocked.append(f"historical universe: {membership['rejected']} unresolved identity/interval records")
     for family,summary in result['short_publication_preflight']['families'].items():
         if summary['repair_required']:blocked.append(f"{family}: {summary['unknown_public_time']} rows lack public-time evidence")
     if not result['corporate_evidence_preflight']['original_public_vintage_certified']:
         blocked.append('corporate actions: original public vintages are not certified')
     if 'sec_acquisition_preflight' in result and not result['sec_acquisition_preflight']['ready']:
         blocked.append('SEC acquisition: incomplete '+','.join(result['sec_acquisition_preflight']['gaps']))
-    if not result['campaign_execution_enabled']:blocked.append('full campaign execution integration is unfinished')
+    if result['campaign_execution_enabled'] and not result.get('batch_conid_pool'):
+        blocked.append('batch universe: select an explicit sealed conid review')
+    if 'storage' in result and not result['storage']['tables']:blocked.append('research output schemas are not installed')
+    if not result['campaign_execution_enabled']:blocked.append('campaign execution handlers are unavailable')
+    result['execution_admission_checked']=False
     result['admission_blockers']=blocked;result['status']='blocked' if blocked else 'ready'
-    result['reason']='; '.join(blocked) if blocked else 'All campaign admission requirements verified'
+    result['reason']='; '.join(blocked) if blocked else 'Data prerequisites inspected; independent launch admission required'
     return result
 
 
@@ -881,7 +887,7 @@ def main(argv=None):
             config=campaign_config(args,args.end_date)
             if args.context_start_date>config.start:raise ValueError('Cohort context cannot follow target start')
             query=client.query
-            snapshot=universe.load(query,args.context_start_date,config.end,args.universe_anchor_date)
+            snapshot=universe.load_for_config(query,args.context_start_date,config.end,args.universe_anchor_date,config)
             if not snapshot['ready']:
                 result=dict(status='blocked',rejections=snapshot['rejection_counts'],full_source_hash=snapshot['source_hash'],
                     history_dependencies=universe.history_repair_inventory(query,snapshot))
@@ -915,12 +921,13 @@ def main(argv=None):
             result['sec_acquisition_preflight']=sec_coverage.inventory(
                 client.query,args.context_start_date or args.start_date,
                 planning.reference_coverage_end(end))
-            historical=universe.load(client.query,
-                args.context_start_date or args.start_date,end,args.universe_anchor_date)
+            historical=universe.load_for_config(client.query,
+                args.context_start_date or args.start_date,end,args.universe_anchor_date,campaign_config(args,end))
             result['universe_preflight']=dict(ready=historical['ready'],intervals=len(historical['intervals']),
                 rejected=len(historical['rejected']),rejection_counts=historical['rejection_counts'],
                 outside_scope=historical['outside_scope'],source_hash=historical['source_hash'])
             result['universe_repair_requirements']=universe.repair_inventory(historical)
+            if 'conid_pool' in historical:result['batch_conid_pool']=historical['conid_pool']
             result['short_publication_preflight']=short_sql.clock_inventory(
                 client.query,args.start_date,end)
             inv=source.inventory(client.query,args.start_date,end)
@@ -933,8 +940,13 @@ def main(argv=None):
             result['reporting_clock_evidence']=source.clock_evidence_inventory(
                 client.query,args.start_date,end)
             qualify_plan(result)
+            from pipelines.certified_research import batch_readiness
+            result['execution_stages']=batch_readiness.stages(result)
         if args.format=='json':print(json.dumps(result,indent=2,default=str))
         else:
+            if args.command=='plan':
+                print(batch_readiness.render(result))
+                return 2 if result['status']=='blocked' else 0
             summary=result['source']
             print(f"Source inspected | {summary['first_day']} to {summary['last_day']} | {summary['sessions']} sessions")
             print(f"Storage checked | {result['storage']['tables']} existing research tables | {result['storage']['parts']} part groups")

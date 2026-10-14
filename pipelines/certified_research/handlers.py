@@ -324,7 +324,8 @@ class UniverseHandlers:
             self.claim.check();self.source_guard();args=plan.arguments
             start=date.fromisoformat(args['context_start']);end=date.fromisoformat(args['end'])
             anchor=date.fromisoformat(args['anchor_date'])
-            snapshot=universe.load(client.query,start,end,anchor)
+            options={} if not args.get('conid_review_hash') else dict(conid_review_hash=args['conid_review_hash'])
+            snapshot=universe.load(client.query,start,end,anchor,**options)
             from .cohorts import select
             snapshot=select(snapshot,tuple(args.get('issuer_keys',())))
             if snapshot['source_hash']!=args['source_hash']:raise ValueError('Frozen Gateway source epoch changed')

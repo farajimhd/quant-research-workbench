@@ -18,7 +18,7 @@ def discover_and_prepare(query,config,dataset_id,claim,client_factory,source_gua
     if stop.is_set():raise InterruptedError('Initial discovery stopped')
     source.require_ready(query,canonical,reporting)
     start=min((*canonical['expected'],short_start))
-    snapshot=cohorts.select(universe.load(query,start,config.end,anchor_date),config.issuer_keys)
+    snapshot=cohorts.select(universe.load_for_config(query,start,config.end,anchor_date,config),config.issuer_keys)
     references=reference_discovery.discover(query,config,dataset_id,claim,client_factory,source_guard,snapshot,
         canonical['expected'],fundamental_start=fundamental_start,short_start=short_start,stop=stop,progress=progress)
     if not references['ready']:
@@ -30,6 +30,7 @@ def discover_and_prepare(query,config,dataset_id,claim,client_factory,source_gua
     authority=PlannedUnit(Unit('universe','universe'),dict(context_start=str(start),end=str(config.end),
         anchor_date=str(anchor_date),source_hash=snapshot['source_hash']))
     if config.issuer_keys:authority=PlannedUnit(authority.unit,dict(authority.arguments,issuer_keys=config.issuer_keys))
+    if config.conid_review_hash:authority=PlannedUnit(authority.unit,dict(authority.arguments,conid_review_hash=config.conid_review_hash))
     assembled=prepare(query,config,claim,client_factory,source_guard,canonical,reporting,definition,rules,
         references['issuers'],references['securities'],prerequisites=(authority,*references['prerequisites']),
         universe_parent='universe',corporate_parents=references['corporate_parents'],adjustment_hashes=adjustment_hashes,
@@ -123,7 +124,7 @@ def prepare(query,config,claim,client_factory,source_guard,canonical,reporting,d
                 raise ValueError('Initial canonical/reporting source changed during preparation')
     frozen_guard()
     membership_start=min((*required,short_start))
-    snapshot=cohorts.select(universe.load(query,membership_start,config.end,anchor_date),config.issuer_keys)
+    snapshot=cohorts.select(universe.load_for_config(query,membership_start,config.end,anchor_date,config),config.issuer_keys)
     if not snapshot['ready']:raise ValueError('Initial historical universe requires evidence repair: '+str(snapshot['rejection_counts']))
     membership=universe.execution_membership(snapshot,required,maximum_sessions=maximum_sessions)
     if not membership['ready']:raise ValueError('Initial dated membership is empty or partial')
@@ -161,7 +162,7 @@ def prepare(query,config,claim,client_factory,source_guard,canonical,reporting,d
         security_listings=linked,fundamental_start=fundamental_start,price_start=min(s.day for s in sessions),
         short_start=short_start,price_context_sessions=price_only)
     frozen_guard()
-    current=cohorts.select(universe.load(query,membership_start,config.end,anchor_date),config.issuer_keys)
+    current=cohorts.select(universe.load_for_config(query,membership_start,config.end,anchor_date,config),config.issuer_keys)
     if not current['ready'] or current['source_hash']!=snapshot['source_hash']:
         raise ValueError('Initial Gateway identity source changed during preparation')
     assembled.update(float_contexts=contexts,float_price_unavailable=assigned['unavailable'],

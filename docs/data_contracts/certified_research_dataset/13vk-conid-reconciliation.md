@@ -167,5 +167,6 @@ listing/symbol tables and live Gateway flags are never overwritten.
 Full resolution requires additional retained or newly acquired broker/reference evidence for
 missing or ambiguous conids, canonical FIGI binding repairs, and dated alias
 proofs for historical spellings. Missing evidence remains a blocker. This
-command is an independently runnable prerequisite, not yet the authority used
-by the existing historical-universe compiler or automatic live repair.
+command is an independently runnable prerequisite. A pinned completed review
+now feeds the batch universe compiler through `--conid-review-hash`; it does
+not authorize automatic live repair. See [batch execution](13vl-batch-execution-readiness.md).
