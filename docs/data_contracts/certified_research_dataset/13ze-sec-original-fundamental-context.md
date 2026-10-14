@@ -96,3 +96,20 @@ stage throughput have not yet been qualified over a production document selectio
 Whole-period coverage certificates remain unfinished. Production normalized
 fundamental authority and float publication therefore remain blocked; these source
 tables preserve the evidence needed to implement those remaining steps.
+
+`sec_fundamental_readback.verify` independently reconstructs the exact extraction
+and reconciliation seals from the normalized tables, including context foreign
+keys, source positions, original comparison-value references, row counts and
+header metadata. It bounds reads, audits exact schemas/part placement, rejects
+duplicate/unreferenced contexts and missing references, and rereads the complete
+group after source guards to detect changes during verification. No filing payload
+is fetched. Canonically ordered reconciliation v2 makes the reconstruction
+deterministic; earlier unordered reconciliation versions require explicit
+requalification rather than guessed source ordering. Live isolated tests verified
+both retained versions and duplicate rejection; fixtures separately reject mutated
+values, context hashes, statuses and availability metadata.
+
+Readback verification is a content-integrity result, not public-time or coverage
+certification. The caller must still qualify the corresponding original witness,
+time receipt, current source lineage and whole-period census. It returns
+`certified=false` and cannot authorize production fundamental publication alone.

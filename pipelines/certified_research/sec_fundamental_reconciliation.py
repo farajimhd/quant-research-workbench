@@ -7,7 +7,7 @@ import re
 from . import sec_public_archive_time
 from .contracts import digest,literal
 
-VERSION='sec-original-fundamental-parity-v1'
+VERSION='sec-original-fundamental-parity-v2'
 
 
 def reconcile(extraction,bulk,witness,qualification,receipt):
@@ -53,6 +53,7 @@ def reconcile(extraction,bulk,witness,qualification,receipt):
         if status=='matched':used.update(positions)
         rows.append(dict(source_record=identity,status=status,source_value=value,original_values=tuple(c['value'] for c in candidates),
             original_positions=positions,context_hash=digest(key(row))))
+    rows.sort(key=lambda row:row['source_record'])
     result=dict(version=VERSION,extraction_hash=sealed,witness_hash=witness['witness_hash'],
         qualification_hash=qualification['qualification_hash'],available_at=qualification['available_at'],
         precision=qualification['precision'],comparisons=tuple(rows),
