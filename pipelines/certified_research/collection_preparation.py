@@ -2,6 +2,7 @@
 from dataclasses import replace
 from datetime import date
 import json
+import re
 from .contracts import digest
 from . import campaign,cohorts,collection,collection_store,context,fresh_execution,initial_plan,source,universe
 from . import verification
@@ -24,7 +25,11 @@ def verify_child_inputs(query,saved):
 
 def prepare(query,config,collection_id,claim,child_claim_factory,client_factory,
             dictionary_claim_factory,capacity_factory,*,context_start,fundamental_start,anchor_date,
-            maximum_issuers=128,maximum_sessions=200000,stop=None,progress=None,rebuild_origin=None,source_preparer=None):
+            maximum_issuers=128,maximum_sessions=200000,stop=None,progress=None,rebuild_origin=None,source_preparer=None,sec_scope_preparer=None,sec_scope_preparation_hash=None):
+    if sec_scope_preparer is not None and (not isinstance(sec_scope_preparation_hash,str) or not re.fullmatch('[0-9a-f]{64}',sec_scope_preparation_hash)):
+        raise ValueError('Collection SEC scope preparation requires its frozen selection hash')
+    if sec_scope_preparation_hash is not None and sec_scope_preparer is None:
+        raise ValueError('Collection SEC scope selection has no preparation provider')
     if config.issuer_keys:raise ValueError('Fresh collection requires the complete unscoped config')
     claim.check()
     targets=source.exchange_sessions(config.start,config.end)
@@ -42,6 +47,7 @@ def prepare(query,config,collection_id,claim,child_claim_factory,client_factory,
     partition.pop('partition_hash')
     partition['preparation_inputs']=dict(context_start=str(context_start),fundamental_start=str(fundamental_start),
         anchor_date=str(anchor_date),rebuild_origin=str(rebuild_origin) if rebuild_origin is not None else None)
+    if sec_scope_preparation_hash is not None:partition['preparation_inputs']['sec_scope_preparation_hash']=sec_scope_preparation_hash
     partition['partition_hash']=digest(partition)
     members=[]
     for index,group in enumerate(partition['groups']):
@@ -81,7 +87,8 @@ def prepare(query,config,collection_id,claim,child_claim_factory,client_factory,
                     return dict(status='blocked',member=id_,completed=index,total=len(partition['groups']),
                                 missing_authorities=assembled.get('missing_authorities',()))
                 launch=initial_plan.build_launch(query,child_config,id_,assembled,child,client_factory,
-                    dictionary_claim_factory,capacity_factory,stop=stop,progress=progress)
+                    dictionary_claim_factory,capacity_factory,stop=stop,progress=progress,
+                    **({'sec_scope_preparer':sec_scope_preparer} if sec_scope_preparer is not None else {}))
                 # Campaign.install compares the complete header and every extant
                 # row before filling missing metadata. Drift cannot overwrite it.
                 launch.admit();launch.controller.install()

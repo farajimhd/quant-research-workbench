@@ -6,7 +6,7 @@ from pipelines.certified_research import collection_preparation as module
 from pipelines.certified_research.contracts import CampaignConfig,digest
 
 
-def exercise(ready,partial=False,fundamental_start=date(2024,1,1),collection_id=None):
+def exercise(ready,partial=False,fundamental_start=date(2024,1,1),collection_id=None,scope_hash=None):
     config=CampaignConfig(date(2026,1,2),date(2026,1,2))
     partition=dict(groups=((1,),(2,)),issuer_keys=(1,2),full_source_hash='a'*64,config_hash=config.content_hash)
     partition['partition_hash']=digest(partition)
@@ -36,7 +36,8 @@ def exercise(ready,partial=False,fundamental_start=date(2024,1,1),collection_id=
          patch.object(module,'verify_child_inputs',side_effect=launch.input_checks),\
          patch.object(module.collection_store,'Store',return_value=SimpleNamespace(install=installed.append)):
         result=module.prepare(query,config,collection_id or str(uuid4()),Mock(),child,None,None,None,
-            context_start=date(2025,12,1),fundamental_start=fundamental_start,anchor_date=date(2026,1,2))
+            context_start=date(2025,12,1),fundamental_start=fundamental_start,anchor_date=date(2026,1,2),
+            **(dict(sec_scope_preparer=Mock(),sec_scope_preparation_hash=scope_hash) if scope_hash is not None else {}))
     return result,claims,installed,launch
 
 
@@ -68,6 +69,14 @@ def test_fundamental_context_changes_child_identity_before_reuse():
     _,_,first,_=exercise(True,fundamental_start=date(2024,1,1),collection_id=root)
     _,_,second,_=exercise(True,fundamental_start=date(2023,1,1),collection_id=root)
     assert first[0]['partition']['preparation_inputs']!=second[0]['partition']['preparation_inputs']
+    assert first[0]['members'][0]['dataset_id']!=second[0]['members'][0]['dataset_id']
+
+
+def test_sec_scope_selection_changes_collection_child_identity_before_reuse():
+    root=str(uuid4())
+    _,_,first,_=exercise(True,collection_id=root,scope_hash='a'*64)
+    _,_,second,_=exercise(True,collection_id=root,scope_hash='b'*64)
+    assert first[0]['partition']['preparation_inputs']['sec_scope_preparation_hash']=='a'*64
     assert first[0]['members'][0]['dataset_id']!=second[0]['members'][0]['dataset_id']
 
 

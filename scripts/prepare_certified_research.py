@@ -82,7 +82,7 @@ def parse_args(argv=None):
     p.add_argument('--compare-sec-bulk',action='store_true',help='measure-sec-extraction only: bounded read-only original/bulk value comparison, without public-time qualification')
     p.add_argument('--verify-sec-archives',action='store_true',help='Verify selected SEC documents against retained G archives and publish public-time evidence; no downloads')
     p.add_argument('--prepare-sec-fundamental-evidence',action='store_true',help='Capture original fundamental contexts and bulk comparisons after archive verification; requires measured sec_fundamental_source capacity')
-    p.add_argument('--sec-numeric-mode',choices=('round-to-nearest','truncation'),help='Opt in to reported projection publication after fundamental readback; requires a mode-compatible sec_reported_projection pilot rate')
+    p.add_argument('--sec-numeric-mode',choices=('round-to-nearest','truncation'),help='Select reported projection publication or an existing mode for automatic fresh-launch SEC scope binding')
     p.add_argument('--sec-archive-canonical-root',type=Path,default=Path('D:/market-data/sec_core/daily_archives'))
     p.add_argument('--sec-archive-backup-root',type=Path,help='Existing G backup root containing YEAR/QTRn SEC archives')
     p.add_argument('--sec-download-receipts',type=Path,help='Original downloader JSONL ledger with successful hashes and HTTP Last-Modified')
@@ -124,8 +124,8 @@ def parse_args(argv=None):
     if args.command=='audit-sec-submissions' and (args.acquire_missing or args.stage_archive or args.recover_retained_reporting
             or args.verify_sec_archives or args.prepare_sec_fundamental_evidence):
         p.error('audit-sec-submissions is read-only; acquisition and preparation flags belong to prepare-sources')
-    if args.sec_numeric_mode is not None and not args.prepare_sec_fundamental_evidence:
-        p.error('--sec-numeric-mode requires --prepare-sec-fundamental-evidence')
+    if args.sec_numeric_mode is not None and not args.prepare_sec_fundamental_evidence and args.command not in ('launch','launch-collection'):
+        p.error('--sec-numeric-mode requires fundamental evidence preparation or a fresh launch; frozen resume uses stored bindings')
     if args.compare_sec_bulk and args.command!='measure-sec-extraction':p.error('--compare-sec-bulk belongs to measure-sec-extraction')
     if args.command=='measure-sec-extraction' or args.measurement_sec_document:
         if (args.command!='measure-sec-extraction' or not 1<=len(args.measurement_sec_document)<=8
@@ -394,7 +394,7 @@ def main(argv=None):
     args=parse_args(argv)
     if args.command=='schema':
         catalog=installation.catalog(args.database)
-        from pipelines.certified_research import sec_share_capture,sec_share_preparation,sec_witness_publication,sec_archive_preparation,sec_fundamental_publication,sec_fundamental_preparation,sec_reported_publication,sec_scope_specification
+        from pipelines.certified_research import sec_share_capture,sec_share_preparation,sec_witness_publication,sec_archive_preparation,sec_fundamental_publication,sec_fundamental_preparation,sec_reported_publication,sec_scope_specification,sec_scope_preparation
         source_tables=sec_share_capture.tables()
         archive_tables=sec_witness_publication.tables()
         fundamental_tables=sec_fundamental_publication.tables()
@@ -416,7 +416,8 @@ def main(argv=None):
             manifest['sec_reported_projection_candidates']=dict(database='q_live',certified=False,
                 product='sec_reported_projection',mode_recipes={mode:sec_fundamental_preparation.reported_recipe_hash(mode) for mode in ('round-to-nearest','truncation')},
                 tables=[dict(name=t.name,order=t.order,partition=t.partition,columns=[vars(c) for c in t.columns]) for t in reported_tables])
-            manifest['sec_original_scope_specifications']=dict(database='q_live',certified=False,
+            manifest['sec_original_scope_specifications']=dict(database='q_live',certified=False,product=sec_scope_preparation.PRODUCT,
+                recipe_hash=sec_scope_preparation.recipe_hash(),default_forms=sec_scope_preparation.DEFAULT_FORMS,
                 tables=[dict(name=t.name,order=t.order,partition=t.partition,columns=[vars(c) for c in t.columns]) for t in scope_tables])
             print(json.dumps(manifest,indent=2))
         else:
@@ -619,14 +620,29 @@ def main(argv=None):
                             finally:source_owner.close()
                             claim.check()
                         admission=capacity_profile.factory(client.query,profile)
+                        def prepare_sec_scopes(query,child_config,plans,owner,guard):
+                            from pipelines.certified_research import sec_scope_preparation
+                            source_owner=SourceClaim(keeper.client)
+                            try:
+                                def current():owner.check();guard();source_owner.check()
+                                def scope_progress(event):
+                                    if args.format=='text':print(f'SEC scopes | {event["state"]} issuer={event["entity_key"]} | completed={event["completed"]}/{event["total"]} | inserted={event["inserted_rows"]}',flush=True)
+                                return sec_scope_preparation.prepare(query,child_config,plans,source_owner,
+                                    lambda:DictionaryClaim(keeper.client,'q_live'),profile,current,stop=stop,progress=scope_progress,
+                                    forms=args.sec_census_forms or sec_scope_preparation.DEFAULT_FORMS,
+                                    numeric_mode=args.sec_numeric_mode,public_time_mode=args.sec_public_time_mode)
+                            finally:source_owner.close()
                         if args.command=='launch-collection':
                             from pipelines.certified_research import collection_preparation,collection_execution
+                            from pipelines.certified_research import sec_scope_preparation
                             prepared=collection_preparation.prepare(client.query,config,str(args.dataset_id),claim,
                                 lambda id_:KeeperClaim(keeper.client,id_),factory,dictionary_factory,admission,
                                 context_start=source_context,fundamental_start=args.fundamental_start_date,
                                 anchor_date=args.universe_anchor_date,maximum_issuers=args.cohort_max_issuers,
                                 maximum_sessions=args.cohort_max_sessions,stop=stop,progress=progress,
-                                rebuild_origin=args.rebuild_origin_date,source_preparer=prepare_discovered_sources)
+                                rebuild_origin=args.rebuild_origin_date,source_preparer=prepare_discovered_sources,sec_scope_preparer=prepare_sec_scopes,
+                                sec_scope_preparation_hash=sec_scope_preparation.selection_hash(forms=args.sec_census_forms or sec_scope_preparation.DEFAULT_FORMS,
+                                    numeric_mode=args.sec_numeric_mode,public_time_mode=args.sec_public_time_mode))
                             result=collection_execution.execute(client.query,args.database,str(args.dataset_id),claim,
                                 lambda id_:KeeperClaim(keeper.client,id_),factory,dictionary_factory,
                                 profile=profile,stop=stop,progress=progress) if prepared['status']=='prepared' else prepared
@@ -634,7 +650,7 @@ def main(argv=None):
                             result=fresh_execution.run(client.query,config,str(args.dataset_id),claim,factory,
                                 dictionary_factory,admission,context_start=source_context,fundamental_start=args.fundamental_start_date,
                                 anchor_date=args.universe_anchor_date,stop=stop,progress=progress,
-                                rebuild_origin=args.rebuild_origin_date,source_preparer=prepare_discovered_sources)
+                                rebuild_origin=args.rebuild_origin_date,source_preparer=prepare_discovered_sources,sec_scope_preparer=prepare_sec_scopes)
                         elif args.command=='backfill-v7':
                             result=checkpoint_backfill.run(client.query,args.database,str(args.source_dataset_id),str(args.dataset_id),
                                 claim,factory,dictionary_factory,admission,stop=stop,progress=progress,

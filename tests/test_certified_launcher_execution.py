@@ -143,6 +143,8 @@ def test_backfill_cli_uses_source_plan_resources_without_source_acquisition(outp
 def test_fresh_cli_orders_schema_source_preparation_and_execution_and_closes_owners(explicit_end,command,complete,with_identity):
     inspection=Mock();client=Mock();client.query.return_value=[dict(n=0)];client.clean_error.side_effect=str
     keeper=SimpleNamespace(client=Mock(),close=Mock());source_claim=Mock();claim=Mock();dictionary=Mock();paths=Mock()
+    scope_claim=Mock()
+    invoke_scope=explicit_end and command=='launch' and complete and not with_identity
     inspection.query.return_value=[dict(last_day='2026-01-02')]
     stages=[]
     def installed(*args):stages.append('schema')
@@ -154,6 +156,9 @@ def test_fresh_cli_orders_schema_source_preparation_and_execution_and_closes_own
         assert args[2].end==date(2026,1,2)
     def fresh(*args,**kwargs):
         stages.append('fresh')
+        assert callable(kwargs['sec_scope_preparer'])
+        if command=='launch-collection':assert len(kwargs['sec_scope_preparation_hash'])==64
+        if invoke_scope:kwargs['sec_scope_preparer'](client.query,args[1],(),claim,Mock())
         if complete:return dict(status='prepared')
         return dict(status='blocked',errors={'inputs':ValueError('missing authority')},seal=None)
     def executed(*args,**kwargs):
@@ -163,7 +168,7 @@ def test_fresh_cli_orders_schema_source_preparation_and_execution_and_closes_own
          patch('pipelines.certified_research.capacity_profile.factory',return_value=Mock()),\
          patch('pipelines.market_sip.flatfiles.download_update_events.load_env_files'),\
          patch('src.trading_runtime.keeper_session.open_workstation_keeper_session',return_value=keeper),\
-         patch('pipelines.certified_research.publication.SourceClaim',return_value=source_claim),\
+         patch('pipelines.certified_research.publication.SourceClaim',side_effect=[source_claim,scope_claim]),\
          patch('pipelines.certified_research.publication.KeeperClaim',return_value=claim),\
          patch('pipelines.certified_research.publication.DictionaryClaim',return_value=dictionary),\
          patch('pipelines.certified_research.acquisition.IngestionPaths',return_value=paths),\
@@ -171,6 +176,7 @@ def test_fresh_cli_orders_schema_source_preparation_and_execution_and_closes_own
          patch.object(launcher,'prepare_identity',side_effect=identity_prepared),\
          patch('pipelines.certified_research.acquisition.prepare_sources',side_effect=acquired),\
          patch('pipelines.certified_research.sec_acquisition.prepare',return_value=dict(status='reused')) as sec_prepare,\
+         patch('pipelines.certified_research.sec_scope_preparation.prepare',return_value=()) as scope_prepare,\
          patch('pipelines.certified_research.sec_lineage.qualify',return_value=dict(qualified=(),unqualified=())),\
          patch('pipelines.certified_research.fresh_execution.run',side_effect=fresh),\
          patch('pipelines.certified_research.collection_preparation.prepare',side_effect=fresh),\
@@ -185,6 +191,11 @@ def test_fresh_cli_orders_schema_source_preparation_and_execution_and_closes_own
     assert stages==['schema']+(['identity'] if with_identity else [])+['sources','fresh']+(['execute'] if complete else [])
     assert sec_prepare.call_args.kwargs['fundamental_start']==date(2024,1,1)
     for owner in (dictionary,source_claim,claim,keeper,client,inspection):owner.close.assert_called_once()
+    if invoke_scope:
+        scope_claim.close.assert_called_once()
+        assert scope_prepare.call_args.args[3] is scope_claim
+        assert scope_prepare.call_args.kwargs['public_time_mode']=='acceptance_checked_day'
+    else:scope_prepare.assert_not_called()
     paths.validate.assert_called_once()
 
 

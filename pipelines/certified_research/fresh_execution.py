@@ -48,10 +48,10 @@ def prepare(query,config,dataset_id,claim,client_factory,dictionary_claim_factor
 
 
 def run(query,config,dataset_id,claim,client_factory,dictionary_claim_factory,capacity_factory,*,
-        context_start,fundamental_start,anchor_date,stop=None,progress=None,rebuild_origin=None,source_preparer=None):
+        context_start,fundamental_start,anchor_date,stop=None,progress=None,rebuild_origin=None,source_preparer=None,sec_scope_preparer=None):
     assembled=prepare(query,config,dataset_id,claim,client_factory,dictionary_claim_factory,capacity_factory,
         context_start=context_start,fundamental_start=fundamental_start,anchor_date=anchor_date,
         stop=stop,progress=progress,rebuild_origin=rebuild_origin,source_preparer=source_preparer)
     if not assembled.get('ready'):return assembled
     return initial_plan.run(query,config,dataset_id,assembled,claim,client_factory,dictionary_claim_factory,
-        capacity_factory,stop=stop,progress=progress)
+        capacity_factory,stop=stop,progress=progress,**({'sec_scope_preparer':sec_scope_preparer} if sec_scope_preparer is not None else {}))

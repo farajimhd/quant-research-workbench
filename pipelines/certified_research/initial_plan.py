@@ -8,10 +8,11 @@ from .execution import validate
 
 
 def build_launch(query,config,dataset_id,assembled,claim,client_factory,dictionary_claim_factory,
-        capacity_factory,*,stop=None,progress=None):
+        capacity_factory,*,stop=None,progress=None,sec_scope_preparer=None):
     """Construct the same typed execution controller used by fresh launch.
 
-    Construction writes no metadata. Callers must admit the complete graph
+    Optional source preparation publishes normalized SEC locators before freezing.
+    Callers must admit the complete graph
     before installation/execution. Factories receive frozen resources.
     """
     from types import SimpleNamespace
@@ -29,6 +30,19 @@ def build_launch(query,config,dataset_id,assembled,claim,client_factory,dictiona
     claim.check()
     guard=verification.source_guard(query,saved)
     guard()
+    if sec_scope_preparer is not None:
+        prepared=tuple(sec_scope_preparer(query,config,plans,claim,guard))
+        if digest(tuple(p.row(dataset_id) for p in plans))!=plan_fingerprint:
+            raise ValueError('SEC scope preparation mutated the input graph')
+        if len(prepared)!=len(plans) or any(a.unit!=b.unit or
+                {k:v for k,v in a.arguments.items() if k!='original_specification_hash'}!=
+                {k:v for k,v in b.arguments.items() if k!='original_specification_hash'} or
+                (a.unit.product!='fundamentals' and a.arguments!=b.arguments) or
+                ('original_specification_hash' in a.arguments and a.arguments!=b.arguments) for a,b in zip(plans,prepared)):
+            raise ValueError('SEC scope preparation changed the frozen graph or source arguments')
+        plans=prepared;saved.units=plans
+        plan_fingerprint=digest(tuple(p.row(dataset_id) for p in plans))
+        guard()
     clients=lambda:client_factory(config)
     capacity=capacity_factory(config,plans)
     if not callable(capacity):raise ValueError('Capacity factory must return a qualified admission guard')
@@ -41,9 +55,9 @@ def build_launch(query,config,dataset_id,assembled,claim,client_factory,dictiona
 
 
 def run(query,config,dataset_id,assembled,claim,client_factory,dictionary_claim_factory,
-        capacity_factory,*,stop=None,progress=None):
+        capacity_factory,*,stop=None,progress=None,sec_scope_preparer=None):
     return build_launch(query,config,dataset_id,assembled,claim,client_factory,dictionary_claim_factory,
-        capacity_factory,stop=stop,progress=progress).run(stop=stop,progress=progress)
+        capacity_factory,stop=stop,progress=progress,**({'sec_scope_preparer':sec_scope_preparer} if sec_scope_preparer is not None else {})).run(stop=stop,progress=progress)
 
 
 def assemble(config,prepared,canonical,reporting,definition,rules,issuers,securities,*,

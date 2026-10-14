@@ -166,8 +166,8 @@ Missing or incompatible evidence blocks admission immediately. This closes the
 previous late failure where a controller could prepare other products and only
 then discover that it never supplied the required parity verifier. The CLI still
 cannot manufacture this authority from candidate captures, reported projections,
-or a matching retained filing list. Automatic whole-period specification assembly
-remains unfinished; no production certification was granted by this wiring change.
+or a matching retained filing list. No production certification was granted by
+the controller wiring; complete source qualification remains required.
 
 ### Concrete original-scope verifier
 
@@ -194,7 +194,7 @@ The verifier is read-only, bounds documents to 1,000 and projection provenance t
 10,000 rows/16 MiB, and never certifies class allocation. It returns certified
 scope evidence only after every check succeeds. Mocked dependency tests exercise
 composition and rejection; no real production scope has passed. Automatic frozen
-specification construction remains required. Existing acceptance clocks may precede conservative
+specification construction is now connected to fresh launch. Existing acceptance clocks may precede conservative
 archive-day evidence; those inputs require a versioned clock/source migration,
 not relaxed verification.
 
@@ -223,5 +223,44 @@ Large document lists do not consume the plan's 8 KiB argument budget.
 
 An isolated real ClickHouse fixture verified SSD placement, publication, readback,
 zero-insert reuse and duplicate rejection; its namespace was removed afterward.
-Automatic census-to-specification construction/publication during source preparation
-is still unfinished. No production scope was admitted or certified by this fixture.
+Automatic census-to-specification construction/publication is now connected to fresh
+launch and collection preparation. No production scope was admitted or certified by this fixture.
+
+### Automatic fresh launch and immutable resume
+
+`launch` and `launch-collection` now run `sec_scope_preparation` automatically after
+complete graph discovery and before plan publication. No manually assembled
+specification or evidence hashes are required. The stage:
+
+1. Derives the earlier filing-context start inside ClickHouse from accessions
+   actually selected by the source projection. Missing/ambiguous dates block it.
+2. Discovers the full retained filing census, current document lineage and unique
+   matching original/reported bank bindings. It never chooses a latest row to hide
+   conflicting evidence. An existing numeric mode can be selected explicitly.
+3. Runs whole-scope parity qualification before publishing any specification.
+4. Publishes normalized locators with measured admission and exact readback, then
+   attaches only the specification hash to each fundamental unit before freezing.
+
+The stage uses global source ownership and `q_live` dictionary ownership, processes
+one issuer at a time, checks interruption and reserves 2 GiB plus query memory.
+It requires a compatible `sec_scope_specification` pilot rate in the existing
+capacity profile; its exact recipe and DDL are exposed by `schema --format json/sql`.
+Specification reuse inserts zero rows after verification. Default forms match the
+Gateway financial-profile family plus 6-K/A; explicit census-form selection is reused
+when provided. `--sec-numeric-mode` on a fresh launch may select existing bindings
+without rerunning document extraction. Without a selection, competing modes block.
+
+Collection preparation fingerprints forms, numeric/public-time modes and this
+stage's recipe into child identity. Fresh graph updates may only add the fundamental
+locator: source fields, other arguments, unit keys and dependencies are preserved.
+`run`, `resume` and `resume-collection` read frozen locators and do not rediscover or
+publish scope specifications. Older plans lacking locators remain immutable and
+require a fresh versioned launch; they are never silently rewritten.
+
+An isolated real ClickHouse test exercised automatic binding lookup against stored
+original/time banks, scope publication, zero-insert reuse and stored-guard restoration.
+Its completeness/parity prerequisite was supplied by the fixture, not certified from
+production sources. A separate read-only Apple probe verified the native filing-date
+context query. These validate assembly, not whole-period production certification.
+Stale submissions, incomplete original banks, unsafe public clocks and unqualified
+capacity still block launch; those are separate source/capacity tasks.

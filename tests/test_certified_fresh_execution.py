@@ -37,3 +37,16 @@ def test_adjustment_discovery_recomputes_candidate_context_from_certified_corpor
             dict(ready=True,sessions=(SimpleNamespace(listing_key=1,day=config.start),)),(plan,),{1:'corporate'},(day,))
     assert result=={1:{day:'b'*64}}
     assert resolve.call_args.args[-2:]==(date(2025,12,30),day)
+
+
+def test_fresh_execution_passes_automatic_sec_scope_provider_only_after_complete_discovery():
+    provider=Mock();config=CampaignConfig(date(2026,1,2),date(2026,1,2))
+    with patch.object(fresh,'prepare',return_value=dict(ready=True)) as prepare,\
+         patch.object(fresh.initial_plan,'run',return_value=dict(status='complete')) as run:
+        fresh.run(Mock(),config,'dataset',Mock(),Mock(),Mock(),Mock(),context_start=date(2025,12,1),
+            fundamental_start=date(2025,1,1),anchor_date=date(2026,1,2),sec_scope_preparer=provider)
+        assert run.call_args.kwargs['sec_scope_preparer'] is provider
+        prepare.return_value=dict(ready=False,status='blocked');run.reset_mock()
+        fresh.run(Mock(),config,'dataset',Mock(),Mock(),Mock(),Mock(),context_start=date(2025,12,1),
+            fundamental_start=date(2025,1,1),anchor_date=date(2026,1,2),sec_scope_preparer=provider)
+        run.assert_not_called();provider.assert_not_called()
