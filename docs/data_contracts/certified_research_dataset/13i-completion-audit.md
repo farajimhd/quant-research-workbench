@@ -62,6 +62,20 @@ old-table codec rewrite occurs. Three focused storage tests and the real SEC
 lineage ClickHouse fixture passed. Other SEC acquisition writers/runtime paths
 still require review before unified acquisition is enabled; no download ran.
 
+The shared SEC `clickhouse_writer` now verifies named workload policy and active
+part placement before schema setup, before cloning a source schema, after setup,
+and before row insertion. Its inferred policy is explicitly `live_market_ssd`;
+absent templates cannot fall back to default, and misplaced templates fail.
+Three unit tests cover absent templates, backup policy, bad parts and missing
+writer tables. A live read-only check passed for the current `WRITE_TABLES` set.
+
+A broader October 13 policy census found eight separate default-policy SEC
+tables: disclosure taxonomy/candidate, filing entity archive manifest, rendered
+text rebuild/bundle manifests, LLM issuer review/history, and synthesis. This is
+not proof that their existing parts moved. Acquisition-used manifest writers
+require review and explicit restart-safe migration before enablement; unrelated
+application products are not modified by this task.
+
 1. Close historical identity/reference creation and acquisition gaps, including
    original public corporate/allocation/short evidence and uncovered SEC ranges.
    Existing qualified scopes can already be imported server-side across datasets.

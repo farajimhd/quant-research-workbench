@@ -321,6 +321,7 @@ class SecClickHouseWriter:
     def insert_rows(self, table: str, rows: list[dict[str, Any]]) -> None:
         if not rows:
             return
+        verify_sec_write_storage(self.client,self.database,[table])
         body = "\n".join(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) for row in rows)
         self.client.execute(f"INSERT INTO {qi(self.database)}.{qi(table)} SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n{body}")
 
@@ -356,6 +357,7 @@ def ensure_sec_write_database(
     read_database: str,
     write_database: str,
 ) -> list[str]:
+    verify_sec_write_storage(client,write_database,WRITE_TABLES,require_tables=False)
     client.execute(f"CREATE DATABASE IF NOT EXISTS {qi(write_database)}")
     required = WRITE_TABLES
     created_or_present: list[str] = []
@@ -388,6 +390,7 @@ def ensure_sec_write_database(
         created_or_present.append(f"{write_database}.{table}")
     create_entity_current_view(client, target_database=write_database)
     create_archive_accession_current_view(client, target_database=write_database)
+    verify_sec_write_storage(client,write_database,WRITE_TABLES)
     return created_or_present
 
 
@@ -405,6 +408,7 @@ def table_exists(client: ClickHouseHttpClient, database: str, table: str) -> boo
 
 
 def clone_table_schema(client: ClickHouseHttpClient, *, source_database: str, target_database: str, source_table: str, target_table: str) -> None:
+    verify_sec_write_storage(client,source_database,[source_table])
     ddl = client.execute(f"SHOW CREATE TABLE {qi(source_database)}.{qi(source_table)} FORMAT TSVRaw").strip()
     pattern = re.compile(
         r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
@@ -603,15 +607,29 @@ def create_pac_table_schema(client: ClickHouseHttpClient, *, target_database: st
     )
 
 
+def verify_sec_write_storage(client,database,tables,*,require_tables=True):
+    """Check explicit operational policy and actual disks; no implicit fallback."""
+    if not tables or len(tables)!=len(set(tables)):
+        raise ValueError('SEC storage audit requires distinct table names')
+    def rows(sql):
+        return [json.loads(line) for line in client.execute(sql+' FORMAT JSONEachRow').splitlines() if line.strip()]
+    policy=rows("SELECT arrayJoin(disks) disk FROM system.storage_policies WHERE policy_name='live_market_ssd'")
+    if not policy or any(r['disk']!='live_market_ssd' for r in policy):
+        raise ValueError('Required SEC writer SSD policy is absent or misconfigured')
+    names=','.join(sql_string(name) for name in tables)
+    actual=rows(f'SELECT name,storage_policy FROM system.tables WHERE database={sql_string(database)} AND name IN ({names})')
+    if require_tables and {r['name'] for r in actual}!=set(tables):
+        raise ValueError('SEC writer tables are missing')
+    if any(r['storage_policy']!='live_market_ssd' for r in actual):
+        raise ValueError('SEC writer table is misplaced; verified migration required')
+    parts=rows(f'SELECT DISTINCT table,disk_name FROM system.parts WHERE active AND database={sql_string(database)} AND table IN ({names})')
+    if any(r['disk_name']!='live_market_ssd' for r in parts):
+        raise ValueError('SEC writer parts are misplaced; verified migration required')
+
+
 def infer_storage_policy(client: ClickHouseHttpClient, database: str, tables: list[str]) -> str:
-    for table in tables:
-        if not table or not table_exists(client, database, table):
-            continue
-        ddl = client.execute(f"SHOW CREATE TABLE {qi(database)}.{qi(table)} FORMAT TSVRaw").strip()
-        match = re.search(r"storage_policy\s*=\s*'([^']+)'", ddl, flags=re.IGNORECASE)
-        if match:
-            return match.group(1)
-    return ""
+    verify_sec_write_storage(client,database,tables,require_tables=False)
+    return 'live_market_ssd'
 
 
 def scalar_int(client: ClickHouseHttpClient, sql: str) -> int:
