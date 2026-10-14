@@ -51,6 +51,14 @@ inactive/current symbols cannot replace dated lifecycle evidence. No provider
 request or canonical/reference mutation occurred during this audit. Counts are
 snapshot-specific and must be refreshed after Gateway repair or acquisition.
 
+`historical_identity.prepare_observations()` now supplies a bounded batch
+executor for the existing dated-point handler: 1–1,000 explicit unique requests,
+one global worker pool, verified point reuse before provider construction, and
+explicit `acquire_missing` opt-in. Newly acquired points require independent
+published readback. Seven handler/batch tests passed without provider calls.
+This does not reconstruct symbol intervals or prove lifetime membership; complete
+change/lifecycle evidence and fresh-launch repair integration remain incomplete.
+
 ## Next implementation order
 
 The shared SEC coverage writer previously allowed an empty policy to omit the

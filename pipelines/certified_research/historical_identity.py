@@ -173,6 +173,8 @@ class AcquisitionHandlers:
     def inputs(self,plan):
         if plan.unit.product!='identity_observation':raise ValueError('Wrong historical identity acquisition product')
         args=plan.arguments
+        if not {'as_of','ticker','composite_figi'}<=set(args)<= {'as_of','ticker','composite_figi','cik'}:
+            raise ValueError('Unexpected historical identity acquisition fields')
         day=date.fromisoformat(args['as_of']);ticker=args['ticker'];figi=args['composite_figi'];cik=args.get('cik')
         if (not isinstance(ticker,str) or not re.fullmatch(r'[A-Z0-9._-]{1,32}',ticker)
                 or not isinstance(figi,str) or not re.fullmatch('[A-Z0-9]{12}',figi)
@@ -212,3 +214,36 @@ class AcquisitionHandlers:
             client.close()
 
     def registry(self):return {'identity_observation':self.producer},{'identity_observation':self.verifier}
+
+
+def prepare_observations(database,claim,client_factory,provider_factory,dictionary_claim_factory,source_guard,
+                         requests,*,acquire_missing=False,workers=4,stop=None,progress=None):
+    """Bounded point acquisition/reuse; no interval interpolation or SIP REST.
+
+    Existing points verify before provider construction. Missing points remain
+    blocked unless acquisition is explicitly enabled after resubscription.
+    """
+    from threading import Event
+    from itertools import islice
+    from .campaign import PlannedUnit
+    from .execution import Unit,execute
+    requests=tuple(islice(iter(requests),1001))
+    if not requests or len(requests)>1000 or type(acquire_missing) is not bool:
+        raise ValueError('Historical identity batch requires 1 to 1000 explicit requests')
+    registry=AcquisitionHandlers(database,claim,client_factory,provider_factory,dictionary_claim_factory,source_guard)
+    plans=[]
+    for index,args in enumerate(requests):
+        plan=PlannedUnit(Unit('identity:'+str(index),'identity_observation'),dict(args))
+        registry.inputs(plan);plans.append(plan)
+    points=[(p.arguments['as_of'],p.arguments['ticker']) for p in plans]
+    if len(points)!=len(set(points)):raise ValueError('Duplicate historical identity point requests')
+    by_key={p.unit.key:p for p in plans};signal=stop if stop is not None else Event()
+    def reuse(unit,parents):return registry.verifier(by_key[unit.key],{})
+    def produce(unit,parents,signal):
+        if not acquire_missing:raise ValueError('Missing dated identity point; provider acquisition is not enabled')
+        plan=by_key[unit.key];registry.producer(plan,{},signal)
+        proof=registry.verifier(plan,{})
+        if proof is None:raise ValueError('Historical identity publication did not independently verify')
+        return proof
+    return execute(tuple(p.unit for p in plans),{'identity_observation':produce},workers=workers,
+        reuse=reuse,stop=signal,progress=progress)
