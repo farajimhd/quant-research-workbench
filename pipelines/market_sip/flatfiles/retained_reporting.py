@@ -42,6 +42,21 @@ def raw_table():
     return schema.Table(RAW,tuple(columns),('source_date','ticker','sip_timestamp_us','sequence_number'),'source_date')
 
 
+def raw_insert_sql(raw,day,*,database='q_live',query_threads=2,query_memory_bytes=2*1024**3):
+    """Bind original fields by name; updater projection order is independent."""
+    from pipelines.certified_research.contracts import identifier
+    identifier(database)
+    if type(day) is not date or not isinstance(raw,str) or not raw:
+        raise ValueError('Invalid retained raw projection/date')
+    if (type(query_threads) is not int or not 1<=query_threads<=8 or type(query_memory_bytes) is not int
+            or not 64*1024**2<=query_memory_bytes<=32*1024**3):
+        raise ValueError('Invalid retained raw insertion budget')
+    names=[c.name for c in raw_table().columns]
+    expressions=[f'toDate({literal(day)})' if name=='source_date' else 'r.'+name for name in names]
+    return (f'INSERT INTO {database}.{RAW} ({",".join(names)}) SELECT {",".join(expressions)} '
+        f'FROM ({raw}) r SETTINGS max_threads={query_threads},max_memory_usage={query_memory_bytes}')
+
+
 def verify_table_columns(query,table):
     actual=query(f"SELECT name,type FROM system.columns WHERE database='q_live' AND table={literal(table.name)} ORDER BY position")
     if [(r['name'],r['type'].replace(' ','')) for r in actual]!=[(c.name,c.type.replace(' ','')) for c in table.columns]:
@@ -177,7 +192,7 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                 schema.verify_auxiliary_storage(query,'q_live',(RAW,))
                 verify_table_columns(query,raw_table())
                 query(f'ALTER TABLE q_live.{RAW} DELETE WHERE {stage_where} SETTINGS mutations_sync=2',read=False)
-                query(f'INSERT INTO q_live.{RAW} SELECT toDate({literal(day)}) source_date,r.* FROM ({raw}) r SETTINGS {settings}',read=False)
+                query(raw_insert_sql(raw,day,query_threads=query_threads,query_memory_bytes=query_memory_bytes),read=False)
                 raw_count=query(f'SELECT count() n FROM q_live.{RAW} WHERE {stage_where}')[0]['n']
                 if int(raw_count)!=int(source['trade_event_rows']):raise ValueError('SSD raw staging count differs from canonical trades')
                 guard();query(f'ALTER TABLE q_live.{STAGE} DELETE WHERE {stage_where} SETTINGS mutations_sync=2',read=False)

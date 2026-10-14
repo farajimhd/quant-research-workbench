@@ -112,3 +112,19 @@ DDL/placement, original-clock flags/projection, shared market aggregation and
 concurrent consumers, causal checkpoint persistence, short-data causality,
 derived formulas, and rejection of incomplete SEC prerequisites. Their fixture
 database was removed by teardown. These checks do not certify the full campaign.
+
+Workstation execution now uses an isolated deployment of pushed source over the
+existing authenticated SSH connection. Local Keeper session, dictionary claim
+and canonical source claim were verified, and all 28 research tables were
+installed under `live_market_ssd`. HTTP uses the observed LAN-bound port proxy;
+no Keeper listener or firewall rule was changed. The retained-file plan found
+all 189 trade backups (597,054,672,991 bytes), with about 3.61 TB free on D,
+800,154,503,987 bytes reserved and three chunks capped at 256 GiB.
+
+The initial ingestion canary exposed a positional raw INSERT mismatch:
+reporting reason preceded clocks in the updater projection but followed the
+conditions array in the staging schema. `raw_insert_sql` now names every input
+and target field. An isolated ClickHouse regression verifies exact nanosecond
+clocks, all six explicit delayed conditions, zero/invalid clock states and
+strict rejection flags; it reads synthetic trades without opening SIP files.
+This fixes the insertion contract, not the outstanding full-range certificates.
