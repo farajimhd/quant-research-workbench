@@ -49,6 +49,8 @@ def analyze(program):
             elif op in COMPARISONS[:4] and ca is not None and cb is not None:
                 constant = {Op.GREATER: ca > cb, Op.LESS: ca < cb,
                             Op.GREATER_EQUAL: ca >= cb, Op.LESS_EQUAL: ca <= cb}[op]
+            elif op == Op.STD and (n.window == 1 or ca is not None):
+                constant = 0.0  # On known inputs only; never replace the mask.
             elif op in (Op.LAG, Op.MEAN, Op.MINIMUM, Op.MAXIMUM, Op.ABS) and ca is not None:
                 constant = abs(ca) if op == Op.ABS else ca
             elif op == Op.BOOL_RATIO and ca is not None:

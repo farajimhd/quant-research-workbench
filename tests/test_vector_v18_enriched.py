@@ -59,6 +59,12 @@ def test_std_masks_validation_and_genetic_reachability():
     assert any(any(n.op==Op.STD for n in numeric(rng,'ratio').nodes) for _ in range(2000))
     assert mutation_feature(rng,len(LEGACY))!=len(LEGACY)
 
+def test_std_cannot_hide_an_implicit_constant_management_rule():
+    from research.vectorized_backtest.v18.semantics import validate_rule,SemanticError
+    p=Program((Node(Op.FEATURE,feature=len(LEGACY)),Node(Op.STD,a=0,window=1),
+        Node(Op.CONSTANT,value=-.1),Node(Op.GREATER,a=1,b=2)),3)
+    with pytest.raises(SemanticError,match='implicit_constant_signal'):validate_rule(p,'exit')
+
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA required')
 def test_fused_std_parity():
