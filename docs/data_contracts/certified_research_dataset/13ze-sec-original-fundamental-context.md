@@ -166,5 +166,35 @@ Missing or incompatible evidence blocks admission immediately. This closes the
 previous late failure where a controller could prepare other products and only
 then discover that it never supplied the required parity verifier. The CLI still
 cannot manufacture this authority from candidate captures, reported projections,
-or a matching retained filing list. Its concrete whole-period authority provider
+or a matching retained filing list. Automatic whole-period specification assembly
 remains unfinished; no production certification was granted by this wiring change.
+
+### Concrete original-scope verifier
+
+`sec_scope_parity.Guard` now supplies the application verifier. Its frozen metadata
+specifies issuer/CIK, target range, earlier context start, metric names, filing forms,
+source hash and one accession/document/reconciliation/reported-binding locator per
+filing. Specifications are hashed, copied and indexed by exact scope; competing,
+changed or absent specifications fail. These are locators for existing ClickHouse
+evidence, never assertions that a document is certified.
+
+For each invocation it independently checks:
+
+1. Qualified SEC acquisition coverage and retained submission/fragment inspection.
+2. Exact binding membership against the whole selected filing census.
+3. Current document lineage, original normalized readback, full catalog and fresh
+   exact bulk parity, including unmatched original facts as blockers.
+4. Original public-time readback linked to the same extraction/reconciliation.
+5. Every selected projection's accession and availability against its original
+   binding. Live-source fallback rows and projection clocks earlier than the
+   proven original availability are rejected.
+6. Unchanged projection, filing inspection and acquisition fingerprints afterward.
+
+The verifier is read-only, bounds documents to 1,000 and projection provenance to
+10,000 rows/16 MiB, and never certifies class allocation. It returns certified
+scope evidence only after every check succeeds. Mocked dependency tests exercise
+composition and rejection; no real production scope has passed. Automatic frozen
+specification construction and wiring through fresh/stored/collection launcher
+adapters remain required. Existing acceptance clocks may precede conservative
+archive-day evidence; those inputs require a versioned clock/source migration,
+not relaxed verification.
