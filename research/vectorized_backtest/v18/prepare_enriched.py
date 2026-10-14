@@ -143,11 +143,11 @@ def prepare_day(dataset,day,output):
                 write_json(folder/'progress.json',dict(status='running',day=day,source_day=source_day,stage='top-10 candles' if is_own else 'minimal market context',completed_tickers=completed_tickers,total_tickers=len(available_tickers),top10_tickers=len(own_tickers),required_rows=len(required),snapshot_tickers=len(tickers),unavailable_source_tickers=len(excluded),prepared_rows=prepared))
             dense.flush()
             rank=np.lib.format.open_memmap(scratch/'rank.npy',mode='w+',dtype=np.float32,shape=(len(tickers),len(clocks)));rank[:]=np.nan
-            # Native sorting and reductions over all peers in bounded 1024-second tiles.
+            # Smaller tiles bound the sorting temporaries alongside training.
             target_tickers=np.asarray([ticker_index[members[int(i)]['ticker']] for i in ids[target_rows]])
             target_clock=ticks[target_rows]-first_clock
-            for begin in range(0,len(clocks),1024):
-                end=min(len(clocks),begin+1024);pick=(target_clock>=begin)&(target_clock<end);rr=target_rows[pick];ti=target_tickers[pick];ci=target_clock[pick]-begin
+            for begin in range(0,len(clocks),256):
+                end=min(len(clocks),begin+256);pick=(target_clock>=begin)&(target_clock<end);rr=target_rows[pick];ti=target_tickers[pick];ci=target_clock[pick]-begin
                 for hi,h in enumerate(MARKET_HORIZONS):
                     tile=np.array(dense[hi,:,begin:end]);common,percentile=market_summary(tile,len(tickers))
                     values[rr,len(OWN_NAMES)+hi*7:len(OWN_NAMES)+hi*7+5]=common[ci]
@@ -174,7 +174,9 @@ def _prepare(training,validation,output,workers=4):
     if not 2<=workers<=4:raise ValueError('Use 2 to 4 bounded CPU session workers')
     out=require_runtime(Path(output));datasets={role:read(path) for path,role in ((training,'training'),(validation,'validation'))}
     import psutil
-    minimum=(workers*16+16)*1024**3
+    # Disk-backed cross-sections are reclaimable; admission covers bounded
+    # query/sort temporaries plus host headroom, not the entire scratch size.
+    minimum=(workers*2+8)*1024**3
     while psutil.virtual_memory().available<minimum:
         if (out/'STOP').exists():raise InterruptedError('Cooperative stop while awaiting memory admission')
         write_json(out/'status.json',dict(status='waiting_for_memory',workers=workers,available_bytes=psutil.virtual_memory().available,
@@ -190,19 +192,24 @@ def _prepare(training,validation,output,workers=4):
         pending={};queue=iter(tasks)
         def refill():
             if failed or (out/'STOP').exists():return
+            if psutil.virtual_memory().available<8*1024**3:return
             while len(pending)<workers:
                 item=next(queue,None)
                 if item is None:break
                 pending[pool.submit(prepare_day,*item)]=item[1]
         refill()
-        while pending:
+        while pending or len(done)+len(failed)<len(tasks):
+            if not pending:
+                if failed or (out/'STOP').exists():break
+                write_json(out/'status.json',dict(status='waiting_for_memory',active=[],completed=done,failed=failed,queued=len(tasks)-len(done),available_bytes=psutil.virtual_memory().available,required_bytes=8*1024**3,workers=workers))
+                time.sleep(10);refill();continue
             completed,_=wait(pending,timeout=10,return_when=FIRST_COMPLETED)
             for future in completed:
                 day=pending.pop(future)
                 try:done.append(future.result())
                 except Exception as e:
                     failed.append(dict(day=day,error=str(e),traceback=traceback.format_exc()));write_json(out/'failures.json',failed)
-            refill();write_json(out/'status.json',dict(status='failed' if failed else 'running',active=list(pending.values()),completed=done,failed=failed,queued=len(tasks)-len(done)-len(failed)-len(pending),total=len(tasks),elapsed_seconds=time.time()-started))
+            refill();write_json(out/'status.json',dict(status='failed' if failed else 'running',active=list(pending.values()),completed=done,failed=failed,queued=len(tasks)-len(done)-len(failed)-len(pending),total=len(tasks),available_bytes=psutil.virtual_memory().available,workers=workers,elapsed_seconds=time.time()-started))
     if failed or len(done)!=len(tasks):raise RuntimeError('Preparation incomplete; sealed days preserved, rerun resumes them')
     for role,d in datasets.items():write_json(out/(role+'.json'),dict(d,enriched_root=str(out),enriched_receipts={day:file_hash(out/day/'complete.json') for day in d['days']}))
     write_json(out/'complete.json',dict(status='complete',definition=definition(),days=[x[1] for x in tasks],receipts={x[1]:file_hash(out/x[1]/'complete.json') for x in tasks}))
