@@ -8,6 +8,7 @@ operator reconciliation, never an automatic overwrite or duplicate retry.
 from __future__ import annotations
 
 import asyncio
+import math
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from itertools import islice
@@ -18,8 +19,9 @@ import polars as pl
 from .market_day_sql import literal
 from .opening_price_reference_producer import CertifiedOpeningInput, source_storage_preflight
 from .liquidity_resolution_producer import CertifiedLiquidityInput
+from . import liquidity_resolution_sql as liquidity_sql
 from src.backend.backtest_market_data import _verify_market_batch
-from src.backend.backtest_liquidity_resolution import CertifiedLiquidityResolution, certify_liquidity_resolution, read_liquidity_window
+from src.backend.backtest_liquidity_resolution import CertifiedLiquidityResolution, certify_liquidity_resolution
 from src.backend.qmd_opening_reference import CertifiedOpeningReference, certify_opening_reference
 from src.backend.qmd_columnar_history import _rows, scope_sql, read_seal, permission_preflight, certify_history_product
 from src.market_engine import columnar_history_product as c
@@ -102,6 +104,34 @@ class CertifiedHistoryInput:
             self.bar_unit.session_date, (self.bar_unit,), reader)
 
 
+def read_history_activity_window(reader, certificate, *, first_bucket, stop_bucket):
+    """Read only certified activity scalars; history never consumes fill levels."""
+    if (type(certificate) is not CertifiedLiquidityResolution
+            or type(first_bucket) is not int or type(stop_bucket) is not int
+            or not 14400 <= first_bucket < stop_bucket <= 72000
+            or stop_bucket - first_bucket > 4096):
+        raise ValueError('History activity requires a bounded certified clock window')
+    predicate = liquidity_sql.target_scope(certificate.source, certificate.derivation_attempt_id)
+    rows = _rows(reader, f'SELECT bucket_index,execution_notional FROM arte.{liquidity_sql.LIQUIDITY.name} '
+        f'WHERE {predicate} AND bucket_index>={first_bucket} AND bucket_index<{stop_bucket} '
+        'ORDER BY bucket_index LIMIT 4097', 4097)
+    previous = first_bucket - 1
+    for row in rows:
+        if set(row) != {'bucket_index', 'execution_notional'}:
+            raise ValueError('History activity projection differs')
+        bucket = row['bucket_index']
+        if type(bucket) is str and bucket.isascii() and bucket.isdecimal():
+            bucket = int(bucket)
+        notional = row['execution_notional']
+        if (type(bucket) is not int or not previous < bucket < stop_bucket
+                or type(notional) not in (int, float) or not math.isfinite(notional)
+                or notional < 0):
+            raise ValueError('History activity contains duplicate, invalid or out-of-window scalars')
+        row['bucket_index'] = bucket
+        previous = bucket
+    return tuple(rows)
+
+
 def materialize_history(reader, source, scope, *, code_hash):
     if type(source) is not CertifiedHistoryInput or scope != source.scope(scope.attempt_id, code_hash):
         raise ValueError("History materialization requires its exact certified scope")
@@ -109,11 +139,11 @@ def materialize_history(reader, source, scope, *, code_hash):
     unit = source.bar_unit
     predicate = (f"build_id={literal(unit.build_id)} AND session_date=toDate({literal(unit.session_date)}) "
         f"AND ticker={literal(unit.ticker)} AND attempt_id=toUUID({literal(unit.attempt_id)}) AND resolution_ms=1000")
-    for first in range(scope.first_bucket, scope.stop_bucket, 256):
-        stop = min(first + 256, scope.stop_bucket)
+    for first in range(scope.first_bucket, scope.stop_bucket, 4096):
+        stop = min(first + 4096, scope.stop_bucket)
         rows = _rows(reader, "SELECT bucket_index,price_valid,extremes_valid,close_int,high_int,low_int,volume "
             f"FROM arte.bars_v1 WHERE {predicate} AND bucket_index>={first} AND bucket_index<{stop} "
-            "ORDER BY bucket_index LIMIT 257", 257)
+            "ORDER BY bucket_index LIMIT 4097", 4097)
         if len(rows) > stop - first:
             raise ValueError("History source bars contain duplicate clocks")
         for row in rows:
@@ -128,7 +158,7 @@ def materialize_history(reader, source, scope, *, code_hash):
                 row[name] = value
             bars.append(row)
         liquidity.extend({"bucket_index": r["bucket_index"], "execution_notional": r["execution_notional"]}
-            for r in read_liquidity_window(reader, source.liquidity, first_bucket=first, stop_bucket=stop))
+            for r in read_history_activity_window(reader, source.liquidity, first_bucket=first, stop_bucket=stop))
     bar_frame = pl.DataFrame(bars, schema={"bucket_index": pl.UInt32, "price_valid": pl.UInt8,
         "extremes_valid": pl.UInt8, "close_int": pl.UInt64, "high_int": pl.UInt64, "low_int": pl.UInt64,
         "volume": pl.Float64})
@@ -174,13 +204,9 @@ def value_insert_projection(rows):
 
 
 def insert_history_rows(writer, table, rows):
-    if table not in (c.FIELD, c.CLOCK, c.VALUE) or not 1 <= len(rows) <= 128:
+    if table not in (c.FIELD, c.CLOCK, c.VALUE) or not 1 <= len(rows) <= 4096:
         raise ValueError("History insertion requires bounded centrally declared children")
-    if table == c.VALUE:
-        columns = ",".join("`" + name + "`" for name, _ in table.columns)
-        writer.execute(f"INSERT INTO `q_live`.`{table.name}` ({columns}) " + value_insert_projection(rows))
-    else:
-        insert_product_rows(writer, table, [c.restore_record(table, row) for row in rows])
+    insert_product_rows(writer, table, [c.restore_record(table, row) for row in rows])
 
 
 def publish_history(reader, writer, source, *, ownership, code_hash):
@@ -217,7 +243,7 @@ def publish_history(reader, writer, source, *, ownership, code_hash):
     header = c.history_seal(prepared, parents, certified_at=datetime.now(timezone.utc))
     for table in (c.FIELD, c.CLOCK, c.VALUE):
         records = iter(c.child_records(prepared, table))
-        while chunk := list(islice(records, 128)):
+        while chunk := list(islice(records, 4096)):
             ownership.assert_owner()
             insert_history_rows(writer, table, chunk)
     # No success seal is issued until all actual children match their projection.

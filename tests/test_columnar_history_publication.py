@@ -103,7 +103,7 @@ class Client:
             assert self.writer
             name = re.search(r"INSERT INTO `q_live`\.`([a-z0-9_]+)`", query).group(1)
             self.store.writes.append(name)
-            if name == c.VALUE.name:
+            if name == c.VALUE.name and 'FORMAT JSONEachRow' not in query:
                 rows = []
                 for select in query.split(" UNION ALL "):
                     row = {}
@@ -160,12 +160,37 @@ class Owner:
         pass
 
 
+@pytest.mark.parametrize('failure', [None, 'duplicate', 'outside', 'negative', 'nonfinite', 'schema'])
+def test_activity_projection_keeps_scope_order_and_finite_notional(failure):
+    certificate=source().liquidity
+    rows=[dict(bucket_index=34200,execution_notional=23.),
+          dict(bucket_index=34201,execution_notional=0.)]
+    if failure=='duplicate':rows[1]['bucket_index']=34200
+    if failure=='outside':rows[1]['bucket_index']=38296
+    if failure=='negative':rows[1]['execution_notional']=-1.
+    if failure=='nonfinite':rows[1]['execution_notional']=float('inf')
+    if failure=='schema':rows[1]['unexpected']=0
+    queries=[]
+    class Reader:
+        def execute(self,query):
+            queries.append(query)
+            return encode(rows)
+    if failure:
+        with pytest.raises(ValueError):
+            p.read_history_activity_window(Reader(),certificate,first_bucket=34200,stop_bucket=38296)
+    else:
+        assert p.read_history_activity_window(Reader(),certificate,first_bucket=34200,stop_bucket=38296)==tuple(rows)
+    assert 'execution_price_levels' not in queries[0]
+    assert certificate.derivation_attempt_id in queries[0]
+    assert 'LIMIT 4097' in queries[0]
+
+
 @pytest.fixture
 def prepared_source(monkeypatch):
     # Publication protocol uses synthetic certified parent providers. Tests
     # below exercise the real source verifier's calls and mismatch rejection.
     monkeypatch.setattr(p.CertifiedHistoryInput, "verify", lambda self, reader: None)
-    monkeypatch.setattr(p, "read_liquidity_window", lambda reader, certificate, first_bucket, stop_bucket:
+    monkeypatch.setattr(p, "read_history_activity_window", lambda reader, certificate, first_bucket, stop_bucket:
         tuple(dict(bucket_index=i, execution_notional=23.) for i in range(max(first_bucket, 34201), stop_bucket)))
     return source()
 

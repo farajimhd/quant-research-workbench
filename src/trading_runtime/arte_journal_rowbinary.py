@@ -42,11 +42,14 @@ def _encoder(kind: str):
                 raise ValueError('Journal FixedString(64) must contain exactly 64 bytes')
             return payload
         return fixed
-    if kind == 'Float64':
+    if kind in {'Float32', 'Float64'}:
         def floating(value):
             if type(value) not in (int, float) or not math.isfinite(value):
-                raise ValueError('Journal Float64 must be finite')
-            return struct.pack('<d', value)
+                raise ValueError('Journal floating value must be finite')
+            try:
+                return struct.pack('<f' if kind == 'Float32' else '<d', value)
+            except OverflowError as error:
+                raise ValueError('Journal floating value exceeds its declared type') from error
         return floating
     formats = {'UInt8': 'B', 'UInt16': 'H', 'UInt32': 'I', 'UInt64': 'Q',
                'Int32': 'i', 'Int64': 'q', 'Bool': '?'}

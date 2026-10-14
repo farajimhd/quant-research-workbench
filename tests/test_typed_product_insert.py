@@ -22,3 +22,15 @@ def test_unsupported_and_oversized_product_rows_fail_before_io():
     table=TableContract('exact_test', (('value','Float64'),), 'tuple()', 'tuple()', database='q_live')
     for rows in ([], [{'value':1.0,'extra':0}], [{'value':float('nan')}], [{'value':1.0}]*4097):
         with pytest.raises(ValueError): insert_product_rows(client,table,rows)
+
+
+def test_nullable_float32_product_preserves_bits_and_bounded_large_batches():
+    table=TableContract('exact_test', (('value','Nullable(Float32)'),), 'tuple()', 'tuple()', database='q_live')
+    requests=[]
+    values=[None, -0.0, struct.unpack('<f',struct.pack('<I',0x3F800001))[0]]
+    insert_product_rows(SimpleNamespace(execute=requests.append),table,[{'value':v} for v in values]*1000)
+    payload=requests[0].partition(b'\n')[2]
+    assert payload == (b'\x01'+b'\x00'+struct.pack('<f',-0.0)+b'\x00'+struct.pack('<I',0x3F800001))*1000
+    with pytest.raises(ValueError):
+        insert_product_rows(SimpleNamespace(execute=lambda _:pytest.fail('Unexpected INSERT')),
+                            table,[{'value':1e100}])

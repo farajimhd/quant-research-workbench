@@ -45,7 +45,7 @@ def product_request_as_json(request, contracts):
             with localcontext() as context:
                 context.prec=100
                 return str(Decimal(integer).scaleb(-scale))
-        formats = {'Float64':'<d', 'UInt8':'<B', 'UInt16':'<H', 'UInt32':'<I',
+        formats = {'Float32':'<f', 'Float64':'<d', 'UInt8':'<B', 'UInt16':'<H', 'UInt32':'<I',
                    'UInt64':'<Q', 'Int32':'<i', 'Int64':'<q', 'Bool':'<?'}
         if kind not in formats: raise AssertionError('Unsupported fixture type '+kind)
         return number(formats[kind])
