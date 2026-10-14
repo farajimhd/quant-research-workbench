@@ -69,6 +69,11 @@ def gather(R,I,C,FAMILIES,COLUMNS,BASE_VALUES,BASE_VALID,HIST,FEATURE_ROW,
 
 
 def project(resident,rows,ids,clock,columns):
+    # Legacy-only programs need no enriched projection. Reuse its exact kernel
+    # rather than introducing the enriched branch into every legacy gather.
+    if all(c<len(LEGACY) for c in columns):
+        from .legacy_feature_gather import project as legacy_project
+        return legacy_project(resident,rows,ids,clock,columns)
     a=resident.tensors;key=('fused_projection',tuple(columns))
     if key not in resident.column_plans:
         families=[];channels=[]

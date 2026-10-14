@@ -70,7 +70,7 @@ def test_single_pass_feature_gather_exact_all_columns_and_strides(tmp_path):
     from test_vector_v7_lightweight import fixture_files
     from research.vectorized_backtest.v7.data import SessionData
     from research.vectorized_backtest.v18.resident_features import ResidentFeatures
-    from research.vectorized_backtest.v18.features import VARIANTS,EXTRA
+    from research.vectorized_backtest.v18.features import VARIANTS,EXTRA,LEGACY
     root,history=fixture_files(tmp_path);data=SessionData(root,history)
     generator=np.random.default_rng(162237)
     data.indicator_values=generator.normal(size=(len(data.arrays['features']),len(VARIANTS))).astype(np.float32)
@@ -80,7 +80,8 @@ def test_single_pass_feature_gather_exact_all_columns_and_strides(tmp_path):
     resident=ResidentFeatures(data);resident.activate('cuda')
     try:
         a=resident.tensors
-        for columns in (list(range(len(CATALOG))),list(reversed(range(len(CATALOG)))),[len(CATALOG)-1,0,0,764,763,50]):
+        for columns in (list(range(len(CATALOG))),list(reversed(range(len(CATALOG)))),[len(CATALOG)-1,0,0,764,763,50],
+                        list(range(len(LEGACY))),[len(LEGACY)-1,0,0,764,763,50]):
             for source,ids,clock in ((a['source'].T,a['ids'].T.to(torch.int64),a['clocks'][None]),
                                      (a['source'].T[:,::2],a['ids'].T[:,::2].to(torch.int64),a['clocks'][::2][None])):
                 expected,mask=resident._values_reference(source,ids,clock,columns)
