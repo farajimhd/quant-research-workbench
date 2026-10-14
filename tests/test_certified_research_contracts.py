@@ -938,7 +938,7 @@ class ClickHouseIntegration(unittest.TestCase):
         from pipelines.sec.edgar.sec_pipeline.coverage import ensure_coverage_table,SecCoverageConfig
         from pipelines.sec.edgar import sec_acquisition_contract as contract
         from tests.test_certified_sec_lineage import raw
-        adapter=SimpleNamespace(execute=lambda sql:self.client.query(sql,read=False))
+        adapter=SimpleNamespace(execute=self.client.http.execute)
         ensure_coverage_table(adapter,SecCoverageConfig(self.database,sec_lineage.RAW_TABLE,'live_market_ssd'))
         stage_rows=[raw(name) for name in sorted(contract.ALL)]
         parents=[raw(kind,stage=False) for kind in sec_coverage.KINDS]

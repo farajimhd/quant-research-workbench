@@ -53,6 +53,15 @@ snapshot-specific and must be refreshed after Gateway repair or acquisition.
 
 ## Next implementation order
 
+The shared SEC coverage writer previously allowed an empty policy to omit the
+DDL storage setting and fall back to ClickHouse default storage. It now creates
+coverage on explicit `live_market_ssd` with ZSTD(1) and checks policy/actual part
+placement before creation and before/after inserts. Existing misplaced tables
+or parts block and require a separate verified migration; no automatic move or
+old-table codec rewrite occurs. Three focused storage tests and the real SEC
+lineage ClickHouse fixture passed. Other SEC acquisition writers/runtime paths
+still require review before unified acquisition is enabled; no download ran.
+
 1. Close historical identity/reference creation and acquisition gaps, including
    original public corporate/allocation/short evidence and uncovered SEC ranges.
    Existing qualified scopes can already be imported server-side across datasets.

@@ -45,7 +45,7 @@ class SecGap:
 class SecCoverageConfig:
     database: str
     coverage_table: str
-    storage_policy: str = ""
+    storage_policy: str = "live_market_ssd"
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,8 +59,31 @@ def new_coverage_id(prefix: str) -> str:
     return f"{prefix}_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:10]}"
 
 
+def verify_coverage_storage(client,config,*,require_table=True):
+    """Coverage is operational evidence: never fall back to backup/default disk."""
+    if config.storage_policy not in ('','live_market_ssd'):
+        raise ValueError('SEC coverage requires live_market_ssd; explicit migration required')
+    def rows(sql):
+        return [json.loads(line) for line in client.execute(sql+' FORMAT JSONEachRow').splitlines() if line.strip()]
+    policy=rows("SELECT arrayJoin(disks) disk FROM system.storage_policies WHERE policy_name='live_market_ssd'")
+    if not policy or any(r['disk']!='live_market_ssd' for r in policy):
+        raise ValueError('Required SEC coverage SSD policy is absent or misconfigured')
+    where=f'database={sql_string(config.database)} AND name={sql_string(config.coverage_table)}'
+    tables=rows('SELECT storage_policy FROM system.tables WHERE '+where)
+    if not tables:
+        if require_table:raise ValueError('SEC coverage table is absent')
+        return
+    if len(tables)!=1 or tables[0]['storage_policy']!='live_market_ssd':
+        raise ValueError('SEC coverage table is misplaced; verified migration required')
+    parts=rows('SELECT DISTINCT disk_name FROM system.parts WHERE active AND '
+        f'database={sql_string(config.database)} AND table={sql_string(config.coverage_table)}')
+    if any(r['disk_name']!='live_market_ssd' for r in parts):
+        raise ValueError('SEC coverage parts are misplaced; verified migration required')
+
+
 def ensure_coverage_table(client: ClickHouseHttpClient, config: SecCoverageConfig) -> None:
-    storage = f", storage_policy = {sql_string(config.storage_policy)}" if config.storage_policy else ""
+    verify_coverage_storage(client,config,require_table=False)
+    storage = ", storage_policy = 'live_market_ssd', default_compression_codec = 'ZSTD(1)'"
     client.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {qi(config.database)}.{qi(config.coverage_table)}
@@ -87,6 +110,7 @@ def ensure_coverage_table(client: ClickHouseHttpClient, config: SecCoverageConfi
         SETTINGS index_granularity = 8192{storage}
         """
     )
+    verify_coverage_storage(client,config)
 
 
 def insert_coverage(
@@ -106,6 +130,7 @@ def insert_coverage(
     metadata: dict[str, Any] | None = None,
     completed: bool = False,
 ) -> None:
+    verify_coverage_storage(client,config)
     now = datetime.now(UTC)
     row = {
         "coverage_id": coverage_id,
@@ -125,6 +150,7 @@ def insert_coverage(
         "completed_at_utc": dt_text(now) if completed else None,
     }
     client.execute(f"INSERT INTO {qi(config.database)}.{qi(config.coverage_table)} SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n{json.dumps(row, default=str)}")
+    verify_coverage_storage(client,config)
 
 
 def load_intervals(client: ClickHouseHttpClient, config: SecCoverageConfig) -> list[CoverageInterval]:
