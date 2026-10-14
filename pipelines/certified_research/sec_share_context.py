@@ -13,7 +13,7 @@ IX='http://www.xbrl.org/2013/inlineXBRL'
 TAGS={'EntityCommonStockSharesOutstanding','CommonStockSharesOutstanding'}
 
 
-def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=10000,catalog_tags=None):
+def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=10000,catalog_tags=None,include_security_cover=False):
     """Retain distinct facts and dimensions; never infer class completeness.
 
     Inputs are exact UTF-8 source text and its independently retained text hash.
@@ -49,7 +49,7 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
                 if pending:namespaces=dict(namespaces,**dict(pending));pending=[]
                 stack.append(namespaces);nodes+=1
                 if nodes>250000 or len(stack)>128:raise ValueError('SEC XML complexity exceeds its bound')
-                if node.tag.rsplit('}',1)[-1]=='nonFraction' or node.tag in ('{'+XBRL+'}measure','{'+DIM+'}explicitMember'):
+                if node.tag.rsplit('}',1)[-1] in ('nonFraction','nonNumeric') or node.tag in ('{'+XBRL+'}measure','{'+DIM+'}explicitMember'):
                     maps[id(node)]=namespaces
             else:
                 stack.pop();namespaces=stack[-1] if stack else {}
@@ -140,6 +140,45 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
             observations.append(observation)
         except (ValueError,TypeError,InvalidOperation) as error:
             rejected.append(dict(row,reason=str(error)))
-    return dict(version='sec-inline-fundamental-context-v1' if fundamental else VERSION,observations=tuple(observations),rejected=tuple(rejected),
+    result=dict(version='sec-inline-fundamental-context-v1' if fundamental else VERSION,observations=tuple(observations),rejected=tuple(rejected),
         source_text_hash=expected_hash,parsing_prefix_bytes=prefix_bytes,parsing_suffix_bytes=suffix_bytes,
         sec_xbrl_envelope=envelope,allocation_certified=False)
+    if include_security_cover:
+        cover=[];failures=[];selected={'Security12bTitle','TradingSymbol','SecurityExchangeName'}
+        for position,fact in enumerate(n for n in root.iter() if n.tag.rsplit('}',1)[-1]=='nonNumeric'):
+            name=fact.get('name','')
+            if name.split(':')[-1] not in selected:continue
+            if len(cover)+len(failures)>=10000:raise ValueError('SEC cover fact bound exceeded')
+            row=dict(source_position=position,concept=name,context_id=fact.get('contextRef',''),fact_id=fact.get('id',''))
+            try:
+                if fact.tag!='{'+IX+'}nonNumeric':raise ValueError('unsupported_cover_inline_namespace')
+                concept=qname(name,fact)
+                if not re.fullmatch(r'\{http://xbrl.sec.gov/dei/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?\}.+',concept):
+                    raise ValueError('unsupported_cover_taxonomy')
+                if fact.get('continuedAt') or fact.get('format') or fact.get('{http://www.w3.org/2001/XMLSchema-instance}nil') in ('true','1'):
+                    raise ValueError('unsupported_cover_transform_continuation_or_nil')
+                if any(True for _ in fact.iter('{'+IX+'}exclude')):raise ValueError('unsupported_cover_exclusion')
+                context=contexts.get(row['context_id'])
+                if context is None:raise ValueError('missing_cover_context')
+                ids=context.findall('.//{'+XBRL+'}identifier')
+                if len(ids)!=1 or ids[0].get('scheme')!='http://www.sec.gov/CIK' or str(int(ids[0].text or '0'))!=str(int(cik)):
+                    raise ValueError('cover_issuer_context_mismatch')
+                if any(True for _ in context.iter('{'+DIM+'}typedMember')):raise ValueError('unsupported_cover_typed_dimension')
+                dimensions=tuple(sorted((qname(m.get('dimension',''),m),qname((m.text or '').strip(),m))
+                    for m in context.iter('{'+DIM+'}explicitMember')))
+                if len({axis for axis,member in dimensions})!=len(dimensions):raise ValueError('duplicate_cover_dimension_axis')
+                instant=context.findall('./{'+XBRL+'}period/{'+XBRL+'}instant')
+                starts=context.findall('./{'+XBRL+'}period/{'+XBRL+'}startDate')
+                ends=context.findall('./{'+XBRL+'}period/{'+XBRL+'}endDate')
+                if len(instant)==1 and not starts and not ends:
+                    period_start=None;period_end=str(date.fromisoformat(instant[0].text))
+                elif not instant and len(starts)==len(ends)==1:
+                    period_start=str(date.fromisoformat(starts[0].text));period_end=str(date.fromisoformat(ends[0].text))
+                    if period_start>period_end:raise ValueError('invalid_cover_period_order')
+                else:raise ValueError('invalid_cover_period')
+                text=''.join(fact.itertext()).strip()
+                if not text or len(text)>4096:raise ValueError('empty_or_oversized_cover_value')
+                cover.append(dict(row,concept=concept,dimensions=dimensions,value=text,period_start=period_start,period_end=period_end))
+            except (ValueError,TypeError) as error:failures.append(dict(row,reason=str(error)))
+        result['security_cover']=dict(observations=tuple(cover),rejected=tuple(failures),class_completeness_proven=False)
+    return result

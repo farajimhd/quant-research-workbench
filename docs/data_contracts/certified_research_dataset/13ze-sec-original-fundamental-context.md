@@ -1,5 +1,7 @@
 # Original-document fundamental observations
 
+[Listed-security cover evidence](13zf-sec-listed-security-cover.md)
+
 `sec_fundamental_context.extract` applies the frozen app metric catalog to exact
 retained document text. It reuses the bounded strict XML parser and source hash
 checks used for shares. The default share extraction contract stays unchanged.
