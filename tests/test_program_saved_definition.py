@@ -52,11 +52,14 @@ def test_running_definition_uses_approved_selection_and_closes_owned_clients(mon
 
 
 @pytest.mark.parametrize("failure", [None, "terminal", "source", "interval", "rows"])
-def test_programme_reconstruction_uses_native_normalized_codec(failure):
+@pytest.mark.parametrize('execution_bound', [False, True])
+def test_programme_reconstruction_uses_native_normalized_codec(failure, execution_bound):
     from tests.test_arte_backtest_definition import _definition, RUN_MONTH
     from src.trading_runtime.arte_backtest_definition import prepare_backtest_definition
     run_id = str(uuid4())
     revision = {"revision_id": "strategy-configuration:" + str(uuid4()), "content_hash": "a" * 64}
+    if execution_bound:
+        revision['execution_binding_hash'] = 'b' * 64
     original = _definition(configuration_revision=revision, execution_interval="1s",
         experimental_structure_book="", market_data_plan={**_definition().market_data_plan,
             "execution_interval": {"milliseconds": 1000}})
@@ -80,6 +83,8 @@ def test_programme_reconstruction_uses_native_normalized_codec(failure):
     else:
         reconstructed = cold.reconstruct_program_saved_definition(evidence, cold._freeze(preflight))
         assert reconstructed.execution_interval == "1s"
+        if execution_bound:
+            assert reconstructed.configuration_revision['execution_binding_hash'] == 'b' * 64
         assert prepare_backtest_definition(run_id, reconstructed, run_month=RUN_MONTH) == saved
         reconstructed.configuration_revision["content_hash"] = "b" * 64
         assert evidence.revision["content_hash"] == "a" * 64
