@@ -56,3 +56,16 @@ def test_profile_mutation_and_recipe_changes_are_not_admitted():
         assert admit(123)['metadata_bytes']==123
         p['safety_factor']='2'
         with pytest.raises(ValueError,match='changed'):admit(123)
+
+
+def test_actual_metadata_envelope_overrides_small_pilot_and_can_block():
+    p=profile();admit=preparation.admission(Mock(),p,2,1)
+    with patch.object(preparation.capacity,'inventory',return_value=storage()):
+        result=admit(10000);product=result['products'][0]
+        assert product['persisted_bytes']==25000
+        assert product['known_persisted_envelope_bytes']>product['pilot_persisted_bytes']
+    small=storage()
+    for disk in small['disks']:disk.update(free_space=20000,unreserved_space=20000)
+    with patch.object(preparation.capacity,'inventory',return_value=small),pytest.raises(ValueError,match='capacity admission blocked'):
+        admit(10000)
+    with pytest.raises(ValueError,match='bounded byte'):admit(64*1024**2+1)

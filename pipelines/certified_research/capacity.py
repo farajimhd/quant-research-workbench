@@ -144,7 +144,7 @@ class PilotRate:
             raise ValueError('Pilot rates require qualified hashes, explicit workload policy and exact byte counts')
 
 
-def admission(storage,demands,rates,recipe_hashes,*,active_units,reserve_bytes,volume_groups,safety_factor='1.25'):
+def admission(storage,demands,rates,recipe_hashes,*,active_units,reserve_bytes,volume_groups,safety_factor='1.25',minimum_persisted_bytes=None):
     """Project from compatible measured product units; missing rates block.
 
     Units are the pilot's declared comparable ticker-sessions/reference units,
@@ -160,6 +160,9 @@ def admission(storage,demands,rates,recipe_hashes,*,active_units,reserve_bytes,v
         raise ValueError('Explicit nonnegative reserve bytes are required for both workload disks')
     rates=tuple(rates);by_product={r.product:r for r in rates}
     if len(by_product)!=len(rates):raise ValueError('Competing pilot rates require explicit selection')
+    minimum_persisted_bytes={} if minimum_persisted_bytes is None else dict(minimum_persisted_bytes)
+    if set(minimum_persisted_bytes)-set(demands) or any(type(v) is not int or v<0 for v in minimum_persisted_bytes.values()):
+        raise ValueError('Known persisted byte envelopes must be nonnegative and scoped to admitted products')
     rows=[];blocked=[];totals={p:0 for p in policies}
     for product,units in sorted(demands.items()):
         identifier(product)
@@ -173,12 +176,15 @@ def admission(storage,demands,rates,recipe_hashes,*,active_units,reserve_bytes,v
         if rate.recipe_hash!=recipe_hashes.get(product):
             blocked.append(product+': pilot recipe is incompatible');continue
         def rounded(value):return int(value.to_integral_value(rounding=ROUND_CEILING))
-        persisted=rounded(Decimal(rate.persisted_bytes)*units/rate.units*factor)
+        pilot_persisted=rounded(Decimal(rate.persisted_bytes)*units/rate.units*factor)
+        known_persisted=rounded(Decimal(minimum_persisted_bytes.get(product,0))*factor)
+        persisted=max(pilot_persisted,known_persisted)
         transient=rounded(Decimal(rate.staging_peak_bytes+rate.merge_peak_bytes)*concurrent/rate.peak_active_units*factor)
         required=persisted+transient
         totals[rate.policy]+=required
         rows.append(dict(product=product,units=units,active_units=concurrent,policy=rate.policy,
-            persisted_bytes=persisted,transient_bytes=transient,required_bytes=required,pilot_evidence=rate.evidence_hash))
+            persisted_bytes=persisted,transient_bytes=transient,required_bytes=required,pilot_evidence=rate.evidence_hash,
+            pilot_persisted_bytes=pilot_persisted,known_persisted_envelope_bytes=known_persisted))
     disks={r['name']:r for r in storage['disks']}
     if len(disks)!=len(storage['disks']):raise ValueError('Storage inventory contains duplicate workload disk names')
     headroom={}

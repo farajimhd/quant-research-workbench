@@ -30,8 +30,12 @@ def recipe_hash():
 
 
 def admission(query,profile,documents,active,*,product=PRODUCT,recipe=None):
+    if type(documents) is not int or not 1<=documents<=1000 or type(active) is not int or not 1<=active<=documents:
+        raise ValueError('SEC admission requires bounded document and active-unit counts')
     # Recheck the loaded profile, including its parsed objects, on every call.
     def admit(metadata_bytes):
+        if type(metadata_bytes) is not int or not 0<=metadata_bytes<=64*1024**2:
+            raise ValueError('SEC source metadata admission exceeds its bounded byte envelope')
         if profile['profile_hash']!=digest({k:v for k,v in profile.items() if k not in ('profile_hash','parsed_rates')}):
             raise ValueError('SEC source capacity profile changed')
         rates=tuple(capacity.PilotRate(**row) for row in profile['rates'])
@@ -40,7 +44,8 @@ def admission(query,profile,documents,active,*,product=PRODUCT,recipe=None):
         if rate is None or rate.policy!='live_market_ssd':raise ValueError('SEC candidates require a qualified SSD '+product+' pilot rate')
         result=capacity.admission(capacity.inventory(query,'q_live'),{product:documents},rates,
             {product:recipe_hash() if recipe is None else recipe},active_units={product:active},reserve_bytes=profile['reserve_bytes'],
-            volume_groups=profile['volume_groups'],safety_factor=profile['safety_factor'])
+            volume_groups=profile['volume_groups'],safety_factor=profile['safety_factor'],
+            minimum_persisted_bytes={product:metadata_bytes*documents})
         if result['status']!='admitted':raise ValueError('SEC source capacity admission blocked: '+str(result.get('blockers',())))
         body=dict(result,metadata_bytes=metadata_bytes);body.pop('certificate_hash',None)
         return dict(body,certificate_hash=digest(body))

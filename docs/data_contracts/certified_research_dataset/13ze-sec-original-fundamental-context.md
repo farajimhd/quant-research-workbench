@@ -124,3 +124,16 @@ verified content separately from successful comparison matching. A verified
 unmatched comparison remains visible evidence and cannot pass production parity
 coverage. The source-capacity recipe now includes the readback implementation;
 older measured recipe profiles must be requalified before this stage runs.
+
+SEC source-write admission now also accounts for the current serialized metadata
+envelope: the persisted projection is the larger of the compatible measured pilot
+projection and `current_metadata_bytes × requested_documents`, with the configured
+safety factor applied to both. Staging and merge allowances remain additive and
+physical-volume grouping/reserves still apply. This deliberately gives no reuse
+discount and prevents a small pilot from underbudgeting a larger current document.
+The envelope is capped at 64MiB per unit; archive witness publication has its
+stricter 8MiB bound. Admission reports the pilot and known-envelope contributions
+separately. The envelope is a conservative planning allowance, not a measured
+compressed disk size or a qualification of unobserved peak usage. Missing or
+incompatible measured source pilot rates still block; this change does not create
+a bootstrap exemption or qualify the production campaign.
