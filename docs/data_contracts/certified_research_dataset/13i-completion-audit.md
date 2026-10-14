@@ -35,6 +35,12 @@ payloads. Three real 2025 filings passed hash-bound extraction. This provides a
 concrete source path for the missing share-allocation producer; original-vintage,
 public-availability, dated class mapping and completeness qualification remain
 required before that producer can publish certified allocation or supply.
+Live metadata for those three payloads is legacy-ranked with empty source
+version keys. Hash-bound extraction must not be confused with qualified
+document-vintage authority. The existing acceptance-timed bulk/company-fact
+projection also lacks independent original-document value parity; acquisition
+closure alone does not resolve it. See the same source-extraction page for the
+required lineage repair and proposed conservative availability boundary.
 
 ## Current historical identity repair inventory
 

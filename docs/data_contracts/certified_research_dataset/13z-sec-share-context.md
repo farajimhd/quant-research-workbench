@@ -52,3 +52,31 @@ prove any completeness claim, and publish normalized source evidence before
 `float_allocation` or class-level supply receipts can authorize downstream float.
 Neither today's tradable-class count nor one unscoped share fact supplies that
 proof. This parser is not yet wired as a certified launcher producer.
+
+## Document-vintage qualification dependency
+
+An additional October 14 live metadata check found all three inspected sources
+marked `source_revision_kind=legacy_archive_occurrence`, with an empty
+`source_version_key`. Extraction success and a matching text hash therefore do
+not establish an independently qualified archive occurrence. Do not assign
+these payloads the original filing's acceptance timestamp or publish allocation
+receipts from them yet.
+
+The existing SEC revision kernel derives version keys from the archive date,
+occurrence order, archive path/member and submission content hash. A document
+text hash is not a substitute for the original submission hash. A versioned
+ingestion-owned lineage repair must recover and reconcile that provenance,
+retain any competing/PAC versions and independently verify its readback.
+It must not generate a plausible version key from incomplete metadata.
+
+After qualification, a conservative source-availability policy can admit a
+payload only after its proven archive day ends (and no earlier than the filing
+acceptance bound). Later occurrences must not be backdated to original filing
+acceptance. This is a proposed qualification policy, not implemented admission.
+
+The current fundamentals projection uses retained bulk/company-fact values and
+filing acceptance clocks. Its acquisition-stage closure and range coverage
+checks do **not** independently demonstrate that every selected value matches
+the original public document vintage. Original-vintage qualification of those
+values remains a separate completion gap; passing the existing SEC producer
+fixture is not proof of that requirement.
