@@ -34,12 +34,43 @@ BAR_COLUMNS=('resolution_ms','bucket_index','open_int','high_int','low_int','clo
 INDICATORS=('bucket_index','macd_line','macd_signal','rsi_14','atr_14','ema_7','ema_26')
 
 
-def source_audit_ready(audit):
+@dataclass(frozen=True)
+class FeatureSourceAudit:
+    """Product proof for one exact plan; never a Backtest cutover audit."""
+    authority: MarketDayColdAudit
+    plan: CertifiedMarketDayPlan
+
+    @property
+    def certificate(self):
+        return self.authority.certificate
+
+    @property
+    def source_plan(self):
+        return self.authority.source_plan
+
+
+def certify_feature_source_day(reader, authority, *, day, read_client_factory=None):
+    """Recheck one complete session without hashing unrelated build products."""
+    if not _source_authority_ready(authority):
+        raise ValueError('Feature source day lacks attested source authority')
+    from src.trading_runtime.arte_market_day_cold_preflight import certified_market_day_plan_from_cold_audit
+    plan = certified_market_day_plan_from_cold_audit(reader, authority,
+        sessions=(day,), tickers=(), configuration={'strategy': {'execution_interval': '100ms'}},
+        read_client_factory=read_client_factory)
+    return plan, FeatureSourceAudit(authority, plan)
+
+
+def _source_authority_ready(audit):
+    return (type(audit) is MarketDayColdAudit and audit.certificate_parts_on_ssd
+        and audit.source_authority_verified and audit.source_storage_verified)
+
+
+def source_audit_ready(audit, plan):
     # Input publication requires certified sources, not permission to launch a
     # Backtest. The latter's active-cutover gate remains owned by Backtest.
-    return (type(audit) is MarketDayColdAudit and audit.certificate_parts_on_ssd
-        and audit.source_authority_verified and audit.source_storage_verified
-        and audit.market_products_verified)
+    if type(audit) is FeatureSourceAudit:
+        return _source_authority_ready(audit.authority) and audit.plan == plan
+    return _source_authority_ready(audit) and audit.market_products_verified
 
 
 def algorithm_hash():
@@ -58,9 +89,9 @@ def algorithm_hash():
 @dataclass(frozen=True)
 class QmdFeaturePreparationRequest:
     opening_source: CertifiedOpeningInput
-    audit: MarketDayColdAudit
-    continuity: tuple[tuple[CertifiedMarketDayPlan, MarketDayColdAudit], ...]
-    prior_volume: tuple[CertifiedMarketDayPlan, MarketDayColdAudit]
+    audit: MarketDayColdAudit | FeatureSourceAudit
+    continuity: tuple[tuple[CertifiedMarketDayPlan, MarketDayColdAudit | FeatureSourceAudit], ...]
+    prior_volume: tuple[CertifiedMarketDayPlan, MarketDayColdAudit | FeatureSourceAudit]
     tickers: tuple[str, ...]
     first_bucket: int
     stop_bucket: int
@@ -69,9 +100,9 @@ class QmdFeaturePreparationRequest:
 
     def __post_init__(self):
         if (type(self.opening_source) is not CertifiedOpeningInput
-                or not source_audit_ready(self.audit)
+                or not source_audit_ready(self.audit, self.opening_source.market)
                 or not self.continuity or type(self.continuity) is not tuple
-                or any(type(p) is not CertifiedMarketDayPlan or not source_audit_ready(a)
+                or any(type(p) is not CertifiedMarketDayPlan or not source_audit_ready(a, p)
                        for p,a in self.continuity)
                 or self.continuity[-1][0]!=self.opening_source.market
                 or self.continuity[-1][1]!=self.audit
@@ -91,7 +122,7 @@ class QmdFeaturePreparationRequest:
                 raise ValueError('Feature source plan differs from its cold certificate')
         from src.market_engine.opening_price_reference import previous_regular_session
         p,a=self.prior_volume
-        if (type(p) is not CertifiedMarketDayPlan or not source_audit_ready(a)
+        if (type(p) is not CertifiedMarketDayPlan or not source_audit_ready(a, p)
                 or p.build_id!=a.certificate.build_id
                 or p.sessions!=(previous_regular_session(date.fromisoformat(days[-1][0])).day.isoformat(),)
                 or any((u.session_date,u.ticker,u.stage,u.attempt_id,u.output_rows,u.output_hash)

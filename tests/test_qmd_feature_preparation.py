@@ -130,3 +130,26 @@ def test_feature_request_rejects_unverified_or_wrong_session_sources():
         replace(req,audit=replace(req.audit,source_storage_verified=False))
     with pytest.raises(ValueError,match='RVOL'):
         replace(req,prior_volume=req.continuity[0])
+
+
+def test_session_product_proof_is_exact_and_does_not_authorize_backtest(monkeypatch):
+    from src.trading_runtime import arte_market_day_cold_preflight as cold
+    old, req = request()
+    authority = replace(req.audit, market_products_verified=False)
+    calls = []
+    def verify(reader, audit, **kwargs):
+        calls.append(kwargs)
+        assert audit is authority
+        return req.opening_source.market
+    monkeypatch.setattr(cold, 'certified_market_day_plan_from_cold_audit', verify)
+    plan, proof = prep.certify_feature_source_day(None, authority,
+        day=req.opening_source.market.sessions[0])
+    assert calls[0]['tickers'] == ()
+    assert calls[0]['sessions'] == plan.sessions
+    assert not authority.market_products_verified and not authority.fixed_backtest_ready
+    assert prep.source_audit_ready(proof, plan)
+    assert not prep.source_audit_ready(proof, replace(plan, token='different-plan'))
+    assert replace(req, audit=proof, continuity=((plan, proof),)).audit is proof
+    with pytest.raises(ValueError, match='authority'):
+        prep.certify_feature_source_day(None, replace(authority, source_storage_verified=False),
+            day=plan.sessions[0])
