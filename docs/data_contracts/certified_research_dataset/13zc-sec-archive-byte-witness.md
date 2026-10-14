@@ -28,6 +28,12 @@ but explicitly keeps `public_time_qualified=false` and
 `allocation_certified=false`. A byte witness is not a public-availability clock
 or evidence that one issuer total belongs to one tradable class.
 
+V2 witnesses can additionally accept a verified staging receipt and independently
+rehash the complete D container. They retain raw filing/change dates, public
+document count and special-release markers. A [separate timing qualifier](13zd-sec-public-archive-time.md)
+uses this evidence with an authenticated original download receipt; the byte
+verifier itself never declares public-time or allocation qualification.
+
 ## Actual bounded validation — October 14
 
 The archive recorded at D was missing; its corresponding workstation G backup

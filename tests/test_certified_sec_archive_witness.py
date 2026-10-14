@@ -16,6 +16,7 @@ from pipelines.sec.edgar.sec_pipeline.revision import source_revision
 def fixture():
     payload='<XBRL><html>original payload</html></XBRL>'
     raw=('<ACCESSION-NUMBER>0000320193-25-000079\n<CIK>0000320193\n<TYPE>10-K\n'
+        '<PUBLIC-DOCUMENT-COUNT>1\n<FILING-DATE>20251031\n<DATE-OF-FILING-DATE-CHANGE>20251031\n'
         '<DOCUMENT>\n<TYPE>10-K\n<SEQUENCE>1\n<FILENAME>filing.htm\n<TEXT>'+payload+'</TEXT>\n</DOCUMENT>').encode()
     member='./0000320193-25-000079.nc';original='D:/market-data/sec_core/20251031.nc.tar.gz'
     revision=source_revision(archive_date='2025-10-31',archive_member=member,archive_path=original,
@@ -52,3 +53,14 @@ def test_different_original_document_hash_is_not_a_witness():
         prepared['document']['lineage']['document']['content_sha256']='c'*64
         prepared.pop('prepared_hash');prepared['prepared_hash']=digest(prepared)
         with pytest.raises(ValueError,match='payload differs'):witness.inspect_archive(path,prepared)
+
+
+def test_v2_container_and_official_date_evidence_are_checked_independently():
+    with fixture() as (path,prepared):
+        staging=dict(status='staged',bytes=path.stat().st_size,sha256=sha256(path.read_bytes()).hexdigest())
+        result=witness.inspect_archive(path,prepared,staging_receipt=staging)
+        assert result['container_digest_verified'] is True
+        assert result['official_filing_date']==result['filing_date_change']=='2025-10-31'
+        assert result['public_document_count']==1 and result['acceptance_datetime_raw']==''
+        staging['sha256']='c'*64
+        with pytest.raises(ValueError,match='container digest'):witness.inspect_archive(path,prepared,staging_receipt=staging)

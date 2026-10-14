@@ -1,6 +1,7 @@
 """Ingestion-owned bounded SEC archive byte witnesses; no market flatfiles."""
 from hashlib import sha256
 from pathlib import Path,PureWindowsPath
+import re
 import tarfile
 
 from pipelines.sec.edgar.sec_filing_text_extract_parts import parse_filing
@@ -9,7 +10,7 @@ from .contracts import digest
 
 
 def inspect_archive(path,prepared,*,stop=None,progress=None,maximum_archive_bytes=2*1024**3,
-                    maximum_member_bytes=64*1024**2,maximum_scan_bytes=32*1024**3,maximum_members=100000):
+                    maximum_member_bytes=64*1024**2,maximum_scan_bytes=32*1024**3,maximum_members=100000,staging_receipt=None):
     """Read only a designated D copy and compare raw bytes with retained lineage.
 
     Staging owns the G→D copy/digest/reserve policy. This verifier establishes
@@ -28,7 +29,17 @@ def inspect_archive(path,prepared,*,stop=None,progress=None,maximum_archive_byte
     if not 0<before.st_size<=maximum_archive_bytes:raise ValueError('SEC archive exceeds its compressed byte bound')
     def check():
         if stop is not None and stop.is_set():raise InterruptedError('SEC archive witness stopped')
-    check();wanted=document['source_archive_member'].lstrip('./');scanned=0;raw=None;ordinal=None
+    check();container_hash=None
+    if staging_receipt is not None:
+        if (staging_receipt.get('status')!='staged' or staging_receipt.get('bytes')!=before.st_size
+                or not re.fullmatch('[0-9a-f]{64}',staging_receipt.get('sha256') or '')):
+            raise ValueError('SEC staging receipt is not a verified bounded copy')
+        checksum=sha256()
+        with path.open('rb') as reader:
+            while chunk:=reader.read(8*1024**2):check();checksum.update(chunk)
+        container_hash=checksum.hexdigest()
+        if container_hash!=staging_receipt['sha256']:raise ValueError('Staged SEC container digest differs')
+    wanted=document['source_archive_member'].lstrip('./');scanned=0;raw=None;ordinal=None
     with tarfile.open(path,'r|gz') as archive:
         for index,member in enumerate(archive,start=1):
             check()
@@ -60,8 +71,20 @@ def inspect_archive(path,prepared,*,stop=None,progress=None,maximum_archive_byte
         raise ValueError('Original SEC document payload differs')
     after=path.stat();check()
     if (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):raise ValueError('Staged SEC archive changed during verification')
-    result=dict(version='sec-archive-document-byte-witness-v1',document_key=prepared['document']['document_key'],
+    header=filing['header_text']
+    public_counts=re.findall(r'(?:<PUBLIC-DOCUMENT-COUNT>\s*|PUBLIC DOCUMENT COUNT:\s*)([0-9]+)',header,re.I)
+    filing_dates=re.findall(r'(?:<FILING-DATE>\s*|FILED AS OF DATE:\s*)([0-9]{8})',header,re.I)
+    filing_day=(filing_dates[0][:4]+'-'+filing_dates[0][4:6]+'-'+filing_dates[0][6:]) if len(filing_dates)==1 else None
+    change_dates=re.findall(r'<DATE-OF-FILING-DATE-CHANGE>\s*([0-9]{8})',header,re.I)
+    change_day=(change_dates[0][:4]+'-'+change_dates[0][4:6]+'-'+change_dates[0][6:]) if len(change_dates)==1 else None
+    result=dict(version='sec-archive-document-byte-witness-v2',document_key=prepared['document']['document_key'],
         candidate_hash=lineage['candidate_hash'],archive_bytes=before.st_size,submission_bytes=len(raw),member_ordinal=ordinal,
         submission_hash=submission_hash,document_hash=document['content_sha256'],archive_version_key=revision.source_version_key,
+        source_archive_date=document['source_archive_date'],form_type=filing['form_type'],
+        official_filing_date=filing_day,filing_date_change=change_day,
+        acceptance_datetime_raw=filing['acceptance_datetime_raw'],public_document_count=int(public_counts[0]) if len(public_counts)==1 else None,
+        special_release=any(re.search(r'<'+tag+r'(?:\s|>)',header,re.I) for tag in ('CORRECTION','DELETION','PRIVATE-TO-PUBLIC','PAPER'))
+            or bool(re.search(r'^\s*(?:CORRECTION|DELETION|PRIVATE[- ]TO[- ]PUBLIC|PAPER)\s*:',header,re.I|re.M)),
+        container_sha256=container_hash,container_digest_verified=container_hash is not None,
         original_bytes_verified=True,public_time_qualified=False,allocation_certified=False)
     return dict(result,witness_hash=digest(result))

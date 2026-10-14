@@ -1,0 +1,60 @@
+"""Explicit conservative public-feed-day availability; never acceptance-as-posting."""
+from datetime import date,datetime,time,timedelta,timezone
+from email.utils import parsedate_to_datetime
+from zoneinfo import ZoneInfo
+import re
+
+from .contracts import digest
+from .facts import CONSERVATIVE_TIME
+
+VERSION='verified-sec-public-feed-day-v1'
+NY=ZoneInfo('America/New_York')
+
+
+def qualify(witness,receipt,*,mode='acceptance_checked_day'):
+    """Require original public-feed bytes, official receipt and unambiguous day.
+
+    A qualified day is a reconstructed public date with a conservative next-day
+    cutoff, not observed app arrival or an exact SEC website posting timestamp.
+    PAC/private-to-public/paper and delayed-day ambiguity remain unsupported.
+    """
+    if mode not in ('acceptance_checked_day','official_filing_day'):raise ValueError('Unknown explicit SEC public-day mode')
+    body=dict(witness);hash_=body.pop('witness_hash',None)
+    if (hash_!=digest(body) or witness.get('version')!='sec-archive-document-byte-witness-v2'
+            or witness.get('original_bytes_verified') is not True or witness.get('container_digest_verified') is not True
+            or witness.get('special_release') is not False or type(witness.get('public_document_count')) is not int
+            or witness['public_document_count']<=0):
+        raise ValueError('SEC public-day qualification requires a verified ordinary public submission')
+    if not isinstance(witness.get('form_type'),str) or not witness['form_type']:
+        raise ValueError('SEC public-day submission type is unknown')
+    day=date.fromisoformat(witness['source_archive_date']);quarter=(day.month-1)//3+1
+    if witness.get('official_filing_date')!=str(day) or witness.get('filing_date_change')!=str(day):
+        raise ValueError('SEC official filing/change dates do not prove the selected public feed day')
+    url=f'https://www.sec.gov/Archives/edgar/Feed/{day.year}/QTR{quarter}/{day:%Y%m%d}.nc.tar.gz'
+    if (receipt.get('status')!='downloaded' or receipt.get('source_kind')!='daily_feed_archive'
+            or receipt.get('source_url')!=url or receipt.get('source_date')!=str(day)
+            or receipt.get('sha256')!=witness['container_sha256'] or not re.fullmatch('[0-9a-f]{64}',receipt.get('sha256') or '')
+            or type(receipt.get('byte_size')) is not int or receipt['byte_size']!=witness['archive_bytes']
+            or receipt.get('error')):
+        raise ValueError('Original SEC feed download receipt differs from witnessed bytes/day')
+    modified=parsedate_to_datetime(receipt.get('last_modified') or '')
+    observed=datetime.fromisoformat(receipt.get('downloaded_at_utc','').replace('Z','+00:00'))
+    if (modified.tzinfo is None or observed.tzinfo is None or modified>observed
+            or modified.astimezone(NY).date()!=day):
+        raise ValueError('SEC feed representation modification day is not qualified')
+    raw=witness.get('acceptance_datetime_raw') or ''
+    if raw or mode=='acceptance_checked_day':
+        if not re.fullmatch('[0-9]{14}',raw):raise ValueError('SEC acceptance header is unknown')
+        local=datetime.strptime(raw,'%Y%m%d%H%M%S');accepted=local.replace(tzinfo=NY)
+        if (accepted.astimezone(timezone.utc).astimezone(NY).replace(tzinfo=None)!=local
+                or accepted.utcoffset()!=accepted.replace(fold=1).utcoffset() or accepted.date()>day):
+            raise ValueError('SEC acceptance header has invalid/ambiguous chronology')
+        deadline=time(22) if witness['form_type'] in ('3','4','5') else time(17,30)
+        if accepted.date()==day and accepted.time()>=deadline:
+            raise ValueError('Same-day SEC dissemination is unproven for a late acceptance')
+    available=datetime.combine(day+timedelta(days=1),time(),NY).astimezone(timezone.utc)
+    source={k:receipt[k] for k in ('source_kind','source_url','source_date','downloaded_at_utc','byte_size','sha256','last_modified','status')}
+    result=dict(version=VERSION,mode=mode,witness_hash=hash_,receipt_hash=digest(source),source_date=str(day),
+        available_at=available.isoformat(),precision=CONSERVATIVE_TIME,precision_name='conservative_day',public_time_qualified=True,
+        exact_posting_time=False,allocation_certified=False)
+    return dict(result,qualification_hash=digest(result))
