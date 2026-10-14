@@ -62,6 +62,16 @@ def test_feature_identity_ignores_scheduler_but_binds_calculation(tmp_path):
     assert preparation.calculation_hash(path)!=preparation.calculation_hash()
 
 
+def test_unavailable_aliases_preserve_market_census_and_certified_identity():
+    from research.vectorized_backtest.v18.prepare_enriched import snapshot_scope
+    rows=[dict(listing_id='one',ticker='OLD'),dict(listing_id='one',ticker='NEW'),dict(listing_id='two',ticker='OTHER')]
+    tickers,mapping,aliases=snapshot_scope(rows,{'NEW','OTHER'})
+    assert tickers=={'OLD','NEW','OTHER'} and mapping=={'one':'NEW','two':'OTHER'}
+    assert aliases=={'one':['NEW','OLD']}
+    with pytest.raises(ValueError,match='Ambiguous certified'):snapshot_scope(rows,{'OLD','NEW','OTHER'})
+    with pytest.raises(ValueError,match='Duplicate certified'):snapshot_scope(rows+[rows[1]],{'NEW','OTHER'})
+
+
 def test_completed_multitimeframe_and_unknown_extremes():
     f=frame(30);v=em.own(f,np.array([14]),0)
     ix=em.OWN_NAMES.index('candle.15s.body');assert np.isnan(v[0,ix])

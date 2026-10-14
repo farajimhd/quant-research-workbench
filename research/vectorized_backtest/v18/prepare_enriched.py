@@ -51,15 +51,28 @@ def calculation_hash(path=None):
     import ast
     from hashlib import sha256
     tree=ast.parse(Path(path or __file__).read_text(encoding='utf-8-sig'))
-    names={'nan_scratch','release_scratch','requested_rows','prepare_day'}
+    names={'nan_scratch','release_scratch','requested_rows','prepare_day','snapshot_scope'}
     selected=[node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name in names]
-    if {node.name for node in selected}!=names:raise ValueError('Incomplete feature calculation identity')
+    # Historical certified producer lacked the explicit snapshot-scope helper.
+    if {node.name for node in selected} not in (names,names-{'snapshot_scope'}):raise ValueError('Incomplete feature calculation identity')
     return sha256(ast.dump(ast.Module(body=selected,type_ignores=[]),include_attributes=False).encode()).hexdigest()
+
+
+def snapshot_scope(rows,eligible):
+    tickers={r['ticker'] for r in rows};mapping={};aliases={}
+    for row in rows:
+        identity=row['listing_id'];ticker=row['ticker'];aliases.setdefault(identity,set()).add(ticker)
+        if ticker not in eligible:continue
+        if identity in mapping and mapping[identity]!=ticker:raise ValueError('Ambiguous certified source listing identity')
+        if identity in mapping:raise ValueError('Duplicate certified source listing pair')
+        mapping[identity]=ticker
+    return tickers,mapping,{identity:sorted(names) for identity,names in aliases.items() if len(names)>1}
 
 
 def definition():
     return dict(version=VERSION,names=list(NAMES),math_sha256=file_hash(Path(__file__).with_name('enriched_math.py')),
         extractor_sha256=calculation_hash(),extractor_identity='v18-calculation-ast-v1',
+        population_identity_sha256=file_hash(Path(__file__).with_name('indicator_identity.py')),
         output_scope='top-10 membership listings only, including their compact causal history; other rows masked',
         universe='unique tickers in the full pinned preopen snapshot; missing certified source units remain unavailable, never zero',
         clock='completed source second <= feature clock; no overnight return; max endpoint age 1 second',
@@ -103,16 +116,13 @@ def prepare_day(dataset,day,output):
             saved=next(p for p in source['definition']['plan']['population'] if p['session_date']==source_day)
             where=f'session_date=toDate({sql.literal(source_day)}) AND snapshot_id={sql.literal(saved["certificate"]["snapshot_id"])} AND is_tradable=1'
             rows=sql.query(client,f'SELECT listing_id,ticker FROM q_live.feature_tradable_universe_snapshot_v2 WHERE {where}')
-            full_map={r['listing_id']:r['ticker'] for r in rows}
-            if len(full_map)!=len(rows):raise ValueError('Duplicate certified listing identity')
-            eligible=set(source['units'][source_day]);snapshot_tickers=set(full_map.values());excluded=sorted(snapshot_tickers-eligible)
+            eligible=set(source['units'][source_day]);snapshot_tickers,expected_map,aliases=snapshot_scope(rows,eligible);excluded=sorted(snapshot_tickers-eligible)
             if (eligible-snapshot_tickers or len(eligible)!=saved['selected_ticker_days']
                     or len(snapshot_tickers)!=saved['tradable_tickers'] or len(excluded)!=saved['tradable_without_canonical_events']):
                 raise ValueError('Certified canonical-event eligibility census changed')
-            expected_map={i:t for i,t in full_map.items() if t in eligible}
-            population,proof=population_map(client,source,date.fromisoformat(source_day),expected_map)
+            population,proof=population_map(client,source,date.fromisoformat(source_day),expected_map,allow_unavailable_aliases=True)
             proof.update(scope='full preopen snapshot; source-unit availability is metadata only, not feature membership',snapshot_tickers=len(snapshot_tickers),
-                certified_source_tickers=len(eligible),unavailable_without_canonical_events=excluded)
+                certified_source_tickers=len(eligible),unavailable_without_canonical_events=excluded,listing_aliases=aliases)
             # Denominator/membership is known preopen, not inferred from later
             # event presence. Missing certified units contribute unknown masks.
             tickers=sorted(snapshot_tickers);available_tickers=sorted(eligible);ticker_index={t:i for i,t in enumerate(tickers)}

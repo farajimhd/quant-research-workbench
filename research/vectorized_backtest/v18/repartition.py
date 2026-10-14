@@ -26,14 +26,17 @@ def junction(source,target):
 
 def migrate_enriched(source,target,input_hash,role,prior_code):
     old_path=Path(prior_code)/'research/vectorized_backtest/v18/prepare_enriched.py'
-    if calculation_hash(old_path)!=calculation_hash():raise ValueError('Cannot reuse changed feature calculations')
+    old_hash=calculation_hash(old_path)
+    unique_scope_producer='51ce9686b65b5a3bd0598ce5c706a295f316c497253be4ad027f1f97202cd62e'
+    if old_hash not in (calculation_hash(),unique_scope_producer):raise ValueError('Cannot reuse changed feature calculations')
     if file_hash(old_path.with_name('enriched_math.py'))!=definition()['math_sha256']:raise ValueError('Feature math changed')
     spec=importlib.util.spec_from_file_location('research.vectorized_backtest.v18._repartition_prior',old_path)
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
     previous=read(source/'complete.json')
     module.verify(source,previous['input_sha256'],'validation' if previous['validation_opened'] else 'training')
     record=dict(previous,definition=definition(),input_sha256=input_hash,validation_opened=role=='validation',
-        repartition_provenance=dict(version='v18-24-12-binding-v1',source_receipt_sha256=file_hash(source/'complete.json'),source_input_sha256=previous['input_sha256'],source_validation_opened=previous['validation_opened'],calculation_sha256=calculation_hash()))
+        repartition_provenance=dict(version='v18-24-12-binding-v1',source_receipt_sha256=file_hash(source/'complete.json'),source_input_sha256=previous['input_sha256'],source_validation_opened=previous['validation_opened'],calculation_sha256=calculation_hash(),source_calculation_sha256=old_hash,
+            compatibility='Identical calculations, or pinned prior producer that required unique snapshot listings: alias handling is inert on its sealed days'))
     artifact(source,target,record)
 
 

@@ -4,7 +4,7 @@ from research.rl_trading.v1.common import NY,digest
 from research.vectorized_backtest.v4.torch_backtest.source import arte_sql as sql
 
 
-def population_map(client,source,day,expected):
+def population_map(client,source,day,expected,*,allow_unavailable_aliases=False):
     saved=[p for p in source['definition']['plan']['population'] if p['session_date']==str(day)]
     if len(saved)!=1:raise ValueError('Missing unique source population certificate')
     saved=saved[0];cert=saved['certificate']
@@ -24,13 +24,15 @@ def population_map(client,source,day,expected):
     if digest(members)!=saved['snapshot_hash']:raise ValueError('Pinned population identity hash changed')
     # Scope is the immutable input bank's mapping, not a new venue filter or a
     # first-row choice among aliases. Every named listing must match exactly once.
-    chosen={}
+    chosen={};unavailable_aliases=[]
     for row in members:
         identity=row['listing_id']
         if identity not in expected:continue
+        if allow_unavailable_aliases and row['ticker']!=expected[identity] and row['ticker'] not in source['units'][str(day)]:
+            unavailable_aliases.append(dict(listing_id=identity,ticker=row['ticker']));continue
         if identity in chosen or not identity or expected[identity]!=row['ticker']:raise ValueError('Ambiguous or changed certified listing pair')
         if row['ticker'] not in source['units'][str(day)]:raise ValueError('Listing lacks a certified bar unit')
         chosen[identity]=row['ticker']
     if set(chosen)!=set(expected):raise ValueError('Frozen input listing missing from certified preopen snapshot')
-    return chosen,dict(snapshot_sha256=saved['snapshot_hash'],snapshot_rows=len(members),
+    return chosen,dict(snapshot_sha256=saved['snapshot_hash'],snapshot_rows=len(members),unavailable_aliases=unavailable_aliases,
         frozen_scope_rows=len(chosen),outside_frozen_scope_rows=len(members)-len(chosen),scope='existing certified input-bank listing mapping')
