@@ -4,7 +4,22 @@ os.environ['PYTHONDONTWRITEBYTECODE']='1'
 import argparse,json,sys,time
 from pathlib import Path
 import psutil
-from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime,write_json
+
+# Importing v6.torch_backtest.runtime executes that package's Torch/runner
+# initializer. Waiting uses only this queue's narrow stdlib I/O contract.
+ROOT=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v20')
+
+
+def require_queue(path):
+    if not Path('D:/TradingML/runtimes').is_dir():raise ValueError('Required runtime unavailable')
+    target=Path(path).resolve()
+    if not target.is_relative_to(ROOT.resolve()) or target==ROOT.resolve():raise ValueError('Use the V20 queue runtime root')
+    target.mkdir(parents=True,exist_ok=True);return target
+
+
+def write_json(path,value):
+    temporary=path.with_suffix('.json.tmp')
+    temporary.write_text(json.dumps(value,sort_keys=True,allow_nan=False),encoding='utf-8');temporary.replace(path)
 
 
 def ready_to_check(job):
@@ -25,7 +40,7 @@ def ready_to_check(job):
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--job',type=Path,required=True)
     parser.add_argument('--once',action='store_true',help='Readiness smoke only, never profile or run')
-    args=parser.parse_args();job=json.loads(args.job.read_bytes());queue=require_runtime(args.job.parent)
+    args=parser.parse_args();job=json.loads(args.job.read_bytes());queue=require_queue(args.job.parent)
     if job['mode']!='profile':raise ValueError('Deferred queue authorizes only the bounded profile, not a full campaign')
     if Path(job['code']).resolve()!=Path(__file__).resolve().parents[3]:raise ValueError('Queue must use its immutable code copy')
     write_json(queue/'waiting-active.json',dict(pid=os.getpid(),creation_time=psutil.Process().create_time()))

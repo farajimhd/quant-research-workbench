@@ -1,1 +1,1 @@
-"""V18 robust assumed-fill search with isolated display-only validation."""
+"""V20 session experts and global evolution with display-only validation."""
