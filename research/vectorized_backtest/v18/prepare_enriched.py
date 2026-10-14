@@ -21,6 +21,24 @@ from research.rl_trading.v1.common import digest,NY
 read=lambda p:json.loads(Path(p).read_bytes())
 
 
+def nan_scratch(path,shape):
+    """Initialize disk bytes without faulting an entire session into RAM."""
+    array=np.lib.format.open_memmap(path,mode='w+',dtype=np.float32,shape=shape)
+    offset=array.offset;count=array.size;array._mmap.close()
+    block=np.full(1024*1024,np.nan,dtype=np.float32)
+    with Path(path).open('r+b') as stream:
+        stream.seek(offset)
+        while count:
+            n=min(count,len(block));stream.write(memoryview(block[:n]).cast('B'));count-=n
+    return np.load(path,mmap_mode='r+')
+
+
+def release_scratch(array,path):
+    """Flush and unmap touched pages between bounded batches/tiles."""
+    array.flush();array._mmap.close()
+    return np.load(path,mmap_mode='r+')
+
+
 def requested_rows(keys,top_indices,listing_count):
     """All causal clocks for listings entering the pinned top-10 funnel."""
     selected=np.unique(top_indices);selected=selected[selected>=0]
@@ -103,7 +121,7 @@ def prepare_day(dataset,day,output):
             scratch=folder/'scratch';scratch.mkdir(exist_ok=True)
             need=len(tickers)*len(clocks)*4*4
             if shutil.disk_usage(folder).free<need+2*1024**3:raise MemoryError('Insufficient runtime disk for bounded market scratch')
-            dense=np.lib.format.open_memmap(scratch/'cross-section.npy',mode='w+',dtype=np.float32,shape=(4,len(tickers),len(clocks)));dense[:]=np.nan
+            dense=nan_scratch(scratch/'cross-section.npy',(4,len(tickers),len(clocks)))
             units=[]
             own_tickers=sorted(requests)
             peers=sorted(eligible-set(own_tickers))
@@ -140,9 +158,10 @@ def prepare_day(dataset,day,output):
                         if np.any(exact>=len(t)) or not np.array_equal(t[exact],ticks[rr]):raise ValueError('Requested completed feature clock absent')
                         values[rr,:len(OWN_NAMES)]=own(f,ticks[rr],origin);prepared+=len(rr)
                 completed_tickers+=len(batch)
+                dense=release_scratch(dense,scratch/'cross-section.npy')
                 write_json(folder/'progress.json',dict(status='running',day=day,source_day=source_day,stage='top-10 candles' if is_own else 'minimal market context',completed_tickers=completed_tickers,total_tickers=len(available_tickers),top10_tickers=len(own_tickers),required_rows=len(required),snapshot_tickers=len(tickers),unavailable_source_tickers=len(excluded),prepared_rows=prepared))
             dense.flush()
-            rank=np.lib.format.open_memmap(scratch/'rank.npy',mode='w+',dtype=np.float32,shape=(len(tickers),len(clocks)));rank[:]=np.nan
+            rank=nan_scratch(scratch/'rank.npy',(len(tickers),len(clocks)))
             # Smaller tiles bound the sorting temporaries alongside training.
             target_tickers=np.asarray([ticker_index[members[int(i)]['ticker']] for i in ids[target_rows]])
             target_clock=ticks[target_rows]-first_clock
@@ -154,6 +173,8 @@ def prepare_day(dataset,day,output):
                     values[rr,len(OWN_NAMES)+hi*7+5]=tile[ti,ci]-common[ci,0]
                     values[rr,len(OWN_NAMES)+hi*7+6]=percentile[ti,ci]
                 _,pct=market_summary(np.array(dense[3,:,begin:end]),len(tickers));rank[:,begin:end]=pct
+                dense=release_scratch(dense,scratch/'cross-section.npy')
+                rank=release_scratch(rank,scratch/'rank.npy')
             values[target_rows,-2]=rank[target_tickers,target_clock]
             prior=target_clock-15;values[target_rows,-1]=np.where(prior>=0,rank[target_tickers,target_clock]-rank[target_tickers,prior.clip(0)],np.nan)
             del dense,rank

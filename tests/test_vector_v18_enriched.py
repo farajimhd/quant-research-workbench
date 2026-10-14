@@ -43,6 +43,15 @@ def test_top10_scope_includes_history_and_excludes_other_listings():
         requested_rows(keys,np.array([[3]]),3)
 
 
+def test_scratch_release_preserves_nan_masks_and_written_values(tmp_path):
+    from research.vectorized_backtest.v18.prepare_enriched import nan_scratch,release_scratch
+    path=tmp_path/'scratch.npy';a=nan_scratch(path,(3,7,11))
+    assert np.isnan(a).all()
+    a[1,2,3]=4.;a=release_scratch(a,path)
+    assert a[1,2,3]==4. and np.count_nonzero(np.isfinite(a))==1
+    a._mmap.close()
+
+
 def test_completed_multitimeframe_and_unknown_extremes():
     f=frame(30);v=em.own(f,np.array([14]),0)
     ix=em.OWN_NAMES.index('candle.15s.body');assert np.isnan(v[0,ix])
