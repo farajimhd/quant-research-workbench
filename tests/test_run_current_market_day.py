@@ -17,6 +17,8 @@ def arguments():
 
 
 def test_show_grants_opens_nothing_and_writes_only_shared_products(monkeypatch, capsys):
+    from research.mlops import env
+    monkeypatch.setattr(env, 'discover_env_files', lambda *args: pytest.fail('Read credentials for grant review'))
     monkeypatch.setattr(operator, 'factories', lambda *args: pytest.fail('Opened factories for grant review'))
     assert operator.main(arguments() + ['--show-grants']) == 0
     text = capsys.readouterr().out
@@ -25,6 +27,25 @@ def test_show_grants_opens_nothing_and_writes_only_shared_products(monkeypatch, 
     assert 'GRANT INSERT ON q_live.' not in text
     assert 'GRANT INSERT ON market_sip_compact.' not in text
     assert '*' not in text
+
+
+def test_operator_loads_base_environment_before_native_plan(monkeypatch):
+    from research.mlops import env
+    events = []
+    monkeypatch.setattr(env, 'discover_env_files', lambda root: (root / '.env',))
+    def load(paths, *, verbose):
+        assert paths == (operator.Path(operator.__file__).resolve().parents[1] / '.env',)
+        assert verbose is False
+        events.append('base_environment')
+    monkeypatch.setattr(env, 'load_env_files', load)
+    async def run(args):
+        assert events == ['base_environment']
+        assert args.execute is False
+        events.append('native_plan')
+        return 0
+    monkeypatch.setattr(operator, 'run', run)
+    assert operator.main(arguments()) == 0
+    assert events == ['base_environment', 'native_plan']
 
 
 @pytest.mark.parametrize('flags', [['--execute'], ['--execute', '--expected-definition-hash', 'bad'],

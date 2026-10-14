@@ -121,7 +121,11 @@ async def run(args):
 
 
 def main(argv=None):
-    return asyncio.run(run(parse_args(argv)))
+    args = parse_args(argv)
+    if args.publish:
+        from research.mlops.env import discover_env_files, load_env_files
+        load_env_files(discover_env_files(Path(__file__).resolve().parents[1]), verbose=False)
+    return asyncio.run(run(args))
 
 
 if __name__ == '__main__':

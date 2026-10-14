@@ -13,6 +13,26 @@ from tests.test_columnar_strategy_publication import Client, Keeper
 from src.trading_runtime.columnar_strategy_release import TABLES
 
 
+@pytest.mark.parametrize('publishing', [False, True])
+def test_cli_reads_base_environment_only_for_approved_publication(monkeypatch, publishing):
+    from research.mlops import env
+    args = SimpleNamespace(publish=publishing)
+    events = []
+    monkeypatch.setattr(operator, 'parse_args', lambda argv: args)
+    monkeypatch.setattr(env, 'discover_env_files', lambda root: (root / '.env',))
+    def load(paths, *, verbose):
+        assert publishing and verbose is False
+        assert paths == (operator.Path(operator.__file__).resolve().parents[1] / '.env',)
+        events.append('base_environment')
+    monkeypatch.setattr(env, 'load_env_files', load)
+    async def run(selected):
+        assert selected is args
+        assert events == (['base_environment'] if publishing else [])
+        return 0
+    monkeypatch.setattr(operator, 'run', run)
+    assert operator.main([]) == 0
+
+
 def arguments():
     return ['--reference-root', 'synthetic-reference', '--clock-root', 'synthetic-clocks',
         '--strategy-number', '62', '--strategy-id', 'synthetic-shared-program',

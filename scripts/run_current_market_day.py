@@ -250,6 +250,8 @@ def main(argv=None):
                 for database, table in sorted(scopes):
                     print(f'GRANT {privilege} ON {database}.{table} TO {principal}')
         return 0
+    from research.mlops.env import discover_env_files, load_env_files
+    load_env_files(discover_env_files(Path(__file__).resolve().parents[1]), verbose=False)
     return asyncio.run(run(args))
 
 
