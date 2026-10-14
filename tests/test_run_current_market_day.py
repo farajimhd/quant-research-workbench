@@ -27,6 +27,8 @@ def test_show_grants_opens_nothing_and_writes_only_shared_products(monkeypatch, 
     assert 'GRANT INSERT ON q_live.' not in text
     assert 'GRANT INSERT ON market_sip_compact.' not in text
     assert '*' not in text
+    assert 'GRANT SELECT ON market_sip_compact.ref_stock_tapes TO current_market_day_reader' in text
+    assert 'ref_stock_tapes TO current_market_day_publisher' not in text
 
 
 def test_operator_loads_base_environment_before_native_plan(monkeypatch):

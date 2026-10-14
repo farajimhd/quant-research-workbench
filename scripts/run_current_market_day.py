@@ -41,7 +41,9 @@ def principal_plan(years):
         'feature_tradable_universe_snapshot_coverage_v2', 'market_stock_split_v1')}
     system = {('system', name) for name in ('storage_policies', 'tables', 'columns', 'parts', 'data_skipping_indices')}
     reads = frozenset(products | certificates | sources | references | system)
-    return ((READER, reads, frozenset()), (WRITER, reads, frozenset(products | certificates)))
+    # The same SELECT-only reader supplies QMD History's canonical tape decoder.
+    reader_reads = reads | {('market_sip_compact', 'ref_stock_tapes')}
+    return ((READER, reader_reads, frozenset()), (WRITER, reads, frozenset(products | certificates)))
 
 
 def _permission(client, profile):
