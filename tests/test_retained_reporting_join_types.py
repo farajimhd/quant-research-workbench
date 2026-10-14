@@ -119,3 +119,9 @@ def test_date_pruning_includes_utc_rollover_and_query_budget_is_frozen():
     assert 'query_timeout_seconds' not in old.identity()['config']
     assert old.content_hash!=bounded.content_hash and old.calculation_hash==bounded.calculation_hash
     with pytest.raises(ValueError,match='bounded'):CampaignConfig(date(2026,1,1),date(2026,10,2),query_timeout_seconds=0)
+
+
+@pytest.mark.parametrize('deadline',('0','-1','3601'))
+def test_launcher_rejects_unbounded_or_invalid_deadlines_before_connection(deadline):
+    from scripts.prepare_certified_research import parse_args
+    with pytest.raises(SystemExit):parse_args(['schema','--query-timeout-seconds',deadline])

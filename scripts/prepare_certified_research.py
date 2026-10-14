@@ -166,6 +166,7 @@ def parse_args(argv=None):
             p.error('Identity observations must be within canonical history and the universe anchor date')
     if args.staging_reserve_gib<0 or args.staging_chunk_gib<0 or not 0<=args.staging_reserve_fraction<1:
         p.error('Invalid SSD staging reserve or chunk bound')
+    if not 1<=args.query_timeout_seconds<=3600:p.error('Query timeout must be between 1 and 3600 seconds')
     if args.recover_retained_reporting and args.command not in ('prepare-sources','launch','launch-collection'):
         p.error('--recover-retained-reporting belongs to prepare-sources')
     try:contracts.identifier(args.database)
@@ -881,7 +882,7 @@ def main(argv=None):
                     finally:claim.close()
             finally:signal.signal(signal.SIGINT,original)
             print(f"Source ready | {len(result['source']['expected'])} sessions | {result['source_hash']}")
-            print('Derived campaign execution remains under implementation.')
+            print('Source preparation complete; derived launch still requires reference and capacity admission.')
             return 0
         if args.command=='plan-cohorts':
             from pipelines.certified_research import cohorts

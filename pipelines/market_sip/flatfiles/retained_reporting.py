@@ -6,6 +6,7 @@ It never downloads, replaces prices/ordinals, or deletes backup/cache originals.
 """
 from datetime import date,datetime,timezone
 from pathlib import Path
+from time import monotonic
 
 from . import archive_staging,download_update_events as updater
 from .download_massive_sip_flatfiles import DownloadJob
@@ -279,11 +280,15 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                     file_key=str(info['key']).replace('\\','/'),source_origin=info['origin'])
                 if len(readback)!=1 or readback[0]!=expected_receipt:
                     raise ValueError('Retained acquisition receipt did not read back exactly')
+            last_status=None;last_report=0.
             while True:
                 guard();result=native.step(query,source,frozen,claim,guard)
-                emit(f"Retained reporting {day} | {result['status']} | parts={result.get('parts_remaining',0)}")
+                status=(result['status'],result.get('parts_remaining',0));now=monotonic()
+                if status!=last_status or now-last_report>=30:
+                    emit(f"Retained reporting {day} | {status[0]} | parts={status[1]}")
+                    last_status=status;last_report=now
                 if result['status']=='complete':break
-                if stop.wait(1):raise InterruptedError('Retained reporting stopped; mutation retained for resume')
+                if stop.wait(10):raise InterruptedError('Retained reporting stopped; mutation retained for resume')
             schema.verify_auxiliary_storage(query,'q_live',(ns.TABLE,STAGE,RECEIPTS))
             query(f'ALTER TABLE q_live.{STAGE} DELETE WHERE source_date=toDate({literal(day)}) SETTINGS mutations_sync=2',read=False)
             if query(f"SELECT count() n FROM system.tables WHERE database='q_live' AND name={literal(RAW)}")[0]['n']:
