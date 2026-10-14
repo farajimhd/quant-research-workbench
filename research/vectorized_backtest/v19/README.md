@@ -171,3 +171,5 @@ folder), `campaign` (own runtime folder), and `generations` (default50).
 Logs/status/receipts and temporary arrays belong exclusively under runtimes.
 The inherited older qualification utilities are archival; `qualify_v17` is the
 only launch authority for V18.
+
+Latest user instruction: do not run long qualifications. Use run_train --first-generation-check for direct launch after focused tests, certified dataset validation and sealed predecessor-stop proof. This mode records timing_verification=first-real-generation and no prelaunch speed pass; monitor the first actual generation's seals, risk and wall time. The standalone qualification mode remains available only when requested.

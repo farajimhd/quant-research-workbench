@@ -48,22 +48,25 @@ def predecessor_ready(active,stop_receipt=None):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    for name in ('training','validation','output','qualification','predecessor'):p.add_argument('--'+name,type=Path,required=True)
+    for name in ('training','validation','output','predecessor'):p.add_argument('--'+name,type=Path,required=True)
+    timing=p.add_mutually_exclusive_group(required=True)
+    timing.add_argument('--qualification',type=Path)
+    timing.add_argument('--first-generation-check',action='store_true',help='User-authorized direct launch; measure first real generation instead of standalone qualification')
     p.add_argument('--commit',required=True)
     p.add_argument('--generations',type=int,default=50)
     p.add_argument('--predecessor-stop',type=Path)
     a=p.parse_args();root=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v19')
     out=require_runtime(a.output)
     if not out.is_relative_to(root):raise ValueError('V19 campaign must use its own runtime root')
-    q=read_json(a.qualification);active=read_json(a.predecessor)
+    q=read_json(a.qualification) if a.qualification else None;active=read_json(a.predecessor)
     if not predecessor_ready(active,a.predecessor_stop):raise ValueError('Verified completed or user-authorized sealed V18 handoff required')
-    if (q['status']!='passed' or q['source_sha256']!=source_hash() or not q['exact_accounting_parity']
+    if q is not None and (q['status']!='passed' or q['source_sha256']!=source_hash() or not q['exact_accounting_parity']
             or not q.get('protected_native_generation_qualified',False)
             or not q['full_generation_with_validation_qualified'] or q['maximum_ratio']!=1.0
             or max(q['full_generation_ratio'],q['matched_accounting_ratio'])>1.0):raise ValueError('Strict V17 speed/accounting qualification required')
-    if file_hash(Path(active['campaign'])/'checkpoint.json')!=q['predecessor_checkpoint_sha256']:raise ValueError('Predecessor changed')
+    if q is not None and file_hash(Path(active['campaign'])/'checkpoint.json')!=q['predecessor_checkpoint_sha256']:raise ValueError('Predecessor changed')
     for role,path in (('training',a.training),('validation',a.validation)):
-        if file_hash(path)!=q[role+'_sha256']:raise ValueError('Qualified manifest changed')
+        if q is not None and file_hash(path)!=q[role+'_sha256']:raise ValueError('Qualified manifest changed')
     for version in range(7,20):
         pointer=root.parent/f'torch_backtest_v{version}/active-campaign.json'
         if pointer.exists():
@@ -79,7 +82,8 @@ def main():
         '--population','1024','--batch-size','512','--session-workers','2','--generations',str(a.generations),'--seed','182237',
         '--capture-gib','4','--maximum-gate-gib','8']
     record=dict(pid=os.getpid(),creation_time=psutil.Process().create_time(),code=str(Path(__file__).resolve().parents[3]),commit=a.commit,
-        campaign=str(out),source_sha256=source_hash(),arguments=argv,qualification_sha256=file_hash(a.qualification),
+        campaign=str(out),source_sha256=source_hash(),arguments=argv,qualification_sha256=file_hash(a.qualification) if a.qualification else None,
+        timing_verification='first-real-generation' if a.first_generation_check else 'prelaunch-qualification',
         predecessor_sha256=file_hash(a.predecessor),validation_feedback=False,initialization='random-only-v1')
     write_json(out/'active.json',record);write_json(root/'active-campaign.json',record)
     print('COMMAND',sys.executable,'-B -u -m research.vectorized_backtest.v19.run_search',' '.join(argv),flush=True)
