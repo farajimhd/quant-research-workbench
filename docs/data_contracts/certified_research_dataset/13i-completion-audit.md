@@ -96,6 +96,12 @@ execution needs a verified runtime mount alias, and existing misplaced source
 tables must be migrated first. No provider acquisition, mount/configuration
 change or production SEC campaign was run. See [scoped SEC acquisition](13w-sec-scoped-acquisition.md).
 
+A narrow readonly SEC runtime bind-mount helper and opt-in startup hook are now
+prepared. Eleven helper/related configuration tests and shell syntax checks
+passed. The helper preserves foreign/nonempty aliases and checks filesystem
+identity; it does not widen the configured file root, move files or restart the
+server. Actual mount activation and CH nonce readback remain unverified.
+
 SEC bulk mirror creation, raw/replacement stages, snapshot manifest writes and
 cutovers now enforce the shared explicit `live_market_ssd` authority with ZSTD(1)
 defaults. Misplaced templates or existing stage parts block before drop/create

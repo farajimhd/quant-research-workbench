@@ -1,5 +1,6 @@
 param(
     [string]$Distro = "Ubuntu",
+    [switch]$EnableCertifiedSecRuntime,
     [string]$PhysicalDrive = "\\.\PHYSICALDRIVE1",
     [string]$SipRawSsdPhysicalDrive = "\\.\PHYSICALDRIVE2",
     [string]$LiveMarketSsdPhysicalDrive = "\\.\PHYSICALDRIVE3",
@@ -485,6 +486,7 @@ Write-Host "==== Step 5: Run Linux bootstrap file ===="
 # =============================================================================
 
 $BootstrapEnv = @(
+    "CLICKHOUSE_CERTIFIED_SEC_RUNTIME_ENABLED=$($EnableCertifiedSecRuntime.IsPresent.ToString().ToLowerInvariant())",
     "EXPECTED_DATA_FS_UUID=$ExpectedDataFsUuid",
     "EXPECTED_SIP_RAW_SSD_FS_UUID=$ExpectedSipRawSsdFsUuid",
     "EXPECTED_LIVE_MARKET_SSD_FS_UUID=$ExpectedLiveMarketSsdFsUuid",

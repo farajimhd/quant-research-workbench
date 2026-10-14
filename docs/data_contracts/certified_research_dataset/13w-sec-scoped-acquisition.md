@@ -54,6 +54,28 @@ was rejected in a live read-only check without creating a runtime directory.
 A verified mount alias inside the allowed directory is needed. No server
 configuration, filesystem mount or server restart was performed.
 
+### Prepared mount path
+
+`scripts/clickhouse/mount_certified_sec_runtime.py` now exposes `plan`, `check`
+and explicit `apply`. The default plan binds only
+`/mnt/d/TradingML/runtimes/certified-research/sec` into
+`/mnt/d/market-data/certified-sec-runtime`, then makes that alias readonly.
+It preserves the original files and existing permissions. It refuses redirected
+paths, another filesystem, a foreign mount or an unmounted nonempty alias.
+It does not unmount anything or restart ClickHouse. `apply` must run as root
+on the Linux ClickHouse host; the launcher still independently verifies exact
+nonce readback using `--sec-runtime-root-ch /mnt/d/market-data/certified-sec-runtime`.
+
+The existing Windows startup launcher has an optional
+`-EnableCertifiedSecRuntime` switch. Its default is off. When selected, bootstrap
+checks/applies this mount before it stops the server; mount failure therefore
+does not newly stop the server. The normal bootstrap still performs its existing
+restart sequence. Standalone mount application can be used separately.
+
+The plan CLI, mocked mount lifecycle/scope checks, Bash syntax and PowerShell
+syntax passed. No real mount or startup activation was performed, so this is
+a prepared deployment path, not proof that current SEC staging is accessible.
+
 ## Validation and remaining work
 
 The actual parent dry-run generated all 21 stages without launching children.

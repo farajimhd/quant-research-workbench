@@ -32,6 +32,7 @@ RUNTIME_LOG_DIR="/mnt/d/TradingML/runtimes/clickhouse-managed"
 BOOT_LOG="$RUNTIME_LOG_DIR/bootstrap.log"
 SENTINEL_FILE=".clickhouse_mount_sentinel"
 USER_FILES_PATH="/mnt/d/market-data"
+CLICKHOUSE_CERTIFIED_SEC_RUNTIME_ENABLED="${CLICKHOUSE_CERTIFIED_SEC_RUNTIME_ENABLED:-false}"
 EXPECTED_DATA_FS_UUID="${EXPECTED_DATA_FS_UUID:-}"
 EXPECTED_SIP_RAW_SSD_FS_UUID="${EXPECTED_SIP_RAW_SSD_FS_UUID:-}"
 EXPECTED_LIVE_MARKET_SSD_FS_UUID="${EXPECTED_LIVE_MARKET_SSD_FS_UUID:-}"
@@ -749,6 +750,12 @@ ensure_dir_exists "$SIP_RAW_SSD_MOUNT"
 ensure_dir_exists "$LIVE_MARKET_SSD_MOUNT"
 
 log_section "[4/14] Disable systemd ownership and stop ClickHouse if already running"
+if [[ "$CLICKHOUSE_CERTIFIED_SEC_RUNTIME_ENABLED" == "true" ]]; then
+    [[ -n "$REPO_CLICKHOUSE_DIR" ]] || die "SEC runtime mounting requires the configured repository ClickHouse directory."
+    command -v python3 >/dev/null || die "SEC runtime mounting requires Python 3."
+    [[ -f "$REPO_CLICKHOUSE_DIR/mount_certified_sec_runtime.py" ]] || die "SEC runtime mount helper is missing."
+    python3 -B "$REPO_CLICKHOUSE_DIR/mount_certified_sec_runtime.py" apply
+fi
 disable_clickhouse_systemd_unit
 stop_clickhouse_if_running
 
