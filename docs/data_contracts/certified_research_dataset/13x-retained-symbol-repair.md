@@ -17,8 +17,10 @@ whose provider signatures independently match the retained payloads.
 
 ## Required evidence
 
-Only active, unambiguously mapped identities with completed nonempty retained
-history are accepted. Event identity, payload hashes, response hashes, normalized
+Ordinary mapped intervals require active, unambiguously mapped identities with
+completed nonempty retained history. The pending-origin path below additionally
+supports independently verified successful empty history. Event identity,
+payload hashes, response hashes, normalized
 dates/tickers, row counts and date census must match the source coverage.
 The successful history snapshot must cover the full requested end horizon and
 must not predate a newer inventory update.
@@ -27,11 +29,31 @@ history starting later does not authorize guessing an earlier ticker. Every
 nonempty historical alias requires an unambiguous canonical binding. The repair
 never silently skips an alias.
 
-Inactive lifecycle, covered-empty origins, competing mappings, missing history
+Inactive lifecycle, origins without verified points, competing mappings, missing history
 and venue/issuer transitions remain separate dependencies. Rebuilding symbol
 intervals does not by itself establish historical listing eligibility or broker
 execution availability. Current conid anchoring and universe admission still run
 their existing independent checks.
+
+### Verified dated origins
+
+The launcher can now reuse its explicitly selected `--identity-point` observations
+as origin inputs for the same retained FIGIs. It loads the points in one bounded
+query and reconstructs/verifies their immutable hashes. Only an unambiguous point
+at or before context is selected; no point is projected back to its reported IPO
+date. The observation must match stable FIGI, share class, CIK, venue, currency,
+stock type and canonical listing binding. Conflicting or inactive evidence blocks.
+
+Covered-empty history additionally requires the original response fingerprint to
+match a successful `OK` empty response. `NOT_FOUND` does not prove absence of
+ticker changes. Retained nonempty timelines must agree with the point.
+
+Synthesized origin intervals persist as `origin_verified_scope_pending` rather
+than ordinary mapped eligibility. Universe admission rejects them with
+`dated_origin_requires_listing_scope`. This closes the symbol-origin evidence
+path but does not certify uninterrupted issuer/listing/venue eligibility.
+The origin input fingerprint is reloaded before and after publication, and a
+complete resume inserts nothing.
 
 ## Publication and restart
 

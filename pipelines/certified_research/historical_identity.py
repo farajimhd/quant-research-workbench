@@ -163,6 +163,39 @@ def load(query,database,as_of,ticker):
     return observation
 
 
+def load_origins(query,database,requests,*,context_start,figis):
+    """One bounded query; choose only unambiguous verified dated origins."""
+    from .schema import verify_auxiliary_storage
+    identifier(database)
+    selected=[request for request in requests if request['composite_figi'] in figis
+        and date.fromisoformat(request['as_of'])<=context_start]
+    if not selected:return {}
+    if len(selected)>1000:raise ValueError('Historical origin selection exceeds 1000 points')
+    verify_auxiliary_storage(query,database,(TABLE,))
+    keys={(request['as_of'],request['ticker']) for request in selected}
+    if len(keys)!=len(selected):raise ValueError('Duplicate historical origin requests')
+    predicate=','.join(f'(toDate({literal(day)}),{literal(ticker)})' for day,ticker in sorted(keys))
+    rows=query(f'SELECT * FROM {database}.{TABLE} WHERE (as_of,ticker) IN ({predicate}) LIMIT 1001')
+    if len(rows)!=len(keys) or len({(str(row['as_of']),row['ticker']) for row in rows})!=len(keys):
+        raise ValueError('Requested historical origins are missing or duplicated')
+    desired={(request['as_of'],request['ticker']):request for request in selected};origins={}
+    for value in rows:
+        key=(str(value['as_of']),value['ticker'])
+        if key not in desired or int(value['active']) not in (0,1):raise ValueError('Historical origin readback is outside requested scope')
+        observation=ListingObservation(date.fromisoformat(key[0]),value['ticker'],value['composite_figi'],value['share_class_figi'],
+            value['cik'],value['exchange'],value['currency'],value['provider_type'],bool(int(value['active'])),
+            None if value['list_day'] is None else EPOCH+timedelta(days=int(value['list_day'])),
+            None if value['delisted_day'] is None else EPOCH+timedelta(days=int(value['delisted_day'])))
+        if observation.evidence_hash!=value['evidence_hash']:raise ValueError('Historical origin evidence hash differs')
+        request=desired[key]
+        reconcile(observation,expected_composite_figi=request['composite_figi'],expected_cik=request.get('cik'))
+        current=origins.get(observation.composite_figi)
+        if current is not None and current.as_of==observation.as_of and current!=observation:
+            raise ValueError('Competing historical origins require explicit resolution')
+        if current is None or observation.as_of<current.as_of:origins[observation.composite_figi]=observation
+    return origins
+
+
 class AcquisitionHandlers:
     """One provider request per global executor unit; no nested worker pool."""
     def __init__(self,database,claim,client_factory,provider_factory,dictionary_claim_factory,source_guard):

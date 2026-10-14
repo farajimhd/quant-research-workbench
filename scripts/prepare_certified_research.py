@@ -196,9 +196,12 @@ def prepare_retained_symbols(args,client,claim,dictionary_factory,stop,through):
     dictionary=dictionary_factory()
     try:
         if dictionary.dictionary_database!='q_live':raise ValueError('Retained symbol repair requires Gateway dictionary ownership')
+        from pipelines.certified_research.historical_identity import load_origins
+        context_start=min(value for value in (args.context_start_date,args.rebuild_origin_date,args.start_date) if value is not None)
         result=rebuild(client.http,database='q_live',identifiers=args.retained_figi,
-            context_start=min(value for value in (args.context_start_date,args.rebuild_origin_date,args.start_date) if value is not None),
-            claim=dictionary,execute=True,guard=guard,through=through)
+            context_start=context_start,claim=dictionary,execute=True,guard=guard,through=through,
+            origin_loader=lambda:load_origins(client.query,args.database,args.identity_point,
+                context_start=context_start,figis=set(args.retained_figi)))
     finally:dictionary.close()
     if args.format=='text':print(f'Retained symbols | intervals={result["intervals"]} | inserted={result["inserted"]}',flush=True)
     return result

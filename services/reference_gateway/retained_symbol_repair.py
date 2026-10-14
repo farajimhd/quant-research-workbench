@@ -13,7 +13,7 @@ VOLATILE={'observed_at_utc','source_run_id','inserted_at'}
 def semantic(row):return {key:value for key,value in row.items() if key not in VOLATILE}
 
 
-def compile_intervals(entity,coverage,events,binding,ticker_bindings,context_start,*,correction=None,through=None):
+def compile_intervals(entity,coverage,events,binding,ticker_bindings,context_start,*,correction=None,through=None,origin=None):
     """Only a complete mapped timeline may supply an interval origin."""
     if type(context_start) is not date or context_start<gateway.TICKER_EVENT_HISTORY_START:
         raise ValueError('Retained ticker-history context precedes its supported history')
@@ -27,7 +27,7 @@ def compile_intervals(entity,coverage,events,binding,ticker_bindings,context_sta
     if (not entity.active or entity.provider_identifier_kind!='composite_figi'
             or not re.fullmatch('[A-Z0-9]{12}',entity.composite_figi)
             or entity.provider_identifier!=entity.composite_figi
-            or binding.status!='mapped' or coverage.get('source_status')!='completed'
+            or binding.status!='mapped' or coverage.get('source_status') not in ('completed','covered_empty')
             or coverage.get('mapping_status')!='mapped'
             or (coverage.get('security_id'),coverage.get('listing_id'))!=(binding.security_id,binding.listing_id)):
         raise ValueError('Retained ticker history needs complete active identity mapping; inactive/empty history requires separate origin/lifecycle evidence')
@@ -56,14 +56,39 @@ def compile_intervals(entity,coverage,events,binding,ticker_bindings,context_sta
             ticker=str((payload.get('ticker_change') or {}).get('ticker') or '').strip().upper()
             if (row.get('ticker') or '')!=ticker:raise ValueError('Retained ticker payload differs from its normalized ticker')
             changes.append((day,ticker,expected))
-    if not dates or (str(min(dates)),str(max(dates)))!=(str(coverage['min_event_date']),str(coverage['max_event_date'])):
+    if dates and (str(min(dates)),str(max(dates)))!=(str(coverage['min_event_date']),str(coverage['max_event_date'])):
         raise ValueError('Retained history date census differs from coverage')
+    if not dates and (coverage['source_status']!='covered_empty' or coverage.get('min_event_date') is not None or coverage.get('max_event_date') is not None):
+        raise ValueError('Empty retained history lacks explicit covered-empty evidence')
+    if not dates and response_hash not in {
+            gateway.sha256_text(gateway.canonical_json(dict(status='OK',name=name,events=[])))
+            for name in (entity.entity_name,'')}:
+        raise ValueError('Empty history lacks an original successful response signature')
     source_system='massive'
     if correction is not None:
         gateway.validate_provider_signature(correction,raw)
         changes=[(date.fromisoformat(day),ticker,gateway.stable_id('ticker_event_correction',
             f'{correction.correction_id}|{day}|{ticker}')) for day,ticker in correction.canonical_timeline]
         source_system=gateway.CORRECTION_SOURCE_SYSTEM
+    origin_event_id=None
+    if origin is not None:
+        current_type=str(json.loads(entity.source_payload_json).get('type') or '')
+        if (not origin.active or not gateway.TICKER_EVENT_HISTORY_START<=origin.as_of<=context_start
+                or origin.composite_figi!=entity.composite_figi or origin.share_class_figi!=entity.share_class_figi
+                or not origin.cik or not entity.cik or int(origin.cik)!=int(entity.cik)
+                or origin.exchange!=entity.primary_exchange or origin.currency!=entity.currency_name.upper()
+                or not current_type or origin.provider_type!=current_type
+                or origin.ticker not in ticker_bindings
+                or (ticker_bindings[origin.ticker].status,ticker_bindings[origin.ticker].security_id,ticker_bindings[origin.ticker].listing_id)
+                    !=('mapped',binding.security_id,binding.listing_id)):
+            raise ValueError('Dated origin conflicts with canonical issuer, listing, venue or security identity')
+        earlier=[change for change in changes if change[0]<=origin.as_of]
+        if earlier:
+            if max(earlier,key=lambda value:value[0])[1]!=origin.ticker:raise ValueError('Dated origin conflicts with retained timeline')
+        else:
+            event_id=gateway.stable_id('verified_symbol_origin',origin.evidence_hash+'|'+response_hash)
+            changes.append((origin.as_of,origin.ticker,event_id))
+            origin_event_id=event_id
     if not changes or min(day for day,_,_ in changes)>context_start:
         raise ValueError('Retained history omits the requested symbol origin; a dated origin is required')
     if max(changes,key=lambda value:value[0])[1]!=entity.current_ticker.strip().upper():
@@ -72,8 +97,13 @@ def compile_intervals(entity,coverage,events,binding,ticker_bindings,context_sta
         if ticker and (ticker not in ticker_bindings or ticker_bindings[ticker].status!='mapped'
                 or ticker_bindings[ticker].security_id!=binding.security_id):
             raise ValueError('Historical alias lacks an unambiguous canonical binding; no alias will be skipped')
-    return gateway.build_symbol_intervals(entity,binding,changes,run_id='retained-symbol-repair-v1',
+    intervals=gateway.build_symbol_intervals(entity,binding,changes,run_id='retained-symbol-repair-v1',
         observed_at=datetime.now(UTC),source_system=source_system,ticker_bindings=ticker_bindings)
+    for interval in intervals:
+        if interval['source_event_id']==origin_event_id:
+            interval['mapping_status']='origin_verified_scope_pending'
+            interval['source_system']='verified_dated_symbol_origin_v1'
+    return intervals
 
 
 def scoped_rows(client,database,table,keys,*,maximum_rows=65536,maximum_bytes=32*1024**2):
@@ -92,7 +122,7 @@ def scoped_rows(client,database,table,keys,*,maximum_rows=65536,maximum_bytes=32
     return rows
 
 
-def rebuild(client,*,database,identifiers,context_start,claim,execute=False,guard=lambda:None,through=None):
+def rebuild(client,*,database,identifiers,context_start,claim,execute=False,guard=lambda:None,through=None,origin_loader=lambda:{}):
     identifiers=gateway.bounded_reference_keys(identifiers)
     if not identifiers:raise ValueError('Retained symbol repair requires explicit bounded identities')
     def check():claim.check();guard();verify_sec_write_storage(client,database,TABLES)
@@ -118,18 +148,20 @@ def rebuild(client,*,database,identifiers,context_start,claim,execute=False,guar
         bindings=gateway.load_canonical_bindings(client,database=database,entities=entities)
         tickers=gateway.load_ticker_bindings(client,database=database,entities=entities,entity_bindings=bindings)
         corrections=gateway.load_ticker_event_corrections()
+        origins=origin_loader()
         proof=gateway.sha256_text(gateway.canonical_json(dict(entities=[asdict(entity) for entity in entities],
             coverage=coverage,events=sorted(events,key=lambda row:row['ticker_event_id']),
             bindings={key:asdict(value) for key,value in bindings.items()},
             tickers={key:{ticker:asdict(value) for ticker,value in values.items()} for key,values in tickers.items()},
-            corrections=[asdict(value) for value in corrections])))
+            corrections=[asdict(value) for value in corrections],origins={key:asdict(value) for key,value in origins.items()})))
         desired=[];by_entity={key:[] for key in keys}
         for row in events:by_entity[row['provider_entity_key']].append(row)
         for entity in entities:
             key=entity.provider_entity_key
             if key not in coverage or key not in bindings:raise ValueError('Retained identity coverage/binding is missing')
             desired.extend(compile_intervals(entity,coverage[key],by_entity[key],
-                bindings[key],tickers.get(key,{}),context_start,correction=gateway.correction_for_entity(entity,corrections),through=through))
+                bindings[key],tickers.get(key,{}),context_start,correction=gateway.correction_for_entity(entity,corrections),
+                through=through,origin=origins.get(entity.composite_figi)))
         return proof,keys,desired
     proof,keys,desired=snapshot()
     wanted={row['symbol_interval_id']:semantic(row) for row in desired}

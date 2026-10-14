@@ -814,6 +814,41 @@ class ClickHouseIntegration(unittest.TestCase):
         actual=self.client.query(f'SELECT * FROM {self.database}.{gateway.SYMBOL_INTERVAL_TABLE} FINAL ORDER BY valid_from_date')
         self.assertEqual([repair.semantic(row) for row in actual],[repair.semantic(row) for row in expected])
 
+    def test_verified_dated_origin_is_persisted_but_not_admitted_as_listing_scope(self):
+        from services.reference_gateway import ticker_events as gateway,retained_symbol_repair as repair
+        from services.reference_gateway.providers import MassiveTickerEventsResult
+        from pipelines.certified_research import historical_identity as identity
+        from datetime import timezone
+        from unittest.mock import patch
+        gateway.ensure_ticker_event_schema(self.client.http,database=self.database,storage_policy='live_market_ssd')
+        self.client.query(identity.persistence_table().ddl(self.database),read=False)
+        entity=gateway.normalize_inventory([dict(ticker='ORIGIN',composite_figi='BBG000000099',active=True,
+            name='Fixture',cik='1',primary_exchange='XNAS',currency_name='usd',type='CS')],[])[0]
+        binding=gateway.CanonicalBinding('mapped','security-origin','listing-origin');when=datetime(2026,10,13,tzinfo=timezone.utc)
+        events,_,hash_=gateway.normalize_ticker_event_response(entity,MassiveTickerEventsResult(
+            entity.provider_identifier,entity.entity_name,[],'OK','fixture'),binding,run_id='fixture',observed_at=when)
+        coverage=gateway.successful_coverage_row(entity,binding,events,source_status='covered_empty',response_sha=hash_,
+            run_id='fixture',started_at=when,finished_at=when,rows_written=0,rows_deleted=0,stale_after_days=7)
+        origin=identity.ListingObservation(date(2025,1,2),'ORIGIN',entity.composite_figi,'','0000000001',
+            'XNAS','USD','CS',True,date(2020,1,1),None)
+        class Claim:
+            def check(self):pass
+        identity.publish(self.client.query,self.database,Claim(),[origin])
+        gateway.insert_json_rows(self.client.http,self.database,gateway.TICKER_EVENT_ENTITY_TABLE,
+            [gateway.inventory_db_row(entity,run_id='fixture',now=when)])
+        gateway.insert_json_rows(self.client.http,self.database,gateway.TICKER_EVENT_COVERAGE_TABLE,[coverage])
+        request=dict(as_of=str(origin.as_of),ticker=origin.ticker,composite_figi=entity.composite_figi,cik='1')
+        loader=lambda:identity.load_origins(self.client.query,self.database,[request],context_start=date(2025,2,1),figis={entity.composite_figi})
+        with patch.object(gateway,'load_canonical_bindings',return_value={entity.provider_entity_key:binding}),\
+             patch.object(gateway,'load_ticker_bindings',return_value={entity.provider_entity_key:{'ORIGIN':binding}}):
+            first=repair.rebuild(self.client.http,database=self.database,identifiers=[entity.composite_figi],
+                context_start=date(2025,2,1),through=date(2026,10,2),claim=Claim(),execute=True,origin_loader=loader)
+            second=repair.rebuild(self.client.http,database=self.database,identifiers=[entity.composite_figi],
+                context_start=date(2025,2,1),through=date(2026,10,2),claim=Claim(),execute=True,origin_loader=loader)
+        self.assertEqual((first['inserted'],second['inserted']),(1,0))
+        row=self.client.query(f"SELECT valid_from_date,mapping_status FROM {self.database}.{gateway.SYMBOL_INTERVAL_TABLE} FINAL WHERE ticker='ORIGIN'")[0]
+        self.assertEqual(row,dict(valid_from_date='2025-01-02',mapping_status='origin_verified_scope_pending'))
+
     def test_sec_bulk_stages_use_verified_ssd_and_lossless_compression(self):
         from pipelines.sec.edgar import sec_bulk_clickhouse_ingest as ingest,sec_bulk_snapshot_refresh as bulk
         ingest.create_database_and_tables(self.client.http,self.database,'')

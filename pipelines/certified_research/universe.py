@@ -207,6 +207,7 @@ def resolve(rows,context_start,end,*,maximum_rows=100000):
             reason='unresolved_market_scope'
         elif len(conids)!=1 or not re.fullmatch('[1-9][0-9]*',str(conids[0])) or int(conids[0])>=2**64:
             reason='conflicting_or_invalid_conid_anchor'
+        elif row.get('interval_mapping')=='origin_verified_scope_pending':reason='dated_origin_requires_listing_scope'
         elif not row.get('symbol_interval_id') or row.get('interval_mapping')!='mapped':reason='missing_dated_symbol_mapping'
         elif row.get('history_status')!='completed' or row.get('history_mapping')!='mapped':reason='uncertified_ticker_history'
         elif (row.get('interval_security_id')!=row['security_id'] or row.get('history_security_id')!=row['security_id']
@@ -275,6 +276,7 @@ def repair_inventory(snapshot):
         if not row.get('security_id') or not row.get('issuer_id'):gaps.append('canonical_identity')
         if not row.get('list_date'):gaps.append('listing_lifecycle')
         if not row.get('symbol_interval_id') or row.get('interval_mapping')!='mapped':gaps.append('dated_symbol_mapping')
+        if row.get('interval_mapping')=='origin_verified_scope_pending':gaps.append('historical_listing_scope')
         if row.get('history_status')!='completed' or row.get('history_mapping')!='mapped':gaps.append('ticker_history_binding')
         if row.get('mapping_issue'):gaps.append('open_mapping_issue')
         for gap in gaps:

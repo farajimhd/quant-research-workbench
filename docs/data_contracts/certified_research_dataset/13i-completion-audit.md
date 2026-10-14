@@ -39,6 +39,13 @@ resumed with zero inserts. Missing histories, inactive lifecycle, covered-empty
 origins and historical eligibility transitions remain unresolved; the repair
 does not manufacture them. See [retained symbol repair](13x-retained-symbol-repair.md).
 
+Verified dated identity points can now supply a missing symbol origin, including
+successful covered-empty histories. Point hashes, identity/venue/type consistency,
+successful response fingerprints and context bounds are checked. A real fixture
+persisted one origin and resumed without inserts. Such intervals remain scope
+pending and cannot enter the historical tradable universe until listing/venue
+evidence is independently qualified; no IPO-date backprojection occurs.
+
 A read-only October 13 audit used context January 1, 2025 through October 2,
 2026, with conid observations through October 13. Among 2,509 listings rejected
 for missing dated symbol intervals, direct retained-coverage lookup found:
