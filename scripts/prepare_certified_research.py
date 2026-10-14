@@ -784,10 +784,13 @@ def main(argv=None):
         if args.command=='qualify-sec-lineage':
             from contextlib import closing
             from src.trading_runtime.keeper_session import open_workstation_keeper_session
-            from pipelines.certified_research.publication import SourceClaim
+            from pipelines.certified_research.publication import DictionaryClaim
             from pipelines.certified_research import sec_lineage,sec_coverage,planning
             with closing(open_workstation_keeper_session()) as keeper:
-                claim=SourceClaim(keeper.client)
+                # This promotes immutable lineage metadata; it acquires no
+                # SEC source bytes and never changes canonical source rows.
+                # Keep the shared metadata lease without blocking SIP repair.
+                claim=DictionaryClaim(keeper.client,'q_live')
                 try:
                     result=sec_lineage.qualify(client.query,claim,args.fundamental_start_date,
                         planning.reference_coverage_end(args.end_date))

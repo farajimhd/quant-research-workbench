@@ -22,6 +22,10 @@ Stages 1–2 and source preparation can progress independently. Market products
 wait for both. SEC/FINRA ingestion can proceed independently of market
 aggregation, but security normalization and certified products require dated
 identity. The existing global worker/memory budget bounds concurrent producers.
+`qualify-sec-lineage` promotes only independently witnessed metadata under the
+shared `q_live` dictionary lease, so it can run alongside SIP recovery. It does
+not acquire SEC bytes or change source manifests; canonical acquisition retains
+source ownership and every promotion rechecks its source/stage snapshot.
 Market rows stay in ClickHouse; V7 reads only its required certified bar stream.
 No training, optimizer execution, training shards or dataset exports are produced.
 

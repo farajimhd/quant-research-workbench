@@ -84,7 +84,7 @@ def test_sec_lineage_cli_is_independent_of_market_acquisition_and_closes_ownersh
     keeper=SimpleNamespace(client=Mock(),close=Mock())
     with patch('scripts.build_market_day.Client',return_value=client),\
          patch('src.trading_runtime.keeper_session.open_workstation_keeper_session',return_value=keeper),\
-         patch('pipelines.certified_research.publication.SourceClaim',return_value=claim),\
+         patch('pipelines.certified_research.publication.DictionaryClaim',return_value=claim) as metadata_claim,\
          patch('pipelines.certified_research.sec_lineage.qualify',return_value=dict(qualified=('a',),unqualified=('b',))) as qualify,\
          patch('pipelines.certified_research.sec_coverage.inventory',return_value=dict(ready=False,gaps={'sec_daily_archive':()})),\
          patch('pipelines.certified_research.acquisition.prepare_sources') as acquire:
@@ -94,6 +94,7 @@ def test_sec_lineage_cli_is_independent_of_market_acquisition_and_closes_ownersh
     output=json.loads(capsys.readouterr().out)
     assert output['qualified']==['a'] and not output['coverage']['ready']
     assert qualify.call_args.args[2:]==(date(2024,1,1),date(2026,1,3))
+    metadata_claim.assert_called_once_with(keeper.client,'q_live')
     acquire.assert_not_called()
     for owner in (claim,keeper,client):owner.close.assert_called_once()
 
