@@ -59,6 +59,18 @@ published readback. Seven handler/batch tests passed without provider calls.
 This does not reconstruct symbol intervals or prove lifetime membership; complete
 change/lifecycle evidence and fresh-launch repair integration remain incomplete.
 
+Historical scope transitions now fail closed instead of silently projecting a
+current OTC/non-US/non-USD classification backward. The candidate query retains
+an evidence bit only from dated 2026-onward tradable snapshots that independently
+match USD stock type and a verified non-OTC US venue. Generic broker tradability
+alone is insufficient. A currently out-of-scope listing with that historical
+evidence requires a dated transition boundary, not silent exclusion or automatic
+historical admission. The evidence bit is included in universe source hashes;
+old universe bindings require requalification rather than silent reuse.
+Two focused tests passed, and the current read-only Gateway query retained its
+existing blockers without widening production admission. Interval reconstruction
+and transition-evidence publication remain incomplete.
+
 ## Next implementation order
 
 The shared SEC coverage writer previously allowed an empty policy to omit the
