@@ -427,10 +427,11 @@ class MarketHandlers:
 
 
 class ReferenceHandlers:
-    def __init__(self,dataset_id,database,claim,client_factory,source_guard,plans,*,dictionary_claim_factory=None):
+    def __init__(self,dataset_id,database,claim,client_factory,source_guard,plans,*,dictionary_claim_factory=None,original_parity_guard=None):
         self.dataset=dataset_id;self.database=database;self.claim=claim;self.client_factory=client_factory
         self.source_guard=source_guard;self.plans={p.unit.key:p for p in plans}
         self.dictionary_claim_factory=dictionary_claim_factory
+        self.original_parity_guard=original_parity_guard
 
     def publication_query(self,query):
         def owned(sql,*args,**kwargs):
@@ -524,7 +525,7 @@ class ReferenceHandlers:
                     raise ValueError('Reported metric selection is empty or not in the frozen catalog')
                 verified_input=any(p.get('product')=='sec_acquisition' for p in parents.values())
                 reference_producer.run_sec(scope,args['cik'],selected,query,self.claim,self.source_guard,database=self.database,
-                    expected_source_hash=args['source_hash'] if verified_input else None)
+                    expected_source_hash=args['source_hash'] if verified_input else None,original_parity_guard=self.original_parity_guard)
             elif plan.unit.product=='derived_fundamentals':
                 key=next(iter(parents));parent_plan=self.plans[key]
                 if parent_plan.unit.product!='fundamentals':raise ValueError('Wrong derived parent product')

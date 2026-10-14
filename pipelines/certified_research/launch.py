@@ -28,7 +28,7 @@ class ExecutionLaunch:
     def from_stored(cls,query,database,dataset_id,claim,client_factory,source_guard,
                     capacity_guard,dictionary_claim_factory,runtime_factory=None,*,
                     prerequisite_registries=(),maximum_units=1_000_000,
-                    maximum_metadata_bytes=256*1024**2,storage_observer=None):
+                    maximum_metadata_bytes=256*1024**2,storage_observer=None,original_parity_guard=None):
         """Restore handlers against the immutable ClickHouse plan, without writes.
 
         Runtime construction receives the validated stored configuration and
@@ -43,18 +43,20 @@ class ExecutionLaunch:
         runtime=runtime_factory(saved)
         launch=cls(query,saved.config,saved.dataset_id,saved.units,saved.source_hash,
             claim,client_factory,source_guard,capacity_guard,dictionary_claim_factory,
-            runtime,prerequisite_registries=prerequisite_registries,storage_observer=storage_observer)
+            runtime,prerequisite_registries=prerequisite_registries,storage_observer=storage_observer,original_parity_guard=original_parity_guard)
         if launch.controller.plan_hash!=saved.plan_hash:
             raise ValueError('Restored execution differs from its immutable stored plan')
         claim.check();source_guard()
         return launch
 
     def __init__(self,query,config,dataset_id,plans,source_hash,claim,client_factory,source_guard,
-                 capacity_guard,dictionary_claim_factory,market_runtime,*,prerequisite_registries=(),storage_observer=None):
+                 capacity_guard,dictionary_claim_factory,market_runtime,*,prerequisite_registries=(),storage_observer=None,original_parity_guard=None):
         if not callable(capacity_guard):raise ValueError('Execution requires qualified capacity admission')
         self.claim=claim;self.source_guard=source_guard;self.capacity_guard=capacity_guard
         self.query=query
         self.config=config;self.plans=tuple(plans)
+        self.reference_handlers=ReferenceHandlers(dataset_id,config.database,claim,client_factory,source_guard,self.plans,
+            dictionary_claim_factory=dictionary_claim_factory,original_parity_guard=original_parity_guard)
         for plan in self.plans:
             if plan.unit.product=='universe' and tuple(plan.arguments.get('issuer_keys',()))!=config.issuer_keys:
                 raise ValueError('Universe issuer cohort differs from the frozen configuration')
@@ -78,8 +80,7 @@ class ExecutionLaunch:
             PreparedShortSourceHandlers(dataset_id,config.database,claim,client_factory,source_guard),
             MarketHandlers(dataset_id,config.database,claim,client_factory,source_guard,
                         market_runtime.request,market_runtime.engine,storage_observer=storage_observer),
-            ReferenceHandlers(dataset_id,config.database,claim,client_factory,source_guard,self.plans,
-                dictionary_claim_factory=dictionary_claim_factory),
+            self.reference_handlers,
             ActivityHandlers(dataset_id,config.database,claim,client_factory,source_guard,self.plans),
             UniverseHandlers(dataset_id,config.database,claim,client_factory,dictionary_claim_factory,source_guard),
             *prerequisite_registries)
@@ -90,6 +91,13 @@ class ExecutionLaunch:
     def admit(self):
         self.claim.check();self.source_guard()
         self.controller.check_plan()
+        if not self.config.database.startswith('certified_research_test_'):
+            from .reference_producer import require_original_parity
+            for plan in self.plans:
+                if plan.unit.product=='fundamentals':
+                    self.claim.check();self.source_guard()
+                    require_original_parity(self.reference_handlers.scope(plan,{}),self.reference_handlers.original_parity_guard)
+                    self.claim.check();self.source_guard()
         if any(p.unit.product=='calculation_recipe' for p in self.plans):runtime_plan.resolve(self.config,self.plans)
         installation.verify(self.query,self.config.database,require_tables=True)
         certificate=self.capacity_guard(self.controller.plan_hash,self.plans)

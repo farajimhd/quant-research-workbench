@@ -12,6 +12,16 @@ from .facts import FACT_KEY,UNITS
 STAGING='research_stage_reference_v1'
 
 
+def require_original_parity(scope,guard):
+    if not callable(guard):raise ValueError('Production SEC fundamentals require certified original-document parity coverage')
+    evidence=guard(scope)
+    if (not isinstance(evidence,dict) or evidence.get('certified') is not True
+            or evidence.get('all_bulk_matched') is not True or evidence.get('original_vintage_qualified') is not True
+            or evidence.get('source_hash')!=scope.parent_hash):
+        raise ValueError('SEC original-document parity coverage differs from frozen source authority')
+    return evidence
+
+
 def staging_table():
     facts=next(t for t in schema.TABLES if t.name=='research_facts_v1')
     proof=next(t for t in schema.TABLES if t.name=='research_provenance_v1')
@@ -27,12 +37,7 @@ def run_sec(scope,cik,metrics,query,claim,source_guard,*,database='arte',expecte
             raise ValueError('Production SEC fundamentals require certified original-document parity coverage')
         base_guard=source_guard
         def source_guard():
-            base_guard();evidence=original_parity_guard(scope)
-            if (not isinstance(evidence,dict) or evidence.get('certified') is not True
-                    or evidence.get('all_bulk_matched') is not True
-                    or evidence.get('original_vintage_qualified') is not True
-                    or evidence.get('source_hash')!=scope.parent_hash):
-                raise ValueError('SEC original-document parity coverage differs from frozen source authority')
+            base_guard();require_original_parity(scope,original_parity_guard)
     identifier(database);claim.check();source_guard()
     schema.verify_storage(query,database,require_tables=True)
     schema.verify_auxiliary_storage(query,database,(STAGING,))

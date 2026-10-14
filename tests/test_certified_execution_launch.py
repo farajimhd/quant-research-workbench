@@ -2,6 +2,7 @@ from datetime import date
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import Mock,patch
+from threading import Event
 from uuid import uuid4
 from pipelines.certified_research.launch import ExecutionLaunch,combine_registries
 from pipelines.certified_research.campaign import PlannedUnit,StoredPlan
@@ -10,18 +11,51 @@ from pipelines.certified_research.contracts import CampaignConfig,digest
 
 
 class ExecutionLaunchTests(TestCase):
+    def test_original_parity_is_required_before_storage_admission_and_writers(self):
+        dataset=str(uuid4());claim=SimpleNamespace(check=Mock());guard=Mock();query=Mock();capacity=Mock()
+        config=CampaignConfig(date(2026,1,2),date(2026,1,2))
+        runtime=SimpleNamespace(dataset=dataset,database='arte',claim=claim,request=Mock(),engine=Mock())
+        plans=(PlannedUnit(Unit('fundamentals','fundamentals'),dict(entity_key=1,cik='320193',
+            start='2026-01-02',end='2026-01-02',source_hash='a'*64)),)
+        launch=ExecutionLaunch(query,config,dataset,plans,'a'*64,claim,Mock(),guard,capacity,Mock(),runtime)
+        with self.assertRaisesRegex(ValueError,'original-document parity'):launch.admit()
+        capacity.assert_not_called();query.assert_not_called()
+        parity=Mock(return_value=dict(certified=True,all_bulk_matched=True,original_vintage_qualified=True,source_hash='wrong'))
+        launch.reference_handlers.original_parity_guard=parity
+        with self.assertRaisesRegex(ValueError,'frozen source'):launch.admit()
+        capacity.assert_not_called();query.assert_not_called()
+        parity.return_value['source_hash']='a'*64
+        capacity.side_effect=ValueError('storage reached after parity')
+        with patch('pipelines.certified_research.launch.installation.verify'):
+            with self.assertRaisesRegex(ValueError,'storage reached'):launch.admit()
+        self.assertEqual(parity.call_args.args[0].parent_hash,'a'*64)
+
+    def test_parity_verifier_reaches_reference_producer_unchanged(self):
+        from pipelines.certified_research.handlers import ReferenceHandlers
+        plan=PlannedUnit(Unit('fundamentals','fundamentals'),dict(entity_key=1,cik='320193',
+            start='2026-01-02',end='2026-01-02',source_hash='a'*64))
+        client=Mock();parity=Mock()
+        handlers=ReferenceHandlers(str(uuid4()),'arte',Mock(),lambda:client,Mock(),(plan,),
+            dictionary_claim_factory=Mock(),original_parity_guard=parity)
+        with patch('pipelines.certified_research.reference_producer.run_sec') as run:
+            handlers.producer(plan,{},Event())
+        self.assertIs(run.call_args.kwargs['original_parity_guard'],parity)
+        client.close.assert_called_once()
+
     def test_stored_launch_preserves_configuration_and_checks_graph_before_capacity_or_writes(self):
         dataset=str(uuid4());claim=SimpleNamespace(check=Mock());guard=Mock();query=Mock()
         config=CampaignConfig(date(2026,1,2),date(2026,1,5),workers=2)
         runtime=SimpleNamespace(dataset=dataset,database='arte',claim=claim,request=Mock(),engine=Mock())
         plans=(PlannedUnit(Unit('bars','market_aggregate'),dict(day='2026-01-02',listing_key=1,ticker='TEST')),)
         capacity=Mock()
-        original=ExecutionLaunch(query,config,dataset,plans,'a'*64,claim,Mock(),guard,capacity,Mock(),runtime)
+        parity=Mock()
+        original=ExecutionLaunch(query,config,dataset,plans,'a'*64,claim,Mock(),guard,capacity,Mock(),runtime,original_parity_guard=parity)
         saved=StoredPlan(dataset,config,plans,'a'*64,original.controller.plan_hash)
         factory=Mock(return_value=runtime)
         with patch('pipelines.certified_research.launch.load_plan',return_value=saved) as loader:
             restored=ExecutionLaunch.from_stored(query,'arte',dataset,claim,Mock(),guard,capacity,Mock(),factory,
-                maximum_units=99,maximum_metadata_bytes=8192)
+                maximum_units=99,maximum_metadata_bytes=8192,original_parity_guard=parity)
+            self.assertIs(restored.reference_handlers.original_parity_guard,parity)
             loader.assert_called_once_with(query,'arte',dataset,maximum_units=99,maximum_metadata_bytes=8192)
             factory.assert_called_once_with(saved)
             self.assertIs(restored.config,config)

@@ -151,3 +151,20 @@ the rejection/conflict evidence survives; this is never a certification success.
 Even readiness true only clears these per-document input conditions. Whole-period
 source census, original-vintage qualification and class allocation remain separate
 required authorities before production data can be certified.
+
+### Campaign admission and producer wiring
+
+Production `ExecutionLaunch` now checks the original-parity verifier for every
+fundamental scope before storage admission or campaign writers. The same verifier
+is passed through `ReferenceHandlers` to `run_sec`, which rechecks it with the
+source guard during publication. Stored-plan restoration preserves this injected
+verifier; it is application code, never executable code in persisted arguments.
+The required evidence remains certified whole-scope coverage, all bulk values
+matched, original public vintage qualified and the exact frozen source hash.
+
+Missing or incompatible evidence blocks admission immediately. This closes the
+previous late failure where a controller could prepare other products and only
+then discover that it never supplied the required parity verifier. The CLI still
+cannot manufacture this authority from candidate captures, reported projections,
+or a matching retained filing list. Its concrete whole-period authority provider
+remains unfinished; no production certification was granted by this wiring change.
