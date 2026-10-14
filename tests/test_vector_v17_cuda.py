@@ -20,6 +20,18 @@ def test_signal_counts_exact_without_gate_sized_allocation():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA workstation gate')
+def test_signal_counts_use_64_bit_offsets_across_production_gate_bank():
+    from research.vectorized_backtest.v17.signal_counts import count
+    torch.cuda.empty_cache()
+    if torch.cuda.mem_get_info()[0]<6*1024**3:pytest.skip('Requires workstation-sized GPU')
+    gates=torch.zeros((512,16384,512),device='cuda',dtype=torch.uint8)
+    gates[-1,-1,-1]=31
+    actual=count(gates)
+    expected=torch.zeros((512,5),device='cuda',dtype=torch.int64);expected[-1]=1
+    assert torch.equal(actual,expected)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA workstation gate')
 def test_fused_numeric_rolling_values_exact():
     from research.vectorized_backtest.v17.fused_program import FusedPrograms
     i=next(i for i,f in enumerate(CATALOG) if f.unit=='ratio')
