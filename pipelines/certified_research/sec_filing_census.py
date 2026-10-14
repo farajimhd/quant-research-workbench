@@ -6,7 +6,8 @@ import re
 from .contracts import digest,literal
 
 
-def inventory(query,ciks,start,end,*,forms,maximum_documents=10000):
+def inventory(query,ciks,start,end,*,forms,maximum_documents=10000,source='retained'):
+    if source not in ('retained','bulk_submissions'):raise ValueError('Unsupported filing census source authority')
     if (not isinstance(ciks,(tuple,list)) or not 1<=len(ciks)<=256 or any(not re.fullmatch('0*[1-9][0-9]{0,9}',str(cik)) for cik in ciks)
             or type(start) is not date or type(end) is not date or start>end
             or not isinstance(forms,(tuple,list)) or not 1<=len(forms)<=32 or len(set(forms))!=len(forms)
@@ -19,7 +20,12 @@ def inventory(query,ciks,start,end,*,forms,maximum_documents=10000):
     columns='cik,accession_number,form_type,filing_date,primary_document,source_content_sha256'
     where=(f'cik IN ({aliases}) AND form_type IN ({",".join(map(literal,forms))}) AND '
         f'(filing_date BETWEEN toDate({literal(start)}) AND toDate({literal(end)}) OR filing_date IS NULL)')
-    base=f'FROM q_live.sec_filing_v3 FINAL WHERE {where}'
+    if source=='retained':base=f'FROM q_live.sec_filing_v3 FINAL WHERE {where}'
+    else:
+        columns+=',source_kind,source_file_id'
+        base=(f'FROM (SELECT cik,accession_number,form_type,filing_date,primary_document,'
+            'lower(hex(SHA256(raw_submission_json))) source_content_sha256,source_kind,source_file_id '
+            f'FROM sec_core.sec_bulk_mirror_filing_v3 FINAL WHERE {where})')
     census_sql=(f'SELECT count() n,sum(length(toJSONString(tuple({columns})))) bytes,'
         f'lower(hex(SHA256(toJSONString(arraySort(groupArray(lower(hex(SHA256(toJSONString(tuple({columns}))))))))))) source_hash {base}')
     before=query(census_sql)
@@ -41,13 +47,36 @@ def inventory(query,ciks,start,end,*,forms,maximum_documents=10000):
         if not row['primary_document']:reasons.append('missing_primary_document')
         elif len(row['primary_document'])>256:reasons.append('oversized_primary_document_name')
         if not re.fullmatch('[0-9a-f]{64}',row['source_content_sha256'] or ''):reasons.append('missing_filing_source_hash')
+        if source=='bulk_submissions':
+            if row['source_kind'] not in ('submissions_bulk','submissions_bulk_fragment'):reasons.append('unqualified_submission_source_kind')
+            if not row['source_file_id']:reasons.append('missing_submission_source_file')
         record=dict(cik=cik,accession=accession,form=row['form_type'],filing_date=row['filing_date'],
             primary_document=row['primary_document'],filing_source_hash=row['source_content_sha256'])
+        if source=='bulk_submissions':record.update(source_kind=row['source_kind'],source_file_id=row['source_file_id'])
         if reasons:issues.append(dict(record,reasons=tuple(reasons)))
         else:documents.append(record)
-    result=dict(version='retained-sec-primary-filing-census-v1',ciks=normalized,start=str(start),end=str(end),forms=tuple(sorted(forms)),
+    result=dict(version='retained-sec-primary-filing-census-v2',source=source,ciks=normalized,start=str(start),end=str(end),forms=tuple(sorted(forms)),
         filings=len(rows),documents=tuple(documents),unresolved=tuple(issues),
         issue_counts=dict(sorted(Counter(reason for row in issues for reason in row['reasons']).items())),
         source_hash=before[0]['source_hash'],discovery_ready=not issues,coverage_certified=False,
         limitation='Retained filing inventory only; independent acquisition/submission completeness and document/time verification remain required.')
     return dict(result,census_hash=digest(result))
+
+
+def reconcile(retained,submissions):
+    for census,source in ((retained,'retained'),(submissions,'bulk_submissions')):
+        body=dict(census);sealed=body.pop('census_hash',None)
+        if sealed!=digest(body) or census['source']!=source:raise ValueError('Filing census source/fingerprint differs')
+    scope=('ciks','start','end','forms')
+    if any(retained[k]!=submissions[k] for k in scope):raise ValueError('Filing census reconciliation scopes differ')
+    def indexed(census):return {(r['cik'],r['accession']):r for r in census['documents']}
+    left=indexed(retained);right=indexed(submissions)
+    conflicts=tuple(sorted(key for key in left.keys()&right.keys() if any(left[key][field]!=right[key][field]
+        for field in ('form','filing_date','primary_document'))))
+    missing=tuple(sorted(right.keys()-left.keys()));unconfirmed=tuple(sorted(left.keys()-right.keys()))
+    result=dict(version='retained-submission-identity-reconciliation-v1',retained_census_hash=retained['census_hash'],
+        submission_census_hash=submissions['census_hash'],retained_filings=retained['filings'],submission_filings=submissions['filings'],
+        missing_retained=missing,unconfirmed_retained=unconfirmed,conflicting_metadata=conflicts,
+        unresolved_retained=len(retained['unresolved']),unresolved_submissions=len(submissions['unresolved']),
+        identity_reconciled=not (missing or unconfirmed or conflicts or retained['unresolved'] or submissions['unresolved']),coverage_certified=False)
+    return dict(result,reconciliation_hash=digest(result))

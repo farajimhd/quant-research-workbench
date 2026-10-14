@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import Mock,patch
 from types import SimpleNamespace
 from threading import Event
-from pipelines.certified_research.sec_filing_census import inventory
+from pipelines.certified_research.sec_filing_census import inventory,reconcile
 from scripts.prepare_certified_research import parse_args,prepare_sec_share_sources
 
 
@@ -18,6 +18,21 @@ def query_for(rows):
 
 def row(**changes):return dict(dict(cik='0000320193',accession_number='0000320193-25-000079',form_type='10-K',
     filing_date='2025-10-31',primary_document='aapl.htm',source_content_sha256='b'*64),**changes)
+
+
+def test_independent_submission_reconciliation_retains_missing_and_conflicting_evidence():
+    def census(rows,source):
+        return inventory(query_for(rows),('320193',),date(2025,1,1),date(2025,12,31),forms=('10-K',),source=source)
+    retained=census([row()],'retained')
+    submission_row=row(source_kind='submissions_bulk',source_file_id='original-source')
+    matched=reconcile(retained,census([submission_row],'bulk_submissions'))
+    assert matched['identity_reconciled'] and not matched['coverage_certified']
+    assert reconcile(retained,census([],'bulk_submissions'))['unconfirmed_retained']
+    assert reconcile(census([],'retained'),census([submission_row],'bulk_submissions'))['missing_retained']
+    changed=dict(submission_row,primary_document='different.htm')
+    assert reconcile(retained,census([changed],'bulk_submissions'))['conflicting_metadata']
+    with pytest.raises(ValueError,match='fingerprint'):
+        reconcile(dict(retained,filings=99),census([submission_row],'bulk_submissions'))
 
 
 def test_census_preserves_unknown_dates_and_missing_primary_documents_as_blockers():
