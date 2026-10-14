@@ -1,9 +1,11 @@
 from datetime import date
 
 import pytest
+from unittest.mock import patch
 
 from pipelines.certified_research.sec_filing_census import inventory
-from pipelines.certified_research.sec_submission_coverage import audit
+from pipelines.certified_research.sec_submission_coverage import audit,inspect
+from scripts.prepare_certified_research import parse_args
 
 
 def census():
@@ -53,3 +55,27 @@ def test_forged_census_and_metadata_drift_fail_closed():
         if calls==3:rows=[dict(rows[0],source_hash='f'*64)]
         return rows
     with pytest.raises(ValueError,match='changed'):audit(drifting,census())
+
+
+def test_read_only_audit_needs_explicit_scope_but_no_capacity_profile():
+    arguments=['audit-sec-submissions','--end-date','2025-12-31','--fundamental-start-date','2025-01-01',
+        '--sec-census-cik','320193','--sec-census-forms','10-K']
+    assert parse_args(arguments).capacity_profile is None
+    with pytest.raises(SystemExit):parse_args(['audit-sec-submissions'])
+    with pytest.raises(SystemExit):parse_args(arguments[:-2])
+    with pytest.raises(SystemExit):parse_args(arguments+['--acquire-missing'])
+
+
+def test_inspection_rechecks_both_inventories_and_coverage():
+    submission=census();retained=dict(submission,source='retained')
+    from pipelines.certified_research.contracts import digest
+    retained.pop('census_hash');retained['census_hash']=digest(retained)
+    with patch('pipelines.certified_research.sec_filing_census.inventory',side_effect=[retained,submission,retained,submission]) as load,\
+         patch('pipelines.certified_research.sec_submission_coverage.audit',return_value=dict(retained_evidence_ready=True,audit_hash='audit')) as coverage:
+        result=inspect(None,('320193',),date(2025,1,1),date(2025,12,31),forms=('10-K',))
+    assert result['status']=='retained_evidence_ready' and not result['coverage_certified']
+    assert load.call_count==4 and coverage.call_count==2
+    with patch('pipelines.certified_research.sec_filing_census.inventory',side_effect=[retained,submission,dict(retained,census_hash='changed')]),\
+         patch('pipelines.certified_research.sec_submission_coverage.audit',return_value=dict(retained_evidence_ready=True,audit_hash='audit')),\
+         pytest.raises(ValueError,match='inventory changed'):
+        inspect(None,('320193',),date(2025,1,1),date(2025,12,31),forms=('10-K',))

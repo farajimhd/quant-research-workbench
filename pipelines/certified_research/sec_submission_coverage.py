@@ -63,3 +63,25 @@ def audit(query,census):
         required_fragments=len(required),issues=tuple(issues),retained_evidence_ready=not issues,
         coverage_certified=False,limitation='ZIP member vintage and ingestion manifests are diagnostics; independent acquisition completeness remains required.')
     return dict(result,audit_hash=digest(result))
+
+
+def inspect(query,ciks,start,end,*,forms,maximum_documents=1000):
+    """Inspect both authorities as one bounded, read-only prerequisite report."""
+    from .sec_filing_census import inventory,reconcile
+    options=dict(forms=forms,maximum_documents=maximum_documents)
+    retained=inventory(query,ciks,start,end,**options)
+    submissions=inventory(query,ciks,start,end,source='bulk_submissions',**options)
+    reconciliation=reconcile(retained,submissions)
+    coverage=audit(query,submissions)
+    for expected,source in ((retained,'retained'),(submissions,'bulk_submissions')):
+        if inventory(query,ciks,start,end,source=source,**options)['census_hash']!=expected['census_hash']:
+            raise ValueError('SEC prerequisite inventory changed during inspection')
+    if audit(query,submissions)['audit_hash']!=coverage['audit_hash']:
+        raise ValueError('SEC prerequisite coverage changed during inspection')
+    ready=reconciliation['identity_reconciled'] and coverage['retained_evidence_ready'] and bool(retained['documents'])
+    result=dict(version='retained-sec-prerequisite-inspection-v1',status='retained_evidence_ready' if ready else 'blocked',
+        ciks=retained['ciks'],start=retained['start'],end=retained['end'],forms=retained['forms'],
+        reconciliation=reconciliation,coverage=coverage,coverage_certified=False,
+        retained_issues=retained['issue_counts'],submission_issues=submissions['issue_counts'],
+        next_requirement='Independent acquisition completeness and original document/public-time qualification; no download or write performed.')
+    return dict(result,inspection_hash=digest(result))

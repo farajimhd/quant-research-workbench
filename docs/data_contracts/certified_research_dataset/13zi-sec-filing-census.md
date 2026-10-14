@@ -49,6 +49,22 @@ to test this launcher wiring.
 
 ### Independent filing identity check
 
+Inspect source prerequisites without a capacity profile, writers or downloads:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B scripts/prepare_certified_research.py audit-sec-submissions `
+  --fundamental-start-date 2025-01-01 --end-date 2026-10-02 `
+  --sec-census-cik 320193 --sec-census-cik 1652044 --sec-census-cik 1326801 `
+  --sec-census-forms '10-K,10-K/A,10-Q,10-Q/A'
+```
+
+The command uses server-enforced read-only access and returns exit code 2 for
+blocked prerequisites. `--format json` returns fingerprints and structured issues.
+It rereads both inventories and coverage metadata before returning, so source changes
+fail inspection. A ready diagnostic report remains uncertified; it does not approve
+writers or replace public-time and complete-acquisition qualification.
+
 Add `--reconcile-sec-submissions` to require the retained census to agree with
 `sec_core.sec_bulk_mirror_filing_v3` before source preparation. This inventory
 comes from the bulk submission parser, which reads all submission entries.

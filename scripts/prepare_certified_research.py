@@ -26,7 +26,7 @@ from pipelines.certified_research import contracts,schema,source,short_sql,campa
 
 def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('schema','install-schema','preflight','plan','plan-cohorts','status','stored-plan','prepare-sources','qualify-sec-lineage','verify','measure-storage','measure-sec-extraction','estimate-storage','launch','launch-collection','backfill-v7','run','resume','resume-collection','verify-collection'))
+    p.add_argument('command',choices=('schema','install-schema','preflight','plan','plan-cohorts','status','stored-plan','prepare-sources','audit-sec-submissions','qualify-sec-lineage','verify','measure-storage','measure-sec-extraction','estimate-storage','launch','launch-collection','backfill-v7','run','resume','resume-collection','verify-collection'))
     p.add_argument('--collection',action='store_true',help='estimate-storage only: inspect a stored collection instead of a single dataset')
     p.add_argument('--dataset-id',type=UUID)
     p.add_argument('--source-dataset-id',type=UUID,help='Qualified source plan/bar dataset for backfill-v7; never modified')
@@ -113,12 +113,17 @@ def parse_args(argv=None):
         p.error('--reconcile-sec-submissions requires --sec-census-cik and --sec-census-forms')
     if args.sec_census_cik or args.sec_census_forms is not None:
         import re
-        if (args.command not in ('prepare-sources','launch','launch-collection') or args.sec_share_document
+        if (args.command not in ('prepare-sources','launch','launch-collection','audit-sec-submissions') or args.sec_share_document
                 or not 1<=len(args.sec_census_cik)<=256 or len(set(args.sec_census_cik))!=len(args.sec_census_cik)
                 or not args.sec_census_forms or len(args.sec_census_forms)>32 or len(set(args.sec_census_forms))!=len(args.sec_census_forms)
                 or any(not re.fullmatch('[A-Z0-9 -]{1,24}(?:/A)?',form) for form in args.sec_census_forms)
-                or args.fundamental_start_date is None or args.capacity_profile is None):
+                or args.fundamental_start_date is None or (args.command!='audit-sec-submissions' and args.capacity_profile is None)):
             p.error('SEC census selection requires fresh source preparation, unique issuers, explicit forms/context start and capacity profile; cannot mix manual documents')
+    if args.command=='audit-sec-submissions' and (not args.sec_census_cik or args.end_date is None):
+        p.error('audit-sec-submissions requires explicit end date, SEC census issuers, forms and fundamental context start')
+    if args.command=='audit-sec-submissions' and (args.acquire_missing or args.stage_archive or args.recover_retained_reporting
+            or args.verify_sec_archives or args.prepare_sec_fundamental_evidence):
+        p.error('audit-sec-submissions is read-only; acquisition and preparation flags belong to prepare-sources')
     if args.sec_numeric_mode is not None and not args.prepare_sec_fundamental_evidence:
         p.error('--sec-numeric-mode requires --prepare-sec-fundamental-evidence')
     if args.compare_sec_bulk and args.command!='measure-sec-extraction':p.error('--compare-sec-bulk belongs to measure-sec-extraction')
@@ -420,8 +425,21 @@ def main(argv=None):
     from scripts import build_market_day as builder
     args.max_threads=args.query_threads;args.max_memory_gb=args.query_memory_gib;args.query_timeout=45
     client=builder.Client(args,persistent=False,readonly=args.command in
-        ('preflight','plan','plan-cohorts','status','stored-plan','verify','verify-collection','measure-storage','measure-sec-extraction','estimate-storage'))
+        ('preflight','plan','plan-cohorts','status','stored-plan','verify','verify-collection','measure-storage','measure-sec-extraction','estimate-storage','audit-sec-submissions'))
     try:
+        if args.command=='audit-sec-submissions':
+            from pipelines.certified_research import sec_submission_coverage
+            result=sec_submission_coverage.inspect(client.query,args.sec_census_cik,args.fundamental_start_date,args.end_date,
+                forms=args.sec_census_forms)
+            if args.format=='json':print(json.dumps(result,indent=2,default=str))
+            else:
+                check=result['reconciliation']
+                print(f'SEC prerequisites | {result["status"]} | retained={check["retained_filings"]} | submissions={check["submission_filings"]} | certified=false')
+                for key in ('missing_retained','unconfirmed_retained','conflicting_metadata'):
+                    for cik,accession in check[key]:print(f'  {key}: CIK {cik}, accession {accession}')
+                for issue in result['coverage']['issues']:print('  '+json.dumps(issue,sort_keys=True,default=str))
+                print(result['next_requirement'])
+            return 2 if result['status']=='blocked' else 0
         if args.command=='measure-sec-extraction':
             from pipelines.certified_research import sec_extraction_measurement
             result=sec_extraction_measurement.measure(client.query,args.measurement_sec_document,compare_bulk=args.compare_sec_bulk)
