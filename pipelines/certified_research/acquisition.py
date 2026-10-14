@@ -173,7 +173,7 @@ def prepare_sources(query,paths,config,claim,stop,*,acquire_missing=False,stage_
             runner(command,paths,stop,emit=emit,guard=claim.check);guard()
         inv=source.inventory(query,range_start,config.end,sessions=sessions)
         if inv['missing'] or inv['incomplete']:raise ValueError('Updater did not certify all required source sessions')
-    resume_native_repairs(query,writer_query,inv,claim,stop,emit=emit)
+    resume_native_repairs(query,writer_query,inv,claim,stop,emit=emit,defer_unsubmitted=recover_retained_reporting)
     reporting=source.reporting_inventory(query,inv)
     if reporting['mutating']:raise ValueError('Canonical reporting mutations must finish before preparation')
     if recover_retained_reporting and reporting['missing']:
@@ -195,14 +195,14 @@ def prepare_sources(query,paths,config,claim,stop,*,acquire_missing=False,stage_
         preparation_hash=digest(dict(source_hash=epoch,range=(range_start,config.start,config.end))))
 
 
-def resume_native_repairs(query,writer_query,inventory,claim,stop,*,emit=print):
+def resume_native_repairs(query,writer_query,inventory,claim,stop,*,emit=print,defer_unsubmitted=False):
     """Route only previously frozen native jobs; never adopt unsigned NS rows."""
     from pipelines.market_sip.events import native_reporting_repair as native
     from .contracts import literal
     exists=query(f"SELECT count() n FROM system.tables WHERE database='q_live' AND name={literal(native.HEADER)}")[0]['n']
     if not int(exists):return
     days=inventory['expected']
-    rows=query(f'SELECT source_date,source_hash,evidence_hash,target FROM q_live.{native.HEADER} '
+    rows=query(f'SELECT source_date,source_hash,evidence_hash,target,marker FROM q_live.{native.HEADER} '
         f'WHERE source_date BETWEEN toDate({literal(min(days))}) AND toDate({literal(max(days))}) ORDER BY source_date')
     if not rows:return
     import json
@@ -213,6 +213,7 @@ def resume_native_repairs(query,writer_query,inventory,claim,stop,*,emit=print):
         f'WHERE source_date BETWEEN toDate({literal(min(days))}) AND toDate({literal(max(days))}) AND revision={literal(REPORTING_REVISION)}') if int(has_coverage) else []
     by_day={str(r['source_date']):r for r in coverage}
     if len(by_day)!=len(coverage):raise ValueError('Native reporting coverage is ambiguous')
+    mutations=query("SELECT command FROM system.mutations WHERE database='market_sip_compact' AND match(table,'^events_[0-9]{4}$')") if defer_unsubmitted else ()
     seen=set();pending={}
     for row in rows:
         day=date.fromisoformat(str(row['source_date']))
@@ -230,17 +231,21 @@ def resume_native_repairs(query,writer_query,inventory,claim,stop,*,emit=print):
                 emit(f'Native reporting {day} | certified receipt reused')
                 continue
         if writer_query is None:raise ValueError('Native repair resume requires the owned writer connection')
+        if defer_unsubmitted and not any(row['marker'] in m['command'] for m in mutations):
+            # A crash during monthly preparation may leave only some headers.
+            # Finish the full month's capture before submitting those days.
+            emit(f'Native reporting {day} | prepared header retained for monthly recovery')
+            continue
         pending.setdefault((day.year,day.month),[]).append((inventory['rows'][day],row['evidence_hash']))
     for month,units in sorted(pending.items()):
         def guard():
             claim.check()
             if stop.is_set():raise InterruptedError('Native repair stopped; server mutation retained for resume')
-            for record,_ in units:
-                day=date.fromisoformat(str(record['source_date']))
-                current=source.inventory(query,day,day,sessions=(day,))
-                if (current['missing'] or current['incomplete']
-                        or current['source_hashes'].get(str(day))!=inventory['source_hashes'][str(day)]):
-                    raise ValueError('Canonical source changed during native reporting repair')
+            batch_days=tuple(date.fromisoformat(str(record['source_date'])) for record,_ in units)
+            current=source.inventory(query,min(batch_days),max(batch_days),sessions=batch_days)
+            if (current['missing'] or current['incomplete'] or any(
+                    current['source_hashes'].get(str(day))!=inventory['source_hashes'][str(day)] for day in batch_days)):
+                raise ValueError('Canonical source changed during native reporting repair')
         previous=None;last_report=0.
         while True:
             guard()

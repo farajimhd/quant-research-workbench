@@ -96,6 +96,10 @@ boundary it prepares independent daily repair headers and submits one combined
 mutation for the days needing repair. Every daily marker is retained in the
 server command, so resume discovers the original mutation instead of issuing
 another one. Each day is independently verified and certified after completion.
+Prepared headers without a submitted mutation are deferred to full monthly
+capture on restart. Polling selects a day owned by the mutation before visiting
+days already certified without needing a flag change. Source guards check the
+entire month in one bounded metadata inventory rather than one query per day.
 
 The batch is limited to 31 distinct dates in one month. Quotes and untargeted
 days retain their original flags; all prices, ordinals and other preserved

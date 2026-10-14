@@ -47,7 +47,7 @@ class Contracts(unittest.TestCase):
         class Stop:
             def is_set(self):return False
             def wait(self,seconds):return False
-        writer=lambda *args,**kwargs:None
+        writer=lambda *args,**kwargs:[]
         with patch.object(source,'inventory',return_value=inventory),patch.object(native,'step',side_effect=[
                 dict(status='mutating',parts_remaining=1),dict(status='complete')]) as step:
             acquisition.resume_native_repairs(query,writer,inventory,Claim(),Stop(),emit=lambda *args:None)
@@ -60,6 +60,35 @@ class Contracts(unittest.TestCase):
         header['source_hash']=frozen
         with self.assertRaisesRegex(ValueError,'writer connection'):
             acquisition.resume_native_repairs(query,None,inventory,Claim(),Stop())
+
+    def test_monthly_resume_defers_unsubmitted_partial_headers(self):
+        from unittest.mock import patch
+        from pipelines.market_sip.events import native_reporting_repair as native
+        day=date(2026,1,2);record=dict(source_date=str(day),trade_event_rows=2)
+        frozen=c.digest(record)
+        inventory=dict(expected=(day,),rows={day:record},source_hashes={str(day):frozen})
+        header=dict(source_date=str(day),source_hash=frozen,evidence_hash='b'*64,
+            target='market_sip_compact.events_2026',marker='c'*64)
+        def query(sql):
+            if 'system.tables' in sql:return [dict(n=1)]
+            if 'system.mutations' in sql or 'historical_trade_reporting_coverage_v1' in sql:return []
+            return [header]
+        with patch.object(native,'batch_step') as batch:
+            acquisition.resume_native_repairs(query,lambda *a:[],inventory,None,None,
+                defer_unsubmitted=True,emit=lambda *a:None)
+            batch.assert_not_called()
+
+    def test_monthly_poll_visits_owned_day_before_previously_complete_day(self):
+        from unittest.mock import patch
+        from pipelines.market_sip.events import native_reporting_repair as native
+        units=[(dict(source_date='2026-01-02',trade_event_rows=2),'b'*64),
+            (dict(source_date='2026-01-05',trade_event_rows=2),'c'*64)]
+        source,frozen=units[1]
+        marker=c.digest(dict(version=native.VERSION,day=date(2026,1,5),source=c.digest(source),
+            evidence=frozen,target='market_sip_compact.events_2026',revision=c.REPORTING_REVISION))
+        with patch.object(native,'step',return_value=dict(status='mutating')) as step:
+            self.assertEqual(native.batch_step(lambda *a:[dict(command=marker)],units,None,None)['status'],'mutating')
+            self.assertEqual(step.call_args.args[1],source)
 
     def test_native_reporting_fingerprint_is_required_and_changes_source_epoch(self):
         import json

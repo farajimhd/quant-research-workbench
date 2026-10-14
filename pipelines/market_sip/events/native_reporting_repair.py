@@ -183,6 +183,19 @@ def batch_step(query,units,claim,source_guard,**kwargs):
     days=[date.fromisoformat(str(source['source_date'])) for source,_ in units]
     if len(set(days))!=len(days) or len({(d.year,d.month) for d in days})!=1:
         raise ValueError('Native repair batch must contain unique days in one month')
+    target=kwargs.get('target') or f'market_sip_compact.events_{days[0].year}'
+    target_db,target_table=target.split('.')
+    identifier(target_db);identifier(target_table)
+    active=query(f'SELECT command FROM system.mutations WHERE database={literal(target_db)} '
+        f'AND table={literal(target_table)} AND NOT is_done')
+    for source,frozen in units:
+        day=date.fromisoformat(str(source['source_date']))
+        source_hash=digest({k:v for k,v in source.items() if k!='updated_at'})
+        marker=digest(dict(version=VERSION,day=day,source=source_hash,evidence=frozen,target=target,revision=REVISION))
+        if any(marker in row.get('command','') for row in active):
+            # Visit a day actually owned by the mutation before any already
+            # certified day whose marker was not needed in that command.
+            return step(query,source,frozen,claim,source_guard,prepare_only=True,**kwargs)
     prepared=[];completed=[]
     for source,frozen in units:
         result=step(query,source,frozen,claim,source_guard,prepare_only=True,**kwargs)

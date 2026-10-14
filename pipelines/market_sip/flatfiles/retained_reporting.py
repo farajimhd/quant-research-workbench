@@ -169,12 +169,11 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
         def batch_guard():
             claim.check()
             if stop.is_set():raise InterruptedError('Retained reporting stopped; submitted mutations may continue')
-            for source,_ in pending:
-                d=date.fromisoformat(str(source['source_date']))
-                current=canonical_source.inventory(query,d,d,sessions=(d,))
-                if (current['missing'] or current['incomplete']
-                        or current['source_hashes'].get(str(d))!=inventory['source_hashes'][str(d)]):
-                    raise ValueError('Canonical source changed during monthly reporting migration')
+            batch_days=tuple(date.fromisoformat(str(source['source_date'])) for source,_ in pending)
+            current=canonical_source.inventory(query,min(batch_days),max(batch_days),sessions=batch_days)
+            if (current['missing'] or current['incomplete'] or any(
+                    current['source_hashes'].get(str(d))!=inventory['source_hashes'][str(d)] for d in batch_days)):
+                raise ValueError('Canonical source changed during monthly reporting migration')
         last_status=None;last_report=0.
         month=str(pending[0][0]['source_date'])[:7]
         while True:
