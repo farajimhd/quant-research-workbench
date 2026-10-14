@@ -325,6 +325,8 @@ class UniverseHandlers:
             start=date.fromisoformat(args['context_start']);end=date.fromisoformat(args['end'])
             anchor=date.fromisoformat(args['anchor_date'])
             snapshot=universe.load(client.query,start,end,anchor)
+            from .cohorts import select
+            snapshot=select(snapshot,tuple(args.get('issuer_keys',())))
             if snapshot['source_hash']!=args['source_hash']:raise ValueError('Frozen Gateway source epoch changed')
             if not snapshot['ready']:
                 raise ValueError('Historical universe requires evidence repair: '+str(snapshot['rejection_counts']))

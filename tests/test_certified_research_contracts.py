@@ -781,6 +781,40 @@ class Contracts(unittest.TestCase):
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
 
+    def test_issuer_cohort_publication_and_stored_plan_preserve_frozen_selection(self):
+        from hashlib import sha256
+        from datetime import timezone,timedelta
+        from pipelines.certified_research import cohorts
+        dataset=str(uuid.uuid4());start=datetime(2026,1,2,tzinfo=timezone.utc)
+        intervals=[];projection=[]
+        for n in range(3):
+            proof=json.dumps(['cohort-fixture',dataset,n]);hash_=sha256(proof.encode()).hexdigest()
+            intervals.append(ListingInterval('L'+dataset+str(n),'S'+dataset+str(n),
+                'I'+dataset+str(n//2),'T'+str(n),n+1,start,start+timedelta(days=3),
+                'US','XNAS','USD','STK',True,True,False,False,hash_))
+            projection.append(f'SELECT {c.literal(intervals[-1].listing_id)} listing_id,'
+                f'{c.literal(proof)} source_proof,{c.literal(hash_)} evidence_hash')
+        full=dict(ready=True,rejected=(),intervals=tuple(intervals),source_hash='a'*64)
+        keys=(identity_key(1,intervals[0].issuer_id),);selected=cohorts.select(full,keys)
+        class Claim:
+            def check(self):pass
+        dictionary=Claim();dictionary.dictionary_database=self.database;claim=Claim()
+        publisher=UniversePublisher(self.client.query,self.database,dataset,claim,dictionary,lambda:None)
+        receipt=publisher.publish(selected,date(2026,1,2),date(2026,1,4),date(2026,10,13),
+            fixture_projection=' UNION ALL '.join(projection))
+        self.assertEqual(receipt['intervals'],2)
+        actual=self.client.query(f'SELECT DISTINCT issuer_key FROM {self.database}.research_membership_v1 '
+            f"WHERE dataset_id=toUUID('{dataset}')")
+        self.assertEqual([int(r['issuer_key']) for r in actual],list(keys))
+        config=c.CampaignConfig(date(2026,1,2),date(2026,1,2),database=self.database,issuer_keys=keys)
+        plans=(PlannedUnit(Unit('membership','universe'),dict(source_hash=selected['source_hash'],issuer_keys=keys)),)
+        controller=Campaign(self.client.query,self.database,claim,dataset,config,plans,'b'*64,lambda:None,
+            {'universe':lambda *args:None},{'universe':lambda *args:receipt})
+        controller.install()
+        saved=load_plan(self.client.query,self.database,dataset)
+        self.assertEqual(saved.config.issuer_keys,keys);self.assertEqual(saved.plan_hash,controller.plan_hash)
+        self.assertEqual(saved.units[0].arguments['issuer_keys'],list(keys))
+
     def test_sec_stage_lineage_promotes_only_proven_ranges_and_detects_source_changes(self):
         from types import SimpleNamespace
         from pipelines.certified_research import sec_lineage,sec_coverage

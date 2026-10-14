@@ -26,7 +26,7 @@ from pipelines.certified_research import contracts,schema,source,short_sql,campa
 
 def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('schema','install-schema','preflight','plan','status','stored-plan','prepare-sources','qualify-sec-lineage','verify','launch','backfill-v7','run','resume'))
+    p.add_argument('command',choices=('schema','install-schema','preflight','plan','plan-cohorts','status','stored-plan','prepare-sources','qualify-sec-lineage','verify','launch','backfill-v7','run','resume'))
     p.add_argument('--dataset-id',type=UUID)
     p.add_argument('--source-dataset-id',type=UUID,help='Qualified source plan/bar dataset for backfill-v7; never modified')
     p.add_argument('--backfill-start-date',type=date.fromisoformat,help='Optional narrower target range inside the source plan')
@@ -53,6 +53,9 @@ def parse_args(argv=None):
     p.add_argument('--volume-windows-seconds',type=integer_list,default=(10,60),help='Rolling market feature requirements for new planning')
     p.add_argument('--short-windows-sessions',type=integer_list,default=(20,),help='Short-pressure session lookbacks for new planning')
     p.add_argument('--resolutions-ms',type=integer_list,default=(100,1000,5000,10000,30000,60000,300000,3600000),help='New-plan bar resolutions; 1000 is required by causal V7')
+    p.add_argument('--issuer-keys',type=integer_list,default=(),help='Explicit bounded issuer cohort; preserves all its securities/history after full-universe admission')
+    p.add_argument('--cohort-max-issuers',type=int,default=128,help='plan-cohorts issuer bound, maximum 256')
+    p.add_argument('--cohort-max-sessions',type=int,default=200000,help='plan-cohorts context/listing-day budget, maximum 250000')
     p.add_argument('--format',choices=('text','json','sql'),default='text')
     p.add_argument('--acquire-missing',action='store_true',help='Opt in to the existing flatfile downloader after Massive resubscription; acquire missing appendable sources before plan freeze')
     p.add_argument('--stage-archive',action='store_true',help='Stage new-source G files on D inside the canonical updater')
@@ -92,6 +95,12 @@ def parse_args(argv=None):
         p.error('qualify-sec-lineage requires --fundamental-start-date and --end-date')
     if args.command=='qualify-sec-lineage' and (args.acquire_missing or args.stage_archive):
         p.error('SEC lineage qualification does not acquire market files')
+    if args.command=='plan-cohorts':
+        if args.end_date is None or args.context_start_date is None or args.issuer_keys:
+            p.error('plan-cohorts requires context/end bounds and an unscoped universe')
+        if not 1<=args.cohort_max_issuers<=256 or not 1<=args.cohort_max_sessions<=250000:
+            p.error('Invalid bounded cohort limits')
+        if args.acquire_missing or args.stage_archive:p.error('plan-cohorts is read-only')
     if args.hydrate_missing_trades:p.error('Imported-day reporting repair cannot hydrate flatfiles; G-to-D staging belongs to acquisition')
     if args.command=='verify' and (args.acquire_missing or args.stage_archive):p.error('verify is read-only; acquisition flags belong to prepare-sources')
     if args.command in ('run','resume') and (args.acquire_missing or args.stage_archive):p.error('Frozen execution cannot acquire sources; use prepare-sources before freezing the plan')
@@ -103,7 +112,7 @@ def campaign_config(args,end):
     return contracts.CampaignConfig(args.start_date,end,database=args.database,workers=args.workers,
         query_threads=args.query_threads,query_memory_bytes=args.query_memory_gib*1024**3,
         global_memory_bytes=args.global_memory_gib*1024**3,volume_windows_seconds=args.volume_windows_seconds,
-        short_windows_sessions=args.short_windows_sessions,resolutions_ms=args.resolutions_ms)
+        short_windows_sessions=args.short_windows_sessions,resolutions_ms=args.resolutions_ms,issuer_keys=args.issuer_keys)
 
 
 def inspect_sources(query,args):
@@ -341,6 +350,20 @@ def main(argv=None):
             print(f"Source ready | {len(result['source']['expected'])} sessions | {result['source_hash']}")
             print('Derived campaign execution remains under implementation.')
             return 0
+        if args.command=='plan-cohorts':
+            from pipelines.certified_research import cohorts
+            config=campaign_config(args,args.end_date)
+            if args.context_start_date>config.start:raise ValueError('Cohort context cannot follow target start')
+            query=lambda sql:client.query(sql+' SETTINGS readonly=1')
+            snapshot=universe.load(query,args.context_start_date,config.end,args.universe_anchor_date)
+            if not snapshot['ready']:
+                result=dict(status='blocked',rejections=snapshot['rejection_counts'],full_source_hash=snapshot['source_hash'])
+            else:
+                result=cohorts.partition_snapshot(snapshot,config,source.exchange_sessions(args.context_start_date,config.end),
+                    maximum_issuers=args.cohort_max_issuers,maximum_sessions=args.cohort_max_sessions)
+                result.update(status='planned',execution_ready=False,read_only=True)
+            print(json.dumps(result,default=str,sort_keys=True,indent=2))
+            return 0 if result['status']=='planned' else 2
         if args.command=='status':
             result=campaign.status(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database,str(args.dataset_id))
             print(json.dumps(result,indent=2,default=str))

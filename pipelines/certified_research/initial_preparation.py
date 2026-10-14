@@ -2,7 +2,7 @@
 from datetime import date
 from threading import Event,Lock
 
-from . import context,float_data,initial_plan,planning,recipe,sec_coverage,seed_preparation,source,universe
+from . import context,float_data,initial_plan,planning,recipe,sec_coverage,seed_preparation,source,universe,cohorts
 from .campaign import PlannedUnit
 from .contracts import digest
 from .execution import Unit,execute
@@ -18,7 +18,7 @@ def discover_and_prepare(query,config,dataset_id,claim,client_factory,source_gua
     if stop.is_set():raise InterruptedError('Initial discovery stopped')
     source.require_ready(query,canonical,reporting)
     start=min((*canonical['expected'],short_start))
-    snapshot=universe.load(query,start,config.end,anchor_date)
+    snapshot=cohorts.select(universe.load(query,start,config.end,anchor_date),config.issuer_keys)
     references=reference_discovery.discover(query,config,dataset_id,claim,client_factory,source_guard,snapshot,
         canonical['expected'],fundamental_start=fundamental_start,short_start=short_start,stop=stop,progress=progress)
     if not references['ready']:
@@ -29,6 +29,7 @@ def discover_and_prepare(query,config,dataset_id,claim,client_factory,source_gua
             canonical['expected'],stop=stop,snapshot=snapshot)
     authority=PlannedUnit(Unit('universe','universe'),dict(context_start=str(start),end=str(config.end),
         anchor_date=str(anchor_date),source_hash=snapshot['source_hash']))
+    if config.issuer_keys:authority=PlannedUnit(authority.unit,dict(authority.arguments,issuer_keys=config.issuer_keys))
     assembled=prepare(query,config,claim,client_factory,source_guard,canonical,reporting,definition,rules,
         references['issuers'],references['securities'],prerequisites=(authority,*references['prerequisites']),
         universe_parent='universe',corporate_parents=references['corporate_parents'],adjustment_hashes=adjustment_hashes,
@@ -119,7 +120,7 @@ def prepare(query,config,claim,client_factory,source_guard,canonical,reporting,d
                 raise ValueError('Initial canonical/reporting source changed during preparation')
     frozen_guard()
     membership_start=min((*required,short_start))
-    snapshot=universe.load(query,membership_start,config.end,anchor_date)
+    snapshot=cohorts.select(universe.load(query,membership_start,config.end,anchor_date),config.issuer_keys)
     if not snapshot['ready']:raise ValueError('Initial historical universe requires evidence repair: '+str(snapshot['rejection_counts']))
     membership=universe.execution_membership(snapshot,required,maximum_sessions=maximum_sessions)
     if not membership['ready']:raise ValueError('Initial dated membership is empty or partial')
@@ -150,13 +151,14 @@ def prepare(query,config,claim,client_factory,source_guard,canonical,reporting,d
     linked={k:tuple(listing for listing in v if listing in planned_listings) for k,v in membership['security_listings'].items()}
     universe_unit=PlannedUnit(authority.unit,dict(context_start=str(membership_start),end=str(config.end),
         anchor_date=str(anchor_date),source_hash=snapshot['source_hash']))
+    if config.issuer_keys:universe_unit=PlannedUnit(universe_unit.unit,dict(universe_unit.arguments,issuer_keys=config.issuer_keys))
     prerequisites=tuple(universe_unit if p.unit.key==universe_parent else p for p in prerequisites)
     assembled=initial_plan.assemble(config,prepared,frozen,frozen_reporting,definition,rules,issuers,securities,
         prerequisites=prerequisites,universe_parent=universe_parent,corporate_parents=corporate_parents,
         security_listings=linked,fundamental_start=fundamental_start,price_start=min(s.day for s in sessions),
         short_start=short_start,price_context_sessions=price_only)
     frozen_guard()
-    current=universe.load(query,membership_start,config.end,anchor_date)
+    current=cohorts.select(universe.load(query,membership_start,config.end,anchor_date),config.issuer_keys)
     if not current['ready'] or current['source_hash']!=snapshot['source_hash']:
         raise ValueError('Initial Gateway identity source changed during preparation')
     assembled.update(float_contexts=contexts,float_price_unavailable=assigned['unavailable'],

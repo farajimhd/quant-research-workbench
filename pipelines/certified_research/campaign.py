@@ -118,6 +118,7 @@ def load_plan(query,database,dataset_id,*,maximum_units=1_000_000,maximum_metada
     values=dict(definition['config']['config'])
     for name in ('start','end'):values[name]=date.fromisoformat(values[name])
     for name in ('volume_windows_seconds','short_windows_sessions','resolutions_ms','checkpoints'):values[name]=tuple(values[name])
+    if 'issuer_keys' in values:values['issuer_keys']=tuple(values['issuer_keys'])
     config=CampaignConfig(**values)
     if (config.database!=database or encoded(config.identity())!=encoded(definition['config'])
             or str(config.start)!=str(row['start_date']) or str(config.end)!=str(row['end_date'])):

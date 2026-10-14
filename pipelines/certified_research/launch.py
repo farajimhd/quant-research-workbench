@@ -55,6 +55,9 @@ class ExecutionLaunch:
         self.claim=claim;self.source_guard=source_guard;self.capacity_guard=capacity_guard
         self.query=query
         self.config=config;self.plans=tuple(plans)
+        for plan in self.plans:
+            if plan.unit.product=='universe' and tuple(plan.arguments.get('issuer_keys',()))!=config.issuer_keys:
+                raise ValueError('Universe issuer cohort differs from the frozen configuration')
         if (market_runtime.dataset!=dataset_id or market_runtime.database!=config.database
                 or market_runtime.claim is not claim):
             raise ValueError('Market runtime ownership/dataset differs from execution launch')

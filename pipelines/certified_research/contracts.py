@@ -56,6 +56,7 @@ class CampaignConfig:
     short_windows_sessions: tuple[int, ...] = (20,)
     resolutions_ms: tuple[int, ...] = (100, 1000, 5000, 10000, 30000, 60000, 300000, 3600000)
     checkpoints: tuple[str, ...] = ("PM", "REGULAR", "AH")
+    issuer_keys: tuple[int,...] = ()
 
     def __post_init__(self):
         if type(self.start) is not date or type(self.end) is not date or self.start > self.end:
@@ -80,9 +81,14 @@ class CampaignConfig:
             raise ValueError('Causal V7 requires certified 1000ms bars')
         if self.checkpoints != ("PM", "REGULAR", "AH"):
             raise ValueError("All three causal session checkpoints are required")
+        if (type(self.issuer_keys) is not tuple or tuple(sorted(set(self.issuer_keys)))!=self.issuer_keys
+                or len(self.issuer_keys)>256 or any(type(v) is not int or not 0<v<2**64 for v in self.issuer_keys)):
+            raise ValueError('Issuer cohort must contain sorted unique UInt64 keys, at most 256')
 
     def identity(self):
-        return dict(version=VERSION, config=asdict(self), trade_policy=TRADE_POLICY,
+        config=asdict(self)
+        if not self.issuer_keys:config.pop('issuer_keys') # Preserve existing unscoped contracts.
+        return dict(version=VERSION, config=config, trade_policy=TRADE_POLICY,
                     reporting_revision=REPORTING_REVISION, storage_policy=STORAGE_POLICY)
 
     @property

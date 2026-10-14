@@ -16,6 +16,7 @@ workers, memory limits, rules or recipes with current CLI defaults.
 | `launch` | New dataset UUID, explicit source/SEC context bounds, qualified capacity profile; optional end date defaults to latest canonical source | Schema checks/install, canonical preparation, retained-reference discovery, context assembly and admitted initial execution |
 | `backfill-v7` | Compatible source dataset UUID, new target UUID, qualified capacity profile; optional narrower backfill bounds | Reuse certified bars and prior causal AH; publish session checkpoints without event rescans or bar copies |
 | `qualify-sec-lineage` | Explicit fundamental context start and market end | Qualify retained acquisition stage evidence without downloads; report uncovered SEC ranges |
+| `plan-cohorts` | Explicit source context and end; optional cohort bounds | Read-only complete issuer partition without expanding the whole session graph; collection execution remains pending |
 | `stored-plan` | Dataset UUID | Read-only plan and resource inspection |
 | `run` / `resume` | Dataset UUID and qualified capacity profile path | Admission, bounded dependency execution, receipt reuse and seal |
 | `status` | Dataset UUID | Persisted progress inspection |
@@ -59,6 +60,10 @@ runner labels and validates a separate compact certificate. `launch` prepares
 these certificates automatically; they do not replace missing acquisition.
 
 ## Feature selection
+
+The [issuer-cohort path](13r-issuer-cohorts.md) freezes optional `--issuer-keys`
+through preparation, publication and resume. It preserves full-universe admission
+and all selected issuer history. Whole-collection orchestration remains pending.
 
 `--resolutions-ms` selects persisted bars and continuous indicator-state frames;
 1s is required for causal V7. SQL rollups calculate only selected resolutions

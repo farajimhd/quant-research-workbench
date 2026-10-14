@@ -9,10 +9,10 @@ from . import recipe,facts,fundamentals,reference_sql,reference_producer,float_d
 
 
 def reference_contract():
-    from . import reference_import,genesis,sec_lineage
+    from . import reference_import,genesis,sec_lineage,cohorts
     from pipelines.sec.edgar import sec_acquisition_contract
     modules=(reference_sql,reference_producer,float_data,short_sql,short_pressure,price_inputs,activity,sec_coverage,
-        reference_import,genesis,sec_lineage,sec_acquisition_contract)
+        reference_import,genesis,sec_lineage,sec_acquisition_contract,cohorts)
     return dict(catalog=facts.catalog_hash(),formulas=fundamentals.contract_hash(),
         algorithms={module.__name__:recipe.code_hash(module) for module in modules})
 

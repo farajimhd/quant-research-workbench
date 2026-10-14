@@ -135,6 +135,19 @@ def test_launch_selections_share_one_configuration_and_cannot_omit_v7_input():
     with pytest.raises(ValueError,match='V7 requires'):launcher.campaign_config(args,args.end_date)
 
 
+def test_cohort_plan_cli_is_read_only_and_does_not_claim_execution_ready(capsys):
+    from tests.test_certified_cohorts import snapshot
+    client=Mock();client.clean_error.side_effect=str
+    with patch('scripts.build_market_day.Client',return_value=client),patch.object(launcher.universe,'load',return_value=snapshot()):
+        result=launcher.main(['plan-cohorts','--context-start-date','2025-12-31','--end-date','2026-01-05','--format','json'])
+    assert result==0
+    output=json.loads(capsys.readouterr().out)
+    assert output['status']=='planned' and not output['execution_ready'] and output['read_only']
+    assert len(output['issuer_keys'])==3
+    client.close.assert_called_once()
+    client.query.assert_not_called() # Isolated snapshot seam; no writers invoked.
+
+
 def test_retained_recovery_is_explicit_and_has_bounded_ssd_defaults():
     args=launcher.parse_args(['prepare-sources','--end-date','2026-10-02','--recover-retained-reporting'])
     assert args.recover_retained_reporting
