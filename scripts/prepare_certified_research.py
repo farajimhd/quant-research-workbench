@@ -474,6 +474,11 @@ def main(argv=None):
                 failures={k:client.clean_error(v)[:256] for k,v in list(result['errors'].items())[:20]},
                 failed_units=len(result['errors']))
             if 'measurements' in result:summary['measurements']=result['measurements']
+            if 'missing_authorities' in result:
+                summary['missing_authorities']=result['missing_authorities']
+                from collections import Counter
+                summary['missing_authority_counts']=dict(sorted(Counter(
+                    row['family'] for row in result['missing_authorities']).items()))
             if observations is not None:
                 captured=observations.result()
                 summary['storage_observations']=dict(samples=len(captured['samples']),observed_maxima=captured['observed_maxima'],
@@ -488,6 +493,8 @@ def main(argv=None):
                     print(f"  Executor elapsed={measured['elapsed_seconds']:.2f}s | peak active workers={measured['peak_active_workers']} | "
                         f"peak reserved memory={measured['peak_reserved_memory_bytes']/1024**3:.2f} GiB")
                 for key,reason in summary['failures'].items():print(f'  {key}: {reason}')
+                for family,count in summary.get('missing_authority_counts',{}).items():
+                    print(f'  Required reference input: {family} | missing scopes={count} | use --format json for identities and ranges')
             return 0 if result['status']=='complete' else 130 if result['status']=='interrupted' else 2
         if args.command=='qualify-sec-lineage':
             from contextlib import closing

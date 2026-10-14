@@ -64,12 +64,15 @@ def test_sec_lineage_cli_is_independent_of_market_acquisition_and_closes_ownersh
     for owner in (claim,keeper,client):owner.close.assert_called_once()
 
 
-def test_backfill_cli_uses_source_plan_resources_without_source_acquisition():
+@pytest.mark.parametrize('output_format',('json','text'))
+def test_backfill_cli_uses_source_plan_resources_without_source_acquisition(output_format,capsys):
     source='00000000-0000-0000-0000-000000000001';target='00000000-0000-0000-0000-000000000002'
     config=CampaignConfig(date(2026,1,2),date(2026,1,5),workers=2,query_threads=3,
         query_memory_bytes=128*1024**2,global_memory_bytes=512*1024**2)
     inspection=Mock();client=Mock();client.clean_error.side_effect=str
     keeper=SimpleNamespace(client=Mock(),close=Mock());claim=Mock()
+    missing=({'family':'corporate_actions','security_key':91,'start':'2025-01-02','end':'2026-01-05'},
+        {'family':'float_allocation','security_key':91,'start':'2025-01-02','end':'2026-01-05'})
     with patch('scripts.build_market_day.Client',side_effect=[inspection,client]) as clients,\
          patch('pipelines.certified_research.campaign.load_plan',return_value=SimpleNamespace(config=config)) as load,\
          patch('pipelines.certified_research.capacity_profile.load',return_value={}),\
@@ -79,9 +82,19 @@ def test_backfill_cli_uses_source_plan_resources_without_source_acquisition():
          patch('pipelines.certified_research.publication.KeeperClaim',return_value=claim),\
          patch('pipelines.certified_research.acquisition.prepare_sources') as acquire,\
          patch('pipelines.certified_research.installation.install') as install,\
-         patch('pipelines.certified_research.checkpoint_backfill.run',return_value=dict(status='blocked',errors={},seal=None)) as run:
+         patch('pipelines.certified_research.checkpoint_backfill.run',return_value=dict(status='blocked',errors={},seal=None,
+             missing_authorities=missing)) as run:
         code=launcher.main(['backfill-v7','--dataset-id',target,'--source-dataset-id',source,
-            '--capacity-profile','pilot.json','--backfill-start-date','2026-01-05'])
+            '--capacity-profile','pilot.json','--backfill-start-date','2026-01-05','--format',output_format])
+    output=capsys.readouterr().out
+    if output_format=='json':
+        import json
+        summary=json.loads(output)
+        assert summary['missing_authorities']==list(missing)
+        assert summary['missing_authority_counts']=={'corporate_actions':1,'float_allocation':1}
+    else:
+        assert 'corporate_actions | missing scopes=1' in output
+        assert 'float_allocation | missing scopes=1' in output
     assert code==2 and load.call_args.args[2]==source
     assert clients.call_args.args[0].max_threads==3
     assert run.call_args.args[2:4]==(source,target)

@@ -60,3 +60,9 @@ requires the current source guard. If a source changes after fact insertion,
 the attempt remains uncertified and public-as-of lookups exclude its rows.
 This applies to SEC, short, derived fundamentals, float and regular-price
 publication; it does not manufacture missing source coverage or vintages.
+
+When preparation returns missing authority scopes, launcher JSON preserves
+`missing_authorities` with security identities and required date ranges, plus
+`missing_authority_counts` grouped by family. Text output shows family totals
+and directs operators to JSON for the complete scope list. An aggregate error
+count alone is insufficient to identify which historical inputs need repair.
