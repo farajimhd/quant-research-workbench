@@ -26,7 +26,7 @@ from pipelines.certified_research import contracts,schema,source,short_sql,campa
 
 def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('schema','install-schema','preflight','plan','plan-cohorts','status','stored-plan','prepare-sources','qualify-sec-lineage','verify','measure-storage','estimate-storage','launch','launch-collection','backfill-v7','run','resume','resume-collection','verify-collection'))
+    p.add_argument('command',choices=('schema','install-schema','preflight','plan','plan-cohorts','status','stored-plan','prepare-sources','qualify-sec-lineage','verify','measure-storage','measure-sec-extraction','estimate-storage','launch','launch-collection','backfill-v7','run','resume','resume-collection','verify-collection'))
     p.add_argument('--collection',action='store_true',help='estimate-storage only: inspect a stored collection instead of a single dataset')
     p.add_argument('--dataset-id',type=UUID)
     p.add_argument('--source-dataset-id',type=UUID,help='Qualified source plan/bar dataset for backfill-v7; never modified')
@@ -71,6 +71,7 @@ def parse_args(argv=None):
         except ValueError as error:raise argparse.ArgumentTypeError(str(error)) from error
     p.add_argument('--sec-share-document',type=sec_share_document,action='append',default=[],
         help='Retained SEC source candidate: CIK,ACCESSION,DOCUMENT_NAME; requires qualified sec_share_source capacity rate, never certifies allocation')
+    p.add_argument('--measurement-sec-document',type=sec_share_document,action='append',default=[],help='measure-sec-extraction only: CIK,ACCESSION,DOCUMENT_NAME; repeat up to eight times')
     p.add_argument('--verify-sec-archives',action='store_true',help='Verify selected SEC documents against retained G archives and publish public-time evidence; no downloads')
     p.add_argument('--prepare-sec-fundamental-evidence',action='store_true',help='Capture original fundamental contexts and bulk comparisons after archive verification; requires measured sec_fundamental_source capacity')
     p.add_argument('--sec-archive-canonical-root',type=Path,default=Path('D:/market-data/sec_core/daily_archives'))
@@ -99,6 +100,11 @@ def parse_args(argv=None):
     p.add_argument('--clickhouse-cache-root',default='/mnt/d/market-data/flatfiles/us_stocks_sip')
     p.add_argument('--hydrate-missing-trades',action='store_true',help='Deprecated: imported-day repair requires canonical sidecars')
     args=p.parse_args(argv)
+    if args.command=='measure-sec-extraction' or args.measurement_sec_document:
+        if (args.command!='measure-sec-extraction' or not 1<=len(args.measurement_sec_document)<=8
+                or len(set(args.measurement_sec_document))!=len(args.measurement_sec_document)
+                or args.acquire_missing or args.acquire_sec_missing or args.stage_archive):
+            p.error('SEC extraction measurement requires 1 to 8 unique measurement documents and cannot acquire sources')
     if args.prepare_sec_fundamental_evidence and not args.verify_sec_archives:
         p.error('Original fundamental evidence requires --verify-sec-archives and selected documents')
     if args.verify_sec_archives or args.sec_archive_backup_root is not None or args.sec_download_receipts is not None:
@@ -340,8 +346,16 @@ def main(argv=None):
     from scripts import build_market_day as builder
     args.max_threads=args.query_threads;args.max_memory_gb=args.query_memory_gib;args.query_timeout=45
     client=builder.Client(args,persistent=False,readonly=args.command in
-        ('preflight','plan','plan-cohorts','status','stored-plan','verify','verify-collection','measure-storage','estimate-storage'))
+        ('preflight','plan','plan-cohorts','status','stored-plan','verify','verify-collection','measure-storage','measure-sec-extraction','estimate-storage'))
     try:
+        if args.command=='measure-sec-extraction':
+            from pipelines.certified_research import sec_extraction_measurement
+            result=sec_extraction_measurement.measure(client.query,args.measurement_sec_document)
+            if args.format=='json':print(json.dumps(result,indent=2))
+            else:
+                for row in result['documents']:print(f'SEC extraction | {row["cik"]} | bytes={row["source_bytes"]:,} | observations={row["observations"]} | rejected={row["rejections"]} | fetch={row["fetch_seconds"]:.3f}s | parse={row["parse_seconds"]:.3f}s')
+                print('Observed only | no writes | storage and peak rates remain unqualified')
+            return 0
         if args.command=='estimate-storage':
             from pipelines.certified_research import storage_estimate,capacity_profile
             profile=capacity_profile.load(args.capacity_profile) if args.capacity_profile is not None else None
