@@ -89,12 +89,14 @@ def episode_statistics(profits, config):
     """Segmented NumPy sorting/reduction: no Python loop over trades."""
     sizes = np.fromiter(map(len, profits), dtype=np.int64, count=len(profits))
     count = len(sizes)
-    values = np.concatenate(profits).astype(np.float64) if sizes.sum() else np.empty(0)
+    # Groups already arrive contiguously. Sort within each group in native
+    # NumPy, avoiding a global two-key lexsort over every position. Stable
+    # ordering preserves tied values (including signed zero) exactly.
+    values = np.concatenate([np.sort(np.asarray(p,dtype=np.float64),kind='stable')
+                             for p in profits]) if sizes.sum() else np.empty(0)
     if not np.isfinite(values).all():
         raise ValueError('Nonfinite complete-position profit')
     owner = np.repeat(np.arange(count), sizes)
-    order = np.lexsort((values, owner))
-    values, owner = values[order], owner[order]
     starts = np.cumsum(sizes) - sizes
     local = np.arange(len(values)) - starts[owner]
     bottom_mass = config.trade_tail_fraction * sizes

@@ -32,3 +32,11 @@ def test_empty_parent_pools_supply_fresh_population_without_relaxing_gates():
     children,newids,report=next_population(rng,members,ids,pedigree,list(range(64)),2,session_values=np.zeros((24,64)),session_eligible=np.zeros((24,64),bool),global_values=np.zeros(64),global_eligible=np.zeros(64,bool))
     assert len(children)==64 and report['fresh_candidates']==64
     assert report['global_elites']==report['local_champions']==0
+
+def test_group_sort_matches_prior_lexsort_exactly():
+    from research.vectorized_backtest.v19.objectives import episode_statistics
+    from research.vectorized_backtest.v18.objectives import episode_statistics as reference
+    rng=np.random.default_rng(1907)
+    groups=[[],[0.,-0.,0.,-0.],[1.,1.,-1.,-1.]]+[rng.normal(size=int(n)) for n in rng.integers(0,500,257)]
+    actual=episode_statistics(groups,Objective());expected=reference(groups,Objective())
+    for key in expected:np.testing.assert_array_equal(actual[key],expected[key])
