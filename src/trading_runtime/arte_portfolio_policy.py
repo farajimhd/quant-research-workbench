@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import fields
 from datetime import datetime, timezone
 from hashlib import sha256
+from decimal import Decimal
+import json
 import re
 from typing import Any
 
@@ -16,7 +18,7 @@ from src.trading_runtime.arte_journal_schema import (
     POLICY_ALLOWED_FIELDS, POLICY_ALLOWED_TABLES, POLICY_BOOLEAN_FIELDS, POLICY_INTEGER_FIELDS,
     POLICY_NUMERIC_FIELDS, journal_permission_preflight, storage_preflight,
 )
-from src.trading_runtime.arte_journal_writer import _insert, _literal, _rows, _wire_row
+from src.trading_runtime.arte_journal_writer import _insert, _literal, _wire_row
 from src.trading_runtime.journal_contract import canonical_json
 from src.trading_runtime.portfolio import PortfolioPolicy
 
@@ -75,11 +77,17 @@ def _policy_rows(policy: PortfolioPolicy) -> tuple[str, dict[str, Any], tuple[di
 
 
 def _query_rows(client: Any, table: str, policy_hash: str) -> list[dict[str, Any]]:
-    from src.trading_runtime.arte_journal_writer import _CONTRACTS
+    from src.trading_runtime.arte_journal_writer import _CONTRACTS, _canonical_typed_content
 
     columns = ",".join(column for column, _ in _CONTRACTS[table].columns)
-    return _rows(client, f"SELECT {columns} FROM arte.{table} "
+    response = client.execute(f"SELECT {columns} FROM arte.{table} "
                  f"WHERE policy_hash={_literal(policy_hash)} FORMAT JSONEachRow")
+    if not isinstance(response, str) or len(response.encode()) > 8 * 1024 * 1024:
+        raise ValueError('Portfolio policy read exceeds its bounded scalar contract')
+    # Decimal JSON numbers must never pass through a binary float before the
+    # central typed codec restores their exact scale and publication identity.
+    return [_canonical_typed_content(table, json.loads(line, parse_float=Decimal), stored_utc=True)
+            for line in response.splitlines() if line.strip()]
 
 
 def load_portfolio_policy(client: Any, policy_hash: str) -> PortfolioPolicy | None:

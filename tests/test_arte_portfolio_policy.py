@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+import re
 
 import pytest
 
@@ -31,6 +32,24 @@ class Catalog:
         policy_hash = sql.split("WHERE policy_hash='", 1)[1].split("'", 1)[0]
         return "\n".join(json.dumps(row) for row in self.tables.get(name, [])
                          if row["policy_hash"] == policy_hash)
+
+
+def test_unquoted_clickhouse_decimals_roundtrip_without_float_or_scale_loss():
+    class NumericDecimalCatalog(Catalog):
+        def execute(self, sql):
+            result = super().execute(sql)
+            if sql.startswith('SELECT '):
+                result = re.sub(r'"(-?\d+\.\d+)"', r'\1', result)
+            return result
+    policy = replace(PortfolioPolicy(), eligible_equity_fraction=1/3,
+                     maximum_buying_power_utilization=.995,
+                     maximum_planned_risk_fraction=.08)
+    client = NumericDecimalCatalog()
+    digest = publish_portfolio_policy(client, policy)
+    assert load_portfolio_policy(client, digest) == policy
+    prior_inserts = len(client.inserts)
+    assert publish_portfolio_policy(client, policy) == digest
+    assert len(client.inserts) == prior_inserts
 
 
 def test_policy_catalog_is_typed_and_round_trips_without_json_columns() -> None:
