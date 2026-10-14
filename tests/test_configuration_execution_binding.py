@@ -40,6 +40,22 @@ def test_binding_joins_only_its_exact_selection_without_mutating_it():
         bind_execution_configuration({**revision, 'selection_hash': 'b' * 64}, actual)
 
 
+def test_program_proposals_resolve_entry_and_exit_through_native_intents():
+    from src.trading_runtime.columnar_program_coordinator import ProgramProposal
+    from src.trading_runtime.execution_policies import ProtectionProfile, ProtectionSlice, StopRule
+    actual = binding()
+    at = datetime.now(UTC)
+    proposal = ProgramProposal('00000000-0000-0000-0000-000000000002', 'entry', 'enter_long',
+        at, 'ABC', 0., 10., 1000., 5., 'frozen-rule')
+    profile = ProtectionProfile('frozen-stop', 1, (ProtectionSlice('one', 1., StopRule(price=5.)),))
+    entry = proposal.to_intent(execution_policy=actual, protection_profile=profile, outside_rth=True)
+    assert entry.execution_policy == actual.policies['entry']
+    exit = replace(proposal, stage='exit', action='exit', quantity=100., requested_cash=None)
+    intent = exit.to_intent(execution_policy=actual, protection_profile=None, outside_rth=True)
+    assert intent.execution_policy == actual.policies['exit']
+    assert entry.capital_request.mode == 'fixed_notional' and entry.capital_request.value == 1000.
+
+
 @pytest.mark.parametrize('case', ['policy_drift', 'selection_drift', 'missing', 'duplicate'])
 def test_execution_binding_rejects_unsealed_changes_and_partial_rows(case):
     actual = binding()

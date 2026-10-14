@@ -1629,7 +1629,7 @@ class TradingRuntime:
         intent = proposal.to_intent(execution_policy=execution_policy,
             protection_profile=protection_profile, outside_rth=outside_rth)
         if intent.action in ENTRY_ACTIONS:
-            envelope = execution_policy.envelope
+            envelope = intent.execution_policy.envelope
             resolution = getattr(getattr(self.broker, "config", None), "liquidity_resolution_ms", None)
             if (resolution not in (100, 1000)
                     or not envelope.persist_until_cancelled

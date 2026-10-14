@@ -219,6 +219,16 @@ def preflight_program_liquidity_scope(controller, work):
     from .backtest_liquidity_price import PriceLevelPlan
     from .backtest_liquidity_resolution import CertifiedLiquidityResolution, liquidity_window_sql
     scope = work.scope
+    from src.trading_runtime.configuration_execution_binding import ConfigurationExecutionBinding
+    execution = scope['execution_policy']
+    approved = controller.definition.configuration_revision.get('execution_binding_hash')
+    if type(execution) is ConfigurationExecutionBinding or approved is not None:
+        revision = controller.definition.configuration_revision
+        if (type(execution) is not ConfigurationExecutionBinding
+                or execution.header['content_hash'] != approved
+                or execution.header['configuration_hash'] != revision.get('selection_hash')
+                or revision.get('revision_id') != 'strategy-configuration:' + execution.header['configuration_id']):
+            raise ValueError('Programme execution binding differs from its approved configuration')
     concurrency = scope["concurrency"]
     if (not callable(scope["reader_factory"]) or type(concurrency) is not int
             or not 1 <= concurrency <= 32):

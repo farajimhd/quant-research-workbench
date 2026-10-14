@@ -247,6 +247,21 @@ def test_cohort_preparation_reuses_full_feature_origin_and_bounds_parallel_io(pr
         scopes=(session_scope,), history_post=post))
     assert len(calls) == before_cached_repeat
     assert_frame_equal(repeated_work[0].projection.frame, result.projection.frame, check_exact=True)
+    from src.backend.backtest_program_input_plan import preflight_program_liquidity_scope
+    from test_configuration_execution_binding import binding
+    execution = binding()
+    bound_work = replace(partition_work[0], scope={**dict(partition_work[0].scope),
+        'execution_policy': execution})
+    before_binding_preflight = len(calls)
+    with pytest.raises(ValueError, match='execution binding'):
+        preflight_program_liquidity_scope(partition_controller, bound_work)
+    revision = {**partition_controller.definition.configuration_revision,
+        'revision_id': 'strategy-configuration:' + execution.header['configuration_id'],
+        'selection_hash': execution.header['configuration_hash'],
+        'execution_binding_hash': execution.header['content_hash']}
+    partition_controller.definition = replace(partition_controller.definition, configuration_revision=revision)
+    preflight_program_liquidity_scope(partition_controller, bound_work)
+    assert len(calls) == before_binding_preflight
 
 
 def test_prepared_scanner_bridge_keeps_exact_top10_and_rejects_missing_history(prepared_source):

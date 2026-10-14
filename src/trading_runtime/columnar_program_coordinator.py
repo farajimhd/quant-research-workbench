@@ -65,6 +65,9 @@ class ProgramProposal:
     def to_intent(self, *, execution_policy: ExecutionPolicy,
                   protection_profile: ProtectionProfile | None,
                   outside_rth: bool) -> StrategyIntent:
+        from .configuration_execution_binding import ConfigurationExecutionBinding
+        if type(execution_policy) is ConfigurationExecutionBinding:
+            execution_policy = execution_policy.policy_for(self.action)
         if not isinstance(execution_policy, ExecutionPolicy) or type(outside_rth) is not bool:
             raise ValueError("Proposal needs the resolved app execution contract")
         if self.action in {"enter_long", "add_long"} and not isinstance(protection_profile, ProtectionProfile):
