@@ -780,6 +780,57 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_collection_real_child_publication_resume_and_authority_tamper(self):
+        from types import SimpleNamespace
+        from pipelines.certified_research import collection,collection_store
+        root=str(uuid.uuid4());day=date(2026,1,2)
+        config=c.CampaignConfig(day,day,database=self.database)
+        partition=dict(groups=((1,),(2,)),issuer_keys=(1,2),config_hash=config.content_hash)
+        partition['partition_hash']=c.digest(partition)
+        class Claim:
+            def check(self):pass
+        claim=Claim();children={};members=[];logs=[]
+        def query(sql,*args,**kwargs):
+            logs.append(sql);return self.client.query(sql,*args,**kwargs)
+        def child(index,key):
+            from dataclasses import replace
+            dataset=collection.member_id(root,partition['partition_hash'],index)
+            child_config=replace(config,issuer_keys=(key,))
+            publisher=ReferencePublisher(query,self.database,claim)
+            bound=ReferenceScope(dataset,1,key,'fundamentals',day,day,'a'*64,facts.catalog_hash())
+            plans=(PlannedUnit(Unit('facts','facts'),dict(issuer_key=key)),)
+            def verify(plan,parents):return publisher.receipt(bound)
+            def produce(plan,parents,stop):
+                attempt=str(uuid.uuid4())
+                row=dict(dataset_id=dataset,attempt_id=attempt,entity_kind=1,entity_key=key,metric_key=1,
+                    period_start=None,period_end=str(day),context_kind=1,fiscal_year=2026,fiscal_period='FY',taxonomy_key=1,
+                    available_at='2026-01-02 12:00:00.000000',revision=0,value=float(key),unit_key=1,basis_unit_key=1,
+                    status=1,precision=1,confidence=100,reason='',evidence_hash='a'*64)
+                insert_rows(query,self.database,'research_facts_v1',[row])
+                publisher.publish(bound,attempt,publisher.evidence(bound,attempt))
+            controller=Campaign(query,self.database,claim,dataset,child_config,plans,'b'*64,
+                lambda:None,{'facts':produce},{'facts':verify})
+            controller.install()
+            def load():
+                return load_plan(query,self.database,dataset).controller(query,claim,lambda:None,{'facts':produce},{'facts':verify})
+            children[dataset]=lambda:SimpleNamespace(controller=load(),config=child_config,
+                run=lambda **kwargs:load().run(**kwargs),verify=lambda:load().verify())
+            members.append(collection.Member(dataset,(key,),controller.plan_hash))
+        child(0,1);child(1,2)
+        frozen=collection.definition(root,partition,members)
+        store=collection_store.Store(query,self.database,root,claim);store.install(frozen)
+        def capacity(value):
+            proof=dict(status='admitted',collection_hash=value['collection_hash'])
+            return dict(proof,certificate_hash=c.digest(proof))
+        controller=store.controller(lambda id_:children[id_](),lambda:None,capacity)
+        first=controller.run();self.assertEqual(first['status'],'complete')
+        logs.clear();self.assertEqual(controller.run()['certificate'],first['certificate'])
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+        self.client.query(f"ALTER TABLE {self.database}.research_facts_v1 UPDATE value=99 "
+            f"WHERE dataset_id=toUUID('{members[1].dataset_id}') SETTINGS mutations_sync=2",read=False)
+        with self.assertRaisesRegex(ValueError,'match'):controller.verify()
+        self.assertEqual(store.rows('research_collection_seal_v1')[0]['root_hash'],first['certificate']['root_hash'])
+
     def test_partial_campaign_metadata_install_recovers_exact_rows_only(self):
         from pipelines.certified_research.campaign import encoded
         dataset=str(uuid.uuid4());config=c.CampaignConfig(date(2026,1,2),date(2026,1,2),database=self.database)

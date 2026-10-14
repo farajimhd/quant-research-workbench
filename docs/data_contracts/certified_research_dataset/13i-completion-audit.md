@@ -12,11 +12,11 @@ claim that the requested full dataset can be certified from current inputs.
 
 | Required outcome | Current implementation evidence | Completion gap |
 |---|---|---|
-| One acquisition-to-certification launch | `launch`, `initial_preparation`, `initial_plan.run`, `ExecutionLaunch`, stored run/resume | Missing historical authorities still require concrete creation/acquisition paths; qualified capacity must be measured |
+| One acquisition-to-certification launch | `launch`, `launch-collection`, initial preparation, typed execution, collection resume/readonly verification | Missing historical authorities still require concrete creation/acquisition paths; qualified capacity must be measured |
 | Download, encode and import after resubscription | `acquisition.updater_command` invokes the existing updater; new ingestion captures original reporting evidence before its success manifest | Keep this path available; no provider calls/download tests while unsubscribed |
 | Repair imported historical events | Authorized ingestion-only retained-file recovery, SSD reserve/chunking, original-clock reconciliation and native repair have bounded ClickHouse tests | Full retained-day migration is not executed here; downstream remains canonical/sidecar only, with no REST |
 | Dated US-stock/conid universe | Historical interval loading, publication and execution membership | Resolve missing/ambiguous historical identities and timely eligibility changes; current pool membership alone is insufficient |
-| Shared bars and parallel consumers | Shared aggregate consumers; complete issuer-cohort census, frozen scoped execution, collection controller core and normalized ClickHouse persistence | Collection CLI wiring, measured aggregate capacity and representative throughput/memory measurements |
+| Shared bars and parallel consumers | Shared aggregate consumers; bounded issuer census, fresh collection launch, normalized persistence and aggregate capacity guard | Representative pilot rates and production throughput/memory measurements |
 | PM/regular/AH causal checkpoints | Prefix-bound generation, explicit rebuild origins, prior-AH/foreign-bar `backfill-v7`, same-state equivalence and zero-insert resume | Legacy 2025 qualification, proven listing-start origins and certified rename bridges |
 | Certified fundamentals, float and short data | Certified fact receipts, SEC stage-lineage/range admission, short source handlers, float and short-pressure SQL | Missing acquisition catch-up paths; original corporate/allocation/supply/short vintages |
 | Requirement-derived earlier context | Automatic issuer/security assignment, state discovery, selected frames, rolling lookbacks, SEC float-price dates and price-only prior listings | Missing historical identity/state/reference evidence remains an explicit dependency |
@@ -37,8 +37,8 @@ No expensive full campaign is part of implementation validation.
 2. Qualify legacy histories, listing-start origins and rename bridges. Reuse the
    delivered causal backfill route only after its source authorities qualify.
 3. Bind capacity admission to representative certified pilot evidence and actual
-   disk topology. Implement chunked whole-universe planning/loading instead of
-   simply lifting the current 250,000-session preparation and 1,000,000-unit /
+   disk topology. Validate the implemented issuer-cohort planning/loading at
+   production scope without lifting the 250,000-session preparation and 1,000,000-unit /
    256 MiB saved-plan bounds. Inventory ratios alone must not authorize writes.
 4. Finish the common-feature comparison against current RL/optimization consumers
    and add missing required common products without downstream preparation.
@@ -63,5 +63,7 @@ dependencies; this metadata repair does not create missing fundamentals.
 materialization during the census and persists each selected issuer group through
 normal launch/resume. The collection controller core and normalized ClickHouse
 definition/member/seal storage now pass bounded restart and complete-membership
-tests. Complete collection CLI wiring and measured aggregate capacity remain
-unfinished; existing bounds have not been raised.
+tests. Fresh launch/resume/readonly verification routes are connected. A real
+two-child fact-publication fixture sealed, resumed without inserts and rejected
+authority tampering. Representative measured rates and production-scope
+acceptance remain unfinished; existing bounds have not been raised.

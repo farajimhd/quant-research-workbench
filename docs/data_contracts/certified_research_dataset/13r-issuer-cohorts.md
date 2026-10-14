@@ -206,3 +206,19 @@ test published a header and one of three units, completed the missing rows,
 repeated install without duplicates, and rejected a changed plan while retaining
 the original plan hash. This verifies metadata publication recovery, not a
 whole-market computation campaign.
+
+## Real child-publication acceptance
+
+An isolated ClickHouse fixture now runs two real `Campaign` controllers inside
+the collection controller. Each child publishes a normalized fundamental fact
+through `ReferencePublisher`, with independent receipt/evidence verification.
+The complete collection seals only after both child roots verify. Repeated
+execution produces the same certificate and no INSERT statements. Mutating one
+child's persisted fact makes collection verification fail while preserving the
+original collection seal. Fixture database cleanup is synchronous.
+
+The test passed in 43.10 seconds, including fixture schema setup and cleanup.
+Its capacity certificate is a controlled test admission, not a qualified pilot
+measurement. It proves real child-publication and collection-certification
+integration; full market/reference production bindings and representative
+storage/throughput validation remain outstanding.
