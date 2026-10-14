@@ -113,3 +113,11 @@ certificates, strict unknown/delayed flags, unchanged prices and idempotent
 resume. The retained recovery controller and existing single-day corruption
 test also passed. This validates the implementation, not full-month production
 throughput or certification of the remaining range.
+
+For supervised workstation execution, `prepare-sources --stop-file
+D:/TradingML/runtimes/certified-research/stop.request` watches a marker inside
+the selected runtime root. Creating that file sets the same stop event as
+Ctrl+C. The current bounded query drains, no new unit is started, and submitted
+server mutations remain discoverable for resume. The watcher is drained on
+exit. A marker already present prevents accidental restart; inspect the prior
+run before removing it. Console delivery is not required for this control.

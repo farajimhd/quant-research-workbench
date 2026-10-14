@@ -17,6 +17,32 @@ import time
 from .contracts import SOURCE_STORAGE_POLICY,digest
 from . import source
 
+
+def stop_marker(stop,path):
+    """Watch an optional local runtime marker; drain the watcher on exit."""
+    from contextlib import contextmanager
+    from threading import Event,Thread
+    @contextmanager
+    def watch():
+        if path is None:
+            yield
+            return
+        done=Event()
+        def poll():
+            while not done.is_set():
+                try:
+                    if Path(path).exists():
+                        stop.set();return
+                except OSError:
+                    stop.set();return # Unreadable stop control fails closed.
+                done.wait(1)
+        worker=Thread(target=poll,name='certified-source-stop-marker',daemon=True)
+        worker.start()
+        try:yield
+        finally:
+            done.set();worker.join(timeout=3)
+    return watch()
+
 ROOT=Path(__file__).resolve().parents[2]
 ARCHIVE=Path(r'\\DESKTOP-SAAI85T\Workstation-G\market-data\flatfiles\us_stocks_sip')
 CACHE=Path(r'\\DESKTOP-SAAI85T\Workstation-D\market-data\flatfiles\us_stocks_sip')

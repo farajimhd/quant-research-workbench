@@ -109,11 +109,16 @@ def parse_args(argv=None):
     p.add_argument('--staging-reserve-fraction',type=float,default=.10,help='D capacity fraction reserved; larger of both reserve bounds applies')
     p.add_argument('--staging-chunk-gib',type=int,default=256,help='Maximum retained-file chunk; 0 uses all available headroom')
     p.add_argument('--runtime-root',type=Path,default=acquisition.RUNTIME/'certified-research')
+    p.add_argument('--stop-file',type=Path,help='prepare-sources: local runtime marker requesting graceful stop; submitted mutations remain resumable')
     p.add_argument('--cache-root',type=Path,default=acquisition.CACHE)
     p.add_argument('--archive-root',type=Path,default=acquisition.ARCHIVE)
     p.add_argument('--clickhouse-cache-root',default='/mnt/d/market-data/flatfiles/us_stocks_sip')
     p.add_argument('--hydrate-missing-trades',action='store_true',help='Deprecated: imported-day repair requires canonical sidecars')
     args=p.parse_args(argv)
+    if args.stop_file is not None:
+        if args.command!='prepare-sources' or not args.stop_file.is_absolute() or not args.stop_file.resolve().is_relative_to(args.runtime_root.resolve()):
+            p.error('--stop-file must be an absolute path inside --runtime-root and belongs to prepare-sources')
+        if args.stop_file.exists():p.error('Stop marker already exists; inspect the previous run before resuming')
     if args.reconcile_sec_submissions and not args.sec_census_cik:
         p.error('--reconcile-sec-submissions requires --sec-census-cik and --sec-census-forms')
     if args.sec_census_cik or args.sec_census_forms is not None:
@@ -863,7 +868,7 @@ def main(argv=None):
             stop=Event();original=signal.getsignal(signal.SIGINT)
             signal.signal(signal.SIGINT,lambda *unused:stop.set())
             try:
-                with closing(open_workstation_keeper_session()) as keeper:
+                with acquisition.stop_marker(stop,args.stop_file),closing(open_workstation_keeper_session()) as keeper:
                     claim=SourceClaim(keeper.client)
                     try:
                         prepare_identity(args,claim,lambda:builder.Client(args,persistent=False),

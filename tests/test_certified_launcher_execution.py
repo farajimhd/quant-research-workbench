@@ -13,6 +13,28 @@ from pipelines.certified_research import capacity_profile,installation,runtime_p
 from pipelines.certified_research.contracts import CampaignConfig,digest
 
 
+def test_source_stop_marker_is_runtime_scoped_and_watcher_drains():
+    from tempfile import TemporaryDirectory
+    from threading import Event,enumerate as threads
+    from pipelines.certified_research import acquisition
+    with TemporaryDirectory(prefix='source-stop-',dir='D:/TradingML/runtimes') as folder:
+        marker=Path(folder)/'stop.request'
+        args=launcher.parse_args(['prepare-sources','--end-date','2026-01-02',
+            '--runtime-root',folder,'--stop-file',str(marker)])
+        assert args.stop_file==marker
+        signal=Event()
+        with acquisition.stop_marker(signal,marker):
+            marker.write_text('stop')
+            assert signal.wait(3)
+        assert not any(t.name=='certified-source-stop-marker' for t in threads())
+        with pytest.raises(SystemExit):launcher.parse_args(['prepare-sources','--end-date','2026-01-02',
+            '--runtime-root',folder,'--stop-file',str(marker)])
+        for command,path in (('plan',str(marker)),('prepare-sources','stop.request'),
+                ('prepare-sources',str(Path(folder).parent/'outside-stop.request'))):
+            with pytest.raises(SystemExit):launcher.parse_args([command,'--end-date','2026-01-02',
+                '--runtime-root',folder,'--stop-file',path])
+
+
 def test_execution_parser_requires_frozen_dataset_and_qualified_profile():
     dataset='00000000-0000-0000-0000-000000000001'
     for command in ('run','resume'):
