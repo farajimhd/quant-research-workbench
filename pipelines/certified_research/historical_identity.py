@@ -170,13 +170,15 @@ class AcquisitionHandlers:
         self.database=database;self.claim=claim;self.clients=client_factory;self.providers=provider_factory
         self.dictionaries=dictionary_claim_factory;self.guard=source_guard
 
-    def inputs(self,plan):
+    @staticmethod
+    def inputs(plan):
         if plan.unit.product!='identity_observation':raise ValueError('Wrong historical identity acquisition product')
         args=plan.arguments
         if not {'as_of','ticker','composite_figi'}<=set(args)<= {'as_of','ticker','composite_figi','cik'}:
             raise ValueError('Unexpected historical identity acquisition fields')
         day=date.fromisoformat(args['as_of']);ticker=args['ticker'];figi=args['composite_figi'];cik=args.get('cik')
-        if (not isinstance(ticker,str) or not re.fullmatch(r'[A-Z0-9._-]{1,32}',ticker)
+        if (args['as_of']!=day.isoformat()
+                or not isinstance(ticker,str) or not re.fullmatch(r'[A-Z0-9._-]{1,32}',ticker)
                 or not isinstance(figi,str) or not re.fullmatch('[A-Z0-9]{12}',figi)
                 or (cik is not None and not re.fullmatch('[0-9]{1,10}',str(cik)))):
             raise ValueError('Invalid historical identity acquisition arguments')

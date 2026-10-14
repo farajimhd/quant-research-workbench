@@ -60,6 +60,17 @@ def parse_args(argv=None):
     p.add_argument('--cohort-max-sessions',type=int,default=200000,help='plan-cohorts context/listing-day budget, maximum 250000')
     p.add_argument('--format',choices=('text','json','sql'),default='text')
     p.add_argument('--acquire-missing',action='store_true',help='Opt in to the existing flatfile downloader after Massive resubscription; acquire missing appendable sources before plan freeze')
+    def identity_point(value):
+        from pipelines.certified_research.historical_identity import AcquisitionHandlers
+        from types import SimpleNamespace
+        fields=value.split(',')
+        if len(fields) not in (3,4):raise argparse.ArgumentTypeError('Use DATE,TICKER,COMPOSITE_FIGI[,CIK]')
+        request=dict(zip(('as_of','ticker','composite_figi','cik'),fields))
+        try:AcquisitionHandlers.inputs(SimpleNamespace(unit=SimpleNamespace(product='identity_observation'),arguments=request))
+        except (ValueError,TypeError) as error:raise argparse.ArgumentTypeError(str(error))
+        return request
+    p.add_argument('--identity-point',type=identity_point,action='append',default=[],help='Bounded dated identity prerequisite: DATE,TICKER,COMPOSITE_FIGI[,CIK]; repeat at most 1000 times')
+    p.add_argument('--acquire-identity-missing',action='store_true',help='Explicit future opt-in to Reference Gateway dated overview acquisition; disabled by default, never SIP REST recovery')
     p.add_argument('--stage-archive',action='store_true',help='Stage new-source G files on D inside the canonical updater')
     p.add_argument('--recover-retained-reporting',action='store_true',help='Authorized ingestion-only original-clock recovery from retained G/D trades; no REST')
     p.add_argument('--staging-reserve-gib',type=int,default=256,help='Minimum D free-space reserve')
@@ -71,6 +82,14 @@ def parse_args(argv=None):
     p.add_argument('--clickhouse-cache-root',default='/mnt/d/market-data/flatfiles/us_stocks_sip')
     p.add_argument('--hydrate-missing-trades',action='store_true',help='Deprecated: imported-day repair requires canonical sidecars')
     args=p.parse_args(argv)
+    if args.identity_point or args.acquire_identity_missing:
+        if args.command not in ('prepare-sources','launch','launch-collection'):
+            p.error('Identity preparation belongs to source preparation or fresh launch')
+        points=[(r['as_of'],r['ticker']) for r in args.identity_point]
+        if not points or len(points)>1000 or len(points)!=len(set(points)):
+            p.error('Identity preparation requires 1 to 1000 unique ticker/date points')
+        if any(not date(2019,1,2)<=date.fromisoformat(r['as_of'])<=args.universe_anchor_date for r in args.identity_point):
+            p.error('Identity observations must be within canonical history and the universe anchor date')
     if args.staging_reserve_gib<0 or args.staging_chunk_gib<0 or not 0<=args.staging_reserve_fraction<1:
         p.error('Invalid SSD staging reserve or chunk bound')
     if args.recover_retained_reporting and args.command not in ('prepare-sources','launch','launch-collection'):
@@ -124,6 +143,34 @@ def campaign_config(args,end):
         query_threads=args.query_threads,query_memory_bytes=args.query_memory_gib*1024**3,
         global_memory_bytes=args.global_memory_gib*1024**3,volume_windows_seconds=args.volume_windows_seconds,
         short_windows_sessions=args.short_windows_sessions,resolutions_ms=args.resolutions_ms,issuer_keys=args.issuer_keys)
+
+
+def prepare_identity(args,claim,client_factory,dictionary_factory,stop,progress=None):
+    """Prepare explicit reference points before freezing any derived graph."""
+    if not args.identity_point:return None
+    from pipelines.certified_research import historical_identity
+    def provider_factory():
+        # Construct only inside an opted-in missing-point producer. Do not probe
+        # credentials or the provider during normal reuse-only preparation.
+        from services.reference_gateway.config import ReferenceGatewayConfig
+        from services.reference_gateway.providers import MassiveReferenceClient
+        config=ReferenceGatewayConfig.from_env()
+        return MassiveReferenceClient(base_url=config.massive_base_url,
+            api_key=os.environ.get('MASSIVE_API_KEY',''),page_limit=config.active_ticker_page_limit,
+            max_pages=config.active_ticker_max_pages)
+    result=historical_identity.prepare_observations(args.database,claim,client_factory,provider_factory,
+        dictionary_factory,claim.check,args.identity_point,acquire_missing=args.acquire_identity_missing,
+        workers=args.workers,stop=stop,progress=progress)
+    if result['status']=='interrupted':raise InterruptedError('Historical identity preparation interrupted')
+    if result['status']!='complete':
+        failures=','.join(sorted(result['errors']))
+        raise ValueError('Historical identity prerequisites did not certify: '+failures+
+            '; missing points require explicit acquisition after resubscription; conflicts require identity resolution')
+    if args.format=='text':
+        from collections import Counter
+        counts=Counter(result['units'].values())
+        print(f'Identity points | certified={counts["certified"]} | reused={counts["reused"]} | failed=0',flush=True)
+    return result
 
 
 def inspect_sources(query,args):
@@ -301,6 +348,8 @@ def main(argv=None):
                                 raise ValueError('Collection already has a frozen definition; use resume-collection')
                         source_claim=SourceClaim(keeper.client)
                         try:
+                            prepare_identity(args,source_claim,lambda:factory(config),
+                                lambda:DictionaryClaim(keeper.client,args.database),stop,progress)
                             from pipelines.certified_research import sec_lineage,planning
                             lineage=sec_lineage.qualify(client.query,source_claim,args.fundamental_start_date,
                                 planning.reference_coverage_end(config.end),stop=stop)
@@ -434,7 +483,7 @@ def main(argv=None):
             import signal
             from pipelines.market_sip.flatfiles.download_update_events import load_env_files
             from src.trading_runtime.keeper_session import open_workstation_keeper_session
-            from pipelines.certified_research.publication import SourceClaim
+            from pipelines.certified_research.publication import SourceClaim,DictionaryClaim
             load_env_files([args.env_file],verbose=False)
             config=campaign_config(args,args.end_date)
             paths=acquisition.IngestionPaths(args.env_file,args.runtime_root,args.cache_root,args.archive_root,args.clickhouse_cache_root)
@@ -445,6 +494,8 @@ def main(argv=None):
                 with closing(open_workstation_keeper_session()) as keeper:
                     claim=SourceClaim(keeper.client)
                     try:
+                        prepare_identity(args,claim,lambda:builder.Client(args,persistent=False),
+                            lambda:DictionaryClaim(keeper.client,args.database),stop)
                         result=acquisition.prepare_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),paths,config,claim,
                             stop,acquire_missing=args.acquire_missing,stage_archive=args.stage_archive,context_start=args.context_start_date,
                             writer_query=client.query,recover_retained_reporting=args.recover_retained_reporting,

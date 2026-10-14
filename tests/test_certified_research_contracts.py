@@ -1481,6 +1481,18 @@ class ClickHouseIntegration(unittest.TestCase):
         logs.clear();handlers.producer(plan,{},Event())
         provider.fetch_ticker_overview.assert_called_once_with('NEXT',as_of=date(2026,1,2))
         self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+        from scripts import prepare_certified_research as launcher
+        from unittest.mock import patch
+        args=launcher.parse_args(['prepare-sources','--database',self.database,'--end-date','2026-01-02',
+            '--identity-point','2026-01-02,HIST,BBG000000001,123',
+            '--identity-point','2026-01-02,NEXT,BBG000000003,123'])
+        logs.clear()
+        with patch('services.reference_gateway.providers.MassiveReferenceClient') as forbidden_provider:
+            result=launcher.prepare_identity(args,Claim(),Client,Dictionary,Event())
+        self.assertEqual(result['status'],'complete')
+        self.assertEqual(set(result['units'].values()),{'reused'})
+        forbidden_provider.assert_not_called()
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
 
     def test_corporate_adjustment_uses_public_execution_evidence_and_scales_state(self):
         from pipelines.certified_research import adjustments,indicators

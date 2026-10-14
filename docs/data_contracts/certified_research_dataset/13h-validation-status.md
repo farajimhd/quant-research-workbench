@@ -4,8 +4,11 @@
 
 ## Current direct regression run
 
-All `tests/test_certified_*.py` files ran directly: **251 passed, 53 skipped in
-24.14 seconds**, without live integration opt-in. The initial attempt to collect
+All `tests/test_certified_*.py` files ran directly: **287 passed, 53 skipped in
+24.81 seconds**, without live integration opt-in, using a fresh checked runtime
+temporary root. The separate historical-identity ClickHouse fixture passed in
+5.61 seconds, including launcher prerequisite reuse of two points with zero
+inserts/provider construction. The earlier attempt to collect
 the entire repository with `-k certified` stopped on unrelated missing
 `MarketDayLedger` and `_sec_document_set_hash` imports. Direct selection avoided
 loading those unrelated modules. A subsequent setup failure accessing Windows'

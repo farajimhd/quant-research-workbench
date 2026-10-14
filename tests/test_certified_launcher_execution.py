@@ -92,12 +92,16 @@ def test_backfill_cli_uses_source_plan_resources_without_source_acquisition():
 
 @pytest.mark.parametrize('explicit_end',(False,True))
 @pytest.mark.parametrize('command,complete',(('launch',False),('launch-collection',False),('launch-collection',True)))
-def test_fresh_cli_orders_schema_source_preparation_and_execution_and_closes_owners(explicit_end,command,complete):
+@pytest.mark.parametrize('with_identity',(False,True))
+def test_fresh_cli_orders_schema_source_preparation_and_execution_and_closes_owners(explicit_end,command,complete,with_identity):
     inspection=Mock();client=Mock();client.query.return_value=[dict(n=0)];client.clean_error.side_effect=str
     keeper=SimpleNamespace(client=Mock(),close=Mock());source_claim=Mock();claim=Mock();dictionary=Mock();paths=Mock()
     inspection.query.return_value=[dict(last_day='2026-01-02')]
     stages=[]
     def installed(*args):stages.append('schema')
+    def identity_prepared(args,owner,clients,dictionaries,stop,progress):
+        assert owner is source_claim
+        if args.identity_point:stages.append('identity')
     def acquired(*args,**kwargs):
         stages.append('sources');assert kwargs['recover_retained_reporting']
         assert args[2].end==date(2026,1,2)
@@ -117,6 +121,7 @@ def test_fresh_cli_orders_schema_source_preparation_and_execution_and_closes_own
          patch('pipelines.certified_research.publication.DictionaryClaim',return_value=dictionary),\
          patch('pipelines.certified_research.acquisition.IngestionPaths',return_value=paths),\
          patch('pipelines.certified_research.installation.install',side_effect=installed),\
+         patch.object(launcher,'prepare_identity',side_effect=identity_prepared),\
          patch('pipelines.certified_research.acquisition.prepare_sources',side_effect=acquired),\
          patch('pipelines.certified_research.sec_lineage.qualify',return_value=dict(qualified=(),unqualified=())),\
          patch('pipelines.certified_research.fresh_execution.run',side_effect=fresh),\
@@ -126,9 +131,10 @@ def test_fresh_cli_orders_schema_source_preparation_and_execution_and_closes_own
             '--capacity-profile','pilot.json','--context-start-date','2025-12-01',
             '--fundamental-start-date','2024-01-01','--recover-retained-reporting']
         if explicit_end:argv.extend(('--end-date','2026-01-02'))
+        if with_identity:argv.extend(('--identity-point','2026-01-02,TEST,BBG000000001'))
         code=launcher.main(argv)
     assert code==(0 if complete else 2)
-    assert stages==['schema','sources','fresh']+(['execute'] if complete else [])
+    assert stages==['schema']+(['identity'] if with_identity else [])+['sources','fresh']+(['execute'] if complete else [])
     for owner in (dictionary,source_claim,claim,keeper,client,inspection):owner.close.assert_called_once()
     paths.validate.assert_called_once()
 

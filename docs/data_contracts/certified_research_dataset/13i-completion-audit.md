@@ -56,8 +56,14 @@ executor for the existing dated-point handler: 1–1,000 explicit unique request
 one global worker pool, verified point reuse before provider construction, and
 explicit `acquire_missing` opt-in. Newly acquired points require independent
 published readback. Seven handler/batch tests passed without provider calls.
-This does not reconstruct symbol intervals or prove lifetime membership; complete
-change/lifecycle evidence and fresh-launch repair integration remain incomplete.
+The unified CLI now accepts bounded explicit identity points on source
+preparation and fresh launch, before source preparation and graph freezing.
+Reuse-only is the default; missing points block market preparation. A separate
+reference-acquisition opt-in does not enable market downloads. The real bounded
+ClickHouse fixture reused two persisted points without inserts/provider calls.
+This does not reconstruct symbol intervals or prove lifetime membership;
+complete change/lifecycle evidence and automatic repair discovery remain
+incomplete. See [identity prerequisite options](13v-identity-prerequisites.md).
 
 Historical scope transitions now fail closed instead of silently projecting a
 current OTC/non-US/non-USD classification backward. The candidate query retains
