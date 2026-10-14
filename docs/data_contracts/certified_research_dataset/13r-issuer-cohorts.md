@@ -48,8 +48,21 @@ cohorts in 0.129 seconds with 1.87 MiB incremental traced Python memory. Fixture
 interval allocation was outside that measurement. This measures metadata census
 work, not production market computation, storage rates or end-to-end throughput.
 
-This is a complete cohort **scoping/planning** component, not yet the complete
-collection controller. Automatic sequential cohort execution, aggregate capacity
-admission, durable member plans and a final whole-collection certificate remain
-required before claiming the full January-to-end universe can run as one launch.
+`collection.Controller` now supplies the bounded orchestration core: deterministic
+child dataset IDs bind the collection UUID, partition hash and member index;
+frozen member plan hashes and issuer sets are checked on every load. It requires
+aggregate capacity admission before any member writer, executes cohorts
+sequentially (each cohort retains its existing concurrent unit execution), and
+independently re-verifies every member before publishing a collection root.
+Interrupted or blocked members cannot produce a whole-collection certificate.
+Resume delegates immutable-plan reuse to existing child controllers and repeats
+final authority verification; progress counts are never certification evidence.
+
+Five controller tests cover successful final re-verification, interrupted/blocked
+execution, changed member identities, failed authority roots, definition tampering
+and capacity rejection before writers. This core has not been exercised as a
+real whole-collection ClickHouse run. Its injected adapters still need durable
+ClickHouse definition/seal persistence, aggregate capacity measurement and CLI
+wiring. These remain required before claiming the full January-to-end universe
+can run as one launch.
 Until then, `plan-cohorts` explicitly reports `execution_ready=false`.
