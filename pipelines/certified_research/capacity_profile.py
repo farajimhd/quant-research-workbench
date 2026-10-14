@@ -53,3 +53,20 @@ def factory(query,profile):
         return capacity.PlanCapacityGuard(query,config,profile['parsed_rates'],recipes,
             reserve_bytes=profile['reserve_bytes'],volume_groups=profile['volume_groups'],safety_factor=profile['safety_factor'])
     return create
+
+
+def collection_guard(query,database,frozen,load_plan,profile):
+    """Resolve child recipes independently; collection metadata has its own recipe."""
+    from . import collection,collection_store
+    create=factory(query,profile);recipes={}
+    for member in frozen['members']:
+        saved=load_plan(member['dataset_id'])
+        guard=create(saved.config,saved.units)
+        for product,hash_ in guard.recipes.items():
+            if product in recipes and recipes[product]!=hash_:
+                raise ValueError('Collection child storage recipes compete')
+            recipes[product]=hash_
+    recipes['collection_metadata']=digest(dict(version=collection.VERSION,
+        ddl=tuple(t.ddl(database) for t in collection_store.tables())))
+    return capacity.CollectionCapacityGuard(query,database,load_plan,profile['parsed_rates'],recipes,
+        reserve_bytes=profile['reserve_bytes'],volume_groups=profile['volume_groups'],safety_factor=profile['safety_factor'])

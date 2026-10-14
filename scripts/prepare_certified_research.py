@@ -26,7 +26,7 @@ from pipelines.certified_research import contracts,schema,source,short_sql,campa
 
 def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('schema','install-schema','preflight','plan','plan-cohorts','status','stored-plan','prepare-sources','qualify-sec-lineage','verify','launch','backfill-v7','run','resume'))
+    p.add_argument('command',choices=('schema','install-schema','preflight','plan','plan-cohorts','status','stored-plan','prepare-sources','qualify-sec-lineage','verify','launch','backfill-v7','run','resume','resume-collection','verify-collection'))
     p.add_argument('--dataset-id',type=UUID)
     p.add_argument('--source-dataset-id',type=UUID,help='Qualified source plan/bar dataset for backfill-v7; never modified')
     p.add_argument('--backfill-start-date',type=date.fromisoformat,help='Optional narrower target range inside the source plan')
@@ -104,6 +104,11 @@ def parse_args(argv=None):
     if args.hydrate_missing_trades:p.error('Imported-day reporting repair cannot hydrate flatfiles; G-to-D staging belongs to acquisition')
     if args.command=='verify' and (args.acquire_missing or args.stage_archive):p.error('verify is read-only; acquisition flags belong to prepare-sources')
     if args.command in ('run','resume') and (args.acquire_missing or args.stage_archive):p.error('Frozen execution cannot acquire sources; use prepare-sources before freezing the plan')
+    if args.command in ('resume-collection','verify-collection'):
+        if args.dataset_id is None:p.error('Collection execution requires --dataset-id (collection UUID)')
+        if args.command=='resume-collection' and args.capacity_profile is None:p.error('resume-collection requires --capacity-profile')
+        if args.acquire_missing or args.stage_archive or args.recover_retained_reporting:
+            p.error('Frozen collection execution cannot acquire or repair sources')
     return args
 
 
@@ -177,6 +182,51 @@ def main(argv=None):
     args.max_threads=args.query_threads;args.max_memory_gb=args.query_memory_gib;args.query_timeout=45
     client=builder.Client(args,persistent=False)
     try:
+        if args.command in ('resume-collection','verify-collection'):
+            from contextlib import closing
+            from types import SimpleNamespace
+            from threading import Event
+            import signal
+            import time
+            from pipelines.market_sip.flatfiles.download_update_events import load_env_files
+            from src.trading_runtime.keeper_session import open_workstation_keeper_session
+            from pipelines.certified_research.publication import KeeperClaim,DictionaryClaim
+            from pipelines.certified_research import collection_execution,capacity_profile
+            load_env_files([args.env_file],verbose=False)
+            verify_only=args.command=='verify-collection'
+            profile=None if verify_only else capacity_profile.load(args.capacity_profile)
+            stop=Event();original=signal.getsignal(signal.SIGINT)
+            signal.signal(signal.SIGINT,lambda *unused:stop.set())
+            def factory(config):
+                options=SimpleNamespace(env_file=args.env_file,max_threads=config.query_threads,
+                    max_memory_gb=config.query_memory_bytes/1024**3,query_timeout=45)
+                real=builder.Client(options,persistent=False)
+                if not verify_only:return real
+                class Reader:
+                    def query(self,sql):return real.query(sql+' SETTINGS readonly=1')
+                    def close(self):real.close()
+                return Reader()
+            last_progress=[0.]
+            def progress(change):
+                now=time.monotonic()
+                if args.format=='text' and now-last_progress[0]>=1:
+                    print(change.get('phase','execution')+' | '+
+                        ' | '.join(f'{k}={v}' for k,v in change.get('counts',{}).items()),flush=True)
+                    last_progress[0]=now
+            try:
+                with closing(open_workstation_keeper_session()) as keeper:
+                    claim=KeeperClaim(keeper.client,str(args.dataset_id))
+                    try:
+                        query=(lambda sql:client.query(sql+' SETTINGS readonly=1')) if verify_only else client.query
+                        result=collection_execution.execute(query,args.database,str(args.dataset_id),claim,
+                            lambda id_:KeeperClaim(keeper.client,id_),factory,
+                            lambda:DictionaryClaim(keeper.client,args.database),profile=profile,
+                            verify_only=verify_only,stop=stop,progress=progress)
+                    finally:claim.close()
+            finally:signal.signal(signal.SIGINT,original)
+            print(json.dumps(result,default=str) if args.format=='json' else
+                'Collection '+result['status']+' | '+str(result.get('certificate',{}).get('root_hash','unsealed')))
+            return 0 if result['status'] in ('complete','verified') else 130 if result['status']=='interrupted' else 2
         if args.command in ('launch','backfill-v7','run','resume'):
             from contextlib import closing
             from types import SimpleNamespace
@@ -417,7 +467,7 @@ def main(argv=None):
         print('Preparation interrupted; rerun launch before plan publication, or resume an already frozen dataset.',file=sys.stderr)
         return 130
     except Exception as error:
-        label='Verification failed: ' if args.command=='verify' else 'Execution failed: ' if args.command in ('launch','backfill-v7','run','resume') else 'Preflight failed: '
+        label='Verification failed: ' if args.command in ('verify','verify-collection') else 'Execution failed: ' if args.command in ('launch','backfill-v7','run','resume','resume-collection') else 'Preflight failed: '
         print(label+client.clean_error(error),file=sys.stderr)
         return 2
     except KeyboardInterrupt:

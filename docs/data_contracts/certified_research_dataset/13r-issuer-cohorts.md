@@ -63,7 +63,7 @@ execution, changed member identities, failed authority roots, definition tamperi
 and capacity rejection before writers. This core has not been exercised as a
 real market-producing whole-collection run. The persistence adapter below is
 implemented and bounded ClickHouse tested; aggregate capacity measurement and
-CLI wiring remain required before claiming the full January-to-end universe
+fresh collection launch wiring remain required before claiming the full January-to-end universe
 can run as one launch.
 Until then, `plan-cohorts` explicitly reports `execution_ready=false`.
 
@@ -119,4 +119,26 @@ reserves and the safety factor use the same existing admission contract. The
 certificate binds the collection hash, every child plan/demand hash, actual disk
 inventory and conservative projection mode. Four tests cover aggregate totals,
 merge overlap, missing rates, changed child config and aggregate headroom failure.
-Representative measured pilot rates and launcher wiring remain outstanding.
+Representative measured pilot rates and fresh collection preparation remain outstanding.
+
+## Stored collection launcher routes
+
+`resume-collection --dataset-id COLLECTION_UUID --capacity-profile PROFILE`
+executes an already installed complete collection. `verify-collection
+--dataset-id COLLECTION_UUID` independently verifies all child campaign seals
+and the stored collection root, with readonly ClickHouse clients and no capacity
+profile needed. Both use the launcher's configured database and secrets file;
+acquisition, retained recovery and archive staging flags are rejected.
+
+Each child acquires a separate Keeper claim, uses its frozen resource config,
+and closes the claim even on failure. The collection retains its own owner.
+The original stop Event reaches child execution; verification checks it between
+members. Final status is complete/verified, interrupted, or blocked/failed.
+The collection metadata pilot recipe is the digest of the collection version
+and exact auxiliary DDL; child recipes are independently resolved by the normal
+capacity-profile factory, and competing recipes fail closed.
+
+These routes are implemented and lifecycle/argument tested. Automatic fresh
+collection preparation/installation and representative measured pilot rates
+remain outstanding. The stored routes do not imply that a whole-universe
+collection has already been installed or that a production campaign was run.
