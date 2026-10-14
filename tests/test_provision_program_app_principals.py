@@ -13,7 +13,7 @@ class Admin:
         self.closed = False
         self.interrupt_once = False
         self.tables = tuple({(t.database, t.name): t for t in
-            (*operator.HISTORY, *operator.OPENING, *operator.LIQUIDITY,
+            (*operator.HISTORY, *operator.OPENING, *operator.PRIOR_CLOSE, *operator.LIQUIDITY,
              *operator.RELEASE, *operator.SELECTION)}.values())
 
     def execute(self, query):
@@ -98,7 +98,8 @@ def test_exact_storage_grants_and_idempotent_resume():
     clients = run(admin)
     assert len(admin.accounts) == len(clients) == 8
     assert all(c.closed for c in clients)
-    assert len(admin.tables) == 28
+    assert len(admin.tables) == 31
+    assert set(operator.PRIOR_CLOSE) <= set(admin.tables)
     for p in operator.desired_plans():
         expected = {('SELECT', *s) for s in p.reads} | {('INSERT', *s) for s in p.writes}
         assert admin.accounts[p.principal] == expected

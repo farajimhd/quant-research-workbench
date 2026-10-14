@@ -27,11 +27,55 @@ class ProgramInputPublication:
             program_app_writer_factory('history_publisher', query_limits=query_limits),
             maximum_concurrent_units=maximum_concurrent_units)
         self._liquidity_reader = reader
+        self._prior_close_reader = reader
+        self._query_limits = dict(query_limits)
         self._liquidity_writer = program_app_writer_factory('liquidity_publisher', query_limits=query_limits)
         self.capacity = maximum_concurrent_units
         self.active = 0
         self._loop = None
         self._liquidity_active, self._liquidity_failed = set(), set()
+        self._prior_close_active, self._prior_close_failed = set(), set()
+
+    async def prepare_prior_close(self, market, *, canonical_storage_policy, canonical_disk,
+            canonical_reader_factory, ownership):
+        """Resolve the normal consumer identity before publishing shared history."""
+        from .regular_close_history_producer import certified_prior_close_input
+        from src.backend.qmd_columnar_history_transport import _owned_worker
+        async def prepare():
+            def read():
+                ownership.assert_owner()
+                reader = self._prior_close_reader()
+                try:
+                    source = certified_prior_close_input(reader, market,
+                        canonical_storage_policy=canonical_storage_policy, canonical_disk=canonical_disk)
+                    ownership.assert_owner()
+                    return source
+                finally:
+                    reader.close()
+            return await _owned_worker(read)
+        source = await self._execute(prepare)
+        return await self.publish_prior_close(source,
+            canonical_reader_factory=canonical_reader_factory, ownership=ownership)
+
+    async def publish_prior_close(self, source, *, canonical_reader_factory, ownership):
+        from .regular_close_history_producer import PriorCloseInput, publish_prior_close_async
+        if type(source) is not PriorCloseInput or not callable(canonical_reader_factory):
+            raise TypeError('Prior-close publication requires its certified consumer and owned canonical reader')
+        key = (source.market.build_id, source.market.sessions[0])
+        if key in self._prior_close_active or key in self._prior_close_failed:
+            raise ValueError('Prior-close unit is active or requires operator reconciliation')
+        if self.active >= self.capacity:
+            raise ValueError('Programme publication capacity is full; caller must bound its work pool')
+        self._prior_close_active.add(key)
+        try:
+            writer = program_app_writer_factory('opening_reference_publisher', query_limits=self._query_limits)
+            return await self._execute(publish_prior_close_async, self._prior_close_reader,
+                canonical_reader_factory, writer, source, ownership=ownership)
+        except BaseException:
+            self._prior_close_failed.add(key)
+            raise
+        finally:
+            self._prior_close_active.remove(key)
 
     async def _execute(self, operation, *args, **kwargs):
         loop = asyncio.get_running_loop()

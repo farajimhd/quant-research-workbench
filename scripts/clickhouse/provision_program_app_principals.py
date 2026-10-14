@@ -18,7 +18,7 @@ os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from scripts.clickhouse.plan_program_app_principals import desired_plans, HISTORY, OPENING, LIQUIDITY, RELEASE, SELECTION
+from scripts.clickhouse.plan_program_app_principals import desired_plans, HISTORY, OPENING, PRIOR_CLOSE, LIQUIDITY, RELEASE, SELECTION
 from scripts.clickhouse.provision_fixed_backtest_v3_principals import URL, WORKSTATION_IPV4
 from scripts.clickhouse.provision_trading_journal import SECRET_ROOT, _admin_client, _restrict_secret_file
 from src.backend.managed_backtest_credentials import _private_values
@@ -87,7 +87,7 @@ def apply_with_clients(*, admin, plans, credential_factory, client_factory, emit
     else:
         for database in ('arte', 'q_live'):
             contracts = tuple({(t.database, t.name): t for t in
-                (*HISTORY, *OPENING, *LIQUIDITY, *RELEASE, *SELECTION) if t.database == database}.values())
+                (*HISTORY, *OPENING, *PRIOR_CLOSE, *LIQUIDITY, *RELEASE, *SELECTION) if t.database == database}.values())
             storage_preflight(admin, tables=contracts)
     present = {}
     for p in plans:

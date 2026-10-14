@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.clickhouse.provision_fixed_backtest_v3_principals import desired_plan as existing_read_plan
 from src.market_engine.columnar_history_product import TABLES as HISTORY
 from src.market_engine.opening_price_reference import TABLES as OPENING
+from src.market_engine.regular_close_history import TABLES as PRIOR_CLOSE
 from pipelines.market_sip.events.liquidity_resolution_sql import TABLES as LIQUIDITY
 from src.trading_runtime.columnar_strategy_release import TABLES as RELEASE
 from src.trading_runtime.strategy_configuration_schema import TABLES as SELECTION
@@ -52,6 +53,7 @@ def desired_plans():
     inherited = ({('arte', name) for name in base.select_arte}
         | set(base.select_reference) | {('system', name) for name in base.select_system})
     history, opening, liquidity = scopes(HISTORY), scopes(OPENING), scopes(LIQUIDITY)
+    prior_close = scopes(PRIOR_CLOSE)
     release, selection = scopes(RELEASE), scopes(SELECTION)
     opening_parents = frozenset((('arte', 'bars_v1'),
         ('q_live', 'id_symbol_interval_v1'), ('q_live', 'market_stock_split_v1')))
@@ -59,9 +61,10 @@ def desired_plans():
         ('arte', 'liquidity_execution_price_100ms_v1')))
     return (
         ProgramPrincipalPlan(PRINCIPALS['market_input_reader'],
-            frozenset(inherited) | SYSTEM | history | opening | liquidity | opening_parents | liquidity_parents),
+            frozenset(inherited) | SYSTEM | history | opening | prior_close | liquidity | opening_parents | liquidity_parents),
         ProgramPrincipalPlan(PRINCIPALS['history_publisher'], SYSTEM | history, history),
-        ProgramPrincipalPlan(PRINCIPALS['opening_reference_publisher'], SYSTEM | opening | opening_parents, opening),
+        ProgramPrincipalPlan(PRINCIPALS['opening_reference_publisher'],
+            SYSTEM | opening | prior_close | opening_parents, opening | prior_close),
         ProgramPrincipalPlan(PRINCIPALS['liquidity_publisher'], SYSTEM | liquidity | liquidity_parents, liquidity),
         ProgramPrincipalPlan(PRINCIPALS['release_reader'], SYSTEM | release),
         ProgramPrincipalPlan(PRINCIPALS['release_publisher'], SYSTEM | release, release),

@@ -19,6 +19,7 @@ from src.backend.backtest_strategy_one_identity import (
     CertifiedIdentityPlan, certify_identity_plan, identity_content_hash,
 )
 from src.market_engine import opening_price_reference as contract
+from src.market_engine.regular_close_history import CertifiedPriorClosePlan
 from src.trading_runtime.arte_journal_schema import storage_preflight
 from src.trading_runtime.historical_reference_identity import load_reference_pin
 from research.mlops.clickhouse import insert_json_each_row
@@ -43,14 +44,14 @@ def _time(value):
 @dataclass(frozen=True)
 class CertifiedOpeningInput:
     market: CertifiedMarketDayPlan
-    prior_market: CertifiedMarketDayPlan
+    prior_market: CertifiedMarketDayPlan | CertifiedPriorClosePlan
     identity: CertifiedIdentityPlan
     listings: tuple[contract.OpeningListing, ...]
     population_reference_hash: str
 
     def __post_init__(self):
         if (type(self.market) is not CertifiedMarketDayPlan
-                or type(self.prior_market) is not CertifiedMarketDayPlan
+                or type(self.prior_market) not in (CertifiedMarketDayPlan, CertifiedPriorClosePlan)
                 or type(self.identity) is not CertifiedIdentityPlan
                 or len(self.market.sessions) != 1 or len(self.prior_market.sessions) != 1
                 or type(self.listings) is not tuple or not 1 <= len(self.listings) <= 25000
@@ -69,7 +70,12 @@ class CertifiedOpeningInput:
         required = {v.ticker for v in self.listings if v.valid_from <= regular.day}
         if not required <= set(self.prior_market.tickers):
             raise ValueError("Prior certified bars do not cover the complete opening population")
-        if 1000 not in self.prior_market.required_resolutions_ms:
+        if type(self.prior_market) is CertifiedPriorClosePlan:
+            self.prior_market.verify_consumer(self.market)
+            if (self.prior_market.header['consumer_identity_plan_hash'] != self.identity.token
+                    or self.prior_market.header['consumer_population_reference_hash'] != self.population_reference_hash):
+                raise ValueError('Prior-close history differs from the opening identity/reference pins')
+        elif 1000 not in self.prior_market.required_resolutions_ms:
             raise ValueError("Opening prior-close inputs require certified one-second bars")
         contract.require_hash(self.population_reference_hash)
         contract.require_hash(self.identity.token)
@@ -96,6 +102,9 @@ class CertifiedOpeningInput:
             raise ValueError("Opening population reference pin changed")
         _verify_identity_rows(reader, self)
         _verify_intervals(reader, self)
+        if type(self.prior_market) is CertifiedPriorClosePlan:
+            self.prior_market.verify(reader)
+            return
         unit_by_ticker = _prior_units(self)
         units = tuple(unit_by_ticker.values())
         for offset in range(0, len(units), 128):
@@ -112,6 +121,11 @@ class CertifiedOpeningInput:
 def _prior_units(source):
     regular = contract.previous_regular_session(date.fromisoformat(source.market.sessions[0]))
     required = {v.ticker for v in source.listings if v.valid_from <= regular.day}
+    if type(source.prior_market) is CertifiedPriorClosePlan:
+        mapped = {unit.ticker: unit for unit in source.prior_market.units if unit.ticker in required}
+        if set(mapped) != required:
+            raise ValueError('Opening reference lacks complete sealed QMD prior-close units')
+        return mapped
     units = [u for u in source.prior_market.units if u.stage == "bars"
              and u.session_date == source.prior_market.sessions[0]
              and u.ticker in required]
@@ -163,7 +177,7 @@ def certified_opening_input(reader, market, prior_market):
     An effective mapping which begins after the prior session is retained as an
     explicit exclusion; a missing current mapping stops the entire unit.
     """
-    if (type(market) is not CertifiedMarketDayPlan or type(prior_market) is not CertifiedMarketDayPlan
+    if (type(market) is not CertifiedMarketDayPlan or type(prior_market) not in (CertifiedMarketDayPlan, CertifiedPriorClosePlan)
             or len(market.sessions) != 1 or len(prior_market.sessions) != 1):
         raise TypeError("Opening input requires typed single-session market certificates")
     identity = certify_identity_plan(market, client=reader)
@@ -232,6 +246,15 @@ def prior_close_sql(source, listings):
     units = _prior_units(source)
     if not listings or len(listings) > 128 or any(v not in source.listings for v in listings):
         raise ValueError("Opening prior-close query requires a bounded certified listing scope")
+    if type(source.prior_market) is CertifiedPriorClosePlan:
+        from src.market_engine.regular_close_history import VALUES
+        prior = source.prior_market
+        return (f'SELECT ticker,closing_bar_count,prior_close_int FROM q_live.{VALUES.name} '
+            f'WHERE consumer_build_id={literal(prior.scope.consumer_build_id)} '
+            f'AND consumer_session_date=toDate({literal(prior.scope.consumer_session_date)}) '
+            f'AND attempt_id=toUUID({literal(prior.header["attempt_id"])}) '
+            f'AND ticker IN ({",".join(literal(v.ticker) for v in listings)}) '
+            'AND closing_bar_count>0 ORDER BY ticker LIMIT 129')
     pairs = ",".join(f"({literal(v.ticker)},toUUID({literal(units[v.ticker].attempt_id)}))" for v in listings)
     return ("SELECT ticker,count() AS closing_bar_count,argMax(close_int,bucket_index) AS prior_close_int "
         "FROM arte.bars_v1 "
@@ -480,6 +503,8 @@ def publication_permission_preflight(client, *, writable):
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", user) is None:
         raise ValueError("Opening reference principal is invalid")
     target = {t.name for t in contract.TABLES}
+    from src.market_engine.regular_close_history import TABLES as PRIOR_CLOSE
+    allowed_target = target | {table.name for table in PRIOR_CLOSE}
     required = {("q_live", n) for n in target} | {("arte", "bars_v1")}
     required |= {("q_live", n) for n in ("id_symbol_interval_v1", "market_stock_split_v1")}
     required |= {("system", n) for n in (
@@ -494,11 +519,11 @@ def publication_permission_preflight(client, *, writable):
         for privilege in {v.strip() for v in match.group(1).split(",")}:
             if privilege == "SELECT":
                 reads.add(scope)
-            elif privilege == "INSERT" and writable and scope[0] == "q_live" and scope[1] in target:
+            elif privilege == "INSERT" and writable and scope[0] == "q_live" and scope[1] in allowed_target:
                 writes.add(scope[1])
             else:
                 raise ValueError("Opening reference principal has unauthorized write/DDL authority")
-    if not required <= reads or writes != (target if writable else set()):
+    if not required <= reads or (writes not in (target, allowed_target) if writable else bool(writes)):
         raise ValueError("Opening reference publication grants are incomplete")
     return user
 
@@ -553,7 +578,7 @@ class OpeningReferencePipeline:
     async def publish(self, market, prior_market, *, ownership, code_hash):
         if type(market) is not CertifiedMarketDayPlan or len(market.sessions) != 1:
             raise TypeError("Opening producer lane requires a certified single-session plan")
-        if type(prior_market) is not CertifiedMarketDayPlan:
+        if type(prior_market) not in (CertifiedMarketDayPlan, CertifiedPriorClosePlan):
             raise TypeError("Opening producer lane requires a certified prior-session plan")
         contract.require_hash(code_hash)
         loop = asyncio.get_running_loop()

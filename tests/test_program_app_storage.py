@@ -19,7 +19,7 @@ def test_inventory_reuses_unique_normalized_contracts():
     for table in contracts:
         assert "storage_policy = 'live_market_ssd'" in table.ddl()
     market = [table for table in contracts if table.database == 'q_live']
-    assert len(market) == 7 and all(table.name.startswith('qmd_') for table in market)
+    assert len(market) == 10 and all(table.name.startswith('qmd_') for table in market)
     assert all(table.database == 'q_live' for table in contracts if table.name.startswith('qmd_'))
     assert 'trading_strategy_signal_exact_price_v1' not in {table.name for table in contracts}
     assert 'trading_oms_observation_snapshot_v1' not in {table.name for table in contracts}
