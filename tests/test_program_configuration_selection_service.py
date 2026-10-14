@@ -61,7 +61,15 @@ def test_current_http_configuration_options_include_certified_programme(monkeypa
     assert len(reads) == 1
 
 
-def test_default_options_preserve_numbered_catalogue_and_include_programme(monkeypatch):
+def test_managed_default_options_use_approved_programme_without_legacy_reads(monkeypatch):
+    _, revision, _ = installed(monkeypatch)
+    monkeypatch.setattr(legacy, 'certified_configuration_options', lambda *_: pytest.fail('Legacy default read'))
+    result = configuration.backtest_configuration_options()
+    assert result['candidate_id'] == revision['revision_id']
+    assert [row['candidate_id'] for row in result['candidates']] == [revision['revision_id']]
+
+
+def test_explicit_numbered_options_preserve_catalogue_and_include_programme(monkeypatch):
     _, revision, _ = installed(monkeypatch)
     old = dict(revision_id="legacy", revision=1, label="Legacy", content_hash="a" * 64,
                run_plan_id="old", available_run_plans=[])
@@ -70,8 +78,8 @@ def test_default_options_preserve_numbered_catalogue_and_include_programme(monke
         calls.append(candidate_id)
         return old, (old,)
     monkeypatch.setattr(legacy, "certified_configuration_options", numbered)
-    result = configuration.backtest_configuration_options()
-    assert calls == [""]
+    result = configuration.backtest_configuration_options('legacy')
+    assert calls == ['legacy']
     assert result["candidate_id"] == "legacy"
     assert [row["candidate_id"] for row in result["candidates"]] == ["legacy", revision["revision_id"]]
 

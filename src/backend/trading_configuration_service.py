@@ -405,6 +405,10 @@ def backtest_configuration_options(candidate_id: str = "") -> dict[str, Any]:
         program_configuration_selection_service,
     )
     service = program_configuration_selection_service()
+    if not candidate_id and service is not None:
+        # Managed startup explicitly supplies its approved current selections.
+        # Their initial UI discovery must not depend on a legacy default.
+        candidate_id = 'strategy-configuration:' + next(iter(service.pins))
     programme = str(candidate_id).startswith("strategy-configuration:")
     if programme and service is None:
         raise ValueError("Programme configuration selection is not installed")
