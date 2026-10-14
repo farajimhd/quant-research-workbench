@@ -19,7 +19,20 @@ def staging_table():
                         facts.order,facts.partition)
 
 
-def run_sec(scope,cik,metrics,query,claim,source_guard,*,database='arte',expected_source_hash=None):
+def run_sec(scope,cik,metrics,query,claim,source_guard,*,database='arte',expected_source_hash=None,original_parity_guard=None):
+    # Isolated fixtures exercise SQL contracts; production requires independent
+    # original-document coverage/value authority before any operational writes.
+    if not database.startswith('certified_research_test_'):
+        if not callable(original_parity_guard):
+            raise ValueError('Production SEC fundamentals require certified original-document parity coverage')
+        base_guard=source_guard
+        def source_guard():
+            base_guard();evidence=original_parity_guard(scope)
+            if (not isinstance(evidence,dict) or evidence.get('certified') is not True
+                    or evidence.get('all_bulk_matched') is not True
+                    or evidence.get('original_vintage_qualified') is not True
+                    or evidence.get('source_hash')!=scope.parent_hash):
+                raise ValueError('SEC original-document parity coverage differs from frozen source authority')
     identifier(database);claim.check();source_guard()
     schema.verify_storage(query,database,require_tables=True)
     schema.verify_auxiliary_storage(query,database,(STAGING,))

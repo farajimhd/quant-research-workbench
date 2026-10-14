@@ -29,3 +29,24 @@ period and dimensions, preserve revision conflicts, and certify coverage.
 Class/issuer allocation and corporate-action basis are separate dependencies for
 float. Existing bulk fundamental projection does not acquire original-document
 parity merely because this parser succeeds.
+
+`sec_fundamental_reconciliation.reconcile` now compares bounded original and bulk
+observations by taxonomy, concept, unit, complete period and explicit dimensions.
+It checks the extraction seal and independently requalifies the archive/time
+evidence; the extracted document hash must match the witnessed document. Exact
+decimal comparison retains missing contexts, competing original values and value
+mismatches. Matching decimal renderings of Float64/unknown numeric storage remain
+`source_precision_unqualified`; preserved decimal text is required for parity.
+Unmatched original source positions and parser rejections remain in the result.
+An accession-bounded CH loader retrieves at most 10,001 rows (the extra row detects
+overflow), retains the actual numeric storage type and normalizes explicit dimension
+maps. Its retained Apple accession read passed a live ClickHouse test.
+
+Reconciliation output is still `certified=false`: it is not a complete coverage
+certificate. Production `reference_producer.run_sec` now requires a caller-supplied
+independent original parity coverage guard, bound to the frozen source hash and
+qualified public vintage, before writes and throughout materialization. The current
+launcher does not yet produce that certificate, so production fundamental output
+remains blocked rather than mislabeling bulk source data as original-vintage proven.
+Isolated `certified_research_test_` SQL fixtures are explicitly outside that production
+certification path. Durable parity publication and coverage certification remain work.
