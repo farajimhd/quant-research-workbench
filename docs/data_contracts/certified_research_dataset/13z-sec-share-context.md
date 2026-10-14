@@ -80,3 +80,16 @@ checks do **not** independently demonstrate that every selected value matches
 the original public document vintage. Original-vintage qualification of those
 values remains a separate completion gap; passing the existing SEC producer
 fixture is not proof of that requirement.
+
+`sec_document_lineage.inspect` now provides a bounded read-only candidate bridge
+between a legacy text row, matching document metadata and the accession archive
+occurrence. It checks complete document identity and text hash in ClickHouse,
+reproduces the existing archive version key from the **submission** hash and
+rank, rejects missing/ambiguous/PAC sources, and repeats the inspection before
+returning. At most two rows per table are requested; payloads remain in
+ClickHouse. A real Apple bridge passed without reading files or publishing a
+repair. Every result remains `candidate_only=true` and
+`original_vintage_qualified=false`: archive/document association alone does not
+replace source-stage qualification, competing-version handling or a verified
+ingestion repair. This supplies concrete inputs for that repair, rather than
+requiring an invented submission hash or version key.
