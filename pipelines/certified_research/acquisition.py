@@ -202,10 +202,14 @@ def prepare_sources(query,paths,config,claim,stop,*,acquire_missing=False,stage_
     resume_native_repairs(query,writer_query,inv,claim,stop,emit=emit,defer_unsubmitted=recover_retained_reporting)
     reporting=source.reporting_inventory(query,inv)
     if reporting['mutating']:raise ValueError('Canonical reporting mutations must finish before preparation')
-    if recover_retained_reporting and reporting['missing']:
+    recovery_days=reporting['missing']
+    if recover_retained_reporting:
+        from pipelines.market_sip.events import original_trade_tape
+        recovery_days=tuple(sorted(set(recovery_days)|set(original_trade_tape.inventory(query,inv))))
+    if recover_retained_reporting and recovery_days:
         if writer_query is None:raise ValueError('Retained reporting recovery requires the owned writer connection')
         from pipelines.market_sip.flatfiles import retained_reporting
-        retained_reporting.recover(writer_query,paths,inv,reporting['missing'],claim,stop,
+        retained_reporting.recover(writer_query,paths,inv,recovery_days,claim,stop,
             reserve_bytes=staging_reserve_bytes,reserve_fraction=staging_reserve_fraction,
             maximum_chunk_bytes=staging_chunk_bytes,emit=emit,query_threads=config.query_threads,
             query_memory_bytes=config.query_memory_bytes)

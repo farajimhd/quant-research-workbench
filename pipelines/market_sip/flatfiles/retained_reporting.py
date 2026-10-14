@@ -10,15 +10,15 @@ from time import monotonic
 
 from . import archive_staging,download_update_events as updater
 from .download_massive_sip_flatfiles import DownloadJob
-from pipelines.market_sip.events import reporting_evidence as ns,native_reporting_repair as native
+from pipelines.market_sip.events import reporting_evidence as ns,native_reporting_repair as native,original_trade_tape as tape
 from pipelines.certified_research import schema
 from pipelines.certified_research import source as canonical_source
 from pipelines.certified_research.contracts import digest,literal
 from pipelines.certified_research.publication import insert_rows,SourceClaim
 
 RECEIPTS='historical_retained_reporting_capture_v1'
-STAGE=ns.TABLE+'_retained_stage'
-RAW=ns.TABLE+'_retained_raw'
+STAGE=ns.TABLE+'_retained_stage_v2'
+RAW=ns.TABLE+'_retained_raw_v2'
 CANONICAL=ns.TABLE+'_retained_canonical'
 
 
@@ -41,10 +41,11 @@ def raw_table():
     columns.extend((schema.c('event_date','Date'),schema.c('sip_timestamp_ns','UInt64','Delta,ZSTD(1)'),
         schema.c('participant_timestamp_ns','Nullable(UInt64)'),schema.c('reporting_condition_entries','Array(String)'),
         schema.c('reporting_reason','UInt8')))
+    columns.append(schema.c('original_listing_tape','Nullable(UInt8)'))
     return schema.Table(RAW,tuple(columns),('source_date','ticker','sip_timestamp_us','sequence_number'),'source_date')
 
 
-def raw_insert_sql(raw,day,*,database='q_live',query_threads=2,query_memory_bytes=2*1024**3):
+def raw_insert_sql(raw,day,*,database='q_live',query_threads=2,query_memory_bytes=2*1024**3,listing_tape=False):
     """Bind original fields by name; updater projection order is independent."""
     from pipelines.certified_research.contracts import identifier
     identifier(database)
@@ -54,7 +55,8 @@ def raw_insert_sql(raw,day,*,database='q_live',query_threads=2,query_memory_byte
             or not 64*1024**2<=query_memory_bytes<=32*1024**3):
         raise ValueError('Invalid retained raw insertion budget')
     names=[c.name for c in raw_table().columns]
-    expressions=[f'toDate({literal(day)})' if name=='source_date' else 'r.'+name for name in names]
+    expressions=[f'toDate({literal(day)})' if name=='source_date' else
+        'CAST(NULL AS Nullable(UInt8))' if name=='original_listing_tape' and not listing_tape else 'r.'+name for name in names]
     return (f'INSERT INTO {database}.{RAW} ({",".join(names)}) SELECT {",".join(expressions)} '
         f'FROM ({raw}) r SETTINGS max_threads={query_threads},max_memory_usage={query_memory_bytes}')
 
@@ -145,7 +147,7 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
     if not routing or any(r['disk_name']!='live_market_ssd' for r in routing):
         raise ValueError('Reporting evidence requires the explicit live_market_ssd policy')
     claim.check()
-    for ddl in (ns.ddl('q_live',ns.TABLE),ns.ddl('q_live',STAGE,stage=True),receipt_table().ddl('q_live')):
+    for ddl in (ns.ddl('q_live',ns.TABLE),ns.ddl('q_live',STAGE,stage=True,listing_tape=True),receipt_table().ddl('q_live')):
         query(ddl,read=False)
     schema.verify_auxiliary_storage(query,'q_live',(ns.TABLE,STAGE,RECEIPTS))
     verify_table_columns(query,receipt_table())
@@ -159,7 +161,8 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
         if rows:receipt_days.add(day)
     missing=[d for d in plan['missing'] if date.fromisoformat(d) not in receipt_days]
     if missing:raise ValueError('Retained reporting source files are missing: '+','.join(missing[:20]))
-    plan.update(archive_staging.plan_chunks(((day,1 if day in receipt_days else plan['files'][day]['bytes'])
+    tape_missing=set(tape.inventory(query,dict(inventory,expected=tuple(days))))
+    plan.update(archive_staging.plan_chunks(((day,1 if day in receipt_days and day not in tape_missing else plan['files'][day]['bytes'])
         for day in sorted(days)),plan['space'],maximum_chunk_bytes=maximum_chunk_bytes))
     private=paths.cache/'_retained_reporting'
     completed=[];reused=[];pending=[]
@@ -217,6 +220,14 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                         if candidate.stat().st_size!=int(receipts[0]['file_bytes']) or _file_hash(candidate,stop)!=receipts[0]['file_digest']:
                             raise ValueError('Resumed private staged file differs from certified capture')
                         staged_file=candidate
+                has_tape=query(f"SELECT count() n FROM system.tables WHERE database='q_live' AND name={literal(tape.RECEIPTS)}")[0]['n']
+                tape_receipts=query(f'SELECT * FROM q_live.{tape.RECEIPTS} WHERE source_date=toDate({literal(day)})') if has_tape else []
+                if tape_receipts:
+                    tape.publish(query,day,source_hash,frozen,receipts[0]['file_digest'],int(source['trade_event_rows']),STAGE,guard,emit=emit)
+                else:
+                    staged_file=recover_prior_tape(query,paths,plan,day,source,source_hash,receipts[0],private,stop,guard,
+                        reserve_bytes=reserve_bytes,reserve_fraction=reserve_fraction,query_threads=query_threads,
+                        query_memory_bytes=query_memory_bytes,emit=emit)
             else:
                 info=plan['files'][day]
                 if info['origin']==1:
@@ -246,7 +257,7 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                 fields=['sip_timestamp_us','price_primary_int','price_secondary_int','size_primary','size_secondary',
                     'exchange_primary','exchange_secondary']+[f'condition_token_{n}' for n in range(1,6)]+['event_date']
                 raw=updater.raw_event_union_sql(args,files,trade_only=True,
-                    include_reporting_reason=True,include_reporting_evidence=True)
+                    include_reporting_reason=True,include_reporting_evidence=True,include_listing_tape=True)
                 # Budget in uncompressed semantic bytes, with room for staging,
                 # publication and merge work; do not infer it from gzip size.
                 footprint=query('SELECT count() n,sum(length(ticker)+128+arraySum(arrayMap(x -> length(x)+9,reporting_condition_entries))) bytes '
@@ -263,7 +274,7 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                 schema.verify_auxiliary_storage(query,'q_live',(RAW,))
                 verify_table_columns(query,raw_table())
                 query(f'ALTER TABLE q_live.{RAW} DELETE WHERE {stage_where} SETTINGS mutations_sync=2',read=False)
-                query(raw_insert_sql(raw,day,query_threads=query_threads,query_memory_bytes=query_memory_bytes),read=False)
+                query(raw_insert_sql(raw,day,query_threads=query_threads,query_memory_bytes=query_memory_bytes,listing_tape=True),read=False)
                 raw_count=query(f'SELECT count() n FROM q_live.{RAW} WHERE {stage_where}')[0]['n']
                 if int(raw_count)!=int(source['trade_event_rows']):raise ValueError('SSD raw staging count differs from canonical trades')
                 # Read the canonical month once, then reuse its compact trade
@@ -281,7 +292,7 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                     bounded=f'SELECT * FROM q_live.{RAW} WHERE {stage_where} AND cityHash64(ticker)%16={bucket}'
                     projection=ns.reconciled_projection(bounded,'q_live.'+CANONICAL,day,source_hash,fields,
                         first_sip_us=int(source['first_sip_timestamp_us']),last_sip_us=int(source['last_sip_timestamp_us']),
-                        repair_reporting_flags=True,ticker_bucket=(bucket,16),canonical_stage=True)
+                        repair_reporting_flags=True,ticker_bucket=(bucket,16),canonical_stage=True,listing_tape=True)
                     projection+=f',{settings},max_bytes_before_external_sort={query_memory_bytes//4}'
                     query(f'INSERT INTO q_live.{STAGE} '+projection,read=False)
                     emit(f'Retained reporting {day} | reconcile={bucket+1}/16')
@@ -303,6 +314,7 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                     file_key=str(info['key']).replace('\\','/'),source_origin=info['origin'])
                 if len(readback)!=1 or readback[0]!=expected_receipt:
                     raise ValueError('Retained acquisition receipt did not read back exactly')
+                tape.publish(query,day,source_hash,frozen,file_hash,expected,STAGE,guard,emit=emit)
             pending.append((source,frozen))
             emit(f'Retained reporting {day} | captured | awaiting monthly flag repair')
             schema.verify_auxiliary_storage(query,'q_live',(ns.TABLE,STAGE,RECEIPTS))
@@ -319,6 +331,57 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
             following=ordered_days[index+1] if index+1<len(ordered_days) else None
             if following is None or (following.year,following.month)!=(day.year,day.month):repair_pending()
     return dict(completed=tuple(completed),reused=tuple(reused))
+
+
+def recover_prior_tape(query,paths,plan,day,source,source_hash,receipt,private,stop,guard,*,
+        reserve_bytes,reserve_fraction,query_threads,query_memory_bytes,emit):
+    """One-time tape upgrade reuses the original clock/ordinal reconciliation."""
+    info=plan['files'].get(day)
+    if info is None:raise ValueError('Original tape needs its retained ingestion source: '+str(day))
+    staged_file=None
+    if info['origin']==1:
+        staged_file=private/info['key']
+        copied=archive_staging.copy_file(info['source'],staged_file,paths.archive,private,info['bytes'],
+            stop=stop,reserve_bytes=reserve_bytes,reserve_fraction=reserve_fraction)
+        if copied['status'] not in ('staged','cached'):raise ValueError('Original tape source changed before staging')
+        input_file=staged_file
+    else:input_file=info['source']
+    if input_file.stat().st_size!=int(receipt['file_bytes']) or _file_hash(input_file,stop)!=receipt['file_digest']:
+        raise ValueError('Tape upgrade must use byte-identical original acquisition')
+    args=updater.parse_args(['--start-date',str(day),'--end-date',str(day),'--skip-bars'])
+    args.flatfiles_root_win=paths.cache;args.flatfiles_root_ch=paths.clickhouse_cache
+    job=DownloadJob('trades',str(day),str(info['key']),str(input_file),info['bytes'])
+    raw=updater.raw_event_union_sql(args,updater.DayFiles(str(day),job,job),trade_only=True,
+        include_reporting_reason=True,include_reporting_evidence=True,include_listing_tape=True)
+    footprint=query(f'SELECT count() n,sum(length(ticker)+128+arraySum(arrayMap(x -> length(x)+9,reporting_condition_entries))) bytes '
+        f'FROM ({raw}) SETTINGS max_threads={query_threads},max_memory_usage={query_memory_bytes}')[0]
+    space=archive_staging.space_budget(paths.cache,reserve_bytes=reserve_bytes,reserve_fraction=reserve_fraction)
+    expected=int(source['trade_event_rows'])
+    if int(footprint['n'])!=expected or 4*int(footprint['bytes'])+256*1024**2>space['usable_bytes']:
+        raise ValueError('Original tape staging lacks exact coverage or SSD headroom')
+    guard();query(raw_table().ddl('q_live'),read=False)
+    schema.verify_auxiliary_storage(query,'q_live',(RAW,STAGE));verify_table_columns(query,raw_table())
+    where=f'source_date=toDate({literal(day)})'
+    query(f'ALTER TABLE q_live.{RAW} DELETE WHERE {where} SETTINGS mutations_sync=2',read=False)
+    query(raw_insert_sql(raw,day,query_threads=query_threads,query_memory_bytes=query_memory_bytes,listing_tape=True),read=False)
+    guard();query(f'ALTER TABLE q_live.{STAGE} DELETE WHERE {where} SETTINGS mutations_sync=2',read=False)
+    for bucket in range(16):
+        guard()
+        bounded=f'SELECT * FROM q_live.{RAW} WHERE {where} AND cityHash64(ticker)%16={bucket}'
+        projection=tape.prior_projection(bounded,'q_live.'+ns.TABLE,day,source_hash,bucket=bucket)
+        query(f'INSERT INTO q_live.{STAGE} '+projection+f',max_threads={query_threads},max_memory_usage={query_memory_bytes}',read=False)
+        emit(f'Original tape {day} | reconcile={bucket+1}/16 | original clocks reused')
+    audit=query(f'SELECT sum(n) n,sum(keys) keys,sum(bad) bad FROM (SELECT ticker,count() n,uniqExact(ordinal) keys,'
+        f'countIf(mismatch OR ambiguous) bad FROM q_live.{STAGE} WHERE {where} GROUP BY ticker) '
+        'SETTINGS optimize_aggregation_in_order=1')[0]
+    if int(audit['n'])!=expected or int(audit['keys'])!=expected or int(audit['bad']):
+        raise ValueError('Original tape does not match frozen clock/ordinal acquisition')
+    if _file_hash(input_file,stop)!=receipt['file_digest']:
+        raise ValueError('Original tape file changed during extraction')
+    if native._hash(query,ns.evidence_fingerprint_sql('q_live.'+ns.TABLE,day))!=receipt['evidence_hash']:
+        raise ValueError('Frozen clock evidence changed during tape upgrade')
+    tape.publish(query,day,source_hash,receipt['evidence_hash'],receipt['file_digest'],expected,STAGE,guard,emit=emit)
+    return staged_file
 
 
 def _file_hash(path,stop):

@@ -121,3 +121,23 @@ Ctrl+C. The current bounded query drains, no new unit is started, and submitted
 server mutations remain discoverable for resume. The watcher is drained on
 exit. A marker already present prevents accidental restart; inspect the prior
 run before removing it. Console delivery is not required for this control.
+
+## Original listing tape
+
+The legacy tape encoder maps both a missing/zero tape and original tape 1
+to encoded zero. An execution venue is also insufficient to establish a
+primary listing exchange. Recovery now preserves the original trade tape
+separately in `q_live.historical_original_trade_tape_v1`, with nullable values
+for missing/malformed input and exact ordinal keys. Coverage receipts bind the
+canonical source, frozen original clocks, original file digest and tape
+fingerprint. This is event evidence; it does not certify IPO dates, historical
+broker permissions or issuer ownership intervals.
+
+New source ingestion captures tape alongside clocks in the same reconciliation.
+Retained recovery uses separate V2 temporary stages. Already captured days get
+a one-time tape upgrade from byte-identical ingestion files, checking every
+clock/full-condition record and ordinal rank against the frozen NS association.
+It does not repeat the canonical price scan or rewrite existing clock evidence.
+Future days preserve both in one pass. Old temporary stages are never adopted
+as tape evidence. Missing or ambiguous ranks, changed files and publication
+differences fail closed.

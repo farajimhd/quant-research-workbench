@@ -103,9 +103,12 @@ def certify(query,database,target,day,source_digest,first_sip_us,last_sip_us,exp
     return counts
 
 
-def ddl(database='q_live',table=TABLE,*,stage=False):
+def ddl(database='q_live',table=TABLE,*,stage=False,listing_tape=False):
     identifier(database);identifier(table)
     extra=',mismatch UInt8 CODEC(ZSTD(1)),ambiguous UInt8 CODEC(ZSTD(1))' if stage else ''
+    if listing_tape:
+        if not stage:raise ValueError('Tape belongs to acquisition staging, not original clock records')
+        extra+=',original_listing_tape Nullable(UInt8) CODEC(ZSTD(1))'
     return f"""CREATE TABLE IF NOT EXISTS {database}.{table} (
       source_date Date CODEC(ZSTD(1)),ticker LowCardinality(String) CODEC(ZSTD(1)),
       ordinal UInt64 CODEC(Delta(8),ZSTD(1)),sip_timestamp_ns UInt64 CODEC(Delta(8),ZSTD(1)),
@@ -116,7 +119,7 @@ def ddl(database='q_live',table=TABLE,*,stage=False):
     SETTINGS storage_policy='live_market_ssd',default_compression_codec='ZSTD(1)'"""
 
 
-def reconciled_projection(raw_sql,target,source_date,source_digest,fields,*,first_sip_us,last_sip_us,repair_reporting_flags=False,ticker_bucket=None,canonical_stage=False):
+def reconciled_projection(raw_sql,target,source_date,source_digest,fields,*,first_sip_us,last_sip_us,repair_reporting_flags=False,ticker_bucket=None,canonical_stage=False,listing_tape=False):
     """Rank matches use full canonical-field equality; unmatched rows block sealing.
 
     The updater supplies its own acquisition-owned raw projection. Historical
@@ -149,7 +152,7 @@ def reconciled_projection(raw_sql,target,source_date,source_digest,fields,*,firs
       r.reporting_condition_entries reporting_condition_entries,r.reporting_reason reporting_reason,
       {literal(source_digest)} source_digest,
       toUInt8(e.present!=1 OR r.present!=1 OR NOT ({equality})) mismatch,
-      toUInt8(r.tie_count!=1) ambiguous
+      toUInt8(r.tie_count!=1) ambiguous{',r.original_listing_tape original_listing_tape' if listing_tape else ''}
     FROM (SELECT *,toUInt8(1) present,row_number() OVER (PARTITION BY ticker ORDER BY ordinal) trade_rank
       FROM {target} WHERE sip_timestamp_us BETWEEN {first_sip_us} AND {last_sip_us} AND bitAnd(event_meta,1)=1{bucket_filter}{stage_filter}) e
     FULL OUTER JOIN (SELECT *,toUInt8(1) present,

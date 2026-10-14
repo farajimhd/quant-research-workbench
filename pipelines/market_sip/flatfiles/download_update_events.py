@@ -1334,9 +1334,11 @@ def flatfile_trade_correction_filter_sql(args: argparse.Namespace) -> str:
     return f"\nAND toUInt8(greatest(0, least(15, toInt16OrZero(correction)))) NOT IN ({values})"
 
 
-def raw_event_union_sql(args: argparse.Namespace, day: DayFiles, *, include_execution_timestamp: bool = False, trade_only: bool = False, include_reporting_reason: bool = False, include_reporting_evidence: bool = False) -> str:
+def raw_event_union_sql(args: argparse.Namespace, day: DayFiles, *, include_execution_timestamp: bool = False, trade_only: bool = False, include_reporting_reason: bool = False, include_reporting_evidence: bool = False, include_listing_tape: bool = False) -> str:
     if include_reporting_evidence and not (trade_only and include_reporting_reason):
         raise ValueError('Full reporting evidence requires trade-only reporting reasons')
+    if include_listing_tape and not (trade_only and include_reporting_evidence):
+        raise ValueError('Original tape evidence requires trade-only original reporting evidence')
     quote_path = windows_path_to_clickhouse_path(Path(day.quote_job.destination), Path(args.flatfiles_root_win), args.flatfiles_root_ch)
     trade_path = windows_path_to_clickhouse_path(Path(day.trade_job.destination), Path(args.flatfiles_root_win), args.flatfiles_root_ch)
     bid_price = "toFloat64OrZero(bid_price)"
@@ -1388,6 +1390,9 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles, *, include_exec
     evidence_columns=(',t.sip_timestamp_ns,t.participant_timestamp_ns,t.reporting_condition_entries' if include_reporting_evidence else '')
     evidence_expressions=("toUInt64OrZero(sip_timestamp) sip_timestamp_ns,toUInt64OrNull(participant_timestamp) participant_timestamp_ns,"
         "arrayMap(x -> trimBoth(x),splitByChar(',',conditions)) reporting_condition_entries," if include_reporting_evidence else '')
+    if include_listing_tape:
+        evidence_columns+=',t.original_listing_tape'
+        evidence_expressions+="if(match(tape,'^[0-9]{1,3}$') AND toUInt16OrZero(tape)<=255,toUInt8OrNull(tape),CAST(NULL AS Nullable(UInt8))) original_listing_tape,"
     quote_sql = f"""
     SELECT
         q.ticker AS ticker,
@@ -2867,13 +2872,21 @@ def capture_reporting_ns(client,args,day,raw_stats,report_path,reporter=None):
     from pipelines.certified_research.schema import verify_auxiliary_storage
     if latest_day_status(client,args,DayJob(day.source_date,build_step_for_date(day.source_date)))=='ok':
         raise RuntimeError('Original reporting capture cannot reopen a certified source day')
-    db=args.execution_clock_database;table=args.reporting_ns_table;stage=table+'_stage'
+    db=args.execution_clock_database;table=args.reporting_ns_table;stage=table+'_stage_v2'
+    from pipelines.market_sip.events import original_trade_tape
+    from hashlib import sha256
+    def file_digest():
+        value=sha256()
+        with Path(day.trade_job.destination).open('rb') as stream:
+            while chunk:=stream.read(8*1024**2):value.update(chunk)
+        return value.hexdigest()
+    original_file_hash=file_digest()
     source_rows=[json.loads(line) for line in client.execute(
         f'SELECT * FROM {quote_ident(args.database)}.{quote_ident(args.source_day_stats_table)} FINAL '
         f'WHERE source_date=toDate({sql_string(day.source_date)}) FORMAT JSONEachRow').splitlines() if line]
     if len(source_rows)!=1:raise RuntimeError('New-source reporting evidence requires a unique source certificate')
     source_digest=digest({k:v for k,v in source_rows[0].items() if k!='updated_at'})
-    client.execute(reporting_evidence.ddl(db,table));client.execute(reporting_evidence.ddl(db,stage,stage=True))
+    client.execute(reporting_evidence.ddl(db,table));client.execute(reporting_evidence.ddl(db,stage,stage=True,listing_tape=True))
     def query(sql,*,read=True):
         if not read:return client.execute(sql)
         return [json.loads(line) for line in client.execute(sql+' FORMAT JSONEachRow').splitlines() if line]
@@ -2884,8 +2897,8 @@ def capture_reporting_ns(client,args,day,raw_stats,report_path,reporter=None):
     fields=['sip_timestamp_us','price_primary_int','price_secondary_int','size_primary','size_secondary',
         'exchange_primary','exchange_secondary']+[f'condition_token_{n}' for n in range(1,6)]+['event_date']
     sql=reporting_evidence.reconciled_projection(raw_event_union_sql(args,day,trade_only=True,
-        include_reporting_reason=True,include_reporting_evidence=True),args.database+'.'+args.events_table,
-        day.source_date,source_digest,fields,first_sip_us=raw_stats.first_sip_timestamp_us,last_sip_us=raw_stats.last_sip_timestamp_us)
+        include_reporting_reason=True,include_reporting_evidence=True,include_listing_tape=True),args.database+'.'+args.events_table,
+        day.source_date,source_digest,fields,first_sip_us=raw_stats.first_sip_timestamp_us,last_sip_us=raw_stats.last_sip_timestamp_us,listing_tape=True)
     sql+=',max_threads=1'
     _run_profiled_with_reporter(client,'reporting_ns_stage_'+day.source_date,
         f'INSERT INTO {quote_ident(db)}.{quote_ident(stage)} '+sql,reporter,day=day.source_date,stage='reporting-ns',detail='original clocks and full conditions')
@@ -2902,6 +2915,11 @@ def capture_reporting_ns(client,args,day,raw_stats,report_path,reporter=None):
             f'EXCEPT ALL SELECT {columns} FROM {quote_ident(db)}.{quote_ident(right)} WHERE {where})')[0]
         if int(difference['n']):raise RuntimeError('Persisted original reporting evidence is incomplete or changed')
     verify_auxiliary_storage(query,db,(table,stage))
+    if file_digest()!=original_file_hash:raise RuntimeError('Original source bytes changed during evidence capture')
+    original_trade_tape.publish(query,date.fromisoformat(day.source_date),source_digest,
+        reporting_evidence.evidence_hash(query,db+'.'+table,day.source_date),original_file_hash,
+        raw_stats.trade_rows,stage,lambda:None,database=db,
+        emit=lambda value:append_jsonl(report_path,dict(type='original_tape_progress',source_date=day.source_date,message=value)))
     reporting_evidence.certify(query,db,args.database+'.'+args.events_table,day.source_date,source_digest,
         raw_stats.first_sip_timestamp_us,raw_stats.last_sip_timestamp_us,raw_stats.trade_rows,table=table,
         coverage=table+'_coverage' if args.test_mode else 'historical_trade_reporting_coverage_v1')

@@ -1526,7 +1526,7 @@ class ClickHouseIntegration(unittest.TestCase):
             +','.join(f'toUInt16(0) condition_token_{i}' for i in range(1,6))+
             f",toDate('{day}') event_date,toUInt64(({first}+number)*1000+123) sip_timestamp_ns,"
             f"toNullable(toUInt64(({first}+number)*1000-1000)) participant_timestamp_ns,"
-            "CAST([] AS Array(String)) reporting_condition_entries,toUInt8(0) reporting_reason FROM numbers(2)")
+            "CAST([] AS Array(String)) reporting_condition_entries,toUInt8(0) reporting_reason,toNullable(toUInt8(1)) original_listing_tape FROM numbers(2)")
         target=database+'.events_2026'
         self.client.query(f'CREATE TABLE {target} ENGINE=MergeTree ORDER BY (ticker,ordinal) '
             "SETTINGS storage_policy='live_market_ssd' EMPTY AS SELECT toUInt64(sequence_number) ordinal,r.* "
@@ -1564,6 +1564,15 @@ class ClickHouseIntegration(unittest.TestCase):
                 result=retained.recover(query,paths,inv,(day,),Claim(),Event(),emit=lambda *a:None)
                 self.assertEqual(result['reused'],(day,))
                 self.assertFalse(any(sql.startswith(f'INSERT INTO {database}.{retained.RAW}') for sql in logs))
+                from pipelines.market_sip.events import original_trade_tape as tape
+                self.client.query(f'ALTER TABLE {database}.{tape.RECEIPTS} DELETE WHERE 1 SETTINGS mutations_sync=2',read=False)
+                self.client.query(f'ALTER TABLE {database}.{tape.TABLE} DELETE WHERE 1 SETTINGS mutations_sync=2',read=False)
+                logs.clear()
+                result=retained.recover(query,paths,inv,(day,),Claim(),Event(),emit=lambda *a:None)
+                self.assertEqual(result['reused'],(day,))
+                self.assertFalse(any(sql.startswith(f'INSERT INTO {database}.{retained.CANONICAL}') for sql in logs))
+                actual_tape=self.client.query(f'SELECT ordinal,original_listing_tape FROM {database}.{tape.TABLE} ORDER BY ordinal')
+                self.assertEqual(actual_tape,[dict(ordinal=1,original_listing_tape=1),dict(ordinal=2,original_listing_tape=1)])
         actual=self.client.query(f'SELECT event_meta,price_primary_int FROM {target} ORDER BY ordinal')
         self.assertEqual([int(r['event_meta']) for r in actual],[65,65])
         self.assertEqual([int(r['price_primary_int']) for r in actual],[1234,1234])

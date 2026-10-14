@@ -10,25 +10,37 @@ from pipelines.market_sip.flatfiles import download_update_events as updater, re
 from pipelines.certified_research.contracts import literal
 
 
-def projection():
+def projection(*,listing_tape=False):
     with patch('sys.argv',['updater','--start-date','2026-01-02','--end-date','2026-01-02','--skip-bars']):
         args=updater.parse_args()
     root=Path(args.flatfiles_root_win)
     job=updater.DownloadJob('trades','2026-01-02','fixture.csv.gz',str(root/'fixture.csv.gz'),1)
     sql=updater.raw_event_union_sql(args,updater.DayFiles('2026-01-02',job,job),trade_only=True,
-        include_reporting_reason=True,include_reporting_evidence=True)
+        include_reporting_reason=True,include_reporting_evidence=True,include_listing_tape=listing_tape)
     sip=1767362400000000000
     rows=[]
     for index,(conditions,participant) in enumerate((('5,13,30,31,32,33',str(sip-1000000)),('999','0'),('',str(sip-1000000)),('','invalid'))):
         values=dict(ticker='TEST',conditions=conditions,correction='0',exchange='11',id=str(index),
             participant_timestamp=participant,price='1.25',sequence_number=str(index+1),sip_timestamp=str(sip),
-            size='1',tape='1',trf_id='',trf_timestamp='')
+            size='1',tape=('1','','0','invalid')[index] if listing_tape else '1',trf_id='',trf_timestamp='')
         rows.append('SELECT '+','.join(literal(value)+' AS '+key for key,value in values.items()))
     call="file("+literal(updater.windows_path_to_clickhouse_path(root/'fixture.csv.gz',root,args.flatfiles_root_ch))+", 'CSVWithNames', "+literal(updater.TRADE_SCHEMA_STRING)+")"
     assert call in sql
     sql=sql.replace(call,'('+' UNION ALL '.join(rows)+')')
     assert 'file(' not in sql
     return sql
+
+
+@pytest.mark.skipif(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')!='1',reason='Explicit bounded SSD ClickHouse opt-in')
+def test_original_tape_preserves_missing_and_zero_instead_of_nyse():
+    from scripts import build_market_day as builder
+    client=builder.Client(builder.parse_args(['--date','2026-01-02','--env-file',str(builder.ROOT/'.env')]),persistent=False)
+    try:
+        rows=client.query('SELECT sequence_number,original_listing_tape,bitAnd(bitShiftRight(event_meta,3),7) encoded_tape '
+            'FROM ('+projection(listing_tape=True)+') ORDER BY sequence_number')
+        assert [r['original_listing_tape'] for r in rows]==[1,None,0,None]
+        assert [r['encoded_tape'] for r in rows]==[0,0,0,0]
+    finally:client.close()
 
 
 @pytest.mark.skipif(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')!='1',reason='Explicit bounded SSD ClickHouse opt-in')

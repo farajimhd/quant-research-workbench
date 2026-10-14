@@ -262,9 +262,10 @@ def test_source_preparation_routes_recovery_before_freezing_source_epoch():
     from pipelines.certified_research import acquisition,source
     from pipelines.market_sip.flatfiles import retained_reporting
     day=date(2026,1,2);config=CampaignConfig(day,day)
-    inv=dict(missing=(),incomplete=())
+    inv=dict(missing=(),incomplete=(),expected=(day,))
     absent=dict(missing=(day,),mutating=False);ready=dict(missing=(),mutating=False)
     def query(sql):
+        if 'SELECT count() n FROM system.tables' in sql:return [dict(n=0)]
         if 'system.storage_policies' in sql:
             return [dict(disk_name='sip_raw_ssd' if "policy_name='sip_raw_ssd'" in sql else 'live_market_ssd')]
         return []
