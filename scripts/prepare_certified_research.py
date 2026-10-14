@@ -303,11 +303,12 @@ def main(argv=None):
     args=parse_args(argv)
     if args.command=='schema':
         catalog=installation.catalog(args.database)
-        from pipelines.certified_research import sec_share_capture,sec_share_preparation,sec_witness_publication,sec_archive_preparation
+        from pipelines.certified_research import sec_share_capture,sec_share_preparation,sec_witness_publication,sec_archive_preparation,sec_fundamental_publication
         source_tables=sec_share_capture.tables()
         archive_tables=sec_witness_publication.tables()
+        fundamental_tables=sec_fundamental_publication.tables()
         if args.format=='sql':print(';\n\n'.join([*(t.ddl(args.database) for _,t in catalog),
-            *(t.ddl('q_live') for t in (*source_tables,*archive_tables))])+';')
+            *(t.ddl('q_live') for t in (*source_tables,*archive_tables,*fundamental_tables))])+';')
         elif args.format=='json':
             manifest=installation.manifest(args.database)
             manifest['sec_source_candidates']=dict(database='q_live',product=sec_share_preparation.PRODUCT,
@@ -316,6 +317,8 @@ def main(argv=None):
             manifest['sec_archive_evidence']=dict(database='q_live',product=sec_archive_preparation.PRODUCT,
                 recipe_hash=sec_archive_preparation.recipe_hash(),allocation_certified=False,
                 tables=[dict(name=t.name,order=t.order,partition=t.partition,columns=[vars(c) for c in t.columns]) for t in archive_tables])
+            manifest['sec_fundamental_evidence']=dict(database='q_live',certified=False,
+                tables=[dict(name=t.name,order=t.order,partition=t.partition,columns=[vars(c) for c in t.columns]) for t in fundamental_tables])
             print(json.dumps(manifest,indent=2))
         else:
             print(f'Compact research schema | {len(catalog)} tables | live_market_ssd')

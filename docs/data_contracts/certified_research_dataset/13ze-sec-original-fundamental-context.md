@@ -49,4 +49,29 @@ qualified public vintage, before writes and throughout materialization. The curr
 launcher does not yet produce that certificate, so production fundamental output
 remains blocked rather than mislabeling bulk source data as original-vintage proven.
 Isolated `certified_research_test_` SQL fixtures are explicitly outside that production
-certification path. Durable parity publication and coverage certification remain work.
+certification path. Whole-period parity coverage certification remains work.
+
+Original observations and comparison evidence now have a bounded durable publisher
+in `sec_fundamental_publication`. Its three exact schemas are exported by the unified
+launcher `schema --format sql/json`:
+
+- `research_sec_fundamental_source_observation_v1`: exact decimal strings, concepts,
+  units, periods, explicit dimensions, source positions and parsing provenance.
+- `research_sec_fundamental_source_comparison_v1`: bulk source identity/value,
+  comparison status, context hash and original-position references. Original values
+  are referenced rather than copied into each comparison.
+- `research_sec_fundamental_source_document_v1`: document/catalog/witness/time/
+  reconciliation hashes, availability, precision, row counts and rejected/unmatched
+  evidence. This completion row is inserted last.
+
+All tables are monthly MergeTree with explicit `live_market_ssd` and lossless codecs.
+The extraction hash is the immutable group identity; competing evidence for an
+existing extraction requires explicit versioned reconciliation rather than overwrite.
+The publisher recomputes reconciliation from its input evidence, checks source and
+storage guards before writes, requires measured write admission, inserts missing
+rows in bounded batches, and independently verifies the complete group. Completed
+groups with missing/conflicting/duplicate rows fail explicitly. An isolated live
+ClickHouse fixture verified partial resume and zero-insert reuse; it used synthetic
+source/time evidence and does not certify a real filing or production capacity.
+CLI execution wiring for these tables and whole-period coverage certificates remain
+unfinished. Production fundamental publication therefore remains blocked.
