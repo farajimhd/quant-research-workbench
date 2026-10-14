@@ -66,8 +66,11 @@ class ProgramProposal:
                   protection_profile: ProtectionProfile | None,
                   outside_rth: bool) -> StrategyIntent:
         from .configuration_execution_binding import ConfigurationExecutionBinding
+        from .program_stop_protection import ProgramStopProtection
         if type(execution_policy) is ConfigurationExecutionBinding:
             execution_policy = execution_policy.policy_for(self.action)
+        if type(protection_profile) is ProgramStopProtection:
+            protection_profile = protection_profile.for_proposal(self)
         if not isinstance(execution_policy, ExecutionPolicy) or type(outside_rth) is not bool:
             raise ValueError("Proposal needs the resolved app execution contract")
         if self.action in {"enter_long", "add_long"} and not isinstance(protection_profile, ProtectionProfile):
