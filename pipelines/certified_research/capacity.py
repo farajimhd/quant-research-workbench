@@ -72,6 +72,56 @@ class PlanCapacityGuard:
         return result
 
 
+class CollectionCapacityGuard:
+    """Sum retained outputs and cohort transient allowances.
+
+    Loads one immutable child graph at a time. No reuse discount or arbitrary
+    old-table byte rate can authorize the complete collection. Background merges
+    can outlive a cohort; without a verified drain barrier their peak allowances
+    are summed rather than assuming only the current cohort occupies disk.
+    """
+    def __init__(self, query, database, load_plan, rates, recipe_hashes, *,
+                 reserve_bytes, volume_groups, safety_factor='1.25'):
+        self.query=query;self.database=identifier(database);self.load_plan=load_plan
+        self.rates=tuple(rates);self.recipes=dict(recipe_hashes)
+        self.reserves=dict(reserve_bytes);self.volumes=dict(volume_groups);self.factor=safety_factor
+
+    def __call__(self, frozen):
+        from dataclasses import replace
+        from .collection import Controller
+        Controller(frozen,None,None,None,None)  # Validate the whole immutable partition.
+        totals={};active={};unknown={};members=[]
+        for member in frozen['members']:
+            saved=self.load_plan(member['dataset_id'])
+            if (saved.dataset_id!=member['dataset_id'] or saved.plan_hash!=member['plan_hash']
+                    or saved.config.database!=self.database
+                    or tuple(saved.config.issuer_keys)!=tuple(member['issuer_keys'])
+                    or replace(saved.config,issuer_keys=()).content_hash!=frozen['partition']['config_hash']):
+                raise ValueError('Collection capacity child differs from the frozen partition')
+            demand=plan_demands(saved.config,saved.units)
+            for product,count in demand['demands'].items():
+                totals[product]=totals.get(product,0)+count
+                active[product]=active.get(product,0)+demand['active_units'][product]
+            for product,count in demand['unknown_products'].items():
+                unknown[product]=unknown.get(product,0)+count
+            members.append((saved.dataset_id,saved.plan_hash,demand['demand_hash']))
+        # Header, member rows and final seal have their own measured metadata rate.
+        totals['collection_metadata']=len(members)+2;active['collection_metadata']=1
+        storage=inventory(self.query,self.database)
+        result=admission(storage,totals,self.rates,self.recipes,active_units=active,
+            reserve_bytes=self.reserves,volume_groups=self.volumes,safety_factor=self.factor)
+        if unknown:
+            result['blockers']+=['Unclassified execution product: '+p for p in sorted(unknown)]
+            result['status']='blocked'
+        result.pop('certificate_hash')
+        result.update(collection_hash=frozen['collection_hash'],
+            demand_hash=digest(dict(members=members,demands=totals,active_units=active)),
+            projection_mode='all_retained_outputs_sum_cohort_transient_no_reuse_discount',
+            unknown_products=unknown)
+        result['certificate_hash']=digest(result)
+        return result
+
+
 @dataclass(frozen=True)
 class PilotRate:
     product: str

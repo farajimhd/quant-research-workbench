@@ -102,3 +102,21 @@ install/reload/reinstall, resumed controller orchestration with fixture child
 launches, idempotent sealing, partial-seal rejection and actual part placement.
 This verifies collection metadata/controller integration, not whole-market
 computation or measured production storage admission.
+
+## Aggregate capacity contract
+
+`capacity.CollectionCapacityGuard` loads one stored child graph at a time and
+checks its dataset ID, plan hash, issuer keys, database and unscoped config hash
+against the frozen partition. It sums all retained product and campaign metadata
+demands; verified reuse is not discounted. Collection header/member/seal storage
+requires a separate qualified `collection_metadata` pilot rate (member count +
+two units). Missing or incompatible measured rates block admission.
+
+Cohort execution is sequential, but ClickHouse background merges can outlive a
+cohort. The guard therefore sums each cohort's transient allowance as well; it
+does not assume a merge-drain barrier exists. Physical-volume grouping, explicit
+reserves and the safety factor use the same existing admission contract. The
+certificate binds the collection hash, every child plan/demand hash, actual disk
+inventory and conservative projection mode. Four tests cover aggregate totals,
+merge overlap, missing rates, changed child config and aggregate headroom failure.
+Representative measured pilot rates and launcher wiring remain outstanding.
