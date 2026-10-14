@@ -93,6 +93,10 @@ repair. Every result remains `candidate_only=true` and
 replace source-stage qualification, competing-version handling or a verified
 ingestion repair. This supplies concrete inputs for that repair, rather than
 requiring an invented submission hash or version key.
+An [original archive byte witness](13zc-sec-archive-byte-witness.md) now also
+verifies submission/document bytes and occurrence ordinal against a staged SEC
+backup. The bounded Apple example passed; public-time/allocation qualification
+and whole-period original-fact parity remain unfinished.
 
 ## Composed normalized preparation
 
