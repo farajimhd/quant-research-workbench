@@ -59,6 +59,15 @@ def test_admission_change_is_checked_before_writing():
     assert all(call.kwargs.get('read',True) for call in query.call_args_list)
 
 
+def test_readonly_incomplete_publication_never_inserts_or_admits():
+    query=Mock(return_value=[]);admission=Mock()
+    publisher=publication.Publisher(query,'q_live',Mock(),Mock(),admission)
+    with patch.object(publication.sec_share_capture,'verify'):
+        assert publisher.publish(*group(),write=False) is None
+    admission.assert_not_called()
+    assert all(call.kwargs.get('read',True) for call in query.call_args_list)
+
+
 @pytest.mark.skipif(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')!='1',reason='explicit ClickHouse integration opt-in')
 def test_real_clickhouse_publication_and_exact_restart():
     from scripts import build_market_day as builder
@@ -77,7 +86,7 @@ def test_real_clickhouse_publication_and_exact_restart():
         document=dict(document_key='b'*64,lineage=dict(candidate_hash='f'*64,archive_submission_hash='c'*64,
             document=dict(content_sha256='d'*64)))
         source=dict(document=document);source['prepared_hash']=digest(source)
-        reused=publisher.reuse((source,),group()[2],mode='acceptance_checked_day')
+        reused=publisher.reuse((source,),group()[2],mode='acceptance_checked_day',write=False)
         assert reused['inserted_rows']==0 and reused['readback_verified']
         source['document']['lineage']['candidate_hash']='1'*64
         source.pop('prepared_hash');source['prepared_hash']=digest(source)

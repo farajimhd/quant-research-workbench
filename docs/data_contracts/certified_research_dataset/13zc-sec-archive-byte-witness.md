@@ -159,6 +159,11 @@ claim/cancellation every 8MiB and full source lineage at unit boundaries rather
 than issuing repeated whole-group database reads for every buffer. A 17MiB cached
 fixture verified five full lineage-boundary checks, no copy-space admission and
 preservation of the existing file. Cancellation checks remain inside the read loop.
-Fresh launcher planning still requires copy headroom for an absent D file before
-execution-level publication reuse is discovered; pre-plan persisted-group discovery
-remains an optimization to implement. No throughput claim is made from fixtures.
+Fresh launcher planning now discovers persisted groups through read-only exact
+publication verification before computing copy demand. Complete verified groups
+enter `publication_reuse` and require zero copy bytes even when D has no remaining
+staging headroom. Missing source tables or incomplete groups retain normal copy
+demand; conflicting evidence fails explicitly. Execution independently rechecks
+reuse rather than trusting the planned exemption. If evidence disappears, fresh
+copy admission still applies. Original G source stats and successful download
+receipts remain required. No throughput claim is made from fixtures.

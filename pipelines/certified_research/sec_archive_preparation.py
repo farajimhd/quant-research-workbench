@@ -5,7 +5,7 @@ from pathlib import Path
 
 from . import sec_archive_execution,sec_archive_staging_plan,sec_archive_witness,sec_public_archive_time
 from . import sec_witness_publication,sec_share_source,sec_share_preparation,sec_document_lineage
-from .contracts import digest
+from .contracts import digest,literal
 
 PRODUCT='sec_archive_witness'
 
@@ -64,15 +64,27 @@ def prepare(query,config,requests,claim,dictionary_factory,profile,*,canonical_r
         metadata_bytes+=len(json.dumps(descriptor).encode('utf-8'))
         if metadata_bytes>64*1024**2:
             raise ValueError('SEC archive source metadata exceeds 64MiB')
-    plan=sec_archive_staging_plan.plan(tuple(sources),canonical_root,backup_root,cache_root,runtime_root,
-        reserve_bytes=reserve_bytes,reserve_fraction=reserve_fraction,maximum_chunk_bytes=maximum_chunk_bytes)
-    original=receipts(receipt_ledger,plan['archives'])
     def source_guard():
         guard()
         for request,source in zip(requests,sources):
             if sec_document_lineage.inspect(query,*request,claim,guard)!=source['document']['lineage']:
                 raise ValueError('SEC archive current source lineage changed')
         guard()
+    original={}
+    def lookup(archives):
+        original.update(receipts(receipt_ledger,archives))
+        names=','.join(literal(t.name) for t in sec_witness_publication.tables())
+        present=query(f'SELECT name FROM system.tables WHERE database=\'q_live\' AND name IN ({names})')
+        if not present:return ()
+        publisher=sec_witness_publication.Publisher(query,'q_live',claim,source_guard,admit)
+        by_key={s['document']['document_key']:s for s in sources};reused=[]
+        for archive in archives:
+            selected=tuple(by_key[d['document_key']] for d in archive['documents'])
+            if publisher.reuse(selected,original[archive['archive_key']],mode=mode,write=False) is not None:
+                reused.append(archive['archive_key'])
+        return tuple(reused)
+    plan=sec_archive_staging_plan.plan(tuple(sources),canonical_root,backup_root,cache_root,runtime_root,
+        reserve_bytes=reserve_bytes,reserve_fraction=reserve_fraction,maximum_chunk_bytes=maximum_chunk_bytes,reuse_lookup=lookup)
     dictionary=dictionary_factory()
     try:sec_witness_publication.install(query,'q_live',dictionary)
     finally:dictionary.close()

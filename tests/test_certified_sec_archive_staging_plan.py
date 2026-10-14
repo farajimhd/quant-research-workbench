@@ -43,6 +43,18 @@ def test_existing_cache_is_planned_without_allocating_copy_headroom():
         assert result['chunks']['chunks']==(((relative.as_posix(),7),),)
 
 
+def test_verified_publication_reuse_is_planned_without_a_d_copy():
+    with TemporaryDirectory(dir='D:/TradingML/runtimes',prefix='sec-reused-plan-') as directory:
+        root=Path(directory);backup=root/'backup';cache=root/'cache';relative=Path('2025/QTR4/20251031.nc.tar.gz')
+        target=backup/relative;target.parent.mkdir(parents=True);target.write_bytes(b'archive')
+        with patch.object(staging.archive_staging,'validate_roots'),patch.object(staging.archive_staging,'space_budget',
+            return_value=dict(usable_bytes=0,reserve_bytes=200,free_bytes=100)):
+            result=staging.plan((prepared('a'*64,'2025-10-31'),),'D:/market-data/sec_core/daily_archives',backup,cache,root,
+                reuse_lookup=lambda archives:(relative.as_posix(),))
+        assert result['publication_reuse']==(relative.as_posix(),) and result['chunks']['copy_bytes']==0
+        assert not cache.exists()
+
+
 def test_path_traversal_and_staging_outside_runtime_are_rejected():
     runtime=Path('D:/TradingML/runtimes')
     with pytest.raises(ValueError,match='below'):

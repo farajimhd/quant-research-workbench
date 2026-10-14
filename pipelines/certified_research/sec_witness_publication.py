@@ -67,7 +67,7 @@ class Publisher:
         if not callable(admission):raise ValueError('SEC witness publication requires source-write admission')
         self.query=query;self.database=database;self.claim=claim;self.source_guard=source_guard;self.admission=admission
 
-    def reuse(self,prepared,receipt,*,mode):
+    def reuse(self,prepared,receipt,*,mode,write=True):
         """Read independently qualified complete evidence; partial groups need execution."""
         if not isinstance(prepared,(tuple,list)) or not 1<=len(prepared)<=1000:
             raise ValueError('SEC reuse requires a bounded prepared group')
@@ -91,9 +91,9 @@ class Publisher:
                 raise ValueError('SEC reused witness differs from current source lineage')
             witnesses.append(witness);qualified.append(qualification)
         # Exact normalized rows, receipt and complete group are independently reread.
-        return self.publish(tuple(witnesses),tuple(qualified),receipt)
+        return self.publish(tuple(witnesses),tuple(qualified),receipt,write=write)
 
-    def publish(self,witnesses,qualifications,receipt):
+    def publish(self,witnesses,qualifications,receipt,*,write=True):
         groups=records(witnesses,qualifications,receipt);catalog=tables()
         metadata_bytes=sum(len(json.dumps(row,separators=(',',':')).encode()) for group in groups for row in group)
         if metadata_bytes>8*1024**2:raise ValueError('SEC witness group exceeds its metadata byte bound')
@@ -114,6 +114,7 @@ class Publisher:
                 current=read()
                 if current and current!=[row]:raise ValueError('SEC witness conflicts with immutable retained source evidence')
                 if not current:
+                    if not write:return None
                     guard();admitted=self.admission(metadata_bytes)
                     if not isinstance(admitted,dict) or admitted.get('status')!='admitted' or admitted.get('metadata_bytes')!=metadata_bytes:
                         raise ValueError('SEC witness source-write admission differs')
