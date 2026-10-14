@@ -2387,9 +2387,16 @@ class ClickHouseIntegration(unittest.TestCase):
                 def close(self):real.close()
             return Client()
         def start_authority():return v7.StartAuthority.genesis(engine(),request.prior_v7_hash)
+        from pipelines.certified_research.capacity_measurement import PhaseObservations,transient_snapshot
+        observer=PhaseObservations(lambda query:transient_snapshot(query,self.database,
+            tuple(market.STAGING.values()),('research_bars_v1','research_liquidity_v1','research_indicators_v1')))
         result=producer.run_market(request,factory,Claim(),lambda:None,start_authority,
-                                   database=self.database,fixture_source=source_sql)
+                                   database=self.database,fixture_source=source_sql,storage_observer=observer.record)
         self.assertEqual(result['status'],'complete',str(result['errors']))
+        observed=observer.result()
+        self.assertTrue(any(s['phase']=='after_staging' for s in observed['samples']))
+        self.assertGreater(observed['observed_maxima']['staging_bytes'],0)
+        self.assertFalse(observed['upper_bound_proven'])
         self.assertEqual(sum(s.startswith(f'INSERT INTO {self.database}.research_stage_liquidity_v1') for s in logs),1)
         bar=result['results']['bars'];technical=result['results']['technical']
         state=producer.indicator_state(self.client.query,self.database,unit,technical['attempt_id'],{},bar_attempt=bar['attempt_id'])

@@ -52,6 +52,21 @@ Continuous/phase-bound capture, representative activity and qualified peak-bound
 conversion remain incomplete. Twelve focused capacity tests and the real
 ClickHouse measurement fixture passed, including the actual merge-counter query.
 
+`PhaseObservations` now provides bounded, thread-safe phase capture. It hashes
+and retains snapshots without dropping samples; exceeding the configured bound
+fails explicitly. `producer.run_market(..., storage_observer=observer.record)`
+can capture before-stage, after-staging and after-publication observations in a
+controlled pilot. Default production behavior is unchanged when no observer is
+selected. Cleanup capture is a supported explicit phase, not automatically
+instrumented throughout every reference/campaign path.
+
+Transient v2 also checks inactive-part disk placement; inactive bytes on a backup
+disk cannot be treated as SSD overhead. Fourteen focused measurement/execution
+tests and the real shared-market DAG fixture passed. The real fixture observed
+positive staging bytes and retained its normal shared-scan/publication/resume
+checks. Automatic pilot CLI capture, all-path cleanup/reference instrumentation,
+representative runs and qualified peak bounds remain incomplete.
+
 ## October 13 physical baseline
 
 A live read-only `system.parts`/disk snapshot returned:

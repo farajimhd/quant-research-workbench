@@ -98,7 +98,7 @@ def validate_recipe(request,database,*,product=None):
 
 
 def market_execution(request: MarketRequest,client_factory,claim,source_guard,engine_factory,*,database='arte',
-                     query_memory_bytes=2*1024**3,fixture_source=None):
+                     query_memory_bytes=2*1024**3,fixture_source=None,storage_observer=None):
     """Expose stages to either the bounded pilot or the campaign's global pool."""
     identifier(database);validate_recipe(request,database)
     if fixture_source is not None and not database.startswith('certified_research_test_'):
@@ -113,6 +113,7 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
             if stop.is_set():raise InterruptedError('Producer stopped before starting a stage')
             publisher=Publisher(query,database,claim)
             schema.verify_auxiliary_storage(query,database,tuple(market.STAGING.values()))
+            if storage_observer:storage_observer(u.product,'before_write',query)
             if u.product=='aggregate':
                 # If both products have receipts, no canonical scan is needed.
                 found={}
@@ -125,6 +126,7 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
                 for sql in market.bar_queries(unit,database,frames=request.frames):
                     claim.check();query(sql,read=False)
                 claim.check();source_guard()
+                if storage_observer:storage_observer(u.product,'after_staging',query)
                 return dict(reused=False,unit=unit,receipts=found,attempt=unit.attempt_id)
             if u.product in ('bars','broker_100ms'):
                 stage=parents['aggregate']
@@ -133,8 +135,10 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
                 expected={k:int(v) for k,v in query(market.expected_evidence_sql(unit,u.product,database,frames=request.frames))[0].items()}
                 query(market.normalized_insert(unit,u.product,database,frames=request.frames),read=False)
                 source_guard();claim.check()
-                return publisher.publish(scope,unit.attempt_id,expected=expected,
-                                         empty_proof=digest(dict(source=request.source_hash,product=u.product)))
+                receipt=publisher.publish(scope,unit.attempt_id,expected=expected,
+                    empty_proof=digest(dict(source=request.source_hash,product=u.product)))
+                if storage_observer:storage_observer(u.product,'after_publish',query)
+                return receipt
             bar_receipt=parents['bars'];parent=request.parent(u.product,(bar_receipt['output_hash'],))
             bar_dataset=request.bars_dataset_id or base.dataset_id
             bar_scope=Scope(bar_dataset,base.day,base.listing_key,'bars',request.parent('bars'))
@@ -177,6 +181,7 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
             source_guard();claim.check()
             receipt=publisher.publish(scope,unit.attempt_id,expected=expected,
                                      empty_proof=digest(dict(source=request.source_hash,bar=bar_receipt['output_hash'],product=u.product)))
+            if storage_observer:storage_observer(u.product,'after_publish',query)
             if u.product=='technical':return state_publication.publish(request,bar_receipt,receipt,query,database,claim,source_guard)
             return receipt
         finally:client.close()
@@ -190,9 +195,9 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
 
 def run_market(request: MarketRequest,client_factory,claim,source_guard,engine_factory,*,database='arte',
                workers=2,memory_bytes=4*1024**3,query_memory_bytes=2*1024**3,stop=None,progress=None,
-               fixture_source=None):
+               fixture_source=None,storage_observer=None):
     """Bounded standalone pilot using the exact campaign stage implementations."""
     units,handler=market_execution(request,client_factory,claim,source_guard,engine_factory,database=database,
-        query_memory_bytes=query_memory_bytes,fixture_source=fixture_source)
+        query_memory_bytes=query_memory_bytes,fixture_source=fixture_source,storage_observer=storage_observer)
     return execute(units,{p:handler for p in ('aggregate','bars','broker_100ms','technical','v7')},
                    workers=workers,memory_bytes=memory_bytes,stop=stop,progress=progress)

@@ -1,7 +1,7 @@
 from unittest.mock import patch
 from uuid import uuid4
 import pytest
-from pipelines.certified_research.capacity_measurement import measure,transient_snapshot
+from pipelines.certified_research.capacity_measurement import measure,transient_snapshot,PhaseObservations
 
 
 def query_for(dataset,*,mixed=False,changed=False):
@@ -39,8 +39,9 @@ def test_unverified_authority_is_rejected():
 def test_transient_snapshot_counts_staging_and_inactive_outputs_without_claiming_peak():
     def query(sql):
         if 'system.merges' in sql:return [dict(table='research_bars_v1',input_bytes=500,written_uncompressed=700)]
-        return [dict(table='research_stage_bars_v1',active=1,bytes=100),
-            dict(table='research_stage_bars_v1',active=0,bytes=30),dict(table='research_bars_v1',active=0,bytes=40)]
+        return [dict(table='research_stage_bars_v1',active=1,bytes=100,disk_name='live_market_ssd'),
+            dict(table='research_stage_bars_v1',active=0,bytes=30,disk_name='live_market_ssd'),
+            dict(table='research_bars_v1',active=0,bytes=40,disk_name='live_market_ssd')]
     with patch('pipelines.certified_research.capacity_measurement.schema.verify_auxiliary_storage'):
         result=transient_snapshot(query,'arte',('research_stage_bars_v1',),('research_bars_v1',))
     assert result['staging_bytes']==130 and result['output_inactive_bytes']==40
@@ -51,6 +52,29 @@ def test_transient_snapshot_counts_staging_and_inactive_outputs_without_claiming
 def test_transient_snapshot_rejects_unknown_or_duplicate_scope():
     with pytest.raises(ValueError):transient_snapshot(None,'arte',('unknown',),())
     with pytest.raises(ValueError):transient_snapshot(None,'arte',('research_bars_v1',),('research_bars_v1',))
+
+
+def test_inactive_backup_disk_parts_cannot_be_counted_as_ssd_headroom():
+    def query(sql):
+        if 'system.merges' in sql:return []
+        return [dict(table='research_bars_v1',active=0,bytes=40,disk_name='default')]
+    with patch('pipelines.certified_research.capacity_measurement.schema.verify_auxiliary_storage'):
+        with pytest.raises(ValueError,match='inactive transient parts'):
+            transient_snapshot(query,'arte',(),('research_bars_v1',))
+
+
+def test_phase_observations_are_bounded_and_do_not_promote_sampled_maxima():
+    from pipelines.certified_research.contracts import digest
+    body=dict(upper_bound_proven=False,staging_bytes=100,output_inactive_bytes=20,
+              merge_input_bytes=30,merge_written_uncompressed_bytes=40)
+    sample=dict(body,evidence_hash=digest(body))
+    observer=PhaseObservations(lambda query:sample,maximum_samples=2)
+    observer.record('aggregate','before_write',None)
+    observer.record('aggregate','after_staging',None)
+    result=observer.result()
+    assert result['observed_maxima']['staging_bytes']==100 and not result['upper_bound_proven']
+    with pytest.raises(ValueError,match='no samples dropped'):observer.record('aggregate','after_cleanup',None)
+    assert len(observer.result()['samples'])==2
 
 
 def test_measurement_launcher_is_read_only_and_closes_claim(capsys):
