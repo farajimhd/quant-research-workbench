@@ -115,5 +115,6 @@ The real three-document preparation read 6,418,363 source bytes once each,
 yielding 32 observations and 28 shared contexts. The byte census and independent
 text hashes remain server-side; only the bounded original payload is transferred
 for XML parsing. Every result remains a candidate, with original-vintage and
-allocation qualification false. Durable normalized capture, source qualification,
-dated class mapping and launcher integration remain unfinished.
+allocation qualification false. [Durable normalized capture](13za-sec-source-capture.md)
+now has restart/readback and SSD-schema checks. Source qualification, dated
+class mapping, production admission and launcher integration remain unfinished.

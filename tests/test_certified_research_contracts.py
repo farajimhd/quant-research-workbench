@@ -780,6 +780,47 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_normalized_sec_source_capture_partial_resume_and_zero_insert_reuse(self):
+        from pipelines.certified_research import sec_share_source,sec_share_capture
+        rows=self.client.query("SELECT document_name FROM q_live.sec_filing_text_v3 WHERE cik IN ('320193','0000320193') "
+            "AND accession_number='0000320193-25-000079' AND document_type='10-K' LIMIT 2")
+        self.assertEqual(len(rows),1)
+        class Claim:
+            def check(self):pass
+        claim=Claim();guard=lambda:None
+        prepared=sec_share_source.prepare(self.client.query,'320193','0000320193-25-000079',rows[0]['document_name'],claim,guard)
+        for table in sec_share_capture.tables():self.client.query(table.ddl(self.database),read=False)
+        admissions=[]
+        def admission(size):
+            admissions.append(size);return dict(status='admitted',metadata_bytes=size,isolated_fixture=True)
+        writes=[]
+        def stopped(sql,*,read=True):
+            if not read:
+                writes.append(sql)
+                if sql.startswith(f'INSERT INTO {self.database}.research_sec_share_source_document_v1'):
+                    raise ValueError('interrupted before capture header')
+            return self.client.query(sql,read=read)
+        with self.assertRaisesRegex(ValueError,'interrupted'):
+            sec_share_capture.capture(stopped,self.database,prepared,claim,guard,admission=admission)
+        resumed=sec_share_capture.capture(self.client.query,self.database,prepared,claim,guard,admission=admission)
+        self.assertEqual(resumed['inserted_rows'],1)
+        before_reuse=len(admissions)
+        reused=sec_share_capture.capture(self.client.query,self.database,prepared,claim,guard,admission=admission)
+        self.assertEqual(reused['inserted_rows'],0)
+        self.assertEqual(len(admissions),before_reuse)
+        self.assertFalse(reused['allocation_certified'])
+        actual=self.client.query(f'SELECT value,context_key FROM {self.database}.research_sec_share_source_observation_v1 ORDER BY source_position')
+        self.assertEqual(len(actual),len(prepared['observations']))
+        self.assertTrue(all(row['context_key'] for row in actual))
+        sec_share_capture.verify(self.client.query,self.database,required=True)
+        first_position=prepared['observations'][0]['source_position']
+        self.client.query(f'ALTER TABLE {self.database}.research_sec_share_source_observation_v1 DELETE WHERE '
+            f'source_position={first_position} SETTINGS mutations_sync=2',read=False)
+        writes.clear()
+        with self.assertRaisesRegex(ValueError,'Completed SEC candidate capture changed'):
+            sec_share_capture.capture(stopped,self.database,prepared,claim,guard,admission=admission)
+        self.assertFalse(writes,'Completed candidate data must not be silently healed')
+
     def test_retained_gateway_symbol_repair_publishes_exact_intervals_and_resumes(self):
         from datetime import timezone
         from services.reference_gateway import ticker_events as gateway,retained_symbol_repair as repair
