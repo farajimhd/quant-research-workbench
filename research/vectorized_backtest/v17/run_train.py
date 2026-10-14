@@ -7,6 +7,12 @@ from .run_search import main as search,source_hash,bind_dataset
 from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime,write_json,file_hash
 
 
+def read_json(path):
+    # Legacy PowerShell pointers may carry UTF-8/UTF-16 BOMs. json.loads(bytes)
+    # detects these encodings while retaining strict malformed-input rejection.
+    return json.loads(Path(path).read_bytes())
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('training','validation','output','qualification','v16-stop'):p.add_argument('--'+name,type=Path,required=True)
@@ -15,14 +21,14 @@ def main():
     a=p.parse_args();root=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v17')
     out=require_runtime(a.output)
     if not out.is_relative_to(root):raise ValueError('V17 campaign must use its own runtime root')
-    q=json.loads(a.qualification.read_text());stop=json.loads(a.v16_stop.read_text())
+    q=read_json(a.qualification);stop=read_json(a.v16_stop)
     if q['status']!='passed' or q['source_sha256']!=source_hash() or not q['exact_accounting_parity']:raise ValueError('Matching V17 qualification required')
     if not stop['workers_stopped'] or not stop['lock_released'] or file_hash(Path(stop['campaign'])/'checkpoint.json')!=q['baseline_checkpoint_sha256']:
         raise ValueError('Verified immutable V16 stop required')
     for version in range(7,18):
         pointer=root.parent/f'torch_backtest_v{version}/active-campaign.json'
         if pointer.exists():
-            old=json.loads(pointer.read_text())
+            old=read_json(pointer)
             if 'creation_time' not in old:continue
             try:
                 process=psutil.Process(old['pid'])

@@ -14,6 +14,16 @@ from research.vectorized_backtest.v17.complexity import simplify
 from test_vector_v17_regressions import metrics
 
 
+@pytest.mark.parametrize('encoding',['utf-8','utf-8-sig','utf-16','utf-32'])
+def test_launcher_reads_legacy_pointer_encodings_and_rejects_invalid_json(tmp_path,encoding):
+    import json
+    from research.vectorized_backtest.v17.run_train import read_json
+    path=tmp_path/'pointer.json';value={'pid':123,'creation_time':17.0}
+    path.write_bytes(json.dumps(value).encode(encoding));assert read_json(path)==value
+    path.write_bytes(b'not a JSON record')
+    with pytest.raises(json.JSONDecodeError):read_json(path)
+
+
 def trimmed(x,f=.1):
     values=sorted(x,reverse=True);mass=f*len(values)
     return sum(values)-sum(max(0,v)*max(0,min(1,mass-i)) for i,v in enumerate(values))
