@@ -30,7 +30,7 @@ def test_cli_measurement_is_explicit_bounded_and_cannot_acquire():
 
 
 def test_readonly_conflict_report_retains_both_values_and_precision_fields():
-    payload=document(extra='<ix:nonFraction name="dei:EntityCommonStockSharesOutstanding" contextRef="c" unitRef="s" decimals="0">1235</ix:nonFraction>')
+    payload=document(extra='<ix:nonFraction name="dei:EntityCommonStockSharesOutstanding" contextRef="c" unitRef="s" decimals="0">1235</ix:nonFraction>').replace('decimals="-3"','decimals="0"')
     def query(sql):
         if 'count()' in sql:return [dict(n=1,bytes=len(payload.encode()),hashes=1,content_hash=sha256(payload.encode()).hexdigest())]
         return [dict(source_text=payload)]
@@ -44,3 +44,5 @@ def test_readonly_conflict_report_retains_both_values_and_precision_fields():
     assert {v['value'] for v in example['originals']}=={'1234','1235'}
     assert all('decimals' in v and 'context_id' in v for v in example['originals'])
     assert row['public_time_qualified'] is False
+    assert row['precision_assessments'][0]['modes']['round-to-nearest']['status']=='compatible_intervals'
+    assert row['comparison_status_counts']=={'original_value_conflict':1}

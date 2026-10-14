@@ -97,3 +97,22 @@ fully preserved in normalized source tables. Diagnostic metadata above 1MiB per
 document fails explicitly rather than generating an unbounded report. No dimensioned
 fact is dropped, no precision tolerance is invented, and none of these counts is
 treated as certification.
+
+`sec_precision.assess` now supplies exact bounded interval diagnostics based on
+the [corrected XBRL Calculations 1.1 specification](https://www.xbrl.org/Specification/calculation-1.1/REC-2023-02-22%2Bcorrected-errata-2024-02-14/calculation-1.1-REC-2023-02-22%2Bcorrected-errata-2024-02-14.html),
+sections 5.2–5.5. It uses rational arithmetic, checks finite values and declared
+precision, and preserves closed rounding versus sign-dependent half-open
+truncation bounds. INF precision is a point interval; excess digits, unknown
+precision and inputs exceeding the bounded precision envelope fail explicitly.
+The normalized fact value already includes inline scale; it is not scaled again.
+
+The read-only conflict audit reports both explicit modes. Meta's two observations
+intersect at [29,753,500,000, 29,754,500,000] under rounding, and
+[29,754,000,000, 29,755,000,000) under truncation. It returns
+`compatible_intervals`, `certified=false` and `value_selected=false`. This is interval
+compatibility, not a full OIM duplicate-equivalence validator or a calculation-linkbase
+certification. The caller must independently establish matching semantic contexts
+and any report-wide rounding policy. Existing exact-comparison status and readiness
+blockers stay unchanged. Source values are never averaged, overwritten or replaced
+with an inferred midpoint. Adopting precision-aware duplicate authority and choosing
+any downstream point-value policy remain separate versioned certification work.

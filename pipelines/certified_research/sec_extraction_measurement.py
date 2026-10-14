@@ -4,6 +4,7 @@ from collections import Counter
 from time import perf_counter
 
 from . import sec_share_preparation,sec_fundamental_context,sec_fundamental_reconciliation,facts
+from . import sec_precision
 from .contracts import digest,literal
 
 
@@ -62,6 +63,15 @@ def measure(query,requests,*,progress=None,compare_bulk=False):
                 original_count=len(row['original_positions']),original_examples_truncated=len(row['original_positions'])>8)
                 for row in conflicts[:8])
             result['conflict_examples_truncated']=len(conflicts)>8
+            assessments=[]
+            for conflict in conflicts[:8]:
+                witnesses=tuple(by_position[p] for p in conflict['original_positions'])
+                modes={}
+                for mode in ('round-to-nearest','truncation'):
+                    try:modes[mode]=sec_precision.assess(witnesses,mode=mode)
+                    except ValueError as error:modes[mode]=dict(status='unqualified_precision',reason=str(error),certified=False)
+                assessments.append(dict(source_record=conflict['source_record'],modes=modes))
+            result['precision_assessments']=tuple(assessments)
         if len(json.dumps(result,separators=(',',':')).encode('utf-8'))>1024*1024:
             raise ValueError('SEC diagnostic measurement metadata exceeds 1MiB per document')
         results.append(result)
