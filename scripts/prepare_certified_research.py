@@ -71,6 +71,12 @@ def parse_args(argv=None):
         except ValueError as error:raise argparse.ArgumentTypeError(str(error)) from error
     p.add_argument('--sec-share-document',type=sec_share_document,action='append',default=[],
         help='Retained SEC source candidate: CIK,ACCESSION,DOCUMENT_NAME; requires qualified sec_share_source capacity rate, never certifies allocation')
+    def census_cik(value):
+        import re
+        if not re.fullmatch('0*[1-9][0-9]{0,9}',value):raise argparse.ArgumentTypeError('Use a positive SEC CIK')
+        return str(int(value))
+    p.add_argument('--sec-census-cik',type=census_cik,action='append',default=[],help='Discover retained primary documents for explicit issuer scope; repeat up to 256 times')
+    p.add_argument('--sec-census-forms',type=lambda value:tuple(value.split(',')),help='Explicit comma-separated filing forms for retained document discovery')
     p.add_argument('--measurement-sec-document',type=sec_share_document,action='append',default=[],help='measure-sec-extraction only: CIK,ACCESSION,DOCUMENT_NAME; repeat up to eight times')
     p.add_argument('--compare-sec-bulk',action='store_true',help='measure-sec-extraction only: bounded read-only original/bulk value comparison, without public-time qualification')
     p.add_argument('--verify-sec-archives',action='store_true',help='Verify selected SEC documents against retained G archives and publish public-time evidence; no downloads')
@@ -102,6 +108,14 @@ def parse_args(argv=None):
     p.add_argument('--clickhouse-cache-root',default='/mnt/d/market-data/flatfiles/us_stocks_sip')
     p.add_argument('--hydrate-missing-trades',action='store_true',help='Deprecated: imported-day repair requires canonical sidecars')
     args=p.parse_args(argv)
+    if args.sec_census_cik or args.sec_census_forms is not None:
+        import re
+        if (args.command not in ('prepare-sources','launch','launch-collection') or args.sec_share_document
+                or not 1<=len(args.sec_census_cik)<=256 or len(set(args.sec_census_cik))!=len(args.sec_census_cik)
+                or not args.sec_census_forms or len(args.sec_census_forms)>32 or len(set(args.sec_census_forms))!=len(args.sec_census_forms)
+                or any(not re.fullmatch('[A-Z0-9 -]{1,24}(?:/A)?',form) for form in args.sec_census_forms)
+                or args.fundamental_start_date is None or args.capacity_profile is None):
+            p.error('SEC census selection requires fresh source preparation, unique issuers, explicit forms/context start and capacity profile; cannot mix manual documents')
     if args.sec_numeric_mode is not None and not args.prepare_sec_fundamental_evidence:
         p.error('--sec-numeric-mode requires --prepare-sec-fundamental-evidence')
     if args.compare_sec_bulk and args.command!='measure-sec-extraction':p.error('--compare-sec-bulk belongs to measure-sec-extraction')
@@ -113,7 +127,7 @@ def parse_args(argv=None):
     if args.prepare_sec_fundamental_evidence and not args.verify_sec_archives:
         p.error('Original fundamental evidence requires --verify-sec-archives and selected documents')
     if args.verify_sec_archives or args.sec_archive_backup_root is not None or args.sec_download_receipts is not None:
-        if (not args.verify_sec_archives or not args.sec_share_document or args.sec_archive_backup_root is None
+        if (not args.verify_sec_archives or not (args.sec_share_document or args.sec_census_cik) or args.sec_archive_backup_root is None
                 or args.sec_download_receipts is None):
             p.error('SEC archive verification requires selected SEC documents, backup root and original receipt ledger')
     if args.sec_share_document:
@@ -223,10 +237,22 @@ def prepare_identity(args,claim,client_factory,dictionary_factory,stop,progress=
 
 
 def prepare_sec_share_sources(args,client,config,claim,client_factory,dictionary_factory,stop,progress=None):
+    census=None
+    if args.sec_census_cik:
+        from pipelines.certified_research import sec_filing_census
+        claim.check()
+        census=sec_filing_census.inventory(client.query,args.sec_census_cik,args.fundamental_start_date,config.end,
+            forms=args.sec_census_forms,maximum_documents=1000)
+        claim.check()
+        if not census['discovery_ready'] or not census['documents']:
+            raise ValueError('Retained SEC filing discovery is not ready: '+str(census['issue_counts']))
+        args.sec_share_document=[(row['cik'],row['accession'],row['primary_document']) for row in census['documents']]
     if not args.sec_share_document:return None
     from pipelines.certified_research import sec_share_preparation,capacity_profile
     result=sec_share_preparation.prepare(client.query,config,args.sec_share_document,claim,client_factory,dictionary_factory,
         capacity_profile.load(args.capacity_profile),stop=stop,progress=progress,retain_descriptors=args.verify_sec_archives)
+    if census is not None:
+        result['filing_census']=dict(census_hash=census['census_hash'],source_hash=census['source_hash'],filings=census['filings'],coverage_certified=False)
     if result['status']=='interrupted':raise InterruptedError('SEC candidate source preparation interrupted')
     if result['status']!='complete':
         details='; '.join(f'{key}: {client.clean_error(error)[:200]}' for key,error in list(result['errors'].items())[:8])
@@ -254,6 +280,13 @@ def prepare_sec_share_sources(args,client,config,claim,client_factory,dictionary
             if args.format=='text':
                 evidence=result['fundamental_evidence']
                 print('SEC parity input blockers | '+json.dumps(evidence.get('parity_input_blockers',{}),sort_keys=True)+' | coverage certified=false',flush=True)
+    if census is not None:
+        claim.check()
+        after=sec_filing_census.inventory(client.query,args.sec_census_cik,args.fundamental_start_date,config.end,
+            forms=args.sec_census_forms,maximum_documents=1000)
+        claim.check()
+        if after['census_hash']!=census['census_hash']:
+            raise ValueError('Retained SEC filing census changed during source preparation; prepared evidence retained')
     return result
 
 

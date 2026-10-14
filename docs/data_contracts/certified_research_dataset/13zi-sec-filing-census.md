@@ -22,4 +22,27 @@ expected submissions were ingested, that every payload exists or parses, or that
 all corresponding archive/time/projection bindings are verified. The acquisition
 coverage manifest and an independent submission completeness census must still
 be reconciled with this inventory before whole-period coverage can be certified.
-Automatic launcher-wide discovery and durable coverage publication remain work.
+Bounded launcher discovery is now available through repeated `--sec-census-cik`
+and explicit `--sec-census-forms`, with `--fundamental-start-date` and a measured
+capacity profile. It is supported by source preparation and fresh launch routes;
+manual document selection cannot be mixed with census selection. Resolved primary
+documents feed the existing share/archive/fundamental/projection stages, retaining
+their opt-in flags and admission requirements. At most 1,000 documents are selected
+per invocation; overflow fails rather than truncates. Empty or unresolved discovery
+blocks processing. The full census hash is rechecked after source preparation;
+changes stop completion while keeping the prepared source evidence.
+
+For example, add these source-selection arguments to the existing complete launch
+command instead of listing each `--sec-share-document`:
+
+```text
+--sec-census-cik 320193 --sec-census-cik 1652044 --sec-census-cik 1326801
+--sec-census-forms 10-K,10-K/A,10-Q,10-Q/A
+--fundamental-start-date 2025-01-01
+```
+
+This discovers retained source documents for the explicit cohort; it does not
+automatically choose all forms, infer an issuer context length or certify acquisition
+completeness. Whole-universe cohort scheduling, independent submission reconciliation
+and durable coverage publication remain unfinished. No historical campaign was run
+to test this launcher wiring.
