@@ -4,7 +4,7 @@ from datetime import date
 from threading import Event
 from itertools import islice
 
-from . import context,indicator_state,v7
+from . import context,indicator_state,v7,genesis
 from .campaign import PlannedUnit
 from .contracts import digest
 from .execution import Unit
@@ -66,12 +66,14 @@ def discover_adjustment_contexts(query,config,dataset_id,claim,source_guard,memb
 
 def prepare_listing(query,config,claim,source_guard,admitted_sessions,recipe_definition,rules,
                     day_sources,adjustment_hashes,*,indicator_dataset=None,v7_dataset=None,
-                    stop=None,maximum_candidates=128,maximum_sessions=4096,price_sessions=()):
+                    stop=None,maximum_candidates=128,maximum_sessions=4096,price_sessions=(),
+                    rebuild_origin=None,universe_parent='universe'):
     """Prepare one listing's lane; the global launcher combines returned units.
 
     Sessions must come from certified execution membership and include the
     known historical context. Source/adjustment hashes are independently frozen
-    authorities. No genesis, rename transition or missing field is inferred.
+    authorities. Empty state requires an explicit versioned rebuild origin;
+    no rename transition or missing field is inferred.
     Source roots returned as dependencies are installed by certified_units().
     """
     stop=stop if stop is not None else Event()
@@ -91,6 +93,10 @@ def prepare_listing(query,config,claim,source_guard,admitted_sessions,recipe_def
     target=tuple(s for s in sessions if config.start<=s.day<=config.end)
     if not target:raise ValueError('Seed preparation has no admitted target sessions')
     listing=target[0].listing_key;first=target[0].day
+    if rebuild_origin is not None:
+        if (type(rebuild_origin) is not date or not date(2019,1,2)<=rebuild_origin<=first
+                or not context.exchange_sessions(rebuild_origin,rebuild_origin)):
+            raise ValueError('Explicit rebuild origin must not follow the first target session')
     rules=tuple(rules);recipe_hash=verify_definition(recipe_definition,rules)
     sources={date.fromisoformat(str(d)):h for d,h in day_sources.items()}
     adjustments={date.fromisoformat(str(d)):h for d,h in adjustment_hashes.items()}
@@ -113,7 +119,8 @@ def prepare_listing(query,config,claim,source_guard,admitted_sessions,recipe_def
     lane=replace(config,start=first,end=target[-1].day)
     demand=context.plan(lane,
         indicator_seed=context.StateSeed(technical['session'],technical['dependency']['output_hash'],True) if technical else None,
-        v7_seed=context.StateSeed(structural['session'],structural['checkpoint']['state_hash'],True) if structural else None)
+        v7_seed=context.StateSeed(structural['session'],structural['checkpoint']['state_hash'],True) if structural else None,
+        rebuild_origin=rebuild_origin)
     blocked=list(demand['blocked']);by_day={s.day:s for s in sessions}
     needed=tuple(sorted(set((*demand['targets'],*demand['market_context'],*price_sessions))))
     missing_membership=tuple(d for d in needed if d not in by_day)
@@ -128,7 +135,14 @@ def prepare_listing(query,config,claim,source_guard,admitted_sessions,recipe_def
         blocked.append('Market context requires a certified historical rename transition')
     roots=[];parents=[];starts=[];seed_days=[]
     for family,found in (('technical',technical),('v7',structural)):
-        if found is None:continue
+        if found is None:
+            if rebuild_origin is None or rebuild_origin not in sources or rebuild_origin not in by_day:continue
+            key=f'origin:{listing}:{family}'
+            row=genesis.binding(listing,by_day[rebuild_origin].ticker,rebuild_origin,recipe_hash,sources[rebuild_origin])
+            roots.append(PlannedUnit(Unit(key,family+'_origin',('source:'+str(rebuild_origin),universe_parent),
+                config.query_memory_bytes),dict(binding=row)))
+            parents.append(key);starts.append(rebuild_origin)
+            continue
         day=found['session'];seed_days.append(day)
         key=f'seed:{listing}:{family}'
         roots.append(PlannedUnit(Unit(key,family+'_seed',('source:'+str(day),),config.query_memory_bytes),
@@ -152,7 +166,7 @@ def prepare_listing(query,config,claim,source_guard,admitted_sessions,recipe_def
 def prepare_universe(client_factory,config,claim,source_guard,membership,recipe_definition,rules,
                      day_sources,adjustment_hashes,*,indicator_datasets=None,v7_datasets=None,
                      stop=None,progress=None,maximum_listings=8192,maximum_candidates=128,
-                     maximum_sessions=4096,price_sessions=None):
+                     maximum_sessions=4096,price_sessions=None,rebuild_origin=None,universe_parent='universe'):
     """One bounded preparation pool; no nested pools and no database writers.
 
     Independent listing preparations have private clients. A blocked listing
@@ -195,7 +209,8 @@ def prepare_universe(client_factory,config,claim,source_guard,membership,recipe_
             value=prepare_listing(client.query,config,claim,source_guard,grouped[listing],recipe_definition,rules,
                 day_sources,adjustment_hashes.get(listing,{}),indicator_dataset=indicator_datasets.get(listing),
                 v7_dataset=v7_datasets.get(listing),stop=signal,maximum_candidates=maximum_candidates,
-                maximum_sessions=maximum_sessions,price_sessions=price_sessions.get(listing,()))
+                maximum_sessions=maximum_sessions,price_sessions=price_sessions.get(listing,()),
+                rebuild_origin=rebuild_origin,universe_parent=universe_parent)
             if not value['ready']:
                 with lock:blocked[unit.key]=value
                 raise Blocked('; '.join(value['blocked']))

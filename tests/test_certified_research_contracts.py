@@ -781,6 +781,88 @@ class Contracts(unittest.TestCase):
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
 
+    def test_explicit_origins_run_shared_market_prefix_rollover_and_read_only_resume(self):
+        from unittest.mock import patch
+        from pipelines.certified_research import genesis,recipe
+        from pipelines.certified_research.handlers import RebuildOriginHandlers
+        from pipelines.certified_research.market_runtime import MarketRuntime
+        days=(date(2026,1,2),date(2026,1,5));dataset=str(uuid.uuid4());listing=13301;security=13302
+        memory=128*1024**2
+        config=c.CampaignConfig(*days,database=self.database,workers=2,query_memory_bytes=memory,
+            global_memory_bytes=2*memory,resolutions_ms=(1000,60000))
+        rules=({'token_id':1,'modifier_int':0,'update_last':1,'update_high_low':1,'update_volume':1},)
+        frozen=recipe.market_recipe(config,rules);sources={day:c.digest(str(day)) for day in days}
+        class Claim:
+            def check(self):pass
+        claim=Claim();logs=[];lock=Lock()
+        def factory():
+            real=self.builder.Client(self.args,persistent=False)
+            class Client:
+                def query(self,sql,*args,**kwargs):
+                    with lock:logs.append(sql)
+                    return real.query(sql,*args,**kwargs)
+                def close(self):real.close()
+            return Client()
+        insert_rows(self.client.query,self.database,'research_membership_v1',[
+            dict(dataset_id=dataset,listing_key=listing,security_key=security,issuer_key=13303,ticker='TEST',conid=91,
+                valid_from='2026-01-02 00:00:00.000000',valid_to='2026-01-07 00:00:00.000000',
+                eligible=1,reason='',evidence_hash='a'*64)])
+        scope=ReferenceScope(dataset,2,security,'corporate_actions',days[0],days[1],'a'*64,facts.catalog_hash())
+        publisher=ReferencePublisher(self.client.query,self.database,claim);attempt=str(uuid.uuid4())
+        corporate=publisher.publish(scope,attempt,publisher.evidence(scope,attempt))
+        roots=[PlannedUnit(Unit('universe','universe'),{}),PlannedUnit(Unit('corporate','corporate_actions'),{})]
+        roots.extend(PlannedUnit(Unit('source:'+str(day),'canonical_source'),dict(day=str(day),source_hash=sources[day])) for day in days)
+        binding=genesis.binding(listing,'TEST',days[0],frozen['hash'],sources[days[0]])
+        roots.extend(PlannedUnit(Unit('origin:'+family,family+'_origin',('source:'+str(days[0]),'universe'),memory),
+            dict(binding=binding)) for family in ('technical','v7'))
+        market_plans=market_units(config,tuple(MarketSession(day,listing,'TEST') for day in days),
+            source_parents={day:('source:'+str(day),) for day in days},universe_parent='universe',
+            seed_parents={listing:('origin:technical','origin:v7')},corporate_parents={listing:'corporate'})
+        plans=(*roots,*market_plans)
+        def fixture(day):
+            times=','.join('toUInt64('+str(market_day_sql.bounds(day,clock))+')'
+                for clock in ('04:00:00','09:30:00','16:00:00'))
+            return (f'SELECT arrayJoin([{times}]) sip_timestamp_us,sip_timestamp_us ordinal,'
+                'toUInt8(71) event_meta,toUInt32(10000) price_primary_int,toUInt32(0) price_secondary_int,'
+                'toFloat32(5) size_primary,toFloat32(0) size_secondary,'
+                +','.join(f'toUInt8(0) condition_token_{i}' for i in range(1,6)))
+        runtime=MarketRuntime(dataset,self.database,claim,factory,lambda:None,frozen['definition'],rules,sources)
+        handlers=MarketHandlers(dataset,self.database,claim,factory,lambda:None,runtime.request,runtime.engine,
+            fixture_source=fixture(days[0]))
+        producers,verifiers=handlers.registry()
+        def market_producer(plan,parents,stop):
+            local=MarketHandlers(dataset,self.database,claim,factory,lambda:None,runtime.request,runtime.engine,
+                fixture_source=fixture(date.fromisoformat(plan.arguments['day'])))
+            return local.producer(plan,parents,stop)
+        producers.update({kind:market_producer for kind in ('market_aggregate','technical','v7')})
+        for registry in (RebuildOriginHandlers(self.database,claim,factory,lambda:None,runtime,plans),
+                         ActivityHandlers(dataset,self.database,claim,factory,lambda:None,plans)):
+            p,v=registry.registry();producers.update(p);verifiers.update(v)
+        def root(plan,parents):
+            if plan.unit.product=='corporate_actions':return corporate
+            if plan.unit.product=='universe':return dict(output_hash='c'*64)
+            return dict(product='canonical_source',**plan.arguments,output_hash=plan.arguments['source_hash'])
+        for product in ('canonical_source','universe','corporate_actions'):
+            producers[product]=lambda plan,parents,stop:root(plan,parents)
+            verifiers[product]=root
+        campaign=Campaign(self.client.query,self.database,claim,dataset,config,plans,'d'*64,lambda:None,producers,verifiers)
+        # Synthetic sources are confined to this isolated namespace. Membership,
+        # origin admission, SQL consumers, checkpoints and resume use real tables.
+        with patch('pipelines.certified_research.source.require_exact_symbol'):
+            result=campaign.run()
+            self.assertEqual(result['status'],'complete',str(result['errors']))
+            checkpoints=self.client.query(f'SELECT session_date,boundary FROM {self.database}.research_v7_checkpoint_v1 '
+                f"WHERE dataset_id=toUUID('{dataset}') ORDER BY session_date,boundary")
+            self.assertEqual([(r['session_date'],int(r['boundary'])) for r in checkpoints],
+                [(str(day),boundary) for day in days for boundary in (1,2,3)])
+            state=self.client.query(f'SELECT sample_count FROM {self.database}.research_indicator_state_v1 '
+                f"WHERE dataset_id=toUUID('{dataset}') AND session_date=toDate('{days[1]}') ORDER BY resolution_ms")
+            self.assertEqual([int(r['sample_count']) for r in state],[6,6])
+            self.assertEqual(sum(sql.startswith(f'INSERT INTO {self.database}.research_stage_liquidity_v1') for sql in logs),2)
+            logs.clear();resumed=campaign.run()
+            self.assertEqual(resumed['seal'],result['seal'])
+            self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+
     def test_reference_import_preserves_public_values_restarts_partial_and_reuses_receipt(self):
         from hashlib import sha256
         from uuid import uuid5,NAMESPACE_URL

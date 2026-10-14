@@ -11,16 +11,18 @@ from pipelines.certified_research.execution import Unit
 
 
 @pytest.mark.parametrize('ready',(False,True))
-def test_fresh_route_admits_only_a_complete_prepared_graph(ready):
+@pytest.mark.parametrize('origin',(None,date(2026,1,2)))
+def test_fresh_route_admits_only_a_complete_prepared_graph(ready,origin):
     config=CampaignConfig(date(2026,1,2),date(2026,1,2));query=Mock(return_value=[dict(token_id=1,
         modifier_int=0,update_high_low=1,update_last=1,update_volume=1)])
     assembled=dict(ready=ready,missing_authorities=({'family':'float_allocation'},),plans=())
     with patch.object(fresh.source,'inventory',return_value={}),patch.object(fresh.source,'reporting_inventory',return_value={}),\
          patch.object(fresh.source,'require_ready',return_value='a'*64),\
-         patch.object(fresh.initial_preparation,'discover_and_prepare',return_value=assembled),\
+         patch.object(fresh.initial_preparation,'discover_and_prepare',return_value=assembled) as prepare,\
          patch.object(fresh.initial_plan,'run',return_value=dict(status='complete')) as execute:
         result=fresh.run(query,config,'00000000-0000-0000-0000-000000000001',Mock(),Mock(),Mock(),Mock(),
-            context_start=date(2025,12,1),fundamental_start=date(2024,1,1),anchor_date=date(2026,10,13))
+            context_start=date(2025,12,1),fundamental_start=date(2024,1,1),anchor_date=date(2026,10,13),rebuild_origin=origin)
+    assert prepare.call_args.kwargs['rebuild_origin']==origin
     assert execute.call_count==int(ready)
     assert result['status']==('complete' if ready else 'blocked')
 

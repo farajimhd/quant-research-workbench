@@ -1,7 +1,7 @@
 """Shared request/engine resolution from a campaign's certified dependencies."""
 from datetime import date,datetime,time,timezone
 from uuid import uuid4,UUID
-from . import producer,market,market_context,adjustments,price_inputs,source
+from . import producer,market,market_context,adjustments,price_inputs,source,genesis
 from .contracts import identifier,literal
 from .checkpoints import NY
 from .recipe import verify_definition
@@ -36,6 +36,13 @@ class MarketRuntime:
             raise ValueError('Corporate dependency differs from the current dataset authority')
         return scope
 
+    def origin(self,parent,listing,day,ticker):
+        row=genesis.verify(parent['binding'],self.definition,self.rules)
+        if (row['listing_key']!=listing or row['ticker']!=ticker or row['origin']!=str(day)
+                or row['source_hash']!=self.sources.get(day) or parent.get('output_hash')!=row['certificate_hash']):
+            raise ValueError('Explicit rebuild origin differs from frozen market scope')
+        return row
+
     def request(self,plan,parents):
         client=self.clients()
         try:
@@ -54,7 +61,14 @@ class MarketRuntime:
             if len(membership)!=1 or int(membership[0]['n'])!=1:
                 raise ValueError('Market execution requires unambiguous full-session dated membership')
             prior={};indicator_hash='0'*64;v7_hash='0'*64;adjustment_hash=''
-            if plan.unit.product=='technical':
+            origins=[r for r in parents.values() if r.get('product')==plan.unit.product+'_origin']
+            if origins:
+                if len(origins)!=1:raise ValueError('Exactly one explicit rebuild origin is required')
+                row=self.origin(origins[0],listing,day,ticker)
+                # An empty state has no preceding price basis to adjust.
+                self.corporate(parents,client.query)
+                indicator_hash=v7_hash=adjustment_hash=row['origin_hash']
+            elif plan.unit.product=='technical':
                 parent=self.one(parents,lambda r:r.get('product') in ('technical','technical_state'),'indicator state')
                 continuation=market_context.indicator_continuation(client.query,self.database,self.claim,parent,listing,day,
                     self.recipe_hash,self.sources,self.rules,self.corporate(parents,client.query),frames=self.definition['frames'])
@@ -84,6 +98,13 @@ class MarketRuntime:
         client=self.clients()
         try:
             self.claim.check();self.guard();args=plan.arguments
+            origins=[r for r in parents.values() if r.get('product')=='v7_origin']
+            if origins:
+                if len(origins)!=1:raise ValueError('Exactly one explicit rebuild origin is required')
+                row=self.origin(origins[0],int(args['listing_key']),date.fromisoformat(args['day']),args['ticker'])
+                self.corporate(parents,client.query)
+                authority=genesis.engine(row,self.definition,self.rules)
+                self.claim.check();self.guard();return authority
             parent=self.one(parents,lambda r:r.get('product')=='v7','V7 state')
             authority=market_context.structural(client.query,self.database,self.claim,parent,int(args['listing_key']),
                 date.fromisoformat(args['day']),args['ticker'],self.recipe_hash,self.sources,

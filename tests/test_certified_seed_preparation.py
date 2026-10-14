@@ -41,6 +41,49 @@ def test_preparation_joins_independent_discovery_into_frozen_execution_roots():
     arguments['query'].assert_not_called() # Only discovery owns database access.
 
 
+@pytest.mark.parametrize('retained',(None,'technical','v7','both'))
+def test_explicit_origin_fills_only_missing_families_and_replays_the_complete_prefix(retained):
+    arguments=inputs();technical,structural=found(date(2026,1,2))
+    if retained not in ('technical','both'):technical=None
+    if retained not in ('v7','both'):structural=None
+    with patch('pipelines.certified_research.seed_preparation.verify_definition',return_value='a'*64),patch(
+            'pipelines.certified_research.indicator_state.discover',return_value=technical),patch(
+            'pipelines.certified_research.v7.discover',return_value=structural):
+        result=prepare_listing(**arguments,rebuild_origin=date(2026,1,2),universe_parent='dated-universe')
+    assert result['ready'] and len(result['seed_units'])==2
+    expected=('technical_seed' if technical else 'technical_origin','v7_seed' if structural else 'v7_origin')
+    assert tuple(p.unit.product for p in result['seed_units'])==expected
+    assert result['state_start_dates'][11]==tuple(date(2026,1,5) if found else date(2026,1,2)
+        for found in (technical,structural))
+    for plan in result['seed_units']:
+        if plan.unit.product.endswith('_origin'):
+            assert plan.unit.parents==('source:2026-01-02','dated-universe')
+            assert plan.arguments['binding']['source_hash']=='b'*64
+    assert result['required_source_days']==(date(2026,1,2),date(2026,1,5))
+
+
+def test_origin_cannot_silently_skip_a_required_intervening_listing_session():
+    arguments=inputs();arguments['config']=CampaignConfig(date(2026,1,6),date(2026,1,6))
+    arguments['admitted_sessions']=(MarketSession(date(2026,1,2),11,'TEST'),MarketSession(date(2026,1,6),11,'TEST'))
+    arguments['day_sources'][date(2026,1,6)]='d'*64
+    with patch('pipelines.certified_research.seed_preparation.verify_definition',return_value='a'*64),patch(
+            'pipelines.certified_research.indicator_state.discover',return_value=None),patch(
+            'pipelines.certified_research.v7.discover',return_value=None):
+        result=prepare_listing(**arguments,rebuild_origin=date(2026,1,2))
+    assert not result['ready'] and result['missing_membership']==(date(2026,1,5),)
+    assert not result['seed_parents']
+
+
+def test_origin_on_first_target_session_retains_prior_market_context_without_prior_state():
+    arguments=inputs()
+    with patch('pipelines.certified_research.seed_preparation.verify_definition',return_value='a'*64),patch(
+            'pipelines.certified_research.indicator_state.discover',return_value=None),patch(
+            'pipelines.certified_research.v7.discover',return_value=None):
+        result=prepare_listing(**arguments,rebuild_origin=date(2026,1,5))
+    assert result['ready'] and result['state_start_dates'][11]==(date(2026,1,5),date(2026,1,5))
+    assert result['required_source_days']==(date(2026,1,2),date(2026,1,5))
+
+
 @pytest.mark.parametrize('failure',('seed','source','membership','rename'))
 def test_preparation_reports_missing_dependencies_before_any_execution(failure):
     arguments=inputs();technical,structural=found(date(2026,1,2))

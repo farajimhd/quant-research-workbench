@@ -74,9 +74,10 @@ def plan(config: CampaignConfig,*,indicator_seed: StateSeed|None=None,v7_seed: S
                                 seed_session=seed.session,seed_hash=seed.hash,sessions=later,
                                 calculation_start=later[0] if later else first))
         elif rebuild_origin is not None:
-            if not source_floor<=rebuild_origin<first:
-                raise ValueError('Declared rebuild origin is outside source bounds or not prior to target')
-            prefix=calendar(rebuild_origin,first-timedelta(days=1));market.update(prefix)
+            if not source_floor<=rebuild_origin<=first or not calendar(rebuild_origin,rebuild_origin):
+                raise ValueError('Declared rebuild origin is outside source bounds or not an exchange session')
+            prefix=calendar(rebuild_origin,first-timedelta(days=1)) if rebuild_origin<first else ()
+            market.update(prefix)
             demands.append(dict(product=name,purpose='explicit versioned rebuild prefix',origin=rebuild_origin,sessions=prefix,
                                 calculation_start=rebuild_origin))
         else:

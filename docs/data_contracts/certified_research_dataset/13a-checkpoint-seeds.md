@@ -39,4 +39,6 @@ The result contains the seed dependency, verified AH checkpoint, source session 
 
 A bounded live ClickHouse campaign fixture verifies AH restoration, both seed handlers, unchanged stored authority and rejection of an altered V7 predecessor hash. Unit tests cover missing frozen source, cancellation and client cleanup. This demonstrates correctness on a small fixture, not production throughput.
 
-Adjustment-evidence acquisition, legacy 2025 checkpoint compatibility/migration, genesis certification and final session-backfill CLI routing remain unfinished. Existing `load_checkpoint`/`load_from_bars` readers support PM, regular and AH; the new `v7_seed` execution root specifically restores the preceding day's AH for chronological day generation.
+Fresh launch now accepts an explicit versioned rebuild origin for missing state families; see [origin admission and lineage](13n-rebuild-origins.md). Compatible seeds remain preferred. Origin roots verify the frozen source and dated membership and replay every subsequent required session. They do not prove that the selected origin is the beginning of a security's history.
+
+Adjustment-evidence acquisition, legacy 2025 checkpoint compatibility/migration and final session-backfill CLI routing remain unfinished. Existing `load_checkpoint`/`load_from_bars` readers support PM, regular and AH; the `v7_seed` execution root specifically restores the preceding day's AH for chronological day generation.

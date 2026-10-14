@@ -32,6 +32,7 @@ def parse_args(argv=None):
     p.add_argument('--start-date',type=date.fromisoformat,default=date(2026,1,1))
     p.add_argument('--end-date',type=date.fromisoformat)
     p.add_argument('--context-start-date',type=date.fromisoformat,help='Explicit earlier source prerequisite bound; target start is unchanged')
+    p.add_argument('--rebuild-origin-date',type=date.fromisoformat,help='Explicit versioned empty-state origin if compatible causal seeds are absent; every subsequent session is replayed')
     p.add_argument('--fundamental-start-date',type=date.fromisoformat,help='Fresh-launch SEC context coverage bound')
     p.add_argument('--universe-anchor-date',type=date.fromisoformat,default=date.today(),help='Last allowed 2026-onward conid observation date')
     p.add_argument('--env-file',type=Path,default=ROOT/'.env')
@@ -73,6 +74,8 @@ def parse_args(argv=None):
     if args.command in ('launch','run','resume') and args.capacity_profile is None:p.error(args.command+' requires --capacity-profile')
     if args.command=='launch' and any(v is None for v in (args.context_start_date,args.fundamental_start_date)):
         p.error('launch requires --context-start-date and --fundamental-start-date')
+    if args.rebuild_origin_date is not None and args.command!='launch':
+        p.error('--rebuild-origin-date belongs to fresh launch; resume uses the frozen plan')
     if args.command=='prepare-sources' and (args.end_date is None or args.format!='text'):
         p.error('prepare-sources requires --end-date and uses text progress')
     if args.hydrate_missing_trades:p.error('Imported-day reporting repair cannot hydrate flatfiles; G-to-D staging belongs to acquisition')
@@ -214,7 +217,8 @@ def main(argv=None):
                         if args.command=='launch':
                             result=fresh_execution.run(client.query,config,str(args.dataset_id),claim,factory,
                                 dictionary_factory,admission,context_start=args.context_start_date,fundamental_start=args.fundamental_start_date,
-                                anchor_date=args.universe_anchor_date,stop=stop,progress=progress)
+                                anchor_date=args.universe_anchor_date,stop=stop,progress=progress,
+                                rebuild_origin=args.rebuild_origin_date)
                         else:result=saved_execution.run(client.query,args.database,str(args.dataset_id),claim,factory,
                             dictionary_factory,admission,stop=stop,progress=progress)
                     finally:claim.close()

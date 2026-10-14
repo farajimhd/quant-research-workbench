@@ -10,7 +10,7 @@ from .execution import Unit,execute
 
 def discover_and_prepare(query,config,dataset_id,claim,client_factory,source_guard,canonical,reporting,definition,rules,*,
                          fundamental_start,short_start,anchor_date,adjustment_hashes=None,
-                         indicator_datasets=None,v7_datasets=None,stop=None,progress=None):
+                         indicator_datasets=None,v7_datasets=None,stop=None,progress=None,rebuild_origin=None):
     """Compose reference discovery and preparation without caller-built locators."""
     from . import reference_discovery
     stop=Event() if stop is None else stop
@@ -33,20 +33,21 @@ def discover_and_prepare(query,config,dataset_id,claim,client_factory,source_gua
         references['issuers'],references['securities'],prerequisites=(authority,*references['prerequisites']),
         universe_parent='universe',corporate_parents=references['corporate_parents'],adjustment_hashes=adjustment_hashes,
         fundamental_start=fundamental_start,short_start=short_start,anchor_date=anchor_date,
-        indicator_datasets=indicator_datasets,v7_datasets=v7_datasets,stop=stop,progress=progress)
+        indicator_datasets=indicator_datasets,v7_datasets=v7_datasets,stop=stop,progress=progress,rebuild_origin=rebuild_origin)
     return dict(assembled,ready=True)
 
 
 def prepare(query,config,claim,client_factory,source_guard,canonical,reporting,definition,rules,
             issuers,securities,*,prerequisites,universe_parent,corporate_parents,adjustment_hashes,
             fundamental_start,short_start,anchor_date,indicator_datasets=None,v7_datasets=None,
-            stop=None,progress=None,maximum_sessions=250000,maximum_issuers=8192):
+            stop=None,progress=None,maximum_sessions=250000,maximum_issuers=8192,rebuild_origin=None):
     """Discover float prices and state context before installing any plan.
 
     Reference source locators must already be certified; their discovery and
     acquisition are separate gates. This coordinator replaces manually prepared
     listing sessions, price-only histories and seed units with one read-only
-    preparation path. It does not infer a missing genesis or rename bridge.
+    preparation path. A rebuild origin must be explicitly supplied; missing
+    genesis or rename evidence is never inferred.
     """
     stop=Event() if stop is None else stop
     issuers=tuple(issuers);securities=tuple(securities);prerequisites=tuple(prerequisites)
@@ -137,7 +138,8 @@ def prepare(query,config,claim,client_factory,source_guard,canonical,reporting,d
     price_requests={k:v for k,v in assigned['price_sessions'].items() if k in target_listings}
     prepared=seed_preparation.prepare_universe(client_factory,config,claim,frozen_guard,membership,definition,rules,
         source.market_day_hashes(frozen,frozen_reporting),adjustment_hashes,indicator_datasets=indicator_datasets,
-        v7_datasets=v7_datasets,stop=stop,progress=progress,price_sessions=price_requests)
+        v7_datasets=v7_datasets,stop=stop,progress=progress,price_sessions=price_requests,
+        rebuild_origin=rebuild_origin,universe_parent=universe_parent)
     if not prepared['ready']:raise ValueError('Initial market preparation is blocked: '+str(prepared['states']))
     price_only=tuple(s for s in membership['sessions'] if s.listing_key not in target_listings
         and s.day in assigned['price_sessions'].get(s.listing_key,()))

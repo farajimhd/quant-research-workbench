@@ -1,7 +1,7 @@
 """One execution controller for market, reference and acquisition registries."""
 from .campaign import Campaign,load_plan
 from .handlers import MarketHandlers,ReferenceHandlers,ActivityHandlers,UniverseHandlers,CanonicalSourceHandlers,PreparedShortSourceHandlers,PreparedSecSourceHandlers,V7SeedHandlers,IndicatorSeedHandlers,ReferenceAuthorityHandlers
-from .handlers import ReferenceImportHandlers
+from .handlers import ReferenceImportHandlers,RebuildOriginHandlers
 from .contracts import digest
 from . import installation,runtime_plan
 
@@ -69,6 +69,7 @@ class ExecutionLaunch:
             ReferenceImportHandlers(dataset_id,config.database,claim,client_factory,source_guard),
             V7SeedHandlers(config.database,claim,client_factory,source_guard,market_runtime),
             IndicatorSeedHandlers(config.database,claim,client_factory,source_guard,market_runtime),
+            RebuildOriginHandlers(config.database,claim,client_factory,source_guard,market_runtime,self.plans),
             PreparedSecSourceHandlers(claim,client_factory,source_guard),
             PreparedShortSourceHandlers(dataset_id,config.database,claim,client_factory,source_guard),
             MarketHandlers(dataset_id,config.database,claim,client_factory,source_guard,

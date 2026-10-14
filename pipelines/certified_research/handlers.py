@@ -170,6 +170,52 @@ class IndicatorSeedHandlers(V7SeedHandlers):
     def registry(self):return {'technical_seed':self.producer},{'technical_seed':self.verifier}
 
 
+class RebuildOriginHandlers(V7SeedHandlers):
+    """Verify declared empty-state roots against source and dated membership."""
+    def __init__(self,database,claim,client_factory,source_guard,market_runtime,plans):
+        super().__init__(database,claim,client_factory,source_guard,market_runtime)
+        self.plans={p.unit.key:p for p in plans}
+
+    def execute(self,plan,parents,stop=None):
+        from datetime import datetime,time,timezone
+        from . import genesis
+        from .checkpoints import NY
+        from .contracts import literal
+        if stop is not None and stop.is_set():raise InterruptedError('Rebuild origin verification stopped')
+        if plan.unit.product not in ('technical_origin','v7_origin') or set(plan.arguments)!={'binding'}:
+            raise ValueError('Invalid explicit rebuild origin unit')
+        row=genesis.verify(plan.arguments['binding'],self.runtime.definition,self.runtime.rules)
+        if set(parents)!=set(plan.unit.parents) or len(parents)!=2:
+            raise ValueError('Rebuild origin requires verified source and universe parents')
+        products=[self.plans[key].unit.product for key in parents]
+        if sorted(products)!=['canonical_source','universe']:
+            raise ValueError('Rebuild origin parents must be canonical source and universe')
+        source_parent=next(parents[key] for key in parents if self.plans[key].unit.product=='canonical_source')
+        day=date.fromisoformat(row['origin'])
+        if (source_parent.get('product')!='canonical_source' or source_parent.get('day')!=str(day)
+                or source_parent.get('source_hash')!=row['source_hash'] or source_parent.get('output_hash')!=row['source_hash']
+                or self.runtime.sources.get(day)!=row['source_hash']):
+            raise ValueError('Explicit rebuild origin source differs from certified authority')
+        client=self.clients()
+        try:
+            self.claim.check();self.guard()
+            start=datetime.combine(day,time(4),NY).astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')
+            end=datetime.combine(day,time(20),NY).astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')
+            rows=client.query(f'SELECT count() n FROM {self.database}.research_membership_v1 WHERE '
+                f'dataset_id=toUUID({literal(self.runtime.dataset)}) AND listing_key={row["listing_key"]} '
+                f'AND ticker={literal(row["ticker"])} AND eligible=1 '
+                f"AND valid_from<=toDateTime64({literal(start)},6,'UTC') AND valid_to>=toDateTime64({literal(end)},6,'UTC')")
+            if len(rows)!=1 or int(rows[0]['n'])!=1:
+                raise ValueError('Explicit rebuild origin requires unambiguous full-session dated membership')
+            self.claim.check();self.guard()
+            return dict(product=plan.unit.product,binding=row,output_hash=row['certificate_hash'])
+        finally:client.close()
+
+    def registry(self):
+        products=('technical_origin','v7_origin')
+        return {p:self.producer for p in products},{p:self.verifier for p in products}
+
+
 class ReferenceAuthorityHandlers:
     """Reuse qualified current-dataset reference scopes without fabrication."""
     PRODUCTS=('corporate_actions','float_allocation','reported_supply')

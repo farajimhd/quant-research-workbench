@@ -75,10 +75,12 @@ def resolve(query,database,claim,scope,listing_key,previous,day,*,membership_sql
     return Adjustment(factor,proof,receipt['output_hash'])
 
 
-def indicator_state(state,adjustment):
+def indicator_state(state,adjustment,*,frames=None):
     """Scale price-valued state once; counts and RSI ratios remain invariant."""
-    validate_state(state)
+    from pipelines.market_sip.events.market_day_sql import FRAMES
+    frames=FRAMES if frames is None else frames
+    validate_state(state,frames)
     result={frame:{name:value if name=='sample_count' else value*adjustment.factor for name,value in row.items()}
         for frame,row in state.items()}
-    validate_state(result)
+    validate_state(result,frames)
     return result

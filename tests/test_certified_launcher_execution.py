@@ -27,8 +27,11 @@ def test_fresh_launch_requires_explicit_context_and_retains_acquisition_controls
     common=['launch','--dataset-id','00000000-0000-0000-0000-000000000001','--capacity-profile','pilot.json']
     with pytest.raises(SystemExit):launcher.parse_args(common)
     args=launcher.parse_args([*common,'--end-date','2026-01-02','--context-start-date','2025-12-01',
-        '--fundamental-start-date','2024-01-01','--recover-retained-reporting'])
+        '--fundamental-start-date','2024-01-01','--recover-retained-reporting','--rebuild-origin-date','2025-12-01'])
     assert args.command=='launch' and args.recover_retained_reporting
+    assert args.rebuild_origin_date==date(2025,12,1)
+    with pytest.raises(SystemExit):launcher.parse_args(['resume','--dataset-id',common[2],
+        '--capacity-profile','pilot.json','--rebuild-origin-date','2025-12-01'])
 
 
 @pytest.mark.parametrize('explicit_end',(False,True))

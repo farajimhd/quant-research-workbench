@@ -40,7 +40,7 @@ def indicator_continuation(query,database,claim,parent,listing_key,day,recipe_ha
     state=indicators(query,database,claim,parent,listing_key,day,recipe_hash,day_sources,rules,frames=frames)
     previous=date.fromisoformat(str(parent['session_date']))
     adjustment=resolve(query,database,claim,corporate_scope,listing_key,previous,day)
-    return dict(state=scale(state,adjustment),predecessor_hash=parent['output_hash'],adjustment=adjustment)
+    return dict(state=scale(state,adjustment,frames=frames),predecessor_hash=parent['output_hash'],adjustment=adjustment)
 
 
 def structural(query,database,claim,parent,listing_key,day,ticker,recipe_hash,day_sources,*,

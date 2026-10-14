@@ -42,7 +42,7 @@ The lower-level coordinator accepts supplied reference source locators and
 fundamental coverage bounds. [Retained reference discovery](13m-reference-discovery.md)
 now supplies those locators through `discover_and_prepare`. Missing reference
 authority creation/acquisition, initial
-genesis/legacy checkpoint qualification and production capacity measurements
+listing-start genesis/legacy checkpoint qualification and production capacity measurements
 remain unfinished. `launch` now connects this preparation to first execution;
 existing `run/resume` execute installed immutable plans. Missing prerequisites
 block launch before a campaign definition or seal is published.
@@ -52,3 +52,9 @@ identity drift, missing seeds, short context and interruption. A real read-only
 ClickHouse check rejects the currently uncovered October SEC range before any
 worker starts. Existing bounded SEC context tests also pass. No full campaign or
 provider download was run.
+
+The explicit `--rebuild-origin-date` route now fills missing indicator/V7 seed
+families with source/universe-verified empty-state roots. It replays the full
+declared prefix and does not reset families with compatible seeds. The origin
+must have dated membership; listing-start proof and rename transitions remain
+separate requirements, not inferred empty state.
