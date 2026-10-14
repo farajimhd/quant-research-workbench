@@ -179,6 +179,17 @@ def prepare(training,validation,output,workers=4):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for k in ('training','validation','output'):p.add_argument('--'+k,type=Path,required=True)
-    p.add_argument('--workers',type=int,default=4);prepare(**vars(p.parse_args()))
+    p.add_argument('--workers',type=int,default=4)
+    p.add_argument('--read-credential-file',type=Path,help='Read-only credential reference; never copied into artifacts')
+    args=vars(p.parse_args());credential=args.pop('read_credential_file')
+    names=('BACKTEST_V3_READ_CREDENTIAL_FILE','BACKTEST_V3_READ_CLICKHOUSE_URL','BACKTEST_V3_READ_CLICKHOUSE_USER','BACKTEST_V3_READ_CLICKHOUSE_PASSWORD')
+    if credential is not None:
+        if any(os.environ.get(n) for n in names[1:]):raise ValueError('Cannot mix file and inline read credentials')
+        os.environ[names[0]]=str(credential)
+    elif not any(os.environ.get(n) for n in names):
+        os.environ[names[0]]='D:/TradingML/secrets/backtest_v3_read.env'
+    from src.backend.backtest_v3_clients import _credential
+    _credential('read',os.environ)  # Fail before launching workers; never print values.
+    prepare(**args)
 
 if __name__=='__main__':main()
