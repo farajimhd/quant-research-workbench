@@ -87,7 +87,7 @@ evidence; a blanket venue filter would drop valid listed-stock activity.
 
 ## Confirmed current blockers
 
-October 14 inspection of January 2–October 2 found 189 canonical sessions,
+Initial October 14 inspection of January 2–October 2 found 189 canonical sessions,
 120,294,226,954 events and 25,995,919,023 trades. The merged identity pool had
 6,781 supported entities, including 6,008 exact event-backed associations.
 Those counts are identity candidates, not certified tradability.
@@ -95,11 +95,11 @@ Those counts are identity candidates, not certified tradability.
 | Dependency | Actual finding | Required action |
 |---|---|---|
 | Dated membership | 7,145 native interval rejections; additional candidate/dependency rejections, potentially overlapping | Repair retained symbol histories, listing lifecycle and issuer/contract bindings with source evidence; do not infer an IPO from first observed events |
-| Strict trade policy | All 189 target sessions lack complete qualified reporting certificates | Ingestion-owned clock/condition reconciliation and native flag migration, including unknown/invalid rejection evidence |
+| Strict trade policy | Jan 2 certified; 188 target sessions still require qualified reporting certificates | Ingestion-owned clock/condition reconciliation and native flag migration, including unknown/invalid rejection evidence |
 | Short data | 3,143,402 short-volume and 142,612 short-interest rows need publication-time evidence | Qualify original public vintages before causal use |
 | SEC/corporate inputs | SEC source/coverage receipts and original corporate vintages incomplete | Verify retained source documents/archives, coverage and availability; then produce certified features |
-| Writers | Secure laptop Keeper endpoint/certificates not configured | Use managed workstation-local ownership or configure the existing secure laptop endpoint; no plaintext or lease bypass |
-| Output/capacity | New research tables absent; no full frozen demand estimate | Install under ownership, qualify representative storage/peak rates and admit the whole plan before writing |
+| Writers | Workstation Keeper and ownership claims verified; laptop endpoint remains unconfigured | Use managed workstation-local ownership or configure the existing secure laptop endpoint; no plaintext or lease bypass |
+| Output/capacity | All 28 research tables installed; no full frozen demand estimate | Install under ownership, qualify representative storage/peak rates and admit the whole plan before writing |
 
 The launcher reports each stage as prepared, blocked or waiting. Readiness is
 not a dataset seal. No full-range generation or certification has completed.
@@ -113,43 +113,4 @@ concurrent consumers, causal checkpoint persistence, short-data causality,
 derived formulas, and rejection of incomplete SEC prerequisites. Their fixture
 database was removed by teardown. These checks do not certify the full campaign.
 
-Workstation execution now uses an isolated deployment of pushed source over the
-existing authenticated SSH connection. Local Keeper session, dictionary claim
-and canonical source claim were verified, and all 28 research tables were
-installed under `live_market_ssd`. HTTP uses the observed LAN-bound port proxy;
-no Keeper listener or firewall rule was changed. The retained-file plan found
-all 189 trade backups (597,054,672,991 bytes), with about 3.61 TB free on D,
-800,154,503,987 bytes reserved and three chunks capped at 256 GiB.
-
-The initial ingestion canary exposed a positional raw INSERT mismatch:
-reporting reason preceded clocks in the updater projection but followed the
-conditions array in the staging schema. `raw_insert_sql` now names every input
-and target field. An isolated ClickHouse regression verifies exact nanosecond
-clocks, all six explicit delayed conditions, zero/invalid clock states and
-strict rejection flags; it reads synthetic trades without opening SIP files.
-This fixes the insertion contract, not the outstanding full-range certificates.
-
-The production canary also exposed the launcher's fixed 45-second statement
-deadline and full-year scans without monthly pruning. New runs use configurable
-`--query-timeout-seconds` (default 900, maximum 3600), frozen in their configuration;
-old stored plans keep their existing timeout contract. Exact UTC event-date
-bounds now accompany the original SIP bounds during canonical certification,
-preserved-field checks and flag mutation. Cross-midnight bounds include both
-dates. Complete source counts and independent comparisons still gate publication.
-
-Reconciliation now materializes the canonical day's trade keys and original
-fields once into the compressed ingestion-only
-`q_live.historical_trade_reporting_ns_v1_retained_canonical` table. The 16 ticker
-buckets reuse that snapshot instead of scanning canonical months 16 times.
-This temporary table uses `live_market_ssd`, explicit original numeric widths,
-dated partitions and lossless codecs, and is cleaned only after day certification.
-It is not a downstream market-event authority. Admission reserves four times
-the measured raw semantic footprint for staging/publication/merge work before
-writing; partial staging remains resumable and has no certified receipt.
-
-Exact original-clock publication also uses the same bounded ticker buckets.
-Both `EXCEPT ALL` comparisons remain mandatory; their memory no longer scales
-with the entire day. Missing-key insertion scopes the existing bank to that
-source date and bucket instead of loading all earlier history. A failed
-comparison leaves the receipt absent, blocks flag mutation and never overwrites
-conflicting original-clock evidence.
+See [retained-clock recovery and canary results](13vm-retained-clock-recovery.md) for the workstation path, implementation repairs and measured storage.
