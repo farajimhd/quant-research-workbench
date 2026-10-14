@@ -15,6 +15,7 @@ from src.backend.signal_stream_typed_publication import TypedSignalPublicationQu
 from test_signal_stream_typed_publication import FakeStorage
 from tests.test_program_managed_journal import controller_request
 from tests.test_program_app_startup import supplied
+from dataclasses import replace
 
 
 def request(tmp_path, publisher):
@@ -24,6 +25,44 @@ def request(tmp_path, publisher):
     return handoff.ProgramAppHandoff(controller.definition, controller._program_strategy.assignments(),
         controller._program_strategy._listings, 1000, inputs,
         ({'source_publisher': publisher},), journal, publisher, {}, lambda: None, 1)
+
+
+@pytest.mark.parametrize('failure', [None, 'binding', 'coverage'])
+def test_bound_handoff_builder_composes_native_owners_without_io(tmp_path, failure):
+    from test_configuration_execution_binding import binding
+    from src.trading_runtime.program_stop_protection import ProgramStopProtection
+    publisher = TypedSignalPublicationQueue(FakeStorage(), capacity=1)
+    try:
+        prior = request(tmp_path, publisher)
+        execution = binding()
+        revision = {**prior.definition.configuration_revision,
+            'revision_id': 'strategy-configuration:' + execution.header['configuration_id'],
+            'selection_hash': execution.header['configuration_hash'],
+            'execution_binding_hash': ('b' * 64 if failure == 'binding' else execution.header['content_hash'])}
+        definition = replace(prior.definition, configuration_revision=revision)
+        order = tuple(row.assignment_id for row in prior.assignments)
+        layouts = {identity: ProgramStopProtection('selected-stop', 1, (1.,)) for identity in order}
+        if failure == 'coverage': layouts = {}
+        arguments = dict(definition=definition, assignments=prior.assignments,
+            listing_by_assignment=prior.listing_by_assignment, liquidity_resolution_ms=1000,
+            published_inputs=prior.published_inputs, journal=prior.journal,
+            signal_publisher=publisher, signal_scope={}, checkpoint_connection_factory=lambda: None,
+            checkpoint_concurrency=1, execution_binding=execution, protection_layouts=layouts,
+            assignment_order=order, catalogs={}, reader_factory=lambda: None,
+            outside_rth=True, maximum_events=1000)
+        if failure:
+            with pytest.raises(ValueError, match='approved configuration'):
+                handoff.build_bound_program_app_handoff(**arguments)
+        else:
+            actual = handoff.build_bound_program_app_handoff(**arguments)
+            assert actual.signal_publisher is publisher and actual.journal is prior.journal
+            scope = actual.scopes[0]
+            assert scope['execution_policy'].header == execution.header
+            assert scope['protection_profiles_at'](datetime(2026, 8, 3, 12, tzinfo=UTC)) == layouts
+            with pytest.raises(ValueError, match='completed native clock'):
+                scope['protection_profiles_at'](datetime(2026, 8, 3, 12))
+    finally:
+        publisher.close()
 
 
 @pytest.mark.parametrize('mode', ['ready', 'failure', 'owner_change'])

@@ -2,6 +2,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
+from datetime import datetime
 
 from fastapi import FastAPI
 from .replay_run_service import ReplayRunDefinition, ReplayRunService
@@ -11,6 +12,67 @@ from .signal_stream_typed_publication import TypedSignalPublicationQueue
 from src.trading_runtime.strategy_engine import StrategyAssignment
 
 HANDOFF_KEY = 'approved_program_app_preparation'
+
+
+class _ProgramProtectionLayouts:
+    """Constant layout lookup; final stop binding occurs after selection."""
+    def __init__(self, layouts):
+        self.layouts = MappingProxyType(dict(layouts))
+
+    def __call__(self, at):
+        if (not isinstance(at, datetime) or at.tzinfo is None or at.utcoffset() is None
+                or at.microsecond):
+            raise ValueError('Programme protection requires a completed native clock')
+        return self.layouts
+
+
+def build_bound_program_app_handoff(*, definition, assignments, listing_by_assignment,
+        liquidity_resolution_ms, published_inputs, journal, signal_publisher, signal_scope,
+        checkpoint_connection_factory, checkpoint_concurrency, execution_binding,
+        protection_layouts, assignment_order, catalogs, reader_factory,
+        outside_rth, maximum_events, market_plan=None, price_plan=None, liquidity_certificates=None):
+    """Compose existing native contracts; no reads, publication or run start.
+
+    Admission order, slice fractions, budgets and source authorities are
+    supplied explicitly by the approved app compute funnel, never invented.
+    """
+    from src.trading_runtime.configuration_execution_binding import (
+        ConfigurationExecutionBinding, restore_execution_binding)
+    from src.trading_runtime.program_stop_protection import ProgramStopProtection
+    if (type(definition) is not ReplayRunDefinition
+            or type(published_inputs) is not ProgramPublishedInputRequest
+            or type(execution_binding) is not ConfigurationExecutionBinding
+            or type(assignments) is not tuple or not assignments
+            or any(type(row) is not StrategyAssignment for row in assignments)
+            or not isinstance(protection_layouts, Mapping)
+            or any(type(layout) is not ProgramStopProtection for layout in protection_layouts.values())
+            or type(assignment_order) is not tuple or not callable(reader_factory)
+            or type(outside_rth) is not bool or type(maximum_events) is not int or maximum_events < 1):
+        raise ValueError('Bound handoff requires explicit native execution, layouts and compute bounds')
+    binding = restore_execution_binding(execution_binding.rows)
+    revision = definition.configuration_revision
+    identities = {row.assignment_id for row in assignments}
+    if (revision.get('execution_binding_hash') != binding.header['content_hash']
+            or revision.get('selection_hash') != binding.header['configuration_hash']
+            or revision.get('revision_id') != 'strategy-configuration:' + binding.header['configuration_id']
+            or set(assignment_order) != identities or len(assignment_order) != len(identities)
+            or set(protection_layouts) != identities):
+        raise ValueError('Bound handoff differs from approved configuration or assignment coverage')
+    layouts = _ProgramProtectionLayouts(protection_layouts)
+    scope = dict(source_publisher=signal_publisher, catalogs=catalogs, reader_factory=reader_factory,
+        concurrency=published_inputs.concurrency, assignment_order=assignment_order,
+        execution_policy=binding, protection_profiles_at=layouts,
+        outside_rth=outside_rth, maximum_events=maximum_events)
+    if market_plan is not None:
+        scope['market_plan'] = market_plan
+    if price_plan is not None:
+        scope['price_plan'] = price_plan
+    if liquidity_certificates is not None:
+        scope['liquidity_certificates'] = liquidity_certificates
+    return ProgramAppHandoff(definition, assignments, listing_by_assignment,
+        liquidity_resolution_ms, published_inputs,
+        tuple(dict(scope) for _ in published_inputs.cohort_windows), journal,
+        signal_publisher, signal_scope, checkpoint_connection_factory, checkpoint_concurrency)
 
 
 @dataclass(frozen=True)
