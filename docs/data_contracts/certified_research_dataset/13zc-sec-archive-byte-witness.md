@@ -149,3 +149,16 @@ Archive preparation is sequential; repeated lineage guards are intentionally str
 and have not yet been measured over a large document selection. Production pilot
 qualification, orphan-cache ownership reconciliation and class/float certification
 remain unfinished; this CLI path has not been run as a production campaign.
+
+The v2 staging plan separately reports total source bytes and `copy_bytes`.
+Same-size existing D files enter `cached_unverified` without reserving space for
+another copy; they still require full digest and original receipt verification.
+The executor checks verified publication reuse before admitting copy space, and
+checks fresh headroom only for files that need allocation. Cached hashing checks
+claim/cancellation every 8MiB and full source lineage at unit boundaries rather
+than issuing repeated whole-group database reads for every buffer. A 17MiB cached
+fixture verified five full lineage-boundary checks, no copy-space admission and
+preservation of the existing file. Cancellation checks remain inside the read loop.
+Fresh launcher planning still requires copy headroom for an absent D file before
+execution-level publication reuse is discovered; pre-plan persisted-group discovery
+remains an optimization to implement. No throughput claim is made from fixtures.

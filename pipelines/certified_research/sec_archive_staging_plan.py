@@ -44,9 +44,15 @@ def plan(prepared,canonical_root,backup_root,cache_root,runtime_root,*,reserve_b
         archives.append(dict(archive_key=name,source=str(source),destination=str(target),bytes=stat.st_size,
             source_mtime_ns=stat.st_mtime_ns,documents=tuple(sorted(documents,key=lambda d:d['document_key']))))
     space=archive_staging.space_budget(cache_root,reserve_bytes=reserve_bytes,reserve_fraction=reserve_fraction)
-    chunks=archive_staging.plan_chunks(((row['archive_key'],row['bytes']) for row in archives),space,
+    cached=tuple((row['archive_key'],row['bytes']) for row in archives
+        if Path(row['destination']).is_file() and Path(row['destination']).stat().st_size==row['bytes'])
+    cached_keys={key for key,size in cached}
+    chunks=archive_staging.plan_chunks(((row['archive_key'],row['bytes']) for row in archives if row['archive_key'] not in cached_keys),space,
         maximum_chunk_bytes=maximum_chunk_bytes)
-    result=dict(version='grouped-sec-archive-staging-plan-v1',archives=tuple(archives),chunks=chunks,
+    chunks=dict(chunks,copy_bytes=chunks['total_bytes'],total_bytes=sum(row['bytes'] for row in archives),
+        chunks=((cached,) if cached else ())+chunks['chunks'])
+    result=dict(version='grouped-sec-archive-staging-plan-v2',archives=tuple(archives),chunks=chunks,
+        cached_unverified=tuple(sorted(cached_keys)),
         documents=len(seen),unique_archives=len(archives),space=space,copy_started=False,
         backup_root=str(backup_root),cache_root=str(cache_root),runtime_root=str(runtime_root))
     return dict(result,plan_hash=digest(result))

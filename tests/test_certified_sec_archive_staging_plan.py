@@ -30,6 +30,19 @@ def test_same_archive_documents_share_one_copy_and_chunks_preserve_reserve():
         assert result['copy_started'] is False and not cache.exists()
 
 
+def test_existing_cache_is_planned_without_allocating_copy_headroom():
+    with TemporaryDirectory(dir='D:/TradingML/runtimes',prefix='sec-cached-plan-') as directory:
+        root=Path(directory);backup=root/'backup';cache=root/'cache';relative=Path('2025/QTR4/20251031.nc.tar.gz')
+        for base in (backup,cache):
+            target=base/relative;target.parent.mkdir(parents=True);target.write_bytes(b'archive')
+        with patch.object(staging.archive_staging,'validate_roots'),patch.object(staging.archive_staging,'space_budget',
+            return_value=dict(usable_bytes=0,reserve_bytes=200,free_bytes=100)):
+            result=staging.plan((prepared('a'*64,'2025-10-31'),),'D:/market-data/sec_core/daily_archives',backup,cache,root)
+        assert result['cached_unverified']==(relative.as_posix(),)
+        assert result['chunks']['copy_bytes']==0 and result['chunks']['total_bytes']==7
+        assert result['chunks']['chunks']==(((relative.as_posix(),7),),)
+
+
 def test_path_traversal_and_staging_outside_runtime_are_rejected():
     runtime=Path('D:/TradingML/runtimes')
     with pytest.raises(ValueError,match='below'):

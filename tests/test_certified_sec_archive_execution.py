@@ -64,7 +64,8 @@ def test_verified_retained_group_skips_copy_and_scan():
              patch.object(execution.archive_staging,'copy_file') as copy,\
              patch.object(execution.sec_archive_witness,'inspect_archives') as inspect:
             plan=planning.plan(sources,'D:/market-data/sec_core/daily_archives',backup,cache,root)
-            result=execution.execute(plan,sources,receipts,Mock(),Event(),Mock(),Mock(),mode='official_filing_day',reuse=reuse)
+            with patch.object(execution.archive_staging,'space_budget',side_effect=AssertionError('reuse must not require copy headroom')):
+                result=execution.execute(plan,sources,receipts,Mock(),Event(),Mock(),Mock(),mode='official_filing_day',reuse=reuse)
         assert result['reused']==(relative.as_posix(),)
         copy.assert_not_called();inspect.assert_not_called()
 
@@ -82,3 +83,23 @@ def test_concrete_adapter_binds_original_receipt_and_reuse():
             mode='official_filing_day')
     assert result['status']=='complete'
     assert publisher.publish.call_args.args[2] is receipt
+
+
+def test_cached_digest_uses_bounded_lineage_checks_and_no_copy_admission():
+    with TemporaryDirectory(dir='D:/TradingML/runtimes',prefix='sec-cached-hash-') as directory:
+        root=Path(directory);backup=root/'backup';cache=root/'cache';relative=Path('2025/QTR4/20251031.nc.tar.gz')
+        source=backup/relative;target=cache/relative
+        source.parent.mkdir(parents=True);target.parent.mkdir(parents=True)
+        data=b'a'*(17*1024**2);source.write_bytes(data);target.write_bytes(data)
+        sources=(prepared('a'*64,'2025-10-31'),)
+        receipts={relative.as_posix():dict(status='downloaded',byte_size=len(data),sha256=sha256(data).hexdigest())}
+        guard=Mock()
+        acknowledgement=dict(persisted=True,readback_verified=True,witness_hashes=('a'*64,),qualification_hashes=('b'*64,))
+        with patch.object(planning.archive_staging,'validate_roots'),\
+             patch.object(execution.sec_archive_witness,'inspect_archives',return_value=({'witness_hash':'a'*64},)),\
+             patch.object(execution.sec_public_archive_time,'qualify',return_value={'qualification_hash':'b'*64}):
+            plan=planning.plan(sources,'D:/market-data/sec_core/daily_archives',backup,cache,root)
+            with patch.object(execution.archive_staging,'space_budget',side_effect=AssertionError('cached input does not allocate a copy')):
+                result=execution.execute(plan,sources,receipts,Mock(),Event(),lambda *args:acknowledgement,guard,mode='official_filing_day')
+        assert guard.call_count==5
+        assert result['preserved_cached_copies']==(str(target),) and target.is_file()

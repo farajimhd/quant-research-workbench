@@ -43,15 +43,16 @@ def execute(plan,prepared,receipts,claim,stop,publish,source_guard,*,mode,
                 raise ValueError('SEC execution prepared source differs')
             selected.append(document['document_key'])
     if len(selected)!=len(set(selected)) or set(selected)!=set(sources):raise ValueError('SEC archive/document relationship differs')
-    def guard():
-        claim.check();source_guard();claim.check()
+    def cancellation_guard():
+        claim.check()
         if stop.is_set():raise InterruptedError('SEC archive execution stopped; staged evidence retained')
+    def guard():
+        cancellation_guard();source_guard();cancellation_guard()
     def emit(phase,group):
         if progress:progress(dict(phase=phase,archive=group['archive_key']))
     completed=[];preserved=[];reused=[]
     for chunk in plan['chunks']['chunks']:
-        guard();space=archive_staging.space_budget(cache,reserve_bytes=reserve_bytes,reserve_fraction=reserve_fraction)
-        archive_staging.plan_chunks(chunk,space,maximum_chunk_bytes=maximum_chunk_bytes)
+        guard()
         for name,size in chunk:
             guard();group=archives[name];source=Path(group['source']).resolve();target=Path(group['destination']).resolve()
             if (size!=group['bytes'] or not source.is_relative_to(backup) or not target.is_relative_to(cache)):
@@ -72,6 +73,12 @@ def execute(plan,prepared,receipts,claim,stop,publish,source_guard,*,mode,
                         raise ValueError('SEC retained group readback is incomplete')
                     reused.append(name);completed.append(name);emit('reused',group)
                     continue
+            # Only an archive that will actually be copied needs fresh headroom.
+            # Files are published/cleaned sequentially, so do not charge reused
+            # groups or already-cleaned siblings against the current D budget.
+            if not (target.is_file() and target.stat().st_size==size):
+                space=archive_staging.space_budget(cache,reserve_bytes=reserve_bytes,reserve_fraction=reserve_fraction)
+                archive_staging.plan_chunks(((name,size),),space,maximum_chunk_bytes=maximum_chunk_bytes)
             emit('copy',group)
             copied=archive_staging.copy_file(source,target,backup,cache,size,stop=stop,
                 reserve_bytes=reserve_bytes,reserve_fraction=reserve_fraction)
@@ -79,7 +86,7 @@ def execute(plan,prepared,receipts,claim,stop,publish,source_guard,*,mode,
             if copied['status']=='cached':
                 checksum=sha256()
                 with target.open('rb') as reader:
-                    while data:=reader.read(8*1024**2):guard();checksum.update(data)
+                    while data:=reader.read(8*1024**2):cancellation_guard();checksum.update(data)
                 copied=dict(status='staged',bytes=size,sha256=checksum.hexdigest())
             elif not owned:raise ValueError('SEC backup could not be staged')
             if copied['sha256']!=receipt['sha256']:raise ValueError('SEC staged archive differs from original download digest')
