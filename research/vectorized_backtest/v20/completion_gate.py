@@ -14,6 +14,18 @@ def alive(owner):
     except psutil.NoSuchProcess:return False
 
 
+def process_identity(pointer):
+    """Legacy pointers locate campaigns; process authority stays in active.json."""
+    if 'pid' in pointer and 'creation_time' in pointer:return pointer
+    if not pointer.get('campaign'):raise ValueError('Optimizer pointer lacks campaign/process authority')
+    root=Path(pointer['campaign']);path=root/'active.json'
+    if not path.exists():raise ValueError('Legacy optimizer process authority missing')
+    identity=read(path)
+    if 'pid' not in identity or 'creation_time' not in identity:raise ValueError('Legacy optimizer process identity missing')
+    if (root/'owner.lock').exists():raise RuntimeError('Legacy optimizer still owns its campaign')
+    return identity
+
+
 def completion(job_path):
     """Follow the current job after migrations, never an obsolete campaign."""
     job=read(job_path);root=Path(job['campaign']);checkpoint=root/'checkpoint.json'
@@ -48,7 +60,7 @@ def completion(job_path):
     for version in range(7,20):
         pointer=root.parents[2]/f'torch_backtest_v{version}'/'active-campaign.json'
         if pointer.exists():
-            owner=read(pointer)
+            owner=process_identity(read(pointer))
             if owner.get('pid')!=psutil.Process().pid and alive(owner):return dict(waiting,reason=f'Waiting for active optimizer V{version} to exit')
     return dict(status='ready',campaign=str(root),completed_generations=50,job_sha256=file_hash(job_path),
                 checkpoint_sha256=file_hash(checkpoint),source_sha256=job['source_sha256'],seals=seals)

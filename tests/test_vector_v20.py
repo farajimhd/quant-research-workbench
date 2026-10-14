@@ -265,3 +265,12 @@ def test_v20_preserves_copied_financial_and_feature_sources():
         old=(root/'v19'/name).read_bytes().replace(b'\r\n',b'\n').replace(b'research.vectorized_backtest.v19',b'research.vectorized_backtest.v20')
         new=(root/'v20'/name).read_bytes().replace(b'\r\n',b'\n')
         assert old==new,name
+
+
+def test_legacy_optimizer_pointer_uses_campaign_process_authority(tmp_path,monkeypatch):
+    campaign=tmp_path/'legacy';campaign.mkdir();identity=dict(pid=123,creation_time=456)
+    write_json(campaign/'active.json',identity)
+    assert completion_gate.process_identity(dict(campaign=str(campaign)))==identity
+    (campaign/'owner.lock').touch()
+    with pytest.raises(RuntimeError,match='owns'):completion_gate.process_identity(dict(campaign=str(campaign)))
+    with pytest.raises(ValueError,match='authority'):completion_gate.process_identity({})
