@@ -32,6 +32,7 @@ from .opening_price_reference_producer import CertifiedOpeningInput
 BAR_COLUMNS=('resolution_ms','bucket_index','open_int','high_int','low_int','close_int',
              'notional','volume','trade_count','price_valid','extremes_valid')
 INDICATORS=('bucket_index','macd_line','macd_signal','rsi_14','atr_14','ema_7','ema_26')
+CONTEXT_COLUMNS=('bucket_index','close_int','notional','price_valid')
 
 
 @dataclass(frozen=True)
@@ -227,6 +228,52 @@ def _listing_identity(reader, listing, day):
     return rows
 
 
+def _read_context_units(reader, plan, tickers, *, stop_bucket):
+    """Read a bounded census packet after the same exact per-unit hash audit."""
+    if (type(tickers) is not tuple or not 1 <= len(tickers) <= 32
+            or tuple(sorted(set(tickers))) != tickers or len(plan.sessions) != 1
+            or set(tickers)-set(plan.tickers) or not 14400 < stop_bucket <= 72000):
+        raise ValueError('Feature context requires a bounded certified ticker packet')
+    units=tuple(u for u in plan.units if u.stage=='bars' and u.ticker in tickers)
+    if len(units)!=len(tickers) or len({u.ticker for u in units})!=len(tickers):
+        raise ValueError('Feature context packet has ambiguous source units')
+    _verify_market_batch(plan,'bars','bars_v1',plan.sessions[0],units,reader)
+    pairs=','.join(f'({literal(u.ticker)},toUUID({literal(u.attempt_id)}))' for u in units)
+    records=[]
+    for first in range(14400,stop_bucket,1024):
+        stop=min(first+1024,stop_bucket);bound=len(tickers)*(stop-first)
+        where=(f'build_id={literal(plan.build_id)} AND session_date=toDate({literal(plan.sessions[0])}) '
+            f'AND (ticker,attempt_id) IN ({pairs}) AND resolution_ms=1000 '
+            f'AND bucket_index>={first} AND bucket_index<{stop}')
+        rows=_rows(reader,f'SELECT ticker,{",".join(CONTEXT_COLUMNS)} FROM arte.bars_v1 '
+            f'WHERE {where} ORDER BY ticker,bucket_index LIMIT {bound+1}',bound+1)
+        if len(rows)>bound:
+            raise ValueError('Feature context packet contains excessive clocks')
+        if any(r['ticker'] not in tickers or not first<=int(r['bucket_index'])<stop for r in rows):
+            raise ValueError('Feature context packet escaped its certified scope')
+        records.extend(rows)
+    frame=pl.DataFrame(records,schema={'ticker':pl.String,'bucket_index':pl.Int64,
+        'close_int':pl.Int64,'notional':pl.Float64,'price_valid':pl.Int64})
+    if frame.select(pl.struct('ticker','bucket_index').is_duplicated().any()).item():
+        raise ValueError('Duplicate feature context clocks')
+    groups=frame.partition_by('ticker',as_dict=True)
+    empty=frame.clear().drop('ticker')
+    return {u.ticker:(groups[(u.ticker,)].drop('ticker') if (u.ticker,) in groups else empty,u) for u in units}
+
+
+def _context_sources(reader, request, ownership, stop_requested):
+    market=request.opening_source.market
+    for first in range(0,len(market.tickers),32):
+        if stop_requested is not None and stop_requested():
+            raise InterruptedError('QMD feature preparation stopped before a source packet')
+        ownership.assert_owner()
+        packet=market.tickers[first:first+32]
+        frames=_read_context_units(reader,market,packet,stop_bucket=request.stop_bucket)
+        for ticker in packet:
+            frame,unit=frames[ticker]
+            yield ticker,frame,unit
+
+
 @dataclass(frozen=True)
 class PreparedQmdFeatureDay:
     request: QmdFeaturePreparationRequest
@@ -319,13 +366,15 @@ def prepare_feature_day(reader, request, *, ownership, progress=None, stop_reque
     bars={};indicators={};references={};prior={};continuous={};peers={};quotes={};activity={}
     listing={v.ticker:v for v in request.opening_source.listings}
     anchor=int(datetime.combine(day,time(4),ZoneInfo('America/New_York')).timestamp())-14400
-    for index,ticker in enumerate(market.tickers):
+    for index,(ticker,current,unit) in enumerate(_context_sources(reader,request,ownership,stop_requested)):
         if stop_requested is not None and stop_requested():
             report(index,active=0,stopped=True)
             raise InterruptedError('QMD feature preparation stopped before a source unit')
         report(index,ticker=ticker)
         ownership.assert_owner()
-        current,unit=_read_unit(reader,market,ticker,'bars',BAR_COLUMNS,stop_bucket=request.stop_bucket)
+        if ticker in request.tickers:
+            current,unit=_read_unit(reader,market,ticker,'bars',BAR_COLUMNS,stop_bucket=request.stop_bucket)
+        current_unit=unit
         dependencies.append(FeatureDependency('bars','arte','bars_v1',day,ticker,unit.attempt_id,unit.output_rows,content_hash(asdict(unit))))
         peers[ticker]=current.select(pl.Series('second',anchor+current['bucket_index'].to_numpy()+1),
             (pl.col('close_int')/10000.).alias('close'),'notional','price_valid')
@@ -353,7 +402,10 @@ def prepare_feature_day(reader, request, *, ownership, progress=None, stop_reque
             source_ticker=identity[0]['ticker_normalized'] if identity else None
             if source_ticker not in p.tickers:
                 continue
-            candles,unit=_read_unit(reader,p,source_ticker,'bars',BAR_COLUMNS,stop_bucket=request.stop_bucket if source_day==day else 72000)
+            if source_day==day and source_ticker==ticker:
+                candles,unit=current,current_unit
+            else:
+                candles,unit=_read_unit(reader,p,source_ticker,'bars',BAR_COLUMNS,stop_bucket=request.stop_bucket if source_day==day else 72000)
             if source_day!=day:
                 dependencies.append(FeatureDependency('continuity','arte','bars_v1',source_day,source_ticker,unit.attempt_id,unit.output_rows,content_hash(asdict(unit))))
             factor=1.

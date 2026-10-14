@@ -62,6 +62,8 @@ def test_native_funnel_prepares_once_seals_sources_and_reaches_app_polars(monkey
         else:frame=b
         return frame.select(columns),unit
     monkeypatch.setattr(prep,'_read_unit',read_unit)
+    monkeypatch.setattr(prep,'_read_context_units',lambda reader,market,tickers,**kw:
+        {ticker:read_unit(reader,market,ticker,'bars',prep.CONTEXT_COLUMNS,**kw) for ticker in tickers})
     monkeypatch.setattr(prep,'read_reference',lambda *args:(None,[],{k:0. for k in FUNDAMENTAL_NAMES},
         dict(float=None,splits=[],hash='c'*64)))
     monkeypatch.setattr(prep,'_verify_market_batch',lambda *args:calls.append(args[1]))
@@ -179,3 +181,26 @@ def test_prior_volume_can_only_be_masked_at_explicit_certified_origin():
     earlier = replace(origin_audit, source_plan={'requested': ['2026-07-30', day]})
     with pytest.raises(ValueError, match='explicit certified history origin'):
         replace(origin, audit=earlier, continuity=((req.opening_source.market, earlier),))
+
+
+def test_batched_context_reads_preserve_empty_units_and_reject_duplicate_clocks(monkeypatch):
+    old, req = request()
+    market = req.opening_source.market
+    unit = next(u for u in market.units if u.stage == 'bars')
+    other = replace(unit, ticker='DEF')
+    market = replace(market, tickers=('ABC', 'DEF'), units=market.units+(other,))
+    audits=[];queries=[]
+    monkeypatch.setattr(prep, '_verify_market_batch', lambda *args: audits.append(args[4]))
+    rows=[dict(ticker='ABC',bucket_index=14400,close_int=100000,notional=100.,price_valid=1)]
+    def read(reader,sql,bound):
+        queries.append(sql)
+        assert '(ticker,attempt_id) IN' in sql and 'resolution_ms=1000' in sql
+        return rows
+    monkeypatch.setattr(prep, '_rows', read)
+    result=prep._read_context_units(None,market,('ABC','DEF'),stop_bucket=14800)
+    assert len(audits)==1 and len(audits[0])==2 and len(queries)==1
+    assert result['ABC'][0]['close_int'].to_list()==[100000]
+    assert result['DEF'][0].is_empty() and result['DEF'][1]==other
+    rows.append(dict(rows[0]))
+    with pytest.raises(ValueError,match='Duplicate'):
+        prep._read_context_units(None,market,('ABC','DEF'),stop_bucket=14800)
