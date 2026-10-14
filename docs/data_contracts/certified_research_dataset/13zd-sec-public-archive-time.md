@@ -1,6 +1,6 @@
 # Conservative public SEC archive timing
 
-[Archive byte witness](13zc-sec-archive-byte-witness.md) · [Source capture](13za-sec-source-capture.md)
+[Archive byte witness](13zc-sec-archive-byte-witness.md) · [Source capture](13za-sec-source-capture.md) · [Original fundamental contexts](13ze-sec-original-fundamental-context.md)
 
 ## Source semantics and policy
 

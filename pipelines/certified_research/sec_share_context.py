@@ -13,7 +13,7 @@ IX='http://www.xbrl.org/2013/inlineXBRL'
 TAGS={'EntityCommonStockSharesOutstanding','CommonStockSharesOutstanding'}
 
 
-def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=10000):
+def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=10000,catalog_tags=None):
     """Retain distinct facts and dimensions; never infer class completeness.
 
     Inputs are exact UTF-8 source text and its independently retained text hash.
@@ -67,10 +67,15 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
             key=node.get('id')
             if not key or key in destination:raise ValueError('Missing or duplicate XBRL identity')
             destination[key]=node
+    fundamental=catalog_tags is not None
+    if fundamental and (not isinstance(catalog_tags,(tuple,list)) or not catalog_tags or len(catalog_tags)>1000
+            or any(not isinstance(tag,str) or not re.fullmatch('[A-Za-z_][A-Za-z0-9_]*',tag) for tag in catalog_tags)):
+        raise ValueError('Invalid bounded fundamental concept catalog')
+    selected_tags=set(catalog_tags) if fundamental else TAGS
     observations=[];rejected=[]
     for position,fact in enumerate(n for n in root.iter() if n.tag.rsplit('}',1)[-1]=='nonFraction'):
         name=fact.get('name','');local=name.split(':')[-1]
-        if local not in TAGS:continue
+        if local not in selected_tags:continue
         if len(observations)+len(rejected)>=maximum_facts:raise ValueError('SEC share fact bound exceeded')
         row=dict(source_position=position,fact_id=fact.get('id',''),context_id=fact.get('contextRef',''),concept=name,
             unit_id=fact.get('unitRef',''),decimals=fact.get('decimals',''),scale=fact.get('scale','0'),
@@ -78,7 +83,9 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
         try:
             if fact.tag!='{'+IX+'}nonFraction':raise ValueError('unsupported_inline_namespace')
             concept=qname(name,fact)
-            if not re.fullmatch(r'\{http://xbrl.sec.gov/dei/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?\}EntityCommonStockSharesOutstanding|\{http://fasb.org/us-gaap/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?\}CommonStockSharesOutstanding',concept):
+            taxonomy_pattern=(r'\{(?:http://xbrl.sec.gov/dei|http://fasb.org/us-gaap)/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?\}[A-Za-z_][A-Za-z0-9_]*'
+                if fundamental else r'\{http://xbrl.sec.gov/dei/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?\}EntityCommonStockSharesOutstanding|\{http://fasb.org/us-gaap/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?\}CommonStockSharesOutstanding')
+            if not re.fullmatch(taxonomy_pattern,concept):
                 raise ValueError('unsupported_share_taxonomy')
             context=contexts.get(row['context_id']);unit=units.get(row['unit_id'])
             if context is None or unit is None:raise ValueError('missing_context_or_unit')
@@ -86,10 +93,32 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
             if len(ids)!=1 or ids[0].get('scheme')!='http://www.sec.gov/CIK' or str(int(ids[0].text or '0'))!=str(int(cik)):
                 raise ValueError('issuer_context_mismatch')
             instant=context.findall('./{'+XBRL+'}period/{'+XBRL+'}instant')
-            if len(instant)!=1:raise ValueError('share_context_requires_instant')
-            measured=date.fromisoformat(instant[0].text)
+            starts=context.findall('./{'+XBRL+'}period/{'+XBRL+'}startDate')
+            ends=context.findall('./{'+XBRL+'}period/{'+XBRL+'}endDate')
+            period_start=None
+            if len(instant)==1 and not starts and not ends:measured=date.fromisoformat(instant[0].text)
+            elif fundamental and not instant and len(starts)==len(ends)==1:
+                period_start=date.fromisoformat(starts[0].text);measured=date.fromisoformat(ends[0].text)
+                if period_start>measured:raise ValueError('invalid_duration_order')
+            else:raise ValueError('share_context_requires_instant' if not fundamental else 'invalid_fundamental_period')
             measures=unit.findall('./{'+XBRL+'}measure')
-            if len(measures)!=1 or qname(measures[0].text,measures[0])!='{'+XBRL+'}shares':raise ValueError('unsupported_share_unit')
+            unit_code=None
+            if len(measures)==1 and len(list(unit))==1:
+                measure=qname(measures[0].text,measures[0])
+                if measure=='{'+XBRL+'}shares':unit_code='shares'
+                elif fundamental and measure=='{'+XBRL+'}pure':unit_code='ratio'
+                elif fundamental and re.fullmatch(r'\{http://www.xbrl.org/2003/iso4217\}[A-Z]{3}',measure):unit_code=measure[-3:]
+            elif fundamental and len(list(unit))==1:
+                divide=unit.find('./{'+XBRL+'}divide')
+                if divide is not None and len(list(divide))==2:
+                    numerator=divide.findall('./{'+XBRL+'}unitNumerator/{'+XBRL+'}measure')
+                    denominator=divide.findall('./{'+XBRL+'}unitDenominator/{'+XBRL+'}measure')
+                    if len(numerator)==len(denominator)==1:
+                        currency=qname(numerator[0].text,numerator[0])
+                        if (re.fullmatch(r'\{http://www.xbrl.org/2003/iso4217\}[A-Z]{3}',currency)
+                                and qname(denominator[0].text,denominator[0])=='{'+XBRL+'}shares'):
+                            unit_code=currency[-3:]+'/share'
+            if unit_code is None:raise ValueError('unsupported_share_unit' if not fundamental else 'unsupported_fundamental_unit')
             if any(True for _ in context.iter('{'+DIM+'}typedMember')):raise ValueError('unsupported_typed_dimension')
             dimensions=tuple(sorted((qname(m.get('dimension',''),m),qname((m.text or '').strip(),m))
                 for m in context.iter('{'+DIM+'}explicitMember')))
@@ -103,12 +132,14 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
             text=''.join(fact.itertext()).strip()
             if not re.fullmatch(r'(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]+)?',text):raise ValueError('invalid_share_number')
             scale=int(row['scale'])
-            if not -12<=scale<=12 or fact.get('sign','') not in ('','+'):raise ValueError('invalid_share_scale_or_sign')
+            if not -12<=scale<=12 or fact.get('sign','') not in (('','+','-') if fundamental else ('','+')):raise ValueError('invalid_share_scale_or_sign')
             number=Decimal(text.replace(',','')).as_tuple()
-            value=Decimal((number.sign,number.digits,number.exponent+scale))
-            observations.append(dict(row,concept=concept,period_end=str(measured),dimensions=dimensions,value=format(value,'f')))
+            value=Decimal((int(fact.get('sign','')=='-'),number.digits,number.exponent+scale))
+            observation=dict(row,concept=concept,period_end=str(measured),dimensions=dimensions,value=format(value,'f'))
+            if fundamental:observation.update(period_start=str(period_start) if period_start else None,unit=unit_code)
+            observations.append(observation)
         except (ValueError,TypeError,InvalidOperation) as error:
             rejected.append(dict(row,reason=str(error)))
-    return dict(version=VERSION,observations=tuple(observations),rejected=tuple(rejected),
+    return dict(version='sec-inline-fundamental-context-v1' if fundamental else VERSION,observations=tuple(observations),rejected=tuple(rejected),
         source_text_hash=expected_hash,parsing_prefix_bytes=prefix_bytes,parsing_suffix_bytes=suffix_bytes,
         sec_xbrl_envelope=envelope,allocation_certified=False)
