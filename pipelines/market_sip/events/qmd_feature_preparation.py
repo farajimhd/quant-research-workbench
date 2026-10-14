@@ -91,12 +91,13 @@ class QmdFeaturePreparationRequest:
     opening_source: CertifiedOpeningInput
     audit: MarketDayColdAudit | FeatureSourceAudit
     continuity: tuple[tuple[CertifiedMarketDayPlan, MarketDayColdAudit | FeatureSourceAudit], ...]
-    prior_volume: tuple[CertifiedMarketDayPlan, MarketDayColdAudit | FeatureSourceAudit]
+    prior_volume: tuple[CertifiedMarketDayPlan, MarketDayColdAudit | FeatureSourceAudit] | None
     tickers: tuple[str, ...]
     first_bucket: int
     stop_bucket: int
     maximum_source_bytes: int
     maximum_context_bytes: int
+    mask_prior_volume_at_origin: bool = False
 
     def __post_init__(self):
         if (type(self.opening_source) is not CertifiedOpeningInput
@@ -121,6 +122,22 @@ class QmdFeaturePreparationRequest:
                            not in a.certificate.stages for u in p.units)):
                 raise ValueError('Feature source plan differs from its cold certificate')
         from src.market_engine.opening_price_reference import previous_regular_session
+        if type(self.mask_prior_volume_at_origin) is not bool:
+            raise ValueError('Feature history origin requires an explicit Boolean policy')
+        if self.prior_volume is None:
+            requested = self.audit.source_plan.get('requested', ())
+            if (not self.mask_prior_volume_at_origin or len(days) != 1 or not requested
+                    or min(requested) != days[0][0]):
+                raise ValueError('Missing RVOL source requires the explicit certified history origin')
+        elif self.mask_prior_volume_at_origin:
+            raise ValueError('Feature history origin cannot mask a supplied RVOL source')
+        if self.prior_volume is not None:
+            self._verify_prior_volume(previous_regular_session, days)
+        for previous,current in zip(days,days[1:]):
+            if previous_regular_session(date.fromisoformat(current[0])).day.isoformat()!=previous[0]:
+                raise ValueError('Continuous feature chain skips a certified exchange session')
+
+    def _verify_prior_volume(self, previous_regular_session, days):
         p,a=self.prior_volume
         if (type(p) is not CertifiedMarketDayPlan or not source_audit_ready(a, p)
                 or p.build_id!=a.certificate.build_id
@@ -128,9 +145,12 @@ class QmdFeaturePreparationRequest:
                 or any((u.session_date,u.ticker,u.stage,u.attempt_id,u.output_rows,u.output_hash)
                        not in a.certificate.stages for u in p.units)):
             raise ValueError('Feature RVOL requires its separately certified prior session')
-        for previous,current in zip(days,days[1:]):
-            if previous_regular_session(date.fromisoformat(current[0])).day.isoformat()!=previous[0]:
-                raise ValueError('Continuous feature chain skips a certified exchange session')
+
+    @property
+    def prior_volume_day(self):
+        from src.market_engine.opening_price_reference import previous_regular_session
+        return (date.fromisoformat(self.prior_volume[0].sessions[0]) if self.prior_volume is not None
+            else previous_regular_session(date.fromisoformat(self.opening_source.market.sessions[0])).day)
 
 
 def _placement(reader):
@@ -227,7 +247,7 @@ class PreparedQmdFeatureDay:
         expected=next(v.content_hash for v in self.plan.dependencies if v.source_kind=='universe')
         if observed!=expected:raise ValueError('Feature universe changed during preparation')
         seen=set()
-        for market,audit in self.request.continuity+(self.request.prior_volume,):
+        for market,audit in self.request.continuity+((self.request.prior_volume,) if self.request.prior_volume is not None else ()):
             key=(market.build_id,market.sessions)
             if key in seen:continue
             seen.add(key)
@@ -273,7 +293,7 @@ class PreparedQmdFeatureDay:
             quotes=self.quotes[ticker],activity=self.activity[ticker],
             continuous_history=self.continuous[ticker],context=self.contexts[ticker],
             opening_splits=self.references[ticker][3].get('splits',[]),
-            prior_volume_day=date.fromisoformat(self.request.prior_volume[0].sessions[0]))
+            prior_volume_day=self.request.prior_volume_day)
 
 
 def prepare_feature_day(reader, request, *, ownership, progress=None, stop_requested=None):
@@ -292,6 +312,10 @@ def prepare_feature_day(reader, request, *, ownership, progress=None, stop_reque
     expected=sum(min(u.output_rows,request.stop_bucket-14400) for u in market.units if u.stage=='bars')*40
     if expected>request.maximum_source_bytes:raise MemoryError('Certified source frames exceed feature admission')
     dependencies=[FeatureDependency('universe','q_live','feature_tradable_universe_snapshot_v2',day,'',snapshot,len(universe),universe_hash)]
+    if request.mask_prior_volume_at_origin:
+        dependencies.append(FeatureDependency('history_origin','arte','market_day_source_session_v1',day,'',
+            'masked-prior-volume-at-certified-origin-v1',0,content_hash(dict(origin=day,
+                requested=request.audit.source_plan['requested'],policy='masked-prior-volume-at-certified-origin-v1'))))
     bars={};indicators={};references={};prior={};continuous={};peers={};quotes={};activity={}
     listing={v.ticker:v for v in request.opening_source.listings}
     anchor=int(datetime.combine(day,time(4),ZoneInfo('America/New_York')).timestamp())-14400
@@ -342,17 +366,18 @@ def prepare_feature_day(reader, request, *, ownership, progress=None, stop_reque
             last_day=source_day
         if continuous_values is None:raise ValueError('Current listing lacks effective continuous feature identity')
         continuous[ticker]=ContinuousFeatureProjection(day,current['bucket_index'].to_numpy(),continuous_values)
-        prior_plan=request.prior_volume[0]
         previous=pl.DataFrame(schema={'bucket_index':pl.Int64,'volume':pl.Float64})
-        prior_day=date.fromisoformat(prior_plan.sessions[0])
-        old_identity=_listing_identity(reader,row,prior_day)
-        dependencies.append(FeatureDependency('prior_identity','q_live','id_symbol_interval_v1',prior_day,
-            ticker,row.listing_id,len(old_identity),content_hash(old_identity)))
-        old_ticker=old_identity[0]['ticker_normalized'] if old_identity else None
-        if old_ticker in prior_plan.tickers:
-            previous,prior_unit=_read_unit(reader,prior_plan,old_ticker,'bars',('bucket_index','volume'),stop_bucket=72000)
-            dependencies.append(FeatureDependency('prior_volume','arte','bars_v1',date.fromisoformat(prior_plan.sessions[0]),
-                old_ticker,prior_unit.attempt_id,prior_unit.output_rows,content_hash(asdict(prior_unit))))
+        if request.prior_volume is not None:
+            prior_plan=request.prior_volume[0]
+            prior_day=date.fromisoformat(prior_plan.sessions[0])
+            old_identity=_listing_identity(reader,row,prior_day)
+            dependencies.append(FeatureDependency('prior_identity','q_live','id_symbol_interval_v1',prior_day,
+                ticker,row.listing_id,len(old_identity),content_hash(old_identity)))
+            old_ticker=old_identity[0]['ticker_normalized'] if old_identity else None
+            if old_ticker in prior_plan.tickers:
+                previous,prior_unit=_read_unit(reader,prior_plan,old_ticker,'bars',('bucket_index','volume'),stop_bucket=72000)
+                dependencies.append(FeatureDependency('prior_volume','arte','bars_v1',date.fromisoformat(prior_plan.sessions[0]),
+                    old_ticker,prior_unit.attempt_id,prior_unit.output_rows,content_hash(asdict(prior_unit))))
         prior[ticker]=previous.select('bucket_index','volume')
         # Quote/activity source is independently pinned and read in bounded 1s
         # projections of the native 100ms product.

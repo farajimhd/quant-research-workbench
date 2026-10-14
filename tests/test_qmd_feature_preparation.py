@@ -42,8 +42,13 @@ def request():
         (root.prior_market,prior),('ABC',),14400,14800,10000000,10000000)
 
 
-def test_native_funnel_prepares_once_seals_sources_and_reaches_app_polars(monkeypatch):
+@pytest.mark.parametrize('masked_origin', [False, True])
+def test_native_funnel_prepares_once_seals_sources_and_reaches_app_polars(monkeypatch, masked_origin):
     old,req=request();main_thread=get_ident();calls=[];store=Store()
+    if masked_origin:
+        a=replace(req.audit,source_plan={'requested': [req.opening_source.market.sessions[0]]})
+        req=replace(req,audit=a,continuity=((req.opening_source.market,a),),
+            prior_volume=None,mask_prior_volume_at_origin=True)
     # Only external database boundaries are fixtures; request admission,
     # calculations, source publication and app transport/evaluation are native.
     monkeypatch.setattr(prep,'_placement',lambda r:None)
@@ -84,6 +89,10 @@ def test_native_funnel_prepares_once_seals_sources_and_reaches_app_polars(monkey
     s=extended.scope('00000000-0000-0000-0000-000000000001','a'*64)
     liquid=pl.DataFrame({'bucket_index':b['bucket_index'],'execution_notional':np.full(400,70.)})
     frame=prepared.project(extended,s,b,liquid)
+    if masked_origin:
+        assert not frame['log_rvol_10s_prev_session__valid'].any()
+        assert (frame['rvol_10s_available'] == 0).all()
+        assert any(d.source_kind == 'history_origin' for d in prepared.plan.dependencies)
     native=product.prepare_product(s,b,liquid,extended.fields,volume_window_seconds=30,
         producer_code_hash='a'*64,feature_frame=frame,feature_plan_hash=prepared.plan.plan_hash)
     parents=extended.parents('a'*64)
@@ -153,3 +162,20 @@ def test_session_product_proof_is_exact_and_does_not_authorize_backtest(monkeypa
     with pytest.raises(ValueError, match='authority'):
         prep.certify_feature_source_day(None, replace(authority, source_storage_verified=False),
             day=plan.sessions[0])
+
+
+def test_prior_volume_can_only_be_masked_at_explicit_certified_origin():
+    old, req = request()
+    day = req.opening_source.market.sessions[0]
+    origin_audit = replace(req.audit, source_plan={'requested': [day]})
+    origin = replace(req, audit=origin_audit,
+        continuity=((req.opening_source.market, origin_audit),),
+        prior_volume=None, mask_prior_volume_at_origin=True)
+    assert origin.prior_volume_day == req.prior_volume_day
+    with pytest.raises(ValueError, match='explicit certified history origin'):
+        replace(origin, mask_prior_volume_at_origin=False)
+    with pytest.raises(ValueError, match='mask a supplied'):
+        replace(req, mask_prior_volume_at_origin=True)
+    earlier = replace(origin_audit, source_plan={'requested': ['2026-07-30', day]})
+    with pytest.raises(ValueError, match='explicit certified history origin'):
+        replace(origin, audit=earlier, continuity=((req.opening_source.market, earlier),))
