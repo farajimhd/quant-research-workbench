@@ -197,8 +197,8 @@ pub fn validate_request(request: &HistoryWindowRequest) -> Result<(), String> {
         || request.first_ordinal >= request.stop_ordinal
         || request.stop_ordinal > s.stop_bucket - s.first_bucket
         || request.stop_ordinal - request.first_ordinal > 4096
-        || request.field_ids.len() > 604
-        || request.field_ids.iter().any(|v| !(149..753).contains(v))
+        || request.field_ids.len() > 957
+        || request.field_ids.iter().any(|v| *v >= 957)
         || request.field_ids.windows(2).any(|v| v[0] >= v[1])
         || request.field_ids.len() * (request.stop_ordinal - request.first_ordinal) as usize > 65536
     {
@@ -297,7 +297,7 @@ fn validate_header(header: &HistoryCoverage, request: &HistoryWindowRequest) -> 
         .any(|v| !hash_valid(v))
         || header.elapsed_clock_count != request.scope.stop_bucket - request.scope.first_bucket
         || header.clock_row_count != header.elapsed_clock_count
-        || header.field_count > 604
+        || header.field_count > 957
         || (header.field_count == 0
             && (header.field_content_hash != format!("{:x}", Sha256::digest([]))
                 || header.value_content_hash != format!("{:x}", Sha256::digest([]))))
@@ -602,6 +602,21 @@ mod tests {
         r = request();
         r.scope.derivation_attempt_id = "not-an-attempt".into();
         assert!(validate_request(&r).is_err());
+    }
+
+    #[test]
+    fn complete_shared_market_catalog_preserves_transport_bounds() {
+        let mut r = request();
+        r.field_ids = vec![0, 148, 753, 901, 902, 956];
+        assert!(validate_request(&r).is_ok());
+        r.field_ids = vec![957];
+        assert!(validate_request(&r).is_err());
+        r.field_ids = (0..957).collect();
+        r.stop_ordinal = 100;
+        r.as_of = completed_clock(&r.scope, r.scope.stop_bucket - 1).unwrap();
+        assert!(validate_request(&r).is_err()); // finite field x clock budget
+        r.stop_ordinal = r.first_ordinal + 1;
+        assert!(validate_request(&r).is_ok());
     }
 
     #[test]

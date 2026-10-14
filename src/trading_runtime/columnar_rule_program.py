@@ -65,7 +65,11 @@ class InputField:
             raise ValueError("Rule field needs an exact producer-owned input contract")
         # Position-open/age are applied by the sequential coordinator, never
         # represented as a vectorized market field or filled execution price.
-        if not self.name.startswith(("history.", "market.", "bar.", "indicator.", "level.")):
+        from src.market_engine.qmd_feature_catalog import BY_NAME as MARKET_CATALOG
+        source = MARKET_CATALOG.get(self.name)
+        certified_market = (source is not None and self.product == 'q_live.qmd_causal_history_value_v1'
+                            and self.resolution_ms == 1000 and self.unit == source[1].unit)
+        if not certified_market and not self.name.startswith(("history.", "market.", "bar.", "indicator.", "level.")):
             raise ValueError("Programs cannot access execution-derived position fields")
         if (self.product.startswith("arte.trading_") or any(token in self.name.lower()
                 for token in ("entry_price", "average_cost", "unrealized", "realized",

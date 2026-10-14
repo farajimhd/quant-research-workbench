@@ -353,7 +353,8 @@ def preflight_program_cohort_inputs(release, pins, population_pin, listing_by_as
         volume = population_pin.histories.get(listing)
         if (type(pin) is not CertifiedHistoryPin or volume is None
                 or any(getattr(pin.scope, name) != getattr(volume.scope, name) for name in identity)
-                or pin.parents != volume.parents
+                or {k:v for k,v in pin.parents.payload().items() if k!='producer_code_hash'}
+                   != {k:v for k,v in volume.parents.payload().items() if k!='producer_code_hash'}
                 or first_ordinal > first_bucket - pin.scope.first_bucket
                 or stop_ordinal < stop_bucket - pin.scope.first_bucket):
             raise ValueError("Programme feature origin differs from its complete scanner lineage")

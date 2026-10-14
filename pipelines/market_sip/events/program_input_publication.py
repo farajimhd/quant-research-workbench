@@ -99,6 +99,35 @@ class ProgramInputPublication:
         return await self._execute(self.history.publish, source,
             ownership=ownership, code_hash=code_hash)
 
+    async def prepare_features(self, request, *, ownership, progress=None, stop_requested=None):
+        """Prepare the shared catalog once, then seal normalized source lineage.
+
+        The result is producer-owned and can feed multiple listing publications.
+        This never runs inside Backtest and accepts no research-shard inputs.
+        """
+        from .qmd_feature_preparation import prepare_feature_day
+        from .feature_source_publication import publish_feature_source_plan
+        from src.backend.qmd_columnar_history_transport import _owned_worker
+        async def prepare():
+            def work():
+                ownership.assert_owner()
+                reader = self.history.reader_factory()
+                try:
+                    prepared = prepare_feature_day(reader, request, ownership=ownership,
+                        progress=progress,stop_requested=stop_requested)
+                    writer = self.history.writer_factory()
+                    try:
+                        publish_feature_source_plan(reader, writer, prepared.plan,
+                            ownership=ownership,
+                            verify_sources=lambda active: prepared.verify_sources(active, ownership=ownership))
+                    finally:
+                        writer.close()
+                    return prepared
+                finally:
+                    reader.close()
+            return await _owned_worker(work)
+        return await self._execute(prepare)
+
     async def publish_liquidity(self, source, *, ownership, code_hash):
         if type(source) is not CertifiedLiquidityInput:
             raise TypeError('Programme liquidity requires a native certified source')

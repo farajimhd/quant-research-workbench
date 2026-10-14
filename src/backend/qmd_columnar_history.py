@@ -29,11 +29,15 @@ def _rows(reader, query, bound):
     return rows
 
 
-def permission_preflight(client, *, writable=False):
+def permission_preflight(client, *, writable=False, feature_sources=False):
     user = client.execute("SELECT currentUser()").strip()
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", user) is None:
         raise ValueError("QMD history principal is invalid")
     targets = {t.name for t in c.TABLES}
+    from src.market_engine.feature_source_plan import TABLES as FEATURE_TABLES
+    feature_targets = {t.name for t in FEATURE_TABLES}
+    if feature_sources:
+        targets |= feature_targets
     required = {("q_live", name) for name in targets}
     required |= {("system", name) for name in (
         "storage_policies", "tables", "columns", "parts", "data_skipping_indices")}
@@ -47,11 +51,14 @@ def permission_preflight(client, *, writable=False):
         for privilege in {v.strip() for v in match.group(1).split(",")}:
             if privilege == "SELECT":
                 reads.add(table)
-            elif privilege == "INSERT" and writable and table[0] == "q_live" and table[1] in targets:
+            elif privilege == "INSERT" and writable and table[0] == "q_live" and table[1] in targets | feature_targets:
                 writes.add(table[1])
             else:
                 raise ValueError("QMD history principal has unauthorized write or DDL authority")
-    if not required <= reads or writes != (targets if writable else set()):
+    expected_writes = targets if writable else set()
+    if writable and not feature_sources and feature_targets <= writes:
+        expected_writes |= feature_targets
+    if not required <= reads or writes != expected_writes:
         raise ValueError("QMD history product grants are incomplete")
     return user
 
@@ -109,24 +116,33 @@ class CertifiedHistoryPin:
                     if n not in {"content_hash", "certified_at"}})
                 or header["field_count"] != len(self.fields)
                 or self.scope.product_revision != c.product_revision(self.fields, self.parents.producer_code_hash,
-                    volume_window_seconds=self.parents.volume_window_seconds)
+                    volume_window_seconds=self.parents.volume_window_seconds, feature_plan_hash=self.parents.feature_plan_hash)
                 or header["field_content_hash"] != c.records_hash(c.FIELD,
                     ({**self.scope.prefix(), "field_id": f.field_id, "field_name": f.name, "unit": f.unit} for f in self.fields))):
             raise ValueError("QMD history pin differs from its cold coverage proof")
         object.__setattr__(self, "header", MappingProxyType(header))
 
 
-def certify_history_product(reader, scope, fields, parents, *, expected_content_hash):
+def certify_history_product(reader, scope, fields, parents, *, expected_content_hash, feature_plan_cache=None):
     """Verify all normalized children and source pins before exposing windows."""
     if type(scope) is not c.HistoryScope or type(parents) is not c.HistoryParents:
         raise TypeError("QMD history needs exact typed source pins")
     c.selected_catalog(fields)
     c.require_hash(expected_content_hash)
     if scope.product_revision != c.product_revision(fields, parents.producer_code_hash,
-            volume_window_seconds=parents.volume_window_seconds):
+            volume_window_seconds=parents.volume_window_seconds, feature_plan_hash=parents.feature_plan_hash):
         raise ValueError("QMD history revision differs from the declared source contract")
     permission_preflight(reader)
     storage_preflight(reader, tables=c.TABLES)
+    if parents.feature_plan_hash:
+        from .qmd_feature_source_plan import read_feature_source_plan,FeatureSourcePlanCache
+        if feature_plan_cache is not None and type(feature_plan_cache) is not FeatureSourcePlanCache:
+            raise TypeError('Feature source cache must be session-owned and parts-fenced')
+        plan = (feature_plan_cache.read(reader,parents.feature_plan_hash) if feature_plan_cache is not None
+                else read_feature_source_plan(reader, parents.feature_plan_hash))
+        if (plan.market_plan_hash != parents.market_plan_hash or plan.session_date != scope.session_date
+                or plan.first_bucket != scope.first_bucket or plan.stop_bucket != scope.stop_bucket):
+            raise ValueError('Feature source plan differs from its history lineage')
     seals = read_seal(reader, scope)
     if len(seals) != 1:
         raise ValueError("QMD history product is not sealed")
@@ -142,7 +158,8 @@ def certify_history_product(reader, scope, fields, parents, *, expected_content_
             or not len(fields) <= header["value_row_count"] <= len(fields) * scope.clock_count):
         raise ValueError("QMD history coverage differs from the pinned product")
     predicate = scope_sql(scope)
-    field_rows = _rows(reader, f"SELECT * FROM q_live.{c.FIELD.name} WHERE {predicate} ORDER BY field_id LIMIT 605", 605)
+    bound = len(c.MARKET_FIELDS) + 1
+    field_rows = _rows(reader, f"SELECT * FROM q_live.{c.FIELD.name} WHERE {predicate} ORDER BY field_id LIMIT {bound}", bound)
     field_rows = [c.restore_record(c.FIELD, row) for row in field_rows]
     expected_fields = [{**scope.prefix(), "field_id": f.field_id, "field_name": f.name, "unit": f.unit} for f in fields]
     if field_rows != expected_fields:
@@ -236,7 +253,8 @@ class HistoryPinRequest:
         c.selected_catalog(self.fields)
         c.require_hash(self.expected_content_hash)
         if self.scope.product_revision != c.product_revision(self.fields,
-                self.parents.producer_code_hash, volume_window_seconds=self.parents.volume_window_seconds):
+                self.parents.producer_code_hash, volume_window_seconds=self.parents.volume_window_seconds,
+                feature_plan_hash=self.parents.feature_plan_hash):
             raise ValueError('History pin request differs from its producer revision')
 
 
@@ -248,6 +266,8 @@ async def certify_history_pins_async(reader_factory, requests, *, concurrency):
     Cancellation drains existing readers; no producer or publication is invoked.
     """
     from .qmd_columnar_history_transport import _owned_worker
+    from .qmd_feature_source_plan import FeatureSourcePlanCache
+    feature_plan_cache=FeatureSourcePlanCache()
     if (not callable(reader_factory) or type(requests) is not tuple
             or not 1 <= len(requests) <= 25000 or type(concurrency) is not int
             or not 1 <= concurrency <= 6
@@ -266,7 +286,8 @@ async def certify_history_pins_async(reader_factory, requests, *, concurrency):
         reader = reader_factory()
         try:
             return certify_history_product(reader, request.scope, request.fields,
-                request.parents, expected_content_hash=request.expected_content_hash).pin()
+                request.parents, expected_content_hash=request.expected_content_hash,
+                feature_plan_cache=feature_plan_cache).pin()
         finally:
             reader.close()
     async def worker():

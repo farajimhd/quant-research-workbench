@@ -41,6 +41,7 @@ class CertifiedHistoryInput:
     stop_bucket: int
     fields: tuple[c.HistoryField, ...]
     volume_window_seconds: int
+    feature_day: object = None
 
     def __post_init__(self):
         if (type(self.opening_source) is not CertifiedOpeningInput
@@ -49,6 +50,12 @@ class CertifiedHistoryInput:
                 or type(self.liquidity) is not CertifiedLiquidityResolution):
             raise TypeError("History producer needs typed certified source products")
         c.selected_catalog(self.fields)
+        if self.feature_day is not None:
+            from .qmd_feature_preparation import PreparedQmdFeatureDay
+            if (type(self.feature_day) is not PreparedQmdFeatureDay
+                    or self.feature_day.request.opening_source != self.opening_source
+                    or self.ticker not in self.feature_day.request.tickers):
+                raise ValueError('Extended history requires its native prepared feature day')
         market = self.opening_source.market
         day = date.fromisoformat(market.sessions[0])
         listings = [v for v in self.opening_source.listings if v.ticker == self.ticker]
@@ -81,14 +88,18 @@ class CertifiedHistoryInput:
         market = self.opening_source.market
         return c.HistoryScope(market.build_id, date.fromisoformat(market.sessions[0]), self.listing_id,
             self.ticker, attempt_id, c.product_revision(self.fields, code_hash,
-                volume_window_seconds=self.volume_window_seconds), self.first_bucket, self.stop_bucket)
+                volume_window_seconds=self.volume_window_seconds,
+                feature_plan_hash=self.feature_day.plan.plan_hash if self.feature_day is not None else ''), self.first_bucket, self.stop_bucket)
 
     def parents(self, code_hash):
         return c.HistoryParents(self.bar_unit.attempt_id, c.content_hash(asdict(self.bar_unit)),
             self.liquidity.derivation_attempt_id, self.liquidity.content_hash,
-            self.opening_reference.content_hash, self.opening_source.market.token, code_hash, self.volume_window_seconds)
+            self.opening_reference.content_hash, self.opening_source.market.token, code_hash, self.volume_window_seconds,
+            self.feature_day.plan.plan_hash if self.feature_day is not None else '')
 
     def verify(self, reader):
+        if self.feature_day is not None:
+            self.feature_day.verify(reader)
         self.opening_source.verify(reader)
         self.liquidity_source.verify(reader)
         opening = certify_opening_reference(reader, self.opening_reference.scope,
@@ -163,8 +174,12 @@ def materialize_history(reader, source, scope, *, code_hash):
         "extremes_valid": pl.UInt8, "close_int": pl.UInt64, "high_int": pl.UInt64, "low_int": pl.UInt64,
         "volume": pl.Float64})
     liquid_frame = pl.DataFrame(liquidity, schema={"bucket_index": pl.UInt32, "execution_notional": pl.Float64})
+    feature_frame = (source.feature_day.project(source,scope,bar_frame,liquid_frame)
+                     if source.feature_day is not None else None)
     return c.prepare_product(scope, bar_frame, liquid_frame, source.fields,
-        volume_window_seconds=source.volume_window_seconds, producer_code_hash=code_hash)
+        volume_window_seconds=source.volume_window_seconds, producer_code_hash=code_hash,
+        feature_frame=feature_frame,
+        feature_plan_hash=source.feature_day.plan.plan_hash if source.feature_day is not None else '')
 
 
 def wire_records(table, rows):
@@ -229,7 +244,8 @@ def publish_history(reader, writer, source, *, ownership, code_hash):
     if existing:
         header = existing[0]
         scope = source.scope(header["derivation_attempt_id"], code_hash)
-        certify_history_product(reader, scope, source.fields, parents, expected_content_hash=header["content_hash"])
+        certify_history_product(reader, scope, source.fields, parents, expected_content_hash=header["content_hash"],
+            feature_plan_cache=source.feature_day._plan_cache if source.feature_day is not None else None)
         prepared = materialize_history(reader, source, scope, code_hash=code_hash)
         if c.history_seal(prepared, parents, certified_at=header["certified_at"]) != header:
             raise ValueError("History persisted product differs from its certified source")
@@ -257,7 +273,8 @@ def publish_history(reader, writer, source, *, ownership, code_hash):
     ownership.assert_owner()
     insert_json_each_row(writer, "q_live", c.COVERAGE.name, [n for n, _ in c.COVERAGE.columns],
         wire_records(c.COVERAGE, [header]))
-    certificate = certify_history_product(reader, scope, source.fields, parents, expected_content_hash=header["content_hash"])
+    certificate = certify_history_product(reader, scope, source.fields, parents, expected_content_hash=header["content_hash"],
+        feature_plan_cache=source.feature_day._plan_cache if source.feature_day is not None else None)
     if dict(certificate.header) != header:
         raise ValueError("History coverage acknowledgement is ambiguous")
     ownership.assert_owner()

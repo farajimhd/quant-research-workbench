@@ -87,7 +87,7 @@ async def certify_program_session_input_plan(controller, request, *, reader_fact
     required = set(required_program_history_fields(release))
     first_source = request.feature_requests[0].scope
     for source in request.feature_requests:
-        if ({f.name for f in source.fields} != required
+        if (not required <= {f.name for f in source.fields}
                 or source.scope.first_bucket != first_source.first_bucket
                 or source.scope.stop_bucket != first_source.stop_bucket
                 or request.stop_ordinal > source.scope.clock_count

@@ -489,6 +489,15 @@ def _query_plans() -> tuple[QueryPlanDefinition, ...]:
     )
     return (
         QueryPlanDefinition(
+            "qmd.certified-market-features.v1", "qmd_history_gateway",
+            "src.backend.qmd_columnar_history_transport:read_history_window",
+            ("q_live.qmd_causal_history_value_v1", "q_live.qmd_feature_source_plan_v1",
+             "q_live.qmd_feature_source_unit_v1"),
+            "certified effective listing_id and stable market feature identity",
+            "completed source second", "completed feature clock with opening-known references",
+            "q_live.qmd_causal_history_coverage_v1,q_live.qmd_feature_source_plan_v1",
+        ),
+        QueryPlanDefinition(
             "qmd.certified-volume-population.v1", "qmd_history_gateway",
             "src.backend.qmd_columnar_population:read_population_window",
             ("q_live.qmd_causal_history_clock_v1", "q_live.qmd_opening_price_reference_v1"),
@@ -1797,6 +1806,21 @@ def _bar_gpt_field_label(field_id: str) -> str:
 
 def _fields() -> tuple[FieldDefinition, ...]:
     rows: list[FieldDefinition] = []
+    feature_rows: list[FieldDefinition] = []
+    from src.market_engine.qmd_feature_catalog import CATALOG as QMD_FEATURE_CATALOG
+    for index, feature in enumerate(QMD_FEATURE_CATALOG):
+        feature_rows.append(_field(
+            f"qmd.feature.{index}", "qmd_features", "qmd_history_gateway",
+            "q_live.qmd_causal_history_value_v1", "qmd.certified-market-features.v1",
+            value_type="number", unit=feature.unit, entity_grain="listing_at_completed_market_clock",
+            source_columns=("field_id", "value", "valid"),
+            identity_join="certified effective listing_id and stable market feature identity",
+            event_at="completed source second", available_at="completed feature clock",
+            ttl_seconds=None, publication_cadence="completed_1s", modes=("backtest",),
+            provenance="derived", coverage_query_plan="qmd.certified-market-features.v1",
+            source_summary=f"Shared QMD field {index}: {feature.name}; explicit value and validity mask.",
+            calculation_summary="Certified producer calculation; pinned source census, continuity and point-in-time references.",
+            timeframes=("1s",), label=feature.name))
 
     for field_id, value_type, unit, column, source_path, calculation in (
         ("market.opening_prior_regular_close", "number", "currency", "opening_prior_regular_close",
@@ -2233,6 +2257,7 @@ def _fields() -> tuple[FieldDefinition, ...]:
         rows.append(_field(field_id, "model_context", owner, source, "model.context_asof.v1", value_type="vector" if field_id.startswith("embedding") else "json", entity_grain="frozen_context", ttl_seconds=None, publication_cadence="artifact_or_event_driven", provenance="model", status="integration_pending", coverage_query_plan="model.context_asof.v1"))
 
     rows.extend(_bar_gpt_fields())
+    rows.extend(feature_rows)
 
     return tuple(rows)
 

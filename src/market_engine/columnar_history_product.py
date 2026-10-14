@@ -151,11 +151,13 @@ def history_catalog():
 
 
 CATALOG = history_catalog()
-BY_NAME = {field.name: field for field in CATALOG}
+from .qmd_feature_catalog import CATALOG as MARKET_CATALOG
+MARKET_FIELDS = tuple(HistoryField(i, f.name, f.unit) for i, f in enumerate(MARKET_CATALOG))
+BY_NAME = {field.name: field for field in MARKET_FIELDS}
 
 
 def selected_catalog(fields):
-    if (type(fields) is not tuple or not 0 <= len(fields) <= len(CATALOG)
+    if (type(fields) is not tuple or not 0 <= len(fields) <= len(MARKET_FIELDS)
             or any(type(f) is not HistoryField or BY_NAME.get(f.name) != f for f in fields)
             or tuple(sorted(fields, key=lambda f: f.field_id)) != fields
             or len({f.field_id for f in fields}) != len(fields)):
@@ -163,16 +165,23 @@ def selected_catalog(fields):
     return fields
 
 
-def product_revision(fields, code_hash, *, volume_window_seconds):
+def product_revision(fields, code_hash, *, volume_window_seconds, feature_plan_hash=""):
     selected_catalog(fields)
     require_hash(code_hash)
     if type(volume_window_seconds) is not int or not 1 <= volume_window_seconds <= 3600:
         raise ValueError("History revision requires its explicit volume window")
-    return content_hash(dict(algorithm=REVISION, producer_code_hash=code_hash,
+    if feature_plan_hash:
+        require_hash(feature_plan_hash)
+    identity = dict(algorithm=REVISION, producer_code_hash=code_hash,
         fields=[(f.field_id, f.name, f.unit) for f in fields],
         activity_basis="completed_execution_notional", rank_basis="completed_share_volume",
         history_basis="declared_elapsed_session_origin", value_type="Float32",
-        volume_window_seconds=volume_window_seconds))
+        volume_window_seconds=volume_window_seconds)
+    if feature_plan_hash:
+        identity['feature_source_plan_hash'] = feature_plan_hash
+    elif any(f not in CATALOG for f in fields):
+        raise ValueError('Extended market fields require a certified feature source plan')
+    return content_hash(identity)
 
 
 @dataclass(frozen=True)
@@ -297,8 +306,11 @@ class HistoryParents:
     market_plan_hash: str
     producer_code_hash: str
     volume_window_seconds: int
+    feature_plan_hash: str = ""
 
     def __post_init__(self):
+        if self.feature_plan_hash:
+            require_hash(self.feature_plan_hash)
         for name in ("source_bar_attempt_id", "source_liquidity_attempt_id"):
             value = getattr(self, name)
             if type(value) is not str or str(UUID(value)) != value:
@@ -310,7 +322,9 @@ class HistoryParents:
             raise ValueError("History parent requires an explicit elapsed volume window")
 
     def payload(self):
-        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+        # Auxiliary lineage is bound by product_revision, preserving V1 seals.
+        return {name: getattr(self, name) for name in self.__dataclass_fields__
+                if name != 'feature_plan_hash'}
 
 
 def child_records(prepared, table):
@@ -334,7 +348,7 @@ def history_seal(prepared, parents, *, certified_at):
         raise TypeError("History seal requires typed inputs and source pins")
     if (prepared.volume_window_seconds != parents.volume_window_seconds
             or prepared.scope.product_revision != product_revision(prepared.fields, parents.producer_code_hash,
-                volume_window_seconds=parents.volume_window_seconds)):
+                volume_window_seconds=parents.volume_window_seconds, feature_plan_hash=parents.feature_plan_hash)):
         raise ValueError("History seal input revision or window differs")
     expand_values(prepared, first_ordinal=0, stop_ordinal=1, evaluation_block="seal-validation")
     header = {**prepared.scope.prefix(), **parents.payload(),
@@ -348,15 +362,27 @@ def history_seal(prepared, parents, *, certified_at):
     return restore_record(COVERAGE, header)
 
 
-def prepare_product(scope, bars, liquidity, fields, *, volume_window_seconds, producer_code_hash):
+def prepare_product(scope, bars, liquidity, fields, *, volume_window_seconds, producer_code_hash,
+                    feature_frame=None, feature_plan_hash=""):
     """Calculate once per listing and compress each field without row loops."""
     selected_catalog(fields)
-    if scope.product_revision != product_revision(fields, producer_code_hash, volume_window_seconds=volume_window_seconds):
+    if scope.product_revision != product_revision(fields, producer_code_hash,
+            volume_window_seconds=volume_window_seconds, feature_plan_hash=feature_plan_hash):
         raise ValueError("History catalog/code revision differs from the source scope")
     frame = elapsed_volume_history(prepare_dense_inputs(scope, bars, liquidity), volume_window_seconds)
     # The whole scanner population needs activity clocks, not program features.
     # An explicit empty catalog has its own revision and seals zero feature rows.
-    history = prepare_causal_history(frame, tuple(f.name for f in fields)) if fields else None
+    if feature_plan_hash:
+        if (not isinstance(feature_frame, pl.DataFrame)
+                or not feature_frame.select('bucket_index').equals(frame.select('bucket_index'))
+                or any(f.name not in feature_frame.columns or f.name+'__valid' not in feature_frame.columns
+                       or feature_frame.schema[f.name+'__valid'] != pl.Boolean for f in fields)):
+            raise ValueError('Extended fields lack their complete producer feature frame')
+        history = feature_frame
+    else:
+        if feature_frame is not None:
+            raise ValueError('Legacy histories cannot accept an unbound feature projection')
+        history = prepare_causal_history(frame, tuple(f.name for f in fields)) if fields else None
     values = []
     for field in fields:
         array = history[field.name].cast(pl.Float32).to_numpy()
