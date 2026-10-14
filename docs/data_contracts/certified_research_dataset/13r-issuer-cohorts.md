@@ -162,8 +162,7 @@ Two orchestration tests verify complete metadata-only installation and missing
 authority rejection with claim cleanup. Existing fresh-launch and initial-plan
 tests pass after separating graph preparation from execution. The core still
 needs a real bounded collection preparation test. Recovery of a partially
-published child graph remains a
-fail-closed dependency rather than being silently overwritten.
+published child graph is now handled by the exact recovery guard below.
 
 ## Unified fresh launch
 
@@ -190,4 +189,20 @@ Acquisition remains disabled unless explicitly selected after resubscription.
 Six mocked launcher cases verify explicit/frontier end-date selection, ordered
 preparation/execution, blocked-authority gating and owner/client cleanup. No real
 whole-collection market campaign has been run. Representative pilot rates and
-partial-child graph recovery remain outstanding.
+real collection execution validation remain outstanding.
+
+## Interrupted child metadata recovery
+
+Preparation reads the existing header fingerprint and expected unit count,
+then measures actual unique unit IDs. Duplicate/extra units, malformed headers
+and oversized metadata fail closed. A genuinely incomplete graph is reconstructed
+through fresh preparation and passed to `Campaign.install()`: its entire header
+must match, and every existing row must match before missing metadata can be
+filled. Nothing is deleted or overwritten. Changed discovery inputs may block
+reconstruction; recovery does not weaken frozen evidence to force progress.
+
+An orchestration test covers that recovery branch. A real isolated ClickHouse
+test published a header and one of three units, completed the missing rows,
+repeated install without duplicates, and rejected a changed plan while retaining
+the original plan hash. This verifies metadata publication recovery, not a
+whole-market computation campaign.

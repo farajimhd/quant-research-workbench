@@ -1,5 +1,7 @@
 """Freeze complete issuer collections one bounded child graph at a time."""
 from dataclasses import replace
+import json
+from .contracts import digest
 from . import campaign,cohorts,collection,collection_store,context,fresh_execution,initial_plan,source,universe
 
 
@@ -26,7 +28,22 @@ def prepare(query,config,collection_id,claim,child_claim_factory,client_factory,
         try:
             existing=query(f'SELECT count() n FROM {config.database}.research_dataset_v1 '
                            f"WHERE dataset_id=toUUID('{id_}')")[0]['n']
+            pending=False
             if int(existing):
+                headers=query(f'SELECT definition,contract_hash FROM {config.database}.research_dataset_v1 '
+                              f"WHERE dataset_id=toUUID('{id_}')")
+                if len(headers)!=1 or len(headers[0]['definition'].encode())>256*1024**2:
+                    raise ValueError('Partial child header is duplicated or oversized')
+                definition=json.loads(headers[0]['definition'])
+                count=definition.get('unit_count')
+                if digest(definition)!=headers[0]['contract_hash'] or type(count) is not int or not 1<=count<=1000000:
+                    raise ValueError('Partial child header fingerprint/count is invalid')
+                census=query(f'SELECT count() n,uniqExact(unit_id) ids FROM {config.database}.research_campaign_unit_v1 '
+                             f"WHERE dataset_id=toUUID('{id_}')")[0]
+                if int(census['n'])!=int(census['ids']) or int(census['n'])>count:
+                    raise ValueError('Partial child graph contains duplicate or extra units')
+                pending=int(census['n'])<count
+            if int(existing) and not pending:
                 saved=campaign.load_plan(query,config.database,id_)
                 if saved.config!=child_config:raise ValueError('Prepared collection child config changed')
             else:
@@ -39,6 +56,8 @@ def prepare(query,config,collection_id,claim,child_claim_factory,client_factory,
                                 missing_authorities=assembled.get('missing_authorities',()))
                 launch=initial_plan.build_launch(query,child_config,id_,assembled,child,client_factory,
                     dictionary_claim_factory,capacity_factory,stop=stop,progress=progress)
+                # Campaign.install compares the complete header and every extant
+                # row before filling missing metadata. Drift cannot overwrite it.
                 launch.admit();launch.controller.install()
                 saved=campaign.load_plan(query,config.database,id_)
             members.append(collection.Member(id_,tuple(group),saved.plan_hash))

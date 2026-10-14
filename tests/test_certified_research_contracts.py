@@ -780,6 +780,26 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_partial_campaign_metadata_install_recovers_exact_rows_only(self):
+        from pipelines.certified_research.campaign import encoded
+        dataset=str(uuid.uuid4());config=c.CampaignConfig(date(2026,1,2),date(2026,1,2),database=self.database)
+        units=tuple(PlannedUnit(Unit('partial'+str(i),'condition_rules'),dict(index=i)) for i in range(3))
+        class Claim:
+            def check(self):pass
+        controller=Campaign(self.client.query,self.database,Claim(),dataset,config,units,'a'*64,
+            lambda:None,{'condition_rules':lambda *args:None},{'condition_rules':lambda *args:None})
+        insert_rows(self.client.query,self.database,'research_dataset_v1',[dict(dataset_id=dataset,
+            contract_hash=controller.plan_hash,schema_hash=s.schema_hash(),definition=encoded(controller.definition),
+            start_date=str(config.start),end_date=str(config.end),created_at=controller.now())])
+        insert_rows(self.client.query,self.database,'research_campaign_unit_v1',[controller.rows[0]])
+        controller.install();controller.install()
+        self.assertEqual(load_plan(self.client.query,self.database,dataset).plan_hash,controller.plan_hash)
+        changed=tuple(PlannedUnit(p.unit,dict(index=99)) for p in units)
+        wrong=Campaign(self.client.query,self.database,Claim(),dataset,config,changed,'a'*64,
+            lambda:None,{'condition_rules':lambda *args:None},{'condition_rules':lambda *args:None})
+        with self.assertRaisesRegex(ValueError,'definition'):wrong.install()
+        self.assertEqual(load_plan(self.client.query,self.database,dataset).plan_hash,controller.plan_hash)
+
     def test_normalized_collection_store_restart_and_complete_seal(self):
         from pipelines.certified_research import collection,collection_store
         dataset=str(uuid.uuid4())
