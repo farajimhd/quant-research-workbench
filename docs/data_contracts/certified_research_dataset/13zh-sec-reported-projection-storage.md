@@ -61,5 +61,12 @@ contract behavior, not production provenance. The verifier reports
 `public_time_qualified=true` only for the independently requalified binding, while
 `certified=false` and `allocation_certified=false` remain explicit. It does not
 prove whole-period coverage, authorize a downstream dataset, or replace dated
-issuer/security class evidence. Launcher completion wiring for this additional
-projection verifier remains unfinished.
+issuer/security class evidence. Launcher completion now invokes this independent
+verifier after projection capture. Its binding/projection/extraction/source-parent
+hashes, explicit mode and qualified time must all match before the binding enters
+the completed list. Failed projection verification stops completion while preserving
+the persisted evidence for restart/reconciliation. Stage results distinguish
+`reported_readback_verified` from whole-period certification. The measured projection
+recipe includes the independent verifier, so prior recipe profiles require
+requalification. Controlled launcher tests cover both successful and failed source
+and projection readback; no production historical campaign has run through this path.

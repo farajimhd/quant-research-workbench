@@ -10,6 +10,7 @@ from . import sec_share_context
 from . import sec_fundamental_readback
 from . import sec_precision
 from . import sec_reported_publication
+from . import sec_reported_readback
 from .contracts import digest,literal
 
 PRODUCT='sec_fundamental_source'
@@ -27,6 +28,7 @@ def reported_recipe_hash(numeric_mode):
     if numeric_mode not in ('round-to-nearest','truncation'):raise ValueError('Explicit reported projection numeric mode is required')
     return digest(dict(source_recipe=recipe_hash(),numeric_mode=numeric_mode,
         publisher=digest(Path(sec_reported_publication.__file__).read_text(encoding='utf-8')),
+        readback=digest(Path(sec_reported_readback.__file__).read_text(encoding='utf-8')),
         ddl=tuple(t.ddl('q_live') for t in sec_reported_publication.tables())))
 
 
@@ -104,6 +106,12 @@ def prepare(query,config,requests,claim,dictionary_factory,profile,*,mode,stop,p
         if numeric_mode is not None:
             projected=sec_reported_publication.capture(query,'q_live',extraction,witness,qualified,receipt,claim,source_guard,
                 reported_admission,numeric_mode=numeric_mode,source_reconciliation_hash=expected)
+            checked=sec_reported_readback.verify(query,'q_live',projected['binding_hash'],claim,source_guard)
+            if (checked.get('readback_verified') is not True or checked.get('public_time_qualified') is not True
+                    or checked.get('binding_hash')!=projected['binding_hash'] or checked.get('projection_hash')!=projected['projection_hash']
+                    or checked.get('extraction_hash')!=extraction['extraction_hash'] or checked.get('source_reconciliation_hash')!=expected
+                    or checked.get('numeric_mode')!=numeric_mode):
+                raise ValueError('Independent reported projection readback differs from current source/time binding')
             reported_bindings.append(projected['binding_hash'])
             reported_inserted+=projected['inserted_rows']
         inserted+=result['inserted_rows'];completed.append(result['extraction_hash'])
@@ -114,4 +122,5 @@ def prepare(query,config,requests,claim,dictionary_factory,profile,*,mode,stop,p
         parity_inputs_ready=parity_ready==len(completed),parity_ready_documents=parity_ready,
         parity_input_blockers=dict(sorted(blockers.items())),unmatched_original_context_counts=dict(sorted(unmatched_contexts.items())),
         numeric_mode=numeric_mode,reported_bindings=tuple(reported_bindings),reported_inserted_rows=reported_inserted,
+        reported_readback_verified=(len(reported_bindings)==len(completed)) if numeric_mode is not None else None,
         certified=False,allocation_certified=False)

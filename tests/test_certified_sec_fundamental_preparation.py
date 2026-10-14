@@ -41,7 +41,8 @@ def test_missing_fundamental_pilot_blocks_before_source_fetch_or_ddl():
 
 @pytest.mark.parametrize('readback_ok',(True,False))
 @pytest.mark.parametrize('numeric_mode',(None,'round-to-nearest'))
-def test_bounded_stage_uses_retained_evidence_and_rechecks_before_capture(readback_ok,numeric_mode):
+@pytest.mark.parametrize('reported_readback_ok',(True,False))
+def test_bounded_stage_uses_retained_evidence_and_rechecks_before_capture(readback_ok,numeric_mode,reported_readback_ok):
     from tests.test_certified_sec_fundamental_publication import source
     from tests.test_certified_sec_share_context import document
     from pipelines.certified_research import sec_share_source,sec_share_context,sec_public_archive_time
@@ -65,25 +66,34 @@ def test_bounded_stage_uses_retained_evidence_and_rechecks_before_capture(readba
         args[-1]()
         return dict(readback_verified=readback_ok,extraction_hash=extraction['extraction_hash'],reconciliation_hash=args[2],all_bulk_matched=True,
             parity_input_blockers={'unmatched_original_numeric_facts':1},parity_inputs_ready=False,unmatched_original_context_counts={'dimensioned':1})
+    def verify_reported(*args):
+        current=preparation.sec_fundamental_reconciliation.reconcile(extraction,bulk,witness,qualified,receipt)
+        return dict(readback_verified=reported_readback_ok,public_time_qualified=True,binding_hash='a'*64,projection_hash='b'*64,
+            extraction_hash=extraction['extraction_hash'],source_reconciliation_hash=current['reconciliation_hash'],numeric_mode=numeric_mode)
+    failure=('Independent fundamental readback' if not readback_ok else
+        'Independent reported projection readback' if numeric_mode is not None and not reported_readback_ok else None)
     with patch.object(preparation.sec_share_preparation,'admission',return_value=lambda size:dict(status='admitted',metadata_bytes=size)),\
          patch.object(preparation.sec_share_capture,'verify'),\
          patch.object(preparation.sec_fundamental_publication,'install'),\
          patch.object(preparation.sec_reported_publication,'install'),\
-         patch.object(preparation.sec_reported_publication,'capture',return_value=dict(binding_hash='a'*64,inserted_rows=2)) as reported,\
+         patch.object(preparation.sec_reported_publication,'capture',return_value=dict(binding_hash='a'*64,projection_hash='b'*64,inserted_rows=2)) as reported,\
+         patch.object(preparation.sec_reported_readback,'verify',side_effect=verify_reported) as reported_readback,\
          patch.object(preparation.sec_document_lineage,'inspect',return_value=lineage) as inspect,\
          patch.object(preparation.sec_fundamental_reconciliation,'load_bulk',return_value=tuple(bulk)) as load,\
          patch.object(preparation.sec_fundamental_publication,'capture',side_effect=capture),\
          patch.object(preparation.sec_fundamental_readback,'verify',side_effect=verify),\
-         (nullcontext() if readback_ok else pytest.raises(ValueError,match='Independent fundamental readback')):
+         (nullcontext() if failure is None else pytest.raises(ValueError,match=failure)):
         result=preparation.prepare(query,CampaignConfig(date(2026,1,2),date(2026,1,2)),
             (('320193','0000320193-25-000079','filing.htm'),),Mock(),lambda:dictionary,{},
             mode='acceptance_checked_day',stop=Event(),numeric_mode=numeric_mode)
-    if readback_ok:
+    if failure is None:
         assert result['inserted_rows']==3 and result['certified'] is False and result['readback_verified']
         assert result['matched_documents']==1 and result['unmatched_documents']==0
         assert result['parity_inputs_ready'] is False and result['parity_input_blockers']=={'unmatched_original_numeric_facts':1}
         assert result['unmatched_original_context_counts']=={'dimensioned':1}
         assert result['reported_bindings']==(('a'*64,) if numeric_mode else ())
+        assert result['reported_readback_verified']==(True if numeric_mode else None)
     assert reported.call_count==int(readback_ok and numeric_mode is not None)
+    assert reported_readback.call_count==reported.call_count
     assert inspect.call_count==load.call_count==3
     dictionary.close.assert_called_once()
