@@ -30,6 +30,8 @@
 
 [Scoped SEC acquisition, runtime access and certification handoff](13w-sec-scoped-acquisition.md)
 
+[Retained historical symbol interval repair](13x-retained-symbol-repair.md)
+
 ## Implemented controller core
 
 `ExecutionLaunch` now combines the concrete market, reference, activity and universe registries into one `Campaign` executor. Acquisition, initial-seed and corporate/allocation stages must supply registered application handlers; missing handlers stop construction, and competing product authorities are rejected. Nothing in stored arguments is executed as code.

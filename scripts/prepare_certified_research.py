@@ -61,6 +61,8 @@ def parse_args(argv=None):
     p.add_argument('--format',choices=('text','json','sql'),default='text')
     p.add_argument('--acquire-missing',action='store_true',help='Opt in to the existing flatfile downloader after Massive resubscription; acquire missing appendable sources before plan freeze')
     p.add_argument('--acquire-sec-missing',action='store_true',help='Explicit opt-in to bounded SEC catch-up before graph freezing; independent of Massive acquisition')
+    p.add_argument('--repair-retained-symbols',action='store_true',help='Restore missing intervals from complete retained Gateway ticker history; no provider requests')
+    p.add_argument('--retained-figi',action='append',default=[],help='Explicit stable FIGI for retained symbol repair; repeat at most 1000 times')
     p.add_argument('--sec-runtime-root-ch',help='CH-readable alias for the SEC runtime folder; verified before acquisition')
     def identity_point(value):
         from pipelines.certified_research.historical_identity import AcquisitionHandlers
@@ -84,6 +86,12 @@ def parse_args(argv=None):
     p.add_argument('--clickhouse-cache-root',default='/mnt/d/market-data/flatfiles/us_stocks_sip')
     p.add_argument('--hydrate-missing-trades',action='store_true',help='Deprecated: imported-day repair requires canonical sidecars')
     args=p.parse_args(argv)
+    if args.repair_retained_symbols or args.retained_figi:
+        import re
+        if (args.command not in ('prepare-sources','launch','launch-collection') or not args.repair_retained_symbols
+                or not 1<=len(args.retained_figi)<=1000 or len(set(args.retained_figi))!=len(args.retained_figi)
+                or any(not re.fullmatch('[A-Z0-9]{12}',value) for value in args.retained_figi)):
+            p.error('Retained symbol repair requires source preparation/fresh launch and 1 to 1000 unique uppercase FIGIs')
     if args.acquire_sec_missing or args.sec_runtime_root_ch is not None:
         if args.command not in ('prepare-sources','launch','launch-collection') or args.fundamental_start_date is None:
             p.error('SEC acquisition options require a fundamental context bound on source preparation or fresh launch')
@@ -175,6 +183,24 @@ def prepare_identity(args,claim,client_factory,dictionary_factory,stop,progress=
         from collections import Counter
         counts=Counter(result['units'].values())
         print(f'Identity points | certified={counts["certified"]} | reused={counts["reused"]} | failed=0',flush=True)
+    return result
+
+
+def prepare_retained_symbols(args,client,claim,dictionary_factory,stop,through):
+    if not args.repair_retained_symbols:return None
+    from services.reference_gateway.retained_symbol_repair import rebuild
+    def guard():
+        claim.check()
+        if stop.is_set():raise InterruptedError('Retained symbol preparation interrupted')
+    guard()
+    dictionary=dictionary_factory()
+    try:
+        if dictionary.dictionary_database!='q_live':raise ValueError('Retained symbol repair requires Gateway dictionary ownership')
+        result=rebuild(client.http,database='q_live',identifiers=args.retained_figi,
+            context_start=min(value for value in (args.context_start_date,args.rebuild_origin_date,args.start_date) if value is not None),
+            claim=dictionary,execute=True,guard=guard,through=through)
+    finally:dictionary.close()
+    if args.format=='text':print(f'Retained symbols | intervals={result["intervals"]} | inserted={result["inserted"]}',flush=True)
     return result
 
 
@@ -355,6 +381,7 @@ def main(argv=None):
                         try:
                             prepare_identity(args,source_claim,lambda:factory(config),
                                 lambda:DictionaryClaim(keeper.client,args.database),stop,progress)
+                            prepare_retained_symbols(args,client,source_claim,lambda:DictionaryClaim(keeper.client,'q_live'),stop,config.end)
                             from pipelines.certified_research import sec_acquisition
                             sec_acquisition.prepare(client.query,paths,config,source_claim,stop,
                                 fundamental_start=args.fundamental_start_date,acquire_missing=args.acquire_sec_missing,
@@ -502,6 +529,7 @@ def main(argv=None):
                     try:
                         prepare_identity(args,claim,lambda:builder.Client(args,persistent=False),
                             lambda:DictionaryClaim(keeper.client,args.database),stop)
+                        prepare_retained_symbols(args,client,claim,lambda:DictionaryClaim(keeper.client,'q_live'),stop,config.end)
                         if args.fundamental_start_date is not None:
                             from pipelines.certified_research import sec_acquisition
                             sec_acquisition.prepare(client.query,paths,config,claim,stop,

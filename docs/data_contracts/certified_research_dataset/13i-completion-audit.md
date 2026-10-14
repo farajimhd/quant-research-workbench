@@ -31,6 +31,14 @@ No expensive full campaign is part of implementation validation.
 
 ## Current historical identity repair inventory
 
+The launcher now includes a bounded retained-history symbol interval repair.
+It reuses the Gateway kernel, checks original retained payload/coverage and
+alias bindings, inserts only missing intervals, and independently verifies
+readback/source stability. A real isolated fixture restored two intervals and
+resumed with zero inserts. Missing histories, inactive lifecycle, covered-empty
+origins and historical eligibility transitions remain unresolved; the repair
+does not manufacture them. See [retained symbol repair](13x-retained-symbol-repair.md).
+
 A read-only October 13 audit used context January 1, 2025 through October 2,
 2026, with conid observations through October 13. Among 2,509 listings rejected
 for missing dated symbol intervals, direct retained-coverage lookup found:

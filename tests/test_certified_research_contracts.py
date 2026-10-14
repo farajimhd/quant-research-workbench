@@ -780,6 +780,40 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_retained_gateway_symbol_repair_publishes_exact_intervals_and_resumes(self):
+        from datetime import timezone
+        from services.reference_gateway import ticker_events as gateway,retained_symbol_repair as repair
+        from services.reference_gateway.providers import MassiveTickerEventsResult
+        from unittest.mock import patch
+        gateway.ensure_ticker_event_schema(self.client.http,database=self.database,storage_policy='live_market_ssd')
+        entity=gateway.normalize_inventory([dict(ticker='NEW',composite_figi='BBG000000001',active=True,
+            name='Fixture',cik='1',primary_exchange='XNAS',currency_name='usd')],[])[0]
+        binding=gateway.CanonicalBinding('mapped','security','listing');maps={'OLD':binding,'NEW':binding}
+        response=MassiveTickerEventsResult('BBG000000001','Fixture',[
+            dict(type='ticker_change',date='2020-01-02',ticker_change=dict(ticker='OLD')),
+            dict(type='ticker_change',date='2024-01-02',ticker_change=dict(ticker='NEW'))],'OK','fixture')
+        when=datetime(2026,10,13,tzinfo=timezone.utc)
+        events,expected,hash_=gateway.normalize_ticker_event_response(entity,response,binding,
+            run_id='fixture',observed_at=when,ticker_bindings=maps)
+        coverage=gateway.successful_coverage_row(entity,binding,events,source_status='completed',response_sha=hash_,
+            run_id='fixture',started_at=when,finished_at=when,rows_written=len(events),rows_deleted=0,stale_after_days=7)
+        gateway.insert_json_rows(self.client.http,self.database,gateway.TICKER_EVENT_ENTITY_TABLE,
+            [gateway.inventory_db_row(entity,run_id='fixture',now=when)])
+        gateway.insert_json_rows(self.client.http,self.database,gateway.TICKER_EVENT_TABLE,events)
+        gateway.insert_json_rows(self.client.http,self.database,gateway.TICKER_EVENT_COVERAGE_TABLE,[coverage])
+        class Claim:
+            def check(self):pass
+        with patch.object(gateway,'load_canonical_bindings',return_value={entity.provider_entity_key:binding}),\
+             patch.object(gateway,'load_ticker_bindings',return_value={entity.provider_entity_key:maps}):
+            first=repair.rebuild(self.client.http,database=self.database,identifiers=['BBG000000001'],
+                context_start=date(2025,1,1),claim=Claim(),execute=True)
+            second=repair.rebuild(self.client.http,database=self.database,identifiers=['BBG000000001'],
+                context_start=date(2025,1,1),claim=Claim(),execute=True)
+        self.assertEqual((first['inserted'],second['inserted']),(2,0))
+        self.assertEqual(first['source_hash'],second['source_hash'])
+        actual=self.client.query(f'SELECT * FROM {self.database}.{gateway.SYMBOL_INTERVAL_TABLE} FINAL ORDER BY valid_from_date')
+        self.assertEqual([repair.semantic(row) for row in actual],[repair.semantic(row) for row in expected])
+
     def test_sec_bulk_stages_use_verified_ssd_and_lossless_compression(self):
         from pipelines.sec.edgar import sec_bulk_clickhouse_ingest as ingest,sec_bulk_snapshot_refresh as bulk
         ingest.create_database_and_tables(self.client.http,self.database,'')
