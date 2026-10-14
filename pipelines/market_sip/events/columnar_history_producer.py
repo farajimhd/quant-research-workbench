@@ -288,24 +288,32 @@ def _verify_children_before_seal(reader, prepared):
             (c.CLOCK, "bucket_index", "bucket_index"),
             (c.VALUE, "(field_id,first_ordinal)", "field_id,first_ordinal")):
         expected = iter(c.child_records(prepared, table))
-        offset = 0
-        # Offset is safe only inside this exclusive immutable publication unit;
-        # the full key/count audit detects conflicting or duplicate children.
+        count = 0
+        last = None
+        columns = tuple(order.split(','))
+        # Resume by the complete ordered key, avoiding repeated prefix scans.
+        # The independent full count/uniqueness audit also catches duplicates
+        # straddling a page boundary, which a strict key cursor would skip.
         while True:
+            after = '' if last is None else (
+                f"AND {key}>{last[0]} " if len(columns) == 1 else
+                f"AND {key}>({','.join(str(v) for v in last)}) ")
             rows = _rows(reader, f"SELECT * FROM q_live.{table.name} WHERE {predicate} "
-                f"ORDER BY {order} LIMIT 1024 OFFSET {offset}", 1024)
+                f"{after}ORDER BY {order} LIMIT 1024", 1024)
             actual = [c.restore_record(table, row) for row in rows]
             if actual != list(islice(expected, len(rows))):
                 raise ValueError("History child INSERT readback differs")
-            offset += len(rows)
+            count += len(rows)
+            if actual:
+                last = tuple(actual[-1][column] for column in columns)
             if len(rows) < 1024:
                 if next(expected, None) is not None:
                     raise ValueError("History child INSERT readback is incomplete")
                 break
         summary = _rows(reader, f"SELECT count() AS row_count,uniqExact({key}) AS unique_keys "
             f"FROM q_live.{table.name} WHERE {predicate}", 1)
-        if (len(summary) != 1 or int(summary[0]["row_count"]) != offset
-                or int(summary[0]["unique_keys"]) != offset):
+        if (len(summary) != 1 or int(summary[0]["row_count"]) != count
+                or int(summary[0]["unique_keys"]) != count):
             raise ValueError("History publication children contain extra or duplicate keys")
 
 

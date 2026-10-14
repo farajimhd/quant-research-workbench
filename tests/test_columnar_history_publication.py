@@ -132,8 +132,13 @@ class Client:
                 return encode([dict(row_count=len(rows), unique_keys=len(keys))])
             if query.startswith("SELECT derivation_attempt_id"):
                 return encode([{"derivation_attempt_id": r["derivation_attempt_id"]} for r in rows[:1]])
-        for key in ("bucket_index", "first_ordinal"):
-            for symbol, predicate in ((">=", lambda a, b: a >= b), ("<", lambda a, b: a < b)):
+        cursor = re.search(r"AND \(field_id,first_ordinal\)>\((\d+),(\d+)\)", query)
+        if cursor:
+            after = tuple(map(int, cursor.groups()))
+            rows = [r for r in rows if (r["field_id"], r["first_ordinal"]) > after]
+        for key in ("bucket_index", "first_ordinal", "field_id"):
+            for symbol, predicate in ((">=", lambda a, b: a >= b), ("<", lambda a, b: a < b),
+                                      (">", lambda a, b: a > b)):
                 match = re.search(key + re.escape(symbol) + r"(\d+)", query)
                 if match:
                     rows = [r for r in rows if predicate(r[key], int(match.group(1)))]
@@ -158,6 +163,48 @@ class Client:
 class Owner:
     def assert_owner(self):
         pass
+
+
+@pytest.mark.parametrize('failure', [None, 'boundary_duplicate', 'missing', 'changed'])
+def test_keyset_readback_checks_every_page_and_boundary_duplicates(monkeypatch, failure):
+    from types import SimpleNamespace
+    expected = {c.FIELD: [dict(field_id=i) for i in range(1100)],
+                c.CLOCK: [dict(bucket_index=i) for i in range(1100)],
+                c.VALUE: [dict(field_id=i // 550, first_ordinal=i % 550, value=i)
+                          for i in range(1100)]}
+    actual = {table: [dict(row) for row in rows] for table, rows in expected.items()}
+    if failure == 'boundary_duplicate':
+        actual[c.VALUE].insert(1024, dict(actual[c.VALUE][1023]))
+    elif failure == 'missing':
+        actual[c.VALUE].pop(1024)
+    elif failure == 'changed':
+        actual[c.VALUE][1024]['value'] = -1
+    queries = []
+    def read(reader, query, bound):
+        queries.append(query)
+        table = next(t for t in actual if 'FROM q_live.' + t.name + ' ' in query)
+        rows = actual[table]
+        keys = ('field_id', 'first_ordinal') if table == c.VALUE else (
+            'field_id' if table == c.FIELD else 'bucket_index',)
+        key = lambda r: tuple(r[k] for k in keys)
+        if query.startswith('SELECT count()'):
+            return [dict(row_count=len(rows), unique_keys=len({key(r) for r in rows}))]
+        cursor = re.search(r'AND (?:\(field_id,first_ordinal\)|field_id|bucket_index)>(\([^)]*\)|\d+)', query)
+        if cursor:
+            last = tuple(map(int, cursor[1].strip('()').split(',')))
+            rows = [r for r in rows if key(r) > last]
+        return rows[:bound]
+    monkeypatch.setattr(p, '_rows', read)
+    monkeypatch.setattr(c, 'child_records', lambda prepared, table: iter(expected[table]))
+    monkeypatch.setattr(c, 'restore_record', lambda table, row: row)
+    prepared = SimpleNamespace(scope=source().scope(UID, CODE))
+    if failure:
+        with pytest.raises(ValueError):
+            p._verify_children_before_seal(None, prepared)
+    else:
+        p._verify_children_before_seal(None, prepared)
+    assert not any('OFFSET' in query for query in queries)
+    assert any('AND (field_id,first_ordinal)>' in query for query in queries)
 
 
 @pytest.mark.parametrize('failure', [None, 'duplicate', 'outside', 'negative', 'nonfinite', 'schema'])
