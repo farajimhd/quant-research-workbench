@@ -72,6 +72,7 @@ def parse_args(argv=None):
     p.add_argument('--sec-share-document',type=sec_share_document,action='append',default=[],
         help='Retained SEC source candidate: CIK,ACCESSION,DOCUMENT_NAME; requires qualified sec_share_source capacity rate, never certifies allocation')
     p.add_argument('--measurement-sec-document',type=sec_share_document,action='append',default=[],help='measure-sec-extraction only: CIK,ACCESSION,DOCUMENT_NAME; repeat up to eight times')
+    p.add_argument('--compare-sec-bulk',action='store_true',help='measure-sec-extraction only: bounded read-only original/bulk value comparison, without public-time qualification')
     p.add_argument('--verify-sec-archives',action='store_true',help='Verify selected SEC documents against retained G archives and publish public-time evidence; no downloads')
     p.add_argument('--prepare-sec-fundamental-evidence',action='store_true',help='Capture original fundamental contexts and bulk comparisons after archive verification; requires measured sec_fundamental_source capacity')
     p.add_argument('--sec-archive-canonical-root',type=Path,default=Path('D:/market-data/sec_core/daily_archives'))
@@ -100,6 +101,7 @@ def parse_args(argv=None):
     p.add_argument('--clickhouse-cache-root',default='/mnt/d/market-data/flatfiles/us_stocks_sip')
     p.add_argument('--hydrate-missing-trades',action='store_true',help='Deprecated: imported-day repair requires canonical sidecars')
     args=p.parse_args(argv)
+    if args.compare_sec_bulk and args.command!='measure-sec-extraction':p.error('--compare-sec-bulk belongs to measure-sec-extraction')
     if args.command=='measure-sec-extraction' or args.measurement_sec_document:
         if (args.command!='measure-sec-extraction' or not 1<=len(args.measurement_sec_document)<=8
                 or len(set(args.measurement_sec_document))!=len(args.measurement_sec_document)
@@ -353,10 +355,12 @@ def main(argv=None):
     try:
         if args.command=='measure-sec-extraction':
             from pipelines.certified_research import sec_extraction_measurement
-            result=sec_extraction_measurement.measure(client.query,args.measurement_sec_document)
+            result=sec_extraction_measurement.measure(client.query,args.measurement_sec_document,compare_bulk=args.compare_sec_bulk)
             if args.format=='json':print(json.dumps(result,indent=2))
             else:
-                for row in result['documents']:print(f'SEC extraction | {row["cik"]} | bytes={row["source_bytes"]:,} | observations={row["observations"]} | rejected={row["rejections"]} | fetch={row["fetch_seconds"]:.3f}s | parse={row["parse_seconds"]:.3f}s')
+                for row in result['documents']:
+                    print(f'SEC extraction | {row["cik"]} | bytes={row["source_bytes"]:,} | observations={row["observations"]} | rejected={row["rejections"]} | fetch={row["fetch_seconds"]:.3f}s | parse={row["parse_seconds"]:.3f}s')
+                    if args.compare_sec_bulk:print('  Value comparison | '+json.dumps(row['comparison_status_counts'],sort_keys=True)+f' | unmatched originals={row["unmatched_original_facts"]}')
                 print('Observed only | no writes | storage and peak rates remain unqualified')
             return 0
         if args.command=='estimate-storage':

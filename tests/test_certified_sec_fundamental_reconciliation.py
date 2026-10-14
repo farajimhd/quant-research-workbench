@@ -27,6 +27,23 @@ def test_exact_match_keeps_original_context_and_public_clock_without_certifying(
     assert result['certified'] is False and result['allocation_certified'] is False
 
 
+@pytest.mark.parametrize('numeric_type',('Nullable(String)','Nullable(Decimal(38, 6))','Decimal(38,6)'))
+def test_nullable_exact_numeric_storage_is_not_mislabeled_lossy(numeric_type):
+    args=inputs_for_parity();args[1][0]['source_numeric_type']=numeric_type
+    assert parity.reconcile(*args)['all_bulk_matched']
+
+
+def test_pure_unit_alias_matches_original_ratio_without_time_qualification():
+    payload=document('0.25').replace('dei:EntityCommonStockSharesOutstanding','g:EffectiveIncomeTaxRateContinuingOperations').replace('x:shares','x:pure')
+    extracted=sec_fundamental_context.extract(payload,sha256(payload.encode()).hexdigest(),'320193')
+    row=dict(source_record='source1',taxonomy='us-gaap',tag='EffectiveIncomeTaxRateContinuingOperations',unit='pure',
+        period_start=None,period_end='2025-10-17',dimensions=(),value='0.25',source_numeric_type='Nullable(String)')
+    result=parity.compare_original(extracted,(row,))
+    assert result['all_bulk_matched'] and result['certified'] is False
+    changed=parity.compare_original(extracted,(dict(row,unit='ratio'),))
+    assert changed['all_bulk_matched'] and changed['comparisons'][0]['context_hash']!=result['comparisons'][0]['context_hash']
+
+
 @pytest.mark.parametrize('field,value,status',[
     ('value','1235','value_mismatch'),('period_end','2025-10-18','missing_original_context'),
     ('dimensions',(('{axis}','{class}'),),'missing_original_context'),

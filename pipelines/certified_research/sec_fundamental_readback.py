@@ -36,7 +36,7 @@ def verify(query,database,reconciliation_hash,claim,source_guard):
             or header['precision']!=proof['precision'] or header['available_at']!=available):
         raise ValueError('Fundamental normalized header differs from sealed source metadata')
     if proof['version']!=sec_fundamental_reconciliation.VERSION:
-        raise ValueError('Legacy unordered reconciliation requires explicit versioned requalification')
+        raise ValueError('Legacy reconciliation recipe requires explicit versioned requalification')
     groups=[read(t,'reconciliation_hash' if index==2 else 'extraction_hash',
         reconciliation_hash if index==2 else extraction_hash) for index,t in enumerate(catalog[:-1])]
     if any(len(rows)>10000 for rows in groups):raise ValueError('Fundamental readback exceeds fact bound')

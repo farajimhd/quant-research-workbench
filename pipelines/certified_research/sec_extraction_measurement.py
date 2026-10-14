@@ -3,11 +3,11 @@ import json
 from collections import Counter
 from time import perf_counter
 
-from . import sec_share_preparation,sec_fundamental_context
+from . import sec_share_preparation,sec_fundamental_context,sec_fundamental_reconciliation,facts
 from .contracts import digest,literal
 
 
-def measure(query,requests,*,progress=None):
+def measure(query,requests,*,progress=None,compare_bulk=False):
     if not isinstance(requests,(tuple,list)) or not 1<=len(requests)<=8 or len(set(requests))!=len(requests):
         raise ValueError('SEC extraction measurement requires 1 to 8 unique explicit documents')
     requests=tuple(sec_share_preparation.request(','.join(row)) for row in requests)
@@ -40,6 +40,17 @@ def measure(query,requests,*,progress=None):
             security_cover_rejection_reasons=dict(sorted(Counter(row['reason'] for row in parsed['security_cover']['rejected']).items())),
             extraction_metadata_bytes=len(json.dumps(parsed,separators=(',',':')).encode('utf-8')),
             extraction_hash=parsed['extraction_hash'])
+        if compare_bulk:
+            tags=tuple(sorted({tag for metric in facts.catalog() for tag in metric.tags}))
+            bulk=sec_fundamental_reconciliation.load_bulk(query,cik,accession,tags)
+            comparison=sec_fundamental_reconciliation.compare_original(parsed,bulk)
+            after=sec_fundamental_reconciliation.load_bulk(query,cik,accession,tags)
+            if digest(sorted(bulk,key=lambda r:r['source_record']))!=digest(sorted(after,key=lambda r:r['source_record'])):
+                raise ValueError('SEC bulk source changed during read-only comparison')
+            result.update(bulk_comparisons=len(bulk),bulk_numeric_types=dict(sorted(Counter(r['source_numeric_type'] for r in bulk).items())),
+                comparison_status_counts=dict(sorted(Counter(r['status'] for r in comparison['comparisons']).items())),
+                unmatched_original_facts=len(comparison['unmatched_original_positions']),comparison_hash=comparison['comparison_hash'],
+                public_time_qualified=False)
         results.append(result)
         if progress:progress(dict(completed=len(results),total=len(requests),**result))
         del rows,parsed

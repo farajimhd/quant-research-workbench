@@ -61,3 +61,21 @@ rose from 883 to 897, retaining the 14 previously rejected zero-valued facts.
 Extraction metadata was 145,379/183,348/127,833 bytes; observed parse times were
 0.068/0.084/0.070 seconds. This proves these transform cases for these filings,
 not whole-period or all-taxonomy coverage, class completeness or float authority.
+
+Add `--compare-sec-bulk` to the same command for an accession-bounded read-only
+original/bulk value audit. It compares exact concept/period/dimensions/value keys,
+checks a second matching bulk-source fingerprint, and reports source numeric
+types, comparison statuses and unmatched original counts. It does not require or
+assert archive public-time qualification and creates no records or certificates.
+
+The live three-filing audit found all 273 selected bulk values preserved as
+`Nullable(String)`. Reconciliation v3 accepts non-null nullable decimal-text types
+and normalizes existing `pure`/`ratio` and supported currency `/shares`/`/share`
+aliases for matching; the original unit still participates in the retained context
+fingerprint. Float64 and unknown storage remain unqualified. After these fixes,
+Apple matched 100/100 bulk facts, Alphabet 87/87, and Meta 85/86 with one competing
+original-value context. The original facts not matched by bulk remained
+126/219/126 respectively. These counts prevent full parity-input readiness even
+where every bulk fact matches. They are not waived, and their class/dimension/
+coverage dependencies remain work. New reconciliation recipes require explicit
+requalification and preserve earlier versions rather than overwrite.

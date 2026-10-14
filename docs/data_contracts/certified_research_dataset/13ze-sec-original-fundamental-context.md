@@ -105,9 +105,10 @@ keys, source positions, original comparison-value references, row counts and
 header metadata. It bounds reads, audits exact schemas/part placement, rejects
 duplicate/unreferenced contexts and missing references, and rereads the complete
 group after source guards to detect changes during verification. No filing payload
-is fetched. Canonically ordered reconciliation v2 makes the reconstruction
-deterministic; earlier unordered reconciliation versions require explicit
-requalification rather than guessed source ordering. Live isolated tests verified
+is fetched. Canonically ordered reconciliation makes reconstruction deterministic;
+the current v3 recipe also supports exact nullable decimal-text storage and known
+unit aliases. Earlier recipes require explicit requalification under the current
+value-comparison policy rather than guessed source ordering. Live isolated tests verified
 both retained versions and duplicate rejection; fixtures separately reject mutated
 values, context hashes, statuses and availability metadata.
 

@@ -6,24 +6,24 @@ import re
 
 from . import sec_public_archive_time
 from .contracts import digest,literal
+from .facts import CURRENCY_UNITS
 
-VERSION='sec-original-fundamental-parity-v2'
+VERSION='sec-original-fundamental-parity-v3'
 
 
-def reconcile(extraction,bulk,witness,qualification,receipt):
+def compare_original(extraction,bulk):
     body=dict(extraction);sealed=body.pop('extraction_hash',None)
     if sealed!=digest(body):raise ValueError('SEC fundamental extraction fingerprint differs')
     if (not isinstance(bulk,(tuple,list)) or len(bulk)>10000
             or len(extraction['observations'])+len(extraction['rejected'])>10000):
         raise ValueError('SEC fundamental reconciliation exceeds its bounded fact census')
-    if sec_public_archive_time.qualify(witness,receipt,mode=qualification['mode'])!=qualification:
-        raise ValueError('SEC fundamental public-time evidence differs')
-    if witness['document_hash']!=extraction['source_text_hash']:
-        raise ValueError('SEC original document differs from extracted fundamentals')
     def key(row):
         dimensions=tuple(tuple(pair) for pair in row['dimensions'])
         if len({p[0] for p in dimensions})!=len(dimensions):raise ValueError('Duplicate fundamental dimension axis')
-        return (row['taxonomy'],row['tag'],row['unit'],row['period_start'],row['period_end'],tuple(sorted(dimensions)))
+        unit=row['unit']
+        if unit=='pure':unit='ratio'
+        elif unit.endswith('/shares') and unit[:-7] in CURRENCY_UNITS:unit=unit[:-7]+'/share'
+        return (row['taxonomy'],row['tag'],unit,row['period_start'],row['period_end'],tuple(sorted(dimensions)))
     original=defaultdict(list)
     for row in extraction['observations']:
         match=re.fullmatch(r'\{(http://fasb.org/us-gaap|http://xbrl.sec.gov/dei)/[^}]+\}(.+)',row['concept'])
@@ -48,17 +48,29 @@ def reconcile(extraction,bulk,witness,qualification,receipt):
                 else 'matched' if number in distinct else 'value_mismatch')
         positions=tuple(c['source_position'] for c in candidates)
         numeric_type=row.get('source_numeric_type','')
-        if status=='matched' and not re.fullmatch(r'String|Decimal(?:\([0-9]+, ?[0-9]+\))?',numeric_type):
+        exact_type=r'String|Decimal(?:\([0-9]+, ?[0-9]+\))?'
+        if status=='matched' and not re.fullmatch(r'(?:'+exact_type+r')|Nullable\((?:'+exact_type+r')\)',numeric_type):
             status='source_precision_unqualified'
         if status=='matched':used.update(positions)
         rows.append(dict(source_record=identity,status=status,source_value=value,original_values=tuple(c['value'] for c in candidates),
-            original_positions=positions,context_hash=digest(key(row))))
+            original_positions=positions,context_hash=digest((row['taxonomy'],row['tag'],row['unit'],row['period_start'],row['period_end'],tuple(sorted(row['dimensions']))))))
     rows.sort(key=lambda row:row['source_record'])
-    result=dict(version=VERSION,extraction_hash=sealed,witness_hash=witness['witness_hash'],
-        qualification_hash=qualification['qualification_hash'],available_at=qualification['available_at'],
-        precision=qualification['precision'],comparisons=tuple(rows),
+    result=dict(version='sec-original-value-comparison-v2',extraction_hash=sealed,comparisons=tuple(rows),
         unmatched_original_positions=tuple(sorted(r['source_position'] for r in extraction['observations'] if r['source_position'] not in used)),
         rejected_original=extraction['rejected'],all_bulk_matched=bool(rows) and all(r['status']=='matched' for r in rows),
+        certified=False,allocation_certified=False)
+    return dict(result,comparison_hash=digest(result))
+
+
+def reconcile(extraction,bulk,witness,qualification,receipt):
+    if sec_public_archive_time.qualify(witness,receipt,mode=qualification['mode'])!=qualification:
+        raise ValueError('SEC fundamental public-time evidence differs')
+    if witness['document_hash']!=extraction['source_text_hash']:
+        raise ValueError('SEC original document differs from extracted fundamentals')
+    comparison=compare_original(extraction,bulk)
+    result=dict(version=VERSION,extraction_hash=comparison['extraction_hash'],witness_hash=witness['witness_hash'],
+        qualification_hash=qualification['qualification_hash'],available_at=qualification['available_at'],
+        precision=qualification['precision'],**{key:comparison[key] for key in ('comparisons','unmatched_original_positions','rejected_original','all_bulk_matched')},
         certified=False,allocation_certified=False)
     return dict(result,reconciliation_hash=digest(result))
 
