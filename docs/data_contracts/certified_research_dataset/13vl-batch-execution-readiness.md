@@ -128,3 +128,21 @@ and target field. An isolated ClickHouse regression verifies exact nanosecond
 clocks, all six explicit delayed conditions, zero/invalid clock states and
 strict rejection flags; it reads synthetic trades without opening SIP files.
 This fixes the insertion contract, not the outstanding full-range certificates.
+
+The production canary also exposed the launcher's fixed 45-second statement
+deadline and full-year scans without monthly pruning. New runs use configurable
+`--query-timeout-seconds` (default 900, maximum 3600), frozen in their configuration;
+old stored plans keep their existing timeout contract. Exact UTC event-date
+bounds now accompany the original SIP bounds during canonical certification,
+preserved-field checks and flag mutation. Cross-midnight bounds include both
+dates. Complete source counts and independent comparisons still gate publication.
+
+Reconciliation now materializes the canonical day's trade keys and original
+fields once into the compressed ingestion-only
+`q_live.historical_trade_reporting_ns_v1_retained_canonical` table. The 16 ticker
+buckets reuse that snapshot instead of scanning canonical months 16 times.
+This temporary table uses `live_market_ssd`, explicit original numeric widths,
+dated partitions and lossless codecs, and is cleaned only after day certification.
+It is not a downstream market-event authority. Admission reserves four times
+the measured raw semantic footprint for staging/publication/merge work before
+writing; partial staging remains resumable and has no certified receipt.

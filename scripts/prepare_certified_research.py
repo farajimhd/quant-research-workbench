@@ -50,6 +50,7 @@ def parse_args(argv=None):
     p.add_argument('--workers',type=int,default=4)
     p.add_argument('--query-threads',type=int,default=2)
     p.add_argument('--query-memory-gib',type=int,default=2)
+    p.add_argument('--query-timeout-seconds',type=int,default=900,help='Bounded data-query deadline, 1 to 3600 seconds; frozen for resumed campaigns')
     p.add_argument('--global-memory-gib',type=int,default=16)
     def integer_list(value):
         try:values=tuple(int(v) for v in value.split(','))
@@ -225,7 +226,7 @@ def campaign_config(args,end):
         query_threads=args.query_threads,query_memory_bytes=args.query_memory_gib*1024**3,
         global_memory_bytes=args.global_memory_gib*1024**3,volume_windows_seconds=args.volume_windows_seconds,
         short_windows_sessions=args.short_windows_sessions,resolutions_ms=args.resolutions_ms,issuer_keys=args.issuer_keys,
-        conid_review_hash=args.conid_review_hash)
+        conid_review_hash=args.conid_review_hash,query_timeout_seconds=args.query_timeout_seconds)
 
 
 def prepare_identity(args,claim,client_factory,dictionary_factory,stop,progress=None):
@@ -450,7 +451,7 @@ def main(argv=None):
             print('Optional conid reconciliation/review | 5 q_live tables | --publish-conid-mappings')
         return 0
     from scripts import build_market_day as builder
-    args.max_threads=args.query_threads;args.max_memory_gb=args.query_memory_gib;args.query_timeout=45
+    args.max_threads=args.query_threads;args.max_memory_gb=args.query_memory_gib;args.query_timeout=args.query_timeout_seconds
     client=builder.Client(args,persistent=False,readonly=args.command in
         ('preflight','plan','plan-cohorts','status','stored-plan','verify','verify-collection','measure-storage','measure-sec-extraction','estimate-storage','audit-sec-submissions') or
         (args.command in ('reconcile-conids','review-conid-issues') and not args.publish_conid_mappings))
@@ -565,7 +566,7 @@ def main(argv=None):
             signal.signal(signal.SIGINT,lambda *unused:stop.set())
             def factory(config):
                 options=SimpleNamespace(env_file=args.env_file,max_threads=config.query_threads,
-                    max_memory_gb=config.query_memory_bytes/1024**3,query_timeout=45)
+                    max_memory_gb=config.query_memory_bytes/1024**3,query_timeout=config.query_timeout_seconds)
                 real=builder.Client(options,persistent=False,readonly=verify_only)
                 if not verify_only:return real
                 class Reader:
@@ -614,7 +615,7 @@ def main(argv=None):
                     last[0]=now
             def factory(config):
                 options=SimpleNamespace(env_file=args.env_file,max_threads=config.query_threads,
-                    max_memory_gb=config.query_memory_bytes/1024**3,query_timeout=45)
+                    max_memory_gb=config.query_memory_bytes/1024**3,query_timeout=config.query_timeout_seconds)
                 return builder.Client(options,persistent=False)
             saved=None if args.command in ('launch','launch-collection') else campaign.load_plan(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database,
                 str(args.source_dataset_id if args.command=='backfill-v7' else args.dataset_id))
@@ -807,7 +808,7 @@ def main(argv=None):
             load_env_files([args.env_file],verbose=False)
             def factory(config):
                 options=SimpleNamespace(env_file=args.env_file,max_threads=config.query_threads,
-                    max_memory_gb=config.query_memory_bytes/1024**3,query_timeout=45)
+                    max_memory_gb=config.query_memory_bytes/1024**3,query_timeout=config.query_timeout_seconds)
                 real=builder.Client(options,persistent=False,readonly=True)
                 class Reader:
                     def query(self,sql):return real.query(sql)

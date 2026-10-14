@@ -57,6 +57,27 @@ def test_ingestion_array_materialization_preserves_full_conditions_and_unknown_c
         assert rows[3]['participant_timestamp_ns'] is None and rows[3]['reporting_reason']==8
         assert int(rows[3]['event_meta'])&192==0
         verify_auxiliary_storage(client.query,database,(retained.RAW,))
+        # Compare direct reconciliation with one materialized canonical scan.
+        from pipelines.market_sip.events import reporting_evidence as ns
+        from dataclasses import replace
+        source=replace(retained.canonical_table(),name='original_fixture')
+        client.query(source.ddl(database),read=False)
+        columns=[c.name for c in source.columns]
+        values=['toDate(\'2026-01-02\')' if c=='source_date' else 'toUInt64(sequence_number*10)' if c=='ordinal'
+            else 'bitAnd(event_meta,63)' if c=='event_meta' else c for c in columns]
+        client.query(f'INSERT INTO {database}.{source.name} ({",".join(columns)}) SELECT {",".join(values)} '
+            f'FROM {database}.{retained.RAW}',read=False)
+        client.query(retained.canonical_table().ddl(database),read=False)
+        first=1767362400000000
+        client.query(retained.canonical_insert_sql(database+'.'+source.name,date(2026,1,2),first,first,database=database),read=False)
+        fields=[c for c in columns if c not in ('source_date','ordinal','ticker','event_meta')]
+        direct=ns.reconciled_projection(f'SELECT * FROM {database}.{retained.RAW}',database+'.'+source.name,date(2026,1,2),
+            'a'*64,fields,first_sip_us=first,last_sip_us=first,repair_reporting_flags=True)
+        cached=ns.reconciled_projection(f'SELECT * FROM {database}.{retained.RAW}',database+'.'+retained.CANONICAL,date(2026,1,2),
+            'a'*64,fields,first_sip_us=first,last_sip_us=first,repair_reporting_flags=True,canonical_stage=True)
+        assert sorted(client.query(direct),key=lambda r:r['ordinal'])==sorted(client.query(cached),key=lambda r:r['ordinal'])
+        assert all(r['mismatch']==0 and r['ambiguous']==0 for r in client.query(cached))
+        verify_auxiliary_storage(client.query,database,(retained.CANONICAL,))
     finally:
         if created:client.query('DROP DATABASE '+database+' SYNC',read=False)
         client.close()
@@ -68,3 +89,16 @@ def test_original_clocks_and_conditions_are_named_not_positional():
     assert 'r.*' not in sql
     assert 'r.sip_timestamp_ns,r.participant_timestamp_ns,r.reporting_condition_entries,r.reporting_reason' in sql
     assert '(source_date,ticker,event_meta,' in sql
+
+
+def test_date_pruning_includes_utc_rollover_and_query_budget_is_frozen():
+    from datetime import datetime,timezone,date
+    from pipelines.market_sip.events.reporting_evidence import event_date_predicate
+    from pipelines.certified_research.contracts import CampaignConfig
+    first=int(datetime(2026,1,2,23,59,tzinfo=timezone.utc).timestamp()*1000000)
+    assert event_date_predicate(first,first+120000000)=="event_date BETWEEN toDate('2026-01-02') AND toDate('2026-01-03')"
+    old=CampaignConfig(date(2026,1,1),date(2026,10,2))
+    bounded=CampaignConfig(date(2026,1,1),date(2026,10,2),query_timeout_seconds=900)
+    assert 'query_timeout_seconds' not in old.identity()['config']
+    assert old.content_hash!=bounded.content_hash and old.calculation_hash==bounded.calculation_hash
+    with pytest.raises(ValueError,match='bounded'):CampaignConfig(date(2026,1,1),date(2026,10,2),query_timeout_seconds=0)

@@ -58,6 +58,7 @@ class CampaignConfig:
     checkpoints: tuple[str, ...] = ("PM", "REGULAR", "AH")
     issuer_keys: tuple[int,...] = ()
     conid_review_hash: str | None = None
+    query_timeout_seconds: int = 45
 
     def __post_init__(self):
         if type(self.start) is not date or type(self.end) is not date or self.start > self.end:
@@ -65,6 +66,8 @@ class CampaignConfig:
         if self.start < date(2026, 1, 1):
             raise ValueError("Universe target starts in 2026; earlier data is context only")
         identifier(self.database)
+        if type(self.query_timeout_seconds) is not int or not 1<=self.query_timeout_seconds<=3600:
+            raise ValueError('Query timeout must be bounded between 1 and 3600 seconds')
         if self.conid_review_hash is not None and (not isinstance(self.conid_review_hash,str)
                 or not re.fullmatch('[0-9a-f]{64}',self.conid_review_hash)):
             raise ValueError('Conid review must be an explicit sealed SHA256 hash')
@@ -93,6 +96,7 @@ class CampaignConfig:
         config=asdict(self)
         if not self.issuer_keys:config.pop('issuer_keys') # Preserve existing unscoped contracts.
         if self.conid_review_hash is None:config.pop('conid_review_hash')
+        if self.query_timeout_seconds==45:config.pop('query_timeout_seconds')
         return dict(version=VERSION, config=config, trade_policy=TRADE_POLICY,
                     reporting_revision=REPORTING_REVISION, storage_policy=STORAGE_POLICY)
 

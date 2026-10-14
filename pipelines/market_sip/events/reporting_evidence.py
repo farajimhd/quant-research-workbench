@@ -6,6 +6,17 @@ TABLE='historical_trade_reporting_ns_v1'
 VERSION='original-reporting-nanosecond-evidence-v1'
 
 
+def event_date_predicate(first,last):
+    """Exact UTC event-date bounds supplement, never replace, the SIP filter."""
+    from datetime import datetime,timedelta,timezone
+    if type(first) is not int or type(last) is not int or not 0<first<=last:
+        raise ValueError('Invalid canonical SIP pruning bounds')
+    epoch=datetime(1970,1,1,tzinfo=timezone.utc)
+    left=(epoch+timedelta(microseconds=first)).date()
+    right=(epoch+timedelta(microseconds=last)).date()
+    return f'event_date BETWEEN toDate({literal(left)}) AND toDate({literal(right)})'
+
+
 def evidence_fingerprint_sql(evidence,day):
     database,table=evidence.split('.');identifier(database);identifier(table)
     fields='source_date,ticker,ordinal,sip_timestamp_ns,participant_timestamp_ns,reporting_condition_entries,reporting_reason,source_digest'
@@ -32,7 +43,7 @@ def coverage_ddl(database='q_live',table='historical_trade_reporting_coverage_v1
     SETTINGS storage_policy='live_market_ssd',default_compression_codec='ZSTD(1)'"""
 
 
-def certification_sql(target,evidence,day,source_digest,first_sip_us,last_sip_us):
+def certification_sql(target,evidence,day,source_digest,first_sip_us,last_sip_us,*,event_date_pruning=False):
     if len(source_digest)!=64 or any(c not in '0123456789abcdef' for c in source_digest):raise ValueError('Source digest is invalid')
     if type(first_sip_us) is not int or type(last_sip_us) is not int or not 0<first_sip_us<=last_sip_us:
         raise ValueError('Certified SIP bounds are invalid')
@@ -41,6 +52,7 @@ def certification_sql(target,evidence,day,source_digest,first_sip_us,last_sip_us
     computed=reason_sql("arrayStringConcat(reporting_condition_entries,',')",
         "ifNull(toString(participant_timestamp_ns),'')",'toString(sip_timestamp_ns)')
     expected=flags_sql('r.expected_reason')
+    pruning=' AND '+event_date_predicate(first_sip_us,last_sip_us) if event_date_pruning else ''
     return f"""WITH evaluated AS (
       SELECT *,toUInt8(1) present,{computed} expected_reason FROM {evidence}
       WHERE source_date=toDate({literal(day)})
@@ -51,13 +63,13 @@ def certification_sql(target,evidence,day,source_digest,first_sip_us,last_sip_us
         OR bitAnd(e.event_meta,192)!={expected}) bad,
       countIf({expected}=64) timely,countIf({expected}=192) delayed,countIf({expected}=0) unknown
     FROM (SELECT *,toUInt8(1) present FROM {target}
-      WHERE sip_timestamp_us BETWEEN {int(first_sip_us)} AND {int(last_sip_us)} AND bitAnd(event_meta,1)=1) e
+      WHERE sip_timestamp_us BETWEEN {int(first_sip_us)} AND {int(last_sip_us)} AND bitAnd(event_meta,1)=1{pruning}) e
     FULL OUTER JOIN evaluated r USING(ticker,ordinal)
     GROUP BY e.ticker)
     SETTINGS join_algorithm='full_sorting_merge',join_use_nulls=0,optimize_aggregation_in_order=1"""
 
 
-def certify(query,database,target,day,source_digest,first_sip_us,last_sip_us,expected_trades,*,table=TABLE,coverage='historical_trade_reporting_coverage_v1',expected_previous=None):
+def certify(query,database,target,day,source_digest,first_sip_us,last_sip_us,expected_trades,*,table=TABLE,coverage='historical_trade_reporting_coverage_v1',expected_previous=None,event_date_pruning=False):
     """Publish native reporting coverage only after independent NS/flag checks."""
     import json
     from datetime import datetime,timezone
@@ -66,7 +78,7 @@ def certify(query,database,target,day,source_digest,first_sip_us,last_sip_us,exp
     identifier(database);identifier(table)
     if type(expected_trades) is not int or expected_trades<0:raise ValueError('Expected source trade count is invalid')
     verify_auxiliary_storage(query,database,(table,))
-    counts={k:int(v) for k,v in query(certification_sql(target,database+'.'+table,day,source_digest,first_sip_us,last_sip_us))[0].items()}
+    counts={k:int(v) for k,v in query(certification_sql(target,database+'.'+table,day,source_digest,first_sip_us,last_sip_us,event_date_pruning=event_date_pruning))[0].items()}
     if counts['n']!=expected_trades or counts['unique_keys']!=expected_trades or counts['bad']:
         raise ValueError('Native reporting evidence does not match complete canonical source')
     identifier(coverage)
@@ -104,7 +116,7 @@ def ddl(database='q_live',table=TABLE,*,stage=False):
     SETTINGS storage_policy='live_market_ssd',default_compression_codec='ZSTD(1)'"""
 
 
-def reconciled_projection(raw_sql,target,source_date,source_digest,fields,*,first_sip_us,last_sip_us,repair_reporting_flags=False,ticker_bucket=None):
+def reconciled_projection(raw_sql,target,source_date,source_digest,fields,*,first_sip_us,last_sip_us,repair_reporting_flags=False,ticker_bucket=None,canonical_stage=False):
     """Rank matches use full canonical-field equality; unmatched rows block sealing.
 
     The updater supplies its own acquisition-owned raw projection. Historical
@@ -126,6 +138,8 @@ def reconciled_projection(raw_sql,target,source_date,source_digest,fields,*,firs
             raise ValueError('Invalid reconciliation ticker bucket')
         bucket_filter=f' AND cityHash64(ticker)%{total}={index}'
     fields=tuple(fields)
+    if type(canonical_stage) is not bool:raise ValueError('Canonical stage selection must be explicit Boolean')
+    stage_filter=f' AND source_date=toDate({literal(source_date)})' if canonical_stage else ''
     if len(fields)!=len(set(fields)) or 'event_meta' in fields:raise ValueError('Canonical comparison fields are duplicated')
     for field in fields:identifier(field)
     meta=lambda alias:f'bitAnd({alias}.event_meta,63)' if repair_reporting_flags else f'{alias}.event_meta'
@@ -137,7 +151,7 @@ def reconciled_projection(raw_sql,target,source_date,source_digest,fields,*,firs
       toUInt8(e.present!=1 OR r.present!=1 OR NOT ({equality})) mismatch,
       toUInt8(r.tie_count!=1) ambiguous
     FROM (SELECT *,toUInt8(1) present,row_number() OVER (PARTITION BY ticker ORDER BY ordinal) trade_rank
-      FROM {target} WHERE sip_timestamp_us BETWEEN {first_sip_us} AND {last_sip_us} AND bitAnd(event_meta,1)=1{bucket_filter}) e
+      FROM {target} WHERE sip_timestamp_us BETWEEN {first_sip_us} AND {last_sip_us} AND bitAnd(event_meta,1)=1{bucket_filter}{stage_filter}) e
     FULL OUTER JOIN (SELECT *,toUInt8(1) present,
       count() OVER (PARTITION BY ticker,sip_timestamp_us,sequence_number) tie_count,
       row_number() OVER (PARTITION BY ticker ORDER BY sip_timestamp_us,sequence_number) trade_rank

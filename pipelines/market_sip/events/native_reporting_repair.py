@@ -104,7 +104,7 @@ def step(query,source,expected_evidence_hash,claim,source_guard,*,database='q_li
     # The source audit also recomputes condition/clock reasons. Ignore only the
     # high flags currently being repaired; SIP association and coverage still
     # must match exactly.
-    audit=ns.certification_sql(target,evidence,day,source_hash,first,last)
+    audit=ns.certification_sql(target,evidence,day,source_hash,first,last,event_date_pruning=not fixture)
     computed=reason_sql("arrayStringConcat(reporting_condition_entries,',')",
         "ifNull(toString(participant_timestamp_ns),'')",'toString(sip_timestamp_ns)')
     flags=flags_sql('r.expected_reason')
@@ -116,6 +116,7 @@ def step(query,source,expected_evidence_hash,claim,source_guard,*,database='q_li
     if not {'ticker','ordinal','sip_timestamp_us','event_meta'}<=set(fields):raise ValueError('Canonical repair columns are missing')
     for field in fields:identifier(field)
     selected=f'sip_timestamp_us BETWEEN {first} AND {last}'
+    if not fixture:selected+=' AND '+ns.event_date_predicate(first,last)
     projection=','.join("if(bitAnd(event_meta,1)=1,bitAnd(event_meta,63),event_meta) AS event_meta" if f=='event_meta' else f for f in fields)
     low_sql=_fingerprint(f'SELECT {projection} FROM {target} WHERE {selected}',','.join(fields))
     low_hash=_hash(query,low_sql)
@@ -129,7 +130,7 @@ def step(query,source,expected_evidence_hash,claim,source_guard,*,database='q_li
     if not old:
         guard();insert_rows(query,database,HEADER,[dict(wanted,created_at=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f'))])
         if query(f'SELECT {columns} FROM {database}.{HEADER} WHERE {where}')!=[wanted]:raise ValueError('Native repair header insert is uncertain')
-    final={k:int(v) for k,v in query(ns.certification_sql(target,evidence,day,source_hash,first,last))[0].items()}
+    final={k:int(v) for k,v in query(ns.certification_sql(target,evidence,day,source_hash,first,last,event_date_pruning=not fixture))[0].items()}
     identifier(coverage)
     guard();query(ns.coverage_ddl(database,coverage),read=False);verify_auxiliary_storage(query,database,(coverage,))
     coverage_where=f'source_date=toDate({literal(day)}) AND revision={literal(REVISION)}'
@@ -162,6 +163,6 @@ def step(query,source,expected_evidence_hash,claim,source_guard,*,database='q_li
         raise ValueError('Native input evidence changed before certification')
     guard()
     ns.certify(query,database,target,day,source_hash,first,last,expected,table=table,coverage=coverage,
-        expected_previous=transition if previous==[transition] else None)
+        expected_previous=transition if previous==[transition] else None,event_date_pruning=not fixture)
     guard()
     return dict(status='complete',counts=final,marker=marker)
