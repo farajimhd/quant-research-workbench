@@ -24,7 +24,7 @@ read=lambda p:json.loads(Path(p).read_bytes())
 def definition():
     return dict(version=VERSION,names=list(NAMES),math_sha256=file_hash(Path(__file__).with_name('enriched_math.py')),
         extractor_sha256=file_hash(Path(__file__)),
-        universe='unique tickers in the pinned preopen tradable snapshot, not ranked feature scope',
+        universe='unique tickers in the full certified canonical-event-eligible preopen research population, not ranked feature scope',
         clock='completed source second <= feature clock; no overnight return; max endpoint age 1 second',
         context='contemporaneously observed valid ticker returns; explicit coverage; minimum 2 peers',
         rank='average-tie full-universe trailing-60-second dollar-volume percentile',validation_feedback=False)
@@ -63,13 +63,23 @@ def prepare_day(dataset,day,output):
             saved=next(p for p in source['definition']['plan']['population'] if p['session_date']==source_day)
             where=f'session_date=toDate({sql.literal(source_day)}) AND snapshot_id={sql.literal(saved["certificate"]["snapshot_id"])} AND is_tradable=1'
             rows=sql.query(client,f'SELECT listing_id,ticker FROM q_live.feature_tradable_universe_snapshot_v2 WHERE {where}')
-            expected_map={r['listing_id']:r['ticker'] for r in rows}
-            if len(expected_map)!=len(rows):raise ValueError('Duplicate certified listing identity')
+            full_map={r['listing_id']:r['ticker'] for r in rows}
+            if len(full_map)!=len(rows):raise ValueError('Duplicate certified listing identity')
+            eligible=set(source['units'][source_day]);snapshot_tickers=set(full_map.values());excluded=sorted(snapshot_tickers-eligible)
+            if (eligible-snapshot_tickers or len(eligible)!=saved['selected_ticker_days']
+                    or len(snapshot_tickers)!=saved['tradable_tickers'] or len(excluded)!=saved['tradable_without_canonical_events']):
+                raise ValueError('Certified canonical-event eligibility census changed')
+            expected_map={i:t for i,t in full_map.items() if t in eligible}
             population,proof=population_map(client,source,date.fromisoformat(source_day),expected_map)
+            proof.update(scope='full certified canonical-event-eligible preopen research population',snapshot_tickers=len(snapshot_tickers),
+                eligible_tickers=len(eligible),excluded_without_canonical_events=excluded,source_eligibility_fraction=len(eligible)/len(snapshot_tickers))
             tickers=sorted(set(population.values()));ticker_index={t:i for i,t in enumerate(tickers)}
             origin=int(datetime.combine(date.fromisoformat(source_day),datetime.min.time().replace(hour=4),NY).timestamp())
-            clocks=origin+np.arange(1,57601,dtype=np.int64)
             target_rows=np.flatnonzero(sources==source_day);requests={}
+            first_clock=max(origin+1,int(ticks[target_rows].min())-15)
+            last_clock=int(ticks[target_rows].max())
+            clocks=np.arange(first_clock,last_clock+1,dtype=np.int64)
+            read_begin=max(origin+1,first_clock-302)
             for identity in np.unique(ids[target_rows]):
                 member=members[int(identity)];listing=member['listing_id'];ticker=member['ticker']
                 if population.get(listing)!=ticker:raise ValueError('Target listing absent from pinned source universe')
@@ -91,18 +101,18 @@ def prepare_day(dataset,day,output):
                     cert=source['units'][source_day][ticker]['bars'];a=actual.get(ticker,dict(n=0,unique_keys=0,hash='0'))
                     if int(a['n'])!=cert['output_rows'] or int(a['n'])!=int(a['unique_keys']) or str(a['hash'])!=cert['output_hash']:raise ValueError('Certified bar unit changed: '+ticker)
                 end=f'intDiv(toInt64({sql.bounds(source_day)}),1000000)+toInt64(bucket_index)+1'
-                frame=authority.frame(client,f'SELECT ticker,toInt64({end}) AS second,open_int/10000. AS open,high_int/10000. AS high,low_int/10000. AS low,close_int/10000. AS close,volume,notional,trade_count,price_valid,extremes_valid FROM arte.bars_v1 WHERE {condition} AND resolution_ms=1000 ORDER BY ticker,bucket_index',
+                frame=authority.frame(client,f'SELECT ticker,toInt64({end}) AS second,open_int/10000. AS open,high_int/10000. AS high,low_int/10000. AS low,close_int/10000. AS close,volume,notional,trade_count,price_valid,extremes_valid FROM arte.bars_v1 WHERE {condition} AND resolution_ms=1000 AND bucket_index>={read_begin-origin-1} AND bucket_index<={last_clock-origin-1} ORDER BY ticker,bucket_index',
                     dict(ticker=pl.String,second=pl.Int64,open=pl.Float64,high=pl.Float64,low=pl.Float64,close=pl.Float64,volume=pl.Float64,notional=pl.Float64,trade_count=pl.Int64,price_valid=pl.Int64,extremes_valid=pl.Int64))
                 grouped=frame.partition_by('ticker',as_dict=True,maintain_order=True)
                 for ticker in batch:
                     f=grouped.get((ticker,),frame.head(0));units.append(dict(ticker=ticker,certificate=source['units'][source_day][ticker]['bars']))
                     if not len(f):continue
-                    t=f['second'].to_numpy();positions=t-origin-1
-                    if np.any(np.diff(t)<=0) or positions.min()<0 or positions.max()>=len(clocks):raise ValueError('Source clock ordering/session mismatch')
+                    t=f['second'].to_numpy();positions=t-first_clock;emit=(positions>=0)&(positions<len(clocks))
+                    if np.any(np.diff(t)<=0) or t.min()<origin+1 or t.max()>origin+57600:raise ValueError('Source clock ordering/session mismatch')
                     c=f['close'].to_numpy();ok=f['price_valid'].to_numpy()!=0;ti=ticker_index[ticker]
-                    for hi,h in enumerate(MARKET_HORIZONS):dense[hi,ti,positions]=returns(t,c,ok,t,h)
+                    for hi,h in enumerate(MARKET_HORIZONS):dense[hi,ti,positions[emit]]=returns(t,c,ok,t,h)[emit]
                     s=np.r_[0.,np.cumsum(f['notional'].to_numpy(),dtype=np.float64)];beg=np.searchsorted(t,t-60,side='right')
-                    dense[3,ti,positions]=s[np.arange(1,len(t)+1)]-s[beg]
+                    dense[3,ti,positions[emit]]=(s[np.arange(1,len(t)+1)]-s[beg])[emit]
                     for rr in requests.get(ticker,[]):
                         exact=np.searchsorted(t,ticks[rr])
                         if np.any(exact>=len(t)) or not np.array_equal(t[exact],ticks[rr]):raise ValueError('Requested completed feature clock absent')
@@ -112,7 +122,7 @@ def prepare_day(dataset,day,output):
             rank=np.lib.format.open_memmap(scratch/'rank.npy',mode='w+',dtype=np.float32,shape=(len(tickers),len(clocks)));rank[:]=np.nan
             # Native sorting and reductions over all peers in bounded 1024-second tiles.
             target_tickers=np.asarray([ticker_index[members[int(i)]['ticker']] for i in ids[target_rows]])
-            target_clock=ticks[target_rows]-origin-1
+            target_clock=ticks[target_rows]-first_clock
             for begin in range(0,len(clocks),1024):
                 end=min(len(clocks),begin+1024);pick=(target_clock>=begin)&(target_clock<end);rr=target_rows[pick];ti=target_tickers[pick];ci=target_clock[pick]-begin
                 for hi,h in enumerate(MARKET_HORIZONS):

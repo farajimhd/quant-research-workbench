@@ -11,7 +11,7 @@ are appended (957 total). V17 code, inputs and running campaign are untouched.
 * Volume/trade acceleration and 15-second volatility versus round-trip fees.
 * Completed 5/15/60-second candle body, range, close location, return,
   log volume/trades and active-second fraction.
-* Full pinned preopen universe (unique ticker, not venue-alias-weighted or
+* Full certified canonical-event-eligible preopen universe (unique ticker, not venue-alias-weighted or
   top-ranked-only) 15/60/300-second median/mean return, advancing fraction,
   dispersion, coverage, own relative return and average-tie return percentile.
 * Full-universe trailing-60-second dollar-volume percentile and 15-second change.
@@ -21,7 +21,8 @@ Every source endpoint is at or before the completed feature clock. The existing
 consumer selects causal features before its decision time. Returns never cross
 sessions; both endpoints must have valid prices and be at most one second old.
 Volatility needs all one-second price increments. Candle extrema need complete
-valid source seconds. Context aggregates currently observed valid tickers and
+valid source seconds. Receipts preserve the full preopen census and explicit canonical-event exclusions.
+Context aggregates currently observed valid eligible tickers and
 exposes coverage; fewer than two peers masks statistics/ranks. Missing evidence
 is NaN in storage and false validity in the evaluator, never a known zero.
 Early session history remains masked rather than borrowing overnight prices.
@@ -35,6 +36,10 @@ operator mutation, pruning, complexity and semantic identity. Existing temporal
 operators still count observed candles; prepared elapsed-time returns use real
 seconds. CUDA STD uses a bounded Welford scan. CPU/Torch is the tested oracle;
 STD agrees within floating-point tolerance, existing operations remain exact.
+
+CPU evaluation residency is an LRU of at most four sessions per worker; active
+evaluation and the two bounded plans retain their own references. This prevents
+year-long datasets from accumulating every session in RAM.
 
 New features participate in typed family sampling and compatible substitutions.
 Market ranks/aggregates are prepared once, never recomputed per candidate.

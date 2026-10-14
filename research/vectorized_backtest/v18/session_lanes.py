@@ -27,7 +27,10 @@ _worker=None
 
 class Worker:
     def __init__(self,config,events,lane):
-        self.config=config;self.events=events;self.lane=lane;self.host={}
+        self.config=config;self.events=events;self.lane=lane
+        from collections import OrderedDict
+        self.host=OrderedDict();self.maximum_host_sessions=config.get('maximum_host_sessions',4)
+        if not 2<=self.maximum_host_sessions<=8:raise ValueError('Bounded CPU session residency required')
         self.staging=TransferStaging();self.loader=ThreadPoolExecutor(max_workers=1)
         from collections import OrderedDict
         self.plans=OrderedDict();self.plan_generation=None;self.plan_limit=config.get("plan_limit",2)
@@ -54,7 +57,11 @@ class Worker:
             receipt=self.host[day].receipt
             actual='validation' if receipt.get('validation_opened') else 'training'
             if actual!=c.get('split','training'):raise ValueError('Session input crossed training/validation boundary')
-        return self.host[day]
+        self.host.move_to_end(day)
+        item=self.host[day]
+        while len(self.host)>self.maximum_host_sessions:self.host.popitem(last=False)
+        # Active evaluation and bounded plans retain their own references.
+        return item
 
     def run(self,day,next_day,payload,generation,token,replay_width):
         from .lineage import program_key

@@ -39,6 +39,11 @@ def test_completed_multitimeframe_and_unknown_extremes():
     missing=f.with_columns(pl.when(pl.col('second')==15).then(0).otherwise(pl.col('extremes_valid')).alias('extremes_valid'))
     v=em.own(missing,np.array([15]),0);assert np.isnan(v[0,em.OWN_NAMES.index('candle.15s.range')])
 
+def test_bounded_source_prefix_is_equivalent():
+    f=frame(900);targets=np.array([600,700,899])
+    full=em.own(f,targets,0);bounded=em.own(f.filter(pl.col('second')>=283),targets,0)
+    assert np.allclose(full,bounded,equal_nan=True,atol=1e-7)
+
 
 def test_std_masks_validation_and_genetic_reachability():
     p=Program((Node(Op.FEATURE,feature=len(LEGACY)),Node(Op.STD,a=0,window=3)),1)
