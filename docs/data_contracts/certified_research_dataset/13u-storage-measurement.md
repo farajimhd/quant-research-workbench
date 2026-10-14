@@ -137,3 +137,22 @@ attempts/coverage outside any selected target campaign. It is not a January-to-
 end estimate for the new schemas. Do not add a proportional projection from
 these old tables to authorize new writers. Capacity admission refreshes current
 headroom and requires compatible qualified product rates plus explicit reserves.
+
+## Bounded execution measurements
+
+Executor results now include `measurements` with monotonic elapsed seconds,
+peak active worker count, peak **reserved** memory bytes, and per-product
+executed/reused/failed counts, total/longest handler duration and receipt-reuse
+check duration. Handler time includes production and independent receipt
+verification; durations can overlap across concurrent workers. Receipt-check
+failures are recorded separately from producer failures. Blocked descendants
+are not counted as executed.
+
+These measurements use the same scheduler for launch, stored run and resume.
+Executor elapsed time includes scheduling and progress callbacks, but excludes
+the controller's initial installation and final seal verification. A previously
+sealed campaign can return before invoking the executor. Memory reservation is
+an admission counter, not observed process RSS or ClickHouse peak allocation.
+Metrics are returned with execution metadata; they do not generate local data
+exports or qualify a capacity profile. Pair them with phase storage observations
+and representative source sizes before evaluating throughput or headroom.

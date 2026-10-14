@@ -473,6 +473,7 @@ def main(argv=None):
             summary=dict(status=result['status'],counts=counts,seal=result.get('seal'),
                 failures={k:client.clean_error(v)[:256] for k,v in list(result['errors'].items())[:20]},
                 failed_units=len(result['errors']))
+            if 'measurements' in result:summary['measurements']=result['measurements']
             if observations is not None:
                 captured=observations.result()
                 summary['storage_observations']=dict(samples=len(captured['samples']),observed_maxima=captured['observed_maxima'],
@@ -482,6 +483,10 @@ def main(argv=None):
             else:
                 print(f"Execution {summary['status']} | failed={summary['failed_units']} | "+
                     (str(summary['seal']['root_hash']) if summary['seal'] else 'unsealed'))
+                if 'measurements' in summary:
+                    measured=summary['measurements']
+                    print(f"  Executor elapsed={measured['elapsed_seconds']:.2f}s | peak active workers={measured['peak_active_workers']} | "
+                        f"peak reserved memory={measured['peak_reserved_memory_bytes']/1024**3:.2f} GiB")
                 for key,reason in summary['failures'].items():print(f'  {key}: {reason}')
             return 0 if result['status']=='complete' else 130 if result['status']=='interrupted' else 2
         if args.command=='qualify-sec-lineage':

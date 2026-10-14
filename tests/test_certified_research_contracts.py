@@ -2709,6 +2709,11 @@ class ClickHouseIntegration(unittest.TestCase):
         campaign=Campaign(self.client.query,self.database,claim,dataset,config,plans,'b'*64,lambda:None,producers,verifiers)
         result=campaign.run()
         self.assertEqual(result['status'],'complete',str(result['errors']))
+        measured=result['measurements']
+        self.assertGreater(measured['elapsed_seconds'],0)
+        self.assertLessEqual(measured['peak_active_workers'],config.workers)
+        self.assertLessEqual(measured['peak_reserved_memory_bytes'],config.global_memory_bytes)
+        self.assertEqual(sum(p['executed'] for p in measured['products'].values()),len(plans))
         self.assertIn(('aggregate','after_staging'),observed)
         self.assertIn(('bars','after_publish'),observed)
         self.assertTrue(result['seal']['root_hash'])

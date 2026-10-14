@@ -11,6 +11,7 @@ from threading import Event
 from collections.abc import Callable, Mapping
 from collections import deque,Counter
 from heapq import heapify,heappush,heappop
+from time import perf_counter
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,13 @@ def execute(units: tuple[Unit, ...], handlers: Mapping[str, Callable], *, worker
     by_key=validate(units,memory_bytes)
     if any(u.product not in handlers for u in units):
         raise ValueError("Required producer is unavailable; execution cannot start")
+    started=perf_counter();peak_workers=0;peak_reserved=0
+    measurements={u.product:dict(executed=0,reused=0,failed=0,reuse_failed=0,handler_seconds=0.,
+        longest_handler_seconds=0.,reuse_check_seconds=0.) for u in units}
+    def run_handler(unit,parents):
+        begin=perf_counter()
+        try:return handlers[unit.product](unit,parents,stop),None,perf_counter()-begin
+        except Exception as error:return None,error,perf_counter()-begin
     stop=stop if stop is not None else Event()
     notify=progress or (lambda event:None)
     state={k:'queued' for k in by_key};results={};errors={};active={};reserved=0
@@ -98,24 +106,35 @@ def execute(units: tuple[Unit, ...], handlers: Mapping[str, Callable], *, worker
                     _,_,key=heappop(ready);u=by_key[key]
                     if state[key]!='queued':continue
                     parents={p:results[p] for p in u.parents}
+                    begin=perf_counter()
                     try:
                         old=reuse(u,parents) if reuse is not None else None
                     except Exception as error:
+                        measurements[u.product]['reuse_failed']+=1
                         errors[key]=error;finish(key,'failed','Existing receipt verification failed');continue
+                    finally:
+                        if reuse is not None:measurements[u.product]['reuse_check_seconds']+=perf_counter()-begin
                     if old is not None:
+                        measurements[u.product]['reused']+=1
                         results[key]=old;finish(key,'reused');continue
                     report(key,'active')
-                    active[pool.submit(handlers[u.product],u,parents,stop)]=u
+                    active[pool.submit(run_handler,u,parents)]=u
                     reserved+=u.memory_bytes
+                    peak_workers=max(peak_workers,len(active));peak_reserved=max(peak_reserved,reserved)
                 if not active:continue
                 done,_=wait(active,timeout=.25,return_when=FIRST_COMPLETED)
                 for future in done:
                     u=active.pop(future);reserved-=u.memory_bytes
                     try:
-                        value=future.result()
+                        value,error,seconds=future.result()
+                        measured=measurements[u.product];measured['executed']+=1
+                        measured['handler_seconds']+=seconds
+                        measured['longest_handler_seconds']=max(measured['longest_handler_seconds'],seconds)
+                        if error is not None:raise error
                         if value is None:raise ValueError('Producer returned no verified receipt')
                         results[u.key]=value;finish(u.key,'certified')
                     except Exception as error:
+                        measurements[u.product]['failed']+=1
                         errors[u.key]=error;finish(u.key,'failed','Producer failed; inspect bounded error receipt')
         except BaseException:
             stop.set()
@@ -123,4 +142,7 @@ def execute(units: tuple[Unit, ...], handlers: Mapping[str, Callable], *, worker
             # Exiting the pool waits for running handlers to reconcile owned writes.
             raise
     return dict(status='failed' if errors else 'interrupted' if stop.is_set() else 'complete',
-                units=state,results=results,errors=errors)
+                units=state,results=results,errors=errors,
+                measurements=dict(version='bounded-execution-measurements-v1',elapsed_seconds=perf_counter()-started,
+                    peak_active_workers=peak_workers,peak_reserved_memory_bytes=peak_reserved,
+                    memory_is_reservation=True,products=measurements))
