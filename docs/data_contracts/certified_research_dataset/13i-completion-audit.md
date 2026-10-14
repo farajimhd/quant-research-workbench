@@ -23,7 +23,7 @@ claim that the requested full dataset can be certified from current inputs.
 | Compact normalized compressed persistence | Exact installation catalog, explicit lossless codecs, workload policies and actual-part checks | Audit every additional acquisition/migration schema before enabling its writer |
 | Restart-safe execution and certification | Immutable CLI plans, typed producers/verifiers, source guards and seals; bounded market/SEC/backfill fixtures resume without inserts | Chunked whole-universe loading and end-to-end acceptance using qualified production bindings/capacity |
 | Measured storage and efficiency | Physical inventory and plan-bound capacity guard | Representative certified pilot rates, transient/merge peaks, physical-volume grouping and full-universe projection |
-| Inputs for RL and optimization | Existing common market/reference product contracts | Final consumer feature-coverage comparison; missing required common products must be added before claiming coverage |
+| Inputs for RL and optimization | [Current RL V6/V18 input review](13t-consumer-input-review.md); common contracts and prior-session RVOL demand | Legacy reader bindings, consumer parity and actual historical evidence/coverage remain unproven |
 | No downstream preparation | Controller scope is common data and certification | Continue excluding shards, hindsight labels, exports/caches, training and optimization |
 
 Passing a fixture does not resolve the production evidence gaps in this table.
@@ -103,7 +103,8 @@ audit remain required before acquisition can be enabled.
    production scope without lifting the 250,000-session preparation and 1,000,000-unit /
    256 MiB saved-plan bounds. Inventory ratios alone must not authorize writes.
 4. Finish the common-feature comparison against current RL/optimization consumers
-   and add missing required common products without downstream preparation.
+   with real reader/parity acceptance after the reviewed primitive mapping;
+   do not generate downstream banks, shards, labels or exports.
 5. Run bounded end-to-end acceptance with current qualified inputs and update
    this audit with requirement-specific evidence before marking the goal complete.
 

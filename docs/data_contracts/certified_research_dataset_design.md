@@ -9,10 +9,20 @@ Prepare one certified historical market/reference dataset for RL trading and str
 
 **Scope update, October 12:** implementation publishes compact, normalized, compressed common data to ClickHouse only. Training shards, hindsight labels, RL banks and optimizer exports are excluded. Consumer pages explain input requirements, not tasks to execute. See the [implemented schema foundations](certified_research_dataset/12-implemented-schemas.md) for exact columns and current implementation status.
 
+**Implementation update, October 13:** `launch-collection` now connects source
+preparation, bounded issuer cohorts, aggregate admission and certification.
+Historical authority and representative capacity gaps still block full
+readiness. The [completion audit](certified_research_dataset/13i-completion-audit.md)
+is the current status authority; fixture passes do not prove production coverage.
+
 ## Page guide
 
 | Page | What you will find |
 | --- | --- |
+| [Current implementation audit](certified_research_dataset/13i-completion-audit.md) | Verified work, live evidence gaps and remaining completion requirements. |
+| [Current RL/optimization input review](certified_research_dataset/13t-consumer-input-review.md) | Source primitive mapping and legacy reader compatibility gaps; no downstream generation. |
+| [Bounded issuer collection launch](certified_research_dataset/13r-issuer-cohorts.md) | Current launch/resume/verification routes, exact collection metadata schemas and capacity contracts. |
+| [SEC manifest storage migration](certified_research_dataset/13s-sec-manifest-migration.md) | Verified backup-retaining migration command and maintenance requirements. |
 | [Identity, timing and shared contracts](certified_research_dataset/01-foundations.md) | Approved policies, identities, clock meanings and precision. |
 | [Available data, gaps and source evidence](certified_research_dataset/02-evidence.md) | Audit numbers, coverage blockers and source pointers. |
 | [Acquisition, event repair and historical universe](certified_research_dataset/03-ingestion-universe.md) | Downloader, G-to-D staging, event migrations and dated ticker membership. |
