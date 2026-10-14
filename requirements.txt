@@ -1,5 +1,6 @@
 polars
 numpy
+numba>=0.61,<0.66
 psutil
 scipy
 fastapi
