@@ -46,9 +46,20 @@ def requested_rows(keys,top_indices,listing_count):
     return np.flatnonzero(np.isin(keys//KEY_STRIDE,selected)),selected
 
 
+def calculation_hash(path=None):
+    """Bind calculation code independently of worker scheduling policy."""
+    import ast
+    from hashlib import sha256
+    tree=ast.parse(Path(path or __file__).read_text(encoding='utf-8-sig'))
+    names={'nan_scratch','release_scratch','requested_rows','prepare_day'}
+    selected=[node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name in names]
+    if {node.name for node in selected}!=names:raise ValueError('Incomplete feature calculation identity')
+    return sha256(ast.dump(ast.Module(body=selected,type_ignores=[]),include_attributes=False).encode()).hexdigest()
+
+
 def definition():
     return dict(version=VERSION,names=list(NAMES),math_sha256=file_hash(Path(__file__).with_name('enriched_math.py')),
-        extractor_sha256=file_hash(Path(__file__)),
+        extractor_sha256=calculation_hash(),extractor_identity='v18-calculation-ast-v1',
         output_scope='top-10 membership listings only, including their compact causal history; other rows masked',
         universe='unique tickers in the full pinned preopen snapshot; missing certified source units remain unavailable, never zero',
         clock='completed source second <= feature clock; no overnight return; max endpoint age 1 second',
@@ -192,7 +203,7 @@ def prepare_day(dataset,day,output):
 
 
 def _prepare(training,validation,output,workers=4):
-    if not 2<=workers<=4:raise ValueError('Use 2 to 4 bounded CPU session workers')
+    if not 2<=workers<=8:raise ValueError('Use 2 to 8 bounded CPU session workers')
     out=require_runtime(Path(output));datasets={role:read(path) for path,role in ((training,'training'),(validation,'validation'))}
     import psutil
     # Disk-backed cross-sections are reclaimable; admission covers bounded

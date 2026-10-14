@@ -52,6 +52,16 @@ def test_scratch_release_preserves_nan_masks_and_written_values(tmp_path):
     a._mmap.close()
 
 
+def test_feature_identity_ignores_scheduler_but_binds_calculation(tmp_path):
+    from pathlib import Path
+    from research.vectorized_backtest.v18 import prepare_enriched as preparation
+    source=Path(preparation.__file__).read_text();path=tmp_path/'extractor.py'
+    path.write_text(source.replace('2<=workers<=8','2<=workers<=16'))
+    assert preparation.calculation_hash(path)==preparation.calculation_hash()
+    path.write_text(source.replace('prepared!=len(required)','prepared!=0'))
+    assert preparation.calculation_hash(path)!=preparation.calculation_hash()
+
+
 def test_completed_multitimeframe_and_unknown_extremes():
     f=frame(30);v=em.own(f,np.array([14]),0)
     ix=em.OWN_NAMES.index('candle.15s.body');assert np.isnan(v[0,ix])

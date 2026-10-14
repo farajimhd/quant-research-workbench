@@ -86,13 +86,20 @@ Use immutable `v8-split-manifest-v1` inputs with indicator banks already bound.
 The script supports both the current and January-onward datasets without hardcoded
 dates. It reads certified ARTE bars whose units and pinned snapshots are verified,
 checks storage policy and actual parts, and never opens raw SIP files or writes
-ClickHouse tables. Two to four workstation CPU processes prepare independent
+ClickHouse tables. Two to eight workstation CPU processes prepare independent
 sessions; each query uses one server thread. Dense full-market scratch is
 runtime-only, disk-backed; native reductions/sorts use 256-second tiles.
 Admission requires 2 GiB per worker plus 8 GiB host headroom (16 GiB for four
 workers). New session assignments pause below 8 GiB available memory; active
 sessions finish without abandoning their work. These are bounded admission
 budgets, not measured peak-memory guarantees.
+The feature certificate binds calculation AST and math bytes independently of
+scheduling policy. `repartition` creates immutable 24/12 bindings, preserves
+original receipts and values, and explicitly records six validation sessions'
+prior V17 training exposure. Reuse of existing enriched values requires exact
+calculation identity and verification against the original producer certificate.
+Unchanged source sessions are read-only directory bindings; moved sessions have
+new input/history/cache/indicator receipts over immutable linked arrays.
 RAM/disk admission, bounded outstanding jobs, day/ticker progress, failures,
 cooperative STOP and sealed-day resume are explicit. Unsealed failed days are
 recomputed; sealed outputs are verified and never overwritten.
