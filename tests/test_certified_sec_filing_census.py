@@ -48,6 +48,22 @@ def test_unique_qualified_metadata_is_discovery_only():
         inventory(query_for([row(),row()]),('320193',),date(2025,1,1),date(2025,12,31),forms=('10-K',))
 
 
+@pytest.mark.parametrize('source',['retained','bulk_submissions'])
+def test_census_pushes_only_replacement_key_before_final(source):
+    statements=[]
+    sample=row()
+    if source=='bulk_submissions':sample.update(source_kind='submissions_bulk',source_file_id='original-source')
+    delegate=query_for([sample])
+    def query(sql):
+        statements.append(sql)
+        return delegate(sql)
+    inventory(query,('320193',),date(2025,1,1),date(2025,12,31),forms=('10-K',),source=source)
+    assert len(statements)==3
+    for sql in statements:
+        assert "FINAL PREWHERE cik IN ('0000320193','320193') WHERE form_type IN ('10-K')" in sql
+        assert 'filing_date BETWEEN' in sql.split(' WHERE ',1)[1]
+
+
 def test_launcher_census_selects_documents_before_preparation():
     base=['prepare-sources','--end-date','2026-01-02','--capacity-profile','pilot.json','--fundamental-start-date','2025-01-01',
         '--sec-census-cik','320193','--sec-census-forms','10-K,10-Q']

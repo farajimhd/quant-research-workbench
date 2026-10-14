@@ -64,3 +64,14 @@ this flag remains explicitly uncertified candidate preparation.
 Identity agreement alone is insufficient for coverage certification. Bulk snapshot
 freshness, original download receipts and complete referenced submission fragments
 must also be verified. These checks do not download data or certify allocation.
+
+### Bounded query execution
+
+Both filing authorities use `(cik, accession_number)` replacement keys. The census
+pushes only its CIK cohort into `PREWHERE` before `FINAL`; mutable form and filing-date
+conditions remain after deduplication. This preserves unknown-date blockers and
+avoids deduplicating unrelated issuers. The 2025–2026 three-issuer live check completed
+both inventories and reconciliation in 2.28 seconds with a 2 GiB query limit.
+Complete census results matched the previous query exactly for both authorities
+when the latter was run with an 8 GiB limit. This pilot does not establish whole-universe
+throughput or snapshot completeness.

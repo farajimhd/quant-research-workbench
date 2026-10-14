@@ -18,14 +18,17 @@ def inventory(query,ciks,start,end,*,forms,maximum_documents=10000,source='retai
     if len(normalized)!=len(ciks):raise ValueError('Filing census has duplicate normalized issuers')
     aliases=','.join(literal(v) for v in sorted({value for cik in normalized for value in (cik,cik.zfill(10))}))
     columns='cik,accession_number,form_type,filing_date,primary_document,source_content_sha256'
-    where=(f'cik IN ({aliases}) AND form_type IN ({",".join(map(literal,forms))}) AND '
+    # CIK is part of both authoritative tables' replacement key. Restrict it
+    # before FINAL; mutable form/date metadata must remain after deduplication.
+    prewhere=f'PREWHERE cik IN ({aliases})'
+    where=(f'form_type IN ({",".join(map(literal,forms))}) AND '
         f'(filing_date BETWEEN toDate({literal(start)}) AND toDate({literal(end)}) OR filing_date IS NULL)')
-    if source=='retained':base=f'FROM q_live.sec_filing_v3 FINAL WHERE {where}'
+    if source=='retained':base=f'FROM q_live.sec_filing_v3 FINAL {prewhere} WHERE {where}'
     else:
         columns+=',source_kind,source_file_id'
         base=(f'FROM (SELECT cik,accession_number,form_type,filing_date,primary_document,'
             'lower(hex(SHA256(raw_submission_json))) source_content_sha256,source_kind,source_file_id '
-            f'FROM sec_core.sec_bulk_mirror_filing_v3 FINAL WHERE {where})')
+            f'FROM sec_core.sec_bulk_mirror_filing_v3 FINAL {prewhere} WHERE {where})')
     census_sql=(f'SELECT count() n,sum(length(toJSONString(tuple({columns})))) bytes,'
         f'lower(hex(SHA256(toJSONString(arraySort(groupArray(lower(hex(SHA256(toJSONString(tuple({columns}))))))))))) source_hash {base}')
     before=query(census_sql)
