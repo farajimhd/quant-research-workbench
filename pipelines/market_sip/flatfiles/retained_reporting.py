@@ -82,6 +82,28 @@ def canonical_insert_sql(target,day,first,last,*,database='q_live',query_threads
         f'AND bitAnd(event_meta,1)=1 SETTINGS max_threads={query_threads},max_memory_usage={query_memory_bytes}')
 
 
+def publish_evidence(query,day,guard,*,database='q_live',buckets=16,emit=print):
+    """Exact multiset readback in bounded buckets; never load all prior days."""
+    from pipelines.certified_research.contracts import identifier
+    identifier(database)
+    if type(day) is not date or type(buckets) is not int or not 1<=buckets<=256:
+        raise ValueError('Invalid reporting publication scope')
+    names='source_date,ticker,ordinal,sip_timestamp_ns,participant_timestamp_ns,reporting_condition_entries,reporting_reason,source_digest'
+    for bucket in range(buckets):
+        guard()
+        selected=f'source_date=toDate({literal(day)}) AND cityHash64(ticker)%{buckets}={bucket}'
+        prior=f'SELECT source_date,ticker,ordinal FROM {database}.{ns.TABLE} WHERE {selected}'
+        query(f'INSERT INTO {database}.{ns.TABLE} ({names}) SELECT '+','.join('s.'+c for c in names.split(','))+
+            f' FROM (SELECT * FROM {database}.{STAGE} WHERE {selected}) s '
+            f'LEFT ANTI JOIN ({prior}) e USING(source_date,ticker,ordinal)',read=False)
+        for left,right in ((STAGE,ns.TABLE),(ns.TABLE,STAGE)):
+            guard()
+            bad=query(f'SELECT count() n FROM (SELECT {names} FROM {database}.{left} WHERE {selected} '
+                f'EXCEPT ALL SELECT {names} FROM {database}.{right} WHERE {selected})')[0]
+            if int(bad['n']):raise ValueError('Retained original-clock publication differs from reconciled evidence')
+        emit(f'Retained reporting {day} | publication={bucket+1}/{buckets}')
+
+
 def verify_table_columns(query,table):
     actual=query(f"SELECT name,type FROM system.columns WHERE database='q_live' AND table={literal(table.name)} ORDER BY position")
     if [(r['name'],r['type'].replace(' ','')) for r in actual]!=[(c.name,c.type.replace(' ','')) for c in table.columns]:
@@ -246,14 +268,8 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                 if int(audit['n'])!=expected or int(audit['unique_keys'])!=expected or int(audit['bad']):
                     raise ValueError('Retained reporting reconstruction is incomplete, mismatched or ambiguous')
                 if _file_hash(input_file,stop)!=file_hash:raise ValueError('Retained reporting input file changed during extraction')
-                cols='source_date,ticker,ordinal,sip_timestamp_ns,participant_timestamp_ns,reporting_condition_entries,reporting_reason,source_digest'
                 # Fill only absent keys after complete source reconciliation.
-                query(f'INSERT INTO q_live.{ns.TABLE} ({cols}) SELECT '+','.join('s.'+c for c in cols.split(','))+
-                    f' FROM q_live.{STAGE} s LEFT ANTI JOIN q_live.{ns.TABLE} e USING(source_date,ticker,ordinal) WHERE s.{stage_where}',read=False)
-                for left,right in ((STAGE,ns.TABLE),(ns.TABLE,STAGE)):
-                    bad=query(f'SELECT count() n FROM (SELECT {cols} FROM q_live.{left} WHERE {stage_where} '
-                        f'EXCEPT ALL SELECT {cols} FROM q_live.{right} WHERE {stage_where})')[0]
-                    if int(bad['n']):raise ValueError('Retained original-clock publication differs from reconciled evidence')
+                publish_evidence(query,day,guard,emit=emit)
                 frozen=native._hash(query,ns.evidence_fingerprint_sql('q_live.'+ns.TABLE,day))
                 guard();insert_rows(query,'q_live',RECEIPTS,[dict(source_date=str(day),source_digest=source_hash,evidence_hash=frozen,
                     file_digest=file_hash,file_bytes=size,file_key=str(info['key']).replace('\\','/'),source_origin=info['origin'],

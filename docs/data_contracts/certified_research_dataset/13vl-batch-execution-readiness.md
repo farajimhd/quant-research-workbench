@@ -146,3 +146,10 @@ dated partitions and lossless codecs, and is cleaned only after day certificatio
 It is not a downstream market-event authority. Admission reserves four times
 the measured raw semantic footprint for staging/publication/merge work before
 writing; partial staging remains resumable and has no certified receipt.
+
+Exact original-clock publication also uses the same bounded ticker buckets.
+Both `EXCEPT ALL` comparisons remain mandatory; their memory no longer scales
+with the entire day. Missing-key insertion scopes the existing bank to that
+source date and bucket instead of loading all earlier history. A failed
+comparison leaves the receipt absent, blocks flag mutation and never overwrites
+conflicting original-clock evidence.

@@ -78,6 +78,23 @@ def test_ingestion_array_materialization_preserves_full_conditions_and_unknown_c
         assert sorted(client.query(direct),key=lambda r:r['ordinal'])==sorted(client.query(cached),key=lambda r:r['ordinal'])
         assert all(r['mismatch']==0 and r['ambiguous']==0 for r in client.query(cached))
         verify_auxiliary_storage(client.query,database,(retained.CANONICAL,))
+        client.query(ns.ddl(database,retained.STAGE,stage=True),read=False)
+        client.query(ns.ddl(database,ns.TABLE),read=False)
+        client.query(f'INSERT INTO {database}.{retained.STAGE} '+cached,read=False)
+        log=[]
+        def traced(sql,**kwargs):log.append(sql);return client.query(sql,**kwargs)
+        retained.publish_evidence(traced,date(2026,1,2),lambda:None,database=database,emit=lambda _:None)
+        assert int(client.query(f'SELECT count() n FROM {database}.{ns.TABLE}')[0]['n'])==4
+        assert all('cityHash64(ticker)%16=' in sql for sql in log)
+        # Resume inserts no duplicates and ignores another source date.
+        from pipelines.certified_research.publication import insert_rows
+        record=client.query(f'SELECT * FROM {database}.{ns.TABLE} LIMIT 1')[0]
+        insert_rows(client.query,database,ns.TABLE,[dict(record,source_date='2026-01-03')])
+        retained.publish_evidence(client.query,date(2026,1,2),lambda:None,database=database,emit=lambda _:None)
+        assert int(client.query(f'SELECT count() n FROM {database}.{ns.TABLE}')[0]['n'])==5
+        client.query(f"ALTER TABLE {database}.{ns.TABLE} UPDATE sip_timestamp_ns=sip_timestamp_ns+1 WHERE source_date='2026-01-02' SETTINGS mutations_sync=2",read=False)
+        with pytest.raises(ValueError,match='differs from reconciled'):
+            retained.publish_evidence(client.query,date(2026,1,2),lambda:None,database=database,emit=lambda _:None)
     finally:
         if created:client.query('DROP DATABASE '+database+' SYNC',read=False)
         client.close()
