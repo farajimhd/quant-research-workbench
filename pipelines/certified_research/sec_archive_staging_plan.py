@@ -47,5 +47,6 @@ def plan(prepared,canonical_root,backup_root,cache_root,runtime_root,*,reserve_b
     chunks=archive_staging.plan_chunks(((row['archive_key'],row['bytes']) for row in archives),space,
         maximum_chunk_bytes=maximum_chunk_bytes)
     result=dict(version='grouped-sec-archive-staging-plan-v1',archives=tuple(archives),chunks=chunks,
-        documents=len(seen),unique_archives=len(archives),space=space,copy_started=False)
+        documents=len(seen),unique_archives=len(archives),space=space,copy_started=False,
+        backup_root=str(backup_root),cache_root=str(cache_root),runtime_root=str(runtime_root))
     return dict(result,plan_hash=digest(result))

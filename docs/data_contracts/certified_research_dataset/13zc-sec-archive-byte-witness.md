@@ -86,5 +86,20 @@ preserved reserve. A live one-document plan found the 1,521,439,675-byte backup,
 reserved 800,154,503,987 bytes and reported one chunk without copying. The
 executor must still revalidate space and source stats before each chunk, copy
 and verify each archive once, publish completed witnesses, then remove only
-owned successful copies. Grouped execution and durable witness publication
-remain unfinished; this plan is not authorization to use stale space readings.
+owned successful copies. The plan is not authorization to use stale space readings.
+
+`sec_archive_execution.execute` now implements this grouped copy/verification
+handoff: it rechecks plan/source fingerprints, exact backup size/mtime and
+current D space per chunk; validates the original successful receipt before
+copy; verifies the staged digest; and scans all selected documents together.
+It applies the explicitly selected timing mode and calls the required publisher.
+Only a complete matching witness/qualification hash readback permits cleanup.
+Files newly created by this run are removed after success. Existing cached files
+are independently hash-verified and reported in `preserved_cached_copies`; their
+ownership is not assumed. Failed/unconfirmed publication leaves evidence intact.
+
+Lifecycle tests exercised real bounded file copies with controlled verifier and
+publisher seams, including failed publication and cached-file preservation.
+These tests are not proof of durable ClickHouse publication. A concrete publisher,
+persisted-group reuse, cache ownership reconciliation, production source admission
+and unified launcher wiring for this executor remain unfinished.
