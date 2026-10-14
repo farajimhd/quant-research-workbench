@@ -8,7 +8,9 @@ are appended (957 total). V17 code, inputs and running campaign are untouched.
 ## Added inputs
 
 * Own clock-based log returns and volatility: 5/15/60/300 seconds.
-* Volume/trade acceleration and 15-second volatility versus round-trip fees.
+* Volume/trade acceleration and 15-second volatility versus nominal $1,000
+  round-trip entry fees ($0.005/share, minimum $1/order, integer shares).
+  This is a causal cost reference, not a prediction of actual exit prices or adds.
 * Completed 5/15/60-second candle body, range, close location, return,
   log volume/trades and active-second fraction.
 * Full pinned preopen universe (unique ticker, not venue-alias-weighted or

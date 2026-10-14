@@ -29,7 +29,7 @@ def returns(seconds,close,valid,targets,horizon,max_age=1):
     return out
 
 
-def own(frame,targets,origin,fee=.005):
+def own(frame,targets,origin,fee=.005,minimum_fee=1.,entry_dollars=1000.):
     """Closed bars only, elapsed-time windows, masked missing price evidence."""
     t=frame['second'].to_numpy();targets=np.asarray(targets,dtype=np.int64)
     c=frame['close'].to_numpy();ok=(frame['price_valid'].to_numpy()!=0)&(c>0)
@@ -49,7 +49,9 @@ def own(frame,targets,origin,fee=.005):
     for i in range(2):
         columns.append((totals[5][i]/5)/(totals[60][i]/60+1)-1)
     current=(end>0)&ok[last]&(targets-t[last]<=1)
-    columns.append(np.where(current,vols[15]/np.maximum(2*fee/np.maximum(c[last],1e-12),1e-8),np.nan))
+    quantity=np.floor(entry_dollars/np.maximum(c[last],1e-12))
+    roundtrip_fee=2*np.maximum(fee*quantity,minimum_fee)/np.maximum(quantity*c[last],1e-12)
+    columns.append(np.where(current&(quantity>0),vols[15]/np.maximum(roundtrip_fee,1e-8),np.nan))
     for h in SCALES:
         bucket=(t-origin-1)//h
         tab=frame.with_columns(pl.Series('bucket',bucket)).group_by('bucket',maintain_order=True).agg(

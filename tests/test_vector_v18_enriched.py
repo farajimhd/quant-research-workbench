@@ -44,6 +44,12 @@ def test_bounded_source_prefix_is_equivalent():
     full=em.own(f,targets,0);bounded=em.own(f.filter(pl.col('second')>=283),targets,0)
     assert np.allclose(full,bounded,equal_nan=True,atol=1e-7)
 
+def test_fee_ratio_includes_minimum_order_commission():
+    f=frame().with_columns(*(pl.col(n)*15 for n in ('open','high','low','close','notional')))
+    v=em.own(f,np.array([400]),0);price=f['close'][-1];quantity=np.floor(1000/price)
+    expected=v[0,em.OWN_NAMES.index('volatility.15s')]/(2*max(.005*quantity,1)/(quantity*price))
+    assert np.isclose(v[0,em.OWN_NAMES.index('execution.volatility_fee_ratio')],expected)
+
 
 def test_std_masks_validation_and_genetic_reachability():
     p=Program((Node(Op.FEATURE,feature=len(LEGACY)),Node(Op.STD,a=0,window=3)),1)
