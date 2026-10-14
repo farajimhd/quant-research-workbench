@@ -7,7 +7,7 @@ from .program import TorchPrograms,Op
 
 
 @triton.jit
-def instruction(X,K,V,M,OPS,A,B,FI,W,C,ACTIVE,rows,candles,features,candidates,index,BLOCK:tl.constexpr):
+def instruction(X,K,V,M,OPS,A,B,FI,W,C,ACTIVE,rows,candles,features,candidates,index,BLOCK:tl.constexpr,HAS_STD:tl.constexpr):
     candidate=tl.load(ACTIVE+tl.program_id(0));r=tl.program_id(1)*BLOCK+tl.arange(0,BLOCK);live=r<rows
     gene=index*candidates+candidate;op=tl.load(OPS+gene)
     output=(index*candidates+candidate)*rows+r
@@ -51,7 +51,7 @@ def instruction(X,K,V,M,OPS,A,B,FI,W,C,ACTIVE,rows,candles,features,candidates,i
                 prior=tl.load(V+ap-offset,past,0);mask=tl.load(M+ap-offset,past,0)
                 known=known & mask & past
                 value=tl.minimum(value,prior) if op==15 else tl.maximum(value,prior)
-        elif op==23:
+        elif HAS_STD and op==23:
             window=tl.load(W+gene);known=live & ((r%candles)>=window-1)
             mean=tl.full((BLOCK,),0,tl.float32);m2=tl.full((BLOCK,),0,tl.float32)
             for offset in range(window):
@@ -87,6 +87,7 @@ class FusedPrograms(TorchPrograms):
         super().__init__(programs,catalog,device,output_unit=output_unit,literal_catalog=literal_catalog)
         from .program import Node
         rows=[[p.nodes[i] if i<len(p.nodes) else Node(Op.CONSTANT) for p in programs] for i in range(self.width)]
+        self.has_std=[any(n.op==Op.STD for n in row) for row in rows]
         # Do not change candidate ordering or moving-mean scan batch shapes.
         # Padding nodes cannot be outputs or operands of any actual program.
         self.active_rows=[torch.tensor([j for j,p in enumerate(programs) if i<len(p.nodes)],
@@ -124,7 +125,7 @@ class FusedPrograms(TorchPrograms):
         axis=torch.arange(c,device=features.device)[None]
         for i in range(self.width):
             instruction[(self.active_rows[i].numel(),triton.cdiv(rows,128))](features,valid,values,masks,*self.genes,self.active_rows[i],
-                rows,c,features.shape[-1],b,i,BLOCK=128,enable_fp_fusion=False)
+                rows,c,features.shape[-1],b,i,BLOCK=128,HAS_STD=self.has_std[i],enable_fp_fusion=False)
             # Keep precisely the old cumsum and pooling order, including float32
             # rounding and missing-evidence propagation. Never approximate a mean.
             for k,indices,ai in self.numeric_means[i]:

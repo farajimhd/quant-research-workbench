@@ -115,6 +115,7 @@ def test_std_cannot_hide_an_implicit_constant_management_rule():
 def test_fused_std_parity():
     from research.vectorized_backtest.v18.fused_program import FusedPrograms
     ps=[Program((Node(Op.FEATURE,feature=0),Node(Op.STD,a=0,window=w)),1) for w in (1,3,20,60,120)]
+    ps.append(Program((Node(Op.FEATURE,feature=0),Node(Op.ABS,a=0),Node(Op.ABS,a=1)),2))
     torch.manual_seed(4);x=torch.randn(3,120,len(CATALOG),device='cuda');m=torch.rand_like(x)>.02
     a,am=TorchPrograms(ps,CATALOG,'cuda',output_unit=CATALOG[0].unit)(x,m)
     b,bm=FusedPrograms(ps,CATALOG,'cuda',output_unit=CATALOG[0].unit)(x,m)
