@@ -11,10 +11,12 @@ class Objective:
     other_session_loss_weight: float = .25
     trade_tail_fraction: float = .10
     session_tail_fraction: float = .20
-    trade_tail_weight: float = 0.
-    session_tail_weight: float = .10
-    drawdown_weight: float = .05
-    risk_weight: float = .005
+    trade_tail_weight: float = .05
+    session_tail_weight: float = .20
+    drawdown_weight: float = .10
+    worst_drawdown_weight: float = .25
+    risk_weight: float = .01
+    peak_position_risk_weight: float = .50
     exposure_weight: float = .0004
     # V18 user-approved complexity price per reachable node.
     complexity_dollars_per_node: float = 0.
@@ -25,8 +27,8 @@ class Objective:
     concentration_weight: float = 0.
 
     def validate(self):
-        if any((self.trade_tail_weight,self.complexity_dollars_per_node,self.shortfall_weight,self.concentration_weight)):
-            raise ValueError('V18 uses positive-only trimming without stacked concentration or trade-tail penalties')
+        if any((self.complexity_dollars_per_node,self.shortfall_weight,self.concentration_weight)):
+            raise ValueError('V18 retains positive-only trimming without stacked concentration penalties')
         if any(not math.isfinite(v) or v < 0 for v in asdict(self).values()):
             raise ValueError('Objective parameters must be finite and nonnegative')
         if not 0 <= self.top_trim_fraction < 1 or not 0 < self.trade_tail_fraction <= 1 or not 0 < self.session_tail_fraction <= 1:
@@ -122,11 +124,15 @@ def local_panel(ordered,config):
     other=(trimmed.sum(0,keepdims=True)-trimmed)/(len(pnl)-1) if len(pnl)>1 else np.zeros_like(trimmed)
     other_loss=config.other_session_loss_weight*np.maximum(0,-other)
     dd=panel('drawdown');risk=panel('stop_risk_dollar_seconds')/3600;capital=panel('capital_dollar_seconds')/3600
-    values=trimmed-config.drawdown_weight*dd-config.risk_weight*risk-config.exposure_weight*capital-other_loss
+    tail=stats['trade_tail_loss'].reshape(pnl.shape)
+    peak=np.asarray([m.get('maximum_position_risk',np.zeros(pnl.shape[1])) for m in ordered],dtype=np.float64)
+    distance=np.asarray([m.get('maximum_stop_distance',np.zeros(pnl.shape[1])) for m in ordered],dtype=np.float64)
+    safe=(peak<=300.+1e-7)&(distance<=.20+1e-12)
+    values=trimmed-config.drawdown_weight*dd-config.risk_weight*risk-config.exposure_weight*capital-other_loss-config.trade_tail_weight*closed*tail-config.peak_position_risk_weight*peak
     if not np.isfinite(values).all():raise ValueError('Nonfinite local cost')
-    feasible=np.asarray([m['terminal_valid'] for m in ordered],dtype=bool).all(0)
+    feasible=np.asarray([m['terminal_valid'] for m in ordered],dtype=bool).all(0)&safe.all(0)
     return dict(pnl=pnl,closed=closed,trimmed=trimmed,other_loss=other_loss,values=values,
-                eligible=(closed>0)&feasible[None,:],drawdown=dd,risk_hours=risk,capital_hours=capital)
+                eligible=(closed>0)&feasible[None,:],drawdown=dd,risk_hours=risk,capital_hours=capital,peak_risk=peak,risk_safe=safe)
 
 
 def score(ordered, complexity, config=Objective()):
@@ -152,8 +158,10 @@ def score(ordered, complexity, config=Objective()):
     sums = lambda key: np.asarray([m[key] for m in ordered], dtype=np.float64).sum(0)
     components = dict(trimmed_profit=global_profit,
         trade_tail_penalty=config.trade_tail_weight*stats['closed_positions']*stats['trade_tail_loss'],
-        session_tail_reward=config.session_tail_weight*days*session_tail,
+        session_tail_reward=config.session_tail_weight*days*np.minimum(session_tail,0),
         drawdown_penalty=config.drawdown_weight*sums('drawdown'),
+        worst_drawdown_penalty=config.worst_drawdown_weight*local['drawdown'].max(0),
+        peak_position_risk_penalty=config.peak_position_risk_weight*local['peak_risk'].max(0),
         stop_risk_penalty=config.risk_weight*sums('stop_risk_dollar_seconds')/3600,
         capital_time_penalty=config.exposure_weight*sums('capital_dollar_seconds')/3600,
         complexity_penalty=config.complexity_dollars_per_node*complexity,
@@ -162,7 +170,7 @@ def score(ordered, complexity, config=Objective()):
     if any(not np.isfinite(v).all() for v in components.values()):
         raise ValueError('Nonfinite objective component')
     value = components['trimmed_profit']+components['session_tail_reward']-sum(v for k,v in components.items() if k.endswith('penalty'))
-    feasible = np.asarray([m['terminal_valid'] for m in ordered], dtype=bool).all(0)
+    feasible = np.asarray([m['terminal_valid'] for m in ordered], dtype=bool).all(0)&local['risk_safe'].all(0)
     # Empty strategies have no empirical distribution and cannot be parents.
     feasible &= stats['closed_positions'] > 0
     active = (closed > 0).sum(0)

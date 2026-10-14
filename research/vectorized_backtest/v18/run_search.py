@@ -86,6 +86,10 @@ def ranking(ordered,population,ids,pedigree,objective,*,selection_required=True,
             key=f'signal_observations_{stage}'
             if all(key in v for v in ordered):diagnostic[key]=sum(v[key][i] for v in ordered)
         record=pedigree.records[int(ids[i])]
+        for key in ('maximum_position_risk','maximum_stop_distance'):
+            if all(key in v for v in ordered):diagnostic[key]=max(v[key][i] for v in ordered)
+        for key in ('risk_rejected_entries','risk_rejected_adds'):
+            if all(key in v for v in ordered):diagnostic[key]=sum(v[key][i] for v in ordered)
         rows.append(dict(rank=place,candidate=i+1,candidate_id=record['label'],serial=int(ids[i]),
             score=float(result['score'][i]),valid=bool(result['feasible'][i]),metrics=diagnostic))
     return (rank,rows,result) if return_objective else (rank,rows)
@@ -122,6 +126,7 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
     if not .25<=capture_gib<=16.:raise ValueError('Capture cache must be between 0.25 and 16 GiB per worker')
     if initial_population is not None:raise ValueError('V18 forbids imported initial populations')
     objective.validate();selection.validate();execution.validate()
+    if not execution.risk_protection:raise ValueError('V18 optimization requires risk protection')
     train=bind_dataset(training,'training');valid=bind_dataset(validation,'validation')
     if set(train['days'])&set(valid['days']) or max(train['days'])>=min(valid['days']):
         raise ValueError('Chronologically disjoint validation required')

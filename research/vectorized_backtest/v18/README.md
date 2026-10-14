@@ -1,9 +1,34 @@
 # V18 causal feature expansion
 
-Copied from V17. Its global/local costs, 50/50 reproduction, genetic quotas,
+Copied from V17. Its 50/50 reproduction, genetic quotas,
 execution accounting, random-only initialization and display-only validation
 remain unchanged. Existing feature IDs 0..901 are preserved; 55 causal channels
 are appended (957 total). V17 code, inputs and running campaign are untouched.
+
+## Risk protection and costs
+
+Normal V18 optimization requires protected execution. Fixed stop genes remain
+evolvable from 0.01% to 20%; actual fixed and swing stop distances are checked
+at entry. Entries exceeding 20% are rejected, never silently clamped. Additions
+must keep average-cost-to-stop distance within 20% and total planned stock-position
+risk within $300. Planned risk includes surviving shares' average-cost loss to
+stop, paid costs/net realized losses, and estimated exit costs; realized gains
+do not subsidize more risk. Gaps/adverse fills can exceed this planned budget.
+This is a per-stock budget, not a portfolio-wide capital constraint.
+
+Global scoring retains 10% positive session trimming and now charges 5% of
+position count times worst-10% mean position loss, 20% of session count times
+worst-20% mean session loss, 10% of summed session drawdowns, 25% of the worst
+session drawdown, 1% of stop-risk dollar-hours and 50% of peak position risk.
+The capital-time penalty remains unchanged. Local scoring retains 10% positive
+trade trimming and other-session loss penalty, and applies the same trade-tail,
+session drawdown, stop-risk-hour and peak-position-risk charges. Global and local
+eligibility reject receipts exceeding the fixed risk envelope. Rejected entries
+and additions, peak risk and maximum stop distance are reported in rankings.
+
+Legacy accounting parity is benchmarked with guards disabled only inside the
+accounting oracle. Native full-generation speed qualification uses the protected
+V18 execution and updated costs. Optimization cannot disable protection.
 
 ## Added inputs
 

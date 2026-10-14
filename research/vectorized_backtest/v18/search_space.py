@@ -78,6 +78,8 @@ def threshold(rng,index):
     return float(rng.uniform(lo,hi))
 
 def fraction(rng,name):
+    if name=='stop_fraction':
+        return float(np.exp(rng.uniform(np.log(1e-4),np.log(.20)))) if rng.random()<.7 else float(rng.uniform(1e-4,.20))
     # Full positive fraction envelope, with resolution around small values.
     if name in ('add_minimum_profit','reduce_minimum_profit') and rng.random()<.15:return 0.
     if rng.random()<.05:return 1.

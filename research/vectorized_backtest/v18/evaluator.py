@@ -14,13 +14,18 @@ class Execution:
     cost_bps:float=0.
     fee_per_share:float=0.
     minimum_order_fee:float=0.
+    risk_protection:bool=True
+    maximum_stop_distance:float=.20
+    maximum_position_risk:float=300.
     def validate(self):
         if any(not math.isfinite(v) or v<0 for v in (self.entry_dollars,self.add_dollars,self.cost_bps,self.fee_per_share,self.minimum_order_fee)) or min(self.entry_dollars,self.add_dollars)<=0:
             raise ValueError('Invalid assumed-fill sizing/cost')
+        if type(self.risk_protection) is not bool or not 0<self.maximum_stop_distance<=.20 or not math.isfinite(self.maximum_position_risk) or not 0<self.maximum_position_risk<=300:
+            raise ValueError('V18 risk envelope: stop <=20%, position risk <=$300')
         return self
 
 
-def step(position,aggregate,price,previous,observed,membership,signals,swing,policy,clock:torch.Tensor,terminal,entry_dollars:float,add_dollars:float,cost:float,fee_per_share:float=0.,minimum_order_fee:float=0.):
+def step(position,aggregate,price,previous,observed,membership,signals,swing,policy,clock:torch.Tensor,terminal,entry_dollars:float,add_dollars:float,cost:float,fee_per_share:float=0.,minimum_order_fee:float=0.,risk_protection:bool=False,maximum_stop_distance:float=.20,maximum_position_risk:float=300.):
     """[session,strategy,ticker] lanes; all signals predate the execution price.
 
     Position fields: quantity, average cost, stop, next target, high water,
@@ -56,6 +61,20 @@ def step(position,aggregate,price,previous,observed,membership,signals,swing,pol
     swing_mode=policy[...,8]>0
     initial=torch.where(swing_mode,swing,initial)
     entry_now&=torch.isfinite(initial)&(initial>0)&(initial<execution_price)
+    rejected_entry=torch.zeros_like(entry_now);rejected_add=torch.zeros_like(add_now)
+    if risk_protection:
+        safe_price=execution_price.clamp_min(1e-12)
+        entry_q=entry_dollars/safe_price
+        entry_risk=entry_q*(execution_price-initial).clamp_min(0)+2*(entry_q*fee_per_share).clamp_min(minimum_order_fee)+entry_dollars*cost+entry_q*initial.clamp_min(0)*cost
+        safe_entry=((execution_price-initial)/safe_price<=maximum_stop_distance+1e-12)&(entry_risk<=maximum_position_risk)
+        rejected_entry=entry_now&~safe_entry;entry_now&=safe_entry
+        add_q=add_dollars/safe_price;prospective_q=remaining+add_q
+        # Existing paid costs/net realized losses plus prospective buy and exit
+        # costs. Realized gains do not subsidize a larger stop-risk budget.
+        add_risk=(remaining*(avg-stop)+add_q*(execution_price-stop)).clamp_min(0)+(episode-realized).clamp_min(0)+(add_q*fee_per_share).clamp_min(minimum_order_fee)+add_dollars*cost+(prospective_q*fee_per_share).clamp_min(minimum_order_fee)+prospective_q*stop.clamp_min(0)*cost
+        prospective_avg=(remaining*avg+add_q*execution_price)/prospective_q.clamp_min(1e-12)
+        safe_add=(add_risk<=maximum_position_risk)&((prospective_avg-stop)/prospective_avg.clamp_min(1e-12)<=maximum_stop_distance+1e-12)
+        rejected_add=add_now&~safe_add;add_now&=safe_add
     # Scalar-only where() defaults to float32, including dollar fee arithmetic.
     dollars=entry_now.to(q.dtype)*entry_dollars+add_now.to(q.dtype)*add_dollars
     bought=dollars/execution_price.clamp_min(1e-12)
@@ -79,7 +98,10 @@ def step(position,aggregate,price,previous,observed,membership,signals,swing,pol
     peak=torch.maximum(aggregate[...,0],equity)
     dd=torch.maximum(aggregate[...,1],peak-equity)
     capital=(quantity*execution_price).sum(-1)
-    risk=(quantity*(execution_price-stop).clamp_min(0)).sum(-1)
+    if risk_protection:
+        position_risk=torch.where(quantity>0,quantity*(new_avg-stop).clamp_min(0)+(episode-realized).clamp_min(0)+(quantity*fee_per_share).clamp_min(minimum_order_fee)+quantity*stop.clamp_min(0)*cost,0.)
+        risk=position_risk.sum(-1)
+    else: risk=(quantity*(execution_price-stop).clamp_min(0)).sum(-1)
     fields=(peak,dd,aggregate[...,2]+capital,aggregate[...,3]+risk,
         aggregate[...,4]+entry_now.sum(-1),aggregate[...,5]+add_now.sum(-1),aggregate[...,6]+reduce_now.sum(-1),
         aggregate[...,7]+(~(quantity>0).any(-1)).to(equity.dtype),torch.minimum(aggregate[...,8],episode_worst),
@@ -91,6 +113,10 @@ def step(position,aggregate,price,previous,observed,membership,signals,swing,pol
     if aggregate.shape[-1]>11:
         turnover=aggregate[...,11]+(sell*execution_price+dollars).sum(-1)
         updated=torch.cat((updated,turnover.unsqueeze(-1)),-1)
+    if aggregate.shape[-1]>12:
+        distance=torch.where(quantity>0,(new_avg-stop).clamp_min(0)/new_avg.clamp_min(1e-12),0.).amax(-1)
+        extra=torch.stack((torch.maximum(aggregate[...,12],position_risk.amax(-1)),torch.maximum(aggregate[...,13],distance),aggregate[...,14]+rejected_entry.sum(-1),aggregate[...,15]+rejected_add.sum(-1)),-1)
+        updated=torch.cat((updated,extra),-1)
     return position,updated
 
 
@@ -156,7 +182,7 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
     from .episodes import Episodes
     episodes=Episodes(s,b,episode_capacity,device,max_listings=u,trace=trace)
     position=torch.zeros((s,b,u,9),dtype=torch.float64,device=device)
-    aggregate=torch.zeros((s,b,12),dtype=torch.float64,device=device);aggregate[...,8]=float('inf')
+    aggregate=torch.zeros((s,b,16 if execution.risk_protection else 12),dtype=torch.float64,device=device);aggregate[...,8]=float('inf')
     policy=torch.tensor([[m.policy.stop_fraction,m.policy.target_fraction,m.policy.reduce_fraction,m.policy.trail_fraction,
         m.policy.add_minimum_profit,m.policy.reduce_minimum_profit,m.policy.maximum_adds,m.policy.cooldown,m.policy.swing_left] for m in members],dtype=torch.float64,device=device)[None,:,None,:]
     from .swing_projection import entry_swings
@@ -204,7 +230,7 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
             terminal=(clock==lengths-1)[:,None,None]
             old_position,old_aggregate=position,aggregate
             position,aggregate=transition(position,aggregate,price,previous,observed,membership,signals,swing,policy,
-                clocks[clock],terminal,execution.entry_dollars,execution.add_dollars,execution.cost_bps/10000.,execution.fee_per_share,execution.minimum_order_fee)
+                clocks[clock],terminal,execution.entry_dollars,execution.add_dollars,execution.cost_bps/10000.,execution.fee_per_share,execution.minimum_order_fee,execution.risk_protection,execution.maximum_stop_distance,execution.maximum_position_risk)
             episodes.append(old_position,position,clock<lengths,opened,clocks[clock])
             opened=torch.where(~held&(position[...,0]>1e-12),clocks[clock],opened)
             active=clock<lengths
@@ -221,4 +247,6 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
             inactivity_fraction=aggregate[i,:,7]/max(1,item.clocks-1),add_count=aggregate[i,:,5],reduce_count=aggregate[i,:,6],
             worst_position_pnl=torch.where(torch.isfinite(aggregate[i,:,8]),aggregate[i,:,8],0.),closed_positions=aggregate[i,:,9],
             winning_positions=aggregate[i,:,10],turnover=aggregate[i,:,11],**episode_results[i]))
+        if execution.risk_protection:
+            result[-1].update(maximum_position_risk=aggregate[i,:,12],maximum_stop_distance=aggregate[i,:,13],risk_rejected_entries=aggregate[i,:,14],risk_rejected_adds=aggregate[i,:,15])
     return result

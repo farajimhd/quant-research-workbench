@@ -239,7 +239,7 @@ def test_authorized_stop_gate_binds_checkpoint_and_sealed_receipts(tmp_path):
 
 @pytest.mark.parametrize('fees',[(0,0,0),(10,.005,1)])
 def test_episode_accounting_matches_v7(fees):
-    execution=Execution(cost_bps=fees[0],fee_per_share=fees[1],minimum_order_fee=fees[2])
+    execution=Execution(cost_bps=fees[0],fee_per_share=fees[1],minimum_order_fee=fees[2],risk_protection=False)
     gates=torch.tensor([1,4,8,0,0,0],dtype=torch.uint8)[None,:,None]
     left=baseline([synthetic('cpu')],[member()],[gates],execution=execution)[0]
     right=replay_cohort([synthetic('cpu')],[member()],[gates],execution=execution)[0]

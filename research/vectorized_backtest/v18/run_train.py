@@ -35,6 +35,7 @@ def main():
     q=read_json(a.qualification);active=read_json(a.predecessor)
     if not predecessor_complete(active):raise ValueError('V17 has not completed successfully')
     if (q['status']!='passed' or q['source_sha256']!=source_hash() or not q['exact_accounting_parity']
+            or not q.get('protected_native_generation_qualified',False)
             or not q['full_generation_with_validation_qualified'] or q['maximum_ratio']!=1.0
             or max(q['full_generation_ratio'],q['matched_accounting_ratio'])>1.0):raise ValueError('Strict V17 speed/accounting qualification required')
     if file_hash(Path(active['campaign'])/'checkpoint.json')!=q['predecessor_checkpoint_sha256']:raise ValueError('Predecessor changed')

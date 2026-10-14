@@ -22,6 +22,9 @@ def worker(a):
     population=read(a.population)['population'];members=[genome.Individual.restore(x) for x in population];token=search.digest(population)
     out=require_runtime(a.output);config=dict(inputs=data['inputs'],history=data['history'],feature_cache=data.get('feature_cache'),indicator_root=data['indicator_root'],enriched_root=data.get('enriched_root'),output=str(out),device='cuda',backend='compile',batch_size=512,execution=dict(entry_dollars=1000.,add_dollars=200.,cost_bps=0.,fee_per_share=.005,minimum_order_fee=1),maximum_data_gib=4.,maximum_gate_gib=8.,source_sha256=search.source_hash(),split='training',episode_capacity=65536,plan_limit=2,reuse_results=False,capture_gib=4.)
     contract=dict(population=1024,generations=4,batch_size=512,session_workers=2,input_receipts={d:data['receipts'][d] for d in days},execution=config['execution'],session_execution='independent');timings=[]
+    # Historical accounting oracle only. Native-generation benchmarking above
+    # always uses V18's protected execution and updated objectives.
+    if a.engine=='v18':config['execution']['risk_protection']=False
     with terminal.CampaignProgress(out,contract) as panel,lanes.SessionLanes(config,2,panel) as runner:
         for repeat in range(1,5):
             panel.begin_generation(repeat);beg=time.perf_counter();runner.generation(days,members,repeat,token);timings.append(time.perf_counter()-beg)
@@ -56,6 +59,7 @@ def qualify(a):
                 if key not in right or value!=right[key]:raise ValueError('Legacy accounting differs: '+key)
     ratio=statistics.median(full['v18'][1:])/statistics.median(full['v17'][1:]);matched=statistics.median(profiles['v18']['wall_seconds'][1:])/statistics.median(profiles['v17']['wall_seconds'][1:])
     q=dict(status='passed' if max(ratio,matched)<=1.0 else 'speed_gate_failed',source_sha256=source_hash(),baseline_source_sha256=profiles['v17']['source_sha256'],exact_accounting_parity=True,maximum_ratio=1.0,full_generation_ratio=ratio,matched_accounting_ratio=matched,full_generation_seconds=full,matched_accounting_seconds={k:v['wall_seconds'] for k,v in profiles.items()},full_generation_with_validation_qualified=True,training_sha256=file_hash(a.training),validation_sha256=file_hash(a.validation),predecessor_checkpoint_sha256=file_hash(a.predecessor/'checkpoint.json'),scope='1024/batch512/two workers; one cold and three warm generations; native searches including selection/validation/publication; separate identical legacy accounting with no reuse')
+    q.update(protected_native_generation_qualified=True,legacy_accounting_scope='unprotected historical oracle only; native V18 speed run requires protection')
     write_json(out/'qualification.json',q);print(json.dumps(q),flush=True);return 0 if q['status']=='passed' else 2
 
 def main():

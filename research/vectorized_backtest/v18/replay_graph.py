@@ -22,7 +22,7 @@ def replay(position, aggregate, opened, policy, prices, observed, membership,
         p,a=transition(position,aggregate,take(prices,clock),take(prices,clock-1),
             take(observed,clock),take(membership,clock-1),selected,swing,policy,
             clock.to(torch.float64),(index==lengths-1)[:,None,None],
-            execution.entry_dollars,execution.add_dollars,execution.cost_bps/10000.,execution.fee_per_share,execution.minimum_order_fee)
+            execution.entry_dollars,execution.add_dollars,execution.cost_bps/10000.,execution.fee_per_share,execution.minimum_order_fee,execution.risk_protection,execution.maximum_stop_distance,execution.maximum_position_risk)
         active=index<lengths
         closed=held&(p[...,0]<=1e-12)&active[:,None,None]
         profits=p[...,7]-position[...,8]

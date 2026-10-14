@@ -38,13 +38,17 @@ def test_costs_match_scalar_oracle_with_losses_empty_and_fractional_boundaries()
     result=score(ordered,[0]*8);local,eligible=session_scores(ordered,prepared=result)
     for i in range(8):
         pnl=[sum(p[i]) for p in profits];tp=[trimmed(p[i]) for p in profits]
-        risk=[.05*m['drawdown'][i]+.005*m['stop_risk_dollar_seconds'][i]/3600+.0004*m['capital_dollar_seconds'][i]/3600 for m in ordered]
+        risk=[.10*m['drawdown'][i]+.01*m['stop_risk_dollar_seconds'][i]/3600+.0004*m['capital_dollar_seconds'][i]/3600 for m in ordered]
+        def tail_loss(p):
+            mass=.1*len(p)
+            return max(0,-sum(v*max(0,min(1,mass-j)) for j,v in enumerate(sorted(p)))/mass) if p else 0
+        trade_penalty=.05*sum(len(p[i]) for p in profits)*tail_loss([v for p in profits for v in p[i]])
         sorted_pnl=sorted(pnl);mass=.2*len(pnl);tail=sum(v*max(0,min(1,mass-j)) for j,v in enumerate(sorted_pnl))/mass
-        expected=trimmed(pnl)+.1*len(pnl)*tail-sum(risk)
+        expected=trimmed(pnl)+.2*len(pnl)*min(tail,0)-sum(risk)-.25*max(m['drawdown'][i] for m in ordered)-trade_penalty
         assert result['score'][i]==pytest.approx(expected)
         for s in range(7):
             other=sum(tp[u] for u in range(7) if u!=s)/6
-            assert local[s,i]==pytest.approx(tp[s]-risk[s]-.25*max(0,-other))
+            assert local[s,i]==pytest.approx(tp[s]-risk[s]-.25*max(0,-other)-.05*len(profits[s][i])*tail_loss(profits[s][i]))
             assert eligible[s,i]==bool(profits[s][i])
     assert result['_local']['trimmed'][0,0]==-30
     assert result['_local']['trimmed'][2,0]==900
@@ -52,10 +56,10 @@ def test_costs_match_scalar_oracle_with_losses_empty_and_fractional_boundaries()
 
 def test_one_session_and_inactive_sessions_have_defined_costs():
     values,eligible=session_scores([metrics([[100],[],[-30]])])
-    np.testing.assert_array_equal(values,[[90,0,-30]])
+    np.testing.assert_array_equal(values,[[90,0,-31.5]])
     np.testing.assert_array_equal(eligible,[[True,False,True]])
     result=score([metrics([[100],[],[-30]])],[1,1,1])
-    np.testing.assert_allclose(result['score'],[100,0,-33])
+    np.testing.assert_allclose(result['score'],[90,0,-37.5])
     np.testing.assert_array_equal(result['feasible'],[True,False,True])
 
 
