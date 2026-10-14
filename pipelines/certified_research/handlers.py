@@ -352,12 +352,13 @@ class MarketHandlers:
     staging data and successful SQL are never campaign authority.
     """
     def __init__(self,dataset_id,database,claim,client_factory,source_guard,request_factory,engine_factory,
-                 *,fixture_source=None):
+                 *,fixture_source=None,storage_observer=None):
         if fixture_source is not None and not database.startswith('certified_research_test_'):
             raise ValueError('Fixture source overrides are forbidden outside isolated test namespaces')
         self.dataset=dataset_id;self.database=database;self.claim=claim;self.client_factory=client_factory
         self.source_guard=source_guard;self.request_factory=request_factory;self.engine_factory=engine_factory
         self.fixture_source=fixture_source
+        self.storage_observer=storage_observer
 
     def request(self,plan,parents):
         if plan.unit.product not in MARKET_PRODUCTS:raise ValueError('Unregistered market product')
@@ -407,7 +408,7 @@ class MarketHandlers:
         request=self.request(plan,parents)
         _,handler=producer.market_execution(request,self.client_factory,self.claim,self.source_guard,
             lambda:self.engine_factory(plan,parents),database=self.database,
-            query_memory_bytes=plan.unit.memory_bytes,fixture_source=self.fixture_source)
+            query_memory_bytes=plan.unit.memory_bytes,fixture_source=self.fixture_source,storage_observer=self.storage_observer)
         if plan.unit.product=='market_aggregate':
             stage=handler(Unit('aggregate','aggregate'),{},stop)
             # Low-cost publication follows the shared scan; no nested executor.

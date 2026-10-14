@@ -28,7 +28,7 @@ class ExecutionLaunch:
     def from_stored(cls,query,database,dataset_id,claim,client_factory,source_guard,
                     capacity_guard,dictionary_claim_factory,runtime_factory=None,*,
                     prerequisite_registries=(),maximum_units=1_000_000,
-                    maximum_metadata_bytes=256*1024**2):
+                    maximum_metadata_bytes=256*1024**2,storage_observer=None):
         """Restore handlers against the immutable ClickHouse plan, without writes.
 
         Runtime construction receives the validated stored configuration and
@@ -43,14 +43,14 @@ class ExecutionLaunch:
         runtime=runtime_factory(saved)
         launch=cls(query,saved.config,saved.dataset_id,saved.units,saved.source_hash,
             claim,client_factory,source_guard,capacity_guard,dictionary_claim_factory,
-            runtime,prerequisite_registries=prerequisite_registries)
+            runtime,prerequisite_registries=prerequisite_registries,storage_observer=storage_observer)
         if launch.controller.plan_hash!=saved.plan_hash:
             raise ValueError('Restored execution differs from its immutable stored plan')
         claim.check();source_guard()
         return launch
 
     def __init__(self,query,config,dataset_id,plans,source_hash,claim,client_factory,source_guard,
-                 capacity_guard,dictionary_claim_factory,market_runtime,*,prerequisite_registries=()):
+                 capacity_guard,dictionary_claim_factory,market_runtime,*,prerequisite_registries=(),storage_observer=None):
         if not callable(capacity_guard):raise ValueError('Execution requires qualified capacity admission')
         self.claim=claim;self.source_guard=source_guard;self.capacity_guard=capacity_guard
         self.query=query
@@ -77,7 +77,7 @@ class ExecutionLaunch:
             PreparedSecSourceHandlers(claim,client_factory,source_guard),
             PreparedShortSourceHandlers(dataset_id,config.database,claim,client_factory,source_guard),
             MarketHandlers(dataset_id,config.database,claim,client_factory,source_guard,
-                        market_runtime.request,market_runtime.engine),
+                        market_runtime.request,market_runtime.engine,storage_observer=storage_observer),
             ReferenceHandlers(dataset_id,config.database,claim,client_factory,source_guard,self.plans,
                 dictionary_claim_factory=dictionary_claim_factory),
             ActivityHandlers(dataset_id,config.database,claim,client_factory,source_guard,self.plans),

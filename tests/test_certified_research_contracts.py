@@ -2510,7 +2510,7 @@ class ClickHouseIntegration(unittest.TestCase):
             'toUInt64(number) ordinal,toUInt8(71) event_meta,toUInt32(10000) price_primary_int,'
             'toUInt32(0) price_secondary_int,toFloat32(5) size_primary,toFloat32(0) size_secondary,'
             +','.join(f'toUInt8(0) condition_token_{i}' for i in range(1,6))+' FROM numbers(3)')
-        args=dict(day=str(day),listing_key=93,ticker='TEST');logs=[];lock=Lock()
+        args=dict(day=str(day),listing_key=93,ticker='TEST');logs=[];lock=Lock();observed=[]
         plans=tuple(PlannedUnit(Unit(key,kind,parents,memory),dict(args)) for key,kind,parents in
             (('shared','market_aggregate',()),('indicators','technical',('shared',)),('levels','v7',('shared',))))
         plans+=(PlannedUnit(Unit('prices','regular_prices',('shared',),memory),
@@ -2531,7 +2531,8 @@ class ClickHouseIntegration(unittest.TestCase):
                 def close(self):real.close()
             return Client()
         claim=Claim();registry=MarketHandlers(dataset,self.database,claim,factory,lambda:None,
-            lambda plan,parents:request,lambda plan,parents:v7.StartAuthority.genesis(engine(),request.prior_v7_hash),fixture_source=source_sql)
+            lambda plan,parents:request,lambda plan,parents:v7.StartAuthority.genesis(engine(),request.prior_v7_hash),
+            fixture_source=source_sql,storage_observer=lambda product,phase,query:observed.append((product,phase)))
         producers,verifiers=registry.registry()
         reference=ReferenceHandlers(dataset,self.database,claim,factory,lambda:None,plans)
         rp,rv=reference.registry();producers.update(rp);verifiers.update(rv)
@@ -2540,6 +2541,8 @@ class ClickHouseIntegration(unittest.TestCase):
         campaign=Campaign(self.client.query,self.database,claim,dataset,config,plans,'b'*64,lambda:None,producers,verifiers)
         result=campaign.run()
         self.assertEqual(result['status'],'complete',str(result['errors']))
+        self.assertIn(('aggregate','after_staging'),observed)
+        self.assertIn(('bars','after_publish'),observed)
         self.assertTrue(result['seal']['root_hash'])
         seed,checkpoint=v7.verify_seed(self.client.query,self.database,claim,result['results']['levels'],
             request.dataset_hash,request.source_hash,rules)

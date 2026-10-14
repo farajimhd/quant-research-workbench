@@ -67,6 +67,13 @@ positive staging bytes and retained its normal shared-scan/publication/resume
 checks. Automatic pilot CLI capture, all-path cleanup/reference instrumentation,
 representative runs and qualified peak bounds remain incomplete.
 
+The same optional observer is now accepted by `MarketHandlers`,
+`ExecutionLaunch`/stored restoration and `saved_execution.run`. Thus controlled
+pilots can use campaign-global shared aggregation rather than a separate market
+implementation. Observation remains launcher-owned Python, never serialized
+executable plan code. Reference/cleanup instrumentation and automatic pilot CLI
+configuration remain outstanding; default runs do not collect samples.
+
 ## October 13 physical baseline
 
 A live read-only `system.parts`/disk snapshot returned:

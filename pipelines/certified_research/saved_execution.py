@@ -4,7 +4,7 @@ from .launch import ExecutionLaunch
 
 
 def run(query,database,dataset_id,claim,client_factory,dictionary_claim_factory,
-        capacity_factory,*,stop=None,progress=None):
+        capacity_factory,*,stop=None,progress=None,storage_observer=None):
     """Factories receive the stored configuration, never current CLI defaults.
 
     Capacity qualification is an explicit dependency: this entry point cannot
@@ -24,7 +24,7 @@ def run(query,database,dataset_id,claim,client_factory,dictionary_claim_factory,
         raise ValueError('Capacity factory must return a qualified admission guard')
     runtime=runtime_plan.runtime(saved,claim,clients,guard)
     launch=ExecutionLaunch(query,saved.config,saved.dataset_id,saved.units,saved.source_hash,
-        claim,clients,guard,capacity,dictionary_claim_factory,runtime)
+        claim,clients,guard,capacity,dictionary_claim_factory,runtime,storage_observer=storage_observer)
     if launch.controller.plan_hash!=saved.plan_hash:
         raise ValueError('Saved execution differs from its immutable stored plan')
     return launch.run(stop=stop,progress=progress)
