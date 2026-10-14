@@ -30,6 +30,14 @@ Legacy accounting parity is benchmarked with guards disabled only inside the
 accounting oracle. Native full-generation speed qualification uses the protected
 V18 execution and updated costs. Optimization cannot disable protection.
 
+Protected CUDA replay uses a financial kernel over 128-listing tiles plus a
+bounded candidate-statistics reduction. Arithmetic remains double precision with
+multiply/add fusion disabled; Torch is the independent financial oracle. Entire
+tiles skip prospective entry/add risk calculations when no action is requested;
+held-position risk and exposure remain accounted. CUDA trajectory, boundary and
+complete-ledger tests verify the path. `protected_kernel=False` in `replay_cohort`
+selects the protected Torch reference for comparison, without disabling limits.
+
 ## Added inputs
 
 * Own clock-based log returns and volatility: 5/15/60/300 seconds.
@@ -130,6 +138,10 @@ sets with batch512/two workers. One cold and three warm generations include
 selection, validation and publication. Both warm median ratios must be <=1.0.
 V18 is not declared as fast until this benchmark passes. Failed qualification
 blocks launch and retains evidence; no wider tolerance or silent feature removal.
+After a V18-only change, `--reuse-baseline` may reuse the completed V17 side of
+a prior attempt only after verifying its source, manifests, predecessor checkpoint,
+population, production execution contract, all four seals and recorded timings.
+V18 accounting and native-generation measurements are always rerun on new code.
 
 `run_train` independently verifies successful V17 completion or the authorized
 sealed handoff receipt, qualification,

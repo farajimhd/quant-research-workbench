@@ -82,6 +82,7 @@ def main():
             else:break
             write_json(root/'status.json',dict(status=status,pid=os.getpid(),creation_time=psutil.Process().create_time(),updated_epoch=time.time(),predecessor=active['campaign']));time.sleep(30)
         command=[sys.executable,'-B','-u','-m','research.vectorized_backtest.v18.qualify_v17','--training',job['training'],'--validation',job['validation'],'--output',job['qualification'],'--baseline-code',active['code'],'--predecessor',active['campaign']]
+        if job.get('reuse_baseline'):command+=['--reuse-baseline',job['reuse_baseline']]
         write_json(root/'status.json',dict(status='qualifying',command=command,pid=os.getpid()))
         with (root/'qualification.log').open('w') as log:result=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT).returncode
         if result:write_json(root/'status.json',dict(status='qualification_failed',exit_code=result));return result

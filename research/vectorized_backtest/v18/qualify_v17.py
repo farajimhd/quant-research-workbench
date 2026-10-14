@@ -5,6 +5,33 @@ import argparse,json,subprocess,sys,statistics,importlib,time
 from pathlib import Path
 read=lambda p:json.loads(Path(p).read_bytes())
 
+
+def validated_baseline(previous,training,validation,predecessor,baseline_code):
+    """Reuse only the already measured, unchanged V17 side of a prior attempt."""
+    from hashlib import sha256
+    from research.vectorized_backtest.v6.torch_backtest.runtime import file_hash
+    q=read(previous/'qualification.json');h=sha256();root=baseline_code/'research/vectorized_backtest'
+    for version in ('v6','v7','v17'):
+        for path in sorted((root/version).rglob('*.py')):
+            h.update(str(path.relative_to(root)).replace('\\','/').encode());h.update(path.read_bytes().replace(b'\r\n',b'\n'))
+    if q['baseline_source_sha256']!=h.hexdigest() or not q['full_generation_with_validation_qualified']:raise ValueError('Reusable V17 source or full-generation proof changed')
+    for key,path in (('training_sha256',training),('validation_sha256',validation),('predecessor_checkpoint_sha256',predecessor/'checkpoint.json')):
+        if q[key]!=file_hash(path):raise ValueError('Reusable V17 dataset/checkpoint changed')
+    profile=read(previous/'v17-accounting/profile.json')
+    if profile['source_sha256']!=h.hexdigest() or profile['result_reuse'] is not False:raise ValueError('Reusable accounting contract changed')
+    checkpoint=read(previous/'v17-generation/checkpoint.json')
+    if checkpoint['state']['completed']!=4 or checkpoint['contract']['population']!=1024 or checkpoint['contract']['batch_size']!=512 or checkpoint['contract']['session_workers']!=2:raise ValueError('Incomplete production-size V17 benchmark')
+    if checkpoint['contract']['seed']!=182237 or checkpoint['contract']['generations']!=4 or checkpoint['contract']['backend']!='compile' or checkpoint['contract']['device']!='cuda':raise ValueError('Reusable V17 execution contract changed')
+    times=[]
+    for g in range(1,5):
+        for role in ('training','validation'):
+            if not (previous/'v17-generation'/role/f'generation-{g:04d}'/'complete.json').exists():raise ValueError('Missing reusable generation seal')
+        wall=read(previous/'v17-generation/training'/f'generation-{g:04d}'/'wall.json')
+        if not wall['includes_selection_validation_publication']:raise ValueError('Incomplete reusable wall timing')
+        times.append(wall['full_generation_seconds'])
+    if times!=q['full_generation_seconds']['v17'] or profile['wall_seconds']!=q['matched_accounting_seconds']['v17']:raise ValueError('Reusable timings changed')
+    return profile,times
+
 def worker(a):
     sys.path.insert(0,str(a.code));os.chdir(a.code)
     import torch
@@ -43,8 +70,12 @@ def qualify(a):
     population=read(a.predecessor/'training/generation-0001/population.json')
     if len(population['population'])!=1024:raise ValueError('1024-member baseline required')
     write_json(out/'population.json',population);profiles={};full={}
+    if a.reuse_baseline:
+        profiles['v17'],full['v17']=validated_baseline(a.reuse_baseline,a.training,a.validation,a.predecessor,a.baseline_code)
+        if read(a.reuse_baseline/'population.json')!=population:raise ValueError('Reusable baseline population changed')
     for mode in ('accounting','generation'):
         for engine,source in (('v17',a.baseline_code),('v18',code)):
+            if engine=='v17' and a.reuse_baseline:continue
             folder=out/(engine+'-'+mode)
             if folder.exists():raise ValueError('Fresh benchmark output required')
             cmd=[sys.executable,'-B','-u',str(Path(__file__).resolve()),'--worker','--engine',engine,'--mode',mode,'--code',str(source),'--output',str(folder),'--training',str(a.training if engine=='v18' else out/'training-v17.json'),'--validation',str(a.validation if engine=='v18' else out/'validation-v17.json'),'--population',str(out/'population.json')]
@@ -54,18 +85,21 @@ def qualify(a):
             else:full[engine]=[read(folder/'training'/f'generation-{g:04d}'/'wall.json')['full_generation_seconds'] for g in range(1,5)]
     for g in range(1,5):
         for day in profiles['v17']['days']:
-            left=read(out/'v17-accounting'/f'generation-{g:04d}'/day/'receipt.json')['metrics'];right=read(out/'v18-accounting'/f'generation-{g:04d}'/day/'receipt.json')['metrics']
+            baseline=a.reuse_baseline if a.reuse_baseline else out
+            left=read(baseline/'v17-accounting'/f'generation-{g:04d}'/day/'receipt.json')['metrics'];right=read(out/'v18-accounting'/f'generation-{g:04d}'/day/'receipt.json')['metrics']
             for key,value in left.items():
                 if key not in right or value!=right[key]:raise ValueError('Legacy accounting differs: '+key)
     ratio=statistics.median(full['v18'][1:])/statistics.median(full['v17'][1:]);matched=statistics.median(profiles['v18']['wall_seconds'][1:])/statistics.median(profiles['v17']['wall_seconds'][1:])
     q=dict(status='passed' if max(ratio,matched)<=1.0 else 'speed_gate_failed',source_sha256=source_hash(),baseline_source_sha256=profiles['v17']['source_sha256'],exact_accounting_parity=True,maximum_ratio=1.0,full_generation_ratio=ratio,matched_accounting_ratio=matched,full_generation_seconds=full,matched_accounting_seconds={k:v['wall_seconds'] for k,v in profiles.items()},full_generation_with_validation_qualified=True,training_sha256=file_hash(a.training),validation_sha256=file_hash(a.validation),predecessor_checkpoint_sha256=file_hash(a.predecessor/'checkpoint.json'),scope='1024/batch512/two workers; one cold and three warm generations; native searches including selection/validation/publication; separate identical legacy accounting with no reuse')
     q.update(protected_native_generation_qualified=True,legacy_accounting_scope='unprotected historical oracle only; native V18 speed run requires protection')
+    if a.reuse_baseline:q.update(reused_baseline=str(a.reuse_baseline),reused_baseline_qualification_sha256=file_hash(a.reuse_baseline/'qualification.json'))
     write_json(out/'qualification.json',q);print(json.dumps(q),flush=True);return 0 if q['status']=='passed' else 2
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for key in ('training','validation','output'):p.add_argument('--'+key,type=Path,required=True)
     for key in ('baseline-code','predecessor','code','population'):p.add_argument('--'+key,type=Path)
+    p.add_argument('--reuse-baseline',type=Path)
     p.add_argument('--worker',action='store_true');p.add_argument('--engine',choices=('v17','v18'));p.add_argument('--mode',choices=('accounting','generation'));a=p.parse_args()
     if a.worker:return worker(a)
     if not a.baseline_code or not a.predecessor:raise ValueError('Pinned predecessor required')

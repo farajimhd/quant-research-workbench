@@ -66,14 +66,16 @@ def step(position,aggregate,price,previous,observed,membership,signals,swing,pol
         safe_price=execution_price.clamp_min(1e-12)
         entry_q=entry_dollars/safe_price
         entry_risk=entry_q*(execution_price-initial).clamp_min(0)+2*(entry_q*fee_per_share).clamp_min(minimum_order_fee)+entry_dollars*cost+entry_q*initial.clamp_min(0)*cost
-        safe_entry=((execution_price-initial)/safe_price<=maximum_stop_distance+1e-12)&(entry_risk<=maximum_position_risk)
+        safe_entry=((execution_price-initial)<=(maximum_stop_distance+1e-12)*safe_price)&(entry_risk<=maximum_position_risk)
         rejected_entry=entry_now&~safe_entry;entry_now&=safe_entry
         add_q=add_dollars/safe_price;prospective_q=remaining+add_q
         # Existing paid costs/net realized losses plus prospective buy and exit
         # costs. Realized gains do not subsidize a larger stop-risk budget.
         add_risk=(remaining*(avg-stop)+add_q*(execution_price-stop)).clamp_min(0)+(episode-realized).clamp_min(0)+(add_q*fee_per_share).clamp_min(minimum_order_fee)+add_dollars*cost+(prospective_q*fee_per_share).clamp_min(minimum_order_fee)+prospective_q*stop.clamp_min(0)*cost
-        prospective_avg=(remaining*avg+add_q*execution_price)/prospective_q.clamp_min(1e-12)
-        safe_add=(add_risk<=maximum_position_risk)&((prospective_avg-stop)/prospective_avg.clamp_min(1e-12)<=maximum_stop_distance+1e-12)
+        prospective_basis=remaining*avg+add_q*execution_price
+        # Positive basis/quantity permit the same distance test without two
+        # candidate x listing float64 divisions on every replay clock.
+        safe_add=(add_risk<=maximum_position_risk)&(prospective_q*stop>=(1-maximum_stop_distance-1e-12)*prospective_basis)
         rejected_add=add_now&~safe_add;add_now&=safe_add
     # Scalar-only where() defaults to float32, including dollar fee arithmetic.
     dollars=entry_now.to(q.dtype)*entry_dollars+add_now.to(q.dtype)*add_dollars
@@ -166,7 +168,7 @@ def state_signals(signals,held,age,limits,stateful:bool):
     return signals&mask
 
 
-def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',progress=None,listing_width=None, episode_capacity=65536,trace=False):
+def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',progress=None,listing_width=None, episode_capacity=65536,trace=False,protected_kernel=True):
     """One batched position engine across independent sessions and strategies.
 
     No bid/ask, spread, volume-capacity, cash, or pending-order tensors enter
@@ -219,7 +221,7 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
         from .replay_graph import replay
         replay(position,aggregate,opened,policy,prices,observed_all,membership_all,
             all_signals,values,all_ids,columns,age_limits,lengths,stateful,execution,
-            step,state_signals,progress,episodes=episodes)
+            step,state_signals,progress,episodes=episodes,protected_kernel=protected_kernel)
     else:
         for clock in range(1,t):
             price=prices[clock];previous=prices[clock-1];observed=observed_all[clock];membership=membership_all[clock-1]

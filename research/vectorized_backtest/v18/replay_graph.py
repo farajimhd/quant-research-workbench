@@ -6,10 +6,12 @@ from collections import deque
 
 def replay(position, aggregate, opened, policy, prices, observed, membership,
            signals, values, ids, columns, age_limits, lengths, stateful,
-           execution, transition, select_signals, progress=None, block=32, episodes=None):
+           execution, transition, select_signals, progress=None, block=32, episodes=None,protected_kernel=True):
     device=position.device
     total=prices.shape[0]-1
     index=torch.ones((),dtype=torch.int64,device=device)
+    if execution.risk_protection and protected_kernel:
+        from .protected_transition import transition as protected_transition
 
     def transition_tick():
         # Device-side index stays dynamic across graph replays. Tail clocks
@@ -19,10 +21,11 @@ def replay(position, aggregate, opened, policy, prices, observed, membership,
         held=position[...,0]>1e-12
         selected=select_signals(take(signals,clock-1),held,clock-1-opened,age_limits,stateful)
         swing=values[take(ids,clock)[:,None,:],columns[None,:,None]]
-        p,a=transition(position,aggregate,take(prices,clock),take(prices,clock-1),
-            take(observed,clock),take(membership,clock-1),selected,swing,policy,
-            clock.to(torch.float64),(index==lengths-1)[:,None,None],
-            execution.entry_dollars,execution.add_dollars,execution.cost_bps/10000.,execution.fee_per_share,execution.minimum_order_fee,execution.risk_protection,execution.maximum_stop_distance,execution.maximum_position_risk)
+        args=(position,aggregate,take(prices,clock),take(prices,clock-1),take(observed,clock),take(membership,clock-1),selected,swing,policy,clock.to(torch.float64),(index==lengths-1)[:,None,None],execution.entry_dollars,execution.add_dollars,execution.cost_bps/10000.,execution.fee_per_share,execution.minimum_order_fee)
+        if execution.risk_protection and protected_kernel:
+            p,a=protected_transition(*args,execution.maximum_stop_distance,execution.maximum_position_risk)
+        else:
+            p,a=transition(*args,execution.risk_protection,execution.maximum_stop_distance,execution.maximum_position_risk)
         active=index<lengths
         closed=held&(p[...,0]<=1e-12)&active[:,None,None]
         profits=p[...,7]-position[...,8]
