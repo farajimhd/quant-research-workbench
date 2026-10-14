@@ -2717,6 +2717,20 @@ class ClickHouseIntegration(unittest.TestCase):
         self.assertIn(('aggregate','after_staging'),observed)
         self.assertIn(('bars','after_publish'),observed)
         self.assertTrue(result['seal']['root_hash'])
+        from pipelines.certified_research import market_reader
+        from datetime import timedelta
+        from zoneinfo import ZoneInfo
+        session_open=datetime(day.year,day.month,day.day,9,30,tzinfo=ZoneInfo('America/New_York'))
+        bar_receipt=result['results']['shared']['receipts']['bars']
+        bar_scope=Scope(dataset,day,93,'bars',bar_receipt['parent_hash'])
+        completed=market_reader.read(self.client.query,self.database,bar_scope,claim,lambda:None,
+            cutoff=session_open+timedelta(seconds=1))
+        self.assertEqual(len(completed['rows']),1)
+        self.assertEqual(int(completed['rows'][0]['bucket_end_us']),
+            int((session_open+timedelta(seconds=1)).timestamp())*1000000)
+        unfinished=market_reader.read(self.client.query,self.database,bar_scope,claim,lambda:None,
+            cutoff=session_open+timedelta(microseconds=999999))
+        self.assertEqual(unfinished['rows'],())
         seed,checkpoint=v7.verify_seed(self.client.query,self.database,claim,result['results']['levels'],
             request.dataset_hash,request.source_hash,rules)
         self.assertEqual(seed,result['results']['levels'])

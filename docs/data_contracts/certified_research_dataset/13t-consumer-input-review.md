@@ -60,3 +60,24 @@ Historical identity, corporate/allocation/float evidence, short publication
 clocks and SEC range gaps remain blockers even when all input columns exist.
 No new required market primitive was identified in this review, but real
 consumer-read parity and representative production coverage remain unproven.
+
+## Shared bounded market reader
+
+`pipelines.certified_research.market_reader.read` now reads bars, indicators,
+100ms liquidity and rolling activity from a frozen `Scope`. It independently
+verifies the full product receipt before and after the read, pins its attempt,
+and rejects an absent/changed receipt or a row-bound overflow. Only completed
+buckets with end time at or before the timezone-aware cutoff are returned.
+`bucket_start_us` and `bucket_end_us` derive from New York midnight and the
+stored resolution/index, retaining DST and exact microsecond cutoff semantics.
+Price integers, readiness/validity masks and sparse gaps are preserved.
+
+Callers must supply their claim and an `authority_guard` that verifies the
+frozen dataset/collection, source and dated membership. A no-op guard is only
+appropriate for isolated fixtures; a product receipt alone does not certify
+full-universe completeness. Resolution selection is explicit (liquidity needs
+`resolutions=(100,)`), and results are bounded to at most one million rows.
+No default current-ticker join, padding or cross-sectional ranking is performed.
+This is a common-data read primitive, not migration of the existing RL/optimizer
+adapters or proof of their parity. Missing historical authority still blocks
+production use.
