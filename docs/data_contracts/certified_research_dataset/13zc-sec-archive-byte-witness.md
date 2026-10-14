@@ -63,3 +63,19 @@ public-time qualification, competing revision handling and dated stock-class
 mapping remain required before certified fundamentals/float publication.
 The successful example proves byte parity for this filing, not whole-period
 coverage or original-vintage parity for the existing bulk fundamental catalog.
+
+`sec_archive_staging_plan.plan` now provides the read-only grouped staging plan.
+It validates prepared fingerprints, canonical D date/quarter/file identity,
+designated G backup roots and private D destinations below the operational
+runtime root. Documents from the same archive share one planned copy. Exact
+backup sizes/mtime and current D space feed the shared reserve/chunk planner;
+missing, escaping or oversized archive units fail explicitly. The plan creates
+no directories and starts no copy.
+
+Unit fixtures verified shared-archive grouping and multiple chunks with a
+preserved reserve. A live one-document plan found the 1,521,439,675-byte backup,
+reserved 800,154,503,987 bytes and reported one chunk without copying. The
+executor must still revalidate space and source stats before each chunk, copy
+and verify each archive once, publish completed witnesses, then remove only
+owned successful copies. Grouped execution and durable witness publication
+remain unfinished; this plan is not authorization to use stale space readings.
