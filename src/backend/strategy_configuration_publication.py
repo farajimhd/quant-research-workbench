@@ -13,6 +13,9 @@ class ConfigurationSelectionPublisher:
     of programme/policy references. Each insert_child call must own its own
     connection. All children settle before any selection seal is written.
     """
+    children = schema.CHILDREN
+    seal = schema.SELECTION
+    restore = staticmethod(restore_configuration_selection)
     def __init__(self, storage, *, concurrency):
         if type(concurrency) is not int or not 1 <= concurrency <= 6:
             raise ValueError("Configuration publication requires explicit bounded concurrency")
@@ -22,7 +25,7 @@ class ConfigurationSelectionPublisher:
         self.failed = False
 
     async def publish(self, source):
-        selected = restore_configuration_selection(source)
+        selected = self.restore(source)
         if self.busy or self.failed:
             raise RuntimeError("Configuration publication lane is busy or stopped")
         self.busy = True
@@ -43,13 +46,13 @@ class ConfigurationSelectionPublisher:
         storage.verify_references(selected)
         existing = storage.read_selection(identity)
         if existing is not None:
-            restored = restore_configuration_selection(existing)
+            restored = self.restore(existing)
             if restored.header["content_hash"] != selected.header["content_hash"]:
                 raise ValueError("Configuration identity already has a different immutable selection")
             storage.assert_owner()
             return restored
         prior = storage.read_children(identity)
-        if set(prior) != {table.name for table in schema.CHILDREN}:
+        if set(prior) != {table.name for table in self.children}:
             raise ValueError("Configuration publication lacks complete child readback")
         if any(prior.values()):
             raise ValueError("Unsealed configuration children require explicit recovery")
@@ -59,7 +62,7 @@ class ConfigurationSelectionPublisher:
             storage.assert_owner()
         errors = []
         with ThreadPoolExecutor(max_workers=self.concurrency, thread_name_prefix="configuration-publish") as pool:
-            futures = [pool.submit(insert, table) for table in schema.CHILDREN]
+            futures = [pool.submit(insert, table) for table in self.children]
             for future in futures:
                 try:
                     future.result()
@@ -70,13 +73,13 @@ class ConfigurationSelectionPublisher:
         if errors:
             raise BaseExceptionGroup("Configuration child publication failed", errors)
         actual = storage.read_children(identity)
-        expected = {table.name: selected.rows[table.name] for table in schema.CHILDREN}
+        expected = {table.name: selected.rows[table.name] for table in self.children}
         if actual != expected:
             raise ValueError("Configuration child readback differs; seal withheld")
         storage.verify_references(selected)
         storage.assert_owner()
-        storage.insert_seal(selected.rows[schema.SELECTION.name])
-        restored = restore_configuration_selection(storage.read_selection(identity))
+        storage.insert_seal(selected.rows[self.seal.name])
+        restored = self.restore(storage.read_selection(identity))
         if restored.header["content_hash"] != selected.header["content_hash"]:
             raise ValueError("Published configuration selection differs")
         storage.assert_owner()
