@@ -2,6 +2,8 @@ import pytest
 
 from pipelines.certified_research.sec_precision import assess
 from pipelines.certified_research.sec_precision import inventory
+from pipelines.certified_research.sec_precision import gate
+from pipelines.certified_research.contracts import digest
 from pipelines.certified_research import sec_fundamental_context
 from tests.test_certified_sec_share_context import document
 from hashlib import sha256
@@ -47,3 +49,23 @@ def test_inventory_rejects_mutated_extraction():
     payload=document();extraction=sec_fundamental_context.extract(payload,sha256(payload.encode()).hexdigest(),'320193')
     extraction['observations'][0]['value']='1'
     with pytest.raises(ValueError,match='extraction'):inventory(extraction)
+
+
+def extracted_pair(first,second):
+    observations=tuple(dict(source_position=i,value=value,decimals=decimals,concept='{taxonomy}Concept',unit='USD',
+        period_start=None,period_end='2025-01-01',dimensions=()) for i,(value,decimals) in enumerate((first,second)))
+    body=dict(observations=observations,rejected=())
+    return dict(body,extraction_hash=digest(body))
+
+
+def test_gate_rejects_equal_accuracy_disagreement_even_with_touching_intervals():
+    result=gate(extracted_pair(('5000','-3'),('6000','-3')),mode='round-to-nearest')
+    assert result['ready'] is False and result['failures'][0]['reason']=='disagreeing_equal_accuracy_values'
+
+
+def test_gate_uses_one_mode_and_preserves_different_precision_values():
+    source=extracted_pair(('5000','-3'),('5500','-2'))
+    result=gate(source,mode='round-to-nearest')
+    assert result['ready'] and not result['certified'] and not result['value_selected']
+    assert len(source['observations'])==2
+    with pytest.raises(ValueError):gate(source,mode='mixed')

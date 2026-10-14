@@ -139,3 +139,20 @@ under rounding. This demonstrates why a report-wide mode must be explicit and
 why per-fact mode selection would be invalid. No mode is automatically adopted,
 no source fact is deleted, and these bounded observations do not certify whole
 filings, original posting times, issuer classes or historical period coverage.
+
+`sec_precision.gate` now checks one explicit mode over every semantic group and
+adds the [OIM equal-accuracy agreement rule](https://www.xbrl.org/Specification/oim/REC-2021-10-13/oim-REC-2021-10-13.html)
+from section 6.2.1: values reported with the same declared accuracy must agree,
+even if their closed intervals merely touch. Rejected source facts, invalid
+precision, disjoint intervals or equal-accuracy disagreements keep the gate false.
+The gate binds extraction and inventory hashes, retains failing context/position
+locators, and selects no point value. `sec_precision.report` shares one inventory
+calculation across both diagnostic gates; measurement and independent persisted
+readback expose the two gate hashes/statuses without automatically choosing a mode.
+
+The live Apple/Alphabet/Meta sample passed the round-to-nearest gate for all three
+filings. Alphabet failed the truncation gate on one group. A fixture separately
+proved equal-accuracy disagreement is rejected even where intervals touch. These
+are gates over the reviewed extracted numeric context model, not full DTS/OIM
+report validation, posting-time or coverage certificates. Production authority
+adoption, point-value rules and whole-period completeness remain separate work.

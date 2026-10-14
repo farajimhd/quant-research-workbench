@@ -72,3 +72,36 @@ def inventory(extraction):
         dimensioned_groups=sum(g['dimensioned'] for g in groups),rejected_numeric_facts=len(extraction['rejected']),
         mode_status_counts={mode:dict(sorted(values.items())) for mode,values in counts.items()},certified=False)
     return dict(result,inventory_hash=digest(result))
+
+
+def gate(extraction,*,mode):
+    """One report-wide mode and equal-accuracy agreement; not full XBRL certification."""
+    if mode not in ('round-to-nearest','truncation'):raise ValueError('A single explicit report-wide precision mode is required')
+    return _gate(extraction,inventory(extraction),mode)
+
+
+def report(extraction):
+    """Share one inventory computation across both diagnostic mode gates."""
+    observed=inventory(extraction)
+    return dict(inventory=observed,gates={mode:_gate(extraction,observed,mode) for mode in ('round-to-nearest','truncation')})
+
+
+def _gate(extraction,observed,mode):
+    by_position={r['source_position']:r for r in extraction['observations']}
+    failures=[]
+    for group in observed['groups']:
+        status=group['modes'][mode]['status']
+        reason='' if status=='compatible_intervals' else status
+        if not reason:
+            accuracies=defaultdict(set)
+            for position in group['positions']:
+                row=by_position[position];accuracy='INF' if row['decimals']=='INF' else int(row['decimals'])
+                accuracies[accuracy].add(Decimal(row['value']))
+            if any(len(values)>1 for values in accuracies.values()):reason='disagreeing_equal_accuracy_values'
+        if reason:failures.append(dict(context_hash=group['context_hash'],positions=group['positions'],reason=reason))
+    result=dict(version='original-sec-report-precision-gate-v1',mode=mode,extraction_hash=extraction['extraction_hash'],
+        inventory_hash=observed['inventory_hash'],observations=observed['observations'],semantic_groups=observed['semantic_groups'],
+        failures=tuple(failures),rejected_numeric_facts=observed['rejected_numeric_facts'],
+        ready=bool(observed['observations']) and not failures and not observed['rejected_numeric_facts'],
+        certified=False,value_selected=False)
+    return dict(result,gate_hash=digest(result))

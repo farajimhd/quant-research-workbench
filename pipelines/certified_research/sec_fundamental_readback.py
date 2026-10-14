@@ -62,7 +62,7 @@ def verify(query,database,reconciliation_hash,claim,source_guard):
     extraction=dict(proof['extraction_metadata'],observations=original,rejected=proof['rejected_original'])
     sealed=extraction.pop('extraction_hash')
     if sealed!=extraction_hash or digest(extraction)!=sealed:raise ValueError('Reconstructed fundamental extraction seal differs')
-    precision_inventory=sec_precision.inventory(dict(extraction,extraction_hash=sealed))
+    precision_report=sec_precision.report(dict(extraction,extraction_hash=sealed));precision_inventory=precision_report['inventory']
     restored_comparisons=[];seen=set()
     for row in comparisons:
         if row['source_record'] in seen or any(p not in positions for p in row['original_positions']):
@@ -100,4 +100,6 @@ def verify(query,database,reconciliation_hash,claim,source_guard):
         unmatched_original_context_counts=unmatched_contexts,
         original_precision_inventory={k:precision_inventory[k] for k in ('inventory_hash','observations','semantic_groups',
             'duplicate_groups','dimensioned_groups','mode_status_counts','certified')},
+        original_report_precision_gates={mode:dict(gate_hash=value['gate_hash'],ready=value['ready'],failures=len(value['failures']),certified=False)
+            for mode,value in precision_report['gates'].items()},
         certified=False,allocation_certified=False)
