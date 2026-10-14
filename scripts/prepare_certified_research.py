@@ -243,6 +243,7 @@ def prepare_sec_share_sources(args,client,config,claim,client_factory,dictionary
     census=None
     submission_census=None
     reconciliation=None
+    submission_coverage=None
     if args.sec_census_cik:
         from pipelines.certified_research import sec_filing_census
         claim.check()
@@ -252,12 +253,16 @@ def prepare_sec_share_sources(args,client,config,claim,client_factory,dictionary
         if not census['discovery_ready'] or not census['documents']:
             raise ValueError('Retained SEC filing discovery is not ready: '+str(census['issue_counts']))
         if args.reconcile_sec_submissions:
+            from pipelines.certified_research import sec_submission_coverage
             submission_census=sec_filing_census.inventory(client.query,args.sec_census_cik,args.fundamental_start_date,config.end,
                 forms=args.sec_census_forms,maximum_documents=1000,source='bulk_submissions')
             claim.check()
             reconciliation=sec_filing_census.reconcile(census,submission_census)
-            if not reconciliation['identity_reconciled']:
-                raise ValueError('SEC filing identities differ from retained submissions: '+json.dumps(reconciliation,sort_keys=True,default=str))
+            submission_coverage=sec_submission_coverage.audit(client.query,submission_census)
+            claim.check()
+            if not reconciliation['identity_reconciled'] or not submission_coverage['retained_evidence_ready']:
+                raise ValueError('SEC filing identities differ or retained submission coverage is incomplete: '+
+                    json.dumps(dict(reconciliation=reconciliation,coverage=submission_coverage),sort_keys=True,default=str))
         args.sec_share_document=[(row['cik'],row['accession'],row['primary_document']) for row in census['documents']]
     if not args.sec_share_document:return None
     from pipelines.certified_research import sec_share_preparation,capacity_profile
@@ -266,6 +271,7 @@ def prepare_sec_share_sources(args,client,config,claim,client_factory,dictionary
     if census is not None:
         result['filing_census']=dict(census_hash=census['census_hash'],source_hash=census['source_hash'],filings=census['filings'],coverage_certified=False)
         if reconciliation is not None:result['filing_census']['submission_reconciliation']=reconciliation
+        if submission_coverage is not None:result['filing_census']['submission_coverage']=submission_coverage
     if result['status']=='interrupted':raise InterruptedError('SEC candidate source preparation interrupted')
     if result['status']!='complete':
         details='; '.join(f'{key}: {client.clean_error(error)[:200]}' for key,error in list(result['errors'].items())[:8])
@@ -306,6 +312,9 @@ def prepare_sec_share_sources(args,client,config,claim,client_factory,dictionary
             claim.check()
             if submission_after['census_hash']!=submission_census['census_hash']:
                 raise ValueError('Independent SEC submission census changed during source preparation; prepared evidence retained')
+            if sec_submission_coverage.audit(client.query,submission_after)['audit_hash']!=submission_coverage['audit_hash']:
+                raise ValueError('Independent SEC submission coverage changed during source preparation; prepared evidence retained')
+            claim.check()
     return result
 
 

@@ -92,6 +92,7 @@ def test_launcher_submission_mismatch_blocks_before_any_preparation():
     retained=inventory(query_for([row()]),('320193',),date(2025,1,1),date(2026,1,2),forms=('10-K',))
     independent=inventory(query_for([]),('320193',),date(2025,1,1),date(2026,1,2),forms=('10-K',),source='bulk_submissions')
     with patch('pipelines.certified_research.sec_filing_census.inventory',side_effect=[retained,independent]),\
+         patch('pipelines.certified_research.sec_submission_coverage.audit',return_value=dict(retained_evidence_ready=False)),\
          patch('pipelines.certified_research.sec_share_preparation.prepare') as prepare,\
          pytest.raises(ValueError,match='identities differ'):
         prepare_sec_share_sources(args,Mock(),SimpleNamespace(end=date(2026,1,2)),Mock(),Mock(),Mock(),Event())

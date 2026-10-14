@@ -61,6 +61,20 @@ writers start. Both inventories are fingerprinted and rechecked after preparatio
 source changes stop completion while preserving prepared evidence. Discovery without
 this flag remains explicitly uncertified candidate preparation.
 
+The same flag audits bounded parent-member and historical-fragment manifests. A
+fragment is required when its advertised filing interval overlaps the requested
+context; unknown intervals remain blockers. Each required member must have one
+completed ingestion record linked to the selected source. Parent member vintage
+must extend past the requested end date. This is a conservative diagnostic gate:
+ZIP modification dates cannot independently prove completeness, and an unchanged
+but current issuer file may require stronger acquisition evidence to qualify.
+The audit is fingerprinted and rechecked after preparation too.
+
+The live three-issuer October 2 check found stale parent members: Apple June 18,
+Alphabet and Meta July 2. The three unconfirmed quarterly filings are dated July
+23, 30 and 31. An August download receipt therefore must not be treated as proof
+that this snapshot contains the later filings. No downloads were attempted.
+
 Identity agreement alone is insufficient for coverage certification. Bulk snapshot
 freshness, original download receipts and complete referenced submission fragments
 must also be verified. These checks do not download data or certify allocation.
