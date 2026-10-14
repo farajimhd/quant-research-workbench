@@ -54,21 +54,28 @@ Isolated `certified_research_test_` SQL fixtures are explicitly outside that pro
 certification path. Whole-period parity coverage certification remains work.
 
 Original observations and comparison evidence now have a bounded durable publisher
-in `sec_fundamental_publication`. Its three exact schemas are exported by the unified
-launcher `schema --format sql/json`:
+in `sec_fundamental_publication`. Its four exact schemas are exported by the unified
+launcher `schema --format sql/json` (current v2 catalog):
 
-- `research_sec_fundamental_source_observation_v1`: exact decimal strings, concepts,
-  units, periods, explicit dimensions, source positions and parsing provenance.
-- `research_sec_fundamental_source_comparison_v1`: bulk source identity/value,
+- `research_sec_fundamental_source_context_v2`: one unit/period/dimension context
+  per extraction/context hash, shared by observations.
+- `research_sec_fundamental_source_observation_v2`: exact decimal strings, concepts,
+  context references, source positions and parsing provenance.
+- `research_sec_fundamental_source_comparison_v2`: bulk source identity/value,
   comparison status, context hash and original-position references. Original values
   are referenced rather than copied into each comparison.
-- `research_sec_fundamental_source_document_v1`: document/catalog/witness/time/
+- `research_sec_fundamental_source_document_v2`: document/catalog/witness/time/
   reconciliation hashes, availability, precision, row counts and rejected/unmatched
   evidence. This completion row is inserted last.
 
 All tables are monthly MergeTree with explicit `live_market_ssd` and lossless codecs.
-The extraction hash is the immutable group identity; competing evidence for an
-existing extraction requires explicit versioned reconciliation rather than overwrite.
+Original context/observation rows are keyed by extraction identity; comparison and
+completion rows are keyed by reconciliation identity. New bulk or time evidence can
+therefore append a reconciliation version while reusing the exact original rows.
+Existing v1 tables are neither altered nor overwritten; no automatic v1 migration
+or qualification is performed. A live isolated fixture verified a second comparison
+version inserted only its comparison and completion rows and left the original
+version exactly reusable.
 The publisher recomputes reconciliation from its input evidence, checks source and
 storage guards before writes, requires measured write admission, inserts missing
 rows in bounded batches, and independently verifies the complete group. Completed

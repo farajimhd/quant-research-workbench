@@ -12,31 +12,35 @@ PREFIX='research_sec_fundamental_source_'
 def tables():
     c=schema.c;common=(c('extraction_hash','FixedString(64)'),c('source_archive_date','Date'))
     return (
-        schema.Table(PREFIX+'observation_v1',common+(c('source_position','UInt32','Delta,ZSTD(1)'),
-            c('context_hash','FixedString(64)'),c('concept','LowCardinality(String)'),c('unit','LowCardinality(String)'),
+        schema.Table(PREFIX+'context_v2',common+(c('context_hash','FixedString(64)'),c('unit','LowCardinality(String)'),
             c('period_start','Nullable(Date)'),c('period_end','Date'),c('dimensions','Array(Tuple(String,String))'),
-            c('value','String'),c('proof','String')),('extraction_hash','source_position'),'toYYYYMM(source_archive_date)'),
-        schema.Table(PREFIX+'comparison_v1',common+(c('source_record','String'),c('status','LowCardinality(String)'),
+            ),('extraction_hash','context_hash'),'toYYYYMM(source_archive_date)'),
+        schema.Table(PREFIX+'observation_v2',common+(c('source_position','UInt32','Delta,ZSTD(1)'),
+            c('context_hash','FixedString(64)'),c('concept','LowCardinality(String)'),c('value','String'),c('proof','String')),
+            ('extraction_hash','source_position'),'toYYYYMM(source_archive_date)'),
+        schema.Table(PREFIX+'comparison_v2',common+(c('reconciliation_hash','FixedString(64)'),c('source_record','String'),c('status','LowCardinality(String)'),
             c('context_hash','FixedString(64)'),c('source_value','String'),c('original_positions','Array(UInt32)')),
-            ('extraction_hash','source_record'),'toYYYYMM(source_archive_date)'),
-        schema.Table(PREFIX+'document_v1',common+(c('document_key','FixedString(64)'),c('document_hash','FixedString(64)'),
+            ('reconciliation_hash','source_record'),'toYYYYMM(source_archive_date)'),
+        schema.Table(PREFIX+'document_v2',common+(c('document_key','FixedString(64)'),c('document_hash','FixedString(64)'),
             c('catalog_hash','FixedString(64)'),c('witness_hash','FixedString(64)'),c('qualification_hash','FixedString(64)'),
             c('reconciliation_hash','FixedString(64)'),c('available_at',"DateTime64(6,'UTC')",'Delta,ZSTD(1)'),
             c('precision','UInt8'),c('observations','UInt32','T64,ZSTD(1)'),c('comparisons','UInt32','T64,ZSTD(1)'),
-            c('proof','String')),('extraction_hash',),'toYYYYMM(source_archive_date)'))
+            c('proof','String')),('reconciliation_hash',),'toYYYYMM(source_archive_date)'))
 
 
 def records(extraction,bulk,witness,qualification,receipt):
     result=sec_fundamental_reconciliation.reconcile(extraction,bulk,witness,qualification,receipt)
     common=dict(extraction_hash=extraction['extraction_hash'],source_archive_date=witness['source_archive_date'])
-    observations=[]
+    observations=[];contexts={}
     for row in extraction['observations']:
         context=(row['period_start'],row['period_end'],row['unit'],row['dimensions'])
-        observations.append(dict(common,source_position=row['source_position'],context_hash=digest(context),concept=row['concept'],
-            unit=row['unit'],period_start=row['period_start'],period_end=row['period_end'],dimensions=row['dimensions'],value=row['value'],
+        context_hash=digest(context)
+        contexts[context_hash]=dict(common,context_hash=context_hash,unit=row['unit'],period_start=row['period_start'],
+            period_end=row['period_end'],dimensions=row['dimensions'])
+        observations.append(dict(common,source_position=row['source_position'],context_hash=context_hash,concept=row['concept'],value=row['value'],
             proof=json.dumps({k:v for k,v in row.items() if k not in ('concept','unit','period_start','period_end','dimensions','value')},
                 sort_keys=True,separators=(',',':'))))
-    comparisons=[dict(common,**{k:v for k,v in row.items() if k!='original_values'}) for row in result['comparisons']]
+    comparisons=[dict(common,reconciliation_hash=result['reconciliation_hash'],**{k:v for k,v in row.items() if k!='original_values'}) for row in result['comparisons']]
     proof={k:v for k,v in result.items() if k!='comparisons'}
     proof['extraction_metadata']={k:v for k,v in extraction.items() if k not in ('observations','rejected')}
     header=dict(common,document_key=witness['document_key'],document_hash=witness['document_hash'],catalog_hash=extraction['catalog_hash'],
@@ -44,7 +48,7 @@ def records(extraction,bulk,witness,qualification,receipt):
         available_at=datetime.fromisoformat(qualification['available_at']).astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f'),
         precision=qualification['precision'],observations=len(observations),comparisons=len(comparisons),
         proof=json.dumps(proof,sort_keys=True,separators=(',',':')))
-    return tuple(observations),tuple(comparisons),(header,)
+    return tuple(contexts.values()),tuple(observations),tuple(comparisons),(header,)
 
 
 def install(query,database,claim):
@@ -68,8 +72,11 @@ def capture(query,database,extraction,bulk,witness,qualification,receipt,claim,s
         if 'dimensions' in row:row['dimensions']=tuple(tuple(pair) for pair in row['dimensions'])
         if 'original_positions' in row:row['original_positions']=tuple(row['original_positions'])
         return row
-    def read(table):return [normalized(r) for r in query(f'SELECT {",".join(c.name for c in table.columns)} '
-        f'FROM {database}.{table.name} WHERE extraction_hash={literal(extraction["extraction_hash"])} LIMIT 10001')]
+    def read(table):
+        key='reconciliation_hash' if any(c.name=='reconciliation_hash' for c in table.columns) else 'extraction_hash'
+        value=groups[-1][0]['reconciliation_hash'] if key=='reconciliation_hash' else extraction['extraction_hash']
+        return [normalized(r) for r in query(f'SELECT {",".join(c.name for c in table.columns)} '
+            f'FROM {database}.{table.name} WHERE {key}={literal(value)} LIMIT 10001')]
     guard();existing=[read(table) for table in catalog];inserted=0
     complete=bool(existing[-1])
     for table,expected,current in zip(catalog,groups,existing):
