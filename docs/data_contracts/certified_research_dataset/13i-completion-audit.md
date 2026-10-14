@@ -29,6 +29,13 @@ claim that the requested full dataset can be certified from current inputs.
 Passing a fixture does not resolve the production evidence gaps in this table.
 No expensive full campaign is part of implementation validation.
 
+[Retained SEC share-context extraction](13z-sec-share-context.md) now preserves
+exact inline share values and explicit class dimensions from original retained
+payloads. Three real 2025 filings passed hash-bound extraction. This provides a
+concrete source path for the missing share-allocation producer; original-vintage,
+public-availability, dated class mapping and completeness qualification remain
+required before that producer can publish certified allocation or supply.
+
 ## Current historical identity repair inventory
 
 The launcher now includes a bounded retained-history symbol interval repair.
