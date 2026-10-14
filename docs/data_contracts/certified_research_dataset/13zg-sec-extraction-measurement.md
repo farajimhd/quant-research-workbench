@@ -156,3 +156,24 @@ proved equal-accuracy disagreement is rejected even where intervals touch. These
 are gates over the reviewed extracted numeric context model, not full DTS/OIM
 report validation, posting-time or coverage certificates. Production authority
 adoption, point-value rules and whole-period completeness remain separate work.
+
+`sec_precision.select_reported` now implements a separately versioned candidate
+point projection for one explicit mode. After the whole-report gate passes, each
+semantic group selects the actual source observation with greatest declared
+accuracy (INF before finite decimals; larger finite decimals before smaller).
+Equal-accuracy source values must already agree; the earliest source position
+provides a deterministic locator among identical candidates. The selected value
+must also lie inside the group's common interval with the correct endpoint rules.
+No midpoint, average, replacement observation or additional precision is inferred.
+All original positions remain linked and all source rows remain preserved.
+
+This is an engineering projection policy, not a claim that the XBRL standard
+requires replacing an interval with a point. It returns `certified=false` and is
+not adopted by the existing strict bulk parity path. `sec_precision.report` shares
+one computed inventory/gate set with optional candidate projections. Read-only
+measurement exposes projection hashes/counts only, with no bank export or writes.
+The live sample produced 215/282/198 round-to-nearest candidate groups for
+Apple/Alphabet/Meta from all 280/350/267 observations. Alphabet's truncation
+projection remained absent because its report-wide gate failed. Persisted
+projection authority, public-as-of certification, class allocation and period
+coverage remain required before these candidates can authorize downstream data.

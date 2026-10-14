@@ -42,12 +42,15 @@ def measure(query,requests,*,progress=None,compare_bulk=False):
             extraction_metadata_bytes=len(json.dumps(parsed,separators=(',',':')).encode('utf-8')),
             extraction_hash=parsed['extraction_hash'])
         if compare_bulk:
-            precision_report=sec_precision.report(parsed);precision=precision_report['inventory']
+            precision_report=sec_precision.report(parsed,include_projections=True);precision=precision_report['inventory']
             result['original_precision_inventory']={k:precision[k] for k in ('inventory_hash','observations','semantic_groups',
                 'duplicate_groups','dimensioned_groups','rejected_numeric_facts','mode_status_counts','certified')}
             result['original_report_precision_gates']={mode:dict(gate_hash=value['gate_hash'],ready=value['ready'],
                 failures=len(value['failures']),rejected_numeric_facts=value['rejected_numeric_facts'],certified=False)
                 for mode,value in precision_report['gates'].items()}
+            result['original_reported_projection_candidates']={mode:(dict(projection_hash=value['projection_hash'],
+                groups=len(value['groups']),observations=value['observations'],inferred_values=False,certified=False) if value else None)
+                for mode,value in precision_report['projections'].items()}
             tags=tuple(sorted({tag for metric in facts.catalog() for tag in metric.tags}))
             bulk=sec_fundamental_reconciliation.load_bulk(query,cik,accession,tags)
             comparison=sec_fundamental_reconciliation.compare_original(parsed,bulk)

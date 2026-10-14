@@ -3,6 +3,7 @@ import pytest
 from pipelines.certified_research.sec_precision import assess
 from pipelines.certified_research.sec_precision import inventory
 from pipelines.certified_research.sec_precision import gate
+from pipelines.certified_research.sec_precision import select_reported
 from pipelines.certified_research.contracts import digest
 from pipelines.certified_research import sec_fundamental_context
 from tests.test_certified_sec_share_context import document
@@ -69,3 +70,15 @@ def test_gate_uses_one_mode_and_preserves_different_precision_values():
     assert result['ready'] and not result['certified'] and not result['value_selected']
     assert len(source['observations'])==2
     with pytest.raises(ValueError):gate(source,mode='mixed')
+
+
+def test_reported_projection_keeps_actual_most_accurate_value_and_all_locators():
+    source=extracted_pair(('29754000000','-6'),('29750000000','-7'))
+    result=select_reported(source,mode='round-to-nearest');row=result['groups'][0]
+    assert row['value']=='29754000000' and row['source_position']==0 and row['all_source_positions']==(0,1)
+    assert not result['inferred_values'] and not result['certified'] and len(source['observations'])==2
+
+
+def test_failed_gate_produces_no_reported_projection():
+    with pytest.raises(ValueError,match='gate failed'):
+        select_reported(extracted_pair(('5000','-3'),('6000','-3')),mode='round-to-nearest')

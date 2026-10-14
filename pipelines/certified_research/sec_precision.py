@@ -80,10 +80,14 @@ def gate(extraction,*,mode):
     return _gate(extraction,inventory(extraction),mode)
 
 
-def report(extraction):
+def report(extraction,*,include_projections=False):
     """Share one inventory computation across both diagnostic mode gates."""
     observed=inventory(extraction)
-    return dict(inventory=observed,gates={mode:_gate(extraction,observed,mode) for mode in ('round-to-nearest','truncation')})
+    result=dict(inventory=observed,gates={mode:_gate(extraction,observed,mode) for mode in ('round-to-nearest','truncation')})
+    if include_projections:
+        result['projections']={mode:_select_reported(extraction,mode,result) if value['ready'] else None
+            for mode,value in result['gates'].items()}
+    return result
 
 
 def _gate(extraction,observed,mode):
@@ -105,3 +109,37 @@ def _gate(extraction,observed,mode):
         ready=bool(observed['observations']) and not failures and not observed['rejected_numeric_facts'],
         certified=False,value_selected=False)
     return dict(result,gate_hash=digest(result))
+
+
+def select_reported(extraction,*,mode):
+    """Choose the most accurate actual report value; retain every source locator."""
+    if mode not in ('round-to-nearest','truncation'):raise ValueError('Explicit reported-value mode is required')
+    return _select_reported(extraction,mode,report(extraction))
+
+
+def _select_reported(extraction,mode,precision_report):
+    verified=precision_report['gates'][mode]
+    if not verified['ready']:raise ValueError('Original report precision gate failed; no values selected')
+    grouped=defaultdict(list)
+    for row in extraction['observations']:
+        key=(row['concept'],row['unit'],row['period_start'],row['period_end'],tuple(tuple(v) for v in row['dimensions']))
+        grouped[key].append(row)
+    selected=[]
+    intervals={group['context_hash']:group['modes'][mode]['intersection'] for group in precision_report['inventory']['groups']}
+    for key,rows in grouped.items():
+        def accuracy(row):return (row['decimals']=='INF',0 if row['decimals']=='INF' else int(row['decimals']))
+        highest=max(accuracy(row) for row in rows)
+        best=[row for row in rows if accuracy(row)==highest]
+        winner=min(best,key=lambda row:row['source_position'])
+        interval=intervals[digest(key)]
+        value=Decimal(winner['value']);lower=Decimal(interval['lower']);upper=Decimal(interval['upper'])
+        if not (lower<=value<=upper) or (value==lower and not interval['lower_inclusive']) or (value==upper and not interval['upper_inclusive']):
+            raise ValueError('Most accurate reported value is outside the validated common interval')
+        selected.append(dict(context_hash=digest(key),concept=key[0],unit=key[1],period_start=key[2],period_end=key[3],dimensions=key[4],
+            value=winner['value'],decimals=winner['decimals'],source_position=winner['source_position'],
+            all_source_positions=tuple(sorted(r['source_position'] for r in rows)),interval=interval))
+    selected.sort(key=lambda row:row['context_hash'])
+    result=dict(version='original-sec-most-accurate-reported-values-v1',mode=mode,extraction_hash=extraction['extraction_hash'],
+        gate_hash=verified['gate_hash'],groups=tuple(selected),observations=len(extraction['observations']),
+        inferred_values=False,certified=False)
+    return dict(result,projection_hash=digest(result))
