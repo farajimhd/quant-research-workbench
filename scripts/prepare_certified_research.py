@@ -26,8 +26,10 @@ from pipelines.certified_research import contracts,schema,source,short_sql,campa
 
 def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('schema','install-schema','preflight','plan','plan-cohorts','status','stored-plan','prepare-sources','reconcile-conids','audit-sec-submissions','qualify-sec-lineage','verify','measure-storage','measure-sec-extraction','estimate-storage','launch','launch-collection','backfill-v7','run','resume','resume-collection','verify-collection'))
-    p.add_argument('--publish-conid-mappings',action='store_true',help='reconcile-conids only: publish an exact retained identity snapshot to q_live; does not alter live admission')
+    p.add_argument('command',choices=('schema','install-schema','preflight','plan','plan-cohorts','status','stored-plan','prepare-sources','reconcile-conids','review-conid-issues','audit-sec-submissions','qualify-sec-lineage','verify','measure-storage','measure-sec-extraction','estimate-storage','launch','launch-collection','backfill-v7','run','resume','resume-collection','verify-collection'))
+    p.add_argument('--publish-conid-mappings',action='store_true',help='reconcile-conids/review-conid-issues: publish an exact retained identity snapshot to q_live; does not alter live admission')
+    p.add_argument('--case-details',action='store_true',help='review-conid-issues: show every per-entity decision in text output')
+    p.add_argument('--case-ticker',action='append',default=[],help='review-conid-issues: filter displayed decisions by exact wire ticker; does not narrow review or publication')
     p.add_argument('--collection',action='store_true',help='estimate-storage only: inspect a stored collection instead of a single dataset')
     p.add_argument('--dataset-id',type=UUID)
     p.add_argument('--source-dataset-id',type=UUID,help='Qualified source plan/bar dataset for backfill-v7; never modified')
@@ -206,9 +208,12 @@ def parse_args(argv=None):
         if args.command=='resume-collection' and args.capacity_profile is None:p.error('resume-collection requires --capacity-profile')
         if args.acquire_missing or args.stage_archive or args.recover_retained_reporting:
             p.error('Frozen collection execution cannot acquire or repair sources')
-    if args.publish_conid_mappings and args.command!='reconcile-conids':
-        p.error('--publish-conid-mappings requires reconcile-conids')
-    if args.command=='reconcile-conids' and (args.acquire_missing or args.stage_archive or args.repair_retained_symbols):
+    if args.publish_conid_mappings and args.command not in ('reconcile-conids','review-conid-issues'):
+        p.error('--publish-conid-mappings requires reconcile-conids or review-conid-issues')
+    if (args.case_details or args.case_ticker) and args.command!='review-conid-issues':
+        p.error('Per-case display options require review-conid-issues')
+    if len(args.case_ticker)>128:p.error('At most 128 display ticker filters are allowed')
+    if args.command in ('reconcile-conids','review-conid-issues') and (args.acquire_missing or args.stage_archive or args.repair_retained_symbols):
         p.error('Conid reconciliation is separate from acquisition and dated-symbol publication')
     return args
 
@@ -405,15 +410,16 @@ def main(argv=None):
         fundamental_tables=sec_fundamental_publication.tables()
         reported_tables=sec_reported_publication.tables()
         scope_tables=sec_scope_specification.tables()
-        from pipelines.certified_research import conid_reconciliation
-        conid_tables=(conid_reconciliation.table(),conid_reconciliation.receipt_table())
+        from pipelines.certified_research import conid_reconciliation,conid_case_review
+        conid_tables=(conid_reconciliation.table(),conid_reconciliation.receipt_table(),conid_case_review.table(),conid_case_review.receipt_table(),conid_case_review.evidence_table())
         if args.format=='sql':print(';\n\n'.join([*(t.ddl(args.database) for _,t in catalog),
             *(t.ddl('q_live') for t in (*source_tables,*archive_tables,*fundamental_tables,*reported_tables,*scope_tables,*conid_tables))])+';')
         elif args.format=='json':
             manifest=installation.manifest(args.database)
             manifest['conid_reconciliation']=dict(database='q_live',version=conid_reconciliation.VERSION,
                 broker_execution_certified=False,historical_membership_certified=False,
-                tables=[dict(name=t.name,order=t.order,partition=t.partition,columns=[vars(c) for c in t.columns]) for t in conid_tables])
+                tables=[dict(name=t.name,engine='ReplacingMergeTree' if isinstance(t,conid_case_review.ReviewTable) else 'MergeTree',
+                    order=t.order,partition=t.partition,columns=[vars(c) for c in t.columns]) for t in conid_tables])
             manifest['sec_source_candidates']=dict(database='q_live',product=sec_share_preparation.PRODUCT,
                 recipe_hash=sec_share_preparation.recipe_hash(),candidate_only=True,
                 tables=[dict(name=t.name,order=t.order,partition=t.partition,columns=[vars(c) for c in t.columns]) for t in source_tables])
@@ -435,20 +441,46 @@ def main(argv=None):
             for group,t in catalog:print(f'  {group}: {t.name} | {len(t.columns)} columns, explicit lossless codecs')
             print(f'Optional SEC source candidates | {len(source_tables)} q_live tables | explicit document selection and measured admission required')
             print('Use --format sql for exact DDL or --format json for the column catalog.')
-            print('Optional conid reconciliation | 2 q_live tables | reconcile-conids --publish-conid-mappings')
+            print('Optional conid reconciliation/review | 5 q_live tables | --publish-conid-mappings')
         return 0
     from scripts import build_market_day as builder
     args.max_threads=args.query_threads;args.max_memory_gb=args.query_memory_gib;args.query_timeout=45
     client=builder.Client(args,persistent=False,readonly=args.command in
         ('preflight','plan','plan-cohorts','status','stored-plan','verify','verify-collection','measure-storage','measure-sec-extraction','estimate-storage','audit-sec-submissions') or
-        (args.command=='reconcile-conids' and not args.publish_conid_mappings))
+        (args.command in ('reconcile-conids','review-conid-issues') and not args.publish_conid_mappings))
     try:
-        if args.command=='reconcile-conids':
+        if args.command in ('reconcile-conids','review-conid-issues'):
             from pipelines.certified_research import conid_reconciliation as reconciliation
             end=args.end_date or args.universe_anchor_date
             if args.format=='text':print('Conid reconciliation | active=retained metadata | provider acquisition=off',flush=True)
             inputs=reconciliation.load(client.query,args.start_date,end)
             result=reconciliation.reconcile(inputs,args.start_date,end)
+            if args.command=='review-conid-issues':
+                from pipelines.certified_research import conid_case_review as review
+                legacy_inputs=dict(inputs,entities=[dict(row,ticker=row.get('legacy_ticker',row['ticker'])) for row in inputs['entities']])
+                legacy_result=reconciliation.reconcile(legacy_inputs,args.start_date,end)
+                evidence=review.load(client.query,legacy_result,inputs)
+                result=review.review(legacy_result,inputs,evidence)
+                if args.publish_conid_mappings:
+                    def review_guard():
+                        fresh_inputs=reconciliation.load(client.query,args.start_date,end)
+                        legacy_inputs=dict(fresh_inputs,entities=[dict(row,ticker=row.get('legacy_ticker',row['ticker'])) for row in fresh_inputs['entities']])
+                        base=reconciliation.reconcile(legacy_inputs,args.start_date,end)
+                        fresh=review.review(base,fresh_inputs,review.load(client.query,base,fresh_inputs))
+                        if fresh['review_hash']!=result['review_hash']:raise ValueError('Per-case review sources changed; repeat review')
+                    result['publication']=review.publish(client.query,result,review_guard)
+                displayed=result['rows'] if not args.case_ticker else [r for r in result['rows'] if r['ticker'] in set(args.case_ticker)]
+                if args.format=='json':print(json.dumps(dict({k:v for k,v in result.items() if k!='proofs'},rows=displayed,shown_rows=len(displayed)),indent=2))
+                else:
+                    s=result['summary']
+                    print(f"Conid case review | reviewed={s['reviewed']} | identity resolved={s['identity_resolved']} | blocked={s['blocked']}")
+                    for reason,count in sorted(s['blocked_reasons'].items()):print(f'  {reason}: {count}')
+                    if args.case_details or args.case_ticker:
+                        for row in displayed:
+                            print(f"{row['ticker']} | {row['decision']} | conid={row['conid']} | {row['reason'] or row['method']} | remaining={','.join(row['remaining_issues'])}")
+                    print('Canonical issues and historical timelines retain separate certification requirements.')
+                    if 'publication' in result:print('ClickHouse case publication: '+json.dumps(result['publication']))
+                return 2 if result['summary']['blocked'] else 0
             if args.publish_conid_mappings:
                 if args.format=='text':print('Conid reconciliation | active=ownership and exact publication',flush=True)
                 from contextlib import closing

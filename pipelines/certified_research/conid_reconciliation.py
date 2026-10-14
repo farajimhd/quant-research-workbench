@@ -12,7 +12,7 @@ from .contracts import digest, identifier, literal
 from .schema import Table, c
 from services.reference_gateway.ibkr_contract_identity import normalize_equity_symbol
 
-VERSION = 'retained-massive-conid-v2'
+VERSION = 'retained-massive-conid-v3'
 TABLE = 'research_massive_conid_reconciliation_v1'
 
 
@@ -43,7 +43,8 @@ def load(query, start, end, *, database='q_live', maximum_entities=50000):
         raise ValueError('Invalid reconciliation metadata bound')
     # Projection and aggregation happen in CH; no tick data is transported.
     sources = {
-        'entities': f"SELECT provider_entity_key AS entity_key,current_ticker AS ticker,entity_name AS name,"
+        'entities': f"SELECT provider_entity_key AS entity_key,if(JSONExtractString(source_payload_json,'ticker')!='',"
+            "JSONExtractString(source_payload_json,'ticker'),current_ticker) AS ticker,current_ticker AS legacy_ticker,entity_name AS name,"
             "active,ifNull(composite_figi,'') AS composite_figi,ifNull(share_class_figi,'') AS share_class_figi,"
             "ifNull(cik,'') AS cik,ifNull(primary_exchange,'') AS exchange,source_content_sha256 AS source_hash,"
             "JSONExtractString(source_payload_json,'type') AS type FROM "
@@ -58,11 +59,11 @@ def load(query, start, end, *, database='q_live', maximum_entities=50000):
             "l.source_content_sha256 AS listing_hash,s.source_content_sha256 AS security_hash "
             f"FROM {database}.id_listing_v1 l FINAL INNER JOIN {database}.id_security_v1 s FINAL ON l.security_id=s.security_id",
         'coverage': f"SELECT provider_entity_key AS entity_key,ifNull(security_id,'') AS security_id,"
-            "ifNull(listing_id,'') AS listing_id,mapping_status,source_status,"
+            "ifNull(listing_id,'') AS listing_id,mapping_status,mapping_reason,source_status,"
             f"ifNull(source_response_sha256,'') AS source_hash FROM {database}.market_ticker_event_entity_coverage_v1 FINAL",
         'issues': f"SELECT source_entity_key,issue_type,source_content_sha256 AS source_hash FROM {database}.id_mapping_issue_v1 FINAL "
             "WHERE lower(issue_status) NOT IN ('resolved','closed','ignored')",
-        'sec_tickers': "SELECT cik,ticker,exchange,mapping_source,source_file_id FROM "
+        'sec_tickers': "SELECT cik,ticker,company_name,exchange,mapping_source,source_file_id FROM "
             "sec_core.sec_bulk_mirror_company_ticker_v3 FINAL WHERE is_active=1 "
             "AND mapping_source IN ('company_tickers','company_tickers_exchange')",
         'sec_bridge': f"SELECT cik,ifNull(ticker,'') AS ticker,ifNull(security_id,'') AS security_id,"
