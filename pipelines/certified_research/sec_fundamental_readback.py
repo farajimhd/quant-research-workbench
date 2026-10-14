@@ -9,7 +9,7 @@ from . import sec_precision
 from .contracts import digest,literal
 
 
-def verify(query,database,reconciliation_hash,claim,source_guard):
+def verify(query,database,reconciliation_hash,claim,source_guard,*,include_extraction=False):
     if not isinstance(reconciliation_hash,str) or not re.fullmatch('[0-9a-f]{64}',reconciliation_hash):
         raise ValueError('Invalid fundamental reconciliation readback key')
     catalog=sec_fundamental_publication.tables()
@@ -94,7 +94,7 @@ def verify(query,database,reconciliation_hash,claim,source_guard):
     unqualified=max((counts.get('unqualified_precision',0) for counts in precision_inventory['mode_status_counts'].values()),default=0)
     if unqualified:blockers['unqualified_original_precision_groups']=unqualified
     if not comparisons:blockers['missing_bulk_comparison_census']=1
-    return dict(readback_verified=True,extraction_hash=extraction_hash,reconciliation_hash=reconciliation_hash,
+    result=dict(readback_verified=True,extraction_hash=extraction_hash,reconciliation_hash=reconciliation_hash,
         observations=len(observations),comparisons=len(comparisons),all_bulk_matched=proof['all_bulk_matched'],
         comparison_status_counts=statuses,parity_input_blockers=blockers,parity_inputs_ready=not blockers,
         unmatched_original_context_counts=unmatched_contexts,
@@ -103,3 +103,5 @@ def verify(query,database,reconciliation_hash,claim,source_guard):
         original_report_precision_gates={mode:dict(gate_hash=value['gate_hash'],ready=value['ready'],failures=len(value['failures']),certified=False)
             for mode,value in precision_report['gates'].items()},
         certified=False,allocation_certified=False)
+    if include_extraction:result['extraction']=dict(extraction,extraction_hash=sealed)
+    return result

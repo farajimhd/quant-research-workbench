@@ -43,3 +43,23 @@ retain exact binding locators and separate inserted-row counts. The default path
 does not select a numeric mode or publish projections. No production campaign
 was launched to test this wiring, and candidates remain forbidden as substitutes
 for certified downstream authority.
+
+`sec_reported_readback.verify` now independently verifies a persisted binding for
+future authority code. It audits schema/parts and bounded row/byte census, verifies
+and reconstructs the original bank through its source-reconciliation locator,
+requalifies the exact persisted archive/time/download proof, and recomputes every
+reported group and completion row under the binding's explicit numeric mode.
+It checks all original locators, selected positions, bounds, counts and hashes,
+then rereads projection/time rows and revalidates the original bank to detect
+changes during verification. No filing payload is fetched or arbitrary projection
+header trusted. Original extraction reconstruction is returned internally only
+when explicitly requested; ordinary source readback remains metadata-only.
+
+The live isolated fixture verified a complete time/receipt → original bank →
+projection chain and duplicate rejection. Synthetic proof inputs establish
+contract behavior, not production provenance. The verifier reports
+`public_time_qualified=true` only for the independently requalified binding, while
+`certified=false` and `allocation_certified=false` remain explicit. It does not
+prove whole-period coverage, authorize a downstream dataset, or replace dated
+issuer/security class evidence. Launcher completion wiring for this additional
+projection verifier remains unfinished.
