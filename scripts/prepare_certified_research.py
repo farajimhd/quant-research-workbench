@@ -41,6 +41,7 @@ def parse_args(argv=None):
     p.add_argument('--env-file',type=Path,default=ROOT/'.env')
     p.add_argument('--capacity-profile',type=Path,help='Bounded metadata configuration containing externally qualified pilot rates; required for run/resume')
     p.add_argument('--measurement-tables',type=lambda value:tuple(value.split(',')),help='measure-storage only: isolated normalized output tables; default common output set')
+    p.add_argument('--observe-storage',action='store_true',help='run/resume only: bounded isolated pilot market phase capture; does not qualify peak bounds')
     p.add_argument('--workers',type=int,default=4)
     p.add_argument('--query-threads',type=int,default=2)
     p.add_argument('--query-memory-gib',type=int,default=2)
@@ -107,6 +108,7 @@ def parse_args(argv=None):
     if args.hydrate_missing_trades:p.error('Imported-day reporting repair cannot hydrate flatfiles; G-to-D staging belongs to acquisition')
     if args.command in ('verify','measure-storage') and (args.acquire_missing or args.stage_archive):p.error('Verification/measurement is read-only; acquisition flags belong to prepare-sources')
     if args.measurement_tables is not None and args.command!='measure-storage':p.error('--measurement-tables belongs to measure-storage')
+    if args.observe_storage and args.command not in ('run','resume'):p.error('--observe-storage belongs to bounded stored run/resume pilots')
     if args.command in ('run','resume') and (args.acquire_missing or args.stage_archive):p.error('Frozen execution cannot acquire sources; use prepare-sources before freezing the plan')
     if args.command in ('resume-collection','verify-collection'):
         if args.dataset_id is None:p.error('Collection execution requires --dataset-id (collection UUID)')
@@ -265,6 +267,18 @@ def main(argv=None):
                     end=date.fromisoformat(str(frontier))
                 config=campaign_config(args,end)
             else:config=saved.config
+            observations=None
+            if args.observe_storage:
+                from pipelines.certified_research import capacity_measurement
+                if len(saved.units)>64:raise ValueError('Storage observation pilot exceeds the 64-unit execution bound')
+                catalog=installation.catalog(args.database)
+                staging=tuple(t.name for group,t in catalog if group=='staging')
+                outputs=tuple(t.name for group,t in catalog if group=='published' and any(c.name=='dataset_id' for c in t.columns))
+                capacity_measurement.require_isolated(client.query,args.database,str(args.dataset_id),(*staging,*outputs))
+                def snapshot(query):
+                    capacity_measurement.require_isolated(query,args.database,str(args.dataset_id),(*staging,*outputs))
+                    return capacity_measurement.transient_snapshot(query,args.database,staging,outputs)
+                observations=capacity_measurement.PhaseObservations(snapshot)
             inspection_client=client
             client=factory(config)
             inspection_client.close()
@@ -322,7 +336,8 @@ def main(argv=None):
                                 claim,factory,dictionary_factory,admission,stop=stop,progress=progress,
                                 start=args.backfill_start_date,end=args.backfill_end_date)
                         else:result=saved_execution.run(client.query,args.database,str(args.dataset_id),claim,factory,
-                            dictionary_factory,admission,stop=stop,progress=progress)
+                            dictionary_factory,admission,stop=stop,progress=progress,
+                            **({'storage_observer':observations.record} if observations is not None else {}))
                     finally:claim.close()
             finally:signal.signal(signal.SIGINT,original)
             if args.command=='launch-collection':
@@ -337,6 +352,10 @@ def main(argv=None):
             summary=dict(status=result['status'],counts=counts,seal=result.get('seal'),
                 failures={k:client.clean_error(v)[:256] for k,v in list(result['errors'].items())[:20]},
                 failed_units=len(result['errors']))
+            if observations is not None:
+                captured=observations.result()
+                summary['storage_observations']=dict(samples=len(captured['samples']),observed_maxima=captured['observed_maxima'],
+                    evidence_hash=captured['evidence_hash'],upper_bound_proven=False)
             if args.format=='json':print(json.dumps(summary,indent=2,default=str))
             else:
                 print(f"Execution {summary['status']} | failed={summary['failed_units']} | "+

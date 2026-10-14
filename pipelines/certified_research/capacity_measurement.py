@@ -7,6 +7,19 @@ from . import schema
 from .contracts import digest,identifier,literal
 
 VERSION='isolated-certified-persisted-bytes-v1'
+COUNTERS=('staging_bytes','output_inactive_bytes','merge_input_bytes','merge_written_uncompressed_bytes')
+
+
+def require_isolated(query,database,dataset_id,tables):
+    identifier(database);dataset_id=str(UUID(dataset_id));tables=tuple(tables)
+    if not tables or len(tables)>64 or len(tables)!=len(set(tables)):
+        raise ValueError('Invalid isolated observation scope')
+    for name in tables:
+        identifier(name)
+        row=query(f'SELECT count() n,uniqExact(dataset_id) datasets,toString(any(dataset_id)) dataset '
+                  f'FROM {database}.{name} SETTINGS final=0')[0]
+        if int(row['n']) and (int(row['datasets'])!=1 or str(row['dataset'])!=dataset_id):
+            raise ValueError('Storage pilot requires isolated dataset tables before execution')
 
 
 class PhaseObservations:
@@ -26,13 +39,14 @@ class PhaseObservations:
             body=dict(value);hash_=body.pop('evidence_hash',None)
             if hash_!=digest(body) or value.get('upper_bound_proven') is not False:
                 raise ValueError('Invalid observed storage snapshot')
+            if any(type(value.get(name)) is not int or value[name]<0 for name in COUNTERS):
+                raise ValueError('Observed storage counters must be nonnegative exact integers')
             self.samples.append(dict(sequence=len(self.samples),product=product,phase=phase,snapshot=deepcopy(value)))
 
     def result(self):
         with self.lock:
             value=dict(version='phase-observed-storage-v1',samples=tuple(deepcopy(self.samples)),upper_bound_proven=False,
-                observed_maxima={name:max((s['snapshot'][name] for s in self.samples),default=None) for name in
-                    ('staging_bytes','output_inactive_bytes','merge_input_bytes','merge_written_uncompressed_bytes')})
+                observed_maxima={name:max((s['snapshot'][name] for s in self.samples),default=None) for name in COUNTERS})
             return dict(value,evidence_hash=digest(value))
 
 

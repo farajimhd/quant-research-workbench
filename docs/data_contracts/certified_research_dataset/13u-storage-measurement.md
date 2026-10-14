@@ -74,6 +74,23 @@ implementation. Observation remains launcher-owned Python, never serialized
 executable plan code. Reference/cleanup instrumentation and automatic pilot CLI
 configuration remain outstanding; default runs do not collect samples.
 
+## Bounded stored-pilot CLI capture
+
+`run`/`resume --observe-storage` now enables market phase capture on an already
+frozen plan of at most 64 units. Source, owner and capacity admission gates
+remain mandatory. Before execution and at every sample, all selected
+staging/dataset-bearing published tables must be empty or belong only to this
+dataset. Mixed pilot tables fail closed. This is an opt-in measurement mode,
+not permission to start a full campaign or expand the plan.
+
+The final CLI summary reports sample count, observed maxima and an evidence
+hash, with `upper_bound_proven=false`. It does not generate a capacity profile
+or export historical data. The collector rejects negative, boolean, fractional
+or missing counters even when their hashes are valid; returned/producer-owned
+snapshots cannot mutate captured history. Forty focused tests cover collector,
+isolation, CLI capture/cleanup and saved execution. Full reference/cleanup/merge
+coverage and representative peak qualification remain outstanding.
+
 ## October 13 physical baseline
 
 A live read-only `system.parts`/disk snapshot returned:

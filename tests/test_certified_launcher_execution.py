@@ -230,23 +230,35 @@ def test_capacity_profile_is_bounded_fingerprinted_and_bound_to_current_recipes(
 
 
 @pytest.mark.parametrize('status,code',(('complete',0),('failed',2),('interrupted',130)))
-def test_real_cli_branch_closes_claim_and_client_and_returns_execution_status(status,code):
+@pytest.mark.parametrize('observe',(False,True))
+def test_real_cli_branch_closes_claim_and_client_and_returns_execution_status(status,code,observe):
     client=Mock();client.clean_error.side_effect=str;inspection=Mock()
     keeper=SimpleNamespace(client=Mock(),close=Mock())
     output=io.StringIO();claim=Mock()
     result=dict(status=status,errors={} if status!='failed' else {'bars':ValueError('input changed')},
         seal=dict(root_hash='a'*64,units=2) if status=='complete' else None)
+    sample=dict(upper_bound_proven=False,staging_bytes=100,output_inactive_bytes=0,merge_input_bytes=0,merge_written_uncompressed_bytes=0)
+    sample['evidence_hash']=digest(sample)
+    def executed(*args,**kwargs):
+        if observe:kwargs['storage_observer']('aggregate','after_staging',client.query)
+        return result
     with patch('scripts.build_market_day.Client',side_effect=[inspection,client]) as builder, \
-            patch('pipelines.certified_research.campaign.load_plan',return_value=SimpleNamespace(config=CampaignConfig(date(2026,1,2),date(2026,1,2),query_threads=1))), \
+            patch('pipelines.certified_research.campaign.load_plan',return_value=SimpleNamespace(config=CampaignConfig(date(2026,1,2),date(2026,1,2),query_threads=1),units=())), \
             patch('pipelines.market_sip.flatfiles.download_update_events.load_env_files'), \
             patch('src.trading_runtime.keeper_session.open_workstation_keeper_session',return_value=keeper), \
             patch('pipelines.certified_research.publication.KeeperClaim',return_value=claim), \
             patch.object(capacity_profile,'load',return_value={}),patch.object(capacity_profile,'factory'), \
-            patch('pipelines.certified_research.saved_execution.run',return_value=result) as run,redirect_stdout(output):
+            patch('pipelines.certified_research.capacity_measurement.require_isolated') as isolate, \
+            patch('pipelines.certified_research.capacity_measurement.transient_snapshot',return_value=sample), \
+            patch('pipelines.certified_research.saved_execution.run',side_effect=executed) as run,redirect_stdout(output):
         actual=launcher.main(['resume','--dataset-id','00000000-0000-0000-0000-000000000001',
-            '--capacity-profile','pilot.json','--format','json'])
+            '--capacity-profile','pilot.json','--format','json']+(['--observe-storage'] if observe else []))
     assert actual==code
     assert json.loads(output.getvalue())['status']==status
+    if observe:
+        assert json.loads(output.getvalue())['storage_observations']['samples']==1
+        assert isolate.call_count==2
+    else:isolate.assert_not_called()
     assert run.call_args.kwargs['stop'].is_set() is False
     client.close.assert_called_once();claim.close.assert_called_once();keeper.close.assert_called_once()
     inspection.close.assert_called_once()
