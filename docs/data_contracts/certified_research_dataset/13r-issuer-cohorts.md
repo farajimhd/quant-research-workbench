@@ -201,6 +201,15 @@ must match, and every existing row must match before missing metadata can be
 filled. Nothing is deleted or overwritten. Changed discovery inputs may block
 reconstruction; recovery does not weaken frozen evidence to force progress.
 
+Fresh partitions also bind context start, fundamental start, conid anchor date
+and explicit rebuild origin. These are outside `CampaignConfig`; changing them
+changes the partition/member UUIDs rather than silently reusing narrower child
+history. Each stored/new child rechecks its canonical/reporting epoch and the
+actual frozen universe range (including any earlier float-price expansion).
+All child input bindings are rechecked before the collection header is installed.
+This verifies input reuse; it does not run market producers or substitute for
+the final independent output verification.
+
 An orchestration test covers that recovery branch. A real isolated ClickHouse
 test published a header and one of three units, completed the missing rows,
 repeated install without duplicates, and rejected a changed plan while retaining

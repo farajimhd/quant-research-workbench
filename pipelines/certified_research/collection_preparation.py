@@ -1,8 +1,25 @@
 """Freeze complete issuer collections one bounded child graph at a time."""
 from dataclasses import replace
+from datetime import date
 import json
 from .contracts import digest
 from . import campaign,cohorts,collection,collection_store,context,fresh_execution,initial_plan,source,universe
+from . import verification
+
+
+def verify_child_inputs(query,saved):
+    """Preparation reuse proves current inputs, not merely matching config."""
+    verification.source_guard(query,saved)()
+    units=[p for p in saved.units if p.unit.product=='universe']
+    if len(units)!=1:raise ValueError('Prepared child requires one frozen universe authority')
+    args=units[0].arguments
+    if args.get('end')!=str(saved.config.end):raise ValueError('Prepared child universe target end changed')
+    if tuple(args.get('issuer_keys',()))!=saved.config.issuer_keys:
+        raise ValueError('Prepared child universe selection changed')
+    snapshot=cohorts.select(universe.load(query,date.fromisoformat(args['context_start']),
+        date.fromisoformat(args['end']),date.fromisoformat(args['anchor_date'])),saved.config.issuer_keys)
+    if not snapshot['ready'] or snapshot['source_hash']!=args['source_hash']:
+        raise ValueError('Prepared child universe input changed')
 
 
 def prepare(query,config,collection_id,claim,child_claim_factory,client_factory,
@@ -20,6 +37,12 @@ def prepare(query,config,collection_id,claim,child_claim_factory,client_factory,
         return dict(status='blocked',phase='historical-universe',rejections=snapshot['rejection_counts'],
                     history_dependencies=universe.history_repair_inventory(query,snapshot),execution_started=False)
     partition=cohorts.partition_snapshot(snapshot,config,days,maximum_issuers=maximum_issuers,maximum_sessions=maximum_sessions)
+    # These launch inputs are not in CampaignConfig. They must still change
+    # member identities, or an interrupted launch could reuse narrower history.
+    partition.pop('partition_hash')
+    partition['preparation_inputs']=dict(context_start=str(context_start),fundamental_start=str(fundamental_start),
+        anchor_date=str(anchor_date),rebuild_origin=str(rebuild_origin) if rebuild_origin is not None else None)
+    partition['partition_hash']=digest(partition)
     members=[]
     for index,group in enumerate(partition['groups']):
         claim.check()
@@ -63,11 +86,16 @@ def prepare(query,config,collection_id,claim,child_claim_factory,client_factory,
                 # row before filling missing metadata. Drift cannot overwrite it.
                 launch.admit();launch.controller.install()
                 saved=campaign.load_plan(query,config.database,id_)
+            if saved.config!=child_config:raise ValueError('Prepared collection child config changed')
+            verify_child_inputs(query,saved)
             members.append(collection.Member(id_,tuple(group),saved.plan_hash))
         finally:child.close()
     claim.check()
     if universe.load(query,start,config.end,anchor_date)['source_hash']!=partition['full_source_hash']:
         raise ValueError('Full universe changed before collection install')
+    for member in members:
+        claim.check()
+        verify_child_inputs(query,campaign.load_plan(query,config.database,member.dataset_id))
     frozen=collection.definition(collection_id,partition,members)
     collection_store.Store(query,config.database,collection_id,claim).install(frozen)
     return dict(status='prepared',collection_hash=frozen['collection_hash'],members=len(members),execution_started=False)
