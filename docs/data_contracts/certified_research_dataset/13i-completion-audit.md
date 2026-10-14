@@ -86,6 +86,17 @@ and transition-evidence publication remain incomplete.
 
 ## Next implementation order
 
+SEC bulk mirror creation, raw/replacement stages, snapshot manifest writes and
+cutovers now enforce the shared explicit `live_market_ssd` authority with ZSTD(1)
+defaults. Misplaced templates or existing stage parts block before drop/create
+or exchange. Acceptance archive inserts and cleanup keys have the same table
+and part checks; cleanup key DDL can no longer use default storage. The shared
+writer audit includes inactive parts, not only active ones. Twenty-two focused
+storage tests and two real bounded ClickHouse fixtures passed (bulk setup/stages,
+acceptance fallback cleanup preserving the verified replacement). These checks
+do not migrate production tables or complete the full SEC acquisition/runtime
+audit needed before enabling unified catch-up.
+
 The shared SEC coverage writer previously allowed an empty policy to omit the
 DDL storage setting and fall back to ClickHouse default storage. It now creates
 coverage on explicit `live_market_ssd` with ZSTD(1) and checks policy/actual part

@@ -36,3 +36,11 @@ def test_misplaced_writer_rejects_before_payload_insert():
     with pytest.raises(ValueError,match='misplaced'):
         SecClickHouseWriter(client,database='q_live').insert_rows('sec_filing_v3',[dict(accession_number='fixture')])
     assert not any(sql.startswith('INSERT') for sql in client.commands)
+
+
+def test_inactive_parts_are_included_in_the_write_guard():
+    client=Client(disk='default')
+    with pytest.raises(ValueError,match='parts'):
+        verify_sec_write_storage(client,'q_live',['sec_filing_v3'])
+    part_query=next(sql for sql in client.commands if 'system.parts' in sql)
+    assert 'WHERE active' not in part_query

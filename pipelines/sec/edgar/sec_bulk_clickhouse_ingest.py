@@ -39,6 +39,11 @@ from pipelines.sec.edgar.sec_initial_fill_download import (  # noqa: E402
 from pipelines.sec.edgar.sec_bulk_sources import DEFAULT_BULK_SOURCES, parse_bulk_sources  # noqa: E402
 from pipelines.sec.edgar.sec_pipeline.submissions import parse_acceptance_datetime  # noqa: E402
 from pipelines.sec.edgar.sec_bulk_snapshot_refresh import refresh_selected_snapshots  # noqa: E402
+from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import require_sec_storage_policy,verify_sec_write_storage  # noqa: E402
+
+MIRROR_TABLES=('sec_bulk_mirror_raw_source_file_v3','sec_bulk_mirror_company_v3',
+    'sec_bulk_mirror_company_ticker_v3','sec_bulk_mirror_submission_file_ref_v3',
+    'sec_bulk_mirror_filing_v3','sec_bulk_mirror_xbrl_fact_v3','sec_bulk_mirror_snapshot_manifest_v3')
 
 
 DEFAULT_DATABASE = "sec_core"
@@ -173,10 +178,12 @@ def default_sec_clickhouse_password() -> str:
 
 
 def default_sec_storage_policy() -> str:
-    return os.environ.get("SEC_CLICKHOUSE_STORAGE_POLICY") or os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or os.environ.get("CLICKHOUSE_STORAGE_POLICY") or ""
+    return os.environ.get("SEC_CLICKHOUSE_STORAGE_POLICY") or os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or os.environ.get("CLICKHOUSE_STORAGE_POLICY") or "live_market_ssd"
 
 
 def validate_args(args: argparse.Namespace) -> None:
+    try:args.storage_policy=require_sec_storage_policy(args.storage_policy)
+    except ValueError as error:raise SystemExit(str(error)) from error
     if args.batch_size < 1:
         raise SystemExit("--batch-size must be >= 1")
     if args.insert_max_retries < 0:
@@ -243,6 +250,8 @@ def discover_artifacts(root: Path, sources: list[str]) -> list[SourceArtifact]:
 
 
 def create_database_and_tables(client: ClickHouseHttpClient, database: str, storage_policy: str) -> None:
+    storage_policy=require_sec_storage_policy(storage_policy)
+    verify_sec_write_storage(client,database,MIRROR_TABLES,require_tables=False)
     client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_ident(database)}")
     for sql in [
         raw_source_file_table_sql(database, storage_policy),
@@ -254,6 +263,7 @@ def create_database_and_tables(client: ClickHouseHttpClient, database: str, stor
         snapshot_manifest_table_sql(database, storage_policy),
     ]:
         client.execute(sql)
+    verify_sec_write_storage(client,database,MIRROR_TABLES)
     client.execute(
         f"ALTER TABLE {quote_ident(database)}.{quote_ident(SNAPSHOT_MANIFEST_TABLE)} "
         "ADD COLUMN IF NOT EXISTS compatibility_repaired_members UInt64 AFTER expected_members"
@@ -1160,9 +1170,8 @@ SETTINGS {merge_tree_settings(storage_policy)}
 
 
 def merge_tree_settings(storage_policy: str) -> str:
-    settings = ["index_granularity = 8192"]
-    if storage_policy.strip():
-        settings.append(f"storage_policy = {sql_string(storage_policy.strip())}")
+    settings = ["index_granularity = 8192", "default_compression_codec = 'ZSTD(1)'",
+        f"storage_policy = {sql_string(require_sec_storage_policy(storage_policy))}"]
     return ", ".join(settings)
 
 

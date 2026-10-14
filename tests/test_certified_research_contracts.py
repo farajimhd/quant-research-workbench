@@ -780,6 +780,43 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_sec_bulk_stages_use_verified_ssd_and_lossless_compression(self):
+        from pipelines.sec.edgar import sec_bulk_clickhouse_ingest as ingest,sec_bulk_snapshot_refresh as bulk
+        ingest.create_database_and_tables(self.client.http,self.database,'')
+        bulk.create_raw_stage(self.client.http,self.database,'sec_fixture_raw','')
+        bulk.create_replacement_tables(self.client.http,self.database,
+            ['sec_bulk_mirror_company_v3','sec_bulk_mirror_xbrl_fact_v3'],'fixture','')
+        self.client.query(f"INSERT INTO {self.database}.sec_fixture_raw VALUES ('fixture','{{\"original\":123}}',0)",read=False)
+        tables=['sec_fixture_raw',*ingest.MIRROR_TABLES,
+            bulk.stage_name('sec_bulk_mirror_company_v3','fixture'),bulk.stage_name('sec_bulk_mirror_xbrl_fact_v3','fixture')]
+        from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import verify_sec_write_storage
+        verify_sec_write_storage(self.client.http,self.database,tables)
+        rows=self.client.query(f"SELECT name,storage_policy FROM system.tables WHERE database='{self.database}'")
+        self.assertTrue(all(r['storage_policy']=='live_market_ssd' for r in rows))
+        self.assertEqual(self.client.query(f'SELECT parse_json FROM {self.database}.sec_fixture_raw'),[dict(parse_json='{"original":123}')])
+
+    def test_sec_acceptance_cleanup_uses_ssd_keys_and_preserves_verified_replacement(self):
+        from pipelines.sec.edgar import sec_acceptance_archive_repair as acceptance
+        from types import SimpleNamespace
+        import tempfile
+        runtime=Path('D:/TradingML/runtimes')
+        if not runtime.is_dir():raise ValueError('Required test runtime root is unavailable')
+        target='sec_acceptance_fixture'
+        self.client.query(f"CREATE TABLE {self.database}.{target} (cik String,accession_number String,accepted_at_source String) "
+            "ENGINE=ReplacingMergeTree ORDER BY (cik,accession_number,accepted_at_source) SETTINGS storage_policy='live_market_ssd',default_compression_codec='ZSTD(1)'",read=False)
+        self.client.query(f"INSERT INTO {self.database}.{target} VALUES ('1','fixture','old_fallback'),"
+            "('1','fixture','archive_acceptance_datetime_v1')",read=False)
+        with tempfile.NamedTemporaryFile(mode='w',suffix='.jsonl',prefix='certified-sec-',dir=runtime,delete=False) as part:
+            part.write(json.dumps(dict(cik='1',accession_number='fixture'))+'\n');path=Path(part.name)
+        try:
+            acceptance.cleanup_superseded_fallbacks(self.client.http,SimpleNamespace(database=self.database,target_table=target),
+                [path],['old_fallback'],'fixture')
+        finally:path.unlink()
+        self.assertEqual(self.client.query(f'SELECT accepted_at_source FROM {self.database}.{target}'),
+            [dict(accepted_at_source='archive_acceptance_datetime_v1')])
+        self.assertEqual(self.client.query(f"SELECT count() n FROM system.tables WHERE database='{self.database}' "
+            "AND startsWith(name,'sec_acceptance_archive_repair_keys__')"),[dict(n=0)])
+
     def test_readonly_http_client_supports_existing_settings_and_rejects_writes(self):
         reader=self.builder.Client(self.args,persistent=False,readonly=True)
         try:

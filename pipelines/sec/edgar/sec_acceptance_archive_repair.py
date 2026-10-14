@@ -34,6 +34,7 @@ from pipelines.sec.edgar.sec_filing_text_extract_parts import (  # noqa: E402
     parse_filing,
 )
 from pipelines.sec.edgar.sec_pipeline.submissions import parse_acceptance_datetime  # noqa: E402
+from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import verify_sec_write_storage  # noqa: E402
 
 
 DEFAULT_ARCHIVE_ROOT_WIN = Path("D:/market-data/sec_core/daily_archives")
@@ -448,6 +449,7 @@ def write_repaired_rows(paths: RunPaths, part_state: dict[str, Any], rows: list[
 
 
 def insert_parts(client: ClickHouseHttpClient, args: argparse.Namespace, part_files: list[Path]) -> None:
+    verify_sec_write_storage(client,args.database,[args.target_table])
     target = f"{quote_ident(args.database)}.{quote_ident(args.target_table)}"
     columns = ", ".join(quote_ident(column) for column in FILING_COLUMNS)
     started = time.perf_counter()
@@ -456,7 +458,9 @@ def insert_parts(client: ClickHouseHttpClient, args: argparse.Namespace, part_fi
         if not body.strip():
             continue
         before = time.perf_counter()
+        verify_sec_write_storage(client,args.database,[args.target_table])
         client.execute(f"INSERT INTO {target} ({columns}) SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n{body}")
+        verify_sec_write_storage(client,args.database,[args.target_table])
         print(f"inserted_part={index:,}/{len(part_files):,} path={path.name} elapsed={time.perf_counter() - before:.2f}s", flush=True)
     print(f"insert_done parts={len(part_files):,} elapsed={time.perf_counter() - started:.1f}s", flush=True)
 
@@ -471,8 +475,12 @@ def cleanup_superseded_fallbacks(
     stage = f"sec_acceptance_archive_repair_keys__{re.sub(r'[^A-Za-z0-9_]', '_', run_id)}"
     target = f"{quote_ident(args.database)}.{quote_ident(args.target_table)}"
     stage_target = f"{quote_ident(args.database)}.{quote_ident(stage)}"
-    client.execute(f"CREATE TABLE {stage_target} (cik String, accession_number String) ENGINE=MergeTree ORDER BY (cik, accession_number)")
+    verify_sec_write_storage(client,args.database,[args.target_table])
+    verify_sec_write_storage(client,args.database,[stage],require_tables=False)
+    client.execute(f"CREATE TABLE {stage_target} (cik String CODEC(ZSTD(1)), accession_number String CODEC(ZSTD(1))) "
+        "ENGINE=MergeTree ORDER BY (cik, accession_number) SETTINGS storage_policy='live_market_ssd', default_compression_codec='ZSTD(1)'")
     try:
+        verify_sec_write_storage(client,args.database,[stage])
         for path in part_files:
             keys: set[tuple[str, str]] = set()
             for line in path.read_text(encoding="utf-8").splitlines():
@@ -480,8 +488,10 @@ def cleanup_superseded_fallbacks(
                     row = json.loads(line)
                     keys.add((str(row["cik"]), str(row["accession_number"])))
             if keys:
+                verify_sec_write_storage(client,args.database,[stage,args.target_table])
                 body = "\n".join(json.dumps({"cik": cik, "accession_number": accession}) for cik, accession in sorted(keys))
                 client.execute(f"INSERT INTO {stage_target} FORMAT JSONEachRow\n{body}")
+        verify_sec_write_storage(client,args.database,[stage,args.target_table])
         expected = int(client.execute(f"SELECT uniqExact((cik, accession_number)) FROM {stage_target} FORMAT TSV").strip() or "0")
         verified = int(
             client.execute(
@@ -508,6 +518,7 @@ def cleanup_superseded_fallbacks(
         )
         if remaining:
             raise RuntimeError(f"superseded acceptance fallback cleanup left {remaining} rows")
+        verify_sec_write_storage(client,args.database,[args.target_table])
     finally:
         client.execute(f"DROP TABLE IF EXISTS {stage_target} SYNC")
 

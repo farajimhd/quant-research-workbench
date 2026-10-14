@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from research.mlops.clickhouse import parse_size_bytes, quote_ident, sql_string, windows_path_to_clickhouse_path
+from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import require_sec_storage_policy,verify_sec_write_storage
 
 
 TICKER_SOURCES = {"company_tickers", "company_tickers_exchange", "company_tickers_mf"}
@@ -26,7 +27,13 @@ def refresh_selected_snapshots(
     retry: Any,
 ) -> dict[str, int]:
     del retry
+    args.storage_policy=require_sec_storage_policy(args.storage_policy)
     by_name = {artifact.source_name: artifact for artifact in artifacts}
+    required={SNAPSHOT_MANIFEST_TABLE}
+    for source_name in ('submissions','companyfacts'):
+        if source_name in by_name:required.update(archive_bases(source_name))
+    if TICKER_SOURCES.intersection(by_name):required.add('sec_bulk_mirror_company_ticker_v3')
+    verify_sec_write_storage(client,args.database,sorted(required))
     totals: dict[str, int] = {}
     if "submissions" in by_name:
         totals["submissions"] = refresh_archive_snapshot(
@@ -765,6 +772,8 @@ def validate_and_cut_over(
     run_id: str,
     on_active: Callable[[], Any] | None = None,
 ) -> None:
+    audited=tuple(bases)+tuple(stage_name(base,run_id) for base in bases)
+    verify_sec_write_storage(client,args.database,audited)
     for base in bases:
         active = table(args.database, base)
         active_count = scalar_int(client, f"SELECT count() FROM {active} FINAL")
@@ -790,6 +799,7 @@ def validate_and_cut_over(
                 raise RuntimeError(f"post-cutover count mismatch for {base}: actual={actual:,} expected={staged_counts[base]:,}")
         if on_active is not None:
             on_active()
+        verify_sec_write_storage(client,args.database,audited)
     except Exception:
         for base in reversed(exchanged):
             client.execute(f"EXCHANGE TABLES {table(args.database, base)} AND {table(args.database, stage_name(base, run_id))}")
@@ -799,13 +809,14 @@ def validate_and_cut_over(
 
 
 def create_replacement_tables(client: Any, database: str, bases: list[str], run_id: str, storage_policy: str) -> None:
+    storage_policy=require_sec_storage_policy(storage_policy)
+    verify_sec_write_storage(client,database,bases)
+    verify_sec_write_storage(client,database,[stage_name(base,run_id) for base in bases],require_tables=False)
     for base in bases:
         stage = stage_name(base, run_id)
         drop_table(client, database, stage)
         if base == "sec_bulk_mirror_xbrl_fact_v3":
-            settings = "index_granularity = 8192"
-            if storage_policy:
-                settings += f", storage_policy = {sql_string(storage_policy)}"
+            settings = f"index_granularity = 8192, storage_policy = {sql_string(storage_policy)}, default_compression_codec = 'ZSTD(1)'"
             client.execute(
                 f"CREATE TABLE {table(database, stage)} AS {table(database, base)} "
                 "ENGINE = ReplacingMergeTree(last_seen_at_utc) "
@@ -814,13 +825,15 @@ def create_replacement_tables(client: Any, database: str, bases: list[str], run_
                 f"ifNull(accession_number, ''), fact_id) SETTINGS {settings}"
             )
         else:
-            client.execute(f"CREATE TABLE {table(database, stage)} AS {table(database, base)}")
+            client.execute(f"CREATE TABLE {table(database, stage)} AS {table(database, base)} "
+                f"SETTINGS storage_policy = {sql_string(storage_policy)}, default_compression_codec = 'ZSTD(1)'")
+        verify_sec_write_storage(client,database,[stage])
 
 
 def create_raw_stage(client: Any, database: str, raw_table: str, storage_policy: str) -> None:
-    settings = "index_granularity = 8192"
-    if storage_policy:
-        settings += f", storage_policy = {sql_string(storage_policy)}"
+    storage_policy=require_sec_storage_policy(storage_policy)
+    verify_sec_write_storage(client,database,[raw_table],require_tables=False)
+    settings = f"index_granularity = 8192, storage_policy = {sql_string(storage_policy)}, default_compression_codec = 'ZSTD(1)'"
     client.execute(
         f"""
         CREATE TABLE {table(database, raw_table)}
@@ -834,6 +847,7 @@ def create_raw_stage(client: Any, database: str, raw_table: str, storage_policy:
         SETTINGS {settings}
         """
     )
+    verify_sec_write_storage(client,database,[raw_table])
 
 
 def record_manifest(
@@ -867,10 +881,12 @@ def record_manifest(
         "processed_at_utc": now,
         "error": error,
     }
+    verify_sec_write_storage(client,database,[SNAPSHOT_MANIFEST_TABLE])
     client.execute(
         f"INSERT INTO {table(database, SNAPSHOT_MANIFEST_TABLE)} FORMAT JSONEachRow\n"
         + json.dumps(row, ensure_ascii=False, separators=(",", ":"))
     )
+    verify_sec_write_storage(client,database,[SNAPSHOT_MANIFEST_TABLE])
 
 
 def execute_stage(client: Any, source: str, stage: str, sql: str) -> None:

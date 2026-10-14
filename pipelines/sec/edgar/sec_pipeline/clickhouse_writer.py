@@ -622,7 +622,7 @@ def verify_sec_write_storage(client,database,tables,*,require_tables=True):
         raise ValueError('SEC writer tables are missing')
     if any(r['storage_policy']!='live_market_ssd' for r in actual):
         raise ValueError('SEC writer table is misplaced; verified migration required')
-    parts=rows(f'SELECT DISTINCT table,disk_name FROM system.parts WHERE active AND database={sql_string(database)} AND table IN ({names})')
+    parts=rows(f'SELECT DISTINCT table,disk_name FROM system.parts WHERE database={sql_string(database)} AND table IN ({names})')
     if any(r['disk_name']!='live_market_ssd' for r in parts):
         raise ValueError('SEC writer parts are misplaced; verified migration required')
 
@@ -630,6 +630,13 @@ def verify_sec_write_storage(client,database,tables,*,require_tables=True):
 def infer_storage_policy(client: ClickHouseHttpClient, database: str, tables: list[str]) -> str:
     verify_sec_write_storage(client,database,tables,require_tables=False)
     return 'live_market_ssd'
+
+
+def require_sec_storage_policy(value: str) -> str:
+    """An empty legacy setting selects the explicit SEC workload authority."""
+    policy=value.strip() or 'live_market_ssd'
+    if policy!='live_market_ssd':raise ValueError('SEC operational storage requires live_market_ssd; verified migration required')
+    return policy
 
 
 def scalar_int(client: ClickHouseHttpClient, sql: str) -> int:
