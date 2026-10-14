@@ -6,6 +6,7 @@ from pathlib import Path
 from . import sec_fundamental_context,sec_fundamental_reconciliation,sec_fundamental_publication
 from . import sec_document_lineage,sec_share_preparation,sec_public_archive_time,facts,sec_share_capture,sec_witness_publication
 from . import sec_share_context
+from . import sec_fundamental_readback
 from .contracts import digest,literal
 
 PRODUCT='sec_fundamental_source'
@@ -13,7 +14,7 @@ PRODUCT='sec_fundamental_source'
 
 def recipe_hash():
     modules=(sys.modules[__name__],sec_fundamental_context,sec_fundamental_reconciliation,sec_fundamental_publication,
-             sec_document_lineage,sec_share_preparation,sec_public_archive_time,facts,sec_share_context)
+             sec_document_lineage,sec_share_preparation,sec_public_archive_time,facts,sec_share_context,sec_fundamental_readback)
     return digest(dict(version='sec-original-fundamental-preparation-v1',
         algorithms={m.__name__:digest(Path(m.__file__).read_text(encoding='utf-8')) for m in modules},
         catalog_hash=facts.catalog_hash(),ddl=tuple(t.ddl('q_live') for t in sec_fundamental_publication.tables())))
@@ -35,7 +36,7 @@ def prepare(query,config,requests,claim,dictionary_factory,profile,*,mode,stop,p
     dictionary=dictionary_factory()
     try:sec_fundamental_publication.install(query,'q_live',dictionary)
     finally:dictionary.close()
-    tags=tuple(sorted({tag for metric in facts.catalog() for tag in metric.tags}));completed=[];inserted=0
+    tags=tuple(sorted({tag for metric in facts.catalog() for tag in metric.tags}));completed=[];reconciliations=[];inserted=0;matched=0
     from .sec_share_source import VERSION as source_version
     from .sec_share_context import VERSION as parser_version
     for cik,accession,name in requests:
@@ -73,6 +74,15 @@ def prepare(query,config,requests,claim,dictionary_factory,profile,*,mode,stop,p
             if digest(sorted(current,key=lambda row:row['source_record']))!=bulk_hash:
                 raise ValueError('Original fundamental bulk comparison source changed')
         result=sec_fundamental_publication.capture(query,'q_live',extraction,bulk,witness,qualified,receipt,claim,source_guard,admit)
+        expected=sec_fundamental_reconciliation.reconcile(extraction,bulk,witness,qualified,receipt)['reconciliation_hash']
+        if result['reconciliation_hash']!=expected:raise ValueError('Captured fundamental reconciliation differs from current inputs')
+        verified=sec_fundamental_readback.verify(query,'q_live',expected,claim,source_guard)
+        if (verified.get('readback_verified') is not True or verified.get('extraction_hash')!=extraction['extraction_hash']
+                or verified.get('reconciliation_hash')!=expected):
+            raise ValueError('Independent fundamental readback did not verify current source seals')
+        matched+=int(verified['all_bulk_matched']);reconciliations.append(expected)
         inserted+=result['inserted_rows'];completed.append(result['extraction_hash'])
-        if progress:progress(dict(phase='fundamental-evidence',completed=len(completed),total=len(requests),inserted_rows=result['inserted_rows']))
-    return dict(status='complete',completed=tuple(completed),inserted_rows=inserted,certified=False,allocation_certified=False)
+        if progress:progress(dict(phase='fundamental-evidence',completed=len(completed),total=len(requests),inserted_rows=result['inserted_rows'],
+            readback_verified=True,all_bulk_matched=verified['all_bulk_matched']))
+    return dict(status='complete',completed=tuple(completed),reconciliations=tuple(reconciliations),inserted_rows=inserted,
+        readback_verified=True,matched_documents=matched,unmatched_documents=len(completed)-matched,certified=False,allocation_certified=False)

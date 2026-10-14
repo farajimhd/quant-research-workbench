@@ -113,3 +113,14 @@ Readback verification is a content-integrity result, not public-time or coverage
 certification. The caller must still qualify the corresponding original witness,
 time receipt, current source lineage and whole-period census. It returns
 `certified=false` and cannot authorize production fundamental publication alone.
+
+The original-fundamental launcher stage now requires this independent readback
+after capture. It first recomputes the reconciliation hash from current inputs,
+then verifies the persisted extraction/reconciliation seals under current lineage,
+archive/time and bulk-source guards. A failed or mismatched readback prevents the
+document from entering the completed count. Results expose the exact reconciliation
+keys plus matched/unmatched document counts, and terminal progress identifies
+verified content separately from successful comparison matching. A verified
+unmatched comparison remains visible evidence and cannot pass production parity
+coverage. The source-capacity recipe now includes the readback implementation;
+older measured recipe profiles must be requalified before this stage runs.

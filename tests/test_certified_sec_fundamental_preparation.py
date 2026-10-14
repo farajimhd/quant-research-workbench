@@ -2,6 +2,7 @@ from datetime import date
 from threading import Event
 from unittest.mock import Mock,patch
 import json
+from contextlib import nullcontext
 
 import pytest
 
@@ -38,7 +39,8 @@ def test_missing_fundamental_pilot_blocks_before_source_fetch_or_ddl():
     query.assert_not_called()
 
 
-def test_bounded_stage_uses_retained_evidence_and_rechecks_before_capture():
+@pytest.mark.parametrize('readback_ok',(True,False))
+def test_bounded_stage_uses_retained_evidence_and_rechecks_before_capture(readback_ok):
     from tests.test_certified_sec_fundamental_publication import source
     from tests.test_certified_sec_share_context import document
     from pipelines.certified_research import sec_share_source,sec_share_context,sec_public_archive_time
@@ -56,16 +58,24 @@ def test_bounded_stage_uses_retained_evidence_and_rechecks_before_capture():
     def capture(*args):
         args[-2]()
         assert args[2]['source_text_hash']==extraction['source_text_hash']
-        return dict(inserted_rows=3,extraction_hash=extraction['extraction_hash'])
+        reconciliation=preparation.sec_fundamental_reconciliation.reconcile(*args[2:7])
+        return dict(inserted_rows=3,extraction_hash=extraction['extraction_hash'],reconciliation_hash=reconciliation['reconciliation_hash'])
+    def verify(*args):
+        args[-1]()
+        return dict(readback_verified=readback_ok,extraction_hash=extraction['extraction_hash'],reconciliation_hash=args[2],all_bulk_matched=True)
     with patch.object(preparation.sec_share_preparation,'admission',return_value=lambda size:dict(status='admitted',metadata_bytes=size)),\
          patch.object(preparation.sec_share_capture,'verify'),\
          patch.object(preparation.sec_fundamental_publication,'install'),\
          patch.object(preparation.sec_document_lineage,'inspect',return_value=lineage) as inspect,\
          patch.object(preparation.sec_fundamental_reconciliation,'load_bulk',return_value=tuple(bulk)) as load,\
-         patch.object(preparation.sec_fundamental_publication,'capture',side_effect=capture):
+         patch.object(preparation.sec_fundamental_publication,'capture',side_effect=capture),\
+         patch.object(preparation.sec_fundamental_readback,'verify',side_effect=verify),\
+         (nullcontext() if readback_ok else pytest.raises(ValueError,match='Independent fundamental readback')):
         result=preparation.prepare(query,CampaignConfig(date(2026,1,2),date(2026,1,2)),
             (('320193','0000320193-25-000079','filing.htm'),),Mock(),lambda:dictionary,{},
             mode='acceptance_checked_day',stop=Event())
-    assert result['inserted_rows']==3 and result['certified'] is False
-    assert inspect.call_count==load.call_count==2
+    if readback_ok:
+        assert result['inserted_rows']==3 and result['certified'] is False and result['readback_verified']
+        assert result['matched_documents']==1 and result['unmatched_documents']==0
+    assert inspect.call_count==load.call_count==3
     dictionary.close.assert_called_once()
