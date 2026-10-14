@@ -60,8 +60,24 @@ def install(query,database,claim):
 
 
 def capture(query,database,extraction,bulk,witness,qualification,receipt,claim,source_guard,admission):
-    if not callable(admission):raise ValueError('Fundamental evidence requires measured source-write admission')
     groups=records(extraction,bulk,witness,qualification,receipt);catalog=tables()
+    scopes={table.name:(('reconciliation_hash',groups[-1][0]['reconciliation_hash']) if any(c.name=='reconciliation_hash' for c in table.columns)
+        else ('extraction_hash',extraction['extraction_hash'])) for table in catalog}
+    result=capture_groups(query,database,catalog,groups,scopes,claim,source_guard,admission)
+    return dict(result,extraction_hash=extraction['extraction_hash'],reconciliation_hash=groups[-1][0]['reconciliation_hash'],
+        certified=False,allocation_certified=False)
+
+
+def capture_groups(query,database,catalog,groups,scopes,claim,source_guard,admission):
+    """Shared bounded immutable SEC publication; completion header is last."""
+    if not callable(admission):raise ValueError('Fundamental evidence requires measured source-write admission')
+    if (not 1<=len(catalog)<=16 or len(groups)!=len(catalog) or len({t.name for t in catalog})!=len(catalog)
+            or set(scopes)!={t.name for t in catalog} or len(groups[-1])!=1):
+        raise ValueError('Invalid bounded immutable SEC publication catalog')
+    for table,group in zip(catalog,groups):
+        key,value=scopes[table.name]
+        if key not in table.order or len(group)>10000 or any(row[key]!=value for row in group):
+            raise ValueError('Immutable SEC publication scope/row bound differs')
     metadata_bytes=sum(len(json.dumps(row,separators=(',',':')).encode()) for group in groups for row in group)
     if metadata_bytes>64*1024**2:raise ValueError('Fundamental evidence exceeds 64MiB metadata bound')
     def guard():
@@ -71,10 +87,10 @@ def capture(query,database,extraction,bulk,witness,qualification,receipt,claim,s
         row=dict(row)
         if 'dimensions' in row:row['dimensions']=tuple(tuple(pair) for pair in row['dimensions'])
         if 'original_positions' in row:row['original_positions']=tuple(row['original_positions'])
+        if 'all_source_positions' in row:row['all_source_positions']=tuple(row['all_source_positions'])
         return row
     def read(table):
-        key='reconciliation_hash' if any(c.name=='reconciliation_hash' for c in table.columns) else 'extraction_hash'
-        value=groups[-1][0]['reconciliation_hash'] if key=='reconciliation_hash' else extraction['extraction_hash']
+        key,value=scopes[table.name]
         return [normalized(r) for r in query(f'SELECT {",".join(c.name for c in table.columns)} '
             f'FROM {database}.{table.name} WHERE {key}={literal(value)} LIMIT 10001')]
     guard();existing=[read(table) for table in catalog];inserted=0
@@ -100,5 +116,4 @@ def capture(query,database,extraction,bulk,witness,qualification,receipt,claim,s
         actual=read(table)
         if len(actual)!=len(desired) or {tuple(r[k] for k in table.order):r for r in actual}!=desired:
             raise ValueError('Fundamental final group readback differs')
-    return dict(persisted=True,readback_verified=True,inserted_rows=inserted,extraction_hash=extraction['extraction_hash'],
-        reconciliation_hash=groups[-1][0]['reconciliation_hash'],certified=False,allocation_certified=False)
+    return dict(persisted=True,readback_verified=True,inserted_rows=inserted)

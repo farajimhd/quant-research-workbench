@@ -1,5 +1,7 @@
 # Bounded retained SEC extraction measurement
 
+[Compact candidate projection storage](13zh-sec-reported-projection-storage.md)
+
 The unified launcher has a read-only `measure-sec-extraction` command. Select
 one to eight unique retained documents; no capacity profile is needed because
 it creates no tables, writes no data and acquires no provider sources.

@@ -324,12 +324,13 @@ def main(argv=None):
     args=parse_args(argv)
     if args.command=='schema':
         catalog=installation.catalog(args.database)
-        from pipelines.certified_research import sec_share_capture,sec_share_preparation,sec_witness_publication,sec_archive_preparation,sec_fundamental_publication,sec_fundamental_preparation
+        from pipelines.certified_research import sec_share_capture,sec_share_preparation,sec_witness_publication,sec_archive_preparation,sec_fundamental_publication,sec_fundamental_preparation,sec_reported_publication
         source_tables=sec_share_capture.tables()
         archive_tables=sec_witness_publication.tables()
         fundamental_tables=sec_fundamental_publication.tables()
+        reported_tables=sec_reported_publication.tables()
         if args.format=='sql':print(';\n\n'.join([*(t.ddl(args.database) for _,t in catalog),
-            *(t.ddl('q_live') for t in (*source_tables,*archive_tables,*fundamental_tables))])+';')
+            *(t.ddl('q_live') for t in (*source_tables,*archive_tables,*fundamental_tables,*reported_tables))])+';')
         elif args.format=='json':
             manifest=installation.manifest(args.database)
             manifest['sec_source_candidates']=dict(database='q_live',product=sec_share_preparation.PRODUCT,
@@ -341,6 +342,8 @@ def main(argv=None):
             manifest['sec_fundamental_evidence']=dict(database='q_live',certified=False,product=sec_fundamental_preparation.PRODUCT,
                 recipe_hash=sec_fundamental_preparation.recipe_hash(),
                 tables=[dict(name=t.name,order=t.order,partition=t.partition,columns=[vars(c) for c in t.columns]) for t in fundamental_tables])
+            manifest['sec_reported_projection_candidates']=dict(database='q_live',certified=False,
+                tables=[dict(name=t.name,order=t.order,partition=t.partition,columns=[vars(c) for c in t.columns]) for t in reported_tables])
             print(json.dumps(manifest,indent=2))
         else:
             print(f'Compact research schema | {len(catalog)} tables | live_market_ssd')
