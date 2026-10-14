@@ -2,7 +2,28 @@
 
 [Controller](13-campaign-controller.md) · [Design overview](../certified_research_dataset_design.md)
 
-## Verified
+## Current direct regression run
+
+All `tests/test_certified_*.py` files ran directly: **251 passed, 53 skipped in
+24.14 seconds**, without live integration opt-in. The initial attempt to collect
+the entire repository with `-k certified` stopped on unrelated missing
+`MarketDayLedger` and `_sec_document_set_hash` imports. Direct selection avoided
+loading those unrelated modules. A subsequent setup failure accessing Windows'
+default pytest temp directory was resolved by selecting a fresh, checked
+directory under `D:/TradingML/runtimes`; test behavior was not changed.
+
+This run covers the assembled certified regression files, including collection
+preparation, immutable scope binding, execution/resume, schema/source admission,
+reference contracts, capacity and launcher paths. Skipped checks are not passes;
+the separate bounded live checks below remain the live evidence. No provider
+acquisition, training/optimizer preparation or full campaign ran.
+
+The [completion audit](13i-completion-audit.md) is the current architecture/status
+authority. The older adapter-stage notes below are retained historical evidence;
+their statements about missing launcher wiring describe the implementation at
+the time of those checks, not the current connected launch/collection routes.
+
+## Earlier bounded checks
 
 - Latest combined opt-in ClickHouse contracts plus initial/saved execution, membership, float, program planning, seed preparation, runtime and capacity suite: **118 passed in 171.76 seconds**. This supersedes narrower checks for those selected modules; it does not qualify a production-scale campaign.
 - Assembled suite without live opt-in: **111 passed, 36 skipped**.
@@ -15,7 +36,7 @@
 
 These suites overlap; counts should not be added. The live suite exercises isolated schema installation/placement, canonical metadata and bounded event reads, original-clock reconciliation/native repair fixtures, public-as-of reference materialization, indicators/state, causal checkpoints, dependency execution, immutable plans, receipts/seals and resume checks. Test namespaces are cleaned up. This run did not call Massive, download flatfiles, train models or start a full historical campaign.
 
-## Still incomplete
+## Earlier adapter-stage limitations
 
 Automatic complete-plan assembly and CLI `run/resume` orchestration; required original-vintage/source qualification and acquisition paths; legacy checkpoint migration/genesis/rename bridges; SEC completeness admission; representative full-universe throughput and qualified storage-rate measurements; full requirement-by-requirement completion audit. Initial graph and execution adapters now exist and are exercised by bounded fixtures. Fresh-campaign SEC price-context discovery is implemented and passed a read-only retained-input check; top-level wiring remains incomplete. Reference scopes currently use UTC dates while sessions and SEC measurement-age checks use New York dates. Price discovery conservatively includes an extra predecessor date at the UTC/NY boundary; full target-session reference range alignment still requires explicit integration.
 
