@@ -130,8 +130,8 @@ class Client:
             if query.startswith("SELECT count() AS row_count"):
                 keys = {(r.get("field_id"), r.get("first_ordinal"), r.get("bucket_index")) for r in rows}
                 return encode([dict(row_count=len(rows), unique_keys=len(keys))])
-            if query.startswith("SELECT derivation_attempt_id"):
-                return encode([{"derivation_attempt_id": r["derivation_attempt_id"]} for r in rows[:1]])
+            if query.startswith(("SELECT derivation_attempt_id", "SELECT DISTINCT derivation_attempt_id")):
+                return encode([{"derivation_attempt_id": v} for v in sorted({r["derivation_attempt_id"] for r in rows})[:2]])
         cursor = re.search(r"AND \(field_id,first_ordinal\)>\((\d+),(\d+)\)", query)
         if cursor:
             after = tuple(map(int, cursor.groups()))
@@ -251,6 +251,32 @@ def consume(store, src):
     scope = src.scope(header["derivation_attempt_id"], CODE)
     return reader.certify_history_product(Client(store), scope, src.fields, src.parents(CODE),
         expected_content_hash=header["content_hash"])
+
+
+@pytest.mark.parametrize('failure', [None, 'wrong_pin', 'missing_child', 'conflicting_attempt'])
+def test_explicit_unsealed_reconciliation_never_reinserts_children(prepared_source, failure):
+    store = Store()
+    assert publish(store, prepared_source) == 'published'
+    header = store.records[c.COVERAGE.name].pop()
+    before = tuple(store.writes)
+    if failure == 'missing_child':
+        store.records[c.VALUE.name].pop()
+    elif failure == 'conflicting_attempt':
+        row = dict(store.records[c.VALUE.name][0])
+        row['derivation_attempt_id'] = '00000000-0000-0000-0000-000000000002'
+        store.records[c.VALUE.name].append(row)
+    arguments = dict(ownership=Owner(), code_hash=CODE,
+        reconcile_attempt_id=header['derivation_attempt_id'],
+        expected_content_hash='0' * 64 if failure == 'wrong_pin' else header['content_hash'])
+    if failure:
+        with pytest.raises(ValueError):
+            p.publish_history(Client(store), Client(store, True), prepared_source, **arguments)
+        assert tuple(store.writes) == before
+        assert not store.records[c.COVERAGE.name]
+    else:
+        assert p.publish_history(Client(store), Client(store, True), prepared_source, **arguments) == 'published'
+        assert tuple(store.writes) == before + (c.COVERAGE.name,)
+        assert store.records[c.COVERAGE.name][0]['content_hash'] == header['content_hash']
 
 
 def test_coverage_last_publication_exact_cold_consumer_and_readonly_retry(prepared_source):

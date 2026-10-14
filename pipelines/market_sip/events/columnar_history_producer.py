@@ -224,10 +224,18 @@ def insert_history_rows(writer, table, rows):
     insert_product_rows(writer, table, [c.restore_record(table, row) for row in rows])
 
 
-def publish_history(reader, writer, source, *, ownership, code_hash):
+def publish_history(reader, writer, source, *, ownership, code_hash,
+                    reconcile_attempt_id=None, expected_content_hash=None):
     if type(source) is not CertifiedHistoryInput:
         raise TypeError("History publication requires certified database parents")
     c.require_hash(code_hash)
+    if (reconcile_attempt_id is None) != (expected_content_hash is None):
+        raise ValueError('History reconciliation requires an explicit attempt and projected content hash')
+    if reconcile_attempt_id is not None:
+        from uuid import UUID
+        if str(UUID(reconcile_attempt_id)) != reconcile_attempt_id:
+            raise ValueError('History reconciliation attempt is not canonical')
+        c.require_hash(expected_content_hash)
     endpoint = getattr(reader, "base_url", None)
     if (reader is writer or not isinstance(endpoint, str) or not endpoint
             or endpoint != getattr(writer, "base_url", None)):
@@ -238,11 +246,14 @@ def publish_history(reader, writer, source, *, ownership, code_hash):
     source_storage_preflight(reader)
     ownership.assert_owner()
     source.verify(reader)
-    scope = source.scope(str(uuid4()), code_hash)
+    scope = source.scope(reconcile_attempt_id or str(uuid4()), code_hash)
     parents = source.parents(code_hash)
     existing = read_seal(reader, scope)
     if existing:
         header = existing[0]
+        if reconcile_attempt_id is not None and (header['derivation_attempt_id'] != reconcile_attempt_id
+                or header['content_hash'] != expected_content_hash):
+            raise ValueError('History reconciliation differs from existing coverage')
         scope = source.scope(header["derivation_attempt_id"], code_hash)
         certify_history_product(reader, scope, source.fields, parents, expected_content_hash=header["content_hash"],
             feature_plan_cache=source.feature_day._plan_cache if source.feature_day is not None else None)
@@ -252,16 +263,21 @@ def publish_history(reader, writer, source, *, ownership, code_hash):
         ownership.assert_owner()
         return "skipped_verified"
     for table in (c.FIELD, c.CLOCK, c.VALUE):
-        if _rows(reader, f"SELECT derivation_attempt_id FROM q_live.{table.name} "
-                f"WHERE {scope_sql(scope, attempt=False)} LIMIT 1", 1):
+        rows = _rows(reader, f"SELECT DISTINCT derivation_attempt_id FROM q_live.{table.name} "
+                f"WHERE {scope_sql(scope, attempt=False)} LIMIT 2", 2)
+        if rows and (reconcile_attempt_id is None or any(
+                row['derivation_attempt_id'] != reconcile_attempt_id for row in rows)):
             raise ValueError("Unsealed history attempt requires operator reconciliation")
     prepared = materialize_history(reader, source, scope, code_hash=code_hash)
     header = c.history_seal(prepared, parents, certified_at=datetime.now(timezone.utc))
-    for table in (c.FIELD, c.CLOCK, c.VALUE):
-        records = iter(c.child_records(prepared, table))
-        while chunk := list(islice(records, 4096)):
-            ownership.assert_owner()
-            insert_history_rows(writer, table, chunk)
+    if reconcile_attempt_id is not None and header['content_hash'] != expected_content_hash:
+        raise ValueError('History reconciliation projection differs from its explicit content pin')
+    if reconcile_attempt_id is None:
+        for table in (c.FIELD, c.CLOCK, c.VALUE):
+            records = iter(c.child_records(prepared, table))
+            while chunk := list(islice(records, 4096)):
+                ownership.assert_owner()
+                insert_history_rows(writer, table, chunk)
     # No success seal is issued until all actual children match their projection.
     _verify_children_before_seal(reader, prepared)
     source.verify(reader)
