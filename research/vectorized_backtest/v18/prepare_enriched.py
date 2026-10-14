@@ -75,6 +75,8 @@ def prepare_day(dataset,day,output):
                 eligible_tickers=len(eligible),excluded_without_canonical_events=excluded,source_eligibility_fraction=len(eligible)/len(snapshot_tickers))
             tickers=sorted(set(population.values()));ticker_index={t:i for i,t in enumerate(tickers)}
             origin=int(datetime.combine(date.fromisoformat(source_day),datetime.min.time().replace(hour=4),NY).timestamp())
+            # ARTE bucket indices start at New York midnight, not session 04:00.
+            bucket_origin=int(datetime.combine(date.fromisoformat(source_day),datetime.min.time(),NY).timestamp())
             target_rows=np.flatnonzero(sources==source_day);requests={}
             first_clock=max(origin+1,int(ticks[target_rows].min())-15)
             last_clock=int(ticks[target_rows].max())
@@ -101,7 +103,7 @@ def prepare_day(dataset,day,output):
                     cert=source['units'][source_day][ticker]['bars'];a=actual.get(ticker,dict(n=0,unique_keys=0,hash='0'))
                     if int(a['n'])!=cert['output_rows'] or int(a['n'])!=int(a['unique_keys']) or str(a['hash'])!=cert['output_hash']:raise ValueError('Certified bar unit changed: '+ticker)
                 end=f'intDiv(toInt64({sql.bounds(source_day)}),1000000)+toInt64(bucket_index)+1'
-                frame=authority.frame(client,f'SELECT ticker,toInt64({end}) AS second,open_int/10000. AS open,high_int/10000. AS high,low_int/10000. AS low,close_int/10000. AS close,volume,notional,trade_count,price_valid,extremes_valid FROM arte.bars_v1 WHERE {condition} AND resolution_ms=1000 AND bucket_index>={read_begin-origin-1} AND bucket_index<={last_clock-origin-1} ORDER BY ticker,bucket_index',
+                frame=authority.frame(client,f'SELECT ticker,toInt64({end}) AS second,open_int/10000. AS open,high_int/10000. AS high,low_int/10000. AS low,close_int/10000. AS close,volume,notional,trade_count,price_valid,extremes_valid FROM arte.bars_v1 WHERE {condition} AND resolution_ms=1000 AND bucket_index>={read_begin-bucket_origin-1} AND bucket_index<={last_clock-bucket_origin-1} ORDER BY ticker,bucket_index',
                     dict(ticker=pl.String,second=pl.Int64,open=pl.Float64,high=pl.Float64,low=pl.Float64,close=pl.Float64,volume=pl.Float64,notional=pl.Float64,trade_count=pl.Int64,price_valid=pl.Int64,extremes_valid=pl.Int64))
                 grouped=frame.partition_by('ticker',as_dict=True,maintain_order=True)
                 for ticker in batch:
