@@ -61,8 +61,44 @@ final authority verification; progress counts are never certification evidence.
 Five controller tests cover successful final re-verification, interrupted/blocked
 execution, changed member identities, failed authority roots, definition tampering
 and capacity rejection before writers. This core has not been exercised as a
-real whole-collection ClickHouse run. Its injected adapters still need durable
-ClickHouse definition/seal persistence, aggregate capacity measurement and CLI
-wiring. These remain required before claiming the full January-to-end universe
+real market-producing whole-collection run. The persistence adapter below is
+implemented and bounded ClickHouse tested; aggregate capacity measurement and
+CLI wiring remain required before claiming the full January-to-end universe
 can run as one launch.
 Until then, `plan-cohorts` explicitly reports `execution_ready=false`.
+
+## Exact collection persistence
+
+`collection_store.tables()` defines three auxiliary MergeTree tables, separate
+from the existing dataset schema fingerprint. All use `live_market_ssd`,
+`PARTITION BY tuple()` and ZSTD(1) on every column. Admission verifies exact
+types, codecs, engine, sorting/partition keys, storage policy and actual active
+part disks. There is no fallback policy and no change to old campaign schemas.
+
+| Table | Columns in persisted order | Sorting key |
+|---|---|---|
+| `research_collection_v1` | `collection_id UUID`, `collection_hash FixedString(64)`, `partition_metadata String`, `member_count UInt32`, `created_at DateTime64(6,'UTC')` | `collection_id` |
+| `research_collection_member_v1` | `collection_id UUID`, `member_index UInt32`, `dataset_id UUID`, `issuer_keys Array(UInt64)`, `plan_hash FixedString(64)` | `collection_id,member_index` |
+| `research_collection_seal_v1` | `collection_id UUID`, `collection_hash FixedString(64)`, `root_hash FixedString(64)`, `member_roots Array(Tuple(UUID,FixedString(64),FixedString(64)))`, `published_at DateTime64(6,'UTC')` | `collection_id` |
+
+UInt32 count/index columns use `T64,ZSTD(1)`; UTC timestamps use
+`Delta(8),ZSTD(1)`. Other columns use `ZSTD(1)`. Partition metadata contains the
+small hashed census/config evidence; issuer membership is stored once in the
+member table and reconstructed on reload. Bounds are 16,384 members, 256 issuer
+keys per cohort (from partition preparation), 4 MiB census metadata and 128 rows
+per insert batch. Market observations are not copied into collection metadata.
+
+Installation checks the complete proposed definition before writing. Member
+rows precede the final header; interrupted installs recover only missing rows
+under the same owner. Conflicting or duplicate rows fail closed. An uncertain
+insert is not retried automatically; restart checks persisted rows. Header and
+seal inserts require exact readback. Repeated matching install/seal calls make
+no new rows. A seal must contain every frozen member exactly once and in order.
+
+`Store.controller()` binds the controller's guards to live persisted-definition
+checks, ownership and the caller's current source-epoch check. The aggregate
+capacity adapter remains mandatory. A real isolated ClickHouse fixture verified
+install/reload/reinstall, resumed controller orchestration with fixture child
+launches, idempotent sealing, partial-seal rejection and actual part placement.
+This verifies collection metadata/controller integration, not whole-market
+computation or measured production storage admission.

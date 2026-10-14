@@ -34,6 +34,9 @@ def definition(collection_id, partition, members):
     if not members or len(members) != len(groups) or len(members) > 16384:
         raise ValueError('Incomplete or oversized collection member list')
     keys = tuple(k for group in groups for k in group)
+    if any(not 1 <= len(group) <= 256 or tuple(sorted(set(group))) != group
+           or any(type(k) is not int or not 0 < k < 2**64 for k in group) for group in groups):
+        raise ValueError('Collection issuer groups exceed the normalized cohort contract')
     if len(keys) != len(set(keys)) or tuple(sorted(keys)) != tuple(partition['issuer_keys']):
         raise ValueError('Collection issuer partition is incomplete or duplicated')
     for index, (group, member) in enumerate(zip(groups, members)):

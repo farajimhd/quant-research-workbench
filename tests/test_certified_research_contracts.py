@@ -780,6 +780,52 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_normalized_collection_store_restart_and_complete_seal(self):
+        from pipelines.certified_research import collection,collection_store
+        dataset=str(uuid.uuid4())
+        class Claim:
+            def check(self):pass
+        partition=dict(groups=((1,2),(3,)),issuer_keys=(1,2,3),session_counts=((1,2),(2,2),(3,2)))
+        partition['partition_hash']=c.digest(partition)
+        members=tuple(collection.Member(collection.member_id(dataset,partition['partition_hash'],i),group,str(i+1)*64)
+                      for i,group in enumerate(partition['groups']))
+        frozen=collection.definition(dataset,partition,members)
+        store=collection_store.Store(self.client.query,self.database,dataset,Claim())
+        store.install(frozen)
+        self.assertEqual(store.load(),frozen)
+        store.install(frozen)
+        roots=tuple((m.dataset_id,m.plan_hash,'a'*64) for m in members)
+        certificate=dict(collection_hash=frozen['collection_hash'],members=roots)
+        certificate['root_hash']=c.digest(certificate)
+        store.seal(certificate);store.seal(certificate)
+        from types import SimpleNamespace
+        launches={m.dataset_id:SimpleNamespace(controller=SimpleNamespace(dataset=m.dataset_id,plan_hash=m.plan_hash),
+            config=SimpleNamespace(issuer_keys=m.issuer_keys),verify=lambda:'a'*64,
+            run=lambda **kwargs:dict(status='complete')) for m in members}
+        def capacity(value):
+            proof=dict(status='admitted',collection_hash=value['collection_hash'])
+            return dict(proof,certificate_hash=c.digest(proof))
+        restored=store.controller(launches.__getitem__,lambda:None,capacity)
+        self.assertEqual(restored.run()['certificate'],certificate)
+        self.assertEqual(len(store.rows('research_collection_seal_v1')),1)
+        self.assertEqual(len(store.rows('research_collection_member_v1')),2)
+        bad=dict(certificate,members=roots[:1]);bad['root_hash']=c.digest({k:v for k,v in bad.items() if k!='root_hash'})
+        with self.assertRaisesRegex(ValueError,'membership'):store.seal(bad)
+        bad=dict(certificate,members=tuple((m[0],m[1],'invalid') for m in roots))
+        bad['root_hash']=c.digest({k:v for k,v in bad.items() if k!='root_hash'})
+        with self.assertRaisesRegex(ValueError,'authority root'):store.seal(bad)
+        resumed_id=str(uuid.uuid4())
+        resumed_members=tuple(collection.Member(collection.member_id(resumed_id,partition['partition_hash'],i),m.issuer_keys,m.plan_hash)
+                              for i,m in enumerate(members))
+        resumed_frozen=collection.definition(resumed_id,partition,resumed_members)
+        insert_rows(self.client.query,self.database,'research_collection_member_v1',[
+            dict(collection_id=resumed_id,member_index=0,**resumed_frozen['members'][0])])
+        resumed_store=collection_store.Store(self.client.query,self.database,resumed_id,Claim())
+        resumed_store.install(resumed_frozen)
+        self.assertEqual(resumed_store.load(),resumed_frozen)
+        self.assertEqual(len(resumed_store.rows('research_collection_member_v1')),2)
+        collection_store.verify_tables(self.client.query,self.database)
+
 
     def test_issuer_cohort_publication_and_stored_plan_preserve_frozen_selection(self):
         from hashlib import sha256
