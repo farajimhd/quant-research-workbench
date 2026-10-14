@@ -1,0 +1,103 @@
+"""Same-device bit-exact numerical rolling regions and masks, including warm capture."""
+import pytest
+import torch
+from research.vectorized_backtest.v18.program import Program,Node,Op,TorchPrograms,WINDOWS
+from research.vectorized_backtest.v18.features import CATALOG
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA workstation gate')
+def test_signal_counts_exact_without_gate_sized_allocation():
+    from research.vectorized_backtest.v18.signal_counts import count
+    generator=torch.Generator().manual_seed(17)
+    gates=torch.randint(0,32,(17,4096,64),dtype=torch.uint8,generator=generator).cuda()
+    expected=torch.stack([torch.count_nonzero(gates & (1<<bit),dim=(1,2)) for bit in range(5)],1)
+    actual=count(gates);assert torch.equal(actual,expected)
+    # Once compiled, the retained output is exactly five int64 values/candidate.
+    torch.cuda.synchronize();torch.cuda.reset_peak_memory_stats()
+    before=torch.cuda.memory_allocated();actual=count(gates);torch.cuda.synchronize()
+    assert actual.numel()*actual.element_size()==17*5*8
+    assert torch.cuda.max_memory_allocated()-before<4096
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA workstation gate')
+def test_signal_counts_use_64_bit_offsets_across_production_gate_bank():
+    from research.vectorized_backtest.v18.signal_counts import count
+    torch.cuda.empty_cache()
+    if torch.cuda.mem_get_info()[0]<6*1024**3:pytest.skip('Requires workstation-sized GPU')
+    gates=torch.zeros((512,16384,512),device='cuda',dtype=torch.uint8)
+    gates[-1,-1,-1]=31
+    actual=count(gates)
+    expected=torch.zeros((512,5),device='cuda',dtype=torch.int64);expected[-1]=1
+    assert torch.equal(actual,expected)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA workstation gate')
+def test_fused_numeric_rolling_values_exact():
+    from research.vectorized_backtest.v18.fused_program import FusedPrograms
+    i=next(i for i,f in enumerate(CATALOG) if f.unit=='ratio')
+    programs=[Program((Node(Op.FEATURE,feature=i),Node(op,a=0,window=w)),1)
+              for op in (Op.MEAN,Op.MINIMUM,Op.MAXIMUM) for w in WINDOWS]
+    generator=torch.Generator().manual_seed(16)
+    values=torch.randn((4,256,len(CATALOG)),generator=generator).cuda();valid=(torch.rand(values.shape,generator=generator)>.01).cuda()
+    original=TorchPrograms(programs,CATALOG,'cuda',output_unit='ratio')
+    fused=FusedPrograms(programs,CATALOG,'cuda',output_unit='ratio')
+    expected,mask=original(values,valid);actual,known=fused(values,valid)
+    torch.testing.assert_close(actual,expected,rtol=0,atol=0)
+    assert torch.equal(mask,known)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA workstation gate')
+def test_fused_ragged_programs_preserve_numeric_scan_shape():
+    from research.vectorized_backtest.v18.fused_program import FusedPrograms
+    i=next(i for i,f in enumerate(CATALOG) if f.unit=='ratio')
+    programs=[Program((Node(Op.FEATURE,feature=i),),0),
+              Program((Node(Op.FEATURE,feature=i),Node(Op.MEAN,a=0,window=60)),1),
+              Program((Node(Op.FEATURE,feature=i),Node(Op.ABS,a=0),Node(Op.MEAN,a=1,window=60)),2)]
+    generator=torch.Generator().manual_seed(162237)
+    values=torch.randn((4,2119,len(CATALOG)),generator=generator).cuda()
+    valid=(torch.rand(values.shape,generator=generator)>.005).cuda()
+    reference=TorchPrograms(programs,CATALOG,'cuda',output_unit='ratio')
+    fused=FusedPrograms(programs,CATALOG,'cuda',output_unit='ratio')
+    expected,mask=reference(values,valid);actual,known=fused(values,valid)
+    torch.testing.assert_close(actual,expected,rtol=0,atol=0)
+    assert torch.equal(mask,known)
+    assert [v.numel() for v in fused.active_rows]==[3,2,1]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA workstation gate')
+def test_single_pass_feature_gather_exact_all_columns_and_strides(tmp_path):
+    import numpy as np
+    from test_vector_v7_lightweight import fixture_files
+    from research.vectorized_backtest.v7.data import SessionData
+    from research.vectorized_backtest.v18.resident_features import ResidentFeatures
+    from research.vectorized_backtest.v18.features import VARIANTS,EXTRA
+    root,history=fixture_files(tmp_path);data=SessionData(root,history)
+    generator=np.random.default_rng(162237)
+    data.indicator_values=generator.normal(size=(len(data.arrays['features']),len(VARIANTS))).astype(np.float32)
+    data.indicator_values[::3,::7]=np.nan
+    data.enriched_values=generator.normal(size=(len(data.arrays['features']),len(EXTRA))).astype(np.float32)
+    data.enriched_values[::4,::5]=np.nan
+    resident=ResidentFeatures(data);resident.activate('cuda')
+    try:
+        a=resident.tensors
+        for columns in (list(range(len(CATALOG))),list(reversed(range(len(CATALOG)))),[len(CATALOG)-1,0,0,764,763,50]):
+            for source,ids,clock in ((a['source'].T,a['ids'].T.to(torch.int64),a['clocks'][None]),
+                                     (a['source'].T[:,::2],a['ids'].T[:,::2].to(torch.int64),a['clocks'][::2][None])):
+                expected,mask=resident._values_reference(source,ids,clock,columns)
+                actual,known=resident._values(source,ids,clock,columns)
+                torch.testing.assert_close(actual,expected,rtol=0,atol=0)
+                assert torch.equal(mask,known)
+    finally:resident.deactivate();data.close()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA workstation gate')
+def test_fused_boolean_mean_values_exact():
+    from research.vectorized_backtest.v18.fused_program import FusedPrograms
+    i=next(i for i,f in enumerate(CATALOG) if f.unit=='bool')
+    programs=[Program((Node(Op.FEATURE,feature=i),Node(Op.BOOL_RATIO,a=0),Node(Op.MEAN,a=1,window=w)),2) for w in WINDOWS]
+    values=torch.ones((4,256,len(CATALOG)),device='cuda');values[...,i][:,::7]=0
+    valid=torch.ones_like(values,dtype=torch.bool);valid[:,::31,i]=False
+    expected,mask=TorchPrograms(programs,CATALOG,'cuda',output_unit='ratio')(values,valid)
+    actual,known=FusedPrograms(programs,CATALOG,'cuda',output_unit='ratio')(values,valid)
+    torch.testing.assert_close(actual,expected,rtol=0,atol=0)
+    assert torch.equal(mask,known)
