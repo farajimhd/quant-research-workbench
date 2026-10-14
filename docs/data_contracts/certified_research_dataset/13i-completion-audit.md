@@ -22,7 +22,7 @@ claim that the requested full dataset can be certified from current inputs.
 | Requirement-derived earlier context | Automatic issuer/security assignment, state discovery, selected frames, rolling lookbacks, SEC float-price dates and price-only prior listings | Missing historical identity/state/reference evidence remains an explicit dependency |
 | Compact normalized compressed persistence | Exact installation catalog, explicit lossless codecs, workload policies and actual-part checks | Audit every additional acquisition/migration schema before enabling its writer |
 | Restart-safe execution and certification | Immutable CLI plans, typed producers/verifiers, source guards and seals; bounded market/SEC/backfill fixtures resume without inserts | Chunked whole-universe loading and end-to-end acceptance using qualified production bindings/capacity |
-| Measured storage and efficiency | Physical inventory and plan-bound capacity guard | Representative certified pilot rates, transient/merge peaks, physical-volume grouping and full-universe projection |
+| Measured storage and efficiency | [Isolated certified persisted-byte measurement](13u-storage-measurement.md), physical inventory and plan/collection capacity guards | Representative pilot rates, transient/merge peaks, physical-volume grouping and full-universe projection |
 | Inputs for RL and optimization | [Current RL V6/V18 input review](13t-consumer-input-review.md); common contracts and prior-session RVOL demand | Legacy reader bindings, consumer parity and actual historical evidence/coverage remain unproven |
 | No downstream preparation | Controller scope is common data and certification | Continue excluding shards, hindsight labels, exports/caches, training and optimization |
 

@@ -23,6 +23,7 @@ is the current status authority; fixture passes do not prove production coverage
 | [Current RL/optimization input review](certified_research_dataset/13t-consumer-input-review.md) | Source primitive mapping and legacy reader compatibility gaps; no downstream generation. |
 | [Bounded issuer collection launch](certified_research_dataset/13r-issuer-cohorts.md) | Current launch/resume/verification routes, exact collection metadata schemas and capacity contracts. |
 | [SEC manifest storage migration](certified_research_dataset/13s-sec-manifest-migration.md) | Verified backup-retaining migration command and maintenance requirements. |
+| [Certified storage measurement](certified_research_dataset/13u-storage-measurement.md) | Isolated measurement route, actual physical baseline and qualification limits. |
 | [Identity, timing and shared contracts](certified_research_dataset/01-foundations.md) | Approved policies, identities, clock meanings and precision. |
 | [Available data, gaps and source evidence](certified_research_dataset/02-evidence.md) | Audit numbers, coverage blockers and source pointers. |
 | [Acquisition, event repair and historical universe](certified_research_dataset/03-ingestion-universe.md) | Downloader, G-to-D staging, event migrations and dated ticker membership. |

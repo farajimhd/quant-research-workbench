@@ -1974,6 +1974,11 @@ class ClickHouseIntegration(unittest.TestCase):
             bound=scope(plan,parents);publisher.publish(bound,attempt,publisher.evidence(bound,attempt))
         campaign=Campaign(query,self.database,claim,dataset,config,plans,'a'*64,lambda:None,{'facts':produce},{'facts':verifier})
         result=campaign.run();self.assertEqual(result['status'],'complete');self.assertEqual(result['seal']['units'],2)
+        from pipelines.certified_research.capacity_measurement import measure
+        measurement=measure(query,self.database,dataset,('research_facts_v1',),campaign.verify)
+        self.assertEqual(measurement['tables'][0]['rows'],2)
+        self.assertGreater(measurement['tables'][0]['disk_bytes'],0)
+        self.assertFalse(measurement['projection_ready'])
         inspection=campaign_status(query,self.database,dataset)
         self.assertTrue(inspection['inspection_only']);self.assertEqual(inspection['counts']['certified'],2)
         self.assertEqual(len(campaign.verify()),64)

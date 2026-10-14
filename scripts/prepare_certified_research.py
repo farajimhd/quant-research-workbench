@@ -26,7 +26,7 @@ from pipelines.certified_research import contracts,schema,source,short_sql,campa
 
 def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('schema','install-schema','preflight','plan','plan-cohorts','status','stored-plan','prepare-sources','qualify-sec-lineage','verify','launch','launch-collection','backfill-v7','run','resume','resume-collection','verify-collection'))
+    p.add_argument('command',choices=('schema','install-schema','preflight','plan','plan-cohorts','status','stored-plan','prepare-sources','qualify-sec-lineage','verify','measure-storage','launch','launch-collection','backfill-v7','run','resume','resume-collection','verify-collection'))
     p.add_argument('--dataset-id',type=UUID)
     p.add_argument('--source-dataset-id',type=UUID,help='Qualified source plan/bar dataset for backfill-v7; never modified')
     p.add_argument('--backfill-start-date',type=date.fromisoformat,help='Optional narrower target range inside the source plan')
@@ -40,6 +40,7 @@ def parse_args(argv=None):
     p.add_argument('--universe-anchor-date',type=date.fromisoformat,default=date.today(),help='Last allowed 2026-onward conid observation date')
     p.add_argument('--env-file',type=Path,default=ROOT/'.env')
     p.add_argument('--capacity-profile',type=Path,help='Bounded metadata configuration containing externally qualified pilot rates; required for run/resume')
+    p.add_argument('--measurement-tables',type=lambda value:tuple(value.split(',')),help='measure-storage only: isolated normalized output tables; default common output set')
     p.add_argument('--workers',type=int,default=4)
     p.add_argument('--query-threads',type=int,default=2)
     p.add_argument('--query-memory-gib',type=int,default=2)
@@ -76,7 +77,7 @@ def parse_args(argv=None):
     try:contracts.identifier(args.database)
     except ValueError as error:p.error(str(error))
     if args.command!='schema' and args.format=='sql':p.error('SQL format is for schema inspection only')
-    if args.command in ('status','stored-plan','verify','launch','launch-collection','backfill-v7','run','resume') and args.dataset_id is None:p.error(args.command+' requires --dataset-id')
+    if args.command in ('status','stored-plan','verify','measure-storage','launch','launch-collection','backfill-v7','run','resume') and args.dataset_id is None:p.error(args.command+' requires --dataset-id')
     if args.command in ('launch','launch-collection','backfill-v7','run','resume') and args.capacity_profile is None:p.error(args.command+' requires --capacity-profile')
     if args.command=='backfill-v7':
         if args.source_dataset_id is None or args.source_dataset_id==args.dataset_id:
@@ -104,7 +105,8 @@ def parse_args(argv=None):
     if args.command=='launch-collection' and (args.issuer_keys or not 1<=args.cohort_max_issuers<=256 or not 1<=args.cohort_max_sessions<=250000):
         p.error('launch-collection requires an unscoped universe and bounded cohort limits')
     if args.hydrate_missing_trades:p.error('Imported-day reporting repair cannot hydrate flatfiles; G-to-D staging belongs to acquisition')
-    if args.command=='verify' and (args.acquire_missing or args.stage_archive):p.error('verify is read-only; acquisition flags belong to prepare-sources')
+    if args.command in ('verify','measure-storage') and (args.acquire_missing or args.stage_archive):p.error('Verification/measurement is read-only; acquisition flags belong to prepare-sources')
+    if args.measurement_tables is not None and args.command!='measure-storage':p.error('--measurement-tables belongs to measure-storage')
     if args.command in ('run','resume') and (args.acquire_missing or args.stage_archive):p.error('Frozen execution cannot acquire sources; use prepare-sources before freezing the plan')
     if args.command in ('resume-collection','verify-collection'):
         if args.dataset_id is None:p.error('Collection execution requires --dataset-id (collection UUID)')
@@ -358,7 +360,7 @@ def main(argv=None):
                 print(f'SEC lineage | qualified={len(result["qualified"])} | unqualified={len(result["unqualified"])} | range_ready={ready["ready"]}')
                 if not ready['ready']:print('  Missing range coverage: '+','.join(ready['gaps']))
             return 0 if ready['ready'] else 2
-        if args.command=='verify':
+        if args.command in ('verify','measure-storage'):
             from contextlib import closing
             from types import SimpleNamespace
             from pipelines.market_sip.flatfiles.download_update_events import load_env_files
@@ -377,10 +379,19 @@ def main(argv=None):
             with closing(open_workstation_keeper_session()) as keeper:
                 claim=KeeperClaim(keeper.client,str(args.dataset_id))
                 try:
-                    result=verification.verify(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database,
-                        str(args.dataset_id),claim,factory,lambda:DictionaryClaim(keeper.client,args.database))
+                    def verify():
+                        return verification.verify(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database,
+                            str(args.dataset_id),claim,factory,lambda:DictionaryClaim(keeper.client,args.database))
+                    if args.command=='measure-storage':
+                        from pipelines.certified_research import capacity_measurement
+                        tables=args.measurement_tables or ('research_bars_v1','research_indicators_v1','research_indicator_state_v1',
+                            'research_liquidity_v1','research_v7_checkpoint_v1','research_activity_v1','research_facts_v1')
+                        result=capacity_measurement.measure(client.query,args.database,str(args.dataset_id),tables,
+                            lambda:verify()['root_hash'])
+                    else:result=verify()
                 finally:claim.close()
             if args.format=='json':print(json.dumps(result,indent=2))
+            elif args.command=='measure-storage':print(f"Measured persisted output | {sum(t['disk_bytes'] for t in result['tables'])} bytes | projection_ready=false")
             else:print(f"Verified | {result['units']} units | {result['root_hash']} | read-only")
             return 0
         if args.command=='install-schema':
@@ -492,7 +503,7 @@ def main(argv=None):
         print('Preparation interrupted; rerun launch before plan publication, or resume an already frozen dataset.',file=sys.stderr)
         return 130
     except Exception as error:
-        label='Verification failed: ' if args.command in ('verify','verify-collection') else 'Execution failed: ' if args.command in ('launch','launch-collection','backfill-v7','run','resume','resume-collection') else 'Preflight failed: '
+        label='Verification/measurement failed: ' if args.command in ('verify','verify-collection','measure-storage') else 'Execution failed: ' if args.command in ('launch','launch-collection','backfill-v7','run','resume','resume-collection') else 'Preflight failed: '
         print(label+client.clean_error(error),file=sys.stderr)
         return 2
     except KeyboardInterrupt:
