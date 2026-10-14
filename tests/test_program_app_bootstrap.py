@@ -78,6 +78,23 @@ def test_hash_bound_plan_is_only_approval_references(tmp_path):
         bootstrap.read_startup_plan(path, '0' * 64)
 
 
+@pytest.mark.parametrize('missing', [False, True])
+def test_v2_startup_requires_exact_execution_approvals_for_every_selection(tmp_path, missing):
+    path, _, plan, _ = packet(tmp_path)
+    plan['contract'] = 'approved-program-app-startup-v2'
+    plan['approved_execution_bindings'] = ({} if missing else
+        {identity: 'b' * 64 for identity in plan['approved_selections']})
+    raw = json.dumps(plan).encode()
+    from pathlib import Path
+    Path(path).write_bytes(raw)
+    if missing:
+        with pytest.raises(ValueError, match='execution binding pins'):
+            bootstrap.read_startup_plan(path, sha256(raw).hexdigest())
+    else:
+        result = bootstrap.read_startup_plan(path, sha256(raw).hexdigest())
+        assert dict(result[3]) == plan['approved_execution_bindings']
+
+
 @pytest.mark.parametrize('mutation', ['extra', 'empty', 'duplicate', 'mode', 'concurrency'])
 def test_invalid_plan_cannot_install_or_open_keeper(tmp_path, monkeypatch, mutation):
     path, _, plan, _ = packet(tmp_path)

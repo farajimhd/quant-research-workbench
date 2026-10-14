@@ -14,6 +14,49 @@ from tests.test_columnar_strategy_release import Reader
 from tests.test_strategy_configuration_selection import children, prepare, ID
 
 
+@pytest.mark.parametrize('foreign_parent', [False, True])
+def test_certified_selection_joins_approved_execution_binding_and_rechecks_selection(monkeypatch, foreign_parent):
+    from types import SimpleNamespace
+    from datetime import datetime, UTC
+    from tests.test_strategy_configuration_materialization import configured
+    from src.backend.strategy_configuration_materialization import materialize_program_configuration
+    from src.backend import configuration_execution_binding_reader as binding_reader
+    from src.trading_runtime.configuration_execution_binding import project_execution_binding
+    from src.trading_runtime.execution_policies import ExecutionPolicy
+    _, actor, selected, policies = configured()
+    revision = materialize_program_configuration(selected, actor.program_release, policies)
+    binding = project_execution_binding(configuration_id=selected.header['configuration_id'],
+        configuration_hash=('b' * 64 if foreign_parent else selected.header['content_hash']),
+        policies=(ExecutionPolicy(),), entry_policy_id='adaptive-regular', exit_policy_id='adaptive-regular',
+        tick_size=.01, limit_offset_bps=2., published_at=datetime.now(UTC))
+    registration = SimpleNamespace(key=(actor.strategy_id, actor.revision))
+    monkeypatch.setattr(module, 'program_strategy_executor', lambda *_: registration)
+    reads = []
+    async def selection(*args, **kwargs):
+        reads.append('selection'); return selected
+    async def references(*args, **kwargs):
+        return module.CertifiedProgramConfiguration(selected, actor.program_release, revision)
+    async def execution(factory, **kwargs):
+        assert kwargs['expected_content_hash'] == binding.header['content_hash']
+        reads.append('binding'); return binding
+    monkeypatch.setattr(module, 'load_configuration_selection', selection)
+    monkeypatch.setattr(module, 'load_program_configuration_references', references)
+    monkeypatch.setattr(binding_reader, 'load_configuration_execution_binding', execution)
+    async def run():
+        return await module.load_certified_program_configuration(selection_client_factory=lambda: None,
+            release_client_factory=lambda: None, policy_client_factory=lambda: None, policy_dispatch=object(),
+            configuration_id=selected.header['configuration_id'], expected_content_hash=selected.header['content_hash'],
+            concurrency=1, expected_execution_binding_hash=binding.header['content_hash'])
+    if foreign_parent:
+        with pytest.raises(ValueError, match='selected configuration'):
+            asyncio.run(run())
+    else:
+        result = asyncio.run(run())
+        assert result.execution_binding is binding
+        assert result.revision['execution_binding_hash'] == binding.header['content_hash']
+        assert reads == ['selection', 'binding', 'selection']
+
+
 @pytest.mark.parametrize("failure", [None, "pin", "policy", "changed", "cancel"])
 def test_configuration_reference_admission_uses_installed_release_and_settles_owned_reads(monkeypatch, failure):
     registration, release_rows, _ = installed(monkeypatch)

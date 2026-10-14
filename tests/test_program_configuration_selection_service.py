@@ -38,6 +38,18 @@ def test_selection_snapshot_and_current_configuration_boundary_use_approved_pins
     assert configuration.backtest_configuration_snapshot(candidate_id=revision["revision_id"])["payload"]["oms"]["limit_offset_bps"] != 99
     with pytest.raises(ValueError, match="run plan"):
         configuration.backtest_configuration_snapshot("other", candidate_id=revision["revision_id"])
+
+
+def test_execution_binding_pin_is_forwarded_and_uncertified_snapshot_rejected(monkeypatch):
+    original, revision, reads = installed(monkeypatch)
+    identity = revision['revision_id'].removeprefix('strategy-configuration:')
+    service = selection_service.ProgramConfigurationSelectionService(approved_selections=original.pins,
+        approved_execution_bindings={identity: 'b' * 64}, **dict(original.authorities))
+    with pytest.raises(ValueError, match='execution binding'):
+        asyncio.run(service.snapshot(revision['revision_id']))
+    revision['execution_binding_hash'] = 'b' * 64
+    result = asyncio.run(service.snapshot(revision['revision_id']))
+    assert result['execution_binding_hash'] == reads[-1]['expected_execution_binding_hash'] == 'b' * 64
     with pytest.raises(ValueError, match="not approved"):
         asyncio.run(service.snapshot("strategy-configuration:00000000-0000-0000-0000-000000000063"))
     with pytest.raises(TypeError): service.pins["other"] = "a" * 64

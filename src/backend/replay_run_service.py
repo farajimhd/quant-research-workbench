@@ -10327,7 +10327,8 @@ class ReplayRunService:
 
     async def prepare_certified_program_controller(self, definition: ReplayRunDefinition, *, assignments,
             listing_by_assignment, liquidity_resolution_ms, selection_client_factory,
-            release_client_factory, policy_client_factory, policy_dispatch, concurrency):
+            release_client_factory, policy_client_factory, policy_dispatch, concurrency,
+            expected_execution_binding_hash=None):
         """Prepare the normal programme lane from the exact UI-reviewed selection.
 
         Only central read authorities are consulted. This neither publishes a
@@ -10341,17 +10342,21 @@ class ReplayRunService:
         revision = definition.configuration_revision
         revision_id = revision.get("revision_id")
         selection_hash = revision.get("selection_hash")
+        if revision.get('execution_binding_hash') != expected_execution_binding_hash:
+            raise ValueError('Programme execution selection differs from reviewed approval')
         if (type(revision_id) is not str or not revision_id.startswith("strategy-configuration:")
                 or type(selection_hash) is not str):
             raise ValueError("Programme configuration lacks its reviewed central selection")
         reviewed_hash = _configuration_hash(definition)
         reviewed_payload = canonical_json(revision["payload"])
+        extra = {} if expected_execution_binding_hash is None else {
+            'expected_execution_binding_hash': expected_execution_binding_hash}
         certified = await load_certified_program_configuration(
             selection_client_factory=selection_client_factory,
             release_client_factory=release_client_factory, policy_client_factory=policy_client_factory,
             policy_dispatch=policy_dispatch,
             configuration_id=revision_id.removeprefix("strategy-configuration:"),
-            expected_content_hash=selection_hash, concurrency=concurrency)
+            expected_content_hash=selection_hash, concurrency=concurrency, **extra)
         current = certified.revision
         if (definition.configuration_revision.get("revision_id") != revision_id
                 or definition.configuration_revision.get("selection_hash") != selection_hash

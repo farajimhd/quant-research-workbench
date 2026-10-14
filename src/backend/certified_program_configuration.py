@@ -29,6 +29,7 @@ class CertifiedProgramConfiguration:
     selection: object
     release: object
     revision: object
+    execution_binding: object = None
 
 
 class _BoundedPolicyReader:
@@ -141,10 +142,13 @@ async def load_program_configuration_references(selected, *,
 
 async def load_certified_program_configuration(*, selection_client_factory,
         release_client_factory, policy_client_factory, policy_dispatch,
-        configuration_id, expected_content_hash, concurrency):
+        configuration_id, expected_content_hash, concurrency, expected_execution_binding_hash=None):
     """Verify persisted selection and settle every owned reference read."""
     if any(not callable(factory) for factory in (selection_client_factory, release_client_factory, policy_client_factory)):
         raise ValueError("Programme configuration needs its explicit central readers")
+    if expected_execution_binding_hash is not None and (type(expected_execution_binding_hash) is not str
+            or re.fullmatch('[0-9a-f]{64}', expected_execution_binding_hash) is None):
+        raise ValueError('Programme execution binding requires its approved hash')
     lock, used = Lock(), []
     def distinct(factory):
         def owned():
@@ -163,6 +167,15 @@ async def load_certified_program_configuration(*, selection_client_factory,
     result = await load_program_configuration_references(selected,
         release_client_factory=distinct(release_client_factory), policy_client_factory=distinct(policy_client_factory),
         policy_dispatch=policy_dispatch, concurrency=concurrency)
+    if expected_execution_binding_hash is not None:
+        from dataclasses import replace
+        from .configuration_execution_binding_reader import load_configuration_execution_binding
+        from src.trading_runtime.configuration_execution_binding import bind_execution_configuration
+        binding = await load_configuration_execution_binding(selection_factory,
+            configuration_id=configuration_id, expected_configuration_hash=expected_content_hash,
+            expected_content_hash=expected_execution_binding_hash)
+        result = replace(result, revision=bind_execution_configuration(result.revision, binding),
+            execution_binding=binding)
     current = await load_configuration_selection(selection_factory, **identity)
     if current != selected or program_strategy_executor(*registration.key) is not registration:
         raise ValueError("Configuration selection or installed pins changed during reference admission")

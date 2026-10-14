@@ -17,8 +17,10 @@ _SERVICE = None
 
 class ProgramConfigurationSelectionService:
     def __init__(self, *, approved_selections, selection_client_factory,
-            release_client_factory, policy_client_factory, policy_dispatch, concurrency):
+            release_client_factory, policy_client_factory, policy_dispatch, concurrency,
+            approved_execution_bindings=None):
         pins = dict(approved_selections)
+        execution_pins = dict(approved_execution_bindings or {})
         if (not 1 <= len(pins) <= 256 or type(concurrency) is not int or not 1 <= concurrency <= 6
                 or any(type(identity) is not str or str(UUID(identity)) != identity
                        or type(digest) is not str or re.fullmatch(r"[0-9a-f]{64}", digest) is None
@@ -26,7 +28,11 @@ class ProgramConfigurationSelectionService:
                 or any(not callable(factory) for factory in
                        (selection_client_factory, release_client_factory, policy_client_factory))):
             raise ValueError("Programme selection service needs explicit bounded approved pins")
+        if (set(execution_pins) - set(pins) or any(type(value) is not str
+                or re.fullmatch('[0-9a-f]{64}', value) is None for value in execution_pins.values())):
+            raise ValueError('Programme execution approvals differ from selected configurations')
         self.pins = MappingProxyType(pins)
+        self.execution_pins = MappingProxyType(execution_pins)
         self.authorities = MappingProxyType(dict(selection_client_factory=selection_client_factory,
             release_client_factory=release_client_factory, policy_client_factory=policy_client_factory,
             policy_dispatch=policy_dispatch, concurrency=concurrency))
@@ -77,9 +83,13 @@ class ProgramConfigurationSelectionService:
         digest = self.pins.get(identity)
         if digest is None:
             raise ValueError("Programme configuration selection is not approved for this app")
+        binding_pin = self.execution_pins.get(identity)
+        extra = {} if binding_pin is None else {'expected_execution_binding_hash': binding_pin}
         certified = await load_certified_program_configuration(configuration_id=identity,
-            expected_content_hash=digest, **self.authorities)
+            expected_content_hash=digest, **self.authorities, **extra)
         revision = deepcopy(certified.revision)
+        if revision.get('execution_binding_hash') != binding_pin:
+            raise ValueError('Programme snapshot execution binding differs from its approval')
         if run_plan_id and revision["run_plan_id"] != run_plan_id:
             raise ValueError("Programme selection differs from the requested run plan")
         revision["available_run_plans"] = [{
@@ -111,9 +121,13 @@ class ProgramConfigurationSelectionService:
         digest = self.pins.get(candidate.removeprefix("strategy-configuration:"))
         if digest is None or revision.get("selection_hash") != digest:
             raise ValueError("Programme preparation selection is not approved for this app")
+        binding_pin = self.execution_pins.get(candidate.removeprefix('strategy-configuration:'))
+        if revision.get('execution_binding_hash') != binding_pin:
+            raise ValueError('Programme execution selection is not approved for this app')
+        extra = {} if binding_pin is None else {'expected_execution_binding_hash': binding_pin}
         controller = await run_service.prepare_certified_program_controller(definition,
             assignments=assignments, listing_by_assignment=listing_by_assignment,
-            liquidity_resolution_ms=liquidity_resolution_ms, **self.authorities)
+            liquidity_resolution_ms=liquidity_resolution_ms, **self.authorities, **extra)
         if program_configuration_selection_service() is not self:
             raise RuntimeError("Programme preparation lost its installed app authority")
         return controller
@@ -170,9 +184,13 @@ class ProgramConfigurationSelectionService:
         if (type(candidate) is not str or not candidate.startswith("strategy-configuration:")
                 or digest is None or digest != revision.get("selection_hash")):
             raise ValueError("Programme resume selection is not approved for this app")
+        binding_pin = self.execution_pins.get(candidate.removeprefix('strategy-configuration:'))
+        if revision.get('execution_binding_hash') != binding_pin:
+            raise ValueError('Programme resume execution selection is not approved')
+        extra = {} if binding_pin is None else {'expected_execution_binding_hash': binding_pin}
         controller = await run_service.prepare_certified_program_resume_controller(evidence,
             assignments=assignments, listing_by_assignment=listing_by_assignment,
-            liquidity_resolution_ms=liquidity_resolution_ms, **self.authorities)
+            liquidity_resolution_ms=liquidity_resolution_ms, **self.authorities, **extra)
         if program_configuration_selection_service() is not self:
             raise RuntimeError("Programme resume preparation lost its installed app authority")
         return controller

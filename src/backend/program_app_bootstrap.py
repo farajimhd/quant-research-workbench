@@ -49,8 +49,12 @@ def read_startup_plan(path, expected_sha256):
     if len(raw) > 128 * 1024 or sha256(raw).hexdigest() != expected_sha256:
         raise ValueError('Programme startup approval differs from its bounded file hash')
     plan = json.loads(raw.decode('utf-8-sig'), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
-    if (type(plan) is not dict or set(plan) != {'contract', 'approved_selections', 'executors', 'concurrency'}
-            or plan['contract'] != 'approved-program-app-startup-v1'
+    version2 = type(plan) is dict and plan.get('contract') == 'approved-program-app-startup-v2'
+    expected = {'contract', 'approved_selections', 'executors', 'concurrency'}
+    if version2:
+        expected.add('approved_execution_bindings')
+    if (type(plan) is not dict or set(plan) != expected
+            or plan['contract'] not in ('approved-program-app-startup-v1', 'approved-program-app-startup-v2')
             or type(plan['concurrency']) is not int or not 1 <= plan['concurrency'] <= 6
             or type(plan['approved_selections']) is not dict or not 1 <= len(plan['approved_selections']) <= 256
             or type(plan['executors']) is not list or not 1 <= len(plan['executors']) <= 256):
@@ -59,6 +63,11 @@ def read_startup_plan(path, expected_sha256):
     if any(type(k) is not str or str(UUID(k)) != k or type(v) is not str
             or re.fullmatch('[0-9a-f]{64}', v) is None for k, v in pins.items()):
         raise ValueError('Programme startup selection pins are invalid')
+    execution_pins = plan.get('approved_execution_bindings', {})
+    if version2 and (type(execution_pins) is not dict or set(execution_pins) != set(pins)
+            or any(type(value) is not str or re.fullmatch('[0-9a-f]{64}', value) is None
+                for value in execution_pins.values())):
+        raise ValueError('Programme startup requires complete approved execution binding pins')
     executors = []
     for row in plan['executors']:
         if type(row) is not dict or set(row) != {'strategy_id', 'revision', 'expected_content_hash',
@@ -69,7 +78,8 @@ def read_startup_plan(path, expected_sha256):
         executors.append(executor)
     if len({p.key for p in executors}) != len(executors):
         raise ValueError('Programme startup repeats an executable identity')
-    return MappingProxyType(dict(pins)), tuple(executors), plan['concurrency']
+    result = MappingProxyType(dict(pins)), tuple(executors), plan['concurrency']
+    return (*result, MappingProxyType(dict(execution_pins))) if version2 else result
 
 
 async def _open_owned_session():
@@ -87,7 +97,9 @@ async def prepare_managed_program_startup(application, spec):
     from .program_app_startup import configure_program_app_startup
     if getattr(application.state, OWNED_KEY, None) is not None:
         raise RuntimeError('Managed programme startup already owns a policy session')
-    pins, registrations, concurrency = await _owned_worker(read_startup_plan, *spec)
+    approved = await _owned_worker(read_startup_plan, *spec)
+    pins, registrations, concurrency = approved[:3]
+    execution_pins = approved[3] if len(approved) == 4 else {}
     iterator = iter(registrations)
     async def worker():
         while True:
@@ -115,7 +127,8 @@ async def prepare_managed_program_startup(application, spec):
             selection_client_factory=program_app_reader_factory('selection_reader'),
             release_client_factory=program_app_reader_factory('release_reader'),
             policy_client_factory=program_app_reader_factory('market_input_reader'),
-            policy_dispatch=TypedInsertDispatch(session.client), concurrency=concurrency)
+            policy_dispatch=TypedInsertDispatch(session.client), concurrency=concurrency,
+            approved_execution_bindings=execution_pins)
         configure_program_app_startup(application, service)
         setattr(application.state, OWNED_KEY, (session, service))
         return service
