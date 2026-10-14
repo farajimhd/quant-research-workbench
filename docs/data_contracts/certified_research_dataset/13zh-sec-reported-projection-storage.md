@@ -2,6 +2,8 @@
 
 [Original evidence](13ze-sec-original-fundamental-context.md) · [Precision policy and measurements](13zg-sec-extraction-measurement.md)
 
+[Retained filing census](13zi-sec-filing-census.md)
+
 `sec_reported_publication` now persists the candidate reported-value projection
 without copying values, concepts, units or dimensions already retained in the
 normalized original bank. Exact DDL and columns appear in the unified launcher
