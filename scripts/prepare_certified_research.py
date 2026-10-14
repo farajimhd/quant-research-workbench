@@ -75,6 +75,7 @@ def parse_args(argv=None):
     p.add_argument('--compare-sec-bulk',action='store_true',help='measure-sec-extraction only: bounded read-only original/bulk value comparison, without public-time qualification')
     p.add_argument('--verify-sec-archives',action='store_true',help='Verify selected SEC documents against retained G archives and publish public-time evidence; no downloads')
     p.add_argument('--prepare-sec-fundamental-evidence',action='store_true',help='Capture original fundamental contexts and bulk comparisons after archive verification; requires measured sec_fundamental_source capacity')
+    p.add_argument('--sec-numeric-mode',choices=('round-to-nearest','truncation'),help='Opt in to reported projection publication after fundamental readback; requires a mode-compatible sec_reported_projection pilot rate')
     p.add_argument('--sec-archive-canonical-root',type=Path,default=Path('D:/market-data/sec_core/daily_archives'))
     p.add_argument('--sec-archive-backup-root',type=Path,help='Existing G backup root containing YEAR/QTRn SEC archives')
     p.add_argument('--sec-download-receipts',type=Path,help='Original downloader JSONL ledger with successful hashes and HTTP Last-Modified')
@@ -101,6 +102,8 @@ def parse_args(argv=None):
     p.add_argument('--clickhouse-cache-root',default='/mnt/d/market-data/flatfiles/us_stocks_sip')
     p.add_argument('--hydrate-missing-trades',action='store_true',help='Deprecated: imported-day repair requires canonical sidecars')
     args=p.parse_args(argv)
+    if args.sec_numeric_mode is not None and not args.prepare_sec_fundamental_evidence:
+        p.error('--sec-numeric-mode requires --prepare-sec-fundamental-evidence')
     if args.compare_sec_bulk and args.command!='measure-sec-extraction':p.error('--compare-sec-bulk belongs to measure-sec-extraction')
     if args.command=='measure-sec-extraction' or args.measurement_sec_document:
         if (args.command!='measure-sec-extraction' or not 1<=len(args.measurement_sec_document)<=8
@@ -246,7 +249,8 @@ def prepare_sec_share_sources(args,client,config,claim,client_factory,dictionary
             def fundamental_progress(event):
                 if args.format=='text':print(f'SEC fundamental evidence | verified {event["completed"]}/{event["total"]} documents | inserted={event["inserted_rows"]} | parity inputs ready={event["parity_inputs_ready"]}',flush=True)
             result['fundamental_evidence']=sec_fundamental_preparation.prepare(client.query,config,args.sec_share_document,claim,
-                dictionary_factory,capacity_profile.load(args.capacity_profile),mode=args.sec_public_time_mode,stop=stop,progress=fundamental_progress)
+                dictionary_factory,capacity_profile.load(args.capacity_profile),mode=args.sec_public_time_mode,stop=stop,
+                progress=fundamental_progress,numeric_mode=args.sec_numeric_mode)
             if args.format=='text':
                 evidence=result['fundamental_evidence']
                 print('SEC parity input blockers | '+json.dumps(evidence.get('parity_input_blockers',{}),sort_keys=True)+' | coverage certified=false',flush=True)
@@ -343,6 +347,7 @@ def main(argv=None):
                 recipe_hash=sec_fundamental_preparation.recipe_hash(),
                 tables=[dict(name=t.name,order=t.order,partition=t.partition,columns=[vars(c) for c in t.columns]) for t in fundamental_tables])
             manifest['sec_reported_projection_candidates']=dict(database='q_live',certified=False,
+                product='sec_reported_projection',mode_recipes={mode:sec_fundamental_preparation.reported_recipe_hash(mode) for mode in ('round-to-nearest','truncation')},
                 tables=[dict(name=t.name,order=t.order,partition=t.partition,columns=[vars(c) for c in t.columns]) for t in reported_tables])
             print(json.dumps(manifest,indent=2))
         else:
