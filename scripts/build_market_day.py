@@ -210,7 +210,7 @@ def parse_args(argv=None):
 
 class Client:
     """Bounded HTTP results, no write retries, explicit cancellation identity."""
-    def __init__(self, args, *, persistent=True):
+    def __init__(self, args, *, persistent=True, readonly=False):
         values = {}
         if args.env_file.is_file():
             for line in args.env_file.read_text(encoding="utf-8-sig").splitlines():
@@ -229,7 +229,8 @@ class Client:
             persistent=persistent,
             default_query_params=dict(max_threads=args.max_threads, max_insert_threads=1,
                 max_memory_usage=int(args.max_memory_gb * 1024**3), max_execution_time=args.query_timeout,
-                max_result_rows=100000, max_result_bytes=16000000, result_overflow_mode="throw"))
+                max_result_rows=100000, max_result_bytes=16000000, result_overflow_mode="throw",
+                **({'readonly':1} if readonly else {})))
         # Cancellation must not wait behind the active persistent-query lock.
         self.cancel_http = ClickHouseHttpClient(endpoint,user,password,timeout_seconds=30)
         self.active = None

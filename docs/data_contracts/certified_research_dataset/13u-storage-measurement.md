@@ -16,6 +16,12 @@ At most 16 tables and 4,096 active parts are inspected. Actual disk/policy check
 remain mandatory. Historical observation rows are not fetched by the sampler;
 the authority verifier still performs its normal bounded evidence checks.
 
+Inspection, verification and measurement clients now enforce `readonly=1`
+through HTTP query settings. They preserve existing SQL settings rather than
+appending a second SQL `SETTINGS` clause. Write clients retain their previous
+default behavior. A real ClickHouse check accepted a read with `SETTINGS final=0`
+and rejected table creation; client configuration and launcher tests also pass.
+
 The result binds dataset/root, version, table row/part counts, actual disk,
 compressed/uncompressed bytes, part evidence hash and result evidence hash.
 `active_parts_only=true` excludes inactive cleanup/staging/merge overhead from

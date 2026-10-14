@@ -184,7 +184,8 @@ def main(argv=None):
         return 0
     from scripts import build_market_day as builder
     args.max_threads=args.query_threads;args.max_memory_gb=args.query_memory_gib;args.query_timeout=45
-    client=builder.Client(args,persistent=False)
+    client=builder.Client(args,persistent=False,readonly=args.command in
+        ('preflight','plan','plan-cohorts','status','stored-plan','verify','verify-collection','measure-storage'))
     try:
         if args.command in ('resume-collection','verify-collection'):
             from contextlib import closing
@@ -204,10 +205,10 @@ def main(argv=None):
             def factory(config):
                 options=SimpleNamespace(env_file=args.env_file,max_threads=config.query_threads,
                     max_memory_gb=config.query_memory_bytes/1024**3,query_timeout=45)
-                real=builder.Client(options,persistent=False)
+                real=builder.Client(options,persistent=False,readonly=verify_only)
                 if not verify_only:return real
                 class Reader:
-                    def query(self,sql):return real.query(sql+' SETTINGS readonly=1')
+                    def query(self,sql):return real.query(sql)
                     def close(self):real.close()
                 return Reader()
             last_progress=[0.]
@@ -221,7 +222,7 @@ def main(argv=None):
                 with closing(open_workstation_keeper_session()) as keeper:
                     claim=KeeperClaim(keeper.client,str(args.dataset_id))
                     try:
-                        query=(lambda sql:client.query(sql+' SETTINGS readonly=1')) if verify_only else client.query
+                        query=client.query
                         result=collection_execution.execute(query,args.database,str(args.dataset_id),claim,
                             lambda id_:KeeperClaim(keeper.client,id_),factory,
                             lambda:DictionaryClaim(keeper.client,args.database),profile=profile,
@@ -371,16 +372,16 @@ def main(argv=None):
             def factory(config):
                 options=SimpleNamespace(env_file=args.env_file,max_threads=config.query_threads,
                     max_memory_gb=config.query_memory_bytes/1024**3,query_timeout=45)
-                real=builder.Client(options,persistent=False)
+                real=builder.Client(options,persistent=False,readonly=True)
                 class Reader:
-                    def query(self,sql):return real.query(sql+' SETTINGS readonly=1')
+                    def query(self,sql):return real.query(sql)
                     def close(self):real.close()
                 return Reader()
             with closing(open_workstation_keeper_session()) as keeper:
                 claim=KeeperClaim(keeper.client,str(args.dataset_id))
                 try:
                     def verify():
-                        return verification.verify(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database,
+                        return verification.verify(client.query,args.database,
                             str(args.dataset_id),claim,factory,lambda:DictionaryClaim(keeper.client,args.database))
                     if args.command=='measure-storage':
                         from pipelines.certified_research import capacity_measurement
@@ -439,7 +440,7 @@ def main(argv=None):
             from pipelines.certified_research import cohorts
             config=campaign_config(args,args.end_date)
             if args.context_start_date>config.start:raise ValueError('Cohort context cannot follow target start')
-            query=lambda sql:client.query(sql+' SETTINGS readonly=1')
+            query=client.query
             snapshot=universe.load(query,args.context_start_date,config.end,args.universe_anchor_date)
             if not snapshot['ready']:
                 result=dict(status='blocked',rejections=snapshot['rejection_counts'],full_source_hash=snapshot['source_hash'],
@@ -451,12 +452,12 @@ def main(argv=None):
             print(json.dumps(result,default=str,sort_keys=True,indent=2))
             return 0 if result['status']=='planned' else 2
         if args.command=='status':
-            result=campaign.status(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database,str(args.dataset_id))
+            result=campaign.status(client.query,args.database,str(args.dataset_id))
             print(json.dumps(result,indent=2,default=str))
             return 0
         if args.command=='stored-plan':
             from collections import Counter
-            saved=campaign.load_plan(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database,str(args.dataset_id))
+            saved=campaign.load_plan(client.query,args.database,str(args.dataset_id))
             result=dict(dataset_id=saved.dataset_id,plan_hash=saved.plan_hash,source_hash=saved.source_hash,
                 config=saved.config.identity(),units=len(saved.units),products=dict(Counter(p.unit.product for p in saved.units)),
                 dependencies=sum(len(p.unit.parents) for p in saved.units),inspection_only=True)
@@ -464,33 +465,33 @@ def main(argv=None):
             else:print(f"Stored plan verified | {result['units']} units | {result['dependencies']} dependencies | {saved.plan_hash}")
             return 0
         # Every query in the inspection path is read-only at the server as well.
-        result=inspect_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),args)
+        result=inspect_sources(client.query,args)
         if args.command=='plan':
-            result['storage_inventory']=capacity.inventory(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database)
+            result['storage_inventory']=capacity.inventory(client.query,args.database)
             result['corporate_evidence_preflight']=source.corporate_evidence_inventory(
-                lambda sql:client.query(sql+' SETTINGS readonly=1'))
+                client.query)
             end=date.fromisoformat(result['config']['config']['end']) if isinstance(result['config']['config']['end'],str) else result['config']['config']['end']
             from pipelines.certified_research import sec_coverage,planning
             result['sec_acquisition_preflight']=sec_coverage.inventory(
-                lambda sql:client.query(sql+' SETTINGS readonly=1'),args.context_start_date or args.start_date,
+                client.query,args.context_start_date or args.start_date,
                 planning.reference_coverage_end(end))
-            historical=universe.load(lambda sql:client.query(sql+' SETTINGS readonly=1'),
+            historical=universe.load(client.query,
                 args.context_start_date or args.start_date,end,args.universe_anchor_date)
             result['universe_preflight']=dict(ready=historical['ready'],intervals=len(historical['intervals']),
                 rejected=len(historical['rejected']),rejection_counts=historical['rejection_counts'],
                 outside_scope=historical['outside_scope'],source_hash=historical['source_hash'])
             result['universe_repair_requirements']=universe.repair_inventory(historical)
             result['short_publication_preflight']=short_sql.clock_inventory(
-                lambda sql:client.query(sql+' SETTINGS readonly=1'),args.start_date,end)
-            inv=source.inventory(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.start_date,end)
-            reporting=source.reporting_inventory(lambda sql:client.query(sql+' SETTINGS readonly=1'),inv)
+                client.query,args.start_date,end)
+            inv=source.inventory(client.query,args.start_date,end)
+            reporting=source.reporting_inventory(client.query,inv)
             result['source_plan']=dict(missing_sources=[str(d) for d in inv['missing']],
                 incomplete_sources=[str(d) for d in inv['incomplete']],
                 missing_reporting=[str(d) for d in reporting['missing']],unqualified_reporting=reporting.get('unqualified',{}),source_hash=inv['content_hash'],
                 reporting_hash=reporting['content_hash'],acquire_missing=args.acquire_missing,
                 hydrate_missing_trades=args.hydrate_missing_trades)
             result['reporting_clock_evidence']=source.clock_evidence_inventory(
-                lambda sql:client.query(sql+' SETTINGS readonly=1'),args.start_date,end)
+                client.query,args.start_date,end)
             qualify_plan(result)
         if args.format=='json':print(json.dumps(result,indent=2,default=str))
         else:

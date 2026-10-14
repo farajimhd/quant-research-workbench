@@ -780,6 +780,17 @@ class Contracts(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')=='1',
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
+    def test_readonly_http_client_supports_existing_settings_and_rejects_writes(self):
+        reader=self.builder.Client(self.args,persistent=False,readonly=True)
+        try:
+            self.assertEqual(reader.query('SELECT toUInt8(1) n SETTINGS final=0'),[dict(n=1)])
+            with self.assertRaisesRegex(Exception,'(?i)readonly'):
+                reader.query(f"CREATE TABLE {self.database}.readonly_rejection_fixture (id UInt8) "
+                    "ENGINE=MergeTree ORDER BY id SETTINGS storage_policy='live_market_ssd'",read=False)
+            self.assertEqual(self.client.query(f"SELECT count() n FROM system.tables WHERE database='{self.database}' "
+                "AND name='readonly_rejection_fixture'")[0]['n'],0)
+        finally:reader.close()
+
     def test_manifest_storage_migration_preserves_versions_backups_and_resume(self):
         import tempfile
         from pathlib import Path
@@ -1996,13 +2007,13 @@ class ClickHouseIntegration(unittest.TestCase):
         class ReadClient:
             closed=False
             def query(self,sql,*args,**kwargs):
-                outer.assertIn('readonly=1',sql)
                 return outer.client.query(sql,*args,**kwargs)
             def clean_error(self,error):return str(error)
             def close(self):self.closed=True
         reader=ReadClient();output=io.StringIO()
-        with patch('scripts.build_market_day.Client',return_value=reader),redirect_stdout(output):
+        with patch('scripts.build_market_day.Client',return_value=reader) as constructor,redirect_stdout(output):
             code=launcher.main(['stored-plan','--dataset-id',dataset,'--database',self.database,'--format','json'])
+        self.assertTrue(constructor.call_args.kwargs['readonly'])
         self.assertEqual(code,0);self.assertTrue(reader.closed)
         self.assertEqual(json.loads(output.getvalue())['plan_hash'],stored.plan_hash)
         with self.assertRaisesRegex(ValueError,'unit bound'):
