@@ -23,6 +23,7 @@ from src.market_engine.regular_close_history import CertifiedPriorClosePlan
 from src.trading_runtime.arte_journal_schema import storage_preflight
 from src.trading_runtime.historical_reference_identity import load_reference_pin
 from research.mlops.clickhouse import insert_json_each_row
+from src.market_engine.typed_product_insert import insert_product_rows
 
 
 def _rows(reader, query, *, bound=25001):
@@ -492,8 +493,7 @@ def publish_opening_reference(reader, writer, source, *, ownership, code_hash):
     for table, records in ((contract.SPLIT, children), (contract.REFERENCE, references)):
         for offset in range(0, len(records), 128):
             ownership.assert_owner()
-            insert_json_each_row(writer, "q_live", table.name, [n for n, _ in table.columns],
-                                 _wire_records(table, records[offset:offset + 128]))
+            insert_product_rows(writer, table, records[offset:offset + 128])
         actual = _readback(reader, source, table, attempt)
         if actual != records:
             raise ValueError("Opening reference child INSERT readback differs")

@@ -182,6 +182,23 @@ def _children(reader, scope, table, attempt):
     return tuple(output)
 
 
+def load_published_prior_close(reader, market, *, expected_producer_code_hash, expected_content_hash):
+    """Reuse a sealed producing revision with explicit previously verified pins.
+
+    A consumer's newer code is not the historical producer identity. This is
+    read-only and cannot publish, regenerate or adopt an unsealed attempt.
+    """
+    from datetime import date
+    if type(market) is not CertifiedMarketDayPlan or len(market.sessions) != 1:
+        raise ValueError('Published prior-close read requires one certified consumer session')
+    c.require_hash(expected_content_hash)
+    scope = c.PriorCloseScope(market.build_id, date.fromisoformat(market.sessions[0]),
+        market.token, market.tickers, expected_producer_code_hash)
+    result = certify_prior_close(reader, scope, expected_hash=expected_content_hash)
+    result.verify_consumer(market)
+    return result
+
+
 def certify_prior_close(reader, scope, *, expected_hash=None):
     if type(scope) is not c.PriorCloseScope:
         raise TypeError('Prior-close certification requires a typed consumer scope')

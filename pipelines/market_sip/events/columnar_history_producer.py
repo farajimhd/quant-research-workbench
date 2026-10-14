@@ -25,6 +25,7 @@ from src.backend.qmd_columnar_history import _rows, scope_sql, read_seal, permis
 from src.market_engine import columnar_history_product as c
 from src.trading_runtime.arte_journal_schema import storage_preflight
 from research.mlops.clickhouse import insert_json_each_row
+from src.market_engine.typed_product_insert import insert_product_rows
 
 
 @dataclass(frozen=True)
@@ -179,7 +180,7 @@ def insert_history_rows(writer, table, rows):
         columns = ",".join("`" + name + "`" for name, _ in table.columns)
         writer.execute(f"INSERT INTO `q_live`.`{table.name}` ({columns}) " + value_insert_projection(rows))
     else:
-        insert_json_each_row(writer, "q_live", table.name, [n for n, _ in table.columns], wire_records(table, rows))
+        insert_product_rows(writer, table, [c.restore_record(table, row) for row in rows])
 
 
 def publish_history(reader, writer, source, *, ownership, code_hash):

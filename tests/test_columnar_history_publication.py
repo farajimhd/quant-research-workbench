@@ -74,6 +74,9 @@ class Client:
         self.store.closed.append("writer" if self.writer else "reader")
 
     def execute(self, query):
+        if isinstance(query, bytes):
+            from product_binary_fixture import product_request_as_json
+            query = product_request_as_json(query, c.TABLES)
         user = "writer" if self.writer else "reader"
         if query == "SELECT currentUser()":
             return user

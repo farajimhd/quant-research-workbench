@@ -49,6 +49,9 @@ class Client:
         self.writer = writer
 
     def execute(self, query):
+        if isinstance(query, bytes):
+            from product_binary_fixture import product_request_as_json
+            query = product_request_as_json(query, sql.TABLES)
         s = self.store
         def encode(rows):
             return "\n".join(json.dumps(row, default=str) for row in rows)

@@ -17,6 +17,9 @@ class Client(Reader):
         super().__init__(rows)
         self.writer, self.fail, self.writes = writer, fail, []
     def execute(self, query):
+        if isinstance(query, bytes):
+            from product_binary_fixture import product_request_as_json
+            query = product_request_as_json(query, TABLES)
         if query == "SHOW GRANTS FINAL" and self.writer:
             return super().execute(query) + "\n" + "\n".join(
                 f"GRANT INSERT ON arte.{table.name} TO program_release_reader" for table in TABLES)

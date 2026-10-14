@@ -23,7 +23,7 @@ from src.backend.backtest_market_data import CertifiedMarketDayPlan, MarketDayUn
 from src.backend.backtest_liquidity_price import PriceLevelUnit
 from src.trading_runtime.arte_journal_schema import storage_preflight
 from src.trading_runtime.eligible_price_contract import matches_summary_digest, volumes_match
-from research.mlops.clickhouse import insert_json_each_row
+from src.market_engine.typed_product_insert import insert_product_rows
 
 
 def _digest(value):
@@ -218,10 +218,9 @@ def publish_unit(reader, writer, source: CertifiedLiquidityInput, *,
         total_execution_volume=liquid["total_execution_volume"],
         liquidity_content_hash=liquid["content_hash"], price_content_hash=price["content_hash"])
     header["content_hash"] = _digest(header)
-    header["certified_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+    header["certified_at"] = datetime.now(timezone.utc)
     ownership.assert_owner()
-    insert_json_each_row(writer, "arte", sql.COVERAGE.name,
-        [name for name, _ in sql.COVERAGE.columns], [header])
+    insert_product_rows(writer, sql.COVERAGE, [header])
     final = _coverage(reader, unit)
     if len(final) != 1 or final[0]["derivation_attempt_id"] != attempt:
         raise ValueError("Liquidity coverage acknowledgement is ambiguous")

@@ -10,7 +10,7 @@ import asyncio
 import re
 from uuid import UUID
 
-from research.mlops.clickhouse import insert_json_each_row
+from src.market_engine.typed_product_insert import insert_product_rows
 from .arte_journal_schema import storage_preflight
 from .columnar_strategy_schema import RELEASE
 from .columnar_strategy_release import TABLES, ReleasePublisher, restore_release
@@ -137,8 +137,7 @@ class ClickHouseReleaseStorage:
             if (set(row) != fields or row.get("release_id") != self.release.header["release_id"]
                     or (table == RELEASE and row["strategy_number"] != self.release.header["strategy_number"])):
                 raise ValueError("Release writer row escapes its immutable identity")
-        insert_json_each_row(self.writer, "arte", table_name,
-                             [name for name, _ in table.columns], rows)
+        insert_product_rows(self.writer, table, rows)
         self.assert_owner()
 
     def mark_committed(self):

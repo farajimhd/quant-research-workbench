@@ -288,7 +288,7 @@ def project_opening_reference(*, build_id: str, day: date, attempt_id: str,
             execution_date=split.execution_date, split_from=float(split.split_from),
             split_to=float(split.split_to), observed_at=utc(split.observed_at),
             source_content_hash=split.source_content_hash))
-    factor = math.prod(factors.values())
+    factor = float(math.prod(factors.values()))
     adjusted = None if prior_close_int is None else prior_close_int / 10_000. * factor
     if not math.isfinite(factor) or factor <= 0 or (adjusted is not None and (
             not math.isfinite(adjusted) or adjusted <= 0)):

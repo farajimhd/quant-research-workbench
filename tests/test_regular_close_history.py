@@ -135,6 +135,19 @@ def publish(store):
         Client(store, 'writer'), store.source, ownership=Owner())
 
 
+def test_published_parent_uses_explicit_old_producer_pins_without_rebuilding(setup):
+    store, native = setup
+    sealed = publish(store)
+    writes = list(store.writes)
+    loaded = p.load_published_prior_close(Client(store, 'reader'), native.market,
+        expected_producer_code_hash=store.source.producer_code_hash,
+        expected_content_hash=sealed.token)
+    assert loaded == sealed and store.writes == writes
+    with pytest.raises(ValueError, match='pins'):
+        p.load_published_prior_close(Client(store, 'reader'), native.market,
+            expected_producer_code_hash='f'*64, expected_content_hash=sealed.token)
+
+
 def test_full_publication_cold_read_and_existing_opening_consumption(setup):
     store, native = setup
     result = publish(store)

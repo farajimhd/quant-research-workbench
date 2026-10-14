@@ -27,6 +27,14 @@ def project(**updates):
     return c.project_opening_reference(**arguments)
 
 
+def test_no_split_float_schema_is_canonical_before_row_hashing():
+    row, children = project(splits=())
+    assert not children
+    assert type(row['split_price_factor']) is float
+    restored = c.restore_record(c.REFERENCE, row)
+    assert restored['content_hash'] == c.content_hash({k:v for k,v in restored.items() if k!='content_hash'})
+
+
 def test_opening_known_split_adjusts_prior_regular_close_and_preserves_evidence():
     row, children = project()
     assert row["prior_session_date"] == date(2026, 7, 31)
