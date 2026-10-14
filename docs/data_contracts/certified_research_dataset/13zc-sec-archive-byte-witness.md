@@ -100,6 +100,16 @@ ownership is not assumed. Failed/unconfirmed publication leaves evidence intact.
 
 Lifecycle tests exercised real bounded file copies with controlled verifier and
 publisher seams, including failed publication and cached-file preservation.
-These tests are not proof of durable ClickHouse publication. A concrete publisher,
-persisted-group reuse, cache ownership reconciliation, production source admission
+These lifecycle tests use controlled publication seams. `sec_witness_publication`
+now supplies the concrete publisher: normalized archive receipts and per-document
+time qualifications use monthly MergeTree tables, lossless codecs and explicit
+`live_market_ssd` placement. Original evidence is independently requalified;
+exact existing rows are reused and conflicting or duplicate rows rejected.
+Every insert requires source-write admission and fresh source/storage checks.
+Complete group readback is required before acknowledging safe copy cleanup.
+This publishes archive/time evidence, not float allocation or fundamental values.
+An isolated live ClickHouse fixture verified schema/part placement, two initial
+rows and zero-insert exact restart. Its timing inputs were synthetic sealed test
+evidence; it does not establish production source qualification or period coverage.
+Persisted-group discovery, cache ownership reconciliation, production source admission
 and unified launcher wiring for this executor remain unfinished.

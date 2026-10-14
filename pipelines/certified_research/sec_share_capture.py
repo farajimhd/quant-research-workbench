@@ -29,8 +29,12 @@ def tables():
             ('document_key','source_position'),'toYYYYMM(source_archive_date)'))
 
 
-def verify(query,database,*,required=False):
-    identifier(database);catalog={t.name:t for t in tables()};names=','.join(map(literal,catalog))
+def verify(query,database,*,required=False,catalog=None):
+    selected=tables() if catalog is None else tuple(catalog)
+    if (not selected or len(selected)>16 or len({t.name for t in selected})!=len(selected)
+            or any(not t.name.startswith('research_sec_') for t in selected)):
+        raise ValueError('Invalid bounded SEC source catalog')
+    identifier(database);catalog={t.name:t for t in selected};names=','.join(map(literal,catalog))
     if database!='q_live' and not database.startswith('certified_research_test_'):
         raise ValueError('SEC source captures require q_live or an isolated fixture namespace')
     policies=query("SELECT disk_name FROM system.storage_policies ARRAY JOIN disks AS disk_name WHERE policy_name='live_market_ssd'")
