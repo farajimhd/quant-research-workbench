@@ -114,7 +114,6 @@ def decode_window(pin, response, *, first_ordinal, stop_ordinal, evaluation_bloc
     if frame.filter((pl.col("observed") > pl.col("source_known")) | (pl.col("extremes_valid") > pl.col("observed"))
             | pl.any_horizontal(~pl.col(name).is_finite() | (pl.col(name) < 0) for name in
                 ("share_volume", "execution_notional", "rolling_volume"))
-            | (pl.col("share_volume") != pl.col("share_volume").floor())
             | (pl.col("share_volume") > 2 ** 53) | (pl.col("rolling_volume") > 2 ** 53)
             | (pl.col("reference_close").is_not_null() & (~pl.col("reference_close").is_finite() | (pl.col("reference_close") <= 0)))
             | ((pl.col("observed") == 1) & pl.col("reference_close").is_null())).height:

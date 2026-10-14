@@ -60,6 +60,20 @@ def certificate(prepared_source):
     return consume(store, prepared_source)
 
 
+def test_fractional_volume_is_preserved_and_invalid_volume_still_fails(certificate):
+    response = response_for(certificate, 0, 5)
+    response['share_volume'][1] = 1.25
+    response['rolling_volume'][1] = 1.25
+    decoded = t.decode_window(certificate.pin(), response, first_ordinal=0, stop_ordinal=5,
+        evaluation_block='fractional-volume')
+    assert decoded['share_volume'][1] == decoded['rolling_volume'][1] == 1.25
+    for invalid in (-.25, float('inf'), 2 ** 54):
+        response['share_volume'][1] = invalid
+        with pytest.raises((ValueError, OverflowError)):
+            t.decode_window(certificate.pin(), response, first_ordinal=0, stop_ordinal=5,
+                evaluation_block='fractional-volume')
+
+
 def test_qmd_column_arrays_reconstruct_the_exact_cold_product_without_feature_calculation(certificate):
     calls = []
     def post(path, request, timeout):
