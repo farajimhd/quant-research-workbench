@@ -118,5 +118,34 @@ independently requalifies the original receipt and verifies the complete normali
 group. Verified groups skip copying and scanning; incomplete groups follow the
 regular bounded archive path. Conflicting evidence stops execution. Reuse does
 not assume ownership of abandoned cached files or delete them.
-Cache ownership reconciliation, production source admission
-and unified launcher wiring for this executor remain unfinished.
+The unified launcher now invokes this stage after selected share-source candidate
+capture using `--verify-sec-archives`. It requires the G backup root, original
+download ledger, and a qualified `sec_archive_witness` SSD capacity rate matching
+the recipe exported by `schema --format json`, in addition to the candidate rate.
+It fetches one bounded document payload at a time and retains only source metadata
+(maximum 64MiB), rechecks current lineage throughout execution, streams the receipt
+ledger (maximum 256MiB; 1MiB per line), and rejects conflicting original receipts.
+Both archive tables appear in `schema --format sql/json`.
+
+Example, after supplying measured compatible rates in the indicated profile:
+
+```powershell
+python -B scripts/prepare_certified_research.py prepare-sources `
+  --start-date 2026-01-01 --end-date 2026-01-02 `
+  --capacity-profile D:/TradingML/runtimes/certified-research/capacity.json `
+  --runtime-root D:/TradingML/runtimes/certified-research `
+  --sec-share-document '320193,0000320193-25-000079,aapl-20250927.htm' `
+  --verify-sec-archives `
+  --sec-archive-backup-root '\\DESKTOP-SAAI85T\Workstation-G\market-data\sec_core\daily_archives' `
+  --sec-download-receipts '\\DESKTOP-SAAI85T\Workstation-D\market-data\prepared\sec_daily_feed_archives\sec_daily_feed_archives_20260610_223246.jsonl' `
+  --sec-public-time-mode official_filing_day `
+  --staging-reserve-gib 256 --staging-reserve-fraction 0.10 --staging-chunk-gib 256
+```
+
+Confirm the retained document name and runtime location on the executing machine.
+The command does not download SEC or Massive data. It runs normal source readiness
+checks after this stage; missing market/reference prerequisites still block launch.
+Archive preparation is sequential; repeated lineage guards are intentionally strict
+and have not yet been measured over a large document selection. Production pilot
+qualification, orphan-cache ownership reconciliation and class/float certification
+remain unfinished; this CLI path has not been run as a production campaign.

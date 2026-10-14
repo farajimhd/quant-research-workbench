@@ -29,17 +29,17 @@ def recipe_hash():
         maximum_source_bytes=16*1024**2,maximum_facts=10000,maximum_metadata_bytes=64*1024**2))
 
 
-def admission(query,profile,documents,active):
+def admission(query,profile,documents,active,*,product=PRODUCT,recipe=None):
     # Recheck the loaded profile, including its parsed objects, on every call.
     def admit(metadata_bytes):
         if profile['profile_hash']!=digest({k:v for k,v in profile.items() if k not in ('profile_hash','parsed_rates')}):
             raise ValueError('SEC source capacity profile changed')
         rates=tuple(capacity.PilotRate(**row) for row in profile['rates'])
         if rates!=profile['parsed_rates']:raise ValueError('SEC source parsed capacity rates differ')
-        rate=next((r for r in rates if r.product==PRODUCT),None)
-        if rate is None or rate.policy!='live_market_ssd':raise ValueError('SEC candidates require a qualified SSD sec_share_source pilot rate')
-        result=capacity.admission(capacity.inventory(query,'q_live'),{PRODUCT:documents},rates,
-            {PRODUCT:recipe_hash()},active_units={PRODUCT:active},reserve_bytes=profile['reserve_bytes'],
+        rate=next((r for r in rates if r.product==product),None)
+        if rate is None or rate.policy!='live_market_ssd':raise ValueError('SEC candidates require a qualified SSD '+product+' pilot rate')
+        result=capacity.admission(capacity.inventory(query,'q_live'),{product:documents},rates,
+            {product:recipe_hash() if recipe is None else recipe},active_units={product:active},reserve_bytes=profile['reserve_bytes'],
             volume_groups=profile['volume_groups'],safety_factor=profile['safety_factor'])
         if result['status']!='admitted':raise ValueError('SEC source capacity admission blocked: '+str(result.get('blockers',())))
         body=dict(result,metadata_bytes=metadata_bytes);body.pop('certificate_hash',None)

@@ -71,6 +71,11 @@ def parse_args(argv=None):
         except ValueError as error:raise argparse.ArgumentTypeError(str(error)) from error
     p.add_argument('--sec-share-document',type=sec_share_document,action='append',default=[],
         help='Retained SEC source candidate: CIK,ACCESSION,DOCUMENT_NAME; requires qualified sec_share_source capacity rate, never certifies allocation')
+    p.add_argument('--verify-sec-archives',action='store_true',help='Verify selected SEC documents against retained G archives and publish public-time evidence; no downloads')
+    p.add_argument('--sec-archive-canonical-root',type=Path,default=Path('D:/market-data/sec_core/daily_archives'))
+    p.add_argument('--sec-archive-backup-root',type=Path,help='Existing G backup root containing YEAR/QTRn SEC archives')
+    p.add_argument('--sec-download-receipts',type=Path,help='Original downloader JSONL ledger with successful hashes and HTTP Last-Modified')
+    p.add_argument('--sec-public-time-mode',choices=('acceptance_checked_day','official_filing_day'),default='acceptance_checked_day')
     def identity_point(value):
         from pipelines.certified_research.historical_identity import AcquisitionHandlers
         from types import SimpleNamespace
@@ -93,6 +98,10 @@ def parse_args(argv=None):
     p.add_argument('--clickhouse-cache-root',default='/mnt/d/market-data/flatfiles/us_stocks_sip')
     p.add_argument('--hydrate-missing-trades',action='store_true',help='Deprecated: imported-day repair requires canonical sidecars')
     args=p.parse_args(argv)
+    if args.verify_sec_archives or args.sec_archive_backup_root is not None or args.sec_download_receipts is not None:
+        if (not args.verify_sec_archives or not args.sec_share_document or args.sec_archive_backup_root is None
+                or args.sec_download_receipts is None):
+            p.error('SEC archive verification requires selected SEC documents, backup root and original receipt ledger')
     if args.sec_share_document:
         if (args.command not in ('prepare-sources','launch','launch-collection') or args.capacity_profile is None
                 or len(args.sec_share_document)>1000 or len(set(args.sec_share_document))!=len(args.sec_share_document)):
@@ -209,6 +218,17 @@ def prepare_sec_share_sources(args,client,config,claim,client_factory,dictionary
         details='; '.join(f'{key}: {client.clean_error(error)[:200]}' for key,error in list(result['errors'].items())[:8])
         raise ValueError('SEC candidate source preparation failed: '+details)
     if args.format=='text':print(f'SEC share source candidates | captured={result["captured"]} | reused={result["reused"]} | allocation certified=false',flush=True)
+    if args.verify_sec_archives:
+        from pipelines.certified_research import sec_archive_preparation
+        def archive_progress(event):
+            if args.format=='text':print(f'SEC archive | {event["phase"]} | {event["archive"]}',flush=True)
+        result['archive_evidence']=sec_archive_preparation.prepare(client.query,config,args.sec_share_document,claim,
+            dictionary_factory,capacity_profile.load(args.capacity_profile),
+            canonical_root=args.sec_archive_canonical_root,backup_root=args.sec_archive_backup_root,
+            cache_root=args.runtime_root/'sec-archive-staging',runtime_root=args.runtime_root,
+            receipt_ledger=args.sec_download_receipts,mode=args.sec_public_time_mode,stop=stop,
+            reserve_bytes=args.staging_reserve_gib*1024**3,reserve_fraction=args.staging_reserve_fraction,
+            maximum_chunk_bytes=args.staging_chunk_gib*1024**3,progress=archive_progress)
     return result
 
 
@@ -283,15 +303,19 @@ def main(argv=None):
     args=parse_args(argv)
     if args.command=='schema':
         catalog=installation.catalog(args.database)
-        from pipelines.certified_research import sec_share_capture,sec_share_preparation
+        from pipelines.certified_research import sec_share_capture,sec_share_preparation,sec_witness_publication,sec_archive_preparation
         source_tables=sec_share_capture.tables()
+        archive_tables=sec_witness_publication.tables()
         if args.format=='sql':print(';\n\n'.join([*(t.ddl(args.database) for _,t in catalog),
-            *(t.ddl('q_live') for t in source_tables)])+';')
+            *(t.ddl('q_live') for t in (*source_tables,*archive_tables))])+';')
         elif args.format=='json':
             manifest=installation.manifest(args.database)
             manifest['sec_source_candidates']=dict(database='q_live',product=sec_share_preparation.PRODUCT,
                 recipe_hash=sec_share_preparation.recipe_hash(),candidate_only=True,
                 tables=[dict(name=t.name,order=t.order,partition=t.partition,columns=[vars(c) for c in t.columns]) for t in source_tables])
+            manifest['sec_archive_evidence']=dict(database='q_live',product=sec_archive_preparation.PRODUCT,
+                recipe_hash=sec_archive_preparation.recipe_hash(),allocation_certified=False,
+                tables=[dict(name=t.name,order=t.order,partition=t.partition,columns=[vars(c) for c in t.columns]) for t in archive_tables])
             print(json.dumps(manifest,indent=2))
         else:
             print(f'Compact research schema | {len(catalog)} tables | live_market_ssd')
