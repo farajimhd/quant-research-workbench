@@ -46,7 +46,8 @@ def _open_managed_client(principal, *, timeout_seconds, settings):
     if not valid:
         raise ValueError('Programme credentials differ from the managed profile')
     return ClickHouseHttpClient(workstation_ipv4_transport(url), user, password,
-        timeout_seconds=timeout_seconds, default_query_params=dict(settings))
+        timeout_seconds=timeout_seconds, default_query_params=dict(settings),
+        persistent=True, max_persistent_idle_seconds=5)
 
 
 def _bounded_query_settings(query_limits):

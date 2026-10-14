@@ -39,6 +39,8 @@ def test_launcher_loads_shared_profiles_and_native_owned_workers_close_readers(t
             assert get_ident() != owner_thread
             assert url == 'http://192.168.1.218:18123'
             assert kwargs['default_query_params'] == {'readonly': '1'}
+            assert kwargs['persistent'] is True
+            assert kwargs['max_persistent_idle_seconds'] == 5
             assert user in (*profiles.PROGRAM_APP_PRINCIPALS.values(), 'backtest_v4_program_runner')
             self.user = user
             self.closed = False
