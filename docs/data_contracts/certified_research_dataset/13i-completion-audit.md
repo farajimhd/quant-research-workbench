@@ -18,7 +18,7 @@ claim that the requested full dataset can be certified from current inputs.
 | Dated US-stock/conid universe | Historical interval loading, publication and execution membership | Resolve missing/ambiguous historical identities and timely eligibility changes; current pool membership alone is insufficient |
 | Shared bars and parallel consumers | Initial assembly joins one aggregate with independent chronological technical/V7 and activity/price consumers | Whole-universe chunked metadata planning and representative throughput/memory measurements |
 | PM/regular/AH causal checkpoints | Prefix-bound generation, explicit rebuild origins, prior-AH/foreign-bar `backfill-v7`, same-state equivalence and zero-insert resume | Legacy 2025 qualification, proven listing-start origins and certified rename bridges |
-| Certified fundamentals, float and short data | Certified fact receipts, SEC/short source handlers, float and short-pressure SQL | Completeness admission; original corporate/allocation/supply vintages; uncovered short-interest sources |
+| Certified fundamentals, float and short data | Certified fact receipts, SEC stage-lineage/range admission, short source handlers, float and short-pressure SQL | Missing acquisition catch-up paths; original corporate/allocation/supply/short vintages |
 | Requirement-derived earlier context | Automatic issuer/security assignment, state discovery, selected frames, rolling lookbacks, SEC float-price dates and price-only prior listings | Missing historical identity/state/reference evidence remains an explicit dependency |
 | Compact normalized compressed persistence | Exact installation catalog, explicit lossless codecs, workload policies and actual-part checks | Audit every additional acquisition/migration schema before enabling its writer |
 | Restart-safe execution and certification | Immutable CLI plans, typed producers/verifiers, source guards and seals; bounded market/SEC/backfill fixtures resume without inserts | Chunked whole-universe loading and end-to-end acceptance using qualified production bindings/capacity |
@@ -53,3 +53,8 @@ See [session backfill](13p-session-checkpoint-backfill.md),
 [explicit origins](13n-rebuild-origins.md), and
 [retained reporting migration](13o-retained-reporting-migration.md) for the
 delivered paths and their precise qualification/retention boundaries.
+
+[SEC lineage qualification](13q-sec-stage-lineage.md) corrects the partial-run
+completion bug and requalifies retained metadata without altering source records.
+Original public-value evidence and actual later acquisition remain separate
+dependencies; this metadata repair does not create missing fundamentals.

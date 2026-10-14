@@ -529,8 +529,7 @@ def main() -> None:
     failed = [result for result in results if result.returncode != 0]
     coverage_written = False
     if args.execute and not failed:
-        write_coverage(args, run_id)
-        coverage_written = True
+        coverage_written = write_coverage(args, run_id, results)
     write_summary(run_root / "sec_historical_gap_fill_summary.md", args, results, coverage_written=coverage_written)
     if failed:
         raise SystemExit(1)
@@ -1301,7 +1300,8 @@ def stage_already_completed(args: argparse.Namespace, command: StageCommand) -> 
             FROM {quote_ident(args.write_database)}.{quote_ident(args.coverage_table)} FINAL
             WHERE source = 'sec'
               AND coverage_kind = {sql_string(kind)}
-              AND status IN ('completed', 'covered_empty', 'coverage_bootstrap')
+              AND status IN ('completed', 'covered_empty')
+              AND error_count = 0 AND completed_at_utc IS NOT NULL
               AND coverage_start_utc <= toDateTime64({sql_string(dt_text(start))}, 3, 'UTC')
               AND coverage_end_utc >= toDateTime64({sql_string(dt_text(end))}, 3, 'UTC')
             FORMAT TSV
@@ -1343,13 +1343,16 @@ def write_stage_coverage(args: argparse.Namespace, run_id: str, command: StageCo
         )
 
 
-def write_coverage(args: argparse.Namespace, run_id: str) -> None:
+def write_coverage(args: argparse.Namespace, run_id: str, results: list[StageResult]) -> bool:
+    from pipelines.sec.edgar.sec_acquisition_contract import VERSION,completed_families
+    kinds=completed_families(results)
+    if not kinds:return False
     config = SecPipelineConfig.from_env()
     client = ClickHouseHttpClient(config.clickhouse.url, config.clickhouse.user, config.clickhouse.password)
     coverage = coverage_config(args)
     start = datetime.combine(parse_date(args.start_date), dt_time.min, tzinfo=UTC)
     end = datetime.combine(parse_date(args.end_date), dt_time.min, tzinfo=UTC)
-    for kind in [KIND_BULK_SUBMISSIONS, KIND_DAILY_ARCHIVE, KIND_LIVE_FEED, KIND_TEXT_EXTRACTION, KIND_BULK_COMPANYFACTS, KIND_INTEGRITY_AUDIT]:
+    for kind in kinds:
         insert_coverage(
             client,
             coverage,
@@ -1360,9 +1363,11 @@ def write_coverage(args: argparse.Namespace, run_id: str) -> None:
             status="completed",
             run_id=run_id,
             host_role="workstation",
-            metadata={"source": "sec_historical_gap_fill", "start_date": args.start_date, "end_date": args.end_date},
+            metadata={"source": "sec_historical_gap_fill", "start_date": args.start_date, "end_date": args.end_date,
+                "lineage_version": VERSION, "executed_stages": sorted(r.stage for r in results if r.status=='ok' and r.returncode==0)},
             completed=True,
         )
+    return True
 
 
 def write_plan(path: Path, commands: list[StageCommand]) -> None:

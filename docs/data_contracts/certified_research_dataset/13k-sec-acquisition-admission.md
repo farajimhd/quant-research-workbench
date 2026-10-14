@@ -1,5 +1,8 @@
 # SEC acquisition admission
 
+The v2 gate additionally requires [qualified stage lineage](13q-sec-stage-lineage.md).
+Legacy completion labels alone do not establish acquisition coverage.
+
 [Launcher](13j-launcher-execution.md) · [Controller](13-campaign-controller.md)
 
 SEC fact fingerprints prove the selected values and public-clock evidence;

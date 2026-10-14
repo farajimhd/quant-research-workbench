@@ -17,7 +17,7 @@ class Column:
 
     def __post_init__(self):
         if self.codec.startswith('Delta,'):
-            width=4 if self.type=='UInt32' else 8 if self.type in ('UInt64',"DateTime64(6,'UTC')") else None
+            width=4 if self.type=='UInt32' else 8 if self.type in ('UInt64',"DateTime64(3,'UTC')","DateTime64(6,'UTC')") else None
             if width is None:raise ValueError('Delta codec needs an explicit supported numeric width')
             object.__setattr__(self,'codec',f'Delta({width}),'+self.codec.removeprefix('Delta,'))
 

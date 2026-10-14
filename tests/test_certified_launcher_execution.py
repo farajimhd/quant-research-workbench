@@ -45,6 +45,25 @@ def test_backfill_parser_requires_new_target_and_forbids_acquisition():
         '--source-dataset-id',source,'--capacity-profile','pilot.json'])
 
 
+def test_sec_lineage_cli_is_independent_of_market_acquisition_and_closes_ownership(capsys):
+    client=Mock();client.clean_error.side_effect=str;claim=Mock()
+    keeper=SimpleNamespace(client=Mock(),close=Mock())
+    with patch('scripts.build_market_day.Client',return_value=client),\
+         patch('src.trading_runtime.keeper_session.open_workstation_keeper_session',return_value=keeper),\
+         patch('pipelines.certified_research.publication.SourceClaim',return_value=claim),\
+         patch('pipelines.certified_research.sec_lineage.qualify',return_value=dict(qualified=('a',),unqualified=('b',))) as qualify,\
+         patch('pipelines.certified_research.sec_coverage.inventory',return_value=dict(ready=False,gaps={'sec_daily_archive':()})),\
+         patch('pipelines.certified_research.acquisition.prepare_sources') as acquire:
+        code=launcher.main(['qualify-sec-lineage','--fundamental-start-date','2024-01-01',
+            '--end-date','2026-01-02','--format','json'])
+    assert code==2
+    output=json.loads(capsys.readouterr().out)
+    assert output['qualified']==['a'] and not output['coverage']['ready']
+    assert qualify.call_args.args[2:]==(date(2024,1,1),date(2026,1,3))
+    acquire.assert_not_called()
+    for owner in (claim,keeper,client):owner.close.assert_called_once()
+
+
 def test_backfill_cli_uses_source_plan_resources_without_source_acquisition():
     source='00000000-0000-0000-0000-000000000001';target='00000000-0000-0000-0000-000000000002'
     config=CampaignConfig(date(2026,1,2),date(2026,1,5),workers=2,query_threads=3,
@@ -93,6 +112,7 @@ def test_fresh_cli_orders_schema_source_preparation_and_execution_and_closes_own
          patch('pipelines.certified_research.acquisition.IngestionPaths',return_value=paths),\
          patch('pipelines.certified_research.installation.install',side_effect=installed),\
          patch('pipelines.certified_research.acquisition.prepare_sources',side_effect=acquired),\
+         patch('pipelines.certified_research.sec_lineage.qualify',return_value=dict(qualified=(),unqualified=())),\
          patch('pipelines.certified_research.fresh_execution.run',side_effect=fresh):
         argv=['launch','--dataset-id','00000000-0000-0000-0000-000000000001',
             '--capacity-profile','pilot.json','--context-start-date','2025-12-01',

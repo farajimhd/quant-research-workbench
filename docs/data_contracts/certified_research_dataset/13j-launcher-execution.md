@@ -15,6 +15,7 @@ workers, memory limits, rules or recipes with current CLI defaults.
 | `prepare-sources` | End date; optional requirement-derived context start | Existing updater/import and canonical reporting prerequisite checks |
 | `launch` | New dataset UUID, explicit source/SEC context bounds, qualified capacity profile; optional end date defaults to latest canonical source | Schema checks/install, canonical preparation, retained-reference discovery, context assembly and admitted initial execution |
 | `backfill-v7` | Compatible source dataset UUID, new target UUID, qualified capacity profile; optional narrower backfill bounds | Reuse certified bars and prior causal AH; publish session checkpoints without event rescans or bar copies |
+| `qualify-sec-lineage` | Explicit fundamental context start and market end | Qualify retained acquisition stage evidence without downloads; report uncovered SEC ranges |
 | `stored-plan` | Dataset UUID | Read-only plan and resource inspection |
 | `run` / `resume` | Dataset UUID and qualified capacity profile path | Admission, bounded dependency execution, receipt reuse and seal |
 | `status` | Dataset UUID | Persisted progress inspection |
@@ -52,6 +53,10 @@ SEC producers require completed, error-free acquisition and integrity coverage
 for their actual context range, independently of fact fingerprints. See
 [SEC acquisition admission](13k-sec-acquisition-admission.md) for the exact rules,
 current August 13 exclusive boundary, and validation evidence.
+
+The [stage-lineage qualification](13q-sec-stage-lineage.md) now rejects partial
+runner labels and validates a separate compact certificate. `launch` prepares
+these certificates automatically; they do not replace missing acquisition.
 
 ## Feature selection
 

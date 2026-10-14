@@ -40,8 +40,18 @@ def test_manifest_absence_and_overflow_fail_without_scanning_sec_facts():
     result=sec.inventory(missing,date(2026,1,2),date(2026,1,2))
     assert not result['ready'] and len(logs)==1
     with patch.object(sec.schema,'verify_auxiliary_storage'):
+        from pipelines.certified_research import sec_lineage
         def query(sql):
             logs.append(sql)
             return [dict(n=1)] if 'system.tables' in sql else rows()
-        with pytest.raises(ValueError,match='exceeds'):sec.inventory(query,date(2026,1,2),date(2026,1,2),maximum_intervals=1)
+        with patch.object(sec_lineage,'qualified',return_value=dict(parents=rows(),qualified={})),pytest.raises(ValueError,match='exceeds'):
+            sec.inventory(query,date(2026,1,2),date(2026,1,2),maximum_intervals=1)
     assert all('sec_xbrl_company_fact' not in sql for sql in logs)
+
+
+def test_complete_legacy_labels_cannot_pass_without_stage_lineage_certificates():
+    from pipelines.certified_research import sec_lineage
+    with patch.object(sec.schema,'verify_auxiliary_storage'),patch.object(sec_lineage,'qualified',
+            return_value=dict(parents=rows(),qualified={})):
+        result=sec.inventory(lambda sql:[dict(n=1)],date(2026,1,2),date(2026,1,2))
+    assert not result['ready'] and len(result['unqualified_lineage'])==4

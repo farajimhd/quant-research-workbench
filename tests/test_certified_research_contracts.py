@@ -781,6 +781,38 @@ class Contracts(unittest.TestCase):
                      'Bounded SSD integration requires explicit test opt-in')
 class ClickHouseIntegration(unittest.TestCase):
 
+    def test_sec_stage_lineage_promotes_only_proven_ranges_and_detects_source_changes(self):
+        from types import SimpleNamespace
+        from pipelines.certified_research import sec_lineage,sec_coverage
+        from pipelines.sec.edgar.sec_pipeline.coverage import ensure_coverage_table,SecCoverageConfig
+        from pipelines.sec.edgar import sec_acquisition_contract as contract
+        from tests.test_certified_sec_lineage import raw
+        adapter=SimpleNamespace(execute=lambda sql:self.client.query(sql,read=False))
+        ensure_coverage_table(adapter,SecCoverageConfig(self.database,sec_lineage.RAW_TABLE,'live_market_ssd'))
+        stage_rows=[raw(name) for name in sorted(contract.ALL)]
+        parents=[raw(kind,stage=False) for kind in sec_coverage.KINDS]
+        partial=raw('sec_bulk_companyfacts',stage=False,coverage_id='partial-parent',completed_at_utc='2026-01-03 20:30:00.000')
+        insert_rows(self.client.query,self.database,sec_lineage.RAW_TABLE,
+            [{key:r[key] for key in sec_lineage.FIELDS} for r in (*stage_rows,*parents,partial)])
+        class Claim:
+            def check(self):pass
+        day=date(2026,1,2)
+        before=sec_coverage.inventory(self.client.query,day,day,database=self.database)
+        self.assertFalse(before['ready']);self.assertEqual(len(before['unqualified_lineage']),5)
+        result=sec_lineage.qualify(self.client.query,Claim(),day,day,database=self.database)
+        self.assertEqual(len(result['qualified']),4);self.assertEqual(result['unqualified'],('partial-parent',))
+        after=sec_coverage.inventory(self.client.query,day,day,database=self.database)
+        self.assertTrue(after['ready']);self.assertEqual(after['rejected_intervals'],1)
+        logs=[]
+        def traced(sql,*args,**kwargs):logs.append(sql);return self.client.query(sql,*args,**kwargs)
+        resumed=sec_lineage.qualify(traced,Claim(),day,day,database=self.database)
+        self.assertEqual(resumed['qualified'],result['qualified'])
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
+        self.client.query(f'ALTER TABLE {self.database}.{sec_lineage.RAW_TABLE} UPDATE error_count=1 '
+            "WHERE coverage_id='bulk-ingest' SETTINGS mutations_sync=2",read=False)
+        with self.assertRaisesRegex(ValueError,'witness changed'):
+            sec_coverage.inventory(self.client.query,day,day,database=self.database)
+
     def test_explicit_origins_run_shared_market_prefix_rollover_and_read_only_resume(self):
         from unittest.mock import patch
         from pipelines.certified_research import genesis,recipe,runtime_plan,checkpoint_backfill,adjustments,reference_import

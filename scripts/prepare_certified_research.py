@@ -26,7 +26,7 @@ from pipelines.certified_research import contracts,schema,source,short_sql,campa
 
 def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('schema','install-schema','preflight','plan','status','stored-plan','prepare-sources','verify','launch','backfill-v7','run','resume'))
+    p.add_argument('command',choices=('schema','install-schema','preflight','plan','status','stored-plan','prepare-sources','qualify-sec-lineage','verify','launch','backfill-v7','run','resume'))
     p.add_argument('--dataset-id',type=UUID)
     p.add_argument('--source-dataset-id',type=UUID,help='Qualified source plan/bar dataset for backfill-v7; never modified')
     p.add_argument('--backfill-start-date',type=date.fromisoformat,help='Optional narrower target range inside the source plan')
@@ -88,6 +88,10 @@ def parse_args(argv=None):
         p.error('--rebuild-origin-date belongs to fresh launch; resume uses the frozen plan')
     if args.command=='prepare-sources' and (args.end_date is None or args.format!='text'):
         p.error('prepare-sources requires --end-date and uses text progress')
+    if args.command=='qualify-sec-lineage' and (args.end_date is None or args.fundamental_start_date is None):
+        p.error('qualify-sec-lineage requires --fundamental-start-date and --end-date')
+    if args.command=='qualify-sec-lineage' and (args.acquire_missing or args.stage_archive):
+        p.error('SEC lineage qualification does not acquire market files')
     if args.hydrate_missing_trades:p.error('Imported-day reporting repair cannot hydrate flatfiles; G-to-D staging belongs to acquisition')
     if args.command=='verify' and (args.acquire_missing or args.stage_archive):p.error('verify is read-only; acquisition flags belong to prepare-sources')
     if args.command in ('run','resume') and (args.acquire_missing or args.stage_archive):p.error('Frozen execution cannot acquire sources; use prepare-sources before freezing the plan')
@@ -215,6 +219,10 @@ def main(argv=None):
                         if int(existing):raise ValueError('Dataset already has a frozen definition; use resume')
                         source_claim=SourceClaim(keeper.client)
                         try:
+                            from pipelines.certified_research import sec_lineage,planning
+                            lineage=sec_lineage.qualify(client.query,source_claim,args.fundamental_start_date,
+                                planning.reference_coverage_end(config.end),stop=stop)
+                            if args.format=='text':print(f'SEC lineage | qualified={len(lineage["qualified"])} | unqualified={len(lineage["unqualified"])}',flush=True)
                             acquisition.prepare_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),paths,config,source_claim,
                                 stop,acquire_missing=args.acquire_missing,stage_archive=args.stage_archive,context_start=args.context_start_date,
                                 writer_query=client.query,recover_retained_reporting=args.recover_retained_reporting,
@@ -249,6 +257,24 @@ def main(argv=None):
                     (str(summary['seal']['root_hash']) if summary['seal'] else 'unsealed'))
                 for key,reason in summary['failures'].items():print(f'  {key}: {reason}')
             return 0 if result['status']=='complete' else 130 if result['status']=='interrupted' else 2
+        if args.command=='qualify-sec-lineage':
+            from contextlib import closing
+            from src.trading_runtime.keeper_session import open_workstation_keeper_session
+            from pipelines.certified_research.publication import SourceClaim
+            from pipelines.certified_research import sec_lineage,sec_coverage,planning
+            with closing(open_workstation_keeper_session()) as keeper:
+                claim=SourceClaim(keeper.client)
+                try:
+                    result=sec_lineage.qualify(client.query,claim,args.fundamental_start_date,
+                        planning.reference_coverage_end(args.end_date))
+                finally:claim.close()
+            ready=sec_coverage.inventory(client.query,args.fundamental_start_date,planning.reference_coverage_end(args.end_date))
+            result['coverage']=ready
+            if args.format=='json':print(json.dumps(result,default=str,sort_keys=True))
+            else:
+                print(f'SEC lineage | qualified={len(result["qualified"])} | unqualified={len(result["unqualified"])} | range_ready={ready["ready"]}')
+                if not ready['ready']:print('  Missing range coverage: '+','.join(ready['gaps']))
+            return 0 if ready['ready'] else 2
         if args.command=='verify':
             from contextlib import closing
             from types import SimpleNamespace
