@@ -42,6 +42,22 @@ class ExecutionLaunchTests(TestCase):
         self.assertIs(run.call_args.kwargs['original_parity_guard'],parity)
         client.close.assert_called_once()
 
+    def test_frozen_specification_locator_automatically_builds_stored_verifier(self):
+        from pipelines.certified_research.sec_scope_specification import StoredGuard
+        dataset=str(uuid4());claim=SimpleNamespace(check=Mock());query=Mock()
+        config=CampaignConfig(date(2026,1,2),date(2026,1,2))
+        runtime=SimpleNamespace(dataset=dataset,database='arte',claim=claim,request=Mock(),engine=Mock())
+        plans=(PlannedUnit(Unit('fundamentals','fundamentals'),dict(entity_key=1,cik='320193',start='2026-01-02',
+            end='2026-01-02',source_hash='a'*64,original_specification_hash='b'*64)),)
+        launch=ExecutionLaunch(query,config,dataset,plans,'a'*64,claim,Mock(),Mock(),Mock(),Mock(),runtime)
+        self.assertIsInstance(launch.reference_handlers.original_parity_guard,StoredGuard)
+        query.assert_not_called()
+        saved=StoredPlan(dataset,config,plans,'a'*64,launch.controller.plan_hash)
+        with patch('pipelines.certified_research.launch.load_plan',return_value=saved):
+            restored=ExecutionLaunch.from_stored(query,'arte',dataset,claim,Mock(),Mock(),Mock(),Mock(),lambda frozen:runtime)
+        self.assertIsInstance(restored.reference_handlers.original_parity_guard,StoredGuard)
+        self.assertEqual(restored.reference_handlers.original_parity_guard.locators,launch.reference_handlers.original_parity_guard.locators)
+
     def test_stored_launch_preserves_configuration_and_checks_graph_before_capacity_or_writes(self):
         dataset=str(uuid4());claim=SimpleNamespace(check=Mock());guard=Mock();query=Mock()
         config=CampaignConfig(date(2026,1,2),date(2026,1,5),workers=2)

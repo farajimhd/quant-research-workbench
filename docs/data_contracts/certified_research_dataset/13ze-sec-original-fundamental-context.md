@@ -194,7 +194,34 @@ The verifier is read-only, bounds documents to 1,000 and projection provenance t
 10,000 rows/16 MiB, and never certifies class allocation. It returns certified
 scope evidence only after every check succeeds. Mocked dependency tests exercise
 composition and rejection; no real production scope has passed. Automatic frozen
-specification construction and wiring through fresh/stored/collection launcher
-adapters remain required. Existing acceptance clocks may precede conservative
+specification construction remains required. Existing acceptance clocks may precede conservative
 archive-day evidence; those inputs require a versioned clock/source migration,
 not relaxed verification.
+
+### Stored scope specifications and automatic restoration
+
+The launcher schema catalog now includes two additional `q_live` tables:
+
+| Table | Data | Key / partition |
+| --- | --- | --- |
+| `research_sec_scope_specification_v1` | One immutable scope header: issuer, CIK, ranges, metric/form selections, source hash and binding count | Specification hash / target-start month |
+| `research_sec_scope_document_v1` | Accession, document name and original reconciliation/reported-binding locators | Specification hash + accession + document / 32 hash partitions |
+
+Both use explicit lossless codecs and `live_market_ssd`; header metadata is stored
+once rather than repeated per document. Binding locators reference existing banks.
+Publication uses the shared bounded header-last, exact-readback/restart protocol and
+requires measured write admission. Publishing a specification grants no certification.
+Readback verifies the complete normalized fingerprint, row count, unique identities,
+byte bounds and unchanged rows. Exact DDL is available through `schema --format sql`.
+
+A fundamental plan carries only `original_specification_hash`. Fresh and restored
+`ExecutionLaunch` controllers automatically construct `StoredGuard` from that frozen
+locator; this also covers collection children through their normal stored execution
+path. The guard reloads and validates the specification before and after whole-scope
+parity checks. Contract hashes include both verifier/specification implementations.
+Large document lists do not consume the plan's 8 KiB argument budget.
+
+An isolated real ClickHouse fixture verified SSD placement, publication, readback,
+zero-insert reuse and duplicate rejection; its namespace was removed afterward.
+Automatic census-to-specification construction/publication during source preparation
+is still unfinished. No production scope was admitted or certified by this fixture.

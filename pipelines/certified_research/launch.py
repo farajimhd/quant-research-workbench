@@ -55,6 +55,9 @@ class ExecutionLaunch:
         self.claim=claim;self.source_guard=source_guard;self.capacity_guard=capacity_guard
         self.query=query
         self.config=config;self.plans=tuple(plans)
+        if original_parity_guard is None and any(p.unit.product=='fundamentals' and 'original_specification_hash' in p.arguments for p in self.plans):
+            from .sec_scope_specification import StoredGuard
+            original_parity_guard=StoredGuard(query,self.plans,claim,source_guard)
         self.reference_handlers=ReferenceHandlers(dataset_id,config.database,claim,client_factory,source_guard,self.plans,
             dictionary_claim_factory=dictionary_claim_factory,original_parity_guard=original_parity_guard)
         for plan in self.plans:
