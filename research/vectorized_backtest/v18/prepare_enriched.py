@@ -24,7 +24,7 @@ read=lambda p:json.loads(Path(p).read_bytes())
 def definition():
     return dict(version=VERSION,names=list(NAMES),math_sha256=file_hash(Path(__file__).with_name('enriched_math.py')),
         extractor_sha256=file_hash(Path(__file__)),
-        universe='unique tickers in the full certified canonical-event-eligible preopen research population, not ranked feature scope',
+        universe='unique tickers in the full pinned preopen snapshot; missing certified source units remain unavailable, never zero',
         clock='completed source second <= feature clock; no overnight return; max endpoint age 1 second',
         context='contemporaneously observed valid ticker returns; explicit coverage; minimum 2 peers',
         rank='average-tie full-universe trailing-60-second dollar-volume percentile',validation_feedback=False)
@@ -71,9 +71,11 @@ def prepare_day(dataset,day,output):
                 raise ValueError('Certified canonical-event eligibility census changed')
             expected_map={i:t for i,t in full_map.items() if t in eligible}
             population,proof=population_map(client,source,date.fromisoformat(source_day),expected_map)
-            proof.update(scope='full certified canonical-event-eligible preopen research population',snapshot_tickers=len(snapshot_tickers),
-                eligible_tickers=len(eligible),excluded_without_canonical_events=excluded,source_eligibility_fraction=len(eligible)/len(snapshot_tickers))
-            tickers=sorted(set(population.values()));ticker_index={t:i for i,t in enumerate(tickers)}
+            proof.update(scope='full preopen snapshot; source-unit availability is metadata only, not feature membership',snapshot_tickers=len(snapshot_tickers),
+                certified_source_tickers=len(eligible),unavailable_without_canonical_events=excluded)
+            # Denominator/membership is known preopen, not inferred from later
+            # event presence. Missing certified units contribute unknown masks.
+            tickers=sorted(snapshot_tickers);available_tickers=sorted(eligible);ticker_index={t:i for i,t in enumerate(tickers)}
             origin=int(datetime.combine(date.fromisoformat(source_day),datetime.min.time().replace(hour=4),NY).timestamp())
             # ARTE bucket indices start at New York midnight, not session 04:00.
             bucket_origin=int(datetime.combine(date.fromisoformat(source_day),datetime.min.time(),NY).timestamp())
@@ -92,9 +94,9 @@ def prepare_day(dataset,day,output):
             if shutil.disk_usage(folder).free<need+2*1024**3:raise MemoryError('Insufficient runtime disk for bounded market scratch')
             dense=np.lib.format.open_memmap(scratch/'cross-section.npy',mode='w+',dtype=np.float32,shape=(4,len(tickers),len(clocks)));dense[:]=np.nan
             units=[]
-            for start in range(0,len(tickers),32):
+            for start in range(0,len(available_tickers),32):
                 if (Path(output)/'STOP').exists():raise InterruptedError('Cooperative preparation stop requested')
-                batch=tickers[start:start+32]
+                batch=available_tickers[start:start+32]
                 pairs=','.join(f'({sql.literal(t)},toUUID({sql.literal(source["units"][source_day][t]["bars"]["attempt_id"])}))' for t in batch)
                 condition=f'build_id={sql.literal(source["build_id"])} AND session_date=toDate({sql.literal(source_day)}) AND (ticker,attempt_id) IN ({pairs})'
                 audits=sql.query(client,f'SELECT ticker,count() AS n,uniqExact((resolution_ms,bucket_index)) AS unique_keys,sum(cityHash64(tuple(*))) AS hash FROM arte.bars_v1 WHERE {condition} GROUP BY ticker')
@@ -119,7 +121,7 @@ def prepare_day(dataset,day,output):
                         exact=np.searchsorted(t,ticks[rr])
                         if np.any(exact>=len(t)) or not np.array_equal(t[exact],ticks[rr]):raise ValueError('Requested completed feature clock absent')
                         values[rr,:len(OWN_NAMES)]=own(f,ticks[rr],origin);prepared+=len(rr)
-                write_json(folder/'progress.json',dict(status='running',day=day,source_day=source_day,stage='certified bars',completed_tickers=min(start+32,len(tickers)),total_tickers=len(tickers),prepared_rows=prepared))
+                write_json(folder/'progress.json',dict(status='running',day=day,source_day=source_day,stage='certified bars',completed_tickers=min(start+32,len(available_tickers)),total_tickers=len(available_tickers),snapshot_tickers=len(tickers),unavailable_source_tickers=len(excluded),prepared_rows=prepared))
             dense.flush()
             rank=np.lib.format.open_memmap(scratch/'rank.npy',mode='w+',dtype=np.float32,shape=(len(tickers),len(clocks)));rank[:]=np.nan
             # Native sorting and reductions over all peers in bounded 1024-second tiles.

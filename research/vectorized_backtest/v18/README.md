@@ -11,7 +11,7 @@ are appended (957 total). V17 code, inputs and running campaign are untouched.
 * Volume/trade acceleration and 15-second volatility versus round-trip fees.
 * Completed 5/15/60-second candle body, range, close location, return,
   log volume/trades and active-second fraction.
-* Full certified canonical-event-eligible preopen universe (unique ticker, not venue-alias-weighted or
+* Full pinned preopen universe (unique ticker, not venue-alias-weighted or
   top-ranked-only) 15/60/300-second median/mean return, advancing fraction,
   dispersion, coverage, own relative return and average-tie return percentile.
 * Full-universe trailing-60-second dollar-volume percentile and 15-second change.
@@ -21,8 +21,10 @@ Every source endpoint is at or before the completed feature clock. The existing
 consumer selects causal features before its decision time. Returns never cross
 sessions; both endpoints must have valid prices and be at most one second old.
 Volatility needs all one-second price increments. Candle extrema need complete
-valid source seconds. Receipts preserve the full preopen census and explicit canonical-event exclusions.
-Context aggregates currently observed valid eligible tickers and
+valid source seconds. Receipts preserve the full preopen census and missing canonical-source units.
+Unavailable tickers remain masked; coverage uses the full preopen denominator,
+never a universe inferred from later event presence.
+Context aggregates currently observed valid tickers and
 exposes coverage; fewer than two peers masks statistics/ranks. Missing evidence
 is NaN in storage and false validity in the evaluator, never a known zero.
 Early session history remains masked rather than borrowing overnight prices.
