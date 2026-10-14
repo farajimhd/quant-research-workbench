@@ -101,6 +101,9 @@ class Client:
                 if query.startswith("SELECT count() AS row_count"):
                     keys = {(r["listing_id"], r.get("source_ordinal", 0)) for r in rows}
                     return encode([dict(row_count=len(rows), unique_keys=len(keys))])
+                if query.startswith("SELECT DISTINCT reference_attempt_id"):
+                    return encode([{'reference_attempt_id': value} for value in
+                        sorted({r['reference_attempt_id'] for r in rows})[:2]])
                 if query.startswith("SELECT reference_attempt_id"):
                     return encode([{"reference_attempt_id": r["reference_attempt_id"]} for r in rows[:1]])
                 if query.startswith("SELECT listing_id,ticker"):
@@ -127,6 +130,30 @@ def verified_source(monkeypatch):
 def run(store, src):
     return p.publish_opening_reference(Client(store), Client(store, True), src,
                                        ownership=Owner(), code_hash="5" * 64)
+
+
+@pytest.mark.parametrize('failure', [None, 'wrong_digest', 'tampered_child', 'another_attempt'])
+def test_explicit_reconciliation_only_seals_exact_reviewed_children(verified_source, failure):
+    store=Store(); reader=Client(store); writer=Client(store,True)
+    attempt='00000000-0000-0000-0000-000000000003'
+    refs,splits=p.materialize_opening_reference(reader,verified_source,attempt_id=attempt)
+    digest=c.content_hash(dict(references=refs,splits=splits))
+    store.records[c.REFERENCE.name]=p._wire_records(c.REFERENCE,refs)
+    store.records[c.SPLIT.name]=p._wire_records(c.SPLIT,splits)
+    if failure=='wrong_digest':digest='0'*64
+    elif failure=='tampered_child':store.records[c.REFERENCE.name][0]['adjusted_prior_close']+=.01
+    elif failure=='another_attempt':
+        store.records[c.REFERENCE.name].append(dict(store.records[c.REFERENCE.name][0],
+            reference_attempt_id='00000000-0000-0000-0000-000000000004'))
+    def reconcile():
+        return p.publish_opening_reference(reader,writer,verified_source,ownership=Owner(),code_hash='5'*64,
+            reconcile_attempt_id=attempt,expected_children_hash=digest)
+    if failure is None:
+        assert reconcile()=='published'
+        assert store.writes==[c.COVERAGE.name]
+    else:
+        with pytest.raises(ValueError):reconcile()
+        assert store.writes==[]
 
 
 def test_publication_seals_last_then_exact_retry_is_read_only(verified_source):

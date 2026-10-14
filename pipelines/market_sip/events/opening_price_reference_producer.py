@@ -458,7 +458,8 @@ def verify_publication(reader, source, header, *, code_hash):
         raise ValueError("Opening reference children differ from recomputed certified source")
 
 
-def publish_opening_reference(reader, writer, source, *, ownership, code_hash):
+def publish_opening_reference(reader, writer, source, *, ownership, code_hash,
+                              reconcile_attempt_id=None, expected_children_hash=None):
     """Exclusive child-first publication. Any ambiguous INSERT terminates the unit."""
     if type(source) is not CertifiedOpeningInput:
         raise TypeError("Opening producer requires its certified input contract")
@@ -478,22 +479,43 @@ def publish_opening_reference(reader, writer, source, *, ownership, code_hash):
         source_storage_preflight(reader, listing_basis=source.listing_basis)
     ownership.assert_owner()
     source.verify(reader)
+    if (reconcile_attempt_id is None) != (expected_children_hash is None):
+        raise ValueError('Opening reconciliation requires both explicit attempt and child digest')
+    if reconcile_attempt_id is not None:
+        from uuid import UUID
+        if type(reconcile_attempt_id) is not str or str(UUID(reconcile_attempt_id)) != reconcile_attempt_id:
+            raise ValueError('Opening reconciliation attempt is not canonical')
+        contract.require_hash(expected_children_hash)
     existing = _coverage(reader, source)
     if existing:
         verify_publication(reader, source, existing[0], code_hash=code_hash)
+        if reconcile_attempt_id is not None and (
+                existing[0]['reference_attempt_id'] != reconcile_attempt_id or
+                contract.content_hash(dict(
+                    references=_readback(reader,source,contract.REFERENCE,reconcile_attempt_id),
+                    splits=_readback(reader,source,contract.SPLIT,reconcile_attempt_id))) != expected_children_hash):
+            raise ValueError('Sealed opening differs from the explicit reconciliation pins')
         ownership.assert_owner()
         return "skipped_verified"
     for table in (contract.REFERENCE, contract.SPLIT):
-        if _rows(reader, f"SELECT reference_attempt_id FROM q_live.{table.name} "
-                 f"WHERE {_scope(source)} LIMIT 1", bound=1):
+        attempts = _rows(reader, f"SELECT DISTINCT reference_attempt_id FROM q_live.{table.name} "
+            f"WHERE {_scope(source)} LIMIT 2", bound=2)
+        if reconcile_attempt_id is None and attempts:
             raise ValueError("Unsealed opening-reference attempt requires operator reconciliation")
-    attempt = str(uuid4())
+        if reconcile_attempt_id is not None and any(
+                row['reference_attempt_id'] != reconcile_attempt_id for row in attempts):
+            raise ValueError('Opening reconciliation has another unsealed attempt')
+    attempt = reconcile_attempt_id or str(uuid4())
     references, children = materialize_opening_reference(reader, source, attempt_id=attempt)
+    if reconcile_attempt_id is not None and contract.content_hash(
+            dict(references=references, splits=children)) != expected_children_hash:
+        raise ValueError('Opening reconciliation source differs from its reviewed child digest')
     # A separate worker owns these finite INSERTs; no event callback waits on I/O.
     for table, records in ((contract.SPLIT, children), (contract.REFERENCE, references)):
-        for offset in range(0, len(records), 128):
-            ownership.assert_owner()
-            insert_product_rows(writer, table, records[offset:offset + 128])
+        if reconcile_attempt_id is None:
+            for offset in range(0, len(records), 128):
+                ownership.assert_owner()
+                insert_product_rows(writer, table, records[offset:offset + 128])
         actual = _readback(reader, source, table, attempt)
         if actual != records:
             raise ValueError("Opening reference child INSERT readback differs")
