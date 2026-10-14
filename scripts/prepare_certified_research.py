@@ -26,7 +26,7 @@ from pipelines.certified_research import contracts,schema,source,short_sql,campa
 
 def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('schema','install-schema','preflight','plan','plan-cohorts','status','stored-plan','prepare-sources','qualify-sec-lineage','verify','launch','backfill-v7','run','resume','resume-collection','verify-collection'))
+    p.add_argument('command',choices=('schema','install-schema','preflight','plan','plan-cohorts','status','stored-plan','prepare-sources','qualify-sec-lineage','verify','launch','launch-collection','backfill-v7','run','resume','resume-collection','verify-collection'))
     p.add_argument('--dataset-id',type=UUID)
     p.add_argument('--source-dataset-id',type=UUID,help='Qualified source plan/bar dataset for backfill-v7; never modified')
     p.add_argument('--backfill-start-date',type=date.fromisoformat,help='Optional narrower target range inside the source plan')
@@ -71,13 +71,13 @@ def parse_args(argv=None):
     args=p.parse_args(argv)
     if args.staging_reserve_gib<0 or args.staging_chunk_gib<0 or not 0<=args.staging_reserve_fraction<1:
         p.error('Invalid SSD staging reserve or chunk bound')
-    if args.recover_retained_reporting and args.command not in ('prepare-sources','launch'):
+    if args.recover_retained_reporting and args.command not in ('prepare-sources','launch','launch-collection'):
         p.error('--recover-retained-reporting belongs to prepare-sources')
     try:contracts.identifier(args.database)
     except ValueError as error:p.error(str(error))
     if args.command!='schema' and args.format=='sql':p.error('SQL format is for schema inspection only')
-    if args.command in ('status','stored-plan','verify','launch','backfill-v7','run','resume') and args.dataset_id is None:p.error(args.command+' requires --dataset-id')
-    if args.command in ('launch','backfill-v7','run','resume') and args.capacity_profile is None:p.error(args.command+' requires --capacity-profile')
+    if args.command in ('status','stored-plan','verify','launch','launch-collection','backfill-v7','run','resume') and args.dataset_id is None:p.error(args.command+' requires --dataset-id')
+    if args.command in ('launch','launch-collection','backfill-v7','run','resume') and args.capacity_profile is None:p.error(args.command+' requires --capacity-profile')
     if args.command=='backfill-v7':
         if args.source_dataset_id is None or args.source_dataset_id==args.dataset_id:
             p.error('backfill-v7 requires distinct source and new target dataset UUIDs')
@@ -85,9 +85,9 @@ def parse_args(argv=None):
             p.error('backfill-v7 reads certified ClickHouse inputs only; prepare sources before backfill')
     elif any(v is not None for v in (args.source_dataset_id,args.backfill_start_date,args.backfill_end_date)):
         p.error('Source dataset and backfill bounds belong to backfill-v7')
-    if args.command=='launch' and any(v is None for v in (args.context_start_date,args.fundamental_start_date)):
+    if args.command in ('launch','launch-collection') and any(v is None for v in (args.context_start_date,args.fundamental_start_date)):
         p.error('launch requires --context-start-date and --fundamental-start-date')
-    if args.rebuild_origin_date is not None and args.command!='launch':
+    if args.rebuild_origin_date is not None and args.command not in ('launch','launch-collection'):
         p.error('--rebuild-origin-date belongs to fresh launch; resume uses the frozen plan')
     if args.command=='prepare-sources' and (args.end_date is None or args.format!='text'):
         p.error('prepare-sources requires --end-date and uses text progress')
@@ -101,6 +101,8 @@ def parse_args(argv=None):
         if not 1<=args.cohort_max_issuers<=256 or not 1<=args.cohort_max_sessions<=250000:
             p.error('Invalid bounded cohort limits')
         if args.acquire_missing or args.stage_archive:p.error('plan-cohorts is read-only')
+    if args.command=='launch-collection' and (args.issuer_keys or not 1<=args.cohort_max_issuers<=256 or not 1<=args.cohort_max_sessions<=250000):
+        p.error('launch-collection requires an unscoped universe and bounded cohort limits')
     if args.hydrate_missing_trades:p.error('Imported-day reporting repair cannot hydrate flatfiles; G-to-D staging belongs to acquisition')
     if args.command=='verify' and (args.acquire_missing or args.stage_archive):p.error('verify is read-only; acquisition flags belong to prepare-sources')
     if args.command in ('run','resume') and (args.acquire_missing or args.stage_archive):p.error('Frozen execution cannot acquire sources; use prepare-sources before freezing the plan')
@@ -227,7 +229,7 @@ def main(argv=None):
             print(json.dumps(result,default=str) if args.format=='json' else
                 'Collection '+result['status']+' | '+str(result.get('certificate',{}).get('root_hash','unsealed')))
             return 0 if result['status'] in ('complete','verified') else 130 if result['status']=='interrupted' else 2
-        if args.command in ('launch','backfill-v7','run','resume'):
+        if args.command in ('launch','launch-collection','backfill-v7','run','resume'):
             from contextlib import closing
             from types import SimpleNamespace
             from threading import Event
@@ -250,7 +252,7 @@ def main(argv=None):
                 options=SimpleNamespace(env_file=args.env_file,max_threads=config.query_threads,
                     max_memory_gb=config.query_memory_bytes/1024**3,query_timeout=45)
                 return builder.Client(options,persistent=False)
-            saved=None if args.command=='launch' else campaign.load_plan(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database,
+            saved=None if args.command in ('launch','launch-collection') else campaign.load_plan(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database,
                 str(args.source_dataset_id if args.command=='backfill-v7' else args.dataset_id))
             if saved is None:
                 end=args.end_date
@@ -267,7 +269,7 @@ def main(argv=None):
             signal.signal(signal.SIGINT,lambda *unused:stop.set())
             try:
                 with closing(open_workstation_keeper_session()) as keeper:
-                    if args.command=='launch':
+                    if args.command in ('launch','launch-collection'):
                         paths=acquisition.IngestionPaths(args.env_file,args.runtime_root,args.cache_root,args.archive_root,args.clickhouse_cache_root)
                         paths.validate()
                         dictionary=DictionaryClaim(keeper.client,args.database)
@@ -276,6 +278,10 @@ def main(argv=None):
                         existing=client.query(f'SELECT count() n FROM {args.database}.research_dataset_v1 '
                             f"WHERE dataset_id=toUUID('{args.dataset_id}')")[0]['n']
                         if int(existing):raise ValueError('Dataset already has a frozen definition; use resume')
+                        if args.command=='launch-collection':
+                            exists=client.query(f"SELECT count() n FROM system.tables WHERE database='{args.database}' AND name='research_collection_v1'")[0]['n']
+                            if int(exists) and int(client.query(f"SELECT count() n FROM {args.database}.research_collection_v1 WHERE collection_id=toUUID('{args.dataset_id}')")[0]['n']):
+                                raise ValueError('Collection already has a frozen definition; use resume-collection')
                         source_claim=SourceClaim(keeper.client)
                         try:
                             from pipelines.certified_research import sec_lineage,planning
@@ -292,7 +298,18 @@ def main(argv=None):
                     try:
                         dictionary_factory=lambda:DictionaryClaim(keeper.client,args.database)
                         admission=capacity_profile.factory(client.query,profile)
-                        if args.command=='launch':
+                        if args.command=='launch-collection':
+                            from pipelines.certified_research import collection_preparation,collection_execution
+                            prepared=collection_preparation.prepare(client.query,config,str(args.dataset_id),claim,
+                                lambda id_:KeeperClaim(keeper.client,id_),factory,dictionary_factory,admission,
+                                context_start=args.context_start_date,fundamental_start=args.fundamental_start_date,
+                                anchor_date=args.universe_anchor_date,maximum_issuers=args.cohort_max_issuers,
+                                maximum_sessions=args.cohort_max_sessions,stop=stop,progress=progress,
+                                rebuild_origin=args.rebuild_origin_date)
+                            result=collection_execution.execute(client.query,args.database,str(args.dataset_id),claim,
+                                lambda id_:KeeperClaim(keeper.client,id_),factory,dictionary_factory,
+                                profile=profile,stop=stop,progress=progress) if prepared['status']=='prepared' else prepared
+                        elif args.command=='launch':
                             result=fresh_execution.run(client.query,config,str(args.dataset_id),claim,factory,
                                 dictionary_factory,admission,context_start=args.context_start_date,fundamental_start=args.fundamental_start_date,
                                 anchor_date=args.universe_anchor_date,stop=stop,progress=progress,
@@ -305,6 +322,10 @@ def main(argv=None):
                             dictionary_factory,admission,stop=stop,progress=progress)
                     finally:claim.close()
             finally:signal.signal(signal.SIGINT,original)
+            if args.command=='launch-collection':
+                if args.format=='json':print(json.dumps(result,default=str))
+                else:print('Collection '+result['status']+' | '+str(result.get('certificate',{}).get('root_hash','unsealed')))
+                return 0 if result['status']=='complete' else 130 if result['status']=='interrupted' else 2
             if not counts and result['status']=='complete' and result.get('seal'):
                 counts=dict(queued=0,active=0,reused=int(result['seal']['units']),failed=0,blocked=0,interrupted=0)
             summary=dict(status=result['status'],counts=counts,seal=result.get('seal'),
@@ -467,7 +488,7 @@ def main(argv=None):
         print('Preparation interrupted; rerun launch before plan publication, or resume an already frozen dataset.',file=sys.stderr)
         return 130
     except Exception as error:
-        label='Verification failed: ' if args.command in ('verify','verify-collection') else 'Execution failed: ' if args.command in ('launch','backfill-v7','run','resume','resume-collection') else 'Preflight failed: '
+        label='Verification failed: ' if args.command in ('verify','verify-collection') else 'Execution failed: ' if args.command in ('launch','launch-collection','backfill-v7','run','resume','resume-collection') else 'Preflight failed: '
         print(label+client.clean_error(error),file=sys.stderr)
         return 2
     except KeyboardInterrupt:

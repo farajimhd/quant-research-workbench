@@ -91,7 +91,8 @@ def test_backfill_cli_uses_source_plan_resources_without_source_acquisition():
 
 
 @pytest.mark.parametrize('explicit_end',(False,True))
-def test_fresh_cli_orders_schema_source_preparation_and_execution_and_closes_owners(explicit_end):
+@pytest.mark.parametrize('command,complete',(('launch',False),('launch-collection',False),('launch-collection',True)))
+def test_fresh_cli_orders_schema_source_preparation_and_execution_and_closes_owners(explicit_end,command,complete):
     inspection=Mock();client=Mock();client.query.return_value=[dict(n=0)];client.clean_error.side_effect=str
     keeper=SimpleNamespace(client=Mock(),close=Mock());source_claim=Mock();claim=Mock();dictionary=Mock();paths=Mock()
     inspection.query.return_value=[dict(last_day='2026-01-02')]
@@ -100,7 +101,12 @@ def test_fresh_cli_orders_schema_source_preparation_and_execution_and_closes_own
     def acquired(*args,**kwargs):
         stages.append('sources');assert kwargs['recover_retained_reporting']
         assert args[2].end==date(2026,1,2)
-    def fresh(*args,**kwargs):stages.append('fresh');return dict(status='blocked',errors={'inputs':ValueError('missing authority')},seal=None)
+    def fresh(*args,**kwargs):
+        stages.append('fresh')
+        if complete:return dict(status='prepared')
+        return dict(status='blocked',errors={'inputs':ValueError('missing authority')},seal=None)
+    def executed(*args,**kwargs):
+        stages.append('execute');return dict(status='complete',certificate=dict(root_hash='a'*64))
     with patch('scripts.build_market_day.Client',side_effect=[inspection,client]),\
          patch('pipelines.certified_research.capacity_profile.load',return_value={}),\
          patch('pipelines.certified_research.capacity_profile.factory',return_value=Mock()),\
@@ -113,13 +119,16 @@ def test_fresh_cli_orders_schema_source_preparation_and_execution_and_closes_own
          patch('pipelines.certified_research.installation.install',side_effect=installed),\
          patch('pipelines.certified_research.acquisition.prepare_sources',side_effect=acquired),\
          patch('pipelines.certified_research.sec_lineage.qualify',return_value=dict(qualified=(),unqualified=())),\
-         patch('pipelines.certified_research.fresh_execution.run',side_effect=fresh):
-        argv=['launch','--dataset-id','00000000-0000-0000-0000-000000000001',
+         patch('pipelines.certified_research.fresh_execution.run',side_effect=fresh),\
+         patch('pipelines.certified_research.collection_preparation.prepare',side_effect=fresh),\
+         patch('pipelines.certified_research.collection_execution.execute',side_effect=executed):
+        argv=[command,'--dataset-id','00000000-0000-0000-0000-000000000001',
             '--capacity-profile','pilot.json','--context-start-date','2025-12-01',
             '--fundamental-start-date','2024-01-01','--recover-retained-reporting']
         if explicit_end:argv.extend(('--end-date','2026-01-02'))
         code=launcher.main(argv)
-    assert code==2 and stages==['schema','sources','fresh']
+    assert code==(0 if complete else 2)
+    assert stages==['schema','sources','fresh']+(['execute'] if complete else [])
     for owner in (dictionary,source_claim,claim,keeper,client,inspection):owner.close.assert_called_once()
     paths.validate.assert_called_once()
 

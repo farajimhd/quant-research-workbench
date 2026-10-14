@@ -63,7 +63,7 @@ execution, changed member identities, failed authority roots, definition tamperi
 and capacity rejection before writers. This core has not been exercised as a
 real market-producing whole-collection run. The persistence adapter below is
 implemented and bounded ClickHouse tested; aggregate capacity measurement and
-fresh collection launch wiring remain required before claiming the full January-to-end universe
+real fresh collection validation remain required before claiming the full January-to-end universe
 can run as one launch.
 Until then, `plan-cohorts` explicitly reports `execution_ready=false`.
 
@@ -119,7 +119,7 @@ reserves and the safety factor use the same existing admission contract. The
 certificate binds the collection hash, every child plan/demand hash, actual disk
 inventory and conservative projection mode. Four tests cover aggregate totals,
 merge overlap, missing rates, changed child config and aggregate headroom failure.
-Representative measured pilot rates and fresh collection preparation remain outstanding.
+Representative measured pilot rates and real fresh collection validation remain outstanding.
 
 ## Stored collection launcher routes
 
@@ -138,9 +138,9 @@ The collection metadata pilot recipe is the digest of the collection version
 and exact auxiliary DDL; child recipes are independently resolved by the normal
 capacity-profile factory, and competing recipes fail closed.
 
-These routes are implemented and lifecycle/argument tested. Automatic fresh
-collection preparation/installation and representative measured pilot rates
-remain outstanding. The stored routes do not imply that a whole-universe
+These routes are implemented and lifecycle/argument tested. Representative
+measured pilot rates and real fresh collection validation remain outstanding.
+The stored routes do not imply that a whole-universe
 collection has already been installed or that a production campaign was run.
 
 ## Fresh preparation core
@@ -161,6 +161,33 @@ each child claim closes on success, blocking or exception.
 Two orchestration tests verify complete metadata-only installation and missing
 authority rejection with claim cleanup. Existing fresh-launch and initial-plan
 tests pass after separating graph preparation from execution. The core still
-needs fresh CLI/source-preparation integration and a real bounded collection
-preparation test. Recovery of a partially published child graph remains a
+needs a real bounded collection preparation test. Recovery of a partially
+published child graph remains a
 fail-closed dependency rather than being silently overwritten.
+
+## Unified fresh launch
+
+`launch-collection` now runs schema admission/install, SEC lineage qualification,
+canonical acquisition/retained-reporting preparation, complete child preparation,
+aggregate admission, execution and final collection sealing. It takes the same
+source paths, SSD reserve/chunk controls, explicit acquisition opt-in and context
+parameters as `launch`, plus the bounded cohort limits. A frozen collection UUID
+requires `resume-collection`; it cannot be relaunch-planned with current defaults.
+
+Example (substitute a new collection UUID and an actually qualified profile):
+
+```powershell
+python -B scripts/prepare_certified_research.py launch-collection `
+  --dataset-id NEW_COLLECTION_UUID --capacity-profile D:/TradingML/runtimes/qualified-profile.json `
+  --start-date 2026-01-01 --end-date 2026-10-02 `
+  --context-start-date 2025-01-01 --fundamental-start-date 2024-01-01 `
+  --recover-retained-reporting --cohort-max-issuers 128 --cohort-max-sessions 200000
+```
+
+These example context bounds are operator selections, not certification that
+all dependencies fit; discovery still derives and validates actual requirements.
+Acquisition remains disabled unless explicitly selected after resubscription.
+Six mocked launcher cases verify explicit/frontier end-date selection, ordered
+preparation/execution, blocked-authority gating and owner/client cleanup. No real
+whole-collection market campaign has been run. Representative pilot rates and
+partial-child graph recovery remain outstanding.
