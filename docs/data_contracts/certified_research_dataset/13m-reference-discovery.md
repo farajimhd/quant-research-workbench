@@ -52,3 +52,11 @@ It independently resolves adjustment hashes for prior V7 candidates. Creation
 and acquisition of missing reference authorities, initial-state qualification
 and measured production capacity remain unfinished. Existing source discovery
 does not make the currently incomplete January–October inputs certifiable.
+
+The shared reference materializer rechecks source fingerprints and ownership
+before each staging, provenance, fact and receipt write. Ownership is checked
+again after the source check, which can itself take time. Reusing a receipt also
+requires the current source guard. If a source changes after fact insertion,
+the attempt remains uncertified and public-as-of lookups exclude its rows.
+This applies to SEC, short, derived fundamentals, float and regular-price
+publication; it does not manufacture missing source coverage or vintages.

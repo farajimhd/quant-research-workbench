@@ -2452,6 +2452,48 @@ class ClickHouseIntegration(unittest.TestCase):
                 database=self.database,source_database=self.database)
         self.assertFalse(any(sql.startswith('INSERT INTO') for sql in logs))
 
+    def test_reference_materialization_write_guards_and_receipt_reuse(self):
+        from datetime import timezone
+        from pipelines.certified_research.contracts import literal
+        dataset=str(uuid.uuid4())
+        scope=ReferenceScope(dataset,2,991,'corporate_actions',date(2026,1,2),date(2026,1,2),'a'*64,facts.catalog_hash())
+        table=reference_producer.staging_table();writes=[]
+        class Claim:
+            def check(self):pass
+        def projection(attempt):
+            values=dict(dataset_id=dataset,attempt_id=attempt,entity_kind=2,entity_key=991,
+                metric_key=next(m.key for m in facts.catalog() if m.name=='corporate.executed_split_ratio'),
+                period_start='2026-01-02',period_end='2026-01-02',context_kind=0,fiscal_year=0,fiscal_period='',
+                taxonomy_key=0,available_at='2026-01-02 12:00:00.000000',revision=0,value=2.,unit_key=3,
+                basis_unit_key=3,status=1,precision=1,confidence=100,reason='',evidence_hash='b'*64,
+                source_system='isolated_fixture',source_record='fixture',source_hash='c'*64,proof='fixture')
+            return 'SELECT '+','.join(f'CAST({literal(values[c.name])},{literal(c.type)}) AS {c.name}' for c in table.columns)
+        def query(sql,*,read=True):
+            if not read:writes.append(sql)
+            return self.client.query(sql,read=read)
+        checks=[]
+        def guard():checks.append(len(writes))
+        first=reference_producer._materialize(scope,query,Claim(),guard,self.database,projection)
+        self.assertEqual(int(first['output_rows']),1)
+        self.assertEqual(len(writes),4)
+        self.assertTrue(set(range(4))<=set(checks))
+        writes.clear()
+        self.assertEqual(reference_producer._materialize(scope,query,Claim(),guard,self.database,projection),first)
+        self.assertFalse(writes)
+        # Losing the source after facts were written must leave the attempt
+        # uncertified; a downstream lookup must never admit it.
+        other=ReferenceScope(str(uuid.uuid4()),2,991,'corporate_actions',scope.start,scope.end,'a'*64,facts.catalog_hash())
+        dataset=other.dataset_id
+        def changed():
+            if len(writes)>=3:raise ValueError('source changed')
+        with self.assertRaisesRegex(ValueError,'source changed'):
+            reference_producer._materialize(other,query,Claim(),changed,self.database,projection)
+        self.assertEqual(self.client.query(f'SELECT count() n FROM {self.database}.research_reference_receipt_v1 WHERE '+other.receipt_where())[0]['n'],0)
+        self.assertEqual(self.client.query(f'SELECT count() n FROM {self.database}.research_facts_v1 WHERE dataset_id=toUUID({literal(dataset)})')[0]['n'],1)
+        metric=next(m.key for m in facts.catalog() if m.name=='corporate.executed_split_ratio')
+        self.assertEqual(self.client.query(facts.lookup_sql(self.database,dataset,[(2,991)],[metric],
+            datetime(2026,1,3,tzinfo=timezone.utc))),[])
+
     def test_real_sec_producer_normalizes_once_and_certifies_public_vintages(self):
         dataset=str(uuid.uuid4());selected=tuple(m for m in facts.catalog() if m.name=='fundamental.cash')
         scope=ReferenceScope(dataset,1,991,'fundamentals',date(2026,1,1),date(2026,8,12),'a'*64,facts.catalog_hash())

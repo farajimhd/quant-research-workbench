@@ -158,9 +158,19 @@ def regular_price_parents(scope,bar_scopes,query,claim,*,database='arte'):
 
 
 def _materialize(scope,query,claim,source_guard,database,projection_factory,*,stage_check=None,publication_filter=None):
+    def guard():
+        claim.check();source_guard();claim.check()
+    raw_query=query
+    def query(sql,*,read=True):
+        # Includes the receipt INSERT performed by ReferencePublisher: an
+        # audit query or source check may outlive ownership of this attempt.
+        if not read:guard()
+        return raw_query(sql,read=read)
+    guard()
     publisher=ReferencePublisher(query,database,claim)
     previous=publisher.receipt(scope)
-    if previous:return previous
+    if previous:
+        guard();return previous
     attempt=str(uuid4())
     # Controller installs this DDL during storage preflight, not during a read.
     where=scope.rows_where(attempt)
@@ -183,7 +193,6 @@ def _materialize(scope,query,claim,source_guard,database,projection_factory,*,st
     proof_columns='evidence_hash,source_system,source_record,source_hash,proof'
     proof=(f'SELECT DISTINCT {proof_columns} FROM {database}.{STAGING} WHERE {where}')
     # Deduplicate only identical evidence; conflicting contents fail on readback.
-    claim.check();source_guard()
     query(f'INSERT INTO {database}.research_provenance_v1 ({proof_columns}) '
           f'SELECT p.* FROM ({proof}) p LEFT ANTI JOIN {database}.research_provenance_v1 existing '
           'ON existing.evidence_hash=p.evidence_hash',read=False)
@@ -196,5 +205,5 @@ def _materialize(scope,query,claim,source_guard,database,projection_factory,*,st
                      'GROUP BY evidence_hash HAVING count()!=1 LIMIT 1')
     if duplicates:raise ValueError('Reference provenance is missing or duplicated')
     query(f'INSERT INTO {database}.research_facts_v1 ({names}) '+normalized,read=False)
-    source_guard();claim.check()
+    guard()
     return publisher.publish(scope,attempt,expected)
