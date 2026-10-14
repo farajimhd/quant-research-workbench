@@ -65,6 +65,13 @@ This does not reconstruct symbol intervals or prove lifetime membership;
 complete change/lifecycle evidence and automatic repair discovery remain
 incomplete. See [identity prerequisite options](13v-identity-prerequisites.md).
 
+Explicit Gateway ticker-history requests now read bounded selected inventory,
+coverage and integrity metadata server-side instead of fetching the complete
+catalog before selection. Readback checks scope, duplication and bounds. A live
+read-only single-identity check passed without publication/provider access.
+This prepares the bounded repair lane; it does not supply missing lifecycle,
+venue-transition or symbol-origin evidence, or change current inactive bindings.
+
 Historical scope transitions now fail closed instead of silently projecting a
 current OTC/non-US/non-USD classification backward. The candidate query retains
 an evidence bit only from dated 2026-onward tradable snapshots that independently

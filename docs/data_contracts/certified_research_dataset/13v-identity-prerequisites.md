@@ -38,3 +38,19 @@ create a continuous eligibility interval, historical broker availability, or
 fundamental availability evidence. Automatic missing-point discovery and
 certified interval reconstruction remain required. No SIP REST recovery is
 introduced, and no provider acquisition was run during validation.
+
+## Bounded Reference Gateway repair reads
+
+Gateway ticker-event synchronization with explicit `only_identifiers` now
+pushes that selection into its inventory SQL before fetching metadata. Coverage
+and integrity-repair reads use only the returned entity keys. Explicit requests
+are limited to 1,000 keys; a selected inventory matching more than 1,000 entities
+fails rather than truncating. Readback rejects duplicated or out-of-scope rows.
+An empty selected entity set does not scan coverage or integrity tables.
+
+Ordinary unscoped Gateway cadence keeps its existing catalog behavior. Historical
+mode continues to reuse completed history; no new provider call is introduced
+by the scoped readers. A current read-only ClickHouse check returned one inventory
+entity, one coverage row and zero integrity repairs in 0.305 seconds, with no
+publication or provider access. This is a bounded query result, not a production
+throughput benchmark or interval reconstruction certificate.

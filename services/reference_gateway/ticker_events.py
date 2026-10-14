@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from itertools import islice
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -358,14 +359,21 @@ def sync_ticker_events(
 ) -> TickerEventSyncResult:
     if mode not in {"historical", "delta", "rolling", "reconcile"}:
         raise ValueError(f"unsupported ticker-event sync mode: {mode}")
+    only_identifiers = bounded_reference_keys(only_identifiers)
     started = time.perf_counter()
     run_id = run_id or ticker_event_run_id(mode)
     corrections = load_ticker_event_corrections()
+    if only_identifiers:
+        inventory = load_ticker_event_inventory(client, database=database, only_identifiers=only_identifiers)
+        entity_keys = tuple(entity.provider_entity_key for entity in inventory)
+        coverage = load_ticker_event_coverage(client, database=database, entity_keys=entity_keys)
+        integrity_repair_keys = load_integrity_repair_entity_keys(client, database=database, entity_keys=entity_keys)
+    else:
+        inventory = load_ticker_event_inventory(client, database=database)
+        coverage = load_ticker_event_coverage(client, database=database)
+        integrity_repair_keys = load_integrity_repair_entity_keys(client, database=database)
     if execute:
         publish_ticker_event_corrections(client, database=database, corrections=corrections, run_id=run_id)
-    inventory = load_ticker_event_inventory(client, database=database)
-    coverage = load_ticker_event_coverage(client, database=database)
-    integrity_repair_keys = load_integrity_repair_entity_keys(client, database=database)
     selected = select_entities(
         inventory,
         coverage,
@@ -757,11 +765,35 @@ def build_symbol_intervals(
     return intervals
 
 
-def load_ticker_event_inventory(client: ClickHouseHttpClient, *, database: str) -> list[TickerEventEntity]:
+def bounded_reference_keys(values: Iterable[str]) -> tuple[str, ...]:
+    """Bound explicit repair metadata before consuming a caller's iterator."""
+    if isinstance(values,(str,bytes)):
+        raise ValueError('Explicit reference repair keys require a collection')
+    values = tuple(islice(iter(values), CLICKHOUSE_KEY_BATCH_SIZE + 1))
+    if len(values) > CLICKHOUSE_KEY_BATCH_SIZE:
+        raise ValueError('Explicit reference repair exceeds 1000 keys')
+    if any(not isinstance(value, str) or not value.strip() or len(value) > 128 for value in values):
+        raise ValueError('Invalid explicit reference repair key')
+    return tuple(sorted(set(value.strip() for value in values)))
+
+
+def load_ticker_event_inventory(client: ClickHouseHttpClient, *, database: str,
+                               only_identifiers: Iterable[str] = ()) -> list[TickerEventEntity]:
+    requested = tuple(sorted({value.upper() for value in bounded_reference_keys(only_identifiers)}))
+    scope = ''
+    if requested:
+        keys = ','.join(sql_string(value) for value in requested)
+        scope = f' AND (upper(provider_identifier) IN ({keys}) OR upper(current_ticker) IN ({keys}))'
     rows = query_json_each_row(
         client,
-        f"SELECT * FROM {table(database, TICKER_EVENT_ENTITY_TABLE)} FINAL WHERE is_deleted = 0 ORDER BY provider_entity_key",
+        f"SELECT * FROM {table(database, TICKER_EVENT_ENTITY_TABLE)} FINAL WHERE is_deleted = 0{scope} ORDER BY provider_entity_key"
+        + (f' LIMIT {CLICKHOUSE_KEY_BATCH_SIZE + 1}' if requested else ''),
     )
+    if requested and (len(rows) > CLICKHOUSE_KEY_BATCH_SIZE
+            or len({row['provider_entity_key'] for row in rows}) != len(rows)
+            or any(str(row.get('provider_identifier','')).upper() not in requested
+                and str(row.get('current_ticker','')).upper() not in requested for row in rows)):
+        raise ValueError('Selected reference inventory exceeds its bound or requested scope')
     return [
         TickerEventEntity(
             provider_entity_key=str(row.get("provider_entity_key") or ""),
@@ -827,8 +859,17 @@ def publish_ticker_event_corrections(
     return insert_json_rows(client, database, TICKER_EVENT_CORRECTION_TABLE, rows)
 
 
-def load_ticker_event_coverage(client: ClickHouseHttpClient, *, database: str) -> dict[str, dict[str, Any]]:
-    rows = query_json_each_row(client, f"SELECT * FROM {table(database, TICKER_EVENT_COVERAGE_TABLE)} FINAL")
+def load_ticker_event_coverage(client: ClickHouseHttpClient, *, database: str,
+                              entity_keys: Iterable[str] | None = None) -> dict[str, dict[str, Any]]:
+    selected = None if entity_keys is None else bounded_reference_keys(entity_keys)
+    if selected == ():return {}
+    scope = '' if selected is None else ' WHERE provider_entity_key IN ('+','.join(sql_string(key) for key in selected)+')'
+    rows = query_json_each_row(client, f"SELECT * FROM {table(database, TICKER_EVENT_COVERAGE_TABLE)} FINAL{scope}"
+        + (f' LIMIT {CLICKHOUSE_KEY_BATCH_SIZE + 1}' if selected is not None else ''))
+    if selected is not None and (len(rows) > len(selected)
+            or len({row['provider_entity_key'] for row in rows}) != len(rows)
+            or any(row['provider_entity_key'] not in selected for row in rows)):
+        raise ValueError('Selected reference coverage is duplicated or outside requested scope')
     return {str(row.get("provider_entity_key") or ""): row for row in rows}
 
 
@@ -932,13 +973,17 @@ def select_entities(
     return selected
 
 
-def load_integrity_repair_entity_keys(client: ClickHouseHttpClient, *, database: str) -> set[str]:
+def load_integrity_repair_entity_keys(client: ClickHouseHttpClient, *, database: str,
+                                    entity_keys: Iterable[str] | None = None) -> set[str]:
     """Return entities whose canonical intervals violate current inventory state.
 
     Active ticker mismatches and inactive entities with an open interval are
     repair work, not ordinary freshness work, so they must bypass rolling
     backlog ordering.
     """
+    selected = None if entity_keys is None else bounded_reference_keys(entity_keys)
+    if selected == ():return set()
+    scope = '' if selected is None else ' WHERE provider_entity_key IN ('+','.join(sql_string(key) for key in selected)+')'
     rows = query_json_each_row(
         client,
         f"""
@@ -965,9 +1010,14 @@ def load_integrity_repair_entity_keys(client: ClickHouseHttpClient, *, database:
               AND c.source_status = 'completed'
               AND c.mapping_status = 'mapped'
               AND i.provider_entity_key = ''
-        )
+        ){scope}
+        {f'LIMIT {CLICKHOUSE_KEY_BATCH_SIZE + 1}' if selected is not None else ''}
         """,
     )
+    if selected is not None and (len(rows) > len(selected)
+            or len({row['provider_entity_key'] for row in rows}) != len(rows)
+            or any(row['provider_entity_key'] not in selected for row in rows)):
+        raise ValueError('Selected integrity repair exceeds requested scope')
     return {str(row.get("provider_entity_key") or "") for row in rows if str(row.get("provider_entity_key") or "")}
 
 
