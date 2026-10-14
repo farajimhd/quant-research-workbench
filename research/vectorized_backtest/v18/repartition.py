@@ -48,6 +48,7 @@ def prepare(training,validation,prepared_enriched,prior_code,output):
     bindings={role:dict(version='v8-split-manifest-v1',role=role,days=days[:24] if role=='training' else days[24:],
         **{key:str(path) for key,path in roots.items()},receipts={},indicator_receipts={},
         split_provenance=dict(version='v18-24-12-binding-v1',prior_training_manifest_sha256=file_hash(training),prior_validation_manifest_sha256=file_hash(validation),prior_training_exposure=days[24:30] if role=='validation' else [])) for role in originals}
+    if not originals['validation'].get('feature_cache'):bindings['validation'].pop('feature_cache')
     previous_indicator=None
     for day in days:
         role='training' if day in days[:24] else 'validation'
@@ -55,6 +56,7 @@ def prepare(training,validation,prepared_enriched,prior_code,output):
         original=originals[prior_role];moved=role!=prior_role;input_hash=original['receipts'][day]['inputs']
         lineage=dict(version='v18-24-12-binding-v1',prior_role=prior_role,role=role,prior_training_exposure=prior_role=='training')
         for key in ('inputs','history','feature_cache'):
+            if key=='feature_cache' and not original.get(key):continue
             source=Path(original[key])/day;target=roots[key]/day
             if not moved:junction(source,target);continue
             record=read(source/'complete.json');record['repartition_provenance']=dict(lineage,source_receipt_sha256=file_hash(source/'complete.json'));record['validation_opened']=True
