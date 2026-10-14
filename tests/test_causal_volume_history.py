@@ -45,7 +45,20 @@ def test_share_counts_fail_closed_before_float_precision_loss():
         elapsed_volume_history(clocks([2 ** 53, 2]), 30)
 
 
-@pytest.mark.parametrize("kind", ["gap", "duplicate", "future", "negative", "fractional"])
+def test_canonical_fractional_shares_retain_ranking_and_elapsed_sum():
+    frame = pl.concat([clocks([4.8366000056266785, .8734139800071716]),
+                       clocks([4.5, .5], "b")]).with_columns(
+        pl.col("listing_id").str.to_uppercase().alias("ticker"),
+        (pl.col("boundary_at") - pl.duration(days=1)).alias("prior_close_available_at"),
+        pl.lit(10.).alias("adjusted_prior_close"))
+    history = elapsed_volume_history(frame, 30)
+    assert history.filter(pl.col("listing_id") == "a")["rolling_volume"].to_list() == [
+        4.8366000056266785, 5.71001398563385]
+    ranked = select_volume_universe(history, VolumeUniverseRule(30, 1, .8, 50))
+    assert ranked["listing_id"].to_list() == ["a", "a"]
+
+
+@pytest.mark.parametrize("kind", ["gap", "duplicate", "future", "negative", "nonfinite"])
 def test_bad_coverage_and_invalid_shares_fail_closed(kind):
     frame = clocks([1., 2., 3.])
     if kind == "gap":
@@ -57,6 +70,6 @@ def test_bad_coverage_and_invalid_shares_fail_closed(kind):
     elif kind == "negative":
         frame = frame.with_columns(pl.lit(-1.).alias("volume"))
     else:
-        frame = frame.with_columns(pl.lit(.5).alias("volume"))
+        frame = frame.with_columns(pl.lit(float("inf")).alias("volume"))
     with pytest.raises(ValueError):
         elapsed_volume_history(frame, 30)

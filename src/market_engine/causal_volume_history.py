@@ -7,7 +7,10 @@ import polars as pl
 
 
 def elapsed_volume_history(frame: pl.DataFrame, window_seconds: int) -> pl.DataFrame:
-    """Include the current completed second; never bridge a session boundary."""
+    """Preserve canonical Float64 shares, including fractional trade sizes.
+
+    Include the current completed second; never bridge a session boundary.
+    """
     keys = ["listing_id", "session_date"]
     required = {*keys, "boundary_at", "available_at", "volume"}
     if (type(window_seconds) is not int or not 1 <= window_seconds <= 3600
@@ -30,7 +33,6 @@ def elapsed_volume_history(frame: pl.DataFrame, window_seconds: int) -> pl.DataF
         | (pl.col("available_at") > pl.col("boundary_at"))
         | ~pl.col("volume").is_finite() | (pl.col("volume") < 0)
         | (pl.col("volume") > 2 ** 53)
-        | (pl.col("volume") != pl.col("volume").floor())
         | ((pl.col("boundary_at").diff().over(keys).dt.total_microseconds()
             != 1_000_000).fill_null(False))
         | (pl.col("boundary_at").dt.microsecond() != 0)
@@ -43,5 +45,5 @@ def elapsed_volume_history(frame: pl.DataFrame, window_seconds: int) -> pl.DataF
         pl.lit(window_seconds).alias("volume_window_seconds"))
     if result.select((~pl.col("rolling_volume").is_finite()
                       | (pl.col("rolling_volume") > 2 ** 53)).any()).item():
-        raise ValueError("Elapsed volume exceeds exact share-count range")
+        raise ValueError("Elapsed volume exceeds supported share-count range")
     return result
