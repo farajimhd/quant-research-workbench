@@ -2,6 +2,11 @@
 
 [Controller](13-campaign-controller.md) · [Completion audit](13i-completion-audit.md)
 
+[Massive/conid batch reconciliation](13vk-conid-reconciliation.md) defines the
+separate reusable identity inventory, compact snapshot forms, executable command
+and unresolved broker-evidence boundary. It retains OTC and inactive identities
+without changing live admission or projecting current aliases backward.
+
 ## Execution order
 
 Fresh `launch` and `launch-collection` install/verify the compact schema, prepare

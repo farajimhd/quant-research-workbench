@@ -26,7 +26,8 @@ from pipelines.certified_research import contracts,schema,source,short_sql,campa
 
 def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('schema','install-schema','preflight','plan','plan-cohorts','status','stored-plan','prepare-sources','audit-sec-submissions','qualify-sec-lineage','verify','measure-storage','measure-sec-extraction','estimate-storage','launch','launch-collection','backfill-v7','run','resume','resume-collection','verify-collection'))
+    p.add_argument('command',choices=('schema','install-schema','preflight','plan','plan-cohorts','status','stored-plan','prepare-sources','reconcile-conids','audit-sec-submissions','qualify-sec-lineage','verify','measure-storage','measure-sec-extraction','estimate-storage','launch','launch-collection','backfill-v7','run','resume','resume-collection','verify-collection'))
+    p.add_argument('--publish-conid-mappings',action='store_true',help='reconcile-conids only: publish an exact retained identity snapshot to q_live; does not alter live admission')
     p.add_argument('--collection',action='store_true',help='estimate-storage only: inspect a stored collection instead of a single dataset')
     p.add_argument('--dataset-id',type=UUID)
     p.add_argument('--source-dataset-id',type=UUID,help='Qualified source plan/bar dataset for backfill-v7; never modified')
@@ -205,6 +206,10 @@ def parse_args(argv=None):
         if args.command=='resume-collection' and args.capacity_profile is None:p.error('resume-collection requires --capacity-profile')
         if args.acquire_missing or args.stage_archive or args.recover_retained_reporting:
             p.error('Frozen collection execution cannot acquire or repair sources')
+    if args.publish_conid_mappings and args.command!='reconcile-conids':
+        p.error('--publish-conid-mappings requires reconcile-conids')
+    if args.command=='reconcile-conids' and (args.acquire_missing or args.stage_archive or args.repair_retained_symbols):
+        p.error('Conid reconciliation is separate from acquisition and dated-symbol publication')
     return args
 
 
@@ -400,10 +405,15 @@ def main(argv=None):
         fundamental_tables=sec_fundamental_publication.tables()
         reported_tables=sec_reported_publication.tables()
         scope_tables=sec_scope_specification.tables()
+        from pipelines.certified_research import conid_reconciliation
+        conid_tables=(conid_reconciliation.table(),conid_reconciliation.receipt_table())
         if args.format=='sql':print(';\n\n'.join([*(t.ddl(args.database) for _,t in catalog),
-            *(t.ddl('q_live') for t in (*source_tables,*archive_tables,*fundamental_tables,*reported_tables,*scope_tables))])+';')
+            *(t.ddl('q_live') for t in (*source_tables,*archive_tables,*fundamental_tables,*reported_tables,*scope_tables,*conid_tables))])+';')
         elif args.format=='json':
             manifest=installation.manifest(args.database)
+            manifest['conid_reconciliation']=dict(database='q_live',version=conid_reconciliation.VERSION,
+                broker_execution_certified=False,historical_membership_certified=False,
+                tables=[dict(name=t.name,order=t.order,partition=t.partition,columns=[vars(c) for c in t.columns]) for t in conid_tables])
             manifest['sec_source_candidates']=dict(database='q_live',product=sec_share_preparation.PRODUCT,
                 recipe_hash=sec_share_preparation.recipe_hash(),candidate_only=True,
                 tables=[dict(name=t.name,order=t.order,partition=t.partition,columns=[vars(c) for c in t.columns]) for t in source_tables])
@@ -425,12 +435,44 @@ def main(argv=None):
             for group,t in catalog:print(f'  {group}: {t.name} | {len(t.columns)} columns, explicit lossless codecs')
             print(f'Optional SEC source candidates | {len(source_tables)} q_live tables | explicit document selection and measured admission required')
             print('Use --format sql for exact DDL or --format json for the column catalog.')
+            print('Optional conid reconciliation | 2 q_live tables | reconcile-conids --publish-conid-mappings')
         return 0
     from scripts import build_market_day as builder
     args.max_threads=args.query_threads;args.max_memory_gb=args.query_memory_gib;args.query_timeout=45
     client=builder.Client(args,persistent=False,readonly=args.command in
-        ('preflight','plan','plan-cohorts','status','stored-plan','verify','verify-collection','measure-storage','measure-sec-extraction','estimate-storage','audit-sec-submissions'))
+        ('preflight','plan','plan-cohorts','status','stored-plan','verify','verify-collection','measure-storage','measure-sec-extraction','estimate-storage','audit-sec-submissions') or
+        (args.command=='reconcile-conids' and not args.publish_conid_mappings))
     try:
+        if args.command=='reconcile-conids':
+            from pipelines.certified_research import conid_reconciliation as reconciliation
+            end=args.end_date or args.universe_anchor_date
+            if args.format=='text':print('Conid reconciliation | active=retained metadata | provider acquisition=off',flush=True)
+            inputs=reconciliation.load(client.query,args.start_date,end)
+            result=reconciliation.reconcile(inputs,args.start_date,end)
+            if args.publish_conid_mappings:
+                if args.format=='text':print('Conid reconciliation | active=ownership and exact publication',flush=True)
+                from contextlib import closing
+                from pipelines.certified_research.publication import DictionaryClaim
+                from src.trading_runtime.keeper_session import open_workstation_keeper_session
+                from pipelines.market_sip.flatfiles.download_update_events import load_env_files
+                load_env_files([args.env_file],verbose=False)
+                def source_guard():
+                    fresh=reconciliation.reconcile(reconciliation.load(client.query,args.start_date,end),args.start_date,end)
+                    if fresh['snapshot_hash']!=result['snapshot_hash']:
+                        raise ValueError('Reference sources changed during reconciliation; retry a new snapshot')
+                with closing(open_workstation_keeper_session()) as keeper:
+                    with closing(DictionaryClaim(keeper.client,'q_live')) as claim:
+                        result['publication']=reconciliation.publish(client.query,'q_live',result,claim,source_guard)
+            output={k:v for k,v in result.items() if k!='rows'}
+            if args.format=='json':print(json.dumps(output,indent=2))
+            else:
+                summary=result['summary']
+                print(f"Conid reconciliation | completed={summary['entities']:,} | resolved={summary['resolved']:,} | blocked={summary['blocked']:,}")
+                for reason,count in summary['reasons'].items():print(f'  {reason}: {count:,}')
+                print('Resolved identity only; broker execution and dated membership require their own evidence.')
+                print('Snapshot: '+result['snapshot_hash'])
+                if 'publication' in result:print('ClickHouse publication: '+json.dumps(result['publication']))
+            return 2 if result['summary']['blocked'] else 0
         if args.command=='audit-sec-submissions':
             from pipelines.certified_research import sec_submission_coverage
             result=sec_submission_coverage.inspect(client.query,args.sec_census_cik,args.fundamental_start_date,args.end_date,
