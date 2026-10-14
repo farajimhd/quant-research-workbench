@@ -29,6 +29,9 @@ def environment(monkeypatch, failure=None):
         def __init__(self, writer): self.writer, self.closed = writer, False
         def close(self): self.closed = True
         def execute(self, query):
+            if isinstance(query, bytes):
+                from tests.product_binary_fixture import product_request_as_json
+                query = product_request_as_json(query, schema.TABLES)
             if query == "SELECT getSetting('readonly')": return "0" if self.writer else "1"
             if query == "SELECT currentUser()": return "configuration_writer"
             if query == "SHOW GRANTS FINAL":

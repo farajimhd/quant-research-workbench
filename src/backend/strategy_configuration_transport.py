@@ -7,7 +7,7 @@ import re
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor
 
-from research.mlops.clickhouse import insert_json_each_row
+from src.market_engine.typed_product_insert import insert_product_rows
 from src.trading_runtime import strategy_configuration_schema as schema
 from src.trading_runtime.strategy_configuration_selection import restore_configuration_selection
 from src.trading_runtime.arte_journal_schema import storage_preflight
@@ -179,8 +179,7 @@ class ClickHouseConfigurationStorage:
         try:
             configuration_writer_preflight(client)
             self.assert_owner()
-            insert_json_each_row(client, "arte", table.name, [name for name, _ in table.columns],
-                                 [dict(row) for row in rows])
+            insert_product_rows(client, table, [dict(row) for row in rows])
             self.assert_owner()
         finally:
             client.close()
