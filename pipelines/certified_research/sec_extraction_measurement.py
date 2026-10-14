@@ -51,6 +51,19 @@ def measure(query,requests,*,progress=None,compare_bulk=False):
                 comparison_status_counts=dict(sorted(Counter(r['status'] for r in comparison['comparisons']).items())),
                 unmatched_original_facts=len(comparison['unmatched_original_positions']),comparison_hash=comparison['comparison_hash'],
                 public_time_qualified=False)
+            missing=set(comparison['unmatched_original_positions'])
+            result['unmatched_original_context_counts']=dict(sorted(Counter('dimensioned' if row['dimensions'] else 'unscoped'
+                for row in parsed['observations'] if row['source_position'] in missing).items()))
+            by_position={row['source_position']:row for row in parsed['observations']}
+            conflicts=[row for row in comparison['comparisons'] if row['status']=='original_value_conflict']
+            result['conflict_examples']=tuple(dict(source_record=row['source_record'],source_value=row['source_value'],
+                originals=tuple(dict(source_position=p,value=by_position[p]['value'],decimals=by_position[p]['decimals'],
+                    scale=by_position[p]['scale'],context_id=by_position[p]['context_id']) for p in row['original_positions'][:8]),
+                original_count=len(row['original_positions']),original_examples_truncated=len(row['original_positions'])>8)
+                for row in conflicts[:8])
+            result['conflict_examples_truncated']=len(conflicts)>8
+        if len(json.dumps(result,separators=(',',':')).encode('utf-8'))>1024*1024:
+            raise ValueError('SEC diagnostic measurement metadata exceeds 1MiB per document')
         results.append(result)
         if progress:progress(dict(completed=len(results),total=len(requests),**result))
         del rows,parsed

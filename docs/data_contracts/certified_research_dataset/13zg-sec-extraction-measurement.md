@@ -79,3 +79,21 @@ original-value context. The original facts not matched by bulk remained
 where every bulk fact matches. They are not waived, and their class/dimension/
 coverage dependencies remain work. New reconciliation recipes require explicit
 requalification and preserve earlier versions rather than overwrite.
+
+The follow-up live audit classified the unmatched originals as 126 dimensioned
+Apple facts, 219 dimensioned Alphabet facts, and 124 dimensioned plus two unscoped
+Meta facts. The selected bulk set contains no dimensioned rows. The two unscoped
+Meta observations are `StockRepurchasedAndRetiredDuringPeriodValue`, with values
+29,754,000,000 (`decimals=-6`, `scale=6`) and 29,750,000,000 (`decimals=-7`,
+`scale=9`) in context `c-1`. These are competing values under the current exact
+comparison policy, not proof that the filing is internally inconsistent. Precision-
+aware duplicate interpretation remains a separate policy/implementation dependency.
+
+Reports and independent readback now separate dimensioned versus unscoped unmatched
+counts. JSON measurement reports include up to eight conflict examples and eight
+original precision witnesses per example, with exact counts and explicit truncation
+flags. This is bounded diagnostic sampling only; authoritative observations remain
+fully preserved in normalized source tables. Diagnostic metadata above 1MiB per
+document fails explicitly rather than generating an unbounded report. No dimensioned
+fact is dropped, no precision tolerance is invented, and none of these counts is
+treated as certification.

@@ -361,6 +361,7 @@ def main(argv=None):
                 for row in result['documents']:
                     print(f'SEC extraction | {row["cik"]} | bytes={row["source_bytes"]:,} | observations={row["observations"]} | rejected={row["rejections"]} | fetch={row["fetch_seconds"]:.3f}s | parse={row["parse_seconds"]:.3f}s')
                     if args.compare_sec_bulk:print('  Value comparison | '+json.dumps(row['comparison_status_counts'],sort_keys=True)+f' | unmatched originals={row["unmatched_original_facts"]}')
+                    if args.compare_sec_bulk:print('  Unmatched contexts | '+json.dumps(row['unmatched_original_context_counts'],sort_keys=True))
                 print('Observed only | no writes | storage and peak rates remain unqualified')
             return 0
         if args.command=='estimate-storage':

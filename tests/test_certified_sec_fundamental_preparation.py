@@ -63,7 +63,7 @@ def test_bounded_stage_uses_retained_evidence_and_rechecks_before_capture(readba
     def verify(*args):
         args[-1]()
         return dict(readback_verified=readback_ok,extraction_hash=extraction['extraction_hash'],reconciliation_hash=args[2],all_bulk_matched=True,
-            parity_input_blockers={'unmatched_original_numeric_facts':1},parity_inputs_ready=False)
+            parity_input_blockers={'unmatched_original_numeric_facts':1},parity_inputs_ready=False,unmatched_original_context_counts={'dimensioned':1})
     with patch.object(preparation.sec_share_preparation,'admission',return_value=lambda size:dict(status='admitted',metadata_bytes=size)),\
          patch.object(preparation.sec_share_capture,'verify'),\
          patch.object(preparation.sec_fundamental_publication,'install'),\
@@ -79,5 +79,6 @@ def test_bounded_stage_uses_retained_evidence_and_rechecks_before_capture(readba
         assert result['inserted_rows']==3 and result['certified'] is False and result['readback_verified']
         assert result['matched_documents']==1 and result['unmatched_documents']==0
         assert result['parity_inputs_ready'] is False and result['parity_input_blockers']=={'unmatched_original_numeric_facts':1}
+        assert result['unmatched_original_context_counts']=={'dimensioned':1}
     assert inspect.call_count==load.call_count==3
     dictionary.close.assert_called_once()

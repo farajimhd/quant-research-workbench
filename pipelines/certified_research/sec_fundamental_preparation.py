@@ -38,7 +38,7 @@ def prepare(query,config,requests,claim,dictionary_factory,profile,*,mode,stop,p
     try:sec_fundamental_publication.install(query,'q_live',dictionary)
     finally:dictionary.close()
     tags=tuple(sorted({tag for metric in facts.catalog() for tag in metric.tags}));completed=[];reconciliations=[];inserted=0;matched=0
-    blockers=Counter();parity_ready=0
+    blockers=Counter();unmatched_contexts=Counter();parity_ready=0
     from .sec_share_source import VERSION as source_version
     from .sec_share_context import VERSION as parser_version
     for cik,accession,name in requests:
@@ -84,10 +84,12 @@ def prepare(query,config,requests,claim,dictionary_factory,profile,*,mode,stop,p
             raise ValueError('Independent fundamental readback did not verify current source seals')
         matched+=int(verified['all_bulk_matched']);reconciliations.append(expected)
         blockers.update(verified['parity_input_blockers']);parity_ready+=int(verified['parity_inputs_ready'])
+        unmatched_contexts.update(verified['unmatched_original_context_counts'])
         inserted+=result['inserted_rows'];completed.append(result['extraction_hash'])
         if progress:progress(dict(phase='fundamental-evidence',completed=len(completed),total=len(requests),inserted_rows=result['inserted_rows'],
             readback_verified=True,all_bulk_matched=verified['all_bulk_matched'],parity_inputs_ready=verified['parity_inputs_ready']))
     return dict(status='complete',completed=tuple(completed),reconciliations=tuple(reconciliations),inserted_rows=inserted,
         readback_verified=True,matched_documents=matched,unmatched_documents=len(completed)-matched,
         parity_inputs_ready=parity_ready==len(completed),parity_ready_documents=parity_ready,
-        parity_input_blockers=dict(sorted(blockers.items())),certified=False,allocation_certified=False)
+        parity_input_blockers=dict(sorted(blockers.items())),unmatched_original_context_counts=dict(sorted(unmatched_contexts.items())),
+        certified=False,allocation_certified=False)

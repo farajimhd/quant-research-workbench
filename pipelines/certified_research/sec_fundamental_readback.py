@@ -82,6 +82,9 @@ def verify(query,database,reconciliation_hash,claim,source_guard):
     statuses=dict(sorted(Counter(row['status'] for row in restored_comparisons).items()))
     blockers={status:count for status,count in statuses.items() if status!='matched'}
     rejected=len(proof['rejected_original']);unmatched=len(proof['unmatched_original_positions'])
+    unmatched_positions=set(proof['unmatched_original_positions'])
+    unmatched_contexts=dict(sorted(Counter('dimensioned' if row['dimensions'] else 'unscoped'
+        for row in original if row['source_position'] in unmatched_positions).items()))
     cover_rejected=len(proof['extraction_metadata']['security_cover']['rejected'])
     if rejected:blockers['rejected_original_numeric_facts']=rejected
     if unmatched:blockers['unmatched_original_numeric_facts']=unmatched
@@ -90,4 +93,5 @@ def verify(query,database,reconciliation_hash,claim,source_guard):
     return dict(readback_verified=True,extraction_hash=extraction_hash,reconciliation_hash=reconciliation_hash,
         observations=len(observations),comparisons=len(comparisons),all_bulk_matched=proof['all_bulk_matched'],
         comparison_status_counts=statuses,parity_input_blockers=blockers,parity_inputs_ready=not blockers,
+        unmatched_original_context_counts=unmatched_contexts,
         certified=False,allocation_certified=False)
