@@ -10,8 +10,9 @@ import re
 
 from .contracts import digest, identifier, literal
 from .schema import Table, c
+from services.reference_gateway.ibkr_contract_identity import normalize_equity_symbol
 
-VERSION = 'retained-massive-conid-v1'
+VERSION = 'retained-massive-conid-v2'
 TABLE = 'research_massive_conid_reconciliation_v1'
 
 
@@ -61,6 +62,12 @@ def load(query, start, end, *, database='q_live', maximum_entities=50000):
             f"ifNull(source_response_sha256,'') AS source_hash FROM {database}.market_ticker_event_entity_coverage_v1 FINAL",
         'issues': f"SELECT source_entity_key,issue_type,source_content_sha256 AS source_hash FROM {database}.id_mapping_issue_v1 FINAL "
             "WHERE lower(issue_status) NOT IN ('resolved','closed','ignored')",
+        'sec_tickers': "SELECT cik,ticker,exchange,mapping_source,source_file_id FROM "
+            "sec_core.sec_bulk_mirror_company_ticker_v3 FINAL WHERE is_active=1 "
+            "AND mapping_source IN ('company_tickers','company_tickers_exchange')",
+        'sec_bridge': f"SELECT cik,ifNull(ticker,'') AS ticker,ifNull(security_id,'') AS security_id,"
+            "ifNull(listing_id,'') AS listing_id,issuer_id,mapping_method,mapping_status,ambiguity_status,"
+            f"valid_from_date,valid_to_date_exclusive,source_content_sha256 AS source_hash FROM {database}.id_sec_market_bridge_v3 FINAL",
         'events': "SELECT ticker,min(source_date) AS first_date,max(source_date) AS last_date "
             "FROM market_sip_compact.events_ticker_day_index FINAL WHERE event_count>0 AND "
             f"source_date>={literal(start)} AND source_date<={literal(end)} GROUP BY ticker",
@@ -79,7 +86,22 @@ def load(query, start, end, *, database='q_live', maximum_entities=50000):
 
 
 def reconcile(sources, start, end):
-    """Use security FIGIs, never company-name or ticker-only joins, to resolve."""
+    """Use FIGIs or independently supported SEC CIK + class-preserving symbol."""
+    def cik_key(value):
+        text=str(value or '')
+        return str(int(text)) if re.fullmatch('0*[1-9][0-9]{0,9}',text) else ''
+    sec_tickers=defaultdict(list)
+    ticker_ciks=defaultdict(set)
+    for row in sources.get('sec_tickers',[]):
+        cik=cik_key(row['cik']);symbol=normalize_equity_symbol(row['ticker'])
+        if cik and symbol:
+            sec_tickers[(cik,symbol)].append(row);ticker_ciks[symbol].add(cik)
+    bridges=defaultdict(list)
+    for row in sources.get('sec_bridge',[]):
+        if (row['mapping_status']=='active'
+                and row['mapping_method']=='issuer_cik_to_active_market_listing'
+                and row['valid_to_date_exclusive'] is None):
+            bridges[(cik_key(row['cik']),normalize_equity_symbol(row['ticker']))].append(row)
     by_figi = defaultdict(set)
     figi_evidence = defaultdict(list)
     for row in sources['identifiers']:
@@ -105,10 +127,27 @@ def reconcile(sources, start, end):
         share = by_figi[entity['share_class_figi']] if entity['share_class_figi'] else set()
         securities = composite or share
         reason = ''
+        sec_key=(cik_key(entity['cik']),normalize_equity_symbol(entity['ticker']))
+        sec_records=sec_tickers.get(sec_key,[]) if sec_key[0] else []
+        bridge_records=bridges.get(sec_key,[]) if sec_records else []
+        sec_securities={r['security_id'] for r in bridge_records if r['security_id']}
+        # SEC's issuer identity alone never chooses among share classes. Both
+        # the independent SEC ticker receipt and a unique market bridge agree.
+        sec_supported=(entity['active'] and len(sec_securities)==1 and ticker_ciks[sec_key[1]]=={sec_key[0]}
+            and all(r['source_file_id'] for r in sec_records)
+            and all(r['source_hash'] and r['listing_id'] and r['security_id'] in sec_securities
+                    and r['ambiguity_status']=='unique' for r in bridge_records))
         if composite and share and not composite & share:
             reason = 'conflicting_provider_figis'
         elif composite and share:
             securities = composite & share
+        if not reason and sec_supported and securities and securities!=sec_securities:
+            reason='sec_figi_security_mismatch'
+        if not reason and not securities and entity['active'] and sec_supported:
+            securities=sec_securities
+            if any(r['security_id'] not in securities for value in
+                   {entity['composite_figi'],entity['share_class_figi']}-{''} for r in figi_evidence[value]):
+                reason='sec_figi_security_mismatch'
         if not reason and len(securities) != 1:
             reason = 'missing_security_figi_binding' if not securities else 'ambiguous_security_figi_binding'
         security = next(iter(securities)) if len(securities) == 1 else ''
@@ -119,6 +158,10 @@ def reconcile(sources, start, end):
                     and int(r['conid']) < 2**64]
         conids = sorted({int(r['conid']) for r in eligible})
         listing_ids = sorted({r['listing_id'] for r in eligible})
+        if not reason and sec_supported and any(not any(
+                candidate['listing_id']==r['listing_id'] and candidate.get('issuer_id')==r['issuer_id']
+                for candidate in eligible) for r in bridge_records):
+            reason='sec_bridge_listing_mismatch'
         bound = coverage[key]
         if not reason and any(r['mapping_status'] == 'source_conflict' for r in bound):
             reason = 'retained_source_mapping_conflict'
@@ -134,7 +177,8 @@ def reconcile(sources, start, end):
         evidence = dict(entity=entity, identifiers=sorted([r for value in
                         sorted({entity['composite_figi'], entity['share_class_figi']} - {''})
                         for r in figi_evidence[value]], key=digest),
-                        listings=sorted(candidates, key=digest), coverage=sorted(bound, key=digest))
+                        listings=sorted(candidates, key=digest), coverage=sorted(bound, key=digest),
+                        sec_tickers=sorted(sec_records,key=digest),sec_bridge=sorted(bridge_records,key=digest))
         if not reason and (not entity['source_hash'] or any(not r['listing_hash'] or not r['security_hash'] for r in eligible)
                            or any(not r['source_hash'] for r in evidence['identifiers'])):
             reason = 'missing_source_provenance'
@@ -170,6 +214,9 @@ def reconcile(sources, start, end):
             types={kind:dict(entities=sum(r['provider_type']==kind for r in rows),
                 resolved=sum(r['provider_type']==kind and r['status']=='resolved' for r in rows))
                 for kind in sorted({r['provider_type'] for r in rows})},
+            sec_bridge_resolved_without_figi=sum(row['status']=='resolved' and
+                not (by_figi.get(entity['composite_figi']) or by_figi.get(entity['share_class_figi']))
+                for row,entity in zip(rows,sorted(entities,key=lambda r:r['entity_key']))),
             event_tickers=len(event_tickers), event_tickers_with_current_identity=len(event_tickers & resolved_tickers),
             event_tickers_requiring_dated_alias_or_identity_resolution=len(event_tickers - resolved_tickers),
             broker_contract_validation=False, historical_membership_certification=False))

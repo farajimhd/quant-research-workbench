@@ -39,6 +39,15 @@ fundamentals or live admission writes start from this command.
   conids shared by different securities, open mapping issues and conflicting
   retained coverage block resolution. Ticker or company-name matching alone
   cannot assign a conid.
+- Recipe `retained-massive-conid-v2` also uses retained SEC evidence: an active
+  provider's normalized CIK and class-preserving ticker must match both
+  `sec_core.sec_bulk_mirror_company_ticker_v3` and a unique active direct
+  issuer/listing row in `q_live.id_sec_market_bridge_v3`. SEC rows retain their
+  source-file locator; bridge rows retain their source hash. CIK alone, a
+  listed-parent bridge, conflicting FIGI ownership (including expired bindings), ambiguous bridges
+  or a different share class cannot establish this association. SEC tables
+  do not supply native FIGIs: they connect a provider identity to an existing
+  canonical security and listing without manufacturing a FIGI.
 - Retain all candidate conids and listing identities. Only a unique positive
   UInt64 canonical conid with source provenance produces `status=resolved`.
   Unknowns use `status=blocked`, `conid=0` and an explicit reason.

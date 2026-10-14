@@ -105,7 +105,7 @@ def test_bounded_paginated_loader_and_range_validation():
         calls.append(sql)
         return [{'n':0}] if sql.startswith('SELECT count()') else []
     assert all(not values for values in r.load(query,START,END).values())
-    assert len(calls)==6
+    assert len(calls)==8
     with pytest.raises(ValueError,match='range'):r.load(query,END,START)
     with pytest.raises(ValueError,match='bound'):r.load(lambda sql:[{'n':200001}],START,END)
 
@@ -190,3 +190,48 @@ def test_shared_conid_across_securities_blocks_both():
     data['identifiers'].append(dict(data['identifiers'][0],value='F2',security_id='s2'))
     data['listings'].append(dict(data['listings'][0],security_id='s2',listing_id='l2'))
     assert all(row['reason']=='conid_owned_by_multiple_securities' for row in run(data)['rows'])
+
+
+def sec_sources():
+    data=sources();data['identifiers']=[]
+    data['sec_tickers']=[dict(cik='0000000001',ticker='ABC.A',exchange='Nasdaq',
+        mapping_source='company_tickers_exchange',source_file_id='sec-file-1')]
+    data['sec_bridge']=[dict(cik='0000000001',ticker='ABC A',security_id='s1',listing_id='l1',
+        issuer_id='i1',mapping_method='issuer_cik_to_active_market_listing',mapping_status='active',
+        ambiguity_status='unique',valid_from_date=None,valid_to_date_exclusive=None,source_hash='f'*64)]
+    return data
+
+
+def test_sec_cik_and_class_symbol_bridge_resolves_missing_figi():
+    result=run(sec_sources())
+    assert result['rows'][0]['conid']==123
+    assert result['summary']['sec_bridge_resolved_without_figi']==1
+
+
+@pytest.mark.parametrize('change', ['no_sec','no_bridge','wrong_class','wrong_cik','no_receipt',
+    'ambiguous_cik','ambiguous_security','listed_parent','inactive','expired_bridge'])
+def test_sec_fallback_requires_independent_class_specific_evidence(change):
+    data=sec_sources()
+    if change=='no_sec':data['sec_tickers']=[]
+    elif change=='no_bridge':data['sec_bridge']=[]
+    elif change=='wrong_class':data['sec_bridge'][0]['ticker']='ABC.B'
+    elif change=='wrong_cik':data['sec_tickers'][0]['cik']='2'
+    elif change=='no_receipt':data['sec_tickers'][0]['source_file_id']=''
+    elif change=='ambiguous_cik':data['sec_tickers'].append(dict(data['sec_tickers'][0],cik='2'))
+    elif change=='ambiguous_security':data['sec_bridge'].append(dict(data['sec_bridge'][0],security_id='s2'))
+    elif change=='listed_parent':data['sec_bridge'][0]['mapping_method']='filing_issuer_to_listed_parent'
+    elif change=='inactive':data['entities'][0]['active']=0
+    elif change=='expired_bridge':data['sec_bridge'][0]['valid_to_date_exclusive']='2025-01-01'
+    assert run(data)['rows'][0]['status']=='blocked'
+
+
+def test_sec_and_existing_figi_disagreement_blocks():
+    data=sec_sources();data['identifiers']=sources()['identifiers']
+    data['sec_bridge'][0]['security_id']='s2'
+    assert run(data)['rows'][0]['reason']=='sec_figi_security_mismatch'
+
+
+def test_expired_figi_cannot_be_reassigned_by_sec_fallback():
+    data=sec_sources();data['identifiers']=[dict(sources()['identifiers'][0],
+        security_id='s2',valid_to_date_exclusive='2025-01-01')]
+    assert run(data)['rows'][0]['reason']=='sec_figi_security_mismatch'
