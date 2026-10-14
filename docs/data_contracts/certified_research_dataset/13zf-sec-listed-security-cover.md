@@ -29,3 +29,21 @@ allocation/completeness claim, preserve unresolved mappings, and handle class
 changes by effective intervals. Cover context periods are source periods, not
 automatically listing-validity intervals. A current conid does not supply that
 missing dated evidence. No existing Gateway behavior is modified by this step.
+
+`sec_class_mapping.resolve` now supplies the bounded deterministic candidate matcher.
+It independently checks the cover hash and archive public-time evidence, requires
+an admitted dated universe and unique CIK-to-issuer bridge, and uses explicit
+canonical exchange aliases. A match requires the exact reported ticker, issuer
+and exchange and one eligible listing interval covering the context-end day's
+04:00–20:00 New York market window. Expired listings, missing evidence, incomplete
+cover fields, exchange ambiguity and multiple matches remain unresolved. Context
+dates are only candidate matching points; they do not prove the cover fields were
+effective throughout that period or establish allocation intervals.
+
+The result binds universe, dictionary, document/time and cover hashes and retains
+class dimensions, positions and rejection reasons. It remains
+`allocation_certified=false` and `class_completeness_proven=false`. Fixtures verify
+exact matching, expired listings, ambiguous exchanges and source mutation. This
+matcher has not yet been connected to a live historical mapping publication or
+used to generate an allocation receipt; that integration and independent issuer
+completeness evidence remain unfinished.
