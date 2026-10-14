@@ -274,10 +274,15 @@ def prepare_dense_inputs(scope, bars: pl.DataFrame, liquidity: pl.DataFrame):
                 .cast(pl.UInt32).cum_max().cast(pl.Boolean).alias("source_known"),
             pl.col("volume").fill_null(0.).cast(pl.Float64),
             pl.col("execution_notional").fill_null(0.).cast(pl.Float64).alias("notional"))
-        .with_columns(pl.when(pl.col("observed")).then(pl.col("close_int") / 10000.).otherwise(None)
+        # NumPy division preserves the frozen feature contract's IEEE rounding.
+        # Polars may replace division by a constant with reciprocal multiplication.
+        .with_columns(pl.when(pl.col("observed")).then(pl.col("close_int").map_batches(
+                lambda s: pl.Series(s.to_numpy().astype(np.float64) / 10000.), return_dtype=pl.Float64,
+                is_elementwise=True)).otherwise(None)
                 .alias("close"),
-            pl.when(pl.col("extremes_valid")).then(pl.col("high_int") / 10000.).otherwise(None).alias("high"),
-            pl.when(pl.col("extremes_valid")).then(pl.col("low_int") / 10000.).otherwise(None).alias("low"))
+            *(pl.when(pl.col("extremes_valid")).then(pl.col(name + "_int").map_batches(
+                lambda s: pl.Series(s.to_numpy().astype(np.float64) / 10000.), return_dtype=pl.Float64,
+                is_elementwise=True)).otherwise(None).alias(name) for name in ("high", "low")))
         .with_columns(pl.col("close").forward_fill().alias("reference_close"),
             pl.lit(scope.listing_id).alias("listing_id"), pl.lit(scope.session_date).alias("session_date")))
     # Compute timestamps as a vector; the offset uses the explicit session's

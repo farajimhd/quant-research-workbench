@@ -43,6 +43,21 @@ def test_catalog_preserves_exact_frozen_feature_ids_and_units():
     assert p.BY_NAME[STOP_FIELD].unit == "price"
 
 
+def test_dense_canonical_prices_preserve_numpy_division_bits():
+    scope, bars, liquidity, _ = inputs(200)
+    # These integer prices distinguish true division from reciprocal multiply.
+    prices = np.resize(np.array([44900, 38076, 47300, 53100], dtype=np.int64), bars.height)
+    bars = bars.with_columns(*(pl.Series(name + "_int", prices) for name in ("close", "high", "low")))
+    dense = p.prepare_dense_inputs(scope, bars, liquidity)
+    observed = dense.filter(pl.col("observed"))
+    np.testing.assert_array_equal(observed["close"].to_numpy().view(np.uint64),
+                                  (prices.astype(np.float64) / 10000.).view(np.uint64))
+    extremes = dense.filter(pl.col("extremes_valid"))
+    expected = prices[bars["extremes_valid"].to_numpy() == 1].astype(np.float64) / 10000.
+    for name in ("high", "low"):
+        np.testing.assert_array_equal(extremes[name].to_numpy().view(np.uint64), expected.view(np.uint64))
+
+
 def test_normalized_interval_product_reconstructs_exact_dense_float32_inputs():
     scope, bars, liquidity, fields = inputs()
     prepared = p.prepare_product(scope, bars, liquidity, fields, volume_window_seconds=30,
