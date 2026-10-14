@@ -57,12 +57,15 @@ def _validate_prices(scope, values):
         if (row['prior_session_date'] != scope.regular.day or row['content_hash'] !=
                 c.content_hash({k: v for k, v in row.items() if k != 'content_hash'})):
             raise ValueError('Prior-close value lineage differs')
+        if row['canonical_event_count'] and (row['next_ordinal'] < row['canonical_event_count']
+                or row['last_ordinal'] + 1 != row['next_ordinal']):
+            raise ValueError('Prior-close canonical daily ordinal interval differs')
         if row['closing_bar_count']:
             if (row['prior_close_int'] is None or row['prior_close_int'] <= 0
                     or row['close_sip_timestamp_us'] is None or not low <= row['close_sip_timestamp_us'] < high
                     or row['close_ordinal'] is None or row['canonical_event_count'] == 0
                     or row['closing_bar_count'] > row['canonical_event_count']
-                    or row['close_ordinal'] > row['last_ordinal']
+                    or not row['next_ordinal'] - row['canonical_event_count'] <= row['close_ordinal'] <= row['last_ordinal']
                     or not row['first_sip_timestamp_us'] <= row['close_sip_timestamp_us'] <= row['last_sip_timestamp_us']):
                 raise ValueError('Prior-close price escapes its prior RTH source clock')
         elif any(row[key] is not None for key in ('prior_close_int', 'close_sip_timestamp_us', 'close_ordinal')):
@@ -282,7 +285,9 @@ def materialize_prior_close(canonical, source, attempt):
     if (not inventory or len(inventory) >= 100001 or len({row['ticker'] for row in inventory}) != len(inventory)
             or int(stats[0]['stats_version']) < 1 or not stats[0]['source_filter_key']
             or sum(int(row['event_count']) for row in inventory) != int(stats[0]['total_event_rows_after_filters'])
-            or any(int(row['next_ordinal']) != int(row['event_count'])
+            # Ordinals span source days. Native daily coverage begins at
+            # next_ordinal-event_count; it does not reset to zero each day.
+            or any(int(row['next_ordinal']) < int(row['event_count'])
                 or int(row['last_ordinal']) + 1 != int(row['next_ordinal'])
                 or int(row['first_sip_timestamp_us']) > int(row['last_sip_timestamp_us']) for row in inventory)):
         raise ValueError('Prior-close canonical complete-day inventory differs from certification')

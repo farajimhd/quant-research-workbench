@@ -22,6 +22,8 @@ class Store:
         self.fail_insert = None
         self.price_reads = 0
         self.source = None
+        self.ordinal_offset = 0
+        self.wrong_day_cursor = False
 
 
 class Client:
@@ -62,7 +64,8 @@ class Client:
             return encode([dict(stats_version=1, source_filter_key='synthetic-source',
                 total_event_rows_after_filters=2, updated_at='2026-10-13 01:00:00')])
         if 'FROM market_sip_compact.events_ordinal_continuity' in query:
-            return encode([dict(ticker='ABC', event_count=2, next_ordinal=2, last_ordinal=1,
+            return encode([dict(ticker='ABC', event_count=2, next_ordinal=self.store.ordinal_offset+2,
+                last_ordinal=self.store.ordinal_offset+1,
                 first_sip_timestamp_us=low, last_sip_timestamp_us=high - 1,
                 build_step=1, updated_at='2026-10-13 01:00:00')])
         if 'FROM market_sip_compact.event_condition_token_reference' in query:
@@ -77,7 +80,8 @@ class Client:
                 return ''
             return encode([dict(ticker='ABC', closing_bar_count=1,
                 prior_close_int=300000 if self.store.change_source and self.store.price_reads > 1 else 200000,
-                close_sip_timestamp_us=high if self.store.future else high - 1, close_ordinal=1)])
+                close_sip_timestamp_us=high if self.store.future else high - 1,
+                close_ordinal=1 if self.store.wrong_day_cursor else self.store.ordinal_offset+1)])
         if query.startswith('INSERT'):
             assert self.role == 'writer'
             name = re.search(r'INSERT INTO `q_live`\.`([a-z0-9_]+)`', query).group(1)
@@ -213,6 +217,22 @@ def test_query_success_without_eligible_prices_is_explicit_covered_empty(setup):
     rows, _ = opening.materialize_opening_reference(Client(store, 'reader'), source,
         attempt_id='00000000-0000-0000-0000-000000000005')
     assert rows[0]['status'] == 'covered_empty'
+
+
+@pytest.mark.parametrize('wrong_cursor', [False,True])
+def test_cumulative_ordinals_follow_native_daily_interval(setup, wrong_cursor):
+    store, _ = setup
+    store.ordinal_offset = 12000000
+    store.wrong_day_cursor = wrong_cursor
+    if wrong_cursor:
+        with pytest.raises(ValueError,match='source clock'):
+            publish(store)
+        assert not store.writes
+    else:
+        result = publish(store)
+        assert result.records[0]['close_ordinal'] == 12000001
+        assert result.records[0]['next_ordinal'] == 12000002
+        assert result.records[0]['canonical_event_count'] == 2
 
 
 @pytest.mark.parametrize('mode', ['change_source','ambiguous'])
