@@ -84,7 +84,8 @@ def run_ingestion(command,paths: IngestionPaths,stop,*,emit=print,guard=None):
     """Own and drain one child. A stopped mutation is reconciled by source gate."""
     paths.validate()
     allowed={str(ROOT/'pipelines/market_sip/flatfiles/download_update_events.py'),
-             str(ROOT/'scripts/backfill_trade_reporting_flags.py')}
+             str(ROOT/'scripts/backfill_trade_reporting_flags.py'),
+             str(ROOT/'pipelines/sec/edgar/sec_historical_gap_fill.py')}
     if len(command)<3 or command[0]!=sys.executable or command[1]!='-B' or command[2] not in allowed:
         raise ValueError('Unrecognized ingestion command')
     if any(flag in command for flag in ('--force-day-delete','--force-day-rebuild','--rebuild-existing','--force-rebuild')):

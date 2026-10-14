@@ -86,6 +86,16 @@ and transition-evidence publication remain incomplete.
 
 ## Next implementation order
 
+The unified launcher now has a guarded `--acquire-sec-missing` handoff to the
+complete existing SEC chain. It propagates explicit context, runtime and bounded
+resource selections, then independently qualifies stage lineage and required
+family coverage before derived graph creation. Actual parent dry-run, typed
+option, query-default, owned-child cleanup and source-handoff tests pass. The
+live default runtime mapping is outside CH's `/mnt/d/market-data/` file authority;
+execution needs a verified runtime mount alias, and existing misplaced source
+tables must be migrated first. No provider acquisition, mount/configuration
+change or production SEC campaign was run. See [scoped SEC acquisition](13w-sec-scoped-acquisition.md).
+
 SEC bulk mirror creation, raw/replacement stages, snapshot manifest writes and
 cutovers now enforce the shared explicit `live_market_ssd` authority with ZSTD(1)
 defaults. Misplaced templates or existing stage parts block before drop/create
@@ -95,7 +105,7 @@ writer audit includes inactive parts, not only active ones. Twenty-two focused
 storage tests and two real bounded ClickHouse fixtures passed (bulk setup/stages,
 acceptance fallback cleanup preserving the verified replacement). These checks
 do not migrate production tables or complete the full SEC acquisition/runtime
-audit needed before enabling unified catch-up.
+audit and runtime access qualification needed before production catch-up.
 
 The shared SEC coverage writer previously allowed an empty policy to omit the
 DDL storage setting and fall back to ClickHouse default storage. It now creates

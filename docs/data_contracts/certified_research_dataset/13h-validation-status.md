@@ -4,6 +4,13 @@
 
 ## Current direct regression run
 
+The expanded SEC handoff run selected every certified test file plus SEC storage,
+scoped execution and shared HTTP regressions: **355 passed, 55 skipped in 27.70
+seconds**. The actual SEC parent dry-run emitted 21 stages without acquisition;
+live query-default and inaccessible-runtime rejection checks were read-only.
+See [scoped SEC acquisition](13w-sec-scoped-acquisition.md) for the current mount
+dependency. The earlier all-certified-only result follows for comparison.
+
 All `tests/test_certified_*.py` files ran directly: **287 passed, 53 skipped in
 24.81 seconds**, without live integration opt-in, using a fresh checked runtime
 temporary root. The separate historical-identity ClickHouse fixture passed in

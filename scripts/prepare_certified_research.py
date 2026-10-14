@@ -60,6 +60,8 @@ def parse_args(argv=None):
     p.add_argument('--cohort-max-sessions',type=int,default=200000,help='plan-cohorts context/listing-day budget, maximum 250000')
     p.add_argument('--format',choices=('text','json','sql'),default='text')
     p.add_argument('--acquire-missing',action='store_true',help='Opt in to the existing flatfile downloader after Massive resubscription; acquire missing appendable sources before plan freeze')
+    p.add_argument('--acquire-sec-missing',action='store_true',help='Explicit opt-in to bounded SEC catch-up before graph freezing; independent of Massive acquisition')
+    p.add_argument('--sec-runtime-root-ch',help='CH-readable alias for the SEC runtime folder; verified before acquisition')
     def identity_point(value):
         from pipelines.certified_research.historical_identity import AcquisitionHandlers
         from types import SimpleNamespace
@@ -82,6 +84,9 @@ def parse_args(argv=None):
     p.add_argument('--clickhouse-cache-root',default='/mnt/d/market-data/flatfiles/us_stocks_sip')
     p.add_argument('--hydrate-missing-trades',action='store_true',help='Deprecated: imported-day repair requires canonical sidecars')
     args=p.parse_args(argv)
+    if args.acquire_sec_missing or args.sec_runtime_root_ch is not None:
+        if args.command not in ('prepare-sources','launch','launch-collection') or args.fundamental_start_date is None:
+            p.error('SEC acquisition options require a fundamental context bound on source preparation or fresh launch')
     if args.identity_point or args.acquire_identity_missing:
         if args.command not in ('prepare-sources','launch','launch-collection'):
             p.error('Identity preparation belongs to source preparation or fresh launch')
@@ -350,10 +355,11 @@ def main(argv=None):
                         try:
                             prepare_identity(args,source_claim,lambda:factory(config),
                                 lambda:DictionaryClaim(keeper.client,args.database),stop,progress)
-                            from pipelines.certified_research import sec_lineage,planning
-                            lineage=sec_lineage.qualify(client.query,source_claim,args.fundamental_start_date,
-                                planning.reference_coverage_end(config.end),stop=stop)
-                            if args.format=='text':print(f'SEC lineage | qualified={len(lineage["qualified"])} | unqualified={len(lineage["unqualified"])}',flush=True)
+                            from pipelines.certified_research import sec_acquisition
+                            sec_acquisition.prepare(client.query,paths,config,source_claim,stop,
+                                fundamental_start=args.fundamental_start_date,acquire_missing=args.acquire_sec_missing,
+                                runtime_root_ch=args.sec_runtime_root_ch,
+                                emit=print if args.format=='text' else lambda text:None)
                             acquisition.prepare_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),paths,config,source_claim,
                                 stop,acquire_missing=args.acquire_missing,stage_archive=args.stage_archive,context_start=args.context_start_date,
                                 writer_query=client.query,recover_retained_reporting=args.recover_retained_reporting,
@@ -496,6 +502,11 @@ def main(argv=None):
                     try:
                         prepare_identity(args,claim,lambda:builder.Client(args,persistent=False),
                             lambda:DictionaryClaim(keeper.client,args.database),stop)
+                        if args.fundamental_start_date is not None:
+                            from pipelines.certified_research import sec_acquisition
+                            sec_acquisition.prepare(client.query,paths,config,claim,stop,
+                                fundamental_start=args.fundamental_start_date,acquire_missing=args.acquire_sec_missing,
+                                runtime_root_ch=args.sec_runtime_root_ch)
                         result=acquisition.prepare_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),paths,config,claim,
                             stop,acquire_missing=args.acquire_missing,stage_archive=args.stage_archive,context_start=args.context_start_date,
                             writer_query=client.query,recover_retained_reporting=args.recover_retained_reporting,

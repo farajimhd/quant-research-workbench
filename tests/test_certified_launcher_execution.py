@@ -123,6 +123,7 @@ def test_fresh_cli_orders_schema_source_preparation_and_execution_and_closes_own
          patch('pipelines.certified_research.installation.install',side_effect=installed),\
          patch.object(launcher,'prepare_identity',side_effect=identity_prepared),\
          patch('pipelines.certified_research.acquisition.prepare_sources',side_effect=acquired),\
+         patch('pipelines.certified_research.sec_acquisition.prepare',return_value=dict(status='reused')) as sec_prepare,\
          patch('pipelines.certified_research.sec_lineage.qualify',return_value=dict(qualified=(),unqualified=())),\
          patch('pipelines.certified_research.fresh_execution.run',side_effect=fresh),\
          patch('pipelines.certified_research.collection_preparation.prepare',side_effect=fresh),\
@@ -135,6 +136,7 @@ def test_fresh_cli_orders_schema_source_preparation_and_execution_and_closes_own
         code=launcher.main(argv)
     assert code==(0 if complete else 2)
     assert stages==['schema']+(['identity'] if with_identity else [])+['sources','fresh']+(['execute'] if complete else [])
+    assert sec_prepare.call_args.kwargs['fundamental_start']==date(2024,1,1)
     for owner in (dictionary,source_claim,claim,keeper,client,inspection):owner.close.assert_called_once()
     paths.validate.assert_called_once()
 

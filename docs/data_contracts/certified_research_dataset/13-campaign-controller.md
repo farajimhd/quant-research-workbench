@@ -28,6 +28,8 @@
 
 [Dated identity prerequisite options and acquisition boundary](13v-identity-prerequisites.md)
 
+[Scoped SEC acquisition, runtime access and certification handoff](13w-sec-scoped-acquisition.md)
+
 ## Implemented controller core
 
 `ExecutionLaunch` now combines the concrete market, reference, activity and universe registries into one `Campaign` executor. Acquisition, initial-seed and corporate/allocation stages must supply registered application handlers; missing handlers stop construction, and competing product authorities are rejected. Nothing in stored arguments is executed as code.

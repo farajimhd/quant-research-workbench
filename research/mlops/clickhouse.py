@@ -292,6 +292,18 @@ class ClickHouseHttpClient:
         self.default_query_params = {
             str(key): str(value) for key, value in (default_query_params or {}).items()
         }
+        sec_threads=os.environ.get('SEC_EXECUTION_MAX_THREADS')
+        sec_memory=os.environ.get('SEC_EXECUTION_MAX_MEMORY_BYTES')
+        if sec_threads is not None or sec_memory is not None:
+            if sec_threads is None or sec_memory is None:
+                raise ValueError('Scoped SEC query defaults require both thread and memory settings')
+            threads=int(sec_threads);memory=int(sec_memory)
+            if not 1<=threads<=8 or not 64*1024**2<=memory<=32*1024**3:
+                raise ValueError('Invalid scoped SEC query defaults')
+            for key,limit in (('max_threads',threads),('max_memory_usage',memory)):
+                existing=self.default_query_params.get(key)
+                value=(parse_size_bytes(existing) if key=='max_memory_usage' else int(existing)) if existing is not None else limit
+                self.default_query_params[key]=str(min(value,limit) if value>0 else limit)
         self._connection: http.client.HTTPConnection | None = None
         self._last_persistent_response_at: float | None = None
         self._connection_lock = threading.Lock()

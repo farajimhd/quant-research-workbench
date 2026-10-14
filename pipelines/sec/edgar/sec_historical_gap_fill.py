@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -281,7 +282,7 @@ def format_bytes(value: int) -> str:
     return f"{value}B"
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Unified SEC historical gap fill. This is the gateway-facing historical "
@@ -301,6 +302,13 @@ def parse_args() -> argparse.Namespace:
         help="Exclusive UTC/archive date, YYYY-MM-DD. Defaults to tomorrow UTC so today's archives are included.",
     )
     parser.add_argument("--execute", action="store_true", help="Execute writes. Without this, only dry-run stage commands execute.")
+    parser.add_argument('--runtime-root-win',type=Path,help='Opt-in scoped execution under the required operational runtime tree')
+    parser.add_argument('--runtime-root-ch',help='Explicit CH-readable mount alias for the same runtime folder; execution verifies an exact nonce readback')
+    parser.add_argument('--execution-workers',type=int)
+    parser.add_argument('--execution-query-threads',type=int)
+    parser.add_argument('--execution-query-memory-bytes',type=int)
+    parser.add_argument('--execution-global-memory-bytes',type=int)
+    parser.add_argument('--context-start-date',default=DEFAULT_START_DATE,help='Explicit SEC context start; legacy default remains 2019-01-01')
     parser.add_argument(
         "--finalize-only",
         action="store_true",
@@ -405,7 +413,15 @@ def parse_args() -> argparse.Namespace:
         help="Skip stages whose stage-level coverage already covers the requested range.",
     )
     parser.add_argument("--progress-layout", choices=["auto", "rich", "text"], default=env_string("SEC_HISTORICAL_GAP_FILL_PROGRESS_LAYOUT", "rich"))
-    return parser.parse_args()
+    args=parser.parse_args(argv)
+    from pipelines.sec.edgar.sec_execution_profile import configure
+    try:
+        context=date.fromisoformat(args.context_start_date)
+        if args.context_start_date!=context.isoformat() or not date(2019,1,1)<=context<date.fromisoformat(args.end_date):
+            raise ValueError('SEC context start must be a canonical date within available history and before end')
+        args.execution_profile=configure(args)
+    except ValueError as error:parser.error(str(error))
+    return args
 
 
 def default_end_date() -> str:
@@ -452,12 +468,32 @@ def main() -> None:
         raise SystemExit("SEC historical gap fill is intentionally bounded at 2019-01-01 or later")
 
     loaded_env = load_env_files(discover_env_files(REPO_ROOT), verbose=True)
+    from pipelines.sec.edgar.sec_execution_profile import environment,commands as scoped_commands
+    os.environ.update(environment(args.execution_profile))
+    runtime_access=None
+    if args.execute and args.execution_profile is not None:
+        from pipelines.sec.edgar.sec_execution_profile import preflight_runtime_access
+        probe_config=SecPipelineConfig.from_env()
+        probe_client=ClickHouseHttpClient(probe_config.clickhouse.url,probe_config.clickhouse.user,
+            probe_config.clickhouse.password,default_query_params={'readonly':1})
+        try:
+            from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import WRITE_TABLES,verify_sec_write_storage
+            from pipelines.sec.edgar.sec_bulk_clickhouse_ingest import MIRROR_TABLES
+            verify_sec_write_storage(probe_client,args.write_database,
+                [*WRITE_TABLES,args.coverage_table,args.entity_archive_manifest_table,args.text_archive_manifest_table,
+                    'sec_filing_bundle_manifest_v3',args.sec_bridge_table],require_tables=False)
+            verify_sec_write_storage(probe_client,args.bulk_mirror_database,MIRROR_TABLES,require_tables=False)
+            verify_sec_write_storage(probe_client,args.context_database,
+                [args.context_filing_table,args.context_text_table,args.context_xbrl_table],require_tables=False)
+            runtime_access=preflight_runtime_access(args.execution_profile,probe_client)
+        finally:probe_client.close()
     run_id = f"sec_historical_gap_fill_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
     run_root = Path(args.output_root_win) / run_id
     logs_root = run_root / "logs"
     logs_root.mkdir(parents=True, exist_ok=True)
 
     commands = build_commands(args, logs_root)
+    commands = scoped_commands(args,commands)
     if args.finalize_only:
         commands = [command for command in commands if command.stage in FINALIZE_ONLY_STAGES]
     commands = commands_from_start_stage(commands, args.start_stage)
@@ -473,6 +509,9 @@ def main() -> None:
         "read_database": args.read_database,
         "write_database": args.write_database,
         "bulk_mirror_database": args.bulk_mirror_database,
+        "execution_profile": args.execution_profile,
+        "runtime_access": runtime_access,
+        "context_start_date": args.context_start_date,
         "run_root": str(run_root),
         "loaded_env_files": [str(path) for path in loaded_env],
         "secret_status": secret_status(
@@ -537,7 +576,7 @@ def main() -> None:
 
 def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageCommand]:
     archive_root = str(Path(args.artifact_root_win) / "daily_archives")
-    context_start_date = DEFAULT_START_DATE
+    context_start_date = args.context_start_date
     context_end_date = (parse_date(args.end_date) - timedelta(days=1)).isoformat()
     required_archive_date = required_archive_through_date(args.end_date).isoformat()
     return [
@@ -1195,16 +1234,23 @@ def run_stage(command: StageCommand, *, progress: HistoricalFillProgress | None 
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            env=dict(os.environ,PYTHONDONTWRITEBYTECODE='1'),
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name=='nt' else 0,
+            start_new_session=os.name!='nt',
         )
-        assert process.stdout is not None
-        for line in process.stdout:
-            if rich_enabled and progress:
-                progress.log_line(line)
-            else:
-                print(line, end="", flush=True)
-            log.write(line)
-            log.flush()
-        returncode = int(process.wait())
+        try:
+            assert process.stdout is not None
+            for line in process.stdout:
+                if rich_enabled and progress:
+                    progress.log_line(line)
+                else:
+                    print(line, end="", flush=True)
+                log.write(line)
+                log.flush()
+            returncode = int(process.wait())
+        finally:
+            stop_owned_stage(process)
+            if process.stdout is not None:process.stdout.close()
     elapsed = round(time.perf_counter() - started, 3)
     status = "ok" if returncode == 0 else "failed"
     result = StageResult(command.stage, status, returncode, elapsed, str(command.log_path), actual_command)
@@ -1213,6 +1259,22 @@ def run_stage(command: StageCommand, *, progress: HistoricalFillProgress | None 
     if not rich_enabled:
         print(f"stage={command.stage} status={status} returncode={returncode} elapsed_seconds={elapsed}", flush=True)
     return result
+
+
+def stop_owned_stage(process):
+    """Drain the owned process group after interruption or output failure."""
+    if process.poll() is not None:return
+    try:
+        if os.name=='nt':process.send_signal(signal.CTRL_BREAK_EVENT)
+        else:os.killpg(process.pid,signal.SIGINT)
+    except OSError:pass
+    try:process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        if os.name=='nt':
+            subprocess.run(['taskkill','/PID',str(process.pid),'/T','/F'],
+                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=5,check=False)
+        else:os.killpg(process.pid,signal.SIGKILL)
+        process.wait(timeout=10)
 
 
 def skipped_stage_result(command: StageCommand) -> StageResult:
