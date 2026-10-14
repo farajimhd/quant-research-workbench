@@ -1,6 +1,10 @@
 import pytest
 
 from pipelines.certified_research.sec_precision import assess
+from pipelines.certified_research.sec_precision import inventory
+from pipelines.certified_research import sec_fundamental_context
+from tests.test_certified_sec_share_context import document
+from hashlib import sha256
 
 
 def rows(*values):return tuple(dict(source_position=i,value=value,decimals=decimals) for i,(value,decimals) in enumerate(values))
@@ -28,3 +32,18 @@ def test_negative_zero_and_exact_infinite_precision():
 @pytest.mark.parametrize('value,decimals',[('1100000','-6'),('1',''),('NaN','INF'),('1e999999','0')])
 def test_missing_excess_or_invalid_precision_cannot_pass(value,decimals):
     with pytest.raises(ValueError):assess(rows((value,decimals)),mode='round-to-nearest')
+
+
+def test_inventory_includes_dimensioned_groups_and_reports_invalid_precision():
+    payload=document(dimension='<d:explicitMember dimension="g:StatementClassOfStockAxis">g:CommonStockMember</d:explicitMember>')
+    extraction=sec_fundamental_context.extract(payload,sha256(payload.encode()).hexdigest(),'320193')
+    result=inventory(extraction)
+    assert result['observations']==result['semantic_groups']==result['dimensioned_groups']==1
+    assert result['mode_status_counts']['round-to-nearest']=={'unqualified_precision':1}
+    assert result['certified'] is False
+
+
+def test_inventory_rejects_mutated_extraction():
+    payload=document();extraction=sec_fundamental_context.extract(payload,sha256(payload.encode()).hexdigest(),'320193')
+    extraction['observations'][0]['value']='1'
+    with pytest.raises(ValueError,match='extraction'):inventory(extraction)

@@ -2,6 +2,7 @@
 from decimal import Decimal,InvalidOperation,localcontext
 from fractions import Fraction
 import re
+from collections import defaultdict,Counter
 
 from .contracts import digest
 
@@ -42,3 +43,32 @@ def assess(rows,*,mode):
         intersection=dict(lower=text(lower),upper=text(upper),lower_inclusive=left,upper_inclusive=right) if compatible else None,
         certified=False,value_selected=False)
     return dict(result,assessment_hash=digest(result))
+
+
+def inventory(extraction):
+    """Assess every original semantic group; dimensional facts remain included."""
+    body=dict(extraction);sealed=body.pop('extraction_hash',None)
+    if sealed!=digest(body) or len(extraction['observations'])+len(extraction['rejected'])>10000:
+        raise ValueError('Invalid bounded original precision extraction')
+    grouped=defaultdict(list);positions=set()
+    for row in extraction['observations']:
+        position=row['source_position']
+        if position in positions:raise ValueError('Original precision inventory has duplicate positions')
+        positions.add(position)
+        key=(row['concept'],row['unit'],row['period_start'],row['period_end'],tuple(tuple(v) for v in row['dimensions']))
+        grouped[key].append(dict(source_position=position,value=row['value'],decimals=row['decimals']))
+    groups=[];counts={mode:Counter() for mode in ('round-to-nearest','truncation')}
+    for key,rows in grouped.items():
+        modes={}
+        for mode in counts:
+            try:result=assess(tuple(rows),mode=mode)
+            except ValueError as error:result=dict(status='unqualified_precision',reason=str(error),certified=False)
+            modes[mode]=result;counts[mode][result['status']]+=1
+        groups.append(dict(context_hash=digest(key),positions=tuple(r['source_position'] for r in rows),
+            dimensioned=bool(key[-1]),observations=len(rows),modes=modes))
+    groups.sort(key=lambda row:row['context_hash'])
+    result=dict(version='original-sec-precision-inventory-v1',extraction_hash=sealed,groups=tuple(groups),
+        observations=len(positions),semantic_groups=len(groups),duplicate_groups=sum(g['observations']>1 for g in groups),
+        dimensioned_groups=sum(g['dimensioned'] for g in groups),rejected_numeric_facts=len(extraction['rejected']),
+        mode_status_counts={mode:dict(sorted(values.items())) for mode,values in counts.items()},certified=False)
+    return dict(result,inventory_hash=digest(result))

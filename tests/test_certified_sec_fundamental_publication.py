@@ -49,7 +49,8 @@ def test_real_partial_resume_exact_readback_and_zero_insert_reuse():
         from pipelines.certified_research import sec_fundamental_readback
         original_hash=publication.records(*source())[-1][0]['reconciliation_hash']
         verified=sec_fundamental_readback.verify(client.query,database,original_hash,Mock(),Mock())
-        assert verified['readback_verified'] and verified['parity_inputs_ready']
+        assert verified['readback_verified'] and not verified['parity_inputs_ready']
+        assert verified['parity_input_blockers']['unqualified_original_precision_groups']==1
         changed=list(source());changed[1][0]['value']='999'
         assert publication.capture(client.query,database,*changed,Mock(),Mock(),admission)['inserted_rows']==2
         changed_hash=publication.records(*changed)[-1][0]['reconciliation_hash']

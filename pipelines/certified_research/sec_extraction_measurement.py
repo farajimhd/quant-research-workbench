@@ -42,6 +42,9 @@ def measure(query,requests,*,progress=None,compare_bulk=False):
             extraction_metadata_bytes=len(json.dumps(parsed,separators=(',',':')).encode('utf-8')),
             extraction_hash=parsed['extraction_hash'])
         if compare_bulk:
+            precision=sec_precision.inventory(parsed)
+            result['original_precision_inventory']={k:precision[k] for k in ('inventory_hash','observations','semantic_groups',
+                'duplicate_groups','dimensioned_groups','rejected_numeric_facts','mode_status_counts','certified')}
             tags=tuple(sorted({tag for metric in facts.catalog() for tag in metric.tags}))
             bulk=sec_fundamental_reconciliation.load_bulk(query,cik,accession,tags)
             comparison=sec_fundamental_reconciliation.compare_original(parsed,bulk)

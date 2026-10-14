@@ -116,3 +116,26 @@ and any report-wide rounding policy. Existing exact-comparison status and readin
 blockers stay unchanged. Source values are never averaged, overwritten or replaced
 with an inferred midpoint. Adopting precision-aware duplicate authority and choosing
 any downstream point-value policy remain separate versioned certification work.
+
+`sec_precision.inventory` now groups every accepted original observation by
+expanded concept, unit, period and dimensions, verifies the extraction seal and
+assesses both modes for every group. It includes dimensional groups absent from
+bulk facts and keeps duplicate source positions rather than deduplicating values.
+Measurement and independent normalized readback expose its hashed counts and
+mode-specific statuses. Invalid/missing declared precision becomes an explicit
+readiness blocker; compatible intervals still do not remove exact comparison
+conflicts or authorize a point value.
+
+The bounded three-filing live inventory observed:
+
+| Filing | Observations | Semantic groups | Duplicate groups | Dimensioned groups | Round-nearest compatible | Truncation compatible |
+|---|---:|---:|---:|---:|---:|---:|
+| Apple | 280 | 215 | 49 | 115 | 215 | 215 |
+| Alphabet | 350 | 282 | 53 | 195 | 282 | 281 |
+| Meta | 267 | 198 | 49 | 112 | 198 | 198 |
+
+Alphabet has one disjoint group under truncation while all its intervals overlap
+under rounding. This demonstrates why a report-wide mode must be explicit and
+why per-fact mode selection would be invalid. No mode is automatically adopted,
+no source fact is deleted, and these bounded observations do not certify whole
+filings, original posting times, issuer classes or historical period coverage.

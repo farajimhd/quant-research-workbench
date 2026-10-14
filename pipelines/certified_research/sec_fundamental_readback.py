@@ -5,6 +5,7 @@ import re
 from datetime import datetime,timezone
 
 from . import sec_fundamental_publication,sec_share_capture,sec_fundamental_reconciliation
+from . import sec_precision
 from .contracts import digest,literal
 
 
@@ -61,6 +62,7 @@ def verify(query,database,reconciliation_hash,claim,source_guard):
     extraction=dict(proof['extraction_metadata'],observations=original,rejected=proof['rejected_original'])
     sealed=extraction.pop('extraction_hash')
     if sealed!=extraction_hash or digest(extraction)!=sealed:raise ValueError('Reconstructed fundamental extraction seal differs')
+    precision_inventory=sec_precision.inventory(dict(extraction,extraction_hash=sealed))
     restored_comparisons=[];seen=set()
     for row in comparisons:
         if row['source_record'] in seen or any(p not in positions for p in row['original_positions']):
@@ -89,9 +91,13 @@ def verify(query,database,reconciliation_hash,claim,source_guard):
     if rejected:blockers['rejected_original_numeric_facts']=rejected
     if unmatched:blockers['unmatched_original_numeric_facts']=unmatched
     if cover_rejected:blockers['rejected_original_cover_facts']=cover_rejected
+    unqualified=max((counts.get('unqualified_precision',0) for counts in precision_inventory['mode_status_counts'].values()),default=0)
+    if unqualified:blockers['unqualified_original_precision_groups']=unqualified
     if not comparisons:blockers['missing_bulk_comparison_census']=1
     return dict(readback_verified=True,extraction_hash=extraction_hash,reconciliation_hash=reconciliation_hash,
         observations=len(observations),comparisons=len(comparisons),all_bulk_matched=proof['all_bulk_matched'],
         comparison_status_counts=statuses,parity_input_blockers=blockers,parity_inputs_ready=not blockers,
         unmatched_original_context_counts=unmatched_contexts,
+        original_precision_inventory={k:precision_inventory[k] for k in ('inventory_hash','observations','semantic_groups',
+            'duplicate_groups','dimensioned_groups','mode_status_counts','certified')},
         certified=False,allocation_certified=False)
