@@ -26,7 +26,8 @@ from pipelines.certified_research import contracts,schema,source,short_sql,campa
 
 def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('schema','install-schema','preflight','plan','plan-cohorts','status','stored-plan','prepare-sources','qualify-sec-lineage','verify','measure-storage','launch','launch-collection','backfill-v7','run','resume','resume-collection','verify-collection'))
+    p.add_argument('command',choices=('schema','install-schema','preflight','plan','plan-cohorts','status','stored-plan','prepare-sources','qualify-sec-lineage','verify','measure-storage','estimate-storage','launch','launch-collection','backfill-v7','run','resume','resume-collection','verify-collection'))
+    p.add_argument('--collection',action='store_true',help='estimate-storage only: inspect a stored collection instead of a single dataset')
     p.add_argument('--dataset-id',type=UUID)
     p.add_argument('--source-dataset-id',type=UUID,help='Qualified source plan/bar dataset for backfill-v7; never modified')
     p.add_argument('--backfill-start-date',type=date.fromisoformat,help='Optional narrower target range inside the source plan')
@@ -110,7 +111,9 @@ def parse_args(argv=None):
     try:contracts.identifier(args.database)
     except ValueError as error:p.error(str(error))
     if args.command!='schema' and args.format=='sql':p.error('SQL format is for schema inspection only')
-    if args.command in ('status','stored-plan','verify','measure-storage','launch','launch-collection','backfill-v7','run','resume') and args.dataset_id is None:p.error(args.command+' requires --dataset-id')
+    if args.command in ('status','stored-plan','verify','measure-storage','estimate-storage','launch','launch-collection','backfill-v7','run','resume') and args.dataset_id is None:p.error(args.command+' requires --dataset-id')
+    if args.collection and args.command!='estimate-storage':p.error('--collection belongs to estimate-storage')
+    if args.command=='estimate-storage' and (args.acquire_missing or args.stage_archive):p.error('Storage estimation cannot acquire sources')
     if args.command in ('launch','launch-collection','backfill-v7','run','resume') and args.capacity_profile is None:p.error(args.command+' requires --capacity-profile')
     if args.command=='backfill-v7':
         if args.source_dataset_id is None or args.source_dataset_id==args.dataset_id:
@@ -268,8 +271,21 @@ def main(argv=None):
     from scripts import build_market_day as builder
     args.max_threads=args.query_threads;args.max_memory_gb=args.query_memory_gib;args.query_timeout=45
     client=builder.Client(args,persistent=False,readonly=args.command in
-        ('preflight','plan','plan-cohorts','status','stored-plan','verify','verify-collection','measure-storage'))
+        ('preflight','plan','plan-cohorts','status','stored-plan','verify','verify-collection','measure-storage','estimate-storage'))
     try:
+        if args.command=='estimate-storage':
+            from pipelines.certified_research import storage_estimate,capacity_profile
+            profile=capacity_profile.load(args.capacity_profile) if args.capacity_profile is not None else None
+            result=storage_estimate.estimate(client.query,args.database,str(args.dataset_id),profile=profile,is_collection=args.collection)
+            if args.format=='json':print(json.dumps(result,indent=2,default=str))
+            else:
+                print('Storage estimate | '+result['status']+' | execution not started')
+                if result['status']=='measurement_required':print('Required bytes unknown: compatible measured product rates and peak bounds are missing.')
+                else:
+                    for name,row in result.get('headroom',{}).items():
+                        print(f'{name} | required={row["required_bytes"]:,} bytes | reserved available={row["available_bytes"]:,} bytes')
+                    for reason in result.get('blockers',[]):print('Blocked: '+reason)
+            return 0 if result['status']=='admitted' else 2
         if args.command in ('resume-collection','verify-collection'):
             from contextlib import closing
             from types import SimpleNamespace

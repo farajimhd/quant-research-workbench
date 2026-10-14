@@ -1,5 +1,23 @@
 # Certified persisted-storage measurement
 
+## Read-only whole-plan estimate
+
+`estimate-storage --dataset-id UUID` now reads an installed immutable plan and
+reports its storage demand without invoking execution or acquiring sources.
+Add `--collection` for an installed collection; retained child outputs and cohort
+transient allowances use the existing conservative collection admission model.
+
+With `--capacity-profile PATH`, the report uses the same schema/recipe-compatible
+qualified rates, reserves and physical-volume grouping as execution admission.
+Without a profile, it returns `measurement_required`, product demand counts,
+current physical inventory and `required_bytes=null`. It does not infer a new
+schema's rate from old-table bytes or qualify sampled peaks automatically.
+
+The server connection is readonly. Plan/collection definitions are rechecked
+after measurement. This is a capacity report, not source or dataset certification;
+no producers, downloads, repair, Keeper writer lease or data exports are started.
+A bounded real stored-plan check returned the missing-measurement state correctly.
+
 [Capacity design](10a-capacity.md) · [Completion audit](13i-completion-audit.md)
 
 `measure-storage --dataset-id UUID --database ISOLATED_PILOT_DATABASE` uses the

@@ -101,6 +101,12 @@ and transition-evidence publication remain incomplete.
 
 ## Next implementation order
 
+`estimate-storage` now exposes whole stored-plan/collection capacity projection
+through a readonly CLI. Compatible qualified profiles use existing admission
+rules; absent measurements return unknown required bytes and explicit product
+demands instead of invented rates. Unit tests and a real stored-plan readonly
+check passed. Representative pilot/peak qualification is still incomplete.
+
 Fresh source preparation now expands its context floor from selected rolling
 requirements and declared rebuild origin. Newly discovered float-price sessions
 have an explicit ingestion dependency before expanded source inventory/epoch

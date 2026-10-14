@@ -1097,6 +1097,14 @@ class ClickHouseIntegration(unittest.TestCase):
         saved=load_plan(self.client.query,self.database,dataset)
         self.assertEqual(saved.config.issuer_keys,keys);self.assertEqual(saved.plan_hash,controller.plan_hash)
         self.assertEqual(saved.units[0].arguments['issuer_keys'],list(keys))
+        from pipelines.certified_research.storage_estimate import estimate
+        reader=self.builder.Client(self.args,persistent=False,readonly=True)
+        try:storage=estimate(reader.query,self.database,dataset)
+        finally:reader.close()
+        self.assertEqual(storage['status'],'measurement_required')
+        self.assertIsNone(storage['required_bytes'])
+        self.assertEqual(storage['plan_hash'],saved.plan_hash)
+        self.assertFalse(storage['execution_started'])
 
     def test_sec_stage_lineage_promotes_only_proven_ranges_and_detects_source_changes(self):
         from types import SimpleNamespace
