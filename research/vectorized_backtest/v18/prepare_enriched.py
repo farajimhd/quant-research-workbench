@@ -21,9 +21,17 @@ from research.rl_trading.v1.common import digest,NY
 read=lambda p:json.loads(Path(p).read_bytes())
 
 
+def requested_rows(keys,top_indices,listing_count):
+    """All causal clocks for listings entering the pinned top-10 funnel."""
+    selected=np.unique(top_indices);selected=selected[selected>=0]
+    if len(selected) and selected.max()>=listing_count:raise ValueError('Top-10 listing outside compact census')
+    return np.flatnonzero(np.isin(keys//KEY_STRIDE,selected)),selected
+
+
 def definition():
     return dict(version=VERSION,names=list(NAMES),math_sha256=file_hash(Path(__file__).with_name('enriched_math.py')),
         extractor_sha256=file_hash(Path(__file__)),
+        output_scope='top-10 membership listings only, including their compact causal history; other rows masked',
         universe='unique tickers in the full pinned preopen snapshot; missing certified source units remain unavailable, never zero',
         clock='completed source second <= feature clock; no overnight return; max endpoint age 1 second',
         context='contemporaneously observed valid ticker returns; explicit coverage; minimum 2 peers',
@@ -48,16 +56,19 @@ def prepare_day(dataset,day,output):
     keys=np.load(root/'feature_keys.npy',mmap_mode='r');ticks=keys%KEY_STRIDE;members=receipt['listings']
     ids=(keys//KEY_STRIDE).astype(np.int64)
     if len(ids) and (ids.min()<0 or ids.max()>=len(members)):raise ValueError('Feature identity outside compact census')
+    required,selected=requested_rows(keys,np.load(root/'top_indices.npy',mmap_mode='r'),len(members))
+    if not len(required):raise ValueError('No top-10 feature rows requested')
     sources=pl.Series(ticks*1000000).cast(pl.Datetime('us','UTC')).dt.convert_time_zone('America/New_York').dt.date().cast(pl.String).to_numpy()
     values=np.lib.format.open_memmap(folder/'values.npy',mode='w+',dtype=np.float32,shape=(len(keys),len(NAMES)));values[:]=np.nan
-    source=authority.load_build(session['source_manifest'],session['source_ledger'],[date.fromisoformat(d) for d in sorted(set(sources))])
+    source_days=sorted(set(sources[required]))
+    source=authority.load_build(session['source_manifest'],session['source_ledger'],[date.fromisoformat(d) for d in source_days])
     bank=Path(session['feature_root']);plan=read(bank/'plan.json')
     if file_hash(bank/'complete.json')!=receipt['bank_certificate_sha256'] or plan['source_build_id']!=source['build_id'] or plan['source_definition_hash']!=source['definition_hash']:
         raise ValueError('Compact features and canonical bar authority differ')
     proofs=[];prepared=0
     with closing(authority.reader(threads=1)) as client:
         storage=authority.storage_check(client)
-        for source_day in sorted(set(sources)):
+        for source_day in source_days:
             if (Path(output)/'STOP').exists():raise InterruptedError('Cooperative preparation stop requested')
             require_reporting_coverage(source,date.fromisoformat(source_day))
             saved=next(p for p in source['definition']['plan']['population'] if p['session_date']==source_day)
@@ -79,7 +90,7 @@ def prepare_day(dataset,day,output):
             origin=int(datetime.combine(date.fromisoformat(source_day),datetime.min.time().replace(hour=4),NY).timestamp())
             # ARTE bucket indices start at New York midnight, not session 04:00.
             bucket_origin=int(datetime.combine(date.fromisoformat(source_day),datetime.min.time(),NY).timestamp())
-            target_rows=np.flatnonzero(sources==source_day);requests={}
+            target_rows=required[sources[required]==source_day];requests={}
             first_clock=max(origin+1,int(ticks[target_rows].min())-15)
             last_clock=int(ticks[target_rows].max())
             clocks=np.arange(first_clock,last_clock+1,dtype=np.int64)
@@ -94,9 +105,12 @@ def prepare_day(dataset,day,output):
             if shutil.disk_usage(folder).free<need+2*1024**3:raise MemoryError('Insufficient runtime disk for bounded market scratch')
             dense=np.lib.format.open_memmap(scratch/'cross-section.npy',mode='w+',dtype=np.float32,shape=(4,len(tickers),len(clocks)));dense[:]=np.nan
             units=[]
-            for start in range(0,len(available_tickers),32):
+            own_tickers=sorted(requests)
+            peers=sorted(eligible-set(own_tickers))
+            batches=[(group[start:start+32],is_own) for group,is_own in ((own_tickers,True),(peers,False)) for start in range(0,len(group),32)]
+            completed_tickers=0
+            for batch,is_own in batches:
                 if (Path(output)/'STOP').exists():raise InterruptedError('Cooperative preparation stop requested')
-                batch=available_tickers[start:start+32]
                 pairs=','.join(f'({sql.literal(t)},toUUID({sql.literal(source["units"][source_day][t]["bars"]["attempt_id"])}))' for t in batch)
                 condition=f'build_id={sql.literal(source["build_id"])} AND session_date=toDate({sql.literal(source_day)}) AND (ticker,attempt_id) IN ({pairs})'
                 audits=sql.query(client,f'SELECT ticker,count() AS n,uniqExact((resolution_ms,bucket_index)) AS unique_keys,sum(cityHash64(tuple(*))) AS hash FROM arte.bars_v1 WHERE {condition} GROUP BY ticker')
@@ -105,8 +119,12 @@ def prepare_day(dataset,day,output):
                     cert=source['units'][source_day][ticker]['bars'];a=actual.get(ticker,dict(n=0,unique_keys=0,hash='0'))
                     if int(a['n'])!=cert['output_rows'] or int(a['n'])!=int(a['unique_keys']) or str(a['hash'])!=cert['output_hash']:raise ValueError('Certified bar unit changed: '+ticker)
                 end=f'intDiv(toInt64({sql.bounds(source_day)}),1000000)+toInt64(bucket_index)+1'
-                frame=authority.frame(client,f'SELECT ticker,toInt64({end}) AS second,open_int/10000. AS open,high_int/10000. AS high,low_int/10000. AS low,close_int/10000. AS close,volume,notional,trade_count,price_valid,extremes_valid FROM arte.bars_v1 WHERE {condition} AND resolution_ms=1000 AND bucket_index>={read_begin-bucket_origin-1} AND bucket_index<={last_clock-bucket_origin-1} ORDER BY ticker,bucket_index',
-                    dict(ticker=pl.String,second=pl.Int64,open=pl.Float64,high=pl.Float64,low=pl.Float64,close=pl.Float64,volume=pl.Float64,notional=pl.Float64,trade_count=pl.Int64,price_valid=pl.Int64,extremes_valid=pl.Int64))
+                columns='ticker,toInt64('+end+') AS second,close_int/10000. AS close,notional,price_valid'
+                schema=dict(ticker=pl.String,second=pl.Int64,close=pl.Float64,notional=pl.Float64,price_valid=pl.Int64)
+                if is_own:
+                    columns+=',open_int/10000. AS open,high_int/10000. AS high,low_int/10000. AS low,volume,trade_count,extremes_valid'
+                    schema.update(open=pl.Float64,high=pl.Float64,low=pl.Float64,volume=pl.Float64,trade_count=pl.Int64,extremes_valid=pl.Int64)
+                frame=authority.frame(client,f'SELECT {columns} FROM arte.bars_v1 WHERE {condition} AND resolution_ms=1000 AND bucket_index>={read_begin-bucket_origin-1} AND bucket_index<={last_clock-bucket_origin-1} ORDER BY ticker,bucket_index',schema)
                 grouped=frame.partition_by('ticker',as_dict=True,maintain_order=True)
                 for ticker in batch:
                     f=grouped.get((ticker,),frame.head(0));units.append(dict(ticker=ticker,certificate=source['units'][source_day][ticker]['bars']))
@@ -121,7 +139,8 @@ def prepare_day(dataset,day,output):
                         exact=np.searchsorted(t,ticks[rr])
                         if np.any(exact>=len(t)) or not np.array_equal(t[exact],ticks[rr]):raise ValueError('Requested completed feature clock absent')
                         values[rr,:len(OWN_NAMES)]=own(f,ticks[rr],origin);prepared+=len(rr)
-                write_json(folder/'progress.json',dict(status='running',day=day,source_day=source_day,stage='certified bars',completed_tickers=min(start+32,len(available_tickers)),total_tickers=len(available_tickers),snapshot_tickers=len(tickers),unavailable_source_tickers=len(excluded),prepared_rows=prepared))
+                completed_tickers+=len(batch)
+                write_json(folder/'progress.json',dict(status='running',day=day,source_day=source_day,stage='top-10 candles' if is_own else 'minimal market context',completed_tickers=completed_tickers,total_tickers=len(available_tickers),top10_tickers=len(own_tickers),required_rows=len(required),snapshot_tickers=len(tickers),unavailable_source_tickers=len(excluded),prepared_rows=prepared))
             dense.flush()
             rank=np.lib.format.open_memmap(scratch/'rank.npy',mode='w+',dtype=np.float32,shape=(len(tickers),len(clocks)));rank[:]=np.nan
             # Native sorting and reductions over all peers in bounded 1024-second tiles.
@@ -142,10 +161,11 @@ def prepare_day(dataset,day,output):
             if scratch.resolve().parent!=folder.resolve():raise ValueError('Scratch escaped runtime session')
             shutil.rmtree(scratch)
             proofs.append(dict(day=source_day,scope=proof,units=units))
-    if prepared!=len(keys):raise ValueError('Incomplete requested feature rows')
+    if prepared!=len(required):raise ValueError('Incomplete requested top-10 feature rows')
     values.flush();shape=list(values.shape);del values
     write_json(folder/'complete.json',dict(status='complete',definition=definition(),input_sha256=expected,
         files={'values.npy':file_hash(folder/'values.npy')},shape=shape,prepared_rows=prepared,
+        required_rows=len(required),unrequested_rows=len(keys)-len(required),top10_listings=selected.tolist(),
         validation_opened=dataset['role']=='validation',source_proofs=proofs,storage=storage,elapsed_seconds=time.perf_counter()-started))
     return dict(day=day,status='completed',elapsed_seconds=time.perf_counter()-started,rows=prepared)
 

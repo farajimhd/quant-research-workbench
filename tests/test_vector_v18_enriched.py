@@ -33,6 +33,16 @@ def test_market_ties_missing_and_coverage():
     assert np.isnan(pct[:,1]).all() and np.isnan(common[1,:4]).all()
 
 
+def test_top10_scope_includes_history_and_excludes_other_listings():
+    from research.vectorized_backtest.v18.prepare_enriched import requested_rows
+    from research.vectorized_backtest.v6.torch_backtest.compact_prepare import KEY_STRIDE
+    keys=np.array([10,20,KEY_STRIDE+5,KEY_STRIDE+30,2*KEY_STRIDE+40],dtype=np.int64)
+    rows,selected=requested_rows(keys,np.array([[-1,1],[1,-1]]),3)
+    assert selected.tolist()==[1] and rows.tolist()==[2,3]
+    with pytest.raises(ValueError,match='outside compact census'):
+        requested_rows(keys,np.array([[3]]),3)
+
+
 def test_completed_multitimeframe_and_unknown_extremes():
     f=frame(30);v=em.own(f,np.array([14]),0)
     ix=em.OWN_NAMES.index('candle.15s.body');assert np.isnan(v[0,ix])

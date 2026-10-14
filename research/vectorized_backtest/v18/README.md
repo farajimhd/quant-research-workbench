@@ -51,6 +51,12 @@ Enriched gather is fused into the existing one-pass CUDA feature projection.
 
 ## CPU shard completion
 
+Per-stock outputs cover only listings that enter the pinned top 10, including
+their causal compact history. All other compact rows remain masked. Full candle
+fields are read only for those listings; peer reads project only completed close,
+price validity and notional for broad-market aggregates/ranks. Receipts record
+the selected listings and required, prepared and unrequested row counts.
+
 Use immutable `v8-split-manifest-v1` inputs with indicator banks already bound.
 The script supports both the current and January-onward datasets without hardcoded
 dates. It reads certified ARTE bars whose units and pinned snapshots are verified,
