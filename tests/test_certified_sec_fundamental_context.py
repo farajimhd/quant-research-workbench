@@ -41,6 +41,14 @@ def test_per_share_currency_unit_is_preserved():
     assert row['value']=='2.50' and row['unit']=='USD/share'
 
 
+def test_fixed_zero_preserves_display_text_and_rejects_wrong_registry():
+    payload=document('—').replace('t:num-dot-decimal','t:fixed-zero')
+    result=run(payload);row=result['observations'][0]
+    assert row['value']=='0' and row['raw_text']=='—'
+    result=run(payload.replace('transformation/2020-02-12','transformation/2015-02-26'))
+    assert result['rejected'][0]['reason']=='unsupported_fixed_zero_namespace'
+
+
 @pytest.mark.skipif(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')!='1',reason='explicit ClickHouse opt-in')
 def test_real_retained_apple_catalog_extraction():
     from scripts import build_market_day as builder

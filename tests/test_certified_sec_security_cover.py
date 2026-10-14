@@ -30,6 +30,17 @@ def test_conflicting_or_continued_cover_fields_remain_unresolved():
     assert result['rejected'] and result['candidates'][0]['reason']=='incomplete_cover_fields'
 
 
+def test_reviewed_sec_exchange_transform_keeps_raw_value_and_normalized_code():
+    text=payload().replace('xmlns:g=', 'xmlns:s="http://www.sec.gov/inlineXBRL/transformation/2015-08-31" xmlns:g=')
+    text=text.replace('name="dei:SecurityExchangeName"','format="s:exchnameen" name="dei:SecurityExchangeName"')
+    text=text.replace('>Nasdaq</ix:nonNumeric>','>The Nasdaq Stock Market LLC</ix:nonNumeric>')
+    result=run(text)
+    assert result['candidates'][0]['fields']['SecurityExchangeName']==('NASDAQ',)
+    row=next(r for r in result['observations'] if r['concept'].endswith('SecurityExchangeName'))
+    assert row['value']=='The Nasdaq Stock Market LLC' and row['transformed_value']=='NASDAQ'
+    assert run(text.replace('The Nasdaq Stock Market LLC','Unknown exchange'))['rejected'][0]['reason']=='unsupported_exchange_transform_input'
+
+
 @pytest.mark.skipif(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')!='1',reason='explicit ClickHouse opt-in')
 def test_real_retained_apple_security_cover():
     from scripts import build_market_day as builder

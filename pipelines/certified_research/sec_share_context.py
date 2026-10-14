@@ -125,22 +125,28 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
             if len({axis for axis,member in dimensions})!=len(dimensions):raise ValueError('duplicate_dimension_axis')
             if fact.get('{http://www.w3.org/2001/XMLSchema-instance}nil') in ('true','1'):raise ValueError('nil_share_fact')
             if any(True for _ in fact.iter('{'+IX+'}exclude')):raise ValueError('unsupported_inline_exclusion')
-            if row['format'] and row['format'].split(':')[-1] not in ('num-dot-decimal','numdotdecimal'):
+            fixed_zero=fundamental and row['format'].split(':')[-1]=='fixed-zero'
+            if row['format'] and row['format'].split(':')[-1] not in ('num-dot-decimal','numdotdecimal') and not fixed_zero:
                 raise ValueError('unsupported_numeric_transform')
             if row['format'] and not re.fullmatch(r'\{http://www.xbrl.org/inlineXBRL/transformation/[0-9]{4}-[0-9]{2}-[0-9]{2}\}.+',qname(row['format'],fact)):
                 raise ValueError('unsupported_transform_namespace')
             text=''.join(fact.itertext()).strip()
+            raw_text=text
+            if fixed_zero:
+                if qname(row['format'],fact)!='{http://www.xbrl.org/inlineXBRL/transformation/2020-02-12}fixed-zero':
+                    raise ValueError('unsupported_fixed_zero_namespace')
+                text='0'
             if not re.fullmatch(r'(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]+)?',text):raise ValueError('invalid_share_number')
             scale=int(row['scale'])
             if not -12<=scale<=12 or fact.get('sign','') not in (('','+','-') if fundamental else ('','+')):raise ValueError('invalid_share_scale_or_sign')
             number=Decimal(text.replace(',','')).as_tuple()
             value=Decimal((int(fact.get('sign','')=='-'),number.digits,number.exponent+scale))
             observation=dict(row,concept=concept,period_end=str(measured),dimensions=dimensions,value=format(value,'f'))
-            if fundamental:observation.update(period_start=str(period_start) if period_start else None,unit=unit_code)
+            if fundamental:observation.update(period_start=str(period_start) if period_start else None,unit=unit_code,raw_text=raw_text)
             observations.append(observation)
         except (ValueError,TypeError,InvalidOperation) as error:
             rejected.append(dict(row,reason=str(error)))
-    result=dict(version='sec-inline-fundamental-context-v1' if fundamental else VERSION,observations=tuple(observations),rejected=tuple(rejected),
+    result=dict(version='sec-inline-fundamental-context-v2' if fundamental else VERSION,observations=tuple(observations),rejected=tuple(rejected),
         source_text_hash=expected_hash,parsing_prefix_bytes=prefix_bytes,parsing_suffix_bytes=suffix_bytes,
         sec_xbrl_envelope=envelope,allocation_certified=False)
     if include_security_cover:
@@ -149,13 +155,13 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
             name=fact.get('name','')
             if name.split(':')[-1] not in selected:continue
             if len(cover)+len(failures)>=10000:raise ValueError('SEC cover fact bound exceeded')
-            row=dict(source_position=position,concept=name,context_id=fact.get('contextRef',''),fact_id=fact.get('id',''))
+            row=dict(source_position=position,concept=name,context_id=fact.get('contextRef',''),fact_id=fact.get('id',''),format=fact.get('format',''))
             try:
                 if fact.tag!='{'+IX+'}nonNumeric':raise ValueError('unsupported_cover_inline_namespace')
                 concept=qname(name,fact)
                 if not re.fullmatch(r'\{http://xbrl.sec.gov/dei/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?\}.+',concept):
                     raise ValueError('unsupported_cover_taxonomy')
-                if fact.get('continuedAt') or fact.get('format') or fact.get('{http://www.w3.org/2001/XMLSchema-instance}nil') in ('true','1'):
+                if fact.get('continuedAt') or fact.get('{http://www.w3.org/2001/XMLSchema-instance}nil') in ('true','1'):
                     raise ValueError('unsupported_cover_transform_continuation_or_nil')
                 if any(True for _ in fact.iter('{'+IX+'}exclude')):raise ValueError('unsupported_cover_exclusion')
                 context=contexts.get(row['context_id'])
@@ -178,7 +184,18 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
                 else:raise ValueError('invalid_cover_period')
                 text=''.join(fact.itertext()).strip()
                 if not text or len(text)>4096:raise ValueError('empty_or_oversized_cover_value')
-                cover.append(dict(row,concept=concept,dimensions=dimensions,value=text,period_start=period_start,period_end=period_end))
+                transformed=text
+                if row['format']:
+                    if (name.split(':')[-1]!='SecurityExchangeName' or qname(row['format'],fact)!=
+                            '{http://www.sec.gov/inlineXBRL/transformation/2015-08-31}exchnameen'):
+                        raise ValueError('unsupported_cover_transform')
+                    reviewed={'the nasdaq stock market llc':'NASDAQ','nasdaq stock market llc':'NASDAQ','nasdaq global select market':'NASDAQ','nasdaq':'NASDAQ',
+                        'the new york stock exchange':'NYSE','new york stock exchange llc':'NYSE','nyse american llc':'NYSEAMER',
+                        'nyse arca, inc.':'NYSEArca'}
+                    transformed=reviewed.get(text.casefold())
+                    if transformed is None:raise ValueError('unsupported_exchange_transform_input')
+                cover.append(dict(row,concept=concept,dimensions=dimensions,value=text,transformed_value=transformed,
+                    period_start=period_start,period_end=period_end))
             except (ValueError,TypeError) as error:failures.append(dict(row,reason=str(error)))
         result['security_cover']=dict(observations=tuple(cover),rejected=tuple(failures),class_completeness_proven=False)
     return result

@@ -42,3 +42,22 @@ A subsequent Apple command confirmed all nine numeric rejections were
 facts. The report now includes both numeric and cover rejection-reason counts so
 those parser coverage gaps can be inspected and resolved explicitly. Current
 successful extraction totals therefore do not establish complete filing coverage.
+
+The subsequent fundamental parser v2 implements `fixed-zero` for the exact
+[XBRL 2020 registry namespace](https://www.xbrl.org/Specification/inlineXBRL-transformationRegistry/REC-2020-02-12/inlineXBRL-transformationRegistry-REC-2020-02-12.html),
+preserving the display text while producing exact zero. Cover extraction now
+supports reviewed exchange-name inputs for the exact SEC 2015 `exchnameen`
+namespace according to the [SEC XBRL guide](https://www.sec.gov/files/edgar/filer-information/specifications/xbrl-guide-2026-08-14.pdf).
+Raw exchange text and transformed EDGAR codes are both retained; unsupported
+inputs and namespaces remain rejected. Candidate grouping uses transformed codes.
+The reviewed finite input set does not claim complete implementation of every
+SEC exchange-name spelling. New parser/source hashes require measured profile
+requalification; prior extraction rows are not overwritten.
+
+The three-filing live launcher rerun after these changes produced 280/350/267
+numeric observations and 17/6/3 cover facts for Apple/Alphabet/Meta respectively,
+with zero numeric or cover rejections in this bounded sample. Total observations
+rose from 883 to 897, retaining the 14 previously rejected zero-valued facts.
+Extraction metadata was 145,379/183,348/127,833 bytes; observed parse times were
+0.068/0.084/0.070 seconds. This proves these transform cases for these filings,
+not whole-period or all-taxonomy coverage, class completeness or float authority.

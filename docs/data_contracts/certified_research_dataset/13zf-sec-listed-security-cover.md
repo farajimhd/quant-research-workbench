@@ -3,7 +3,7 @@
 `sec_security_cover.extract` preserves inline-XBRL `Security12bTitle`,
 `TradingSymbol` and `SecurityExchangeName` from exact retained SEC document text.
 It checks source hashes, strict XML bounds, issuer CIK, DEI namespace, context
-period and explicit dimensions. Continuations, transforms, nil values, excluded
+period and explicit dimensions. Continuations, unsupported transforms, nil values, excluded
 text, typed dimensions and ambiguous contexts remain explicit rejections.
 
 Fields are grouped by complete dimensions and context period. Different values
@@ -12,6 +12,11 @@ positions, values, period and context identifiers survive. No ticker aliases,
 exchange names or stock-class descriptions are guessed. A live retained Apple
 10-K read produced its AAPL cover evidence; fixtures tested conflicting and
 continued fields.
+
+Cover v2 retains raw and transformed values for reviewed SEC `exchnameen`
+exchange inputs in the exact 2015 namespace. Candidate fields use transformed
+EDGAR codes; unsupported input spellings remain unresolved. See the
+[transform validation and bounded live rerun](13zg-sec-extraction-measurement.md).
 
 The fundamental extraction path now gathers the same cover observations during
 its existing XML pass and preserves them once in document extraction metadata.
