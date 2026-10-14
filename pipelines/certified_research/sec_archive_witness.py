@@ -9,7 +9,7 @@ from pipelines.sec.edgar.sec_pipeline.revision import source_revision
 from .contracts import digest
 
 
-def inspect_archive(path,prepared,*,stop=None,progress=None,maximum_archive_bytes=2*1024**3,
+def inspect_archives(path,prepared,*,stop=None,progress=None,maximum_archive_bytes=2*1024**3,
                     maximum_member_bytes=64*1024**2,maximum_scan_bytes=32*1024**3,maximum_members=100000,staging_receipt=None):
     """Read only a designated D copy and compare raw bytes with retained lineage.
 
@@ -21,10 +21,21 @@ def inspect_archive(path,prepared,*,stop=None,progress=None,maximum_archive_byte
         raise ValueError('SEC archive witness requires a designated D copy')
     for value in (maximum_archive_bytes,maximum_member_bytes,maximum_scan_bytes,maximum_members):
         if type(value) is not int or value<=0:raise ValueError('Invalid SEC archive witness bound')
-    body=dict(prepared);hash_=body.pop('prepared_hash',None)
-    if hash_!=digest(body):raise ValueError('SEC prepared source fingerprint differs')
-    lineage=prepared['document']['lineage'];document=lineage['document']
-    if path.name!=PureWindowsPath(document['source_archive_path']).name:raise ValueError('SEC archive file identity differs')
+    if not isinstance(prepared,(tuple,list)) or not 1<=len(prepared)<=1000:
+        raise ValueError('SEC archive verification needs 1 to 1000 prepared documents')
+    pending={};keys=[];seen=set();archive_identity=None
+    for source in prepared:
+        body=dict(source);hash_=body.pop('prepared_hash',None)
+        if hash_!=digest(body):raise ValueError('SEC prepared source fingerprint differs')
+        document=source['document']['lineage']['document'];key=source['document']['document_key']
+        if key in seen:raise ValueError('SEC archive documents are duplicated')
+        seen.add(key);keys.append(key)
+        canonical=PureWindowsPath(document['source_archive_path'])
+        identity=(canonical,document['source_archive_date'])
+        if path.name!=canonical.name or (archive_identity is not None and identity!=archive_identity):
+            raise ValueError('SEC archive file identity differs')
+        archive_identity=identity
+        pending.setdefault(document['source_archive_member'].lstrip('./'),[]).append(source)
     before=path.stat()
     if not 0<before.st_size<=maximum_archive_bytes:raise ValueError('SEC archive exceeds its compressed byte bound')
     def check():
@@ -39,38 +50,52 @@ def inspect_archive(path,prepared,*,stop=None,progress=None,maximum_archive_byte
             while chunk:=reader.read(8*1024**2):check();checksum.update(chunk)
         container_hash=checksum.hexdigest()
         if container_hash!=staging_receipt['sha256']:raise ValueError('Staged SEC container digest differs')
-    wanted=document['source_archive_member'].lstrip('./');scanned=0;raw=None;ordinal=None
+    scanned=0;results={}
     with tarfile.open(path,'r|gz') as archive:
         for index,member in enumerate(archive,start=1):
             check()
             scanned+=512+((member.size+511)//512)*512
             if index>maximum_members or scanned>maximum_scan_bytes:raise ValueError('SEC archive scan exceeds its bound')
             if progress and index%250==0:progress(index,scanned)
-            if member.name.lstrip('./')!=wanted:continue
+            wanted=member.name.lstrip('./')
+            if wanted not in pending:continue
             if not member.isfile() or not 0<member.size<=maximum_member_bytes:
                 raise ValueError('SEC submission is not a bounded regular archive member')
             reader=archive.extractfile(member)
             if reader is None:raise ValueError('SEC submission cannot be opened')
             with reader:raw=reader.read(maximum_member_bytes+1)
             if len(raw)!=member.size:raise ValueError('SEC submission member byte count differs')
-            ordinal=index;break
-    if raw is None:raise ValueError('Selected SEC submission is absent from the archive')
-    check()
-    submission_hash=sha256(raw).hexdigest()
+            check();sources=pending.pop(wanted)
+            submission_hash=sha256(raw).hexdigest();filing=parse_filing(raw,wanted)
+            selected={(s['document']['lineage']['document']['sequence_number'],
+                s['document']['lineage']['document']['document_name'],
+                s['document']['lineage']['document']['document_type']) for s in sources}
+            document_hashes={key:[] for key in selected}
+            for row in filing['documents']:
+                identity=(row['sequence_number'],row['document_name'],row['document_type'])
+                if identity in document_hashes:document_hashes[identity].append(sha256(row['payload'].encode('utf-8')).hexdigest())
+            for source in sources:
+                check();result=_document_witness(source,len(raw),submission_hash,index,filing,document_hashes,before.st_size,container_hash)
+                results[result['document_key']]=result
+            if not pending:break
+    if pending:raise ValueError('Selected SEC submission is absent from the archive: '+','.join(sorted(pending)[:4]))
+    after=path.stat();check()
+    if (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):raise ValueError('Staged SEC archive changed during verification')
+    return tuple(results[key] for key in keys)
+
+
+def _document_witness(prepared,raw_bytes,submission_hash,ordinal,filing,document_hashes,archive_bytes,container_hash):
+    lineage=prepared['document']['lineage'];document=lineage['document']
     if submission_hash!=lineage['archive_submission_hash']:raise ValueError('Original SEC submission hash differs')
     revision=source_revision(archive_date=document['source_archive_date'],archive_member=document['source_archive_member'],
         archive_path=document['source_archive_path'],source_content_sha256=submission_hash,occurrence_sequence=ordinal)
     if revision.source_version_key!=lineage['archive_version_key'] or revision.source_revision_rank!=lineage['archive_revision_rank']:
         raise ValueError('Original SEC occurrence ordinal/version differs')
-    filing=parse_filing(raw,wanted)
     if filing['accession_number']!=document['accession_number'] or str(int(filing['cik']))!=str(int(document['cik'])):
         raise ValueError('Original SEC submission identity differs')
-    selected=[row for row in filing['documents'] if (row['sequence_number'],row['document_name'],row['document_type'])==
-        (document['sequence_number'],document['document_name'],document['document_type'])]
-    if len(selected)!=1 or sha256(selected[0]['payload'].encode('utf-8')).hexdigest()!=document['content_sha256']:
+    selected=document_hashes[(document['sequence_number'],document['document_name'],document['document_type'])]
+    if len(selected)!=1 or selected[0]!=document['content_sha256']:
         raise ValueError('Original SEC document payload differs')
-    after=path.stat();check()
-    if (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):raise ValueError('Staged SEC archive changed during verification')
     header=filing['header_text']
     public_counts=re.findall(r'(?:<PUBLIC-DOCUMENT-COUNT>\s*|PUBLIC DOCUMENT COUNT:\s*)([0-9]+)',header,re.I)
     filing_dates=re.findall(r'(?:<FILING-DATE>\s*|FILED AS OF DATE:\s*)([0-9]{8})',header,re.I)
@@ -78,7 +103,7 @@ def inspect_archive(path,prepared,*,stop=None,progress=None,maximum_archive_byte
     change_dates=re.findall(r'<DATE-OF-FILING-DATE-CHANGE>\s*([0-9]{8})',header,re.I)
     change_day=(change_dates[0][:4]+'-'+change_dates[0][4:6]+'-'+change_dates[0][6:]) if len(change_dates)==1 else None
     result=dict(version='sec-archive-document-byte-witness-v2',document_key=prepared['document']['document_key'],
-        candidate_hash=lineage['candidate_hash'],archive_bytes=before.st_size,submission_bytes=len(raw),member_ordinal=ordinal,
+        candidate_hash=lineage['candidate_hash'],archive_bytes=archive_bytes,submission_bytes=raw_bytes,member_ordinal=ordinal,
         submission_hash=submission_hash,document_hash=document['content_sha256'],archive_version_key=revision.source_version_key,
         source_archive_date=document['source_archive_date'],form_type=filing['form_type'],
         official_filing_date=filing_day,filing_date_change=change_day,
@@ -88,3 +113,8 @@ def inspect_archive(path,prepared,*,stop=None,progress=None,maximum_archive_byte
         container_sha256=container_hash,container_digest_verified=container_hash is not None,
         original_bytes_verified=True,public_time_qualified=False,allocation_certified=False)
     return dict(result,witness_hash=digest(result))
+
+
+def inspect_archive(path,prepared,**options):
+    """Single-document compatibility entry point through the grouped reader."""
+    return inspect_archives(path,(prepared,),**options)[0]

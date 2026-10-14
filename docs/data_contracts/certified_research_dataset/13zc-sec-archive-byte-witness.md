@@ -34,6 +34,15 @@ document count and special-release markers. A [separate timing qualifier](13zd-s
 uses this evidence with an authenticated original download receipt; the byte
 verifier itself never declares public-time or allocation qualification.
 
+`inspect_archives` verifies up to 1,000 selected documents from the same
+canonical archive/date with one container digest and one streaming archive
+pass. Each selected submission is decoded once, even when it supplies multiple
+documents; only requested document payload hashes are calculated. Results
+preserve request order and are returned only after every selected document
+matches and the file's size/mtime remains stable. Missing or conflicting
+members/documents fail the whole group. The single-document `inspect_archive`
+entry point uses this same implementation.
+
 ## Actual bounded validation — October 14
 
 The archive recorded at D was missing; its corresponding workstation G backup

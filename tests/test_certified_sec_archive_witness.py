@@ -1,9 +1,11 @@
 from contextlib import contextmanager
+from copy import deepcopy
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import tarfile
+from unittest.mock import patch
 
 import pytest
 
@@ -13,11 +15,13 @@ from pipelines.sec.edgar.sec_pipeline.revision import source_revision
 
 
 @contextmanager
-def fixture():
+def fixture(*,two_documents=False):
     payload='<XBRL><html>original payload</html></XBRL>'
     raw=('<ACCESSION-NUMBER>0000320193-25-000079\n<CIK>0000320193\n<TYPE>10-K\n'
         '<PUBLIC-DOCUMENT-COUNT>1\n<FILING-DATE>20251031\n<DATE-OF-FILING-DATE-CHANGE>20251031\n'
         '<DOCUMENT>\n<TYPE>10-K\n<SEQUENCE>1\n<FILENAME>filing.htm\n<TEXT>'+payload+'</TEXT>\n</DOCUMENT>').encode()
+    if two_documents:
+        raw+=b'<DOCUMENT>\n<TYPE>10-K\n<SEQUENCE>2\n<FILENAME>other.htm\n<TEXT>second payload</TEXT>\n</DOCUMENT>'
     member='./0000320193-25-000079.nc';original='D:/market-data/sec_core/20251031.nc.tar.gz'
     revision=source_revision(archive_date='2025-10-31',archive_member=member,archive_path=original,
         source_content_sha256=sha256(raw).hexdigest(),occurrence_sequence=2)
@@ -64,3 +68,17 @@ def test_v2_container_and_official_date_evidence_are_checked_independently():
         assert result['public_document_count']==1 and result['acceptance_datetime_raw']==''
         staging['sha256']='c'*64
         with pytest.raises(ValueError,match='container digest'):witness.inspect_archive(path,prepared,staging_receipt=staging)
+
+
+def test_grouped_documents_use_one_archive_scan_and_one_submission_parse():
+    with fixture(two_documents=True) as (path,first):
+        second=deepcopy(first);second['document']['document_key']='c'*64
+        second['document']['lineage']['document'].update(sequence_number=2,document_name='other.htm',
+            content_sha256=sha256(b'second payload').hexdigest())
+        second.pop('prepared_hash');second['prepared_hash']=digest(second)
+        with patch.object(witness.tarfile,'open',wraps=tarfile.open) as opened,\
+             patch.object(witness,'parse_filing',wraps=witness.parse_filing) as parsed:
+            result=witness.inspect_archives(path,(first,second))
+        assert len(result)==2 and [r['document_key'] for r in result]==['b'*64,'c'*64]
+        opened.assert_called_once();parsed.assert_called_once()
+        assert result[0]['submission_hash']==result[1]['submission_hash']
