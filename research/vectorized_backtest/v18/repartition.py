@@ -27,8 +27,12 @@ def junction(source,target):
 def migrate_enriched(source,target,input_hash,role,prior_code):
     old_path=Path(prior_code)/'research/vectorized_backtest/v18/prepare_enriched.py'
     old_hash=calculation_hash(old_path)
-    unique_scope_producer='51ce9686b65b5a3bd0598ce5c706a295f316c497253be4ad027f1f97202cd62e'
-    if old_hash not in (calculation_hash(),unique_scope_producer):raise ValueError('Cannot reuse changed feature calculations')
+    # Pinned identical prior calculation, serialized by the laptop/workstation
+    # Python AST versions respectively. Original producer verification below
+    # additionally binds its full certificate and unchanged math bytes.
+    unique_scope_producers={'51ce9686b65b5a3bd0598ce5c706a295f316c497253be4ad027f1f97202cd62e',
+        '9dcfecde08928ac400c581ef49540aa35c8a115cb94a84d70828184a06e4428a'}
+    if old_hash not in {calculation_hash(),*unique_scope_producers}:raise ValueError('Cannot reuse changed feature calculations')
     if file_hash(old_path.with_name('enriched_math.py'))!=definition()['math_sha256']:raise ValueError('Feature math changed')
     spec=importlib.util.spec_from_file_location('research.vectorized_backtest.v18._repartition_prior',old_path)
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
