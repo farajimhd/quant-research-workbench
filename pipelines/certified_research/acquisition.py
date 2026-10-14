@@ -213,7 +213,7 @@ def resume_native_repairs(query,writer_query,inventory,claim,stop,*,emit=print):
         f'WHERE source_date BETWEEN toDate({literal(min(days))}) AND toDate({literal(max(days))}) AND revision={literal(REPORTING_REVISION)}') if int(has_coverage) else []
     by_day={str(r['source_date']):r for r in coverage}
     if len(by_day)!=len(coverage):raise ValueError('Native reporting coverage is ambiguous')
-    seen=set()
+    seen=set();pending={}
     for row in rows:
         day=date.fromisoformat(str(row['source_date']))
         if day not in inventory['rows']:continue
@@ -230,15 +230,24 @@ def resume_native_repairs(query,writer_query,inventory,claim,stop,*,emit=print):
                 emit(f'Native reporting {day} | certified receipt reused')
                 continue
         if writer_query is None:raise ValueError('Native repair resume requires the owned writer connection')
+        pending.setdefault((day.year,day.month),[]).append((inventory['rows'][day],row['evidence_hash']))
+    for month,units in sorted(pending.items()):
         def guard():
             claim.check()
             if stop.is_set():raise InterruptedError('Native repair stopped; server mutation retained for resume')
-            current=source.inventory(query,day,day,sessions=(day,))
-            if current['missing'] or current['incomplete'] or current['source_hashes'].get(str(day))!=expected_hash:
-                raise ValueError('Canonical source changed during native reporting repair')
+            for record,_ in units:
+                day=date.fromisoformat(str(record['source_date']))
+                current=source.inventory(query,day,day,sessions=(day,))
+                if (current['missing'] or current['incomplete']
+                        or current['source_hashes'].get(str(day))!=inventory['source_hashes'][str(day)]):
+                    raise ValueError('Canonical source changed during native reporting repair')
+        previous=None;last_report=0.
         while True:
             guard()
-            result=native.step(writer_query,inventory['rows'][day],row['evidence_hash'],claim,guard)
-            emit(f"Native reporting {day} | {result['status']} | parts remaining {result.get('parts_remaining',0)}")
+            result=native.batch_step(writer_query,units,claim,guard)
+            state=(result['status'],result.get('parts_remaining',0));now=time.monotonic()
+            if state!=previous or now-last_report>=30:
+                emit(f"Native reporting {month[0]}-{month[1]:02d} | days={len(units)} | {state[0]} | parts remaining {state[1]}")
+                previous=state;last_report=now
             if result['status']=='complete':break
-            if stop.wait(1):raise InterruptedError('Native repair stopped; server mutation retained for resume')
+            if stop.wait(10):raise InterruptedError('Native repair stopped; server mutation retained for resume')

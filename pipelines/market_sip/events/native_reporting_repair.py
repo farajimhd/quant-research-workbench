@@ -55,7 +55,7 @@ def _hash(query,sql):
     return digest({k:int(v) for k,v in rows[0].items()})
 
 
-def step(query,source,expected_evidence_hash,claim,source_guard,*,database='q_live',table=ns.TABLE,target=None,coverage='historical_trade_reporting_coverage_v1'):
+def step(query,source,expected_evidence_hash,claim,source_guard,*,database='q_live',table=ns.TABLE,target=None,coverage='historical_trade_reporting_coverage_v1',prepare_only=False):
     """Repair only from a frozen acquisition receipt, not a newly trusted clock snapshot.
 
     expected_evidence_hash must come from the ingestion-owned reconciliation
@@ -155,6 +155,9 @@ def step(query,source,expected_evidence_hash,claim,source_guard,*,database='q_li
         if own:raise ValueError('Completed native mutation failed its independent flag verification')
         evaluated=f'(SELECT ticker,ordinal,{computed} expected_reason FROM {evidence} WHERE source_date=toDate({literal(day)}))'
         desired=f'toUInt8(bitOr(bitAnd(event_meta,63),{desired_flags_sql(evaluated,counts)}))'
+        if prepare_only:
+            return dict(status='prepared',marker=marker,target=target,
+                predicate=f'({selected}) AND bitAnd(event_meta,1)=1',assignment=desired)
         guard();query(f'ALTER TABLE {target} UPDATE event_meta={desired} WHERE {selected} AND bitAnd(event_meta,1)=1 '
             f'AND {literal(marker)}={literal(marker)} SETTINGS mutations_sync=0',read=False)
         return dict(status='submitted',marker=marker)
@@ -166,3 +169,37 @@ def step(query,source,expected_evidence_hash,claim,source_guard,*,database='q_li
         expected_previous=transition if previous==[transition] else None,event_date_pruning=not fixture)
     guard()
     return dict(status='complete',counts=final,marker=marker)
+
+
+def batch_step(query,units,claim,source_guard,**kwargs):
+    """One monthly mutation; retain independent daily headers and certification.
+
+    Units are (source receipt, frozen evidence hash). The batch is bounded to
+    one canonical month. Interruption never cancels or blindly resubmits work:
+    each day marker is present in the shared server mutation command.
+    """
+    if not units or len(units)>31:
+        raise ValueError('Native repair batch requires 1 to 31 source days')
+    days=[date.fromisoformat(str(source['source_date'])) for source,_ in units]
+    if len(set(days))!=len(days) or len({(d.year,d.month) for d in days})!=1:
+        raise ValueError('Native repair batch must contain unique days in one month')
+    prepared=[];completed=[]
+    for source,frozen in units:
+        result=step(query,source,frozen,claim,source_guard,prepare_only=True,**kwargs)
+        if result['status']=='mutating':
+            return result
+        if result['status']=='complete':completed.append(str(source['source_date']))
+        elif result['status']=='prepared':prepared.append(result)
+        else:raise ValueError('Unexpected native batch preparation state')
+    if not prepared:return dict(status='complete',days=completed)
+    targets={r['target'] for r in prepared}
+    if len(targets)!=1:raise ValueError('Native repair batch has different canonical targets')
+    branches=[]
+    for result in prepared:branches.extend((result['predicate'],result['assignment']))
+    assignment='multiIf('+','.join((*branches,'event_meta'))+')'
+    selected=' OR '.join('('+r['predicate']+')' for r in prepared)
+    markers=' AND '.join(f'{literal(r["marker"])}={literal(r["marker"])}' for r in prepared)
+    claim.check();source_guard()
+    query(f'ALTER TABLE {prepared[0]["target"]} UPDATE event_meta={assignment} '
+        f'WHERE ({selected}) AND {markers} SETTINGS mutations_sync=0',read=False)
+    return dict(status='submitted',days=[str(d) for d in days],completed=completed)

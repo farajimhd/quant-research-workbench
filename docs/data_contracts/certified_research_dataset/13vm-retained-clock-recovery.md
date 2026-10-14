@@ -86,3 +86,26 @@ path before making a throughput claim. The active canary mutation was allowed
 to finish; it was never cancelled or blindly reissued. No production block-number
 settings, patch-update mode, partition layout or server-wide resource settings
 were changed.
+
+## Monthly execution
+
+The retained recovery controller now captures and reconciles daily evidence,
+publishes an immutable original-clock receipt, and cleans that day's temporary
+tables and private D copy. The durable sidecar remains on SSD. At each month
+boundary it prepares independent daily repair headers and submits one combined
+mutation for the days needing repair. Every daily marker is retained in the
+server command, so resume discovers the original mutation instead of issuing
+another one. Each day is independently verified and certified after completion.
+
+The batch is limited to 31 distinct dates in one month. Quotes and untargeted
+days retain their original flags; all prices, ordinals and other preserved
+fields remain subject to the existing before/after checks. An interrupted
+capture resumes from its immutable receipt. An interrupted repair retains its
+server mutation and fail-closed coverage transition. No patch-update settings
+or canonical partition changes are introduced.
+
+The real ClickHouse two-day regression proved a single mutation, both daily
+certificates, strict unknown/delayed flags, unchanged prices and idempotent
+resume. The retained recovery controller and existing single-day corruption
+test also passed. This validates the implementation, not full-month production
+throughput or certification of the remaining range.

@@ -130,7 +130,7 @@ def file_plan(paths,days,*,reserve_bytes=256*1024**3,reserve_fraction=.10,maximu
 
 def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,reserve_fraction=.10,
             maximum_chunk_bytes=256*1024**3,emit=print,query_threads=2,query_memory_bytes=2*1024**3):
-    """Sequential certified units inside space-bounded, restart-safe chunks."""
+    """Capture bounded daily evidence, then repair each month exactly once."""
     if not days:return dict(completed=(),reused=())
     if not isinstance(claim,SourceClaim):raise ValueError('Retained reporting recovery requires canonical source ownership')
     if (type(query_threads) is not int or not 1<=query_threads<=8 or type(query_memory_bytes) is not int
@@ -162,7 +162,31 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
     plan.update(archive_staging.plan_chunks(((day,1 if day in receipt_days else plan['files'][day]['bytes'])
         for day in sorted(days)),plan['space'],maximum_chunk_bytes=maximum_chunk_bytes))
     private=paths.cache/'_retained_reporting'
-    completed=[];reused=[]
+    completed=[];reused=[];pending=[]
+    ordered_days=sorted(days)
+    def repair_pending():
+        if not pending:return
+        def batch_guard():
+            claim.check()
+            if stop.is_set():raise InterruptedError('Retained reporting stopped; submitted mutations may continue')
+            for source,_ in pending:
+                d=date.fromisoformat(str(source['source_date']))
+                current=canonical_source.inventory(query,d,d,sessions=(d,))
+                if (current['missing'] or current['incomplete']
+                        or current['source_hashes'].get(str(d))!=inventory['source_hashes'][str(d)]):
+                    raise ValueError('Canonical source changed during monthly reporting migration')
+        last_status=None;last_report=0.
+        month=str(pending[0][0]['source_date'])[:7]
+        while True:
+            batch_guard();result=native.batch_step(query,pending,claim,batch_guard)
+            status=(result['status'],result.get('parts_remaining',0));now=monotonic()
+            if status!=last_status or now-last_report>=30:
+                emit(f'Retained reporting {month} | days={len(pending)} | {status[0]} | parts={status[1]}')
+                last_status=status;last_report=now
+            if result['status']=='complete':break
+            if stop.wait(10):raise InterruptedError('Retained reporting stopped; monthly mutation retained for resume')
+        completed.extend(date.fromisoformat(str(source['source_date'])) for source,_ in pending)
+        pending.clear()
     for batch in plan['chunks']:
         # Recheck after prior CH writes/copies; the original free-space snapshot
         # never authorizes a later chunk against stale headroom.
@@ -280,15 +304,8 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                     file_key=str(info['key']).replace('\\','/'),source_origin=info['origin'])
                 if len(readback)!=1 or readback[0]!=expected_receipt:
                     raise ValueError('Retained acquisition receipt did not read back exactly')
-            last_status=None;last_report=0.
-            while True:
-                guard();result=native.step(query,source,frozen,claim,guard)
-                status=(result['status'],result.get('parts_remaining',0));now=monotonic()
-                if status!=last_status or now-last_report>=30:
-                    emit(f"Retained reporting {day} | {status[0]} | parts={status[1]}")
-                    last_status=status;last_report=now
-                if result['status']=='complete':break
-                if stop.wait(10):raise InterruptedError('Retained reporting stopped; mutation retained for resume')
+            pending.append((source,frozen))
+            emit(f'Retained reporting {day} | captured | awaiting monthly flag repair')
             schema.verify_auxiliary_storage(query,'q_live',(ns.TABLE,STAGE,RECEIPTS))
             query(f'ALTER TABLE q_live.{STAGE} DELETE WHERE source_date=toDate({literal(day)}) SETTINGS mutations_sync=2',read=False)
             if query(f"SELECT count() n FROM system.tables WHERE database='q_live' AND name={literal(RAW)}")[0]['n']:
@@ -299,7 +316,9 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                 resolved=staged_file.resolve()
                 if not resolved.is_relative_to(private.resolve()):raise ValueError('Owned staging cleanup escaped its D root')
                 resolved.unlink()
-            completed.append(day)
+            index=ordered_days.index(day)
+            following=ordered_days[index+1] if index+1<len(ordered_days) else None
+            if following is None or (following.year,following.month)!=(day.year,day.month):repair_pending()
     return dict(completed=tuple(completed),reused=tuple(reused))
 
 

@@ -1514,8 +1514,8 @@ class ClickHouseIntegration(unittest.TestCase):
             sql=sql.replace('market_sip_compact.events_2026',target)
             logs.append(sql);return self.client.query(sql,*args,**kwargs)
         original_step=native.step
-        def step(q,row,frozen,claim,guard):
-            return original_step(q,row,frozen,claim,guard,database=database,target=target)
+        def step(q,row,frozen,claim,guard,**kwargs):
+            return original_step(q,row,frozen,claim,guard,database=database,target=target,**kwargs)
         with TemporaryDirectory(prefix='retained-recovery-',dir='D:/TradingML/runtimes') as directory:
             root=Path(directory);input_file=root/'input.gz';input_file.write_bytes(b'retained fixture')
             paths=SimpleNamespace(cache=root,validate=lambda:None)
@@ -1756,6 +1756,54 @@ class ClickHouseIntegration(unittest.TestCase):
         self.client.query(f'ALTER TABLE {target} UPDATE price=999 WHERE ordinal=1 SETTINGS mutations_sync=2',read=False)
         with self.assertRaisesRegex(ValueError,'preserved fields'):
             step()
+
+    def test_monthly_native_repair_submits_once_and_certifies_each_day(self):
+        from pipelines.market_sip.events import reporting_evidence as ns,native_reporting_repair as repair
+        target=self.database+'.batch_events_'+uuid.uuid4().hex
+        clock='batch_ns_'+uuid.uuid4().hex;coverage='batch_coverage_'+uuid.uuid4().hex
+        self.client.query(f'CREATE TABLE {target} (ticker String,ordinal UInt64,event_meta UInt8,sip_timestamp_us UInt64,price UInt32) '
+            "ENGINE=MergeTree ORDER BY (ticker,ordinal) SETTINGS storage_policy='live_market_ssd'",read=False)
+        self.client.query(ns.ddl(self.database,clock),read=False)
+        units=[]
+        for index,day in enumerate((date(2026,1,2),date(2026,1,5))):
+            first=1767370000000000+index*3*86400*1000000
+            source=dict(source_date=str(day),first_sip_timestamp_us=first,last_sip_timestamp_us=first+2,trade_event_rows=3)
+            source_hash=c.digest(source)
+            insert_rows(self.client.query,self.database,target.split('.')[1],[dict(ticker='TEST',ordinal=index*3+n,
+                event_meta=71,sip_timestamp_us=first+n-1,price=100+index*3+n) for n in (1,2,3)])
+            rows=[]
+            for n,delta,reason in ((1,1000,0),(2,None,8),(3,10_000_000_001,4)):
+                sip=(first+n-1)*1000+123
+                rows.append(dict(source_date=str(day),ticker='TEST',ordinal=index*3+n,sip_timestamp_ns=sip,
+                    participant_timestamp_ns=None if delta is None else sip-delta,reporting_condition_entries=[],
+                    reporting_reason=reason,source_digest=source_hash))
+            insert_rows(self.client.query,self.database,clock,rows)
+            units.append((source,repair._hash(self.client.query,repair.evidence_fingerprint_sql(self.database+'.'+clock,day))))
+        class Claim:
+            def check(self):pass
+        logs=[]
+        def query(sql,*args,**kwargs):logs.append(sql);return self.client.query(sql,*args,**kwargs)
+        def step():return repair.batch_step(query,units,Claim(),lambda:None,database=self.database,
+            table=clock,target=target,coverage=coverage)
+        result=step();self.assertEqual(result['status'],'submitted')
+        submitted=[sql for sql in logs if sql.startswith('ALTER TABLE '+target+' UPDATE')]
+        self.assertEqual(len(submitted),1)
+        markers=self.client.query(f'SELECT marker FROM {self.database}.{repair.HEADER} WHERE target={c.literal(target)}')
+        self.assertEqual(len(markers),2)
+        self.assertTrue(all(row['marker'] in submitted[0] for row in markers))
+        deadline=time.monotonic()+30
+        while result['status']!='complete' and time.monotonic()<deadline:
+            time.sleep(.1);result=step()
+        self.assertEqual(result['status'],'complete')
+        self.assertEqual(len([sql for sql in logs if sql.startswith('ALTER TABLE '+target+' UPDATE')]),1)
+        self.assertEqual([int(r['event_meta']) for r in self.client.query(f'SELECT event_meta FROM {target} ORDER BY ordinal')],
+            [71,7,199,71,7,199])
+        self.assertEqual([int(r['price']) for r in self.client.query(f'SELECT price FROM {target} ORDER BY ordinal')],list(range(101,107)))
+        self.assertEqual(self.client.query(f'SELECT status FROM {self.database}.{coverage} FINAL ORDER BY source_date'),
+            [dict(status='complete'),dict(status='complete')])
+        self.assertEqual(step()['status'],'complete')
+        with self.assertRaisesRegex(ValueError,'unique days'):
+            repair.batch_step(query,[units[0],units[0]],Claim(),lambda:None)
 
     def test_continuous_wilder_state_survives_warmup_and_ready_session_boundaries(self):
         from pipelines.certified_research import indicators
