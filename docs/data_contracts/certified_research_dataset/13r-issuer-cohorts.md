@@ -142,3 +142,25 @@ These routes are implemented and lifecycle/argument tested. Automatic fresh
 collection preparation/installation and representative measured pilot rates
 remain outstanding. The stored routes do not imply that a whole-universe
 collection has already been installed or that a production campaign was run.
+
+## Fresh preparation core
+
+`collection_preparation.prepare()` now derives the complete admitted partition,
+including declared context and short-window sessions. Each child uses the same
+fresh reference/state discovery and calculation assembler as single-dataset
+launch, with all securities of its frozen issuer group. Only one child graph is
+held at a time. Missing authorities block before a collection header is created.
+Compatible complete child plans can be reused on preparation restart.
+
+Each new child passes the existing plan capacity admission before its immutable
+metadata is installed. This stage does not execute market producers. Aggregate
+capacity admission remains mandatory at collection execution. The full universe
+fingerprint is rechecked between children and before the collection install;
+each child claim closes on success, blocking or exception.
+
+Two orchestration tests verify complete metadata-only installation and missing
+authority rejection with claim cleanup. Existing fresh-launch and initial-plan
+tests pass after separating graph preparation from execution. The core still
+needs fresh CLI/source-preparation integration and a real bounded collection
+preparation test. Recovery of a partially published child graph remains a
+fail-closed dependency rather than being silently overwritten.

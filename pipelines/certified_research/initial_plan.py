@@ -7,12 +7,12 @@ from .contracts import digest
 from .execution import validate
 
 
-def run(query,config,dataset_id,assembled,claim,client_factory,dictionary_claim_factory,
+def build_launch(query,config,dataset_id,assembled,claim,client_factory,dictionary_claim_factory,
         capacity_factory,*,stop=None,progress=None):
-    """Publish and execute through the same admission gates used by resume.
+    """Construct the same typed execution controller used by fresh launch.
 
-    No initial metadata is installed until ExecutionLaunch.run admits the
-    complete graph. Client and capacity factories receive frozen resources.
+    Construction writes no metadata. Callers must admit the complete graph
+    before installation/execution. Factories receive frozen resources.
     """
     from types import SimpleNamespace
     from uuid import UUID
@@ -37,7 +37,13 @@ def run(query,config,dataset_id,assembled,claim,client_factory,dictionary_claim_
         raise ValueError('Initial plan changed during execution assembly')
     launch=ExecutionLaunch(query,config,dataset_id,plans,saved.source_hash,claim,clients,guard,
         capacity,dictionary_claim_factory,runtime)
-    return launch.run(stop=stop,progress=progress)
+    return launch
+
+
+def run(query,config,dataset_id,assembled,claim,client_factory,dictionary_claim_factory,
+        capacity_factory,*,stop=None,progress=None):
+    return build_launch(query,config,dataset_id,assembled,claim,client_factory,dictionary_claim_factory,
+        capacity_factory,stop=stop,progress=progress).run(stop=stop,progress=progress)
 
 
 def assemble(config,prepared,canonical,reporting,definition,rules,issuers,securities,*,

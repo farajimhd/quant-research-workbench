@@ -5,9 +5,9 @@ from threading import Event
 from . import context,initial_preparation,initial_plan,recipe,source
 
 
-def run(query,config,dataset_id,claim,client_factory,dictionary_claim_factory,capacity_factory,*,
+def prepare(query,config,dataset_id,claim,client_factory,dictionary_claim_factory,capacity_factory,*,
         context_start,fundamental_start,anchor_date,stop=None,progress=None,rebuild_origin=None):
-    """Prepare retained inputs, then admit and execute the complete graph.
+    """Discover retained inputs and assemble a complete graph without executing it.
 
     Missing reference authorities and compatible initial states remain explicit
     blockers unless the caller declares a versioned rebuild origin. No partial
@@ -43,5 +43,14 @@ def run(query,config,dataset_id,claim,client_factory,dictionary_claim_factory,ca
         missing=assembled['missing_authorities']
         return dict(status='blocked',errors={'reference-authorities':ValueError(f'{len(missing)} required reference authority scopes are missing')},
             seal=None,missing_authorities=missing)
+    return assembled
+
+
+def run(query,config,dataset_id,claim,client_factory,dictionary_claim_factory,capacity_factory,*,
+        context_start,fundamental_start,anchor_date,stop=None,progress=None,rebuild_origin=None):
+    assembled=prepare(query,config,dataset_id,claim,client_factory,dictionary_claim_factory,capacity_factory,
+        context_start=context_start,fundamental_start=fundamental_start,anchor_date=anchor_date,
+        stop=stop,progress=progress,rebuild_origin=rebuild_origin)
+    if not assembled.get('ready'):return assembled
     return initial_plan.run(query,config,dataset_id,assembled,claim,client_factory,dictionary_claim_factory,
         capacity_factory,stop=stop,progress=progress)
