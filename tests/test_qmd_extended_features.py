@@ -53,6 +53,15 @@ def test_complete_catalog_preserves_all_957_ids_units_bounds_and_masks():
             InputField(name,'ratio','q_live.qmd_causal_history_value_v1','a'*64,1000)
 
 
+def test_rust_wire_unit_classes_match_the_shared_catalog():
+    from pathlib import Path
+    import re
+    source=(Path(__file__).resolve().parents[1]/'services/qmd_history_gateway/src/columnar_history.rs').read_text()
+    declaration=re.search(r'const MARKET_UNITS: \[&str; \d+\] = \[(.*?)\];',source,re.S)
+    assert declaration is not None
+    assert set(re.findall(r'"([^"\n]+)"',declaration[1]))=={f.unit for f in shared.CATALOG}
+
+
 def test_own_features_preserve_exact_float32_math_and_future_prefix():
     bars=candles();s=scope();p=peer(bars,s)
     f=bars.select(p['second'],*(pl.col(n+'_int').truediv(10000.).alias(n) for n in ('open','high','low','close')),

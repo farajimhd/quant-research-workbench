@@ -11,6 +11,11 @@ use std::collections::BTreeMap;
 use std::future::Future;
 
 pub const CONTRACT: &str = "qmd-causal-history-window-v1";
+// Wire unit classes must match the shared producer catalog, including V18.
+const MARKET_UNITS: [&str; 10] = [
+    "price", "ratio", "dollars", "bool", "duration", "log_count",
+    "log_dollars", "log_duration", "log_price", "log_shares",
+];
 const PREFIX: [&str; 8] = [
     "source_build_id",
     "session_date",
@@ -470,7 +475,7 @@ fn assemble(
     }
     for field in fields {
         if !text_valid(&field.field_name, 256)
-            || !["price", "ratio", "dollars"].contains(&field.unit.as_str())
+            || !MARKET_UNITS.contains(&field.unit.as_str())
         {
             return Err("History field contract differs".into());
         }
@@ -661,7 +666,8 @@ mod tests {
                 else if case == "changing-seal" && count > 0 { format!("{body}\n") }
                 else { body }
             } else if sql.contains("FROM q_live.qmd_causal_history_field_v1") {
-                json!({"field_id":326,"field_name":"history.attention_mean.58","unit":"dollars"}).to_string()
+                json!({"field_id":326,"field_name":"history.attention_mean.58",
+                    "unit":case.strip_prefix("unit:").unwrap_or("dollars")}).to_string()
             } else if sql.contains("FROM q_live.qmd_causal_history_clock_v1") {
                 (0..2).map(|i| json!({"bucket_index":34200 + if case == "duplicate-clock" {0} else {i},
                     "source_known":1,"observed":1,"extremes_valid":1,"reference_close":10.,
@@ -714,6 +720,17 @@ mod tests {
         assert!(response.fields.is_empty());
         assert_eq!(response.coverage.field_count, 0);
         assert_eq!(response.rolling_volume, vec![1., 2.]);
+    }
+
+    #[tokio::test]
+    async fn shared_v18_catalog_units_pass_and_unknown_units_fail_closed() {
+        for case in ["unit:price", "unit:ratio", "unit:dollars", "unit:bool",
+                     "unit:duration", "unit:log_count", "unit:log_dollars",
+                     "unit:log_duration", "unit:log_price", "unit:log_shares"] {
+            let response = fixture(case).await.unwrap();
+            assert_eq!(response.fields[0].unit, case.strip_prefix("unit:").unwrap());
+        }
+        assert!(fixture("unit:unrecognized").await.is_err());
     }
 
     #[tokio::test]
