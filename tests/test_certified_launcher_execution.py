@@ -23,6 +23,40 @@ def test_execution_parser_requires_frozen_dataset_and_qualified_profile():
             '--capacity-profile','pilot.json','--acquire-missing'])
 
 
+def test_sec_source_document_selection_is_explicit_unique_and_capacity_bound():
+    value='0000320193,0000320193-25-000079,filing.htm'
+    args=launcher.parse_args(['prepare-sources','--end-date','2026-01-02','--capacity-profile','pilot.json',
+        '--sec-share-document',value])
+    assert args.sec_share_document==[('320193','0000320193-25-000079','filing.htm')]
+    for argv in (['prepare-sources','--sec-share-document',value],
+        ['resume','--dataset-id','00000000-0000-0000-0000-000000000001','--capacity-profile','pilot.json','--sec-share-document',value],
+        ['prepare-sources','--capacity-profile','pilot.json','--sec-share-document',value,'--sec-share-document',value]):
+        with pytest.raises(SystemExit):launcher.parse_args(argv)
+
+
+def test_schema_json_exposes_source_tables_and_capacity_recipe_without_connecting(capsys):
+    import json
+    with patch('scripts.build_market_day.Client') as client:
+        assert launcher.main(['schema','--format','json'])==0
+    client.assert_not_called()
+    candidate=json.loads(capsys.readouterr().out)['sec_source_candidates']
+    assert candidate['database']=='q_live' and candidate['product']=='sec_share_source'
+    assert len(candidate['tables'])==3 and len(candidate['recipe_hash'])==64
+
+
+def test_sec_candidate_wrapper_propagates_controls_and_preserves_candidate_boundary():
+    from pipelines.certified_research import sec_share_preparation
+    args=launcher.parse_args(['prepare-sources','--end-date','2026-01-02','--capacity-profile','pilot.json',
+        '--sec-share-document','320193,0000320193-25-000079,filing.htm'])
+    result=dict(status='complete',captured=1,reused=0,candidate_only=True,allocation_certified=False)
+    client=Mock();config=Mock();claim=Mock();factory=Mock();dictionary=Mock();stop=Mock()
+    with patch.object(sec_share_preparation,'prepare',return_value=result) as prepare,\
+         patch('pipelines.certified_research.capacity_profile.load',return_value={'profile':'fixture'}):
+        assert launcher.prepare_sec_share_sources(args,client,config,claim,factory,dictionary,stop)==result
+    assert prepare.call_args.args[2]==args.sec_share_document
+    assert prepare.call_args.kwargs['stop'] is stop
+
+
 def test_fresh_launch_requires_explicit_context_and_retains_acquisition_controls():
     common=['launch','--dataset-id','00000000-0000-0000-0000-000000000001','--capacity-profile','pilot.json']
     with pytest.raises(SystemExit):launcher.parse_args(common)

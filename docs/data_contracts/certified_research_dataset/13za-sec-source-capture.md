@@ -15,7 +15,8 @@ requires the global database dictionary claim. Capture requires source ownership
 a current source guard and explicit source-write admission for its metadata-byte
 request. This admission is a caller dependency, not a measured production
 capacity profile fabricated by the capture stage. Launcher integration and a
-production source-write admission binding remain unfinished.
+production source-write pilot qualification remain unfinished. The launcher
+binding is now implemented as described below.
 
 ## Persistence forms
 
@@ -65,7 +66,41 @@ zero inserts. It verified exact schema/codec/SSD placement. Deliberately removin
 a completed observation then failed without an insert. No production capture,
 provider request or full campaign was run.
 
-These source tables are not yet part of unified launcher installation/execution.
-Production source admission, source-stage/vintage qualification, competing
+These source tables now have optional unified launcher installation/execution.
+Production pilot qualification, source-stage/vintage qualification, competing
 revision handling, dated stock-class mapping and certified float/supply
 publication remain required. Candidate capture must not substitute for them.
+
+## Unified launch path
+
+Repeat `--sec-share-document CIK,ACCESSION,DOCUMENT_NAME` on `prepare-sources`,
+`launch` or `launch-collection` for 1–1,000 unique retained documents. There is
+no automatic broad source scan, provider request or acquisition fallback.
+Frozen `run`/`resume` routes reject the option. The selected stage runs after
+requested SEC catch-up and before market source preparation/graph freezing.
+It owns the q_live schema claim, then uses one bounded worker pool with private
+clients and a per-document reservation of 2 GiB plus the query-memory budget.
+Clients and claims are drained on completion/failure/interruption.
+
+`--capacity-profile` must contain a separately qualified `sec_share_source`
+pilot rate on `live_market_ssd`. Its recipe hash binds the source algorithms,
+exact DDL, Python major/minor version and extraction bounds. The stage admits
+all selected document outputs plus concurrent staging/merge peaks without a
+reuse discount, and checks current disk/physical-volume headroom before writes.
+Missing/incompatible rates block before candidate schema installation. No rate
+or qualified peak bound was created from the three small parser examples.
+
+Use the existing offline command to inspect the required recipe and schemas:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B scripts/prepare_certified_research.py schema --format json
+```
+
+The JSON `sec_source_candidates` section contains the recipe and column catalog;
+`--format sql` includes the optional q_live candidate DDL. Default
+`install-schema` still installs the common research catalog. Candidate schema
+installation occurs only on explicit document selection after source admission.
+Fresh-launch JSON reports candidate capture counts separately from dataset
+certification. Text progress labels source work as prepared candidates rather
+than certified fundamentals/allocation.

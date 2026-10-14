@@ -65,6 +65,12 @@ def parse_args(argv=None):
     p.add_argument('--repair-retained-symbols',action='store_true',help='Restore missing intervals from complete retained Gateway ticker history; no provider requests')
     p.add_argument('--retained-figi',action='append',default=[],help='Explicit stable FIGI for retained symbol repair; repeat at most 1000 times')
     p.add_argument('--sec-runtime-root-ch',help='CH-readable alias for the SEC runtime folder; verified before acquisition')
+    def sec_share_document(value):
+        from pipelines.certified_research.sec_share_preparation import request
+        try:return request(value)
+        except ValueError as error:raise argparse.ArgumentTypeError(str(error)) from error
+    p.add_argument('--sec-share-document',type=sec_share_document,action='append',default=[],
+        help='Retained SEC source candidate: CIK,ACCESSION,DOCUMENT_NAME; requires qualified sec_share_source capacity rate, never certifies allocation')
     def identity_point(value):
         from pipelines.certified_research.historical_identity import AcquisitionHandlers
         from types import SimpleNamespace
@@ -87,6 +93,10 @@ def parse_args(argv=None):
     p.add_argument('--clickhouse-cache-root',default='/mnt/d/market-data/flatfiles/us_stocks_sip')
     p.add_argument('--hydrate-missing-trades',action='store_true',help='Deprecated: imported-day repair requires canonical sidecars')
     args=p.parse_args(argv)
+    if args.sec_share_document:
+        if (args.command not in ('prepare-sources','launch','launch-collection') or args.capacity_profile is None
+                or len(args.sec_share_document)>1000 or len(set(args.sec_share_document))!=len(args.sec_share_document)):
+            p.error('SEC share candidates require source preparation/fresh launch, a capacity profile and up to 1000 unique documents')
     if args.repair_retained_symbols or args.retained_figi:
         import re
         if (args.command not in ('prepare-sources','launch','launch-collection') or not args.repair_retained_symbols
@@ -189,6 +199,19 @@ def prepare_identity(args,claim,client_factory,dictionary_factory,stop,progress=
     return result
 
 
+def prepare_sec_share_sources(args,client,config,claim,client_factory,dictionary_factory,stop,progress=None):
+    if not args.sec_share_document:return None
+    from pipelines.certified_research import sec_share_preparation,capacity_profile
+    result=sec_share_preparation.prepare(client.query,config,args.sec_share_document,claim,client_factory,dictionary_factory,
+        capacity_profile.load(args.capacity_profile),stop=stop,progress=progress)
+    if result['status']=='interrupted':raise InterruptedError('SEC candidate source preparation interrupted')
+    if result['status']!='complete':
+        details='; '.join(f'{key}: {client.clean_error(error)[:200]}' for key,error in list(result['errors'].items())[:8])
+        raise ValueError('SEC candidate source preparation failed: '+details)
+    if args.format=='text':print(f'SEC share source candidates | captured={result["captured"]} | reused={result["reused"]} | allocation certified=false',flush=True)
+    return result
+
+
 def prepare_retained_symbols(args,client,claim,dictionary_factory,stop,through,*,context_start=None):
     if not args.repair_retained_symbols:return None
     from services.reference_gateway.retained_symbol_repair import rebuild
@@ -260,12 +283,20 @@ def main(argv=None):
     args=parse_args(argv)
     if args.command=='schema':
         catalog=installation.catalog(args.database)
-        if args.format=='sql':print(';\n\n'.join(t.ddl(args.database) for _,t in catalog)+';')
+        from pipelines.certified_research import sec_share_capture,sec_share_preparation
+        source_tables=sec_share_capture.tables()
+        if args.format=='sql':print(';\n\n'.join([*(t.ddl(args.database) for _,t in catalog),
+            *(t.ddl('q_live') for t in source_tables)])+';')
         elif args.format=='json':
-            print(json.dumps(installation.manifest(args.database),indent=2))
+            manifest=installation.manifest(args.database)
+            manifest['sec_source_candidates']=dict(database='q_live',product=sec_share_preparation.PRODUCT,
+                recipe_hash=sec_share_preparation.recipe_hash(),candidate_only=True,
+                tables=[dict(name=t.name,order=t.order,partition=t.partition,columns=[vars(c) for c in t.columns]) for t in source_tables])
+            print(json.dumps(manifest,indent=2))
         else:
             print(f'Compact research schema | {len(catalog)} tables | live_market_ssd')
             for group,t in catalog:print(f'  {group}: {t.name} | {len(t.columns)} columns, explicit lossless codecs')
+            print(f'Optional SEC source candidates | {len(source_tables)} q_live tables | explicit document selection and measured admission required')
             print('Use --format sql for exact DDL or --format json for the column catalog.')
         return 0
     from scripts import build_market_day as builder
@@ -411,6 +442,8 @@ def main(argv=None):
                                 fundamental_start=args.fundamental_start_date,acquire_missing=args.acquire_sec_missing,
                                 runtime_root_ch=args.sec_runtime_root_ch,
                                 emit=print if args.format=='text' else lambda text:None)
+                            sec_candidates=prepare_sec_share_sources(args,client,config,source_claim,lambda:factory(config),
+                                lambda:DictionaryClaim(keeper.client,'q_live'),stop,progress)
                             acquisition.prepare_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),paths,config,source_claim,
                                 stop,acquire_missing=args.acquire_missing,stage_archive=args.stage_archive,context_start=source_context,
                                 writer_query=client.query,recover_retained_reporting=args.recover_retained_reporting,
@@ -461,6 +494,8 @@ def main(argv=None):
                             **({'storage_observer':observations.record} if observations is not None else {}))
                     finally:claim.close()
             finally:signal.signal(signal.SIGINT,original)
+            if args.sec_share_document and args.command=='launch-collection' and sec_candidates is not None:
+                result['sec_source_candidates']={k:sec_candidates[k] for k in ('status','captured','reused','candidate_only','allocation_certified','original_vintage_qualified')}
             if args.command=='launch-collection':
                 if args.format=='json':print(json.dumps(result,default=str))
                 else:
@@ -473,6 +508,8 @@ def main(argv=None):
             summary=dict(status=result['status'],counts=counts,seal=result.get('seal'),
                 failures={k:client.clean_error(v)[:256] for k,v in list(result['errors'].items())[:20]},
                 failed_units=len(result['errors']))
+            if args.sec_share_document and args.command=='launch' and sec_candidates is not None:
+                summary['sec_source_candidates']={k:sec_candidates[k] for k in ('status','captured','reused','candidate_only','allocation_certified','original_vintage_qualified')}
             if 'measurements' in result:summary['measurements']=result['measurements']
             if 'missing_authorities' in result:
                 summary['missing_authorities']=result['missing_authorities']
@@ -586,6 +623,8 @@ def main(argv=None):
                             sec_acquisition.prepare(client.query,paths,config,claim,stop,
                                 fundamental_start=args.fundamental_start_date,acquire_missing=args.acquire_sec_missing,
                                 runtime_root_ch=args.sec_runtime_root_ch)
+                        prepare_sec_share_sources(args,client,config,claim,lambda:builder.Client(args,persistent=False),
+                            lambda:DictionaryClaim(keeper.client,'q_live'),stop)
                         result=acquisition.prepare_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),paths,config,claim,
                             stop,acquire_missing=args.acquire_missing,stage_archive=args.stage_archive,context_start=args.context_start_date,
                             writer_query=client.query,recover_retained_reporting=args.recover_retained_reporting,

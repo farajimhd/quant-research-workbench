@@ -28,6 +28,16 @@ def test_candidate_bridge_preserves_full_submission_and_distinct_document_hashes
     assert len(result['candidate_hash'])==64
 
 
+def test_matching_versioned_archive_pair_is_candidate_without_backdating():
+    text,document,archive=fixture()
+    for row in (text,document):
+        for key in ('source_version_key','source_revision_rank','source_revision_at','source_revision_kind'):
+            row[key]=archive[key]
+    result=lineage.bridge(text,document,archive)
+    assert result['document_revision_state']=='versioned_archive'
+    assert result['original_vintage_qualified'] is False
+
+
 @pytest.mark.parametrize('index,key,value',[
     (0,'actual_text_hash','c'*64),(1,'document_name','other.htm'),
     (2,'source_content_sha256','c'*64),(2,'source_revision_rank',1),

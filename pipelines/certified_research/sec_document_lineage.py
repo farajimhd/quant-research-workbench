@@ -31,10 +31,14 @@ def bridge(text,document,archive):
     if (expected.source_version_key!=archive['source_version_key']
             or expected.source_revision_at!=str(archive.get('source_revision_at'))):
         raise ValueError('Archive occurrence version cannot be reproduced')
-    if (text.get('source_revision_kind')!='legacy_archive_occurrence' or text.get('source_version_key')
-            or document.get('source_revision_kind')!='legacy_archive_occurrence' or document.get('source_version_key')):
-        raise ValueError('Candidate is not a matching legacy document/text pair')
-    result=dict(version='sec-document-lineage-candidate-v1',document={k:text[k] for k in identity},
+    legacy=all(row.get('source_revision_kind')=='legacy_archive_occurrence' and not row.get('source_version_key') for row in (text,document))
+    current=all(row.get('source_revision_kind') in ('archive_occurrence','archive_raw_lineage_recovery')
+        and row.get('source_version_key')==archive['source_version_key']
+        and row.get('source_revision_rank')==rank and str(row.get('source_revision_at'))==expected.source_revision_at
+        for row in (text,document))
+    if not legacy and not current:raise ValueError('Candidate document/text revision pair differs')
+    result=dict(version='sec-document-lineage-candidate-v2',document={k:text[k] for k in identity},
+        document_revision_state='legacy' if legacy else 'versioned_archive',
         archive_version_key=expected.source_version_key,archive_submission_hash=archive['source_content_sha256'],
         archive_revision_rank=rank,candidate_only=True,original_vintage_qualified=False)
     return dict(result,candidate_hash=digest(result))
@@ -49,7 +53,7 @@ def inspect(query,cik,accession,document_name,claim,source_guard):
     def guard():claim.check();source_guard();claim.check()
     ciks=','.join(literal(v) for v in sorted({str(int(cik)),str(int(cik)).zfill(10)}))
     where=f'accession_number={literal(accession)} AND document_name={literal(document_name)} AND cik IN ({ciks})'
-    columns='document_id,accession_number,cik,sequence_number,document_name,document_type,source_archive_date,source_archive_member,source_archive_path,content_sha256,source_revision_kind,source_version_key'
+    columns='document_id,accession_number,cik,sequence_number,document_name,document_type,source_archive_date,source_archive_member,source_archive_path,content_sha256,source_revision_kind,source_version_key,source_revision_rank,source_revision_at'
     def load():
         text=query(f'SELECT {columns},lower(hex(SHA256(source_text))) actual_text_hash FROM q_live.sec_filing_text_v3 WHERE {where} LIMIT 2')
         document=query(f'SELECT {columns} FROM q_live.sec_filing_document_v3 WHERE {where} LIMIT 2')
@@ -59,6 +63,8 @@ def inspect(query,cik,accession,document_name,claim,source_guard):
         if any(len(rows)!=1 for rows in (text,document,archive)):
             raise ValueError('Document lineage is missing or ambiguous; explicit reconciliation required')
         archive[0]['source_revision_rank']=int(archive[0]['source_revision_rank'])
+        for row in (*text,*document):
+            if 'source_revision_rank' in row:row['source_revision_rank']=int(row['source_revision_rank'])
         return bridge(text[0],document[0],archive[0])
     guard();first=load();guard();second=load();guard()
     if first!=second:raise ValueError('SEC candidate lineage changed during inspection')
