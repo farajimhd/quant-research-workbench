@@ -139,3 +139,14 @@ separately. The envelope is a conservative planning allowance, not a measured
 compressed disk size or a qualification of unobserved peak usage. Missing or
 incompatible measured source pilot rates still block; this change does not create
 a bootstrap exemption or qualify the production campaign.
+
+Independent readback and launcher results now also expose `parity_inputs_ready`
+and exact `parity_input_blockers` counts. Matching every bulk row is insufficient:
+unmatched original numeric facts, numeric/cover parser rejections, absent bulk
+census and any non-matched comparison status keep readiness false. The launcher
+aggregates these counts across documents and prints them separately from verified
+content and completed capture. Evidence capture can complete with blockers so
+the rejection/conflict evidence survives; this is never a certification success.
+Even readiness true only clears these per-document input conditions. Whole-period
+source census, original-vintage qualification and class allocation remain separate
+required authorities before production data can be certified.

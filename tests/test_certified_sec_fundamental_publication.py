@@ -48,11 +48,14 @@ def test_real_partial_resume_exact_readback_and_zero_insert_reuse():
         assert publication.capture(client.query,database,*source(),Mock(),Mock(),admission)['inserted_rows']==0
         from pipelines.certified_research import sec_fundamental_readback
         original_hash=publication.records(*source())[-1][0]['reconciliation_hash']
-        assert sec_fundamental_readback.verify(client.query,database,original_hash,Mock(),Mock())['readback_verified']
+        verified=sec_fundamental_readback.verify(client.query,database,original_hash,Mock(),Mock())
+        assert verified['readback_verified'] and verified['parity_inputs_ready']
         changed=list(source());changed[1][0]['value']='999'
         assert publication.capture(client.query,database,*changed,Mock(),Mock(),admission)['inserted_rows']==2
         changed_hash=publication.records(*changed)[-1][0]['reconciliation_hash']
-        assert sec_fundamental_readback.verify(client.query,database,changed_hash,Mock(),Mock())['all_bulk_matched'] is False
+        changed_result=sec_fundamental_readback.verify(client.query,database,changed_hash,Mock(),Mock())
+        assert changed_result['all_bulk_matched'] is False and changed_result['parity_inputs_ready'] is False
+        assert changed_result['parity_input_blockers']['value_mismatch']==1
         assert publication.capture(client.query,database,*source(),Mock(),Mock(),admission)['inserted_rows']==0
         publication.sec_share_capture.verify(client.query,database,required=True,catalog=publication.tables())
         table=publication.tables()[0].name

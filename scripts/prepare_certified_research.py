@@ -242,9 +242,12 @@ def prepare_sec_share_sources(args,client,config,claim,client_factory,dictionary
         if args.prepare_sec_fundamental_evidence:
             from pipelines.certified_research import sec_fundamental_preparation
             def fundamental_progress(event):
-                if args.format=='text':print(f'SEC fundamental evidence | verified {event["completed"]}/{event["total"]} documents | inserted={event["inserted_rows"]} | comparisons matched={event["all_bulk_matched"]}',flush=True)
+                if args.format=='text':print(f'SEC fundamental evidence | verified {event["completed"]}/{event["total"]} documents | inserted={event["inserted_rows"]} | parity inputs ready={event["parity_inputs_ready"]}',flush=True)
             result['fundamental_evidence']=sec_fundamental_preparation.prepare(client.query,config,args.sec_share_document,claim,
                 dictionary_factory,capacity_profile.load(args.capacity_profile),mode=args.sec_public_time_mode,stop=stop,progress=fundamental_progress)
+            if args.format=='text':
+                evidence=result['fundamental_evidence']
+                print('SEC parity input blockers | '+json.dumps(evidence.get('parity_input_blockers',{}),sort_keys=True)+' | coverage certified=false',flush=True)
     return result
 
 

@@ -1,5 +1,6 @@
 """Reconstruct immutable extraction/reconciliation seals from normalized CH rows."""
 import json
+from collections import Counter
 import re
 from datetime import datetime,timezone
 
@@ -78,6 +79,15 @@ def verify(query,database,reconciliation_hash,claim,source_guard):
     for table,before,index in zip(catalog[:-1],groups,range(3)):
         if read(table,'reconciliation_hash' if index==2 else 'extraction_hash',reconciliation_hash if index==2 else extraction_hash)!=before:
             raise ValueError('Fundamental normalized rows changed during readback')
+    statuses=dict(sorted(Counter(row['status'] for row in restored_comparisons).items()))
+    blockers={status:count for status,count in statuses.items() if status!='matched'}
+    rejected=len(proof['rejected_original']);unmatched=len(proof['unmatched_original_positions'])
+    cover_rejected=len(proof['extraction_metadata']['security_cover']['rejected'])
+    if rejected:blockers['rejected_original_numeric_facts']=rejected
+    if unmatched:blockers['unmatched_original_numeric_facts']=unmatched
+    if cover_rejected:blockers['rejected_original_cover_facts']=cover_rejected
+    if not comparisons:blockers['missing_bulk_comparison_census']=1
     return dict(readback_verified=True,extraction_hash=extraction_hash,reconciliation_hash=reconciliation_hash,
         observations=len(observations),comparisons=len(comparisons),all_bulk_matched=proof['all_bulk_matched'],
+        comparison_status_counts=statuses,parity_input_blockers=blockers,parity_inputs_ready=not blockers,
         certified=False,allocation_certified=False)
