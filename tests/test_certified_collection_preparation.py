@@ -25,7 +25,7 @@ def exercise(ready,partial=False):
         return [dict(n=int(partial))]
     with patch.object(module.source,'exchange_sessions',return_value=(date(2026,1,2),)),\
          patch.object(module.context,'preceding_sessions',return_value=(date(2025,12,31),)),\
-         patch.object(module.universe,'load',return_value=dict(source_hash='a'*64)),\
+         patch.object(module.universe,'load',return_value=dict(source_hash='a'*64,ready=True)),\
          patch.object(module.cohorts,'partition_snapshot',return_value=partition),\
          patch.object(module.fresh_execution,'prepare',return_value=dict(ready=ready)),\
          patch.object(module.initial_plan,'build_launch',return_value=launch),\

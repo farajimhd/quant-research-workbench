@@ -29,6 +29,28 @@ claim that the requested full dataset can be certified from current inputs.
 Passing a fixture does not resolve the production evidence gaps in this table.
 No expensive full campaign is part of implementation validation.
 
+## Current historical identity repair inventory
+
+A read-only October 13 audit used context January 1, 2025 through October 2,
+2026, with conid observations through October 13. Among 2,509 listings rejected
+for missing dated symbol intervals, direct retained-coverage lookup found:
+
+| Dependency | Listings |
+|---|---:|
+| Missing retained ticker-history coverage | 2,351 |
+| Source mapping conflict | 70 |
+| Inactive listing lifecycle proof | 54 |
+| Covered-empty history requiring a proven symbol origin | 34 |
+
+`universe.history_repair_inventory()` reads coverage directly by listing ID;
+joining through an absent symbol interval would hide this distinction. It
+returns a bounded hashed dependency inventory, not an admission certificate.
+`plan-cohorts` and fresh collection preparation now expose these lanes.
+Mapped `covered_empty` does not by itself prove an unchanged lifetime ticker;
+inactive/current symbols cannot replace dated lifecycle evidence. No provider
+request or canonical/reference mutation occurred during this audit. Counts are
+snapshot-specific and must be refreshed after Gateway repair or acquisition.
+
 ## Next implementation order
 
 1. Close historical identity/reference creation and acquisition gaps, including

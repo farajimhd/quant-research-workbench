@@ -17,6 +17,41 @@ from .identity import ListingInterval,validate_intervals
 from services.reference_gateway.tradability import otc_venue_predicate_sql
 
 
+def history_repair_inventory(query,snapshot,*,database='q_live',maximum_listings=8192):
+    """Read retained history directly; no missing-interval join or admission."""
+    identifier(database)
+    if type(maximum_listings) is not int or not 1<=maximum_listings<=8192:
+        raise ValueError('Invalid historical identity repair bound')
+    listings=tuple(sorted({r['listing_id'] for r in snapshot['rejected'] if r['reason']=='missing_dated_symbol_mapping'}))
+    if len(listings)>maximum_listings:raise ValueError('Historical identity repair exceeds metadata bound')
+    if not listings:return dict(listings=0,lanes={},source_hash=snapshot['source_hash'],inspection_only=True)
+    ids=','.join(literal(id_) for id_ in listings)
+    rows=query('SELECT listing_id,count() records,groupArray(17)(tuple(provider_entity_key,source_status,mapping_status,'
+        'active_event_count,source_response_sha256)) coverage FROM '
+        f'{database}.market_ticker_event_entity_coverage_v1 FINAL WHERE listing_id IN ({ids}) GROUP BY listing_id')
+    by_listing={r['listing_id']:r for r in rows}
+    if len(by_listing)!=len(rows) or set(by_listing)-set(listings):raise ValueError('Competing historical repair metadata')
+    lanes=Counter();proof=[]
+    for id_ in listings:
+        row=by_listing.get(id_)
+        if row is None:lane='missing_retained_history_coverage';coverage=()
+        else:
+            coverage=tuple(sorted(tuple(v) for v in row['coverage']))
+            if int(row['records'])>16:raise ValueError('Historical coverage alternatives exceed bounded repair scope')
+            if len(coverage)!=int(row['records']):raise ValueError('Historical coverage census changed')
+            if len(coverage)!=1:lane='competing_history_coverage'
+            elif coverage[0][2]=='source_conflict':lane='resolve_source_mapping_conflict'
+            elif coverage[0][2]=='inactive':lane='prove_inactive_listing_lifecycle'
+            elif coverage[0][1]=='covered_empty' and coverage[0][2]=='mapped':lane='prove_empty_history_symbol_origin'
+            elif coverage[0][1]=='completed' and coverage[0][2]=='mapped':lane='rebuild_intervals_from_retained_history'
+            else:lane='qualify_history_source_and_mapping'
+        lanes[lane]+=1;proof.append((id_,lane,coverage))
+    result=dict(listings=len(listings),lanes=dict(sorted(lanes.items())),source_hash=snapshot['source_hash'],
+                repair_evidence_hash=digest(proof),inspection_only=True)
+    result['inventory_hash']=digest(result)
+    return result
+
+
 def execution_membership(snapshot,days,*,maximum_sessions=250000):
     """Compile compact dated execution metadata from a certified universe.
 

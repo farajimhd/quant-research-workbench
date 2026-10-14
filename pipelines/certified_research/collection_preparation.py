@@ -16,6 +16,9 @@ def prepare(query,config,collection_id,claim,child_claim_factory,client_factory,
     start=min((context_start,*short_days,*targets))
     days=source.exchange_sessions(start,config.end)
     snapshot=universe.load(query,start,config.end,anchor_date)
+    if not snapshot['ready']:
+        return dict(status='blocked',phase='historical-universe',rejections=snapshot['rejection_counts'],
+                    history_dependencies=universe.history_repair_inventory(query,snapshot),execution_started=False)
     partition=cohorts.partition_snapshot(snapshot,config,days,maximum_issuers=maximum_issuers,maximum_sessions=maximum_sessions)
     members=[]
     for index,group in enumerate(partition['groups']):

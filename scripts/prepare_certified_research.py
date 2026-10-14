@@ -324,7 +324,10 @@ def main(argv=None):
             finally:signal.signal(signal.SIGINT,original)
             if args.command=='launch-collection':
                 if args.format=='json':print(json.dumps(result,default=str))
-                else:print('Collection '+result['status']+' | '+str(result.get('certificate',{}).get('root_hash','unsealed')))
+                else:
+                    print('Collection '+result['status']+' | '+str(result.get('certificate',{}).get('root_hash','unsealed')))
+                    for lane,count in result.get('history_dependencies',{}).get('lanes',{}).items():
+                        print(f'  Historical identity: {lane}={count}')
                 return 0 if result['status']=='complete' else 130 if result['status']=='interrupted' else 2
             if not counts and result['status']=='complete' and result.get('seal'):
                 counts=dict(queued=0,active=0,reused=int(result['seal']['units']),failed=0,blocked=0,interrupted=0)
@@ -428,7 +431,8 @@ def main(argv=None):
             query=lambda sql:client.query(sql+' SETTINGS readonly=1')
             snapshot=universe.load(query,args.context_start_date,config.end,args.universe_anchor_date)
             if not snapshot['ready']:
-                result=dict(status='blocked',rejections=snapshot['rejection_counts'],full_source_hash=snapshot['source_hash'])
+                result=dict(status='blocked',rejections=snapshot['rejection_counts'],full_source_hash=snapshot['source_hash'],
+                    history_dependencies=universe.history_repair_inventory(query,snapshot))
             else:
                 result=cohorts.partition_snapshot(snapshot,config,source.exchange_sessions(args.context_start_date,config.end),
                     maximum_issuers=args.cohort_max_issuers,maximum_sessions=args.cohort_max_sessions)
