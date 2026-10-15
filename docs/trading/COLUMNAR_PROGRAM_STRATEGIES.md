@@ -124,3 +124,10 @@ All frozen optimization session results remain in the comparison report.
 Unexecuted app sessions are explicitly unrun. Profitability selection and new
 validation experiments are a later phase; matching an audit session alone does
 not establish profitability or live suitability.
+
+Clock metadata may declare one physical input parent per split or an exact
+session-to-physical-parent mapping. A dataset directory junction does not
+authorize its target implicitly. Every declared session still requires its
+original certificate and clock hashes, complete clock grid and containment
+inside the declared physical parent. These files provide comparison clocks,
+never app market observations.

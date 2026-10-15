@@ -7,6 +7,7 @@ transport. A missing listing is a coverage failure, never an inferred zero.
 from __future__ import annotations
 
 import asyncio
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 from types import MappingProxyType
@@ -164,16 +165,9 @@ async def read_population_window(pin: CertifiedPopulationPin, *, first_bucket: i
     _preflight_population_window(pin, first_bucket=first_bucket, stop_bucket=stop_bucket,
         as_of=as_of, concurrency=concurrency)
     if type(pin) is CertifiedVolumePopulationPin:
-        from .qmd_volume_reader import volume_window
         from .qmd_columnar_history_transport import _owned_worker
-        def project():
-            frames = {listing: _population_listing_frame(pin, listing,
-                volume_window(history,
-                    first_ordinal=first_bucket - history.scope.first_bucket,
-                    stop_ordinal=stop_bucket - history.scope.first_bucket, as_of=as_of))
-                for listing, history in sorted(pin.histories.items())}
-            return _population_window(pin, frames)
-        return await _owned_worker(project)
+        return await _owned_worker(_volume_population_window, pin,
+            first_bucket=first_bucket, stop_bucket=stop_bucket)
     iterator = iter(sorted(pin.histories.items()))
     results = {}
     async def worker():
@@ -232,9 +226,69 @@ def _population_window(pin, results):
         ticker=pl.String, prior_close_available_at=pl.Datetime("us", "UTC"),
         adjusted_prior_close=pl.Float64, volume_window_seconds=pl.UInt32)
     rows = pl.concat([results[listing] for listing in sorted(results)]) if results else pl.DataFrame(schema=schema)
+    return _population_result(pin, rows)
+
+
+def _population_result(pin, rows):
     ranked = select_volume_universe(rows, pin.rule)
     references = tuple(pin.opening.rows_by_listing.values())
     return CertifiedPopulationWindow(pin.source_revision, rows, ranked, len(references),
         len(pin.histories), sum(row["status"] == "covered_empty" for row in references),
         sum(row["status"] == "excluded_identity" for row in references),
         sum(row["status"] == "resolved" for row in references) - len(pin.histories))
+
+
+def _volume_population_window(pin, *, first_bucket, stop_bucket):
+    """Project certified intervals in one bounded population join, without I/O.
+
+    The caller preflights every scope and completed clock before this worker.
+    Scalar coverage checks remain identical to the single-listing reader; only
+    the many tiny eager DataFrames are replaced by population-wide frames.
+    """
+    from src.market_engine import qmd_volume_product as volume
+    from src.market_engine.columnar_history_product import session_clock_anchor_us
+    if not pin.histories:
+        return _population_window(pin, {})
+    listings, starts, stops, values, references = [], [], [], [], []
+    anchors = set()
+    for listing, history in sorted(pin.histories.items()):
+        scope = history.scope
+        first = max(0, bisect_right(history._starts, first_bucket - scope.first_bucket) - 1)
+        stop = bisect_left(history._starts, stop_bucket - scope.first_bucket)
+        selected = history.intervals[first:stop]
+        rows = tuple(volume.run_records(scope, selected))
+        volume.validate_intervals(scope, rows,
+            first_ordinal=first_bucket - scope.first_bucket,
+            stop_ordinal=stop_bucket - scope.first_bucket)
+        for run in selected:
+            listings.append(listing)
+            starts.append(scope.first_bucket + run.first_ordinal)
+            stops.append(scope.first_bucket + run.stop_ordinal)
+            values.append(run.rolling_volume)
+        reference = pin.opening.rows_by_listing[listing]
+        references.append((listing, scope.ticker, reference['available_at'], reference['adjusted_prior_close']))
+        anchors.add(session_clock_anchor_us(scope))
+    if len(anchors) != 1:
+        raise ValueError('Volume population crosses completed-clock anchors')
+    intervals = pl.DataFrame(dict(listing_id=listings, first=starts, stop=stops,
+        rolling_volume=values), schema_overrides=dict(first=pl.Int64, stop=pl.Int64,
+            rolling_volume=pl.Float64))
+    reference = pl.DataFrame(references, schema=dict(listing_id=pl.String, ticker=pl.String,
+        prior_close_available_at=pl.Datetime('us', 'UTC'), adjusted_prior_close=pl.Float64), orient='row')
+    grid = reference.select('listing_id').join(pl.DataFrame({'bucket': range(first_bucket, stop_bucket)},
+        schema={'bucket': pl.Int64}), how='cross')
+    rows = grid.join_asof(intervals, left_on='bucket', right_on='first', by='listing_id',
+        check_sortedness=False)
+    if (rows.height != len(pin.histories) * (stop_bucket - first_bucket)
+            or rows['rolling_volume'].null_count()
+            or not rows.filter((pl.col('bucket') < pl.col('first'))
+                | (pl.col('bucket') >= pl.col('stop'))).is_empty()):
+        raise ValueError('Volume intervals do not cover the complete requested population clocks')
+    rows = (rows.with_columns(((pl.col('bucket') + 1) * 1000000 + anchors.pop())
+            .cast(pl.Datetime('us', 'UTC')).alias('boundary_at'))
+        .with_columns(pl.col('boundary_at').alias('available_at'))
+        .join(reference, on='listing_id', how='left', validate='m:1', maintain_order='left')
+        .with_columns(pl.lit(pin.rule.window_seconds, dtype=pl.UInt32).alias('volume_window_seconds'))
+        .select('listing_id', 'boundary_at', 'available_at', 'rolling_volume', 'ticker',
+            'prior_close_available_at', 'adjusted_prior_close', 'volume_window_seconds'))
+    return _population_result(pin, rows)

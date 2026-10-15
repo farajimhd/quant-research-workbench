@@ -254,6 +254,8 @@ def read_candidate_reference(root, serial, *, concurrency=1, input_roots=None):
 
     Only hash-bound clock metadata and clocks.npy are opened from input roots;
     these reference clocks never provide app market or feature observations.
+    Each split declares one physical parent or an exact day-to-parent mapping;
+    directory aliases do not authorize reads outside those declared parents.
     """
     from .optimized_candidate_evidence import read_frozen_candidate_evidence
     from .optimized_candidate import restore_candidate
@@ -271,6 +273,19 @@ def read_candidate_reference(root, serial, *, concurrency=1, input_roots=None):
     sessions, jobs = {}, []
     if input_roots is not None and set(input_roots) != {'training', 'validation'}:
         raise ValueError('Explicit input roots required for both source splits')
+    authorities = {}
+    if input_roots is not None:
+        for role in ('training', 'validation'):
+            days = {session['day'] for session in selected[role]}
+            declared = input_roots[role]
+            if isinstance(declared, Mapping):
+                if set(declared) != days:
+                    raise ValueError('Per-day input authorities require exact frozen split days')
+                authorities[role] = {day: Path(parent).resolve(strict=True)
+                                     for day, parent in declared.items()}
+            else:
+                parent = Path(declared).resolve(strict=True)
+                authorities[role] = {day: parent for day in days}
     for role in ('training', 'validation'):
         for session in selected[role]:
             day = session['day']
@@ -286,10 +301,13 @@ def read_candidate_reference(root, serial, *, concurrency=1, input_roots=None):
                     raise ValueError('Frozen candidate receipt changed during clock binding')
                 receipt = json.loads(raw)
                 checksum = receipt['identity']['input_sha256']
-                input_root = Path(input_roots[role]).resolve(strict=True)
+                input_root = authorities[role][day]
                 # The source input certificate may retain validation_opened=False
                 # even for a display-only optimizer receipt. Bind its exact flag.
-                certificate = (input_root / day / 'complete.json').read_bytes()
+                target = (input_root / day).resolve(strict=True)
+                if not target.is_relative_to(input_root):
+                    raise ValueError('Frozen optimizer clock path escaped its declared authority')
+                certificate = (target / 'complete.json').read_bytes()
                 if sha256(certificate).hexdigest() != checksum:
                     raise ValueError('Candidate input certificate differs from receipt')
                 flag = json.loads(certificate)['validation_opened']

@@ -79,3 +79,43 @@ def test_native_frozen_fixture_constructor_bridge(tmp_path):
     assert reference.candidate == 2
     assert len(reference.sessions) == 2
     assert reference.candidate_envelope.execution['risk_protection'] is True
+
+
+@pytest.mark.parametrize('authority', ['legacy', 'physical', 'legacy_physical', 'missing', 'extra', 'wrong_parent', 'changed_clock'])
+def test_candidate_clock_physical_authorities_keep_exact_scope_and_containment(monkeypatch, tmp_path, authority):
+    import json, os, subprocess
+    import numpy as np
+    from hashlib import sha256
+    from datetime import datetime, timedelta, timezone
+    candidate=envelope()
+    metrics={name:0. for name in METRICS}; metrics['terminal_valid']=True
+    selected={}; sources={}; roots={}
+    for role,day in [('training','2026-01-01'),('validation','2026-01-02')]:
+        physical=tmp_path/(role+'-physical'); target=physical/day; target.mkdir(parents=True)
+        start=datetime.fromisoformat(day+'T08:00:00+00:00')
+        np.save(target/'clocks.npy', np.arange(int(start.timestamp())+1,int(start.timestamp())+5,dtype=np.int64),allow_pickle=False)
+        metadata=dict(status='complete',ready_for_replay=True,validation_opened=False,split=role,clocks=4,
+            identity=dict(top_n=10,window=30,session=dict(day=day,start=start.isoformat(),end=(start+timedelta(seconds=4)).isoformat())),
+            files={'clocks.npy':sha256((target/'clocks.npy').read_bytes()).hexdigest()})
+        certificate=json.dumps(metadata).encode();(target/'complete.json').write_bytes(certificate)
+        relative=f"{role}/generation-{candidate['generation']:04d}/{day}/receipt.json"
+        receipt=json.dumps({'identity':{'input_sha256':sha256(certificate).hexdigest()}}).encode()
+        receipt_path=tmp_path/relative;receipt_path.parent.mkdir(parents=True);receipt_path.write_bytes(receipt)
+        sources[relative]=sha256(receipt).hexdigest();selected[role]=[{'day':day,'metrics':metrics}]
+        alias=tmp_path/(role+'-alias');alias.mkdir()
+        if os.name=='nt':
+            subprocess.run(['cmd','/c','mklink','/J',str(alias/day),str(target)],check=True,capture_output=True)
+        else: (alias/day).symlink_to(target,target_is_directory=True)
+        roots[role]=(str(alias) if authority=='legacy' else str(physical) if authority=='legacy_physical' else {day:str(physical)})
+    evidence=dict(candidate_envelopes=[candidate],sessions={'12':selected},sources=sources)
+    monkeypatch.setattr('src.trading_runtime.optimized_candidate_evidence.read_frozen_candidate_evidence',lambda *a,**kw:evidence)
+    if authority=='missing': roots['training']={}
+    if authority=='extra': roots['training']['2026-01-03']=str(tmp_path)
+    if authority=='wrong_parent': roots['training']['2026-01-01']=str(tmp_path/'training-alias')
+    if authority=='changed_clock': (tmp_path/'training-physical/2026-01-01/clocks.npy').write_bytes(b'changed')
+    if authority in ('physical','legacy_physical'):
+        result=read_candidate_reference(tmp_path,12,concurrency=2,input_roots=roots)
+        assert set(result.clock_windows)=={'2026-01-01','2026-01-02'}
+    else:
+        with pytest.raises(ValueError,match='exact frozen split days' if authority in ('missing','extra') else 'escaped|clocks changed'):
+            read_candidate_reference(tmp_path,12,concurrency=2,input_roots=roots)
