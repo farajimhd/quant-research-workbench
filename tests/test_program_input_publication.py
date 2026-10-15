@@ -145,3 +145,60 @@ def test_session_receipts_bridge_native_publication_to_app_request(prepared_sour
     assert reports[-1]['completed'] == reports[-1]['skipped'] == 1
     assert all(sum(row[key] for key in ('queued', 'active', 'completed', 'skipped', 'failed')) == row['total']
         for row in reports)
+
+def test_compact_volume_receipts_keep_managed_feature_publication(prepared_source, monkeypatch):
+    from dataclasses import replace
+    from datetime import datetime, UTC
+    from types import MappingProxyType
+    from test_columnar_history_publication import Store, Client, Owner, CODE, publish, consume
+    from tests.test_backtest_program_inputs import release_for
+    from pipelines.market_sip.events.qmd_volume_producer import CertifiedVolumeSource
+    from src.backend.qmd_volume_reader import VolumePinRequest
+    opening = replace(prepared_source.opening_reference, rows_by_listing=MappingProxyType({
+        'listing': MappingProxyType(dict(ticker='ABC', listing_id='listing',
+            status='resolved', adjusted_prior_close=10.))}))
+    feature = replace(prepared_source, opening_reference=opening)
+    store = Store(); publish(store, feature)
+    release = release_for(consume(store, feature).pin())
+    source = CertifiedVolumeSource(feature.opening_source, opening, feature.ticker,
+        feature.first_bucket, feature.stop_bucket, 30)
+    volume = VolumePinRequest(source.scope('00000000-0000-0000-0000-000000000091', CODE),
+        source.parents(CODE), '5' * 64, source)
+    lane = publication.ProgramInputPublication(query_limits=dict(max_threads=2,
+        max_memory_usage=1024, max_execution_time=30, max_result_rows=1000, max_result_bytes=65536),
+        maximum_concurrent_units=1)
+    lane.history.reader_factory = lambda: Client(store)
+    lane.history.writer_factory = lambda: Client(store, True)
+    request = asyncio.run(lane.publish_session_histories(release, opening, (feature,), (volume,),
+        ownership=Owner(), code_hash=CODE, first_ordinal=0, stop_ordinal=200,
+        evaluation_block='full-session', cohort_windows=((34200, 34400),),
+        as_of=datetime(2026, 8, 4, tzinfo=UTC), maximum_retained_population_bytes=1024))
+    assert request.volume_requests == (volume,)
+    assert request.maximum_retained_population_bytes == 1024
+    assert lane.history.skipped_verified == 1 and lane.history.completed == 0
+
+
+def test_scanner_volume_publication_closes_owned_clients_on_failure(monkeypatch):
+    from pipelines.market_sip.events import qmd_volume_producer
+    import threading
+    lane = publication.ProgramInputPublication(query_limits=dict(max_threads=1,
+        max_memory_usage=1024, max_execution_time=30, max_result_rows=1000, max_result_bytes=65536),
+        maximum_concurrent_units=1)
+    clients = []
+    class Client:
+        closed = False
+        def close(self): self.closed = True
+    def factory():
+        client = Client(); clients.append(client); return client
+    lane.history.reader_factory = lane.history.writer_factory = factory
+    caller_thread = threading.get_ident()
+    def publish(*args, **kwargs):
+        assert threading.get_ident() != caller_thread
+        assert kwargs['maximum_retained_bytes'] == 1024
+        raise RuntimeError('Ambiguous volume publication')
+    monkeypatch.setattr(qmd_volume_producer, 'publish_volume_batch', publish)
+    with pytest.raises(RuntimeError, match='Ambiguous'):
+        asyncio.run(lane.publish_scanner_volume((), ownership=None, code_hash='5'*64,
+            maximum_retained_bytes=1024))
+    assert len(clients) == 2 and all(client.closed for client in clients)
+    assert lane.active == 0

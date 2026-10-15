@@ -148,9 +148,36 @@ class ProgramInputPublication:
         finally:
             self._liquidity_active.remove(key)
 
+    async def publish_scanner_volume(self, sources, *, ownership, code_hash,
+            maximum_retained_bytes=256 * 1024 * 1024, progress=None,
+            stop_requested=None, reconcile_requests=()):
+        """Publish a complete native volume batch off-loop using managed clients.
+
+        The caller durably records projected attempt/hash progress before INSERT.
+        Interrupted transport is drained by the shared owned-worker primitive.
+        """
+        from .qmd_volume_producer import publish_volume_batch
+        from src.backend.qmd_columnar_history_transport import _owned_worker
+        async def publish():
+            def work():
+                reader, writer = self.history.reader_factory(), None
+                try:
+                    writer = self.history.writer_factory()
+                    return publish_volume_batch(reader, writer, sources, ownership=ownership,
+                        code_hash=code_hash, maximum_retained_bytes=maximum_retained_bytes,
+                        progress=progress, stop_requested=stop_requested,
+                        reconcile_requests=reconcile_requests)
+                finally:
+                    if writer is not None:
+                        writer.close()
+                    reader.close()
+            return await _owned_worker(work)
+        return await self._execute(publish)
+
     async def publish_session_histories(self, release, opening, feature_sources, volume_sources, *,
             ownership, code_hash, first_ordinal, stop_ordinal, evaluation_block,
-            cohort_windows, as_of, maximum_retained_feature_bytes=None, on_progress=None):
+            cohort_windows, as_of, maximum_retained_feature_bytes=None, on_progress=None,
+            maximum_retained_population_bytes=None):
         """Publish the full eligible population and return the app's native request.
 
         No top10 truncation occurs at publication. Ranking remains in the shared
@@ -165,7 +192,11 @@ class ProgramInputPublication:
         from src.trading_runtime.columnar_strategy_release import ProgramRelease
         from src.market_engine.columnar_history_product import require_hash
         from src.backend.backtest_program_journal_startup import _settle_owned_task
+        from src.backend.qmd_volume_reader import VolumePinRequest
+        from src.trading_runtime.columnar_program_input_contract import portable_revision
+        from src.market_engine.columnar_history_product import BY_NAME
         require_hash(code_hash)
+        compact_volume = bool(volume_sources) and all(type(v) is VolumePinRequest for v in volume_sources)
         if (type(release) is not ProgramRelease or type(opening) is not CertifiedOpeningReference
                 or type(feature_sources) is not tuple or type(volume_sources) is not tuple
                 or type(first_ordinal) is not int or type(stop_ordinal) is not int
@@ -176,7 +207,9 @@ class ProgramInputPublication:
                 or len(cohort_windows) > 57600
                 or (on_progress is not None and not asyncio.iscoroutinefunction(on_progress))
                 or (maximum_retained_feature_bytes is not None and
-                    (type(maximum_retained_feature_bytes) is not int or maximum_retained_feature_bytes < 1))):
+                    (type(maximum_retained_feature_bytes) is not int or maximum_retained_feature_bytes < 1))
+                or (maximum_retained_population_bytes is not None and
+                    (type(maximum_retained_population_bytes) is not int or maximum_retained_population_bytes < 1))):
             raise ValueError('Session publication lacks explicit native source and compute bounds')
         eligible = {row['listing_id']: row for row in opening.resolved_rows()
             if release.universe.minimum_prior_close <= row['adjusted_prior_close'] <= release.universe.maximum_prior_close}
@@ -184,24 +217,37 @@ class ProgramInputPublication:
             raise ValueError('Session publication has no price-eligible population')
         required = set(required_program_history_fields(release))
         origin = None
-        for packet, fields in ((feature_sources, required), (volume_sources, set())):
-            if (len(packet) != len(eligible) or any(type(s) is not CertifiedHistoryInput for s in packet)
-                    or {s.listing_id for s in packet} != set(eligible)):
-                raise ValueError('Session publication requires the complete eligible population')
+        for index, (packet, fields) in enumerate(((feature_sources, required), (volume_sources, set()))):
+            source_type = VolumePinRequest if compact_volume and index == 1 else CertifiedHistoryInput
+            identities = {source.scope.listing_id if source_type is VolumePinRequest else source.listing_id
+                for source in packet if type(source) is source_type}
+            if (not packet or any(type(source) is not source_type for source in packet)
+                    or len(identities) != len(packet) or not identities <= set(eligible)
+                    or ((index == 1 or not compact_volume) and identities != set(eligible))):
+                raise ValueError('Session publication requires the complete eligible volume population')
             for source in packet:
-                scope = source.scope('00000000-0000-0000-0000-000000000001', code_hash)
-                if (source.opening_reference != opening or source.ticker != eligible[source.listing_id]['ticker']
-                        or {field.name for field in source.fields} != fields
-                        or source.volume_window_seconds != release.universe.window_seconds
-                        or stop_ordinal > scope.clock_count):
-                    raise ValueError('Session publication differs from its release and opening lineage')
-                bounds = source.first_bucket, source.stop_bucket
-                if origin is None:
-                    origin = bounds
-                if bounds != origin:
+                if source_type is VolumePinRequest:
+                    scope = source.scope
+                    if (source.source.opening_reference != opening
+                            or source.parents.volume_window_seconds != release.universe.window_seconds):
+                        raise ValueError('Volume request differs from its exact opening and release')
+                else:
+                    scope = source.scope('00000000-0000-0000-0000-000000000001', code_hash)
+                    if (source.opening_reference != opening
+                            or source.ticker != eligible[source.listing_id]['ticker']
+                            or {field.name for field in source.fields} != fields
+                            or source.volume_window_seconds != release.universe.window_seconds):
+                        raise ValueError('Session publication differs from release and opening lineage')
+                    selected = tuple(sorted((BY_NAME[name] for name in release.fields), key=lambda f: f.field_id))
+                    portable = portable_revision(selected, code_hash,
+                        volume_window_seconds=source.volume_window_seconds)
+                    if fields and any(field.revision not in (scope.product_revision, portable)
+                                      for field in release.fields.values()):
+                        raise ValueError('Session publication differs from frozen feature revision')
+                bounds = scope.first_bucket, scope.stop_bucket
+                if stop_ordinal > scope.clock_count or origin is not None and bounds != origin:
                     raise ValueError('Session publication mixes feature and volume origins')
-                if fields and any(field.revision != scope.product_revision for field in release.fields.values()):
-                    raise ValueError('Session publication differs from the frozen programme feature revision')
+                origin = bounds
         previous = None
         for window in cohort_windows:
             if (type(window) is not tuple or len(window) != 2 or any(type(v) is not int for v in window)
@@ -209,7 +255,7 @@ class ProgramInputPublication:
                     or window[1] - window[0] > 256 or (previous is not None and window[0] != previous)):
                 raise ValueError('Session publication cohort windows are not a contiguous bounded origin')
             previous = window[1]
-        sources = feature_sources + volume_sources
+        sources = feature_sources + (() if compact_volume else volume_sources)
         if self.active:
             raise ValueError('Session publication requires an idle operator lane')
         iterator = iter(enumerate(sources))
@@ -260,6 +306,6 @@ class ProgramInputPublication:
         if any(receipt is None for receipt in receipts):
             raise RuntimeError('Session publication lacks complete coverage receipts')
         count = len(feature_sources)
-        return ProgramPublishedInputRequest(opening, tuple(receipts[:count]), tuple(receipts[count:]),
+        return ProgramPublishedInputRequest(opening, tuple(receipts[:count]), (volume_sources if compact_volume else tuple(receipts[count:])),
             first_ordinal, stop_ordinal, evaluation_block, cohort_windows, as_of, self.capacity,
-            maximum_retained_feature_bytes)
+            maximum_retained_feature_bytes, maximum_retained_population_bytes)
