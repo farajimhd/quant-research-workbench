@@ -173,7 +173,7 @@ def session_layout(data,width,height):
     if not complete:
         if lane.get('total_rule_tiles'):tasks.append(('Current batch rules',lane.get('rule_tiles',0),lane['total_rule_tiles']))
         if lane.get('total_seconds'):tasks.append(('Backtest timestamps',lane.get('completed_seconds',0),lane['total_seconds']))
-        if lane.get('completed_local_batches') is not None:tasks.append(('Candidate batches',lane['completed_local_batches'],2))
+        if lane.get('total_local_batches',0)>0:tasks.append(('Candidate batches',lane.get('completed_local_batches',0),lane['total_local_batches']))
     for label,count,total in tasks:
         bars.add_task(label,total=total,completed=count,units=f'{count:,}/{total:,}')
     layout['progress'].update(bars);layout['progress'].size=4

@@ -2,8 +2,38 @@
 import torch
 import triton
 import triton.language as tl
-from torch.nn import functional as F
 from .program import TorchPrograms,Op
+
+
+@triton.jit
+def mean_inputs(V,M,INDICES,AI,SAFE,KNOWN,rows,candidates,total,BLOCK:tl.constexpr):
+    r=tl.program_id(0)*BLOCK+tl.arange(0,BLOCK);live=r<total
+    group=r//rows;cell=r%rows
+    candidate=tl.load(INDICES+group,live,0);node=tl.load(AI+group,live,0)
+    source=(node*candidates+candidate)*rows+cell
+    known=tl.load(M+source,live,0);value=tl.load(V+source,live,0)
+    tl.store(SAFE+r,tl.where(known,value,0.),live)
+    tl.store(KNOWN+r,known.to(tl.float32),live)
+
+
+@triton.jit
+def mean_outputs(SAFE,SUMS,COUNTS,INDICES,V,M,rows,candles,candidates,index,total,
+                 WINDOW:tl.constexpr,RECIPROCAL:tl.constexpr,BLOCK:tl.constexpr):
+    r=tl.program_id(0)*BLOCK+tl.arange(0,BLOCK);live=r<total
+    clock=r%candles;prior=live & (clock>=WINDOW)
+    count=tl.load(COUNTS+r,live,0)-tl.load(COUNTS+r-WINDOW,prior,0)
+    known=live & (clock>=WINDOW-1) & (count==WINDOW)
+    if WINDOW==1:
+        value=tl.load(SAFE+r,live,0)
+    else:
+        difference=tl.load(SUMS+r,live,0)-tl.load(SUMS+r-WINDOW,prior,0)
+        # Torch's scalar division kernel multiplies by a float32 reciprocal.
+        # Keep that operation, without fusion or reassociating the prefix scan.
+        value=difference*RECIPROCAL
+    known=known & (tl.abs(value)<float('inf'))
+    candidate=tl.load(INDICES+r//rows,live,0)
+    target=(index*candidates+candidate)*rows+r%rows
+    tl.store(V+target,tl.where(known,value,0.),live);tl.store(M+target,known,live)
 
 
 @triton.jit
@@ -122,19 +152,20 @@ class FusedPrograms(TorchPrograms):
             raise ValueError('Fused rules require contiguous float32 features and masks')
         b=len(self.programs);c=features.shape[-2];shape=(b,*features.shape[:-1]);rows=features.numel()//features.shape[-1]
         values=features.new_empty((self.width,*shape));masks=torch.empty_like(values,dtype=torch.bool)
-        axis=torch.arange(c,device=features.device)[None]
         for i in range(self.width):
             instruction[(self.active_rows[i].numel(),triton.cdiv(rows,128))](features,valid,values,masks,*self.genes,self.active_rows[i],
                 rows,c,features.shape[-1],b,i,BLOCK=128,HAS_STD=self.has_std[i],enable_fp_fusion=False)
             # Keep precisely the old cumsum and pooling order, including float32
             # rounding and missing-evidence propagation. Never approximate a mean.
             for k,indices,ai in self.numeric_means[i]:
-                    source=values[ai,indices];known=masks[ai,indices]
-                    safe=torch.where(known,source,0.)
-                    sums=F.pad(safe.cumsum(-1),(1,0));counts=F.pad(known.to(features.dtype).cumsum(-1),(1,0))
-                    starts=(torch.arange(c,device=features.device)+1-k).clamp_min(0)
-                    mv=((counts[...,1:]-counts[...,starts])==k)&(axis>=k-1)
-                    z=source if k==1 else (sums[...,1:]-sums[...,starts])/k
-                    mv=mv&torch.isfinite(z)
-                    values[i].index_copy_(0,indices,torch.where(mv,z,0.));masks[i].index_copy_(0,indices,mv)
+                    mean_shape=(indices.numel(),*features.shape[:-1])
+                    safe=features.new_empty(mean_shape);known=torch.empty_like(safe)
+                    total=safe.numel()
+                    mean_inputs[(triton.cdiv(total,256),)](values,masks,indices,ai,safe,known,
+                        rows,b,total,BLOCK=256,enable_fp_fusion=False)
+                    # Same CUDA cumsum implementation, dtype, grouping, and
+                    # shape as before. Only its gather/scatter wrappers fuse.
+                    sums=safe.cumsum(-1);counts=known.cumsum(-1)
+                    mean_outputs[(triton.cdiv(total,256),)](safe,sums,counts,indices,values,masks,
+                        rows,c,b,i,total,WINDOW=k,RECIPROCAL=1./k,BLOCK=256,enable_fp_fusion=False)
         return values[self.outputs,self.batch_axis],masks[self.outputs,self.batch_axis]

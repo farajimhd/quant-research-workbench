@@ -37,12 +37,13 @@ class Worker:
         self.pending=None
         self.loads=0;self.uploads=0
         self.resident_results=None
+        self.batch_progress={}
         torch.set_num_threads(1)
         if config['backend']=='compile':
             configure_caches(require_runtime(Path(config.get('compile_cache_root',config['output']))/'cache'/f'lane-{lane}'),recompile_limit=128)
 
     def emit(self,day,**values):
-        event=dict(day=day,lane=self.lane,pid=os.getpid(),updated_epoch=time(),**values)
+        event=dict(day=day,lane=self.lane,pid=os.getpid(),updated_epoch=time(),**(self.batch_progress|values))
         # Queue is bounded. Progress snapshots may be coalesced, never receipts.
         try:self.events.put_nowait(event)
         except queue.Full:pass
@@ -70,6 +71,7 @@ class Worker:
         from .lineage import program_key
         from research.vectorized_backtest.v6.torch_backtest.runtime import file_hash
         from hashlib import sha256
+        self.batch_progress={}
         c=self.config;started=perf_counter();self.emit(day,stage='Load session',candidate_offset=0)
         item=self.pending.result() if self.pending is not None else self.loader.submit(self.load,day).result()
         self.pending=self.loader.submit(self.load,next_day) if next_day else None
@@ -91,6 +93,7 @@ class Worker:
             if sha256(raw.encode()).hexdigest()!=record['results_sha256']:raise ValueError('Result cache integrity mismatch')
             cached=record['results']
         missing=[i for i,k in enumerate(keys) if k not in cached]
+        self.batch_progress=dict(completed_local_batches=0,total_local_batches=(len(missing)+c['batch_size']-1)//c['batch_size'])
         timings=[];execution=Execution(**c['execution'])
         try:
             if missing:
@@ -104,6 +107,7 @@ class Worker:
             load_seconds=perf_counter()-started
             with Publisher() as publisher:
                 for offset in range(0,len(missing),c['batch_size']):
+                    self.batch_progress['completed_local_batches']=offset//c['batch_size']
                     selection=missing[offset:offset+c['batch_size']]
                     members=[population[i] for i in selection]
                     # Stable replay width; repeated padded members share rule evaluation.

@@ -101,3 +101,13 @@ def test_switch_clears_old_ranking_before_loading_new_session(tmp_path):
     observer.select('new')
     assert observer.read()['day']=='new' and observer.read()['rows']==[] and not observer.read()['payloads']
     assert observer.wake.is_set()
+
+
+@pytest.mark.parametrize('width,height',[(110,38),(70,24)])
+def test_initial_population_progress_uses_actual_batch_count(width,height):
+    data=dict(days=['2026-07-30'],day='2026-07-30',generation=0,running=True,target=30,
+              session_progress=dict(generation=1,stage='Evaluate rules',completed_local_batches=7,total_local_batches=12,
+                                    rule_tiles=100,total_rule_tiles=200))
+    output=StringIO();Console(file=output,width=width,height=height,color_system=None).print(d.render(data,width,height))
+    text=output.getvalue()
+    assert 'Candidate batches' in text and '7/12' in text and '7/2' not in text
