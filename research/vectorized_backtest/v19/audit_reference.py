@@ -18,13 +18,17 @@ POSITION_FIELDS = ('quantity', 'average_price', 'stop_price', 'target_price',
 
 
 def trace_reference_session(data, member, execution, *, max_rows, gates=None,
-                            maximum_gate_gib=1., verify_replay=True):
+                            maximum_gate_gib=1., verify_replay=True, on_trace_batch=None,
+                            maximum_batch_rows=262144):
     """Trace every listing/clock from the same source step used by replay_cohort.
 
     Gates may be supplied from the campaign's prepared source evaluator. The
     trace preserves flat/open packed gates and age-selected gates separately.
     Quantity changes are source model transitions, never fabricated broker fills.
     """
+    if (on_trace_batch is not None and not callable(on_trace_batch)
+            or type(maximum_batch_rows) is not int or maximum_batch_rows < 1):
+        raise ValueError('Reference trace requires bounded explicit batch delivery')
     member.validate()
     execution.validate()
     u, t = len(data.listing_ids), data.clocks
@@ -58,7 +62,9 @@ def trace_reference_session(data, member, execution, *, max_rows, gates=None,
     limits = torch.tensor([[member.minimum_age.get(stage, 0) for stage in STAGES]],
         dtype=torch.float64, device=device)[None, :, None, :]
     values, columns, history_ids = entry_swings(data, [member])
-    records = []
+    if u > maximum_batch_rows:
+        raise ValueError('Reference listing clock exceeds batch row bound')
+    records, batch_start, emitted_rows = [], 0, 0
     for clock in range(1, t):
         before = position
         held = before[..., 0] > 1e-12
@@ -80,9 +86,37 @@ def trace_reference_session(data, member, execution, *, max_rows, gates=None,
         records.append((before[0, 0].detach().cpu().numpy(), position[0, 0].detach().cpu().numpy(),
             raw[0, 0].detach().cpu().numpy(), selected[0, 0].detach().cpu().numpy(),
             price[0, 0].detach().cpu().numpy(), observed[0, 0].cpu().numpy(), membership[0, 0].cpu().numpy()))
-    columns_out = {'listing_id': listing_ids * (t - 1),
-        'signal_at': [datetime.fromtimestamp(int(at), timezone.utc) for at in np.repeat(clocks[:-1], u)],
-        'execution_at': [datetime.fromtimestamp(int(at), timezone.utc) for at in np.repeat(clocks[1:], u)]}
+        if on_trace_batch is not None and (len(records) * u + u > maximum_batch_rows or clock == t - 1):
+            frame, tables = _trace_frames(records, listing_ids, clocks, batch_start,
+                execution, gates.dtype == torch.int16)
+            on_trace_batch(emitted_rows, frame, tables)
+            emitted_rows += frame.height
+            batch_start += len(records)
+            records.clear()
+    if on_trace_batch is None:
+        frame, tables = _trace_frames(records, listing_ids, clocks, 0, execution, gates.dtype == torch.int16)
+        emitted_rows = frame.height
+    else:
+        frame, tables = None, {}
+    metrics = None
+    if verify_replay:
+        # This independent original replay also exports exact source episodes.
+        metrics = replay_cohort([data], [member], [gates], execution=execution,
+            backend='eager', trace=True)[0]
+        actual = position[0, 0, :, 7].sum()
+        if not torch.equal(actual, metrics['net_pnl'][0]):
+            raise ValueError('Reference trace differs from original replay oracle')
+    return dict(model='v19-assumed-immediate-fill', complete=True, trace=frame, tables=tables,
+        metrics=metrics, trace_rows=emitted_rows, streamed=on_trace_batch is not None, unavailable=dict(orders='optimizer has no OMS order model',
+            fills='optimizer has no broker execution identities or observed fills'),
+        qualification='source-model reference; no broker causality established')
+
+
+def _trace_frames(records, listing_ids, clocks, first_clock, execution, packed):
+    u = len(listing_ids)
+    columns_out = {'listing_id': listing_ids * len(records),
+        'signal_at': [datetime.fromtimestamp(int(at), timezone.utc) for at in np.repeat(clocks[first_clock:first_clock+len(records)], u)],
+        'execution_at': [datetime.fromtimestamp(int(at), timezone.utc) for at in np.repeat(clocks[first_clock+1:first_clock+len(records)+1], u)]}
     before = np.concatenate([row[0] for row in records])
     after = np.concatenate([row[1] for row in records])
     for i, name in enumerate(POSITION_FIELDS):
@@ -116,7 +150,7 @@ def trace_reference_session(data, member, execution, *, max_rows, gates=None,
     # unavailable from these retained gates and must remain unknown.
     frame = frame.with_columns(pl.lit('not_recovered').alias('raw_gate_validity'))
     frame = frame.with_columns(*[
-        (((pl.col('raw_gate_bits') // (1 << (index + (8 if gates.dtype == torch.int16 and stage != 'entry' else 0)))) % 2) == 1).alias(stage)
+        (((pl.col('raw_gate_bits') // (1 << (index + (8 if packed and stage != 'entry' else 0)))) % 2) == 1).alias(stage)
         for index, stage in enumerate(STAGES)])
     tables = dict(
         rule_outputs=frame.select('listing_id', 'signal_at', 'raw_gate_bits', 'raw_gate_validity', *STAGES),
@@ -126,15 +160,4 @@ def trace_reference_session(data, member, execution, *, max_rows, gates=None,
         fees_pnl=frame.select('listing_id', 'execution_at', 'source_execution_mark',
             'modeled_commission', 'modeled_notional_cost', 'after_net_realized_pnl'),
         membership=frame.select('listing_id', 'signal_at', 'execution_at', 'membership', 'observed'))
-    metrics = None
-    if verify_replay:
-        # This independent original replay also exports exact source episodes.
-        metrics = replay_cohort([data], [member], [gates], execution=execution,
-            backend='eager', trace=True)[0]
-        actual = position[0, 0, :, 7].sum()
-        if not torch.equal(actual, metrics['net_pnl'][0]):
-            raise ValueError('Reference trace differs from original replay oracle')
-    return dict(model='v19-assumed-immediate-fill', complete=True, trace=frame, tables=tables,
-        metrics=metrics, unavailable=dict(orders='optimizer has no OMS order model',
-            fills='optimizer has no broker execution identities or observed fills'),
-        qualification='source-model reference; no broker causality established')
+    return frame, tables

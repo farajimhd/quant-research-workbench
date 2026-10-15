@@ -47,3 +47,30 @@ def test_source_stateful_bits_and_age_mask_remain_distinct():
     result = trace_reference_session(data(), candidate, Execution(), gates=gates, max_rows=5)
     assert result['trace']['raw_gate_bits'][1] == 4 << 8
     assert result['trace']['selected_gate_bits'][1] == 0
+
+def test_streamed_source_trace_preserves_all_rows_and_exact_replay():
+    import polars as pl
+    item = data()
+    gates = torch.tensor([1, 4, 8, 0, 0, 0], dtype=torch.uint8)[None, :, None]
+    full = trace_reference_session(item, member(), Execution(), gates=gates, max_rows=5)
+    batches = []
+    def sink(offset, frame, tables):
+        assert frame.height <= 2
+        assert offset == sum(packet.height for packet in batches)
+        assert tables['actions'].height == frame.height
+        batches.append(frame)
+    streamed = trace_reference_session(item, member(), Execution(), gates=gates,
+        max_rows=5, maximum_batch_rows=2, on_trace_batch=sink)
+    assert streamed['streamed'] and streamed['trace_rows'] == 5
+    assert streamed['trace'] is None and streamed['tables'] == {}
+    assert pl.concat(batches).equals(full['trace'])
+    assert torch.equal(streamed['metrics']['net_pnl'], full['metrics']['net_pnl'])
+
+
+def test_streaming_sink_failure_is_not_reported_complete():
+    def fail(*args):
+        raise RuntimeError('Unavailable output sink')
+    with pytest.raises(RuntimeError, match='output sink'):
+        trace_reference_session(data(), member(), Execution(),
+            gates=torch.ones((1,6,1), dtype=torch.uint8), max_rows=5,
+            maximum_batch_rows=2, on_trace_batch=fail)
