@@ -98,19 +98,20 @@ def publish(query,day,source_digest,clock_hash,file_hash,expected,stage,guard,*,
         query(f'INSERT INTO {database}.{TABLE} ({FIELDS}) SELECT '+','.join('s.'+n for n in FIELDS.split(','))+
             f' FROM (SELECT {FIELDS} FROM {database}.{stage} WHERE {bounded}) s LEFT ANTI JOIN '
             f'(SELECT source_date,ticker,ordinal FROM {database}.{TABLE} WHERE {bounded}) p USING(source_date,ticker,ordinal)',read=False)
-        for left,right in ((stage,TABLE),(TABLE,stage)):
-            guard()
-            if int(query(f'SELECT count() n FROM (SELECT {FIELDS} FROM {database}.{left} WHERE {bounded} '
-                    f'EXCEPT ALL SELECT {FIELDS} FROM {database}.{right} WHERE {bounded})')[0]['n']):
-                raise ValueError('Original tape multiset differs from reconciled acquisition')
         emit(f'Original tape {day} | publication={bucket+1}/16')
+    guard()
+    expected_hash=native._hash(query,native._fingerprint(
+        f'SELECT {FIELDS} FROM {database}.{stage} WHERE {where}',FIELDS))
+    published_hash=native._hash(query,fingerprint_sql(database,day))
+    if published_hash!=expected_hash:
+        raise ValueError('Original tape fingerprint differs from reconciled acquisition')
     audit=query(f'SELECT sum(n) n,sum(keys) keys FROM (SELECT ticker,count() n,uniqExact(ordinal) keys '
         f'FROM {database}.{TABLE} WHERE {where} GROUP BY ticker) SETTINGS optimize_aggregation_in_order=1')[0]
     if int(audit['n'])!=expected or int(audit['keys'])!=expected:
         raise ValueError('Original tape does not cover every canonical trade')
     guard()
     wanted=dict(source_date=str(day),source_digest=source_digest,clock_evidence_hash=clock_hash,
-        file_digest=file_hash,tape_evidence_hash=native._hash(query,fingerprint_sql(database,day)),trade_rows=expected,version=VERSION)
+        file_digest=file_hash,tape_evidence_hash=published_hash,trade_rows=expected,version=VERSION)
     insert_rows(query,database,RECEIPTS,[wanted])
     if query(f'SELECT * FROM {database}.{RECEIPTS} WHERE {where}')!=[wanted]:
         raise ValueError('Original tape receipt publication is uncertain')

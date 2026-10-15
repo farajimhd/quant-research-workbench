@@ -97,7 +97,10 @@ def test_ingestion_array_materialization_preserves_full_conditions_and_unknown_c
         def traced(sql,**kwargs):log.append(sql);return client.query(sql,**kwargs)
         retained.publish_evidence(traced,date(2026,1,2),lambda:None,database=database,emit=lambda _:None)
         assert int(client.query(f'SELECT count() n FROM {database}.{ns.TABLE}')[0]['n'])==4
-        assert all('cityHash64(ticker)%16=' in sql for sql in log)
+        inserts=[sql for sql in log if sql.startswith('INSERT')]
+        assert len(inserts)==16 and all('cityHash64(ticker)%16=' in sql for sql in inserts)
+        assert sum('SHA256(' in sql for sql in log)==2
+        assert not any('EXCEPT ALL' in sql for sql in log)
         # Resume inserts no duplicates and ignores another source date.
         from pipelines.certified_research.publication import insert_rows
         record=client.query(f'SELECT * FROM {database}.{ns.TABLE} LIMIT 1')[0]

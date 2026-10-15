@@ -38,9 +38,16 @@ It is not a downstream market-event authority. Admission reserves four times
 the measured raw semantic footprint for staging/publication/merge work before
 writing; partial staging remains resumable and has no certified receipt.
 
-Exact original-clock publication also uses the same bounded ticker buckets.
-Both `EXCEPT ALL` comparisons remain mandatory; their memory no longer scales
-with the entire day. Missing-key insertion scopes the existing bank to that
+Original-clock publication uses the same bounded ticker buckets.
+Publication now uses the same streaming SHA-256 row fingerprints as the frozen
+repair receipts: compare reconciled staging against published rows once per
+day and product, including count and all persisted fields. This replaces the
+two `EXCEPT ALL` scans per bucket. Inserts remain bounded and restart-safe;
+reconciliation still rejects missing, duplicated, mismatched or ambiguous keys.
+Fingerprint equality is a probabilistic integrity check, not an exact multiset
+proof. It avoids repeated whole-day scans without changing trade eligibility.
+The fingerprint comparison uses bounded aggregation memory. Missing-key
+insertion scopes the existing bank to that
 source date and bucket instead of loading all earlier history. A failed
 comparison leaves the receipt absent, blocks flag mutation and never overwrites
 conflicting original-clock evidence.

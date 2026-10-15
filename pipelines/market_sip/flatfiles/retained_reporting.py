@@ -86,7 +86,7 @@ def canonical_insert_sql(target,day,first,last,*,database='q_live',query_threads
 
 
 def publish_evidence(query,day,guard,*,database='q_live',buckets=16,emit=print):
-    """Exact multiset readback in bounded buckets; never load all prior days."""
+    """Bounded inserts followed by one streaming fingerprint per day/product."""
     from pipelines.certified_research.contracts import identifier
     identifier(database)
     if type(day) is not date or type(buckets) is not int or not 1<=buckets<=256:
@@ -99,12 +99,12 @@ def publish_evidence(query,day,guard,*,database='q_live',buckets=16,emit=print):
         query(f'INSERT INTO {database}.{ns.TABLE} ({names}) SELECT '+','.join('s.'+c for c in names.split(','))+
             f' FROM (SELECT * FROM {database}.{STAGE} WHERE {selected}) s '
             f'LEFT ANTI JOIN ({prior}) e USING(source_date,ticker,ordinal)',read=False)
-        for left,right in ((STAGE,ns.TABLE),(ns.TABLE,STAGE)):
-            guard()
-            bad=query(f'SELECT count() n FROM (SELECT {names} FROM {database}.{left} WHERE {selected} '
-                f'EXCEPT ALL SELECT {names} FROM {database}.{right} WHERE {selected})')[0]
-            if int(bad['n']):raise ValueError('Retained original-clock publication differs from reconciled evidence')
         emit(f'Retained reporting {day} | publication={bucket+1}/{buckets}')
+    guard()
+    expected=native._hash(query,ns.evidence_fingerprint_sql(database+'.'+STAGE,day))
+    actual=native._hash(query,ns.evidence_fingerprint_sql(database+'.'+ns.TABLE,day))
+    if actual!=expected:raise ValueError('Retained original-clock publication differs from reconciled evidence')
+    return actual
 
 
 def verify_table_columns(query,table):
@@ -304,8 +304,7 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                     raise ValueError('Retained reporting reconstruction is incomplete, mismatched or ambiguous')
                 if _file_hash(input_file,stop)!=file_hash:raise ValueError('Retained reporting input file changed during extraction')
                 # Fill only absent keys after complete source reconciliation.
-                publish_evidence(query,day,guard,emit=emit)
-                frozen=native._hash(query,ns.evidence_fingerprint_sql('q_live.'+ns.TABLE,day))
+                frozen=publish_evidence(query,day,guard,emit=emit)
                 guard();insert_rows(query,'q_live',RECEIPTS,[dict(source_date=str(day),source_digest=source_hash,evidence_hash=frozen,
                     file_digest=file_hash,file_bytes=size,file_key=str(info['key']).replace('\\','/'),source_origin=info['origin'],
                     created_at=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f'))])
