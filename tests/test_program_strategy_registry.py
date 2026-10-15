@@ -47,8 +47,8 @@ def test_programme_registry_is_immutable_and_builds_from_central_rows(monkeypatc
     assert actor.program_release.header["entry_cash"] == 1000
     assert actor.program_release.header["add_cash"] == 200
     assert reader.closed and reader.queries
-    for mode in ("live", "replay"):
-        with pytest.raises(ValueError, match="Backtest-only"):
+    for mode in ("live", "replay", "paper"):
+        with pytest.raises(ValueError, match="actual owned native execution journal"):
             asyncio.run(registration.build((selected,), {selected.assignment_id: "listing"},
                 mode=mode, client_factory=lambda: pytest.fail("unexpected read")))
     with pytest.raises(ValueError, match="unique listing"):

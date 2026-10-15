@@ -12,7 +12,7 @@ from tests.test_qmd_columnar_history_transport import response_for
 from tests.test_backtest_program_inputs import release_for
 from tests.test_program_controller_runtime import definition_and_actor
 from tests.test_signal_source_runtime_bootstrap import source
-from tests.test_signal_stream_typed_publication import FakeStorage
+from tests.test_program_signal_source import executable_contextual_publisher, source_context_for
 from tests.test_broker_liquidity_resolution import second_bar
 from tests.test_liquidity_resolution_producer import source as liquidity_source
 from src.backend import backtest_liquidity_resolution as liquidity
@@ -21,7 +21,6 @@ from src.backend.qmd_columnar_population import CertifiedPopulationWindow
 from src.backend.replay_run_service import ReplayRunController
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.backend.backtest_typed_publisher import BacktestTypedJournalPublisher
-from src.backend.signal_stream_typed_publication import TypedSignalPublicationQueue
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval, MarketDayUnit
 from src.backend.backtest_liquidity_price import PriceLevelPlan, PriceLevelUnit
 from src.market_engine.volume_rank_rules import select_volume_universe
@@ -66,7 +65,7 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
     controller = ReplayRunController(definition, runtime_root=tmp_path, program_strategy=actor,
         program_liquidity_resolution_ms=resolution)
     controller._journal = BacktestMemoryJournal(run_id=controller.run_id)
-    publisher = TypedSignalPublicationQueue(FakeStorage(), capacity=1)
+    publisher = executable_contextual_publisher(source_context_for(controller, scope['source_revision']), scope['catalogs'])
     def post(path, request, timeout):
         return response_for(certificate, request["first_ordinal"], request["stop_ordinal"], request["field_ids"])
     async def run_test():
