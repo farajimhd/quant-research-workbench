@@ -34,3 +34,19 @@ def test_nullable_float32_product_preserves_bits_and_bounded_large_batches():
     with pytest.raises(ValueError):
         insert_product_rows(SimpleNamespace(execute=lambda _:pytest.fail('Unexpected INSERT')),
                             table,[{'value':1e100}])
+
+def test_datetime_product_seal_uses_canonical_utc_microsecond_wire():
+    from datetime import datetime, timezone, timedelta
+    table=TableContract('timestamp_test', (('certified_at', "DateTime64(6, 'UTC')"),),
+        'tuple()', 'tuple()', database='q_live')
+    requests=[]
+    instant=datetime(2026,10,15,12,30,45,123456,tzinfo=timezone(timedelta(hours=5,minutes=30)))
+    insert_product_rows(SimpleNamespace(execute=requests.append),table,[{'certified_at':instant}])
+    import json
+    body = requests[0].partition('\n')[2]
+    projected = json.loads(body)
+    assert projected['certified_at'] == '2026-10-15 07:00:45.123456'
+    assert instant.utcoffset() == timedelta(hours=5, minutes=30)
+    with pytest.raises(ValueError,match='explicit timezone'):
+        insert_product_rows(SimpleNamespace(execute=lambda _:pytest.fail('Unexpected INSERT')),
+            table,[{'certified_at':instant.replace(tzinfo=None)}])
