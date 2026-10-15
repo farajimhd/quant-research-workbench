@@ -58,6 +58,15 @@ require exact reconciliation; no data deletion, implicit retry or raw SIP
 fallback is permitted. Imported days use canonical ClickHouse authorities.
 Research shards are comparison evidence and never app market inputs.
 
+Concurrent price publishers use an explicit selected-source certificate. Logical
+coverage and child hashes are fenced before and after the full audit, together
+with schema and SSD placement; unrelated writes and unchanged physical merges
+do not invalidate another listing. Static backtests retain their existing cache.
+History publishers may reuse a bounded cohort-owned opening proof only while
+its exact source, schema, part checksums and Keeper receipts remain unchanged.
+Any parent change requires the full proof again. Child materialization, exact
+readback and coverage-last publication remain mandatory for every listing.
+
 Continuous history uses the explicitly selected identity basis for every source
 day. Shared Reference Gateway captures are bound to that day's certified market
 identity, routing and tradability facts, including historical ticker changes.

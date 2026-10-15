@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, replace
+from collections import OrderedDict
+from threading import RLock
+from hashlib import sha256
+import json
 from datetime import date, datetime, timezone
 from itertools import islice
 from uuid import uuid4
@@ -30,6 +34,135 @@ from research.mlops.clickhouse import insert_json_each_row
 from src.market_engine.typed_product_insert import insert_product_rows
 
 
+class OpeningProofCache:
+    """Publisher-owned, bounded, inventory-fenced native opening proofs."""
+
+    def __init__(self, maximum_entries=2):
+        if type(maximum_entries) is not int or not 1 <= maximum_entries <= 3:
+            raise ValueError('Opening proof cache requires one to three entries')
+        self.maximum_entries = maximum_entries
+        self._items = OrderedDict()
+        self._lock = RLock()
+        self._closed = False
+
+    @staticmethod
+    def _eligible(reader, source):
+        from research.mlops.clickhouse import ClickHouseHttpClient
+        from src.market_engine.regular_close_history import CertifiedPriorClosePlan
+        return (type(reader) is ClickHouseHttpClient and type(source) is CertifiedOpeningInput
+            and source.listing_basis == 'shared-reference-routing-tradability-v1'
+            and type(source.prior_market) is CertifiedPriorClosePlan
+            and reader.default_query_params.get('readonly') == '1')
+
+    def verify(self, reader, source):
+        with self._lock:
+            if self._closed:
+                raise RuntimeError('Opening proof cache owner is closed')
+            if not self._eligible(reader, source):
+                source.verify(reader)
+                return
+            key = (reader.base_url, reader.user, source.market.build_id, source.market.token,
+                source.prior_market.token, source.identity.token, source.population_reference_hash,
+                source.listing_basis)
+            try:
+                before = self._inventory(reader, source)
+            except Exception:
+                self._items.clear()
+                raise
+            entry = self._items.get(key)
+            if entry is not None and entry[0] == source and entry[1] == before:
+                try:
+                    after = self._inventory(reader, source)
+                except Exception:
+                    self._items.pop(key, None)
+                    raise
+                if after != before:
+                    self._items.pop(key, None)
+                    raise ValueError('Opening parent inventory changed during cache verification')
+                self._items.move_to_end(key)
+                return
+            self._items.pop(key, None)
+            source.verify(reader)
+            if self._inventory(reader, source) != before:
+                raise ValueError('Opening parent inventory changed during cold verification')
+            self._items[key] = (source, before)
+            self._items.move_to_end(key)
+            while len(self._items) > self.maximum_entries:
+                self._items.popitem(last=False)
+
+    @staticmethod
+    def _keeper_fence(source):
+        from src.backend.backtest_market_keeper_pool import MARKET_CERTIFICATE_KEEPER_POOL
+        from src.trading_runtime.arte_market_day_keeper import MarketDayKeeperReader
+        from src.trading_runtime.arte_market_day_session_seal import _receipt_path
+        with MARKET_CERTIFICATE_KEEPER_POOL.borrow() as session:
+            keeper = MarketDayKeeperReader(session.client)
+            proof = keeper.load(source.market.build_id)
+            if proof is None:
+                raise ValueError('Opening Keeper attestation is absent')
+            receipt, _ = session.client.get(_receipt_path(source.market.build_id,source.market.sessions[0]))
+            if keeper.load(source.market.build_id) != proof:
+                raise ValueError('Opening Keeper proof changed during inventory read')
+            return proof.wire(), receipt
+
+    @classmethod
+    def _inventory(cls, reader, source):
+        from src.market_engine.regular_close_history import TABLES as PRIOR_TABLES
+        from .shared_reference_listing_basis import TABLES as SHARED_TABLES
+        arte = {'market_day_session_seal_v1','market_day_planned_scope_v1',
+            'market_day_stage_certificate_v1','market_day_seed_v1','market_day_source_unit_v1'}
+        optional = {f'strategy_one_identity{suffix}_v{version}' for version in (1,2,3)
+            for suffix in ('','_coverage')} | {'strategy_one_identity_resolution_v3'}
+        q_live = set(SHARED_TABLES) | {t.name for t in PRIOR_TABLES} | {
+            'feature_tradable_universe_snapshot_v2','feature_tradable_universe_snapshot_coverage_v2',
+            'market_stock_split_v1'}
+        pairs = {('arte',name) for name in arte | optional} | {('q_live',name) for name in q_live}
+        required = pairs - {('arte',name) for name in optional}
+        def condition(key):
+            return f'(database,{key}) IN (' + ','.join('('+literal(db)+','+literal(name)+')'
+                for db,name in sorted(pairs)) + ')'
+        queries = (
+            ('tables','database,name,uuid,engine,storage_policy,partition_key,sorting_key,create_table_query,metadata_modification_time',
+                'name','database,name'),
+            ('columns','database,table,name,type,position','table','database,table,position,name'),
+            ('parts','database,table,name,uuid,partition_id,min_block_number,max_block_number,level,data_version,disk_name,rows,bytes_on_disk,hash_of_all_files',
+                'table','database,table,name'))
+        inventory = []
+        for table,columns,key,order in queries:
+            sql = f'SELECT {columns} FROM system.{table} WHERE {condition(key)}'
+            if table == 'parts': sql += ' AND active'
+            raw = reader.execute(sql + f' ORDER BY {order} LIMIT 20001 FORMAT JSONEachRow')
+            if type(raw) is not str or len(raw.encode()) > 16*1024*1024:
+                raise ValueError('Opening parent inventory exceeds byte bound')
+            rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
+            if len(rows) > 20000 or any(set(row) != set(columns.split(','))
+                    or (row['database'],row[key]) not in pairs for row in rows):
+                raise ValueError('Opening parent inventory is incomplete or malformed')
+            if table in ('tables','columns'):
+                present = {(row['database'],row[key]) for row in rows}
+                if not required <= present:
+                    raise ValueError('Opening parent inventory lacks required metadata')
+                if table == 'tables':
+                    if len(present) != len(rows) or any(row['storage_policy'] != 'live_market_ssd'
+                            for row in rows if (row['database'],row['name']) in required):
+                        raise ValueError('Opening parent inventory storage policy changed')
+                    known = present
+                elif present != known:
+                    raise ValueError('Opening parent inventory lacks column metadata')
+            else:
+                if any(row['disk_name'] != 'live_market_ssd' for row in rows
+                        if (row['database'],row['table']) in required):
+                    raise ValueError('Opening parent inventory active parts moved outside SSD')
+            inventory.append(rows)
+        keeper = cls._keeper_fence(source)
+        return sha256(json.dumps(inventory,sort_keys=True,separators=(',',':')).encode()).hexdigest(),keeper
+
+    def close(self):
+        with self._lock:
+            self._items.clear()
+            self._closed = True
+
+
 @dataclass(frozen=True)
 class CertifiedHistoryInput:
     opening_source: CertifiedOpeningInput
@@ -42,8 +175,11 @@ class CertifiedHistoryInput:
     fields: tuple[c.HistoryField, ...]
     volume_window_seconds: int
     feature_day: object = None
+    _opening_proof_cache: OpeningProofCache | None = field(default=None,repr=False,compare=False)
 
     def __post_init__(self):
+        if self._opening_proof_cache is not None and type(self._opening_proof_cache) is not OpeningProofCache:
+            raise TypeError('History opening proof cache requires its concrete owner')
         if (type(self.opening_source) is not CertifiedOpeningInput
                 or type(self.opening_reference) is not CertifiedOpeningReference
                 or type(self.liquidity_source) is not CertifiedLiquidityInput
@@ -100,7 +236,10 @@ class CertifiedHistoryInput:
     def verify(self, reader):
         if self.feature_day is not None:
             self.feature_day.verify(reader)
-        self.opening_source.verify(reader)
+        if self._opening_proof_cache is None:
+            self.opening_source.verify(reader)
+        else:
+            self._opening_proof_cache.verify(reader,self.opening_source)
         self.liquidity_source.verify(reader)
         opening = certify_opening_reference(reader, self.opening_reference.scope,
             expected_content_hash=self.opening_reference.content_hash)
@@ -378,6 +517,7 @@ class HistoryProductPipeline:
         self.active, self.failed = set(), set()
         self.completed = self.skipped_verified = 0
         self._loop = None
+        self._opening_proof_cache = OpeningProofCache(maximum_entries=2)
 
     async def publish(self, source, *, ownership, code_hash):
         if type(source) is not CertifiedHistoryInput:
@@ -395,6 +535,7 @@ class HistoryProductPipeline:
         if key in self.active or len(self.active) >= self.capacity:
             raise ValueError("History capacity is full or this unit is already active")
         self.active.add(key)
+        source = replace(source,_opening_proof_cache=self._opening_proof_cache)
 
         def work():
             ownership.assert_owner()
@@ -444,3 +585,8 @@ class HistoryProductPipeline:
             raise
         finally:
             self.active.remove(key)
+
+    def close(self):
+        if self.active:
+            raise RuntimeError('History pipeline cannot close while units are active')
+        self._opening_proof_cache.close()

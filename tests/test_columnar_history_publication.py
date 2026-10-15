@@ -415,6 +415,7 @@ def test_bounded_pipeline_rejects_duplicates_and_accounts_cancelled_success(prep
     store = Store()
     original = p.publish_history
     def blocked(*args, **kwargs):
+        assert args[2]._opening_proof_cache is pipeline._opening_proof_cache
         entered.set()
         release.wait(5)
         return original(*args, **kwargs)
@@ -469,3 +470,163 @@ def test_multi_page_clocks_and_intervals_preserve_exact_window_values(prepared_s
     expected_product = p.materialize_history(Client(store), src, certificate.prepared.scope, code_hash=CODE)
     expected = c.expand_values(expected_product, first_ordinal=2040, stop_ordinal=2110, evaluation_block="test-block")
     assert certificate.window(first_ordinal=2040, stop_ordinal=2110, evaluation_block="test-block").equals(expected)
+
+
+
+def native_opening_cache_fixture(monkeypatch):
+    from src.market_engine.regular_close_history import CertifiedPriorClosePlan,PriorCloseScope,_PROOF
+    from research.mlops.clickhouse import ClickHouseHttpClient
+    original=source().opening_source
+    prior=CertifiedPriorClosePlan(PriorCloseScope(original.market.build_id,date(2026,8,3),original.market.token,('ABC',),'4'*64),
+        dict(content_hash='5'*64,consumer_identity_plan_hash=original.identity.token,
+            consumer_population_reference_hash=original.population_reference_hash),
+        (dict(ticker='ABC',attempt_id=UID,content_hash='6'*64),),_PROOF)
+    opening_source=replace(original,prior_market=prior,listing_basis='shared-reference-routing-tradability-v1')
+    reader=ClickHouseHttpClient('http://localhost:18123','program_market_input_reader','test-only-not-a-secret',default_query_params={'readonly':1})
+    state=dict(part='part-a',ddl='CREATE TABLE original',disk='live_market_ssd',cold=0,queries=[],invalid=False)
+    def execute(query):
+        state['queries'].append(query)
+        pairs=re.findall(r"\('([^']+)','([^']+)'\)",query)
+        table='tables' if 'system.tables ' in query else 'columns' if 'system.columns ' in query else 'parts'
+        rows=[]
+        for database,name in pairs:
+            if table=='tables':
+                rows.append(dict(database=database,name=name,uuid='uuid-'+name,engine='MergeTree',storage_policy=state['disk'],partition_key='tuple()',sorting_key='key',create_table_query=state['ddl'],metadata_modification_time='at'))
+            elif table=='columns':rows.append(dict(database=database,table=name,name='key',type='String',position=1))
+            else:rows.append(dict(database=database,table=name,name=state['part'],uuid='part-uuid',partition_id='p',min_block_number=1,max_block_number=1,level=0,data_version=1,disk_name=state['disk'],rows=1,bytes_on_disk=1,hash_of_all_files='checksum-'+state['part']))
+        return encode(rows)
+    monkeypatch.setattr(reader,'execute',execute)
+    monkeypatch.setattr(p.OpeningProofCache,'_keeper_fence',staticmethod(lambda _:('root-proof','session-receipt')))
+    def verify(actual,client):
+        state['cold']+=1
+        if state['invalid'] or actual != opening_source:raise ValueError('actual cold source proof changed')
+    monkeypatch.setattr(CertifiedOpeningInput,'verify',verify)
+    return opening_source,reader,state
+
+
+def test_native_opening_cache_reuses_only_unchanged_complete_inventory(monkeypatch):
+    actual,reader,state=native_opening_cache_fixture(monkeypatch)
+    cache=p.OpeningProofCache()
+    cache.verify(reader,actual);cache.verify(reader,actual)
+    assert state['cold']==1 and len(state['queries'])==12
+    assert all('liquidity_execution_price' not in query and 'qmd_causal_history' not in query for query in state['queries'])
+    # Concurrent price/history writes are outside the declared parent inventory.
+    cache.verify(reader,actual);assert state['cold']==1
+    cache.close();assert not cache._items
+    with pytest.raises(RuntimeError,match='closed'):cache.verify(reader,actual)
+
+
+@pytest.mark.parametrize('mutation',['part','ddl','disk','source'])
+def test_native_opening_cache_invalidates_parent_changes_and_preserves_cold_failure(monkeypatch,mutation):
+    actual,reader,state=native_opening_cache_fixture(monkeypatch)
+    cache=p.OpeningProofCache();cache.verify(reader,actual)
+    if mutation=='source':
+        altered=replace(actual.listings[0],identity_source_hash='8'*64)
+        actual=replace(actual,listings=(altered,))
+    else:state[mutation]={'part':'part-b','ddl':'CREATE TABLE changed','disk':'default'}[mutation]
+    state['invalid']=True
+    with pytest.raises(ValueError,match='cold source|SSD|storage policy'):cache.verify(reader,actual)
+    if mutation!='disk':assert state['cold']==2
+
+
+def test_native_opening_cache_rejects_change_during_full_verification(monkeypatch):
+    actual,reader,state=native_opening_cache_fixture(monkeypatch)
+    def verify(source,client):state['part']='changed-during-proof'
+    monkeypatch.setattr(CertifiedOpeningInput,'verify',verify)
+    cache=p.OpeningProofCache()
+    with pytest.raises(ValueError,match='changed during cold'):cache.verify(reader,actual)
+    assert not cache._items
+
+
+def test_native_opening_cache_singleflight_and_legacy_uncached(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from time import sleep
+    actual,reader,state=native_opening_cache_fixture(monkeypatch)
+    def verify(source,client):state['cold']+=1;sleep(.01)
+    monkeypatch.setattr(CertifiedOpeningInput,'verify',verify)
+    cache=p.OpeningProofCache()
+    with ThreadPoolExecutor(max_workers=4) as pool:list(pool.map(lambda _:cache.verify(reader,actual),range(4)))
+    assert state['cold']==1
+    cache.verify(object(),actual);cache.verify(object(),actual)
+    assert state['cold']==3
+    legacy=source().opening_source
+    cache.verify(reader,legacy);cache.verify(reader,legacy)
+    assert state['cold']==5
+    for bad in (0,4,True):
+        with pytest.raises(ValueError):p.OpeningProofCache(bad)
+    with pytest.raises(TypeError,match='concrete owner'):replace(source(),_opening_proof_cache=object())
+
+
+
+def test_opening_proof_cache_bounds_entries_and_pipeline_cleanup(monkeypatch):
+    actual,reader,state=native_opening_cache_fixture(monkeypatch)
+    cache=p.OpeningProofCache(maximum_entries=2)
+    for i in range(4):
+        reader.base_url='http://localhost:'+str(18000+i)
+        cache.verify(reader,actual)
+        assert len(cache._items)<=2
+    assert state['cold']==4
+    assert len(cache._items)==2
+    state['disk']='default'
+    with pytest.raises(ValueError,match='storage policy'):cache.verify(reader,actual)
+    assert not cache._items
+    pipeline=p.HistoryProductPipeline(lambda:None,lambda:None,maximum_concurrent_units=1)
+    pipeline.active.add('actual-active-unit')
+    with pytest.raises(RuntimeError,match='active'):pipeline.close()
+    pipeline.active.clear();pipeline.close()
+    assert pipeline._opening_proof_cache._closed
+
+
+def test_opening_parent_fence_keeps_optional_legacy_policy_without_new_requirement(monkeypatch):
+    actual,reader,state=native_opening_cache_fixture(monkeypatch)
+    original=reader.execute
+    def execute(query):
+        rows=[json.loads(line) for line in original(query).splitlines()]
+        for row in rows:
+            name=row.get('table',row.get('name'))
+            if name=='strategy_one_identity_v1':
+                if 'storage_policy' in row:row['storage_policy']='legacy-policy'
+                if 'disk_name' in row:row['disk_name']='legacy-disk'
+        return encode(rows)
+    monkeypatch.setattr(reader,'execute',execute)
+    cache=p.OpeningProofCache();cache.verify(reader,actual);cache.verify(reader,actual)
+    assert state['cold']==1
+
+
+@pytest.mark.parametrize('family',['columns','parts'])
+def test_opening_cache_missing_inventory_fails_closed_and_discards_proof(monkeypatch,family):
+    actual,reader,state=native_opening_cache_fixture(monkeypatch)
+    cache=p.OpeningProofCache();cache.verify(reader,actual)
+    original=reader.execute
+    monkeypatch.setattr(reader,'execute',lambda query:'' if 'system.'+family+' ' in query else original(query))
+    if family=='parts':state['invalid']=True
+    with pytest.raises(ValueError,match='metadata|cold source'):cache.verify(reader,actual)
+    assert state['cold']==(2 if family=='parts' else 1)
+    assert not cache._items
+
+
+def test_opening_cache_hit_rechecks_keeper_receipt_before_acceptance(monkeypatch):
+    actual,reader,state=native_opening_cache_fixture(monkeypatch)
+    cache=p.OpeningProofCache();cache.verify(reader,actual)
+    reads=[]
+    def fence(source):
+        reads.append(1)
+        return ('root-proof','session-receipt' if len(reads)==1 else 'changed-session-receipt')
+    monkeypatch.setattr(p.OpeningProofCache,'_keeper_fence',staticmethod(fence))
+    with pytest.raises(ValueError,match='changed during cache'):cache.verify(reader,actual)
+    assert not cache._items
+
+
+
+def test_opening_cache_hashes_covered_empty_part_family_after_successful_cold_proof(monkeypatch):
+    actual,reader,state=native_opening_cache_fixture(monkeypatch)
+    original=reader.execute
+    def execute(query):
+        rows=[json.loads(line) for line in original(query).splitlines()]
+        if 'system.parts ' in query:
+            rows=[row for row in rows if row['table'] not in ('market_day_seed_v1','market_stock_split_v1')]
+        return encode(rows)
+    monkeypatch.setattr(reader,'execute',execute)
+    cache=p.OpeningProofCache()
+    cache.verify(reader,actual);cache.verify(reader,actual)
+    assert state['cold']==1 and len(cache._items)==1

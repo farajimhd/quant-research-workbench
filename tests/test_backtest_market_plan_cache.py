@@ -381,3 +381,32 @@ def test_selected_part_change_during_cache_recheck_forces_full_audit(monkeypatch
     global_part[0] = "part-2"
     assert market.certified_market_plan_from_arte(**args) is not first
     assert len(scans) == 2  # selected change requires a fresh cold audit
+
+
+def test_price_publication_fingerprint_batches_exact_source_keys_and_binds_scope():
+    from uuid import UUID
+    class PriceInventory:
+        def __init__(self):self.logical=[]
+        def execute(self,sql):
+            if 'FROM system.tables' in sql:
+                return '\n'.join(json.dumps(dict(name=name,uuid='uuid-'+name,storage_policy='live_market_ssd',
+                    metadata_modification_time='fixed',create_table_query='CREATE TABLE '+name)) for name in subject._PRICE_NAMES)
+            if 'FROM system.columns' in sql:
+                return '\n'.join(json.dumps(dict(table=name,name='source_build_id',type='String',position=1))
+                    for name in subject._PRICE_NAMES)
+            if 'FROM system.parts' in sql:return ''
+            if sql.startswith('SELECT table_name,session_date'):
+                self.logical.append(sql);return ''
+            raise AssertionError(sql)
+    scopes=tuple(('2026-08-18',f'T{i:04d}',str(UUID(int=i+1))) for i in range(513))
+    client=PriceInventory()
+    first=subject.price_publication_inventory_fingerprint(client,source_build_id='build',scopes=scopes)
+    assert len(client.logical)==3
+    assert all(sql.count('toUUID(')<=512 for sql in client.logical)  # two exact table scans per batch
+    assert all('source_build_id=\'build\'' in sql and 'source_attempt_id) IN' in sql for sql in client.logical)
+    assert subject.price_publication_inventory_fingerprint(client,source_build_id='other-build',scopes=scopes)!=first
+    assert subject.price_publication_inventory_fingerprint(client,source_build_id='build',scopes=scopes[:-1])!=first
+    with pytest.raises(ValueError):
+        subject.price_publication_inventory_fingerprint(client,source_build_id='build',scopes=(scopes[0],scopes[0]))
+    with pytest.raises(ValueError):
+        subject.price_publication_inventory_fingerprint(client,source_build_id='build',scopes=(('2026-02-30','A',scopes[0][2]),))

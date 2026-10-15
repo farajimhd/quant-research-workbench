@@ -231,3 +231,69 @@ def test_pinned_price_levels_join_and_decode_without_market_writes():
     assert row["execution_price_levels"] == (
         {"price_int": 98000, "volume": 5.0},
         {"price_int": 99500, "volume": 35.0})
+
+class PublicationReader(Reader):
+    """Selected logical content is independent of unrelated physical parts."""
+    def __init__(self, change=None, **kwargs):
+        super().__init__(**kwargs)
+        self.change=change;self.changed=False;self.logical_reads=0;self.part_generation=0
+
+    def execute(self, query):
+        if 'FROM system.tables' in query and 'uuid' in query:
+            return '\n'.join(json.dumps(dict(name=name,uuid='uuid-'+name,storage_policy='default' if self.changed and self.change=='policy' else 'live_market_ssd',
+                metadata_modification_time='changed' if self.changed and self.change=='ddl' else 'original',
+                create_table_query='changed' if self.changed and self.change=='ddl_same_timestamp' else 'CREATE TABLE '+name))
+                for name in plan_cache._PRICE_NAMES)
+        if 'FROM system.columns' in query:
+            return '\n'.join(json.dumps(dict(table=name,name='source_build_id',type='UInt64' if self.changed and self.change=='columns' else 'String',position=1))
+                for name in plan_cache._PRICE_NAMES)
+        if query.startswith('SELECT table_name,session_date,ticker,source_attempt_text,row_count,unique_keys,row_hash'):
+            self.logical_reads+=1
+            assert "source_build_id='build'" in query
+            assert f"(toDate('2026-08-18'),'ABCD',toUUID('{SOURCE}'))" in query
+            assert 'source_attempt_id) IN' in query
+            assert 'GROUP BY session_date,ticker,source_attempt_id' in query
+            assert 'WHERE' in query and 'LIMIT 3' in query
+            child_count=3 if self.changed and self.change in ('append','orphan','duplicate') else 2
+            rows=[dict(table_name=name,session_date='2026-08-18',ticker='ABCD',source_attempt_text=SOURCE,
+                row_count=child_count if index==0 else 1,
+                unique_keys=2 if index==0 and self.changed and self.change=='duplicate' else child_count if index==0 else 1,
+                row_hash=('changed' if self.changed and self.change=='malformed' else
+                    '999' if self.changed and self.change in ('mutation','coverage') and
+                    index==int(self.change=='coverage') else '123' if index==0 else '456'))
+                for index,name in enumerate(plan_cache._PRICE_NAMES)]
+            if self.changed and self.change=='delete':rows=rows[1:]
+            return '\n'.join(map(json.dumps,rows))
+        if 'FROM system.parts' in query and self.changed and self.change=='disk':
+            return json.dumps(dict(table=plan_cache._PRICE_NAMES[0],disk_name='default'))
+        result=super().execute(query)
+        if 'FROM arte.liquidity_execution_price_100ms_v1' in query:
+            self.changed=True;self.part_generation+=1
+        return result
+
+
+def test_publication_certification_allows_disjoint_writes_and_background_merges(monkeypatch):
+    class ForbiddenCache:
+        def get(self,*args):pytest.fail('Producer certification must not use the static consumer cache')
+        def put(self,*args):pytest.fail('Producer certification must not populate the static consumer cache')
+    monkeypatch.setattr(price_subject,'PRICE_PLAN_CACHE',ForbiddenCache())
+    reader=PublicationReader(change='merge_and_other_build_append')
+    expected=certify_price_level_plan(_plan(),Reader())
+    actual=price_subject.certify_price_level_plan_for_publication(_plan(),reader)
+    assert actual==expected and reader.logical_reads==2 and reader.part_generation==1
+    # It cold-audits again even with the same market token; no producer warm shortcut.
+    assert price_subject.certify_price_level_plan_for_publication(_plan(),reader)==expected
+    assert reader.logical_reads==4 and reader.part_generation==2
+
+
+@pytest.mark.parametrize('change',['append','orphan','duplicate','mutation','coverage','delete','ddl','ddl_same_timestamp','columns','policy','disk','malformed'])
+def test_publication_certification_rejects_selected_content_or_authority_changes(change):
+    with pytest.raises(RuntimeError,match='inventory|SSD'):
+        price_subject.certify_price_level_plan_for_publication(_plan(),PublicationReader(change=change))
+
+
+def test_publication_certification_keeps_native_child_hash_and_missing_coverage_checks():
+    with pytest.raises(RuntimeError,match='differ from published coverage'):
+        price_subject.certify_price_level_plan_for_publication(_plan(),PublicationReader(tampered=True))
+    with pytest.raises(RuntimeError,match='coverage'):
+        price_subject.certify_price_level_plan_for_publication(_plan(),PublicationReader(coverage=False))

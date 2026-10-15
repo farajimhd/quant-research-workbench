@@ -17,7 +17,7 @@ from uuid import UUID
 
 from src.backend.backtest_market_data import CertifiedMarketDayPlan, _literal
 from src.backend.backtest_market_plan_cache import (
-    PRICE_PLAN_CACHE, price_inventory_fingerprint,
+    PRICE_PLAN_CACHE, price_inventory_fingerprint, price_publication_inventory_fingerprint,
 )
 from src.trading_runtime.eligible_price_contract import (
     matches_summary_digest, summary_digest, volumes_match,
@@ -87,8 +87,8 @@ def certify_price_level_plan(
         raise ValueError("Price levels require a pinned fixed market-day plan")
     from research.mlops.clickhouse import ClickHouseHttpClient
 
-    # Only the real, read-only ClickHouse client participates in process-local
-    # reuse. Fake clients and producer-side callers always execute the audit.
+    # Static consumers may reuse only a real ClickHouse inventory snapshot.
+    # Concurrent operators use the separate publication API below, without cache.
     cacheable = isinstance(client, ClickHouseHttpClient)
     if cacheable:
         before = price_inventory_fingerprint(client)
@@ -102,6 +102,31 @@ def certify_price_level_plan(
         if after != before:
             raise RuntimeError("ARTE passive-fill price inventory changed during certification")
         PRICE_PLAN_CACHE.put(market.token, after, plan)
+    return plan
+
+
+def certify_price_level_plan_for_publication(
+    market: CertifiedMarketDayPlan, client: Any, *,
+    read_client_factory: Callable[[], Any] | None = None,
+) -> PriceLevelPlan:
+    """Exact producer-scoped audit, safe beside disjoint writes and merges.
+
+    Unlike the static consumer cache, this explicit operator path always cold
+    audits selected children. Logical before/after fences include every row in
+    the source scopes and full coverage metadata, retaining DDL and SSD checks.
+    """
+    if market.execution_interval.kind != 'fixed' or not market.units:
+        raise ValueError('Price levels require a pinned fixed market-day plan')
+    scopes = tuple(sorted((unit.session_date, unit.ticker, unit.attempt_id)
+        for unit in market.units if unit.stage == 'broker_100ms'))
+    before = price_publication_inventory_fingerprint(client,
+        source_build_id=market.build_id, scopes=scopes)
+    plan = _certify_price_level_plan_uncached(market, client,
+        read_client_factory=read_client_factory)
+    after = price_publication_inventory_fingerprint(client,
+        source_build_id=market.build_id, scopes=scopes)
+    if after != before:
+        raise RuntimeError('Selected passive-fill price inventory changed during publication certification')
     return plan
 
 

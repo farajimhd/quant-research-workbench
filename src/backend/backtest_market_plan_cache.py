@@ -159,6 +159,95 @@ def price_inventory_fingerprint(client: Any) -> str:
                                   b"arte-price-plan-inventory-v1")
 
 
+def price_publication_inventory_fingerprint(
+    client: Any, *, source_build_id: str,
+    scopes: tuple[tuple[str, str, str], ...],
+) -> str:
+    """Fence selected logical rows while disjoint producers and merges proceed.
+
+    Publication has no cache: it pays this bounded content audit around the
+    normal exact covered-child audit. Static Backtest keeps its existing fast
+    physical-part cache. All selected attempts, including uncovered children,
+    participate; a merge alone cannot change these order-independent hashes.
+    """
+    from uuid import UUID
+    from src.backend.backtest_market_data import _literal
+    if (type(source_build_id) is not str or not source_build_id or len(source_build_id) > 256
+            or type(scopes) is not tuple or not 1 <= len(scopes) <= 25000):
+        raise ValueError('Price publication inventory requires bounded exact source scopes')
+    for scope in scopes:
+        if (type(scope) is not tuple or len(scope) != 3
+                or any(type(value) is not str for value in scope)
+                or date.fromisoformat(scope[0]).isoformat() != scope[0]
+                or not scope[1] or len(scope[1]) > 128 or str(UUID(scope[2])) != scope[2]):
+            raise ValueError('Price publication inventory has an invalid source scope')
+    if tuple(sorted(set(scopes))) != scopes or len({scope[:2] for scope in scopes}) != len(scopes):
+        raise ValueError('Price publication inventory requires unique ordered source scopes')
+    names = ','.join(_literal(name) for name in _PRICE_NAMES)
+    digest = sha256(b'arte-price-publication-logical-inventory-v1\0')
+    digest.update(json.dumps((source_build_id, scopes), separators=(',', ':')).encode() + b'\0')
+
+    def read(sql, maximum):
+        response = client.execute(sql + ' FORMAT JSONEachRow')
+        if not isinstance(response, str) or len(response.encode()) > 8 * 1024 * 1024:
+            raise RuntimeError('Price publication inventory exceeds its byte bound')
+        rows = [json.loads(line) for line in response.splitlines() if line.strip()]
+        if len(rows) > maximum:
+            raise RuntimeError('Price publication inventory exceeds its row bound')
+        return rows
+
+    schema_queries = ((_QUERIES[0][0], _QUERIES[0][1] + ',create_table_query',
+        *_QUERIES[0][2:]), _QUERIES[1])
+    for label, columns, table, key, ordering in schema_queries:
+        rows = read(f"SELECT {columns} FROM {table} WHERE database='arte' "
+            f'AND {key} IN ({names}) ORDER BY {ordering} LIMIT 20001', 20000)
+        if (any(set(row) != set(columns.split(',')) or row[key] not in _PRICE_NAMES for row in rows)
+                or label == 'table' and (len(rows) != len(_PRICE_NAMES)
+                    or {row['name'] for row in rows} != set(_PRICE_NAMES)
+                    or any(row['storage_policy'] != 'live_market_ssd' for row in rows))
+                or label == 'column' and {row['table'] for row in rows} != set(_PRICE_NAMES)):
+            raise RuntimeError('Price publication inventory schema or policy changed')
+        digest.update(label.encode() + b'\0')
+        for row in rows:
+            digest.update(json.dumps(row, sort_keys=True, separators=(',', ':')).encode() + b'\n')
+    if read("SELECT table,disk_name FROM system.parts WHERE database='arte' AND active "
+            f"AND table IN ({names}) AND disk_name!='live_market_ssd' LIMIT 1", 1):
+        raise RuntimeError('Price publication inventory has active parts outside SSD')
+    for offset in range(0, len(scopes), 256):
+        batch = scopes[offset:offset + 256]
+        selected = ','.join(f'(toDate({_literal(day)}),{_literal(ticker)},toUUID({_literal(attempt)}))'
+                            for day, ticker, attempt in batch)
+        condition = (f'source_build_id={_literal(source_build_id)} '
+            f'AND (session_date,ticker,source_attempt_id) IN ({selected})')
+        selects = []
+        for name in _PRICE_NAMES:
+            unique = ('(derivation_attempt_id,bucket_index,price_int)'
+                if name == _PRICE_NAMES[0] else 'derivation_attempt_id')
+            selects.append(f"SELECT '{name}' AS table_name,session_date,ticker,"
+                'toString(source_attempt_id) AS source_attempt_text,count() AS row_count,'
+                f'uniqExact({unique}) AS unique_keys,toString(sum(cityHash64(tuple(*)))) AS row_hash '
+                f'FROM arte.{name} WHERE {condition} GROUP BY session_date,ticker,source_attempt_id')
+        maximum = len(batch) * len(_PRICE_NAMES)
+        rows = read('SELECT table_name,session_date,ticker,source_attempt_text,row_count,unique_keys,row_hash '
+            'FROM (' + ' UNION ALL '.join(selects) + ') '
+            f'ORDER BY table_name,session_date,ticker,source_attempt_text LIMIT {maximum + 1}', maximum)
+        previous = None
+        for row in rows:
+            if set(row) != {'table_name','session_date','ticker','source_attempt_text','row_count','unique_keys','row_hash'}:
+                raise RuntimeError('Price publication inventory has malformed scoped rows')
+            scope = (row['session_date'], row['ticker'], row['source_attempt_text'])
+            key = (row['table_name'], *scope)
+            if (row['table_name'] not in _PRICE_NAMES or scope not in batch
+                    or previous is not None and key <= previous
+                    or any(type(row[field]) not in (int, str) or not str(row[field]).isascii()
+                        or not str(row[field]).isdecimal() for field in ('row_count','unique_keys','row_hash'))
+                    or int(row['row_count']) < 1 or int(row['row_count']) != int(row['unique_keys'])):
+                raise RuntimeError('Price publication inventory has duplicate or invalid scoped rows')
+            previous = key
+            digest.update(json.dumps(row, sort_keys=True, separators=(',', ':')).encode() + b'\n')
+    return digest.hexdigest()
+
+
 def product_inventory_fingerprint(client: Any, names: tuple[str, ...]) -> str:
     """Fence exact normalized derivative tables before reusing a cold audit."""
     if (not names or len(names) != len(set(names))
