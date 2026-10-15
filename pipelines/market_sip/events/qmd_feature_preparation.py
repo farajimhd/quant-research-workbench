@@ -229,6 +229,94 @@ def _listing_identity(reader, listing, day):
     return rows
 
 
+def _covered_empty_identity(reader, request, market, audit, identity, listing):
+    """Prove historical no-event membership from the attested full census."""
+    from src.trading_runtime.arte_market_day_source_plan import _digest
+    from .shared_reference_listing_basis import stamp, RETAINED
+    day = date.fromisoformat(market.sessions[0])
+    def reject(reason):
+        raise ValueError(f'Shared covered-empty {day} {listing.ticker}: {reason}')
+    if day >= date.fromisoformat(request.opening_source.market.sessions[0]):
+        reject('current-day identity cannot be covered empty')
+    authority = audit.authority if type(audit) is FeatureSourceAudit else audit
+    if not source_audit_ready(audit,market) or authority.attestation is None:
+        reject('missing attested source authority')
+    plan = authority.source_plan
+    token = _digest(plan)
+    if (token != authority.attestation.source_plan_hash
+            or plan != authority.certificate.source_plan
+            or authority.attestation.build_id != market.build_id
+            or authority.certificate.build_id != market.build_id
+            or authority.certificate.definition_hash != market.definition_hash
+            or authority.attestation.definition_hash != market.definition_hash):
+        reject('source plan differs from attestation')
+    populations = [v for v in plan['population'] if v['session_date'] == day.isoformat()]
+    if len(populations) != 1:
+        reject('missing unique full-universe population')
+    population = populations[0]
+    selected = {v['ticker'] for v in plan['units'] if v['source_date'] == day.isoformat()}
+    if (population['authority'] != 'q_live.feature_tradable_universe_snapshot_v2'
+            or type(population['excluded_canonical_tickers']) is not int
+            or population['excluded_canonical_tickers'] < 0
+            or type(population['tradable_without_canonical_events']) is not int
+            or population['tradable_without_canonical_events'] < 1
+            or population['selected_ticker_days'] != len(market.tickers)
+            or selected != set(market.tickers)
+            or population['tradable_tickers'] != population['selected_ticker_days'] + population['tradable_without_canonical_events']):
+        reject('unknown, partial or explicit-ticker source population')
+    certificate = population['certificate']
+    cutoff = datetime.combine(day,time(4),ZoneInfo('America/New_York'))
+    if (certificate['status'] != 'certified' or certificate['revision'] != 'preopen-tradable-snapshot-v3'
+            or certificate['source_universe_date'] != day.isoformat()
+            or not stamp(certificate['captured_at_utc']) <= stamp(certificate['available_at_utc']) < cutoff
+            or stamp(certificate['cutoff_utc']) != cutoff):
+        reject('population snapshot is not timely exact-day certified')
+    heads = _rows(reader,f'SELECT source_plan_hash FROM arte.market_day_source_plan_v1 WHERE build_id={literal(market.build_id)} LIMIT 2',2)
+    if heads != [{'source_plan_hash':token}]:
+        reject('source-plan head changed')
+    where = f'session_date=toDate({literal(day)}) AND snapshot_id={literal(certificate["snapshot_id"])}'
+    summary = _rows(reader,'SELECT count() AS n,countIf(is_tradable) AS tradable,'
+        'toString(sum(cityHash64(tuple(ticker,symbol_id,listing_id,security_id,is_tradable,exclusion_reason,source_run_id,captured_at_utc)))) AS hash '
+        f'FROM q_live.feature_tradable_universe_snapshot_v2 WHERE {where}',1)
+    if (len(summary) != 1 or int(summary[0]['n']) != certificate['row_count']
+            or int(summary[0]['tradable']) != certificate['tradable_count']
+            or int(summary[0]['tradable']) != population['tradable_tickers']
+            or str(summary[0]['hash']) != str(certificate['source_hash'])):
+        reject('full pinned snapshot changed')
+    rows = _rows(reader,'SELECT ticker,symbol_id,listing_id,security_id,is_tradable,source_run_id,captured_at_utc '
+        f'FROM q_live.feature_tradable_universe_snapshot_v2 WHERE {where} '
+        f'AND listing_id={literal(listing.listing_id)} LIMIT 3',3)
+    if (len(rows) != 1 or rows[0]['security_id'] != listing.security_id
+            or type(rows[0]['is_tradable']) not in (int,str) or rows[0]['is_tradable'] not in (1,'1')
+            or stamp(rows[0]['captured_at_utc']) >= cutoff):
+        reject('missing or ambiguous stable snapshot identity')
+    row = rows[0]; ticker = row['ticker']
+    if ticker in selected or ticker in identity.tickers or any(u.ticker == ticker for u in market.units):
+        reject('contradictory present market or identity ticker')
+    units = _rows(reader,f'SELECT ticker FROM arte.market_day_source_unit_v1 WHERE build_id={literal(market.build_id)} '
+        f'AND source_date=toDate({literal(day)}) AND ticker={literal(ticker)} LIMIT 1',1)
+    if units:
+        reject('source unit contradicts covered-empty evidence')
+    retained = _rows(reader,f'SELECT {",".join(RETAINED)} FROM q_live.feature_tradable_universe_v1 FINAL '
+        f'WHERE universe_date=toDate({literal(day)}) AND listing_id={literal(row["listing_id"])} LIMIT 3',3)
+    if (len(retained) != 1 or any(retained[0][key] != row[key] for key in
+            ('ticker','symbol_id','listing_id','security_id','source_run_id'))
+            or stamp(retained[0]['inserted_at']) != stamp(row['captured_at_utc'])):
+        reject('shared capture differs from exact pinned snapshot')
+    fact = {key:row[key] for key in ('ticker','symbol_id','listing_id','security_id','source_run_id')}
+    fact.update(ibkr_conid=retained[0]['ibkr_conid'],source_inserted_at=retained[0]['inserted_at'])
+    basis = dict(source_plan_hash=token,market_token=market.token,
+        certificate_build=authority.certificate.build_id,certificate_definition=authority.certificate.definition_hash,
+        identity_token=identity.token,identity_hash=identity.content_hash,population=population,snapshot=row,
+        matching_source_units=0,matching_identity_rows=0)
+    dependencies = tuple(FeatureDependency('identity_shared_covered_empty_v1',db,table,day,listing.ticker,
+        table+':'+identity_key,0 if table == 'market_day_source_unit_v1' else 1,content_hash(basis))
+        for db,table,identity_key in (('arte','market_day_source_plan_v1',token),
+            ('arte','market_day_source_population_v1',token),('arte','market_day_source_unit_v1',ticker),
+            ('q_live','feature_tradable_universe_snapshot_v2',certificate['snapshot_id'])))
+    return fact, dependencies
+
+
 def _source_identity_cache(reader, request):
     """Cold certify full day identities once; retain exact shared source proofs."""
     from .shared_reference_listing_basis import BASIS, load_source_day_proofs, TABLES
@@ -271,9 +359,16 @@ def _source_identity_cache(reader, request):
                 tables.append(name)
         if len(tables) != 1:
             raise ValueError('Feature identity version is missing or ambiguous')
-        chosen = {}
+        chosen = {}; empty = {}
         for listing_id, listing in requested.items():
             matches = [by_listing[listing_id]] if listing_id in by_listing else []
+            if not matches:
+                fact, dependencies = _covered_empty_identity(reader,request,market,audit,identity,listing)
+                if fact['ticker'] in facts:
+                    raise ValueError(f'Shared covered-empty {day} {listing.ticker}: conflicting certified ticker')
+                chosen[fact['ticker']] = fact
+                empty[listing_id] = dependencies
+                continue
             if (len(matches) != 1 or matches[0]['security_id'] != listing.security_id
                     or day.isoformat() == request.opening_source.market.sessions[0]
                     and (matches[0]['symbol_id'] != listing.symbol_id or matches[0]['ticker'] != listing.ticker)):
@@ -285,14 +380,15 @@ def _source_identity_cache(reader, request):
         for ticker, proof in proofs.items():
             fact = chosen[ticker]
             dependencies = [FeatureDependency('identity_shared_source_day_v1','arte',tables[0],day,
-                requested[fact['listing_id']].ticker,identity.token,1,
+                requested[fact['listing_id']].ticker,identity.token,0 if fact['listing_id'] in empty else 1,
                 content_hash(dict(identity_token=identity.token,identity_hash=identity.content_hash,
                     market_token=market.token,fact=fact,basis=proof['basis'])))]
             for table, key in zip(TABLES, ('routing','tradability','retained'), strict=True):
                 dependencies.append(FeatureDependency('identity_shared_source_day_v1','q_live',table,day,
                     requested[fact['listing_id']].ticker,proof['basis']+':'+table+':'+fact['listing_id'],
                     len(proof[key]),content_hash(proof[key])))
-            resolved[fact['listing_id']] = (ticker,tuple(dependencies),int(fact['ibkr_conid']))
+            dependencies.extend(empty.get(fact['listing_id'],()))
+            resolved[fact['listing_id']] = (None if fact['listing_id'] in empty else ticker,tuple(dependencies),int(fact['ibkr_conid']))
         cache[day] = (market,resolved)
     return cache
 
@@ -374,7 +470,8 @@ class PreparedQmdFeatureDay:
         identity_cache = _source_identity_cache(reader,self.request)
         if identity_cache is not None:
             observed = {v for _, rows in identity_cache.values() for row in rows.values() for v in row[1]}
-            expected = {v for v in self.plan.dependencies if v.source_kind == 'identity_shared_source_day_v1'}
+            expected = {v for v in self.plan.dependencies if v.source_kind in
+                ('identity_shared_source_day_v1','identity_shared_covered_empty_v1')}
             if observed != expected:
                 raise ValueError('Shared source-day feature identity changed during preparation')
         universe,unavailable,observed,_=_population(reader,self.request)
@@ -490,7 +587,7 @@ def prepare_feature_day(reader, request, *, ownership, progress=None, stop_reque
             if identity_cache is None:
                 dependencies.extend(identity_dependencies)
             if source_ticker not in p.tickers:
-                if identity_cache is not None:
+                if identity_cache is not None and source_ticker is not None:
                     raise ValueError(f'Shared source-day feature bars missing: {source_day} {ticker}')
                 continue
             if source_day==day and source_ticker==ticker:

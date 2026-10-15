@@ -64,6 +64,12 @@ identity, routing and tradability facts, including historical ticker changes.
 Their scalar dependencies name the actual source tables and are cold-verified
 again before publication. A current opening proof cannot stand in for earlier
 source days, and an absent shared proof cannot fall back to symbol intervals.
+A historical day may leave continuous state unchanged only when the attested
+full-universe source plan proves that the timely pinned tradable listing had no
+canonical events. This covered-empty case retains explicit zero-unit, snapshot,
+identity and shared-reference dependencies and cold-verifies them again. It
+cannot cover missing current-day data, an explicit ticker subset, an unknown
+snapshot or a contradictory market/identity unit.
 
 ## Immutable translation and execution parameters
 

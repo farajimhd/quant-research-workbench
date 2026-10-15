@@ -238,3 +238,71 @@ def test_legacy_feature_identity_dispatch_remains_interval_owned(monkeypatch):
     listing=SimpleNamespace(ticker='NEW',listing_id='stable')
     ticker,deps=q._feature_identity(None,listing,date(2026,7,30),None)
     assert ticker=='OLD' and len(calls)==1 and deps[0].source_table=='id_symbol_interval_v1'
+
+
+@pytest.mark.parametrize('failure',[None,'explicit','unknown','current','unit','snapshot','identity','late','changed_head'])
+def test_historical_covered_empty_requires_attested_full_population_and_exact_snapshot(monkeypatch,failure):
+    from pipelines.market_sip.events import qmd_feature_preparation as q
+    from src.backend.backtest_market_data import CertifiedMarketDayPlan,ExecutionInterval
+    from src.backend.backtest_strategy_one_identity import CertifiedIdentityPlan
+    from src.trading_runtime.arte_market_day_certification import MarketDayCertificate
+    from src.trading_runtime.arte_market_day_cold_preflight import MarketDayColdAudit
+    from src.trading_runtime.arte_market_day_keeper import BuildAttestation
+    from src.trading_runtime.arte_market_day_source_plan import _digest
+    from src.market_engine.opening_price_reference import OpeningListing
+    market=CertifiedMarketDayPlan(ExecutionInterval.fixed(100),'1'*64,'a'*64,('2026-07-30',),('OTHER',),(),(100,),'b'*64)
+    listing=OpeningListing('gold-resource','GORO','symbol','resource-security','proof','c'*64,date(2026,7,31),None)
+    metadata=dict(snapshot_id='snapshot',source_universe_date='2026-07-30',captured_at_utc='2026-07-30 07:55:00',available_at_utc='2026-07-30 07:56:00',cutoff_utc='2026-07-30 08:00:00',row_count=2,tradable_count=2,source_hash=123,revision='preopen-tradable-snapshot-v3',status='certified')
+    population=dict(session_date='2026-07-30',authority='q_live.feature_tradable_universe_snapshot_v2',excluded_canonical_tickers=0,tradable_without_canonical_events=1,selected_ticker_days=1,tradable_tickers=2,certificate=metadata)
+    if failure=='explicit':population['excluded_canonical_tickers']=None
+    if failure=='unknown':population['tradable_without_canonical_events']=None
+    plan=dict(population=[population],units=[dict(source_date='2026-07-30',ticker='OTHER')])
+    certificate=MarketDayCertificate('1'*64,'a'*64,(),(),plan,{})
+    token=_digest(plan)
+    attestation=BuildAttestation('1'*64,'a'*64,token,*(['d'*64]*5),'owner',1)
+    audit=MarketDayColdAudit(certificate,attestation,True,plan,True,True,True)
+    identity=CertifiedIdentityPlan('1'*64,'2026-07-30','00000000-0000-0000-0000-000000000001',market.token,('GORO',) if failure=='identity' else ('OTHER',),(123,),'e'*64,'f'*64)
+    request=SimpleNamespace(opening_source=SimpleNamespace(market=SimpleNamespace(sessions=('2026-07-30' if failure=='current' else '2026-08-03',))))
+    fact,routes,states,retained=deepcopy(packet());retained=retained[-1:]
+    snapshot=dict(ticker=fact['ticker'],symbol_id=fact['symbol_id'],listing_id=fact['listing_id'],security_id=fact['security_id'],is_tradable=1,source_run_id=fact['source_run_id'],captured_at_utc=fact['source_inserted_at'])
+    if failure=='snapshot':snapshot['security_id']='wrong'
+    if failure=='late':snapshot['captured_at_utc']='2026-07-30 08:00:00'
+    def rows(reader,sql,bound):
+        if 'source_plan_hash FROM' in sql:return [{'source_plan_hash':'0'*64 if failure=='changed_head' else token}]
+        if 'countIf(is_tradable)' in sql:return [dict(n=2,tradable=2,hash='123')]
+        if 'snapshot_v2' in sql:return [snapshot]
+        if 'market_day_source_unit_v1' in sql:return [{'ticker':'GORO'}] if failure=='unit' else []
+        if 'feature_tradable_universe_v1' in sql:return retained
+        raise AssertionError(sql)
+    monkeypatch.setattr(q,'_rows',rows)
+    if failure:
+        with pytest.raises(ValueError,match='covered-empty'):
+            q._covered_empty_identity(None,request,market,audit,identity,listing)
+    else:
+        actual,deps=q._covered_empty_identity(None,request,market,audit,identity,listing)
+        assert actual==fact and len(deps)==4
+        assert {d.source_kind for d in deps}=={'identity_shared_covered_empty_v1'}
+        assert next(d for d in deps if d.source_table=='market_day_source_unit_v1').row_count==0
+        assert b.source_day_proof(actual,routes,states,retained,day=date(2026,7,30))['basis']==b.FEATURE_BASIS
+        from src.market_engine.feature_source_plan import FeatureSourcePlan,FeatureDependency
+        universe=FeatureDependency('universe','q_live','feature_tradable_universe_snapshot_v2',date(2026,8,3),'','universe',1,'a'*64)
+        ordered=tuple(sorted((*deps,universe),key=lambda v:(v.source_kind,v.session_date,v.ticker,v.source_identity)))
+        source_plan=FeatureSourcePlan('b'*64,q.algorithm_hash(),date(2026,8,3),14400,14402,1,ordered)
+        request.continuity=((market,audit),);request.prior_volume=None
+        request.opening_source.listings=(listing,)
+        request.opening_source.listing_basis=b.BASIS
+        def cold_cache(reader,req):
+            _,reloaded=q._covered_empty_identity(reader,req,market,audit,identity,listing)
+            return {date(2026,7,30):(market,{listing.listing_id:(None,reloaded,879173582)})}
+        monkeypatch.setattr(q,'_source_identity_cache',cold_cache)
+        monkeypatch.setattr(q,'_placement',lambda *args:None)
+        monkeypatch.setattr(q,'_population',lambda *args:((),(),'a'*64,'universe'))
+        prepared=SimpleNamespace(request=request,plan=source_plan,references={})
+        owner=SimpleNamespace(assert_owner=lambda:None)
+        q.PreparedQmdFeatureDay.verify_sources(prepared,None,ownership=owner)
+        before={d.content_hash for d in deps}
+        snapshot['captured_at_utc']='2026-07-30 07:54:14.592'
+        with pytest.raises(ValueError,match='capture differs'):
+            q._covered_empty_identity(None,request,market,audit,identity,listing)
+        with pytest.raises(ValueError,match='capture differs'):
+            q.PreparedQmdFeatureDay.verify_sources(prepared,None,ownership=owner)
