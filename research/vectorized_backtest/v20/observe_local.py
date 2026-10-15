@@ -51,32 +51,9 @@ def render(data,width=110,height=38,page=0):
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--active',type=Path,default=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v20/active-campaign.json'));p.add_argument('--once',action='store_true');a=p.parse_args()
-    console=Console();cache={};page=0;switch=None
-    if os.name=='nt' and console.is_terminal:
-        import ctypes
-        from ctypes import wintypes
-        k=ctypes.windll.kernel32;k.SetConsoleTitleW('V20 session progress - read only');k.GetConsoleWindow.restype=wintypes.HWND
-        ctypes.windll.user32.ShowWindow(k.GetConsoleWindow(),3)
-    try:
-        with Live(console=console,screen=console.is_terminal and not a.once,auto_refresh=False) as live:
-            while True:
-                owner=read_progress(a.active);root=Path(owner['campaign'])
-                if (root/'global'/'status.json').exists():switch=root/'global';break
-                data=snapshot(root,cache);live.update(render(data,console.width,console.height,page),refresh=True)
-                if a.once:return 0
-                if os.name=='nt':
-                    import msvcrt
-                    if msvcrt.kbhit():
-                        key=msvcrt.getwch().lower()
-                        if key=='q':return 0
-                        if key=='n':page+=1
-                        if key=='b':page=max(0,page-1)
-                time.sleep(2)
-    except KeyboardInterrupt:return 0
-    if switch:
-        from .observe import main as global_panel
-        return global_panel(['--output',str(switch)])
+    # Compatibility entry point; this module is never imported by the search.
+    from .local_details import main as detailed
+    return detailed()
 
 
 if __name__=='__main__':raise SystemExit(main())
