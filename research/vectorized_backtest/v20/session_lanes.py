@@ -36,6 +36,7 @@ class Worker:
         self.plans=OrderedDict();self.plan_generation=None;self.plan_limit=config.get("plan_limit",2)
         self.pending=None
         self.loads=0;self.uploads=0
+        self.resident_results=None
         torch.set_num_threads(1)
         if config['backend']=='compile':
             configure_caches(require_runtime(Path(config.get('compile_cache_root',config['output']))/'cache'/f'lane-{lane}'),recompile_limit=128)
@@ -78,7 +79,12 @@ class Worker:
         identity=dict(source=c['source_sha256'],data=item.identity,execution=c['execution'],
                       split=c.get('split','training'),episode_capacity=c.get('episode_capacity',65536))
         keys=[v.get('canonical_sha256') or program_key(m) for v,m in zip(payload,population)];cached={}
-        if cache_path.exists() and c.get('reuse_results',True):
+        resident=c.get('retain_session_residency',False) and c.get('reuse_results',True)
+        if resident and self.resident_results is not None:
+            prior_identity,cached=self.resident_results
+            if prior_identity!=identity:raise ValueError('Resident result cache contract changed')
+            cached=dict(cached)
+        elif cache_path.exists() and c.get('reuse_results',True):
             record=json.loads(cache_path.read_text(encoding='utf-8-sig'))
             if record['identity']!=identity:raise ValueError('Result cache contract changed')
             raw=json.dumps(record['results'],sort_keys=True,separators=(',',':'),allow_nan=False)
@@ -165,6 +171,9 @@ class Worker:
                     listing_ids=item.listing_ids.tolist(),reused_candidates=len(population)-len(missing),
                     evaluated_candidates=len(missing)))
                 publisher.write(root/'timings.json',timings)
+            # Only retain a successfully published generation. The disk cache
+            # remains hashed and is revalidated on process/session restart.
+            if resident:self.resident_results=(identity,selected)
             self.emit(day,stage='Session complete',completed_local_batches=len(timings),completed_seconds=item.clocks-1)
             return dict(day=day,timings=timings,wall_seconds=perf_counter()-started,pid=os.getpid(),clocks=item.clocks-1)
         except BaseException as error:
@@ -175,6 +184,7 @@ class Worker:
                 item.deactivate()
 
     def close(self):
+        self.resident_results=None
         self.loader.shutdown(wait=True,cancel_futures=True);self.staging.close()
         for plan in self.plans.values():plan.close()
         self.plans.clear()

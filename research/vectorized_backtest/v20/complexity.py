@@ -1,10 +1,18 @@
 """Safe structural simplification preserves feature-validity semantics."""
 from dataclasses import replace
+from functools import lru_cache
 from .program import Program, Op, Node
 from .genome import effective_rules
 
 
 def simplify(program):
+    # Preserve signed-zero and numeric-type identity: dataclass equality alone
+    # would merge 0, 0.0 and -0.0 despite their distinct canonical JSON bytes.
+    return _simplify(program,repr(program))
+
+
+@lru_cache(maxsize=8192)
+def _simplify(program,literal_identity):
     nodes=[];seen={};mapping={}
     def visit(i):
         if i in mapping:return mapping[i]

@@ -100,6 +100,7 @@ def test_local_session_restart_preserves_rng_population_archive_and_load_once(tm
     full=tmp_path/'full';resumed=tmp_path/'resumed'
     assert local_runner.run_session(local_config,'2026-08-01',full,**options)['status']=='complete'
     assert FakeWorker.instances[-1].loads==1 and FakeWorker.instances[-1].uploads==1
+    assert FakeWorker.instances[-1].config['plan_limit']==1
     FakeWorker.stop_once=True
     assert local_runner.run_session(local_config,'2026-08-01',resumed,**options)['completed']==1
     (resumed/'STOP').unlink()
@@ -225,7 +226,14 @@ def test_real_session_worker_cpu_replay_publication_and_result_reuse(tmp_path,mo
     members=[replace(m,policy=replace(m.policy,swing_left=0,swing_right=0,stop_fraction=.1)) for m in sample(np.random.default_rng(20),3)]
     payload=[m.payload() for m in members];token=digest(payload);worker=lanes.Worker(config,queue.Queue(maxsize=1),0)
     try:
-        worker.run(day,None,payload,1,token,1);worker.run(day,None,payload,2,token,1)
+        worker.run(day,None,payload,1,token,1)
+        original_read=Path.read_text
+        def guarded_read(path,*args,**kwargs):
+            assert path.parent.name!='result-cache','Resident generation reread its disk cache'
+            return original_read(path,*args,**kwargs)
+        with monkeypatch.context() as patch:
+            patch.setattr(Path,'read_text',guarded_read)
+            worker.run(day,None,payload,2,token,1)
         first=json.loads((tmp_path/'worker'/'generation-0001'/day/'receipt.json').read_bytes())
         second=json.loads((tmp_path/'worker'/'generation-0002'/day/'receipt.json').read_bytes())
         assert worker.loads==1 and second['reused_candidates']==3 and second['evaluated_candidates']==0
@@ -233,6 +241,23 @@ def test_real_session_worker_cpu_replay_publication_and_result_reuse(tmp_path,mo
         assert all(second['metrics']['terminal_valid']) and all(x<=300+1e-7 for x in second['metrics']['maximum_position_risk'])
         assert first['validation_opened']==second['validation_opened']==False
     finally:worker.close()
+    # A fresh worker must revalidate the durable copy rather than trust memory.
+    cache=tmp_path/'worker'/'result-cache'/f'{day}.json';saved=json.loads(cache.read_text());saved['results_sha256']='corrupt';write_json(cache,saved)
+    worker=lanes.Worker(config,queue.Queue(maxsize=1),0)
+    try:
+        with pytest.raises(ValueError,match='integrity'):worker.run(day,None,payload,3,token,1)
+    finally:worker.close()
+
+
+def test_bounded_simplification_cache_preserves_literal_identity():
+    from research.vectorized_backtest.v20.complexity import simplify,_simplify
+    from research.vectorized_backtest.v20.program import Program,Node,Op
+    _simplify.cache_clear()
+    for value in (0,0.,-0.,1,1.):
+        p=Program((Node(Op.CONSTANT,value=value,unit='bool'),),0)
+        assert json.dumps(simplify(p).payload())==json.dumps(_simplify.__wrapped__(p,repr(p)).payload())
+        assert simplify(p) is simplify(p)
+    assert _simplify.cache_info().maxsize==8192 and _simplify.cache_info().hits>=10
 
 
 def test_lightweight_deferred_queue_does_not_import_torch_or_launch(tmp_path,monkeypatch,capsys):

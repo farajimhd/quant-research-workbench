@@ -72,6 +72,7 @@ def run_session(config,day,output,generations=30,population_size=1024,seed=2020,
             from .session_lanes import Worker
             worker_factory=Worker
         cfg=dict(config,output=str(output),split='training',retain_session_residency=True,reuse_results=True,maximum_host_sessions=2,
+                 plan_limit=1,
                  compile_cache_root=str(output.parent/'worker-caches'/str(os.getpid())))
         events=queue.Queue(maxsize=1);stopped=threading.Event();current={};progress_errors=[]
         def pump():
@@ -98,10 +99,13 @@ def run_session(config,day,output,generations=30,population_size=1024,seed=2020,
                 evaluation=worker.run(day,None,payload,generation,token,len(item.listing_ids))
                 folder=output/f'generation-{generation:04d}';receipt=folder/day/'receipt.json';record=json.loads(receipt.read_bytes())
                 if record['population_sha256']!=token or record['validation_opened'] is not False or record['execution']!=config['execution'] or not record['full_session']:raise ValueError('Local session receipt changed')
-                status('Score and archive');prepared=local_panel([record['metrics']],objective);values=prepared['values'][0];eligible=prepared['eligible'][0]
+                status('Score and archive');score_start=time.perf_counter();prepared=local_panel([record['metrics']],objective);values=prepared['values'][0];eligible=prepared['eligible'][0];score_seconds=time.perf_counter()-score_start
+                archive_start=time.perf_counter()
                 archive=update_archive(archive,members,ids,values,eligible,pedigree,day,generation,archive_capacity,archive_shortlist)
+                archive_seconds=time.perf_counter()-archive_start;reproduction_start=time.perf_counter()
                 rank=np.lexsort((ids,-values)).tolist();source_ids=ids.copy()
                 members,ids,report=next_population(rng,members,ids,pedigree,rank,generation+1,selection,session_values=values[None],session_eligible=eligible[None],global_values=values,global_eligible=eligible) if generation<generations else (members,ids,{})
+                reproduction_seconds=time.perf_counter()-reproduction_start;publication_start=time.perf_counter()
                 births=[r for r in pedigree.records.values() if r['generation']==generation+1];write_json(folder/'births.json',births)
                 write_json(folder/'scores.json',dict(ids=source_ids.tolist(),scores=values.tolist(),eligible=eligible.tolist(),archive_count=len(archive),diversity=report))
                 write_json(folder/'complete.json',dict(receipt_sha256=file_hash(receipt),population_sha256=token,validation_opened=False,day=day,
@@ -114,6 +118,7 @@ def run_session(config,day,output,generations=30,population_size=1024,seed=2020,
                 write_json(checkpoint,dict(contract=contract,state=state,state_sha256=digest(state)))
                 if progress_errors:raise RuntimeError('Local progress publication failed') from progress_errors[0]
                 write_json(folder/'wall.json',dict(full_generation_seconds=time.perf_counter()-began,includes_scoring_archive_reproduction_checkpoint=True,
+                           score_seconds=score_seconds,archive_seconds=archive_seconds,reproduction_seconds=reproduction_seconds,publication_checkpoint_seconds=time.perf_counter()-publication_start,
                            checkpoint_sha256=file_hash(checkpoint),complete_sha256=file_hash(folder/'complete.json')))
                 if (output/'STOP').exists():return dict(status='interrupted',day=day,completed=generation)
             stopped.set();thread.join()
