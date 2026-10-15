@@ -1,4 +1,4 @@
-"""Display-only reads that do not block Windows atomic status replacement."""
+"""Short shared progress reads; transient Windows access errors stay display-only."""
 import json,os
 from contextlib import contextmanager
 

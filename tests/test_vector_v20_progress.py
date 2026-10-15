@@ -8,11 +8,18 @@ from research.vectorized_backtest.v20.observe_local import snapshot,render
 from research.vectorized_backtest.v6.torch_backtest.runtime import write_json
 
 
-def test_status_read_allows_atomic_replacement_while_open(tmp_path):
-    path=tmp_path/'status.json';write_json(path,dict(generation=1))
+def test_status_read_and_bounded_writer_retry_cooperate(tmp_path):
+    import threading,time
+    path=tmp_path/'status.json';write_json(path,dict(generation=1));errors=[]
+    def publish():
+        try:write_json(path,dict(generation=2))
+        except BaseException as error:errors.append(error)
     with shared_binary(path) as stream:
-        write_json(path,dict(generation=2))
+        thread=threading.Thread(target=publish);thread.start()
         assert json.load(stream)==dict(generation=1)
+        time.sleep(.05)
+    thread.join(5)
+    assert not thread.is_alive() and not errors
     assert read_progress(path)==dict(generation=2)
 
 
