@@ -35,6 +35,42 @@ def test_program_principal_is_explicit_shared_and_has_all_typed_storage_contract
     assert all('*' not in grant and 'CREATE' not in grant for grant in plan.grants())
 
 
+@pytest.mark.parametrize('current_table_mismatch', [False, True])
+def test_preflight_keeps_legacy_markers_read_only_without_auditing_their_current_schema(
+        monkeypatch, current_table_mismatch):
+    from src.trading_runtime import arte_journal_schema as schema
+    from src.backend.live_strategy_one_v4_principal import _LEGACY_COMMIT_READ
+    selected = lease(monkeypatch)
+    client = module.ProgramV4WriterClient(Client(user=module.PRINCIPAL), selected)
+    checked, granted = [], []
+    def storage(actual, *, tables):
+        assert actual is client
+        names = {table.name for table in tables}
+        checked.append(names)
+        assert not names & _LEGACY_COMMIT_READ
+        assert names == module.desired_plan().select_arte - schema.MARKET_READ_TABLES - _LEGACY_COMMIT_READ
+        if current_table_mismatch:
+            raise ValueError('Typed journal columns differ: trading_commit_v4')
+    def permissions(actual, **scope):
+        assert actual is client
+        granted.append(scope)
+        assert _LEGACY_COMMIT_READ <= scope['read_only_tables']
+        assert not _LEGACY_COMMIT_READ & scope['journal_tables']
+    monkeypatch.setattr(schema, 'storage_preflight', storage)
+    monkeypatch.setattr(schema, 'journal_permission_preflight', permissions)
+    try:
+        if current_table_mismatch:
+            with pytest.raises(ValueError, match='trading_commit_v4'):
+                module.program_v4_preflight(client)
+            assert not granted
+        else:
+            module.program_v4_preflight(client)
+            assert len(granted) == 1
+        assert len(checked) == 1
+    finally:
+        selected.release()
+
+
 def test_program_owner_is_immutable_exclusive_and_bound_to_installed_executable(monkeypatch):
     selected = lease(monkeypatch)
     selected.assert_current()

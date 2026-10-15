@@ -80,6 +80,7 @@ def desired_plan():
 
 
 def storage_contracts():
+    from .live_strategy_one_v4_principal import _LEGACY_COMMIT_READ
     from src.trading_runtime.arte_journal_writer import _CONTRACTS
     from src.trading_runtime import columnar_strategy_schema as release_schema
     from src.trading_runtime import strategy_configuration_schema as selection_schema
@@ -89,7 +90,10 @@ def storage_contracts():
     contracts.update({t.name: t for t in (*release_schema.TABLES, *selection_schema.TABLES, *BINDING, *RISK)})
     plan = desired_plan()
     from src.trading_runtime.arte_journal_schema import MARKET_READ_TABLES
-    names = plan.insert_arte | (plan.select_arte - plan.insert_arte - MARKET_READ_TABLES)
+    # Legacy commit markers are read-only mixed-version guards. Their minimal
+    # version readers own compatibility; current schemas must not be imposed
+    # on those historical tables (the existing live V4 preflight does likewise).
+    names = plan.insert_arte | (plan.select_arte - plan.insert_arte - MARKET_READ_TABLES - _LEGACY_COMMIT_READ)
     missing = names - set(contracts)
     if missing:
         raise RuntimeError('Program principal lacks typed storage contracts: ' + ','.join(sorted(missing)))
