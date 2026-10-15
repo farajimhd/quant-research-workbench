@@ -1,0 +1,117 @@
+# V21 design discussion and decision record
+
+Status: discussion only; implementation is not authorized yet.
+Baseline inspected: V20 source at commit a55e3a139, 2026-10-15.
+
+## Agreed decisions
+
+| ID | Agreement | Authority |
+| --- | --- | --- |
+| A01 | Leave the current V20 optimization running. | User: "Let's keep that going" |
+| A02 | Discuss V20 parts separately and record V21 agreements as the discussion proceeds. | User request, 2026-10-15 |
+| A03 | Implement V21 only after the user's later implementation instruction. | User: "at the end ask you to implement" |
+
+No V21 feature, parameter, objective, eligibility or selection changes have been agreed yet. The earlier discussion of score-only selection is an open design topic, not authorization to remove filters. This document is the design record; existing task-history files are unchanged.
+
+## Big picture: current V20 baseline, not V21 decisions
+
+Certified causal inputs -> selected features and typed expressions -> five lifecycle signals -> position policy and fixed execution/risk checks -> financial results -> objective plus eligibility -> reproduction/archive.
+
+Phase 1 evolves session experts independently. Phase 2 evolves candidates globally across training sessions. Both use the same feature catalog and genome representation. Validation is diagnostic and does not feed reproduction.
+
+There are 957 selectable feature channels. A candidate uses only channels referenced by its rules; 957 is not a per-candidate parameter count. Indicator periods and historical windows are discrete channels, not continuously fitted indicator coefficients.
+
+## 1. Input features
+
+| Family | Channels | Contents |
+| --- | ---: | --- |
+| Original scalar bank | 37 | Log OHLC; bar/session VWAP relative values and validity; log volume/trades and trailing 60-second totals; prior-session relative volume and availability; MACD line/signal, RSI14, ATR14, EMA7/26; time-of-day sin/cos; premarket/regular/after-hours flags; inter-candle gap; float/shares and availability; days since split/reverse split and availability; price/extreme validity. |
+| Structural levels | 110 | Five below and five above, each with center/lower/upper relative distance, observation counts (all/today), confirmation age, support/resistance/transition flags, historical-origin flag and presence. |
+| Session split flags | 2 | Split this session; reverse split this session. |
+| Raw causal history | 332 | Recent high at 1..60; lagged close at 1..60 (named momentum_close); mean dollar activity at 1..60; average absolute close movement at 2..32; 121 confirmed swing-low left/right pairs. |
+| Relative causal history | 272 | Price-valued history divided by current close, minus one. Attention/dollar activity does not have this price-relative variant. In particular, average_move.relative_to_close is movement/close - 1, not movement/close. |
+| Market/execution | 11 | Bid/ask relative to close, spread fraction, quote age, log execution volume/notional/trade count, raw bid/ask/spread/close. |
+| Indicator variants | 138 | EMA and ATR raw and relative, RSI; relative MACD line/signal/histogram variants, as detailed below. |
+| Own-stock enriched features | 32 | Returns/volatility at 5/15/60/300 seconds; volume/trade acceleration; volatility-to-fee ratio; seven completed-candle fields at 5/15/60 seconds. |
+| Broad-market context and rank | 23 | Seven context fields at 15/60/300 seconds, plus trailing-60-second dollar-volume percentile and its 15-second change. |
+| **Total** | **957** | |
+
+Indicator period bank: 2, 3, 5, 7, 9, 10, 12, 14, 15, 20, 26, 30, 45, 50, 60. EMA/ATR each have raw and relative channels; RSI is normalized. MACD fast choices 3/7/12, slow 15/26/50, signal 5/9/20. These produce 75 EMA/RSI/ATR plus 63 MACD channels.
+
+Completed-candle fields: body/close, range/close, close location inside range, log return, log volume, log trades, active fraction. Volatility is the square root of summed squared one-second log returns, with missing coverage masked. Acceleration compares short-window and longer-window activity rates. The fee-ratio channel uses the producer's fixed order/fee assumptions.
+
+Context fields per horizon: median return, mean return, advancing fraction, return dispersion, coverage fraction, own return minus median, own return percentile. Dollar-volume rank is a percentile (highest = 1, lowest = 0, average ties), not ordinal rank 1/2/3. Its change is a percentile difference over 15 seconds.
+
+Scope: enriched stock features are prepared only for listings entering the top 10, with causal history. Broad-market peers supply the minimal aggregates/rank census; not full per-peer candle feature banks. Membership gates new entries; an already-held position still needs management after leaving the top 10. A session can contain more than ten distinct eligible listings over time.
+
+Validity: unavailable/insufficient-history values have masks; they are not made into fabricated zero observations. Features and decisions are causal; confirmed swings must wait for right-side confirmation. Enriched horizons are elapsed seconds. Program temporal operators count observed candles; these are not interchangeable clocks.
+
+## 2. What the GA evolves
+
+Five independent effective rule outputs: entry, exit, add, reduce, trail. Entry applies while flat; the other rules apply while holding. Internal open_rules/rules storage does not mean ten independent effective trading decisions.
+
+For each rule the GA can change feature IDs, numeric/Boolean constants, operator types, operand links, subtree structure, temporal windows and compatible subtree crossovers. It also evolves the policy and holding-age parameters below. Feature substitution is restricted to compatible units/semantic classes; structure replacement can introduce other valid features.
+
+| Operation family | Available operations |
+| --- | --- |
+| Arithmetic | Add, subtract, multiply, divide, absolute value |
+| Comparisons | Greater, greater-or-equal, less, less-or-equal, cross above, cross below |
+| Logic | AND, OR, NOT; Boolean-to-ratio conversion |
+| Temporal | Lag, mean, minimum, maximum, difference, standard deviation |
+
+Program windows: 1, 2, 3, 5, 10, 20, 30, 60, 120 observed candles. Each rule has at most 32 nodes. Combined temporal extent must fit 120 observed candles (119 preceding observations); lag/difference 120 is consequently invalid. Output must be Boolean. Cycles, incompatible units, self-comparisons and prohibited implicit constant signals are rejected. Explicit disabled management rules are allowed. Mutation edits 1..5 distinct effective fields with bounded retries; ineffective edits are rejected.
+
+### Numeric thresholds: sampling is not a hard execution range
+
+Feature metadata defines initialization ranges: e.g. price typically 0..1000, price-relative history -0.5..0.5, bid/ask relative -0.1..0.1, spread fraction 0..0.1, quote age 0..3600, normalized RSI 0..1; exact ranges depend on channel. Positive/signed log-scale priors favor small thresholds in several families. Numeric literal mutation adds Gaussian noise with scale max(1e-6, 5% of absolute value). It does not clamp to the initialization range. Program validation requires finite, correctly typed literals, not those feature sampling limits. Input values are not clipped to threshold priors.
+
+Feature sampling first chooses an eligible family, then a channel, to avoid large channel families dominating initialization purely by size.
+
+## 3. Evolvable position policy
+
+| Gene | Search domain | Meaning / constraints |
+| --- | --- | --- |
+| Stop mode | Fixed fraction or confirmed swing low | Chooses the initial stop source. |
+| stop_fraction | 0.0001..0.20 (0.01%..20%) sampled | Initial stop = entry price * (1-fraction) in fixed mode. Inactive in swing mode. Policy validation alone accepts up to 1, but execution rejects distances over 20%. |
+| swing_left / swing_right | Each 1,2,3,4,5,10,15,20,30,45,60; (0,0) disables | 121 confirmed pairs. Stop must be finite, positive, below entry, within distance and dollar-risk bounds. |
+| target_fraction | 0.0001..1 (0.01%..100%); includes exact 1 | Initial target = entry * (1+fraction). Hitting target triggers a reduction, not necessarily a full exit. A filled target advances the next target by average cost * fraction. |
+| reduce_fraction | 0.0001..1 | Fraction of current quantity sold on reduction/target; 1 closes the whole position. |
+| trail_fraction | 0.0001..1 | Trail rule ratchets stop to max(old stop, high-water * (1-fraction)); never loosens it. |
+| add_minimum_profit | 0 or sampled 0.0001..1 | Minimum price return versus average cost before signal-driven add; not a net-after-fee profit threshold. |
+| reduce_minimum_profit | 0 or sampled 0.0001..1 | Minimum price return for signal-driven reduction; target-driven reductions have a separate trigger. |
+| maximum_adds | Integer 0..5 | Maximum additions in a position. |
+| cooldown | Integer 1..300 seconds | Minimum elapsed time since entry/add/reduction before another add/reduction. Not a general re-entry cooldown or an exit delay. |
+| Minimum holding ages | Integer 0..300 seconds per exit/add/reduce/trail rule | Gates those rule signals; entry has no holding age. Does not disable hard stop/session-end execution. |
+
+Fractions are proportions, not percentages: 0.03 means 3%. Non-stop positive fraction sampling favors small values but allows values through 1. Numeric policy genes are redrawn within their sampling domains on mutation; unlike expression thresholds they do not use unconstrained Gaussian mutation.
+
+## 4. Fixed execution and constraints (not GA genes)
+
+- Long positions; fixed $1000 entry and $200 per addition. Quantities are dollar size / execution price in this research simulator.
+- Current campaign fees: $0.005/share, minimum $1/order; extra cost_bps = 0. These are execution assumptions, not learned parameters.
+- Maximum planned stock-position risk $300; maximum stop distance 20%. Entry/add requests violating these are rejected. Planned risk includes modeled costs; it is not a guarantee against a gap through the stop.
+- Entry requires causal top-10 membership and usable execution evidence. Management continues for held listings; hard stops and session-end liquidation coexist with evolved rule signals.
+- Stop/exit has precedence over reduction, which has precedence over adding. Target-driven reduction and rule-driven reduction share reduce_fraction.
+- No evolved total-account cash budget, portfolio risk budget, short-side gene, order-type gene or per-candidate dollar sizing in the inspected policy/execution model. Per-stock planned risk must not be described as a portfolio loss cap.
+- Position state (quantity, average cost, stop, target, etc.) is maintained by execution. It is not automatically a selectable feature channel; age/profit gates are explicit policy mechanisms.
+
+## 5. Separate performance eligibility from cost
+
+Current V20 Phase 1: positive trade-trimmed profit, >=3 completed positions, financial/risk validity. Phase 2: positive net profit AND positive session-trimmed profit, >=20 positions, >=8 active sessions, financial/risk validity. These are hard performance gates in addition to score, not merely score penalties. Validation observes a training-selected eligible shortlist; raw-profit display rank is not parent eligibility or objective rank.
+
+V21 selection, activity thresholds, trimming, risk limits, feature additions/removals and ranges remain open. Do not infer approval from this inventory.
+
+## Discussion queue
+
+1. Feature families, clocks, availability and rank representation.
+2. Expression operations, complexity and threshold bounds.
+3. Position policy, sizing, target/partial-exit semantics and risk limits.
+4. Local/global costs versus hard eligibility and archive selection.
+5. Runner, caching, profiling, validation and user-interface requirements.
+6. Final consolidated approval, then implementation.
+
+## Source references
+
+- V20: features.py, enriched_math.py, prepare_enriched.py, search_space.py, genome.py, program.py, expressions.py, variation.py, semantics.py, evaluator.py, protected_transition.py, run_train.py, objectives.py, README.md.
+- Inherited catalog: ../v7/features.py and ../v6/torch_backtest/feature_bank.py, history_bank.py.
+- Catalog count verified by importing V20 features with bytecode writing disabled: 957 total = 764 inherited + 138 indicator variants + 55 enriched.
