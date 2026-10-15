@@ -17,6 +17,10 @@ class _ProgramWriterAudit:
 
 
 def _require_profile(client):
+    from src.backend.program_v4_principal import ProgramV4WriterClient
+    if type(client) is ProgramV4WriterClient:
+        client.live_v4_lease.assert_current()
+        return
     if (getattr(client, "live_v4_lease", None) is not None
             or getattr(client, "automatic_ladder_profile", False)
             or getattr(client, "entry_spread_risk_profile", False)):
@@ -50,6 +54,14 @@ def preflight_rule_decision_writer(client):
     from .rule_decision_publication import rule_decision_storage_contracts
     _require_profile(client)
     client._program_writer_audit = None
+    from src.backend.program_v4_principal import ProgramV4WriterClient, program_v4_preflight
+    if type(client) is ProgramV4WriterClient:
+        program_v4_preflight(client)
+        audit = _ProgramWriterAudit(client, client.typed_insert_dispatch, client.live_v4_lease,
+            getattr(client, 'user', None), getattr(client, 'base_url', None),
+            rule_decision_storage_contracts(), _AUDIT_TOKEN)
+        client._program_writer_audit = audit
+        return audit
     if client.execute("SELECT currentUser()").strip() != "backtest_v4_program_runner":
         raise RuntimeError("Program writer requires its dedicated principal")
     preflight_rule_decision_storage(client)
@@ -73,7 +85,8 @@ def require_rule_decision_writer_audit(client):
     if (type(audit) is not _ProgramWriterAudit or audit.token is not _AUDIT_TOKEN
             or audit.client is not client
             or audit.dispatch is not getattr(client, "typed_insert_dispatch", None)
-            or audit.lease is not getattr(client, "backtest_v4_lease", None)
+            or audit.lease is not (getattr(client, "backtest_v4_lease", None)
+                if getattr(client, 'live_v4_lease', None) is None else client.live_v4_lease)
             or audit.user != getattr(client, "user", None)
             or audit.base_url != getattr(client, "base_url", None)
             or audit.contracts != rule_decision_storage_contracts()):

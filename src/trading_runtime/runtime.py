@@ -164,6 +164,40 @@ def typed_run_config_payload(config: RunConfig) -> dict[str, Any]:
 class TradingRuntime:
     """One event/order/portfolio lifecycle for live, paper, replay, and backtest."""
 
+    def require_program_dispatch_mode(self) -> str:
+        """Validate the real execution assembly before any program side effect.
+
+        Completed-QMD dispatch can share an actor across modes, but production
+        admission also needs typed Portfolio transitions and decision receipts.
+        Neither a mode string nor a legacy SQLite journal supplies that proof.
+        """
+        from .columnar_program_actor import AssignedProgramStrategy
+        from src.backend.backtest_journal_memory import BacktestMemoryJournal
+        from .simulated_broker import SimulatedBrokerAdapter
+        if (not isinstance(self.strategy, AssignedProgramStrategy)
+                or not isinstance(self.order_manager, OrderManagementEngine)
+                or not isinstance(self.portfolio, PortfolioManagementEngine)):
+            raise RuntimeError('Program dispatch requires its native actor, OMS and Portfolio')
+        if self.config.mode is not RunMode.BACKTEST:
+            from src.backend.program_runtime_assembly import ProgramRuntimeAssembly
+            assembly = getattr(self, '_program_execution_assembly', None)
+            if type(assembly) is ProgramRuntimeAssembly:
+                mode = assembly.require_runtime(self)
+                if getattr(assembly, 'execution_intake', None) is not None and assembly.execution_intake.deferred_count:
+                    raise RuntimeError('Program dispatch awaits retained future broker executions at the next completed source clock')
+                return mode
+            raise RuntimeError(
+                'Program production dispatch requires normalized decision receipts, '
+                'complete typed Portfolio transitions and generic broker-command ownership; '
+                'the existing live_v4 writer is Strategy 1 only')
+        if (not isinstance(self.journal, BacktestMemoryJournal)
+                or not isinstance(self.broker, SimulatedBrokerAdapter)
+                or self.journal.run_id != self.run_id
+                or self.strategy.strategy_id != self.config.strategy_id
+                or self.strategy.revision != self.config.strategy_revision):
+            raise RuntimeError('Program dispatch differs from its native run assembly')
+        return self.config.mode.value
+
     def __init__(
         self,
         config: RunConfig,
@@ -179,6 +213,7 @@ class TradingRuntime:
         typed_portfolio_sync_authority: Any | None = None,
         typed_oms_image: Any | None = None,
         strategy_configuration: Mapping[str, Any] | None = None,
+        program_execution_assembly: Any | None = None,
     ) -> None:
         if strategy is not None and (
             config.strategy_id != strategy.strategy_id
@@ -209,6 +244,11 @@ class TradingRuntime:
         self.broker = broker
         self.strategy = strategy
         self.journal = journal
+        if program_execution_assembly is not None:
+            from src.backend.program_runtime_assembly import ProgramRuntimeAssembly
+            if type(program_execution_assembly) is not ProgramRuntimeAssembly:
+                raise TypeError('Program runtime requires concrete native assembly')
+        self._program_execution_assembly = program_execution_assembly
         self._strategy_one_price_source = None
         self._persisted_assignment_versions: dict[str, tuple[str, str]] = {}
         self._persisted_assignment_times: dict[str, datetime] = {}
@@ -221,7 +261,8 @@ class TradingRuntime:
         self.control_plane = control_plane or shared_trading_control_plane(broker)
         if not review_only:
             self.control_plane.campaigns.bind_durable_authority(
-                journal,
+                (program_execution_assembly.portfolio_authority.coordinator
+                 if program_execution_assembly is not None else journal),
                 session_key=config.anchor_date.isoformat(),
             )
             bind_campaigns = getattr(strategy, "bind_campaign_registry", None)
@@ -396,7 +437,7 @@ class TradingRuntime:
                 entity_id=self.run_id,
                 payload={"status": "running", "config": (
                     typed_run_config_payload(self.config)
-                    if self.config.mode == RunMode.BACKTEST
+                    if self.config.mode == RunMode.BACKTEST or self._program_execution_assembly is not None
                     else asdict(self.config))},
             )
 
@@ -444,7 +485,24 @@ class TradingRuntime:
         quotes = await self.process_liquidity_boundary((row,), at=at)
         return quotes[ticker]
 
+    async def complete_program_broker_boundary(self, at: datetime):
+        """Join actual Paper/Live fills to a committed contextual source clock."""
+        from src.backend.program_runtime_assembly import ProgramRuntimeAssembly
+        if type(self._program_execution_assembly) is not ProgramRuntimeAssembly:
+            raise RuntimeError('Actual broker completion requires its native programme assembly')
+        return await self._program_execution_assembly.complete_broker_boundary(at)
+
     async def process_liquidity_boundary(
+        self, rows: Sequence[Mapping[str, Any]], *, at: datetime,
+    ) -> dict[str, QuoteEvent | None]:
+        if self._program_execution_assembly is not None:
+            async with self._program_execution_assembly.operation():
+                result = await self._process_liquidity_boundary_native(rows, at=at)
+                await self._program_execution_assembly.flush()
+                return result
+        return await self._process_liquidity_boundary_native(rows, at=at)
+
+    async def _process_liquidity_boundary_native(
         self, rows: Sequence[Mapping[str, Any]], *, at: datetime,
     ) -> dict[str, QuoteEvent | None]:
         """Validate a global boundary, then advance OMS once and match by ticker.
@@ -454,7 +512,12 @@ class TradingRuntime:
         sequence is invented. A malformed later row cannot partially advance
         the broker or OMS state of an earlier ticker.
         """
-        if self.config.mode != TradingMode.BACKTEST or at.tzinfo is None:
+        if self.config.mode != TradingMode.BACKTEST:
+            from .program_broker_gateway import ProgramBrokerGateway
+            if (self.config.mode is not RunMode.REPLAY or type(self.broker) is not ProgramBrokerGateway
+                    or self.require_program_dispatch_mode() != 'replay'):
+                raise ValueError('Liquidity bars require native Backtest or owned Replay execution')
+        if at.tzinfo is None:
             raise ValueError("Liquidity-bar execution is restricted to Backtest")
         if self.last_event_time is not None and at < self.last_event_time:
             raise ValueError("Liquidity bars must be processed in non-decreasing time")
@@ -501,9 +564,14 @@ class TradingRuntime:
             ticker = str(row["ticker"]).upper()
             # Validation completed for the entire boundary before any match.
             executions = await (validated_matcher or matcher)(row, at=at)
-            self._record_executions(executions)
+            if self._program_execution_assembly is not None:
+                await self._program_execution_assembly.execution_intake.observe_replay(executions, at=at)
+            else:
+                self._record_executions(executions)
             if executions and self.order_manager is not None:
                 await self.order_manager.reconcile()
+                if self._program_execution_assembly is not None:
+                    await self._program_execution_assembly.assess_post_fill_risk(at)
             if executions and self._canonical_session is not None:
                 await self._canonical_session.reconcile_executions(executions)
                 self.portfolio.synchronize_canonical(
@@ -520,6 +588,14 @@ class TradingRuntime:
         return quotes
 
     async def advance_program_session_clock(self, at: datetime) -> None:
+        if self._program_execution_assembly is not None:
+            async with self._program_execution_assembly.operation():
+                await self._advance_program_session_clock_native(at)
+                await self._program_execution_assembly.flush()
+            return
+        await self._advance_program_session_clock_native(at)
+
+    async def _advance_program_session_clock_native(self, at: datetime) -> None:
         """Advance a certified sparse program clock without a market observation.
 
         The caller must have scanned the admitted liquidity window through this
@@ -528,9 +604,14 @@ class TradingRuntime:
         """
         from .columnar_program_actor import AssignedProgramStrategy
         from .simulated_broker import SimulatedBrokerAdapter
-        if (self.config.mode != RunMode.BACKTEST or type(self.strategy) is not AssignedProgramStrategy
-                or type(self.broker) is not SimulatedBrokerAdapter
-                or self.broker.mode != TradingMode.BACKTEST or not self.broker._bar_mode
+        from .program_broker_gateway import ProgramBrokerGateway
+        native = self.broker.broker if type(self.broker) is ProgramBrokerGateway else self.broker
+        owned_replay = (self.config.mode is RunMode.REPLAY and type(self.broker) is ProgramBrokerGateway
+                        and self.require_program_dispatch_mode() == 'replay')
+        if (not (self.config.mode is RunMode.BACKTEST or owned_replay)
+                or type(self.strategy) is not AssignedProgramStrategy
+                or type(native) is not SimulatedBrokerAdapter
+                or native.mode != TradingMode(self.config.mode.value) or not native._bar_mode
                 or (self.config.strategy_id, self.config.strategy_revision) != (self.strategy.strategy_id, self.strategy.revision)
                 or not isinstance(at, datetime) or at.tzinfo is None or at.utcoffset() is None
                 or self.last_event_time is not None and at < self.last_event_time):
@@ -542,6 +623,9 @@ class TradingRuntime:
             await self.order_manager.expire_entry_deadlines(at)
 
     def _record_executions(self, executions: Sequence[Any]) -> None:
+        from .columnar_program_actor import AssignedProgramStrategy
+        if isinstance(self.strategy, AssignedProgramStrategy):
+            self.require_program_dispatch_mode()
         """Keep broker fills and known fees as separate ordered journal facts."""
         if not executions:
             return
@@ -568,10 +652,7 @@ class TradingRuntime:
                     },
                 })
         self.journal.append_many(entries)
-        from .columnar_program_actor import AssignedProgramStrategy
         if isinstance(self.strategy, AssignedProgramStrategy):
-            if self.config.mode is not RunMode.BACKTEST or self.order_manager is None:
-                raise RuntimeError("Program execution projection requires the actual Backtest OMS")
             self.strategy.on_broker_executions(executions, self.order_manager)
 
     def process_passive_market_event(self, event: MarketEvent) -> None:
@@ -963,10 +1044,10 @@ class TradingRuntime:
             require_no_replacement_capital(evaluation.intents)
             require_strategy_one_actions(evaluation.intents)
         if program_assignment_id is not None:
+            self.require_program_dispatch_mode()
             from .columnar_strategy_release import ProgramRelease
             release = getattr(self.strategy, "program_release", None)
             if (not isinstance(release, ProgramRelease)
-                    or self.config.mode is not RunMode.BACKTEST
                     or release.header["strategy_id"] != self.config.strategy_id
                     or release.header["strategy_number"] != self.config.strategy_revision
                     or event is not None or not program_assignment_id
@@ -978,6 +1059,9 @@ class TradingRuntime:
                         profit_giveback_source, confirmed_ah_source,
                         liquidity_fade_source, automatic_entry))):
                 raise ValueError("Program submission lacks its exclusive release authority")
+            if self.config.mode is not RunMode.BACKTEST:
+                return await self._program_execution_assembly.execute_evaluation(evaluation,
+                    account_id=account_id, assignment_id=program_assignment_id)
         from .numbered_fixed_strategy import is_numbered_fixed_strategy, resolve_numbered_fixed_strategy
         if (self.config.mode == RunMode.BACKTEST
                 and is_numbered_fixed_strategy(self.config.strategy_id, self.config.strategy_revision)):
@@ -1608,11 +1692,15 @@ class TradingRuntime:
         from decimal import Decimal
         from .configuration_execution_risk import evaluate_acquisition_risk
         position = self.strategy.position_for(assignment_id)
-        return evaluate_acquisition_risk(self.strategy.execution_risk, action=intent.action,
+        decision = evaluate_acquisition_risk(self.strategy.execution_risk, action=intent.action,
             quantity=position.quantity, average_price=position.average_price,
             stop_price=Decimal(str(intent.invalidation_price)), episode_paid_fees=Decimal(0),
             episode_realized_gross_pnl=position.episode_net_pnl if position.position_open else Decimal(0),
             requested_cash=requested_cash, execution_price=execution_price)
+        if self.strategy.execution_state.pending_fee_count:
+            return replace(decision, allowed=False,
+                reasons=tuple(dict.fromkeys(('execution_commissions_pending', *decision.reasons))))
+        return decision
 
     async def submit_program_proposal(
         self, proposal: Any, *, account_id: str, assignment_id: str,
@@ -1628,9 +1716,10 @@ class TradingRuntime:
         from src.backend.backtest_journal_memory import BacktestMemoryJournal
         release = getattr(self.strategy, "program_release", None)
         assignments = getattr(self.strategy, "assignments", None)
+        self.require_program_dispatch_mode()
         if (type(proposal) is not ProgramProposal or not isinstance(release, ProgramRelease)
-                or self.config.mode is not RunMode.BACKTEST
-                or not isinstance(self.journal, BacktestMemoryJournal)
+                or self.config.mode is RunMode.BACKTEST
+                   and not isinstance(self.journal, BacktestMemoryJournal)
                 or not callable(assignments)
                 or account_id not in self.config.account_ids):
             raise ValueError("Program submission requires its typed Backtest runtime")
@@ -1666,15 +1755,20 @@ class TradingRuntime:
                 execution_price=Decimal(str(proposal.reference_price)))
             if not risk.allowed:
                 from types import SimpleNamespace
-                await self._record_intent_rejection(intent, account_id,
-                    SimpleNamespace(reasons=risk.reasons, status='rejected'))
+                rejected = SimpleNamespace(reasons=risk.reasons, status='rejected')
+                if self._program_execution_assembly is not None:
+                    await self._program_execution_assembly.reject_intent(intent,
+                        account_id=account_id, assignment_id=assignment_id, decision=rejected)
+                else:
+                    await self._record_intent_rejection(intent, account_id, rejected)
                 return [{'decision': {'status': 'rejected', 'reasons': list(risk.reasons)}, 'order_group': None}]
         if intent.action in ENTRY_ACTIONS:
             envelope = intent.execution_policy.envelope
             resolution = getattr(getattr(self.broker, "config", None), "liquidity_resolution_ms", None)
-            if (resolution not in (100, 1000)
+            if (self.config.mode in {RunMode.BACKTEST, RunMode.REPLAY}
+                    and (resolution not in (100, 1000)
                     or not envelope.persist_until_cancelled
-                    and 0 < envelope.deadline_ms <= resolution):
+                    and 0 < envelope.deadline_ms <= resolution)):
                 raise ValueError("Program order deadline expires before its first eligible liquidity bucket")
         return await self._execute_intents(StrategyEvaluation(intents=(intent,)),
             account_id, None, program_assignment_id=assignment_id)
@@ -2127,6 +2221,9 @@ class TradingRuntime:
                 await self._synchronize_portfolio_broker()
 
     async def _synchronize_portfolio_broker(self) -> None:
+        if self._program_execution_assembly is not None:
+            await self._program_execution_assembly.synchronize()
+            return
         if getattr(self.portfolio, "_typed_recovery", False):
             if self._typed_portfolio_sync_authority is None:
                 raise RuntimeError("Typed portfolio broker sync authority is unavailable")
@@ -2334,7 +2431,12 @@ class TradingRuntime:
                     aggregate_position_quantity=aggregate_position_quantity,
                 )
                 self._persist_strategy_assignments(snapshot.updated_at)
-        self.portfolio.on_order_group_update(snapshot)
+        if self._program_execution_assembly is not None:
+            if any(row.intent_id == snapshot.intent_id for row in self.portfolio.reservations.values()):
+                await self._program_execution_assembly.transition(snapshot.account_id,
+                    'order_group_update', {'snapshot': snapshot})
+        else:
+            self.portfolio.on_order_group_update(snapshot)
         await self.risk_supervisor.evaluate(
             snapshot.account_id,
             reason=f"order_group:{snapshot.state.value}",

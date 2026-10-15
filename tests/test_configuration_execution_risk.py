@@ -16,6 +16,21 @@ def contract(**changes):
     return project_execution_risk(**(values | changes))
 
 
+def test_actual_filled_risk_classifies_adverse_fill_and_paid_episode_loss_without_changing_stop():
+    from src.trading_runtime.configuration_execution_risk import evaluate_filled_execution_risk
+    values = dict(quantity=D(100), average_price=D(20), stop_price=D('17.02'), episode_net_pnl=D(-1))
+    exact = evaluate_filled_execution_risk(contract(), **values)
+    assert exact.allowed and exact.modeled_stop_loss == D(300)
+    adverse = evaluate_filled_execution_risk(contract(), **(values | {'average_price': D('20.0001')}))
+    assert adverse.reasons == ('post_fill_maximum_position_risk_exceeded',)
+    lost = evaluate_filled_execution_risk(contract(), **(values | {'episode_net_pnl': D(-2)}))
+    assert lost.modeled_stop_loss == D(301) and not lost.allowed
+    distance = evaluate_filled_execution_risk(contract(), quantity=D(1), average_price=D(10),
+        stop_price=D(7), episode_net_pnl=D(-1))
+    assert distance.reasons == ('post_fill_maximum_stop_distance_exceeded',)
+    assert values['stop_price'] == D('17.02')
+
+
 def entry(**changes):
     return dict(action="enter_long", quantity=D(0), average_price=D(0),
         stop_price=D(8), episode_paid_fees=D(0), episode_realized_gross_pnl=D(0),

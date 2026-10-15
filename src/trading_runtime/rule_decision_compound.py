@@ -47,7 +47,11 @@ def prepare_qualified_compound_families(client, compound, *, verified_prior_pref
     from .arte_journal_compound_v4 import prepare_compound_v4_families
     supplements = qualified_compound_rule_families(compound)
     if supplements and getattr(client, "live_v4_lease", None) is not None:
-        raise ValueError("Program decision publication requires its Backtest owner")
+        from src.backend.program_v4_principal import ProgramV4WriterClient
+        from .rule_decision_writer_preflight import require_rule_decision_writer_audit
+        if type(client) is not ProgramV4WriterClient:
+            raise ValueError("Program decision publication requires its Backtest owner or own normalized program owner")
+        require_rule_decision_writer_audit(client)
     children = dict(compound.children)
     children["rule_decision_bases"] = ()
     children["rule_decision_intents"] = ()

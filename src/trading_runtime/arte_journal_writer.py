@@ -61,6 +61,8 @@ from src.backend.backtest_squeeze_episode_schema import (
 )
 from src.backend.backtest_reconciliation_v3 import CHILD as RECONCILIATION_DIFFERENCE
 from src.backend.backtest_portfolio_control_v3 import CONTROL as PORTFOLIO_CONTROL
+from src.trading_runtime.arte_portfolio_control_v4 import V4PortfolioControlBatch
+from src.trading_runtime.arte_broker_policy_v4 import V4BrokerPolicyBatch
 from src.backend.backtest_trade_proposal_v3 import TABLES as TRADE_PROPOSAL_TABLES
 from src.backend.backtest_squeeze_episode_schema import (
     BROKER_OMS_TABLES, ENTRY_REPRICE_CAPACITY_TABLES,
@@ -4015,6 +4017,15 @@ class ArteJournalWriter:
 
     _V4_PROFILES = frozenset({"backtest_v4", "live_v4"})
 
+    def _require_program_or_backtest_profile(self):
+        if self._journal_profile == 'backtest_v4':
+            return
+        from src.backend.program_v4_principal import ProgramV4WriterClient
+        from .rule_decision_writer_preflight import require_rule_decision_writer_audit
+        if self._journal_profile != 'live_v4' or type(getattr(self, '_client', None)) is not ProgramV4WriterClient:
+            raise ValueError('Exact program facts require their pinned Backtest writer or owned program writer')
+        require_rule_decision_writer_audit(self._client)
+
     def __init__(self, client: Any, *, run_id: str, capacity: int = 8,
                  max_events_per_commit: int = 4096,
                  coalesce_batches: bool = True,
@@ -4055,7 +4066,11 @@ class ArteJournalWriter:
                     v4_preflight_seal.used = True
             else:
                 from src.backend.live_strategy_one_v4_principal import live_v4_preflight
-                live_v4_preflight(client)
+                from src.backend.program_v4_principal import ProgramV4WriterClient, program_v4_preflight
+                if type(client) is ProgramV4WriterClient:
+                    program_v4_preflight(client)
+                else:
+                    live_v4_preflight(client)
         else:
             raise ValueError("Unknown typed journal profile")
         context = _verify_run_identity(client, run_id)
@@ -4069,7 +4084,10 @@ class ArteJournalWriter:
         self._journal_profile = journal_profile
         if journal_profile in {"backtest_v2", "backtest_v3", "backtest_v4"} and self._run_mode != "backtest":
             raise RuntimeError("Versioned journal profile requires a verified Backtest run")
-        if journal_profile == "live_v4" and self._run_mode not in {"live", "paper"}:
+        from src.backend.program_v4_principal import ProgramV4WriterClient
+        program_owned = type(client) is ProgramV4WriterClient
+        if journal_profile == "live_v4" and self._run_mode not in (
+                {'live', 'paper', 'replay'} if program_owned else {'live', 'paper'}):
             raise RuntimeError("Live V4 journal requires a verified live or paper run")
         if journal_profile == "live_v4":
             from src.backend.live_strategy_one_v4_principal import LiveV4KeeperLease
@@ -4080,6 +4098,13 @@ class ArteJournalWriter:
         else:
             lease = None
         self._live_v4_lease = lease
+        if program_owned:
+            registration = lease.registration
+            if (context.get('strategy_id'), context.get('strategy_revision')) != registration.key:
+                raise RuntimeError('Program writer run context differs from installed executable')
+            if (context.get('configuration_hash') != lease.configuration_hash
+                    or context.get('code_hash') != registration.expected_code_hash):
+                raise RuntimeError('Program writer run configuration/code pins differ')
         backtest_lease = getattr(client, "backtest_v4_lease", None)
         if backtest_lease is not None:
             from src.backend.backtest_v4_keeper_lease import BacktestV4KeeperLease
@@ -4240,7 +4265,11 @@ class ArteJournalWriter:
         if unit.children['rule_decision_bases'] or unit.children['rule_decision_intents']:
             from .rule_decision_compound import qualified_compound_rule_families
             if self._journal_profile != 'backtest_v4':
-                raise ValueError('Qualified program decisions require the Backtest writer')
+                from src.backend.program_v4_principal import ProgramV4WriterClient
+                from .rule_decision_writer_preflight import require_rule_decision_writer_audit
+                if type(getattr(self, '_client', None)) is not ProgramV4WriterClient:
+                    raise ValueError('Qualified decisions require their Backtest writer or actual owned program writer')
+                require_rule_decision_writer_audit(self._client)
             qualified_compound_rule_families(unit)
         if unit.children['profit_givebacks'] or unit.children['confirmed_ah_failures'] or unit.children['liquidity_fade_failures']:
             return self._submit_profit_publication(unit, first_price_source=first_price_source)
@@ -4265,7 +4294,8 @@ class ArteJournalWriter:
     def submit_qualified_rule_v4(self, unit) -> Future[str]:
         """Queue a native-qualified one-decision tail without network I/O."""
         from .rule_decision_publication import QualifiedRuleDecisionBatch, _check_rule_decision_qualification
-        if (self._journal_profile != 'backtest_v4' or type(unit) is not QualifiedRuleDecisionBatch
+        self._require_program_or_backtest_profile()
+        if (type(unit) is not QualifiedRuleDecisionBatch
                 or unit.base.run_id != self._run_id):
             raise ValueError('Qualified rule requires its pinned Backtest writer')
         _check_rule_decision_qualification(unit.unit, unit.qualification)
@@ -4433,8 +4463,8 @@ class ArteJournalWriter:
     def submit_exact_order_v4(self, unit) -> Future[str]:
         """Queue exact-price commands without caller-side network I/O."""
         from .arte_order_exact_prices import ExactPriceOrderCommandBatch
-        if (self._journal_profile != "backtest_v4"
-                or type(unit) is not ExactPriceOrderCommandBatch
+        self._require_program_or_backtest_profile()
+        if (type(unit) is not ExactPriceOrderCommandBatch
                 or unit.base.run_id != self._run_id):
             raise ValueError("Exact order prices require the pinned Backtest writer")
         with self._submission_lock:
@@ -4451,7 +4481,8 @@ class ArteJournalWriter:
     def submit_exact_execution_v4(self, unit) -> Future[str]:
         """Queue exact fills without caller-side I/O or bypassing V4 ownership."""
         from .arte_execution_exact_prices import ExactPriceExecutionBatch
-        if (self._journal_profile != "backtest_v4" or type(unit) is not ExactPriceExecutionBatch
+        self._require_program_or_backtest_profile()
+        if (type(unit) is not ExactPriceExecutionBatch
                 or unit.base.run_id != self._run_id):
             raise ValueError("Exact fills require the pinned Backtest writer")
         with self._submission_lock:
@@ -4468,8 +4499,8 @@ class ArteJournalWriter:
     def submit_exact_oms_v4(self, unit) -> Future[str]:
         """Queue exact-price OMS persistence without caller-side network I/O."""
         from .arte_oms_exact_prices import ExactPriceOmsStateBatch
-        if (self._journal_profile != "backtest_v4"
-                or type(unit) is not ExactPriceOmsStateBatch
+        self._require_program_or_backtest_profile()
+        if (type(unit) is not ExactPriceOmsStateBatch
                 or unit.base.run_id != self._run_id):
             raise ValueError("Exact OMS prices require the pinned Backtest writer")
         with self._submission_lock:
@@ -4499,6 +4530,37 @@ class ArteJournalWriter:
                 self._queue.put_nowait((unit, receipt))
             except Full as exc:
                 raise JournalQueueFull("V4 journal queue is full; stop admission") from exc
+            self._accepted_writes = True
+            return receipt
+
+    def submit_portfolio_control_v4(self, unit: V4PortfolioControlBatch) -> Future[str]:
+        """Queue a closed shared control fact; existing principal grants still apply."""
+        if (self._journal_profile not in self._V4_PROFILES or type(unit) is not V4PortfolioControlBatch
+                or unit.base.run_id != self._run_id):
+            raise ValueError('V4 Portfolio control requires its pinned writer')
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError('V4 writer is closed or failed')
+            receipt = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull('V4 control queue is full; stop admission') from exc
+            self._accepted_writes = True
+            return receipt
+
+    def submit_broker_policy_v4(self, unit: V4BrokerPolicyBatch) -> Future[str]:
+        if (self._journal_profile not in self._V4_PROFILES or type(unit) is not V4BrokerPolicyBatch
+                or unit.base.run_id != self._run_id):
+            raise ValueError('V4 broker policy requires its pinned native writer')
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError('V4 writer is closed or failed')
+            receipt = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull('V4 broker policy queue is full') from exc
             self._accepted_writes = True
             return receipt
 
@@ -5228,7 +5290,7 @@ class ArteJournalWriter:
                 from .automatic_ladder_transport import V4AutomaticLadderBatch
                 if (self._journal_profile in {"backtest_v2", "backtest_v3", *self._V4_PROFILES}
                         and not isinstance(group[0][0],
-                                           (EntryAcquisitionFreezeBatch, ExactPriceOrderCommandBatch, ExactPriceExecutionBatch, ExactPriceOmsStateBatch, QualifiedRuleDecisionBatch, TypedJournalBatch, V3SqueezeBatch, V4AutomaticLadderBatch,
+                                           (V4BrokerPolicyBatch, V4PortfolioControlBatch, EntryAcquisitionFreezeBatch, ExactPriceOrderCommandBatch, ExactPriceExecutionBatch, ExactPriceOmsStateBatch, QualifiedRuleDecisionBatch, TypedJournalBatch, V3SqueezeBatch, V4AutomaticLadderBatch,
                                             V4CompoundBatch,
                                             V4StrategyOneEntryBatch, V4FollowThroughFailureBatch,
                                             V4OmsTacticBatch,
@@ -5397,6 +5459,16 @@ class ArteJournalWriter:
                     committed_id = publish_oms_tactic_batch_v4(
                         self._client, unit.base, tactic_state=unit.tactic_state,
                         tactic_steps=unit.tactic_steps)
+                elif isinstance(group[0][0], V4BrokerPolicyBatch):
+                    from .arte_journal_commit_v4 import _publish_typed_batch_v4
+                    unit = group[0][0]
+                    committed_id = _publish_typed_batch_v4(self._client, unit.base,
+                        broker_policy_rows=(unit.policy,), broker_policy_message_rows=unit.messages)
+                elif isinstance(group[0][0], V4PortfolioControlBatch):
+                    from .arte_journal_commit_v4 import _publish_typed_batch_v4
+                    unit = group[0][0]
+                    committed_id = _publish_typed_batch_v4(self._client, unit.base,
+                        portfolio_control_rows=(unit.control,))
                 elif isinstance(group[0][0], V4PortfolioAllocationBatch):
                     from src.trading_runtime.arte_journal_commit_v4 import (
                         publish_portfolio_allocation_batch_v4,

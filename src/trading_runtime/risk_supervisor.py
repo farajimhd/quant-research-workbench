@@ -74,6 +74,7 @@ class ContinuousRiskSupervisor:
             else {}
         )
         self._broker_connected = True
+        self._program_execution_assembly = None
 
     async def evaluate(
         self,
@@ -187,7 +188,7 @@ class ContinuousRiskSupervisor:
             internal_reaction_ms=internal_reaction_ms,
         )
         self.states[account_id] = evaluation
-        self._apply_control(evaluation)
+        await self._apply_control(evaluation)
         if persist:
             self.journal.append(
                 run_id=self.run_id,
@@ -216,17 +217,23 @@ class ContinuousRiskSupervisor:
             raise ValueError(
                 "Account cannot resume until broker, portfolio, loss, and protection state are normal"
             )
-        self.portfolio.set_control(
-            evaluation.account_key,
-            PortfolioControlMode.ENABLED,
-            reason=reason,
-        )
+        await self._set_control(evaluation, PortfolioControlMode.ENABLED, reason)
         return evaluation
 
     def payload(self) -> list[dict[str, object]]:
         return [asdict(self.states[key]) for key in sorted(self.states)]
 
-    def _apply_control(self, evaluation: RiskEvaluation) -> None:
+    async def _set_control(self, evaluation, desired, reason):
+        if self._program_execution_assembly is not None:
+            from src.backend.program_runtime_assembly import ProgramRuntimeAssembly
+            if type(self._program_execution_assembly) is not ProgramRuntimeAssembly:
+                raise TypeError('Risk controls require concrete native programme assembly')
+            await self._program_execution_assembly.transition(evaluation.account_id, 'set_control',
+                {'mode': desired, 'reason': reason})
+        else:
+            self.portfolio.set_control(evaluation.account_key, desired, reason=reason)
+
+    async def _apply_control(self, evaluation: RiskEvaluation) -> None:
         desired = {
             AccountRiskState.NORMAL: None,
             AccountRiskState.ENTRIES_PAUSED: PortfolioControlMode.ENTRIES_PAUSED,
@@ -239,11 +246,7 @@ class ContinuousRiskSupervisor:
             return
         current = self.portfolio.by_key[evaluation.account_key].control_mode
         if current != desired:
-            self.portfolio.set_control(
-                evaluation.account_key,
-                desired,
-                reason=";".join(evaluation.reasons),
-            )
+            await self._set_control(evaluation, desired, ";".join(evaluation.reasons))
 
 
 def _risk_severity(state: AccountRiskState) -> int:

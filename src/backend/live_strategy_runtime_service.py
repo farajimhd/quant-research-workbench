@@ -53,6 +53,15 @@ def _reject_strategy_one_legacy_runtime(snapshot: dict[str, Any]) -> None:
     from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
 
     strategy = dict(dict(snapshot.get("payload") or {}).get("strategy") or {})
+    from src.trading_runtime.strategy_registry import program_strategy_executor
+    identity = strategy.get('strategy_id'), strategy.get('revision', strategy.get('strategy_revision'))
+    if type(identity[0]) is str and type(identity[1]) is int:
+        try:
+            program_strategy_executor(*identity)
+        except ValueError:
+            pass
+        else:
+            raise RuntimeError('Installed programme requires its native context-bound host; SQLite is forbidden')
     # Any identity claiming the immutable numbered strategy must stay out of
     # the SQLite runtime, including incomplete or mismatched configuration
     # revisions. The typed live admission path is a separate authority.
@@ -87,6 +96,7 @@ class LiveStrategyRuntimeSupervisor:
                  typed_signal_completion: CompletionPublicationQueue | None = None) -> None:
         self._typed_assignment_admission = typed_assignment_admission
         self._typed_signal_completion = typed_signal_completion
+        self._program_runs = {}
         self._queue: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=10_000)
         self._thread: threading.Thread | None = None
         self._lock = threading.RLock()
@@ -121,7 +131,7 @@ class LiveStrategyRuntimeSupervisor:
     def start(self) -> None:
         # This bounded lane covers incremental assignment admission only.
         # Initial assignments and activation recovery are still SQLite-owned.
-        if self._typed_delivery_requested():
+        if self._typed_delivery_requested() and not self._program_runs:
             with self._lock:
                 self._status.update({"running": False, "state": "degraded",
                                      "last_error": "Typed live cutover is incomplete"})
@@ -137,7 +147,8 @@ class LiveStrategyRuntimeSupervisor:
             if self._thread and self._thread.is_alive():
                 return
             self._stop.clear()
-            self._hydrate_activations()
+            if not self._program_runs:
+                self._hydrate_activations()
             self._thread = threading.Thread(
                 target=self._run_thread,
                 name="live-strategy-runtime",
@@ -159,6 +170,8 @@ class LiveStrategyRuntimeSupervisor:
             self._status.update({"running": False, "state": "stopped"})
 
     def submit(self, deliveries: list[dict[str, Any]]) -> int:
+        if self._program_runs:
+            raise RuntimeError('Installed native programme runs require completed contextual boundary delivery')
         if self._typed_delivery_requested():
             raise RuntimeError("Typed live signal delivery cutover is incomplete; refusing SQLite fallback")
         accepted = 0
@@ -195,6 +208,67 @@ class LiveStrategyRuntimeSupervisor:
         with self._lock:
             self._status["queued"] = self._queue.qsize()
         return accepted
+
+    def install_program_runtime(self, runtime):
+        """Install actual owned assembly on this host before starting its worker.
+
+        Managed startup owns the selected configuration, native principal and
+        source bootstrap. No SQLite activation or legacy observation is used.
+        """
+        from .program_runtime_assembly import ProgramRuntimeAssembly
+        from types import SimpleNamespace
+        if (type(runtime) is not TradingRuntime or runtime.config.mode.value != self.mode
+                or runtime.config.mode.value not in {'paper', 'live'}
+                or type(getattr(runtime, '_program_execution_assembly', None)) is not ProgramRuntimeAssembly):
+            raise TypeError('Native host installation requires its exact mode-bound programme runtime')
+        runtime.require_program_dispatch_mode()
+        with self._lock:
+            if (self._thread and self._thread.is_alive() or self._activations
+                    or not self._queue.empty() or len(self._program_runs) >= 16
+                    or runtime.run_id in self._program_runs):
+                raise RuntimeError('Native programme installation requires an idle bounded host')
+            assembly = runtime._program_execution_assembly
+            self._program_runs[runtime.run_id] = SimpleNamespace(_runtime=runtime,
+                _journal=runtime.journal, run_id=runtime.run_id, _program_strategy=runtime.strategy,
+                _program_signal_runtime=assembly.signal_runtime, _program_dispatch_failure=None)
+            self._status['active_runs'] = [{'run_id': owner.run_id,
+                'strategy_id': owner._runtime.config.strategy_id,
+                'mode': owner._runtime.config.mode.value} for owner in self._program_runs.values()]
+
+    def submit_program_boundary(self, run_id, block, population, **scope):
+        from .backtest_program_inputs import PreparedProgramBlock
+        from .qmd_columnar_population import CertifiedPopulationWindow
+        required = {'ordinal', 'assignment_id', 'execution_policy', 'protection_profile', 'outside_rth'}
+        if (type(block) is not PreparedProgramBlock or type(population) is not CertifiedPopulationWindow
+                or not required <= set(scope) or set(scope) - required - {'terminal'}):
+            raise ValueError('Native host delivery requires exact prepared/source boundary scope')
+        with self._lock:
+            owner = self._program_runs.get(run_id)
+            if owner is None or not self._thread or not self._thread.is_alive() or self._stop.is_set():
+                raise RuntimeError('Native programme host is not running its installed assembly')
+            owner._runtime.require_program_dispatch_mode()
+            result = concurrent.futures.Future()
+            try:
+                self._queue.put_nowait({'kind': 'program_boundary', 'run_id': run_id,
+                    'block': block, 'population': population, 'scope': dict(scope), 'result': result})
+            except queue.Full as exc:
+                raise RuntimeError('Native programme host boundary queue is full') from exc
+            self._status['queued'] = self._queue.qsize()
+            return result
+
+    async def _process_program_boundary(self, delivery):
+        from .program_boundary_dispatch import dispatch_program_boundary
+        owner = self._program_runs.get(delivery['run_id'])
+        if owner is None:
+            raise ValueError('Completed programme boundary has no installed native host owner')
+        runtime = owner._runtime
+        at = delivery['block'].row_for(runtime.strategy._listings[delivery['scope']['assignment_id']],
+            delivery['scope']['ordinal'])[0]['boundary_at']
+        observed = await runtime.complete_program_broker_boundary(at)
+        if observed.deferred:
+            return {'status': 'broker_ahead_of_completed_source', 'deferred_executions': observed.deferred,
+                    'completed': False}
+        return await dispatch_program_boundary(owner, delivery['block'], delivery['population'], **delivery['scope'])
 
     def submit_signal_work(
         self, delivery: dict[str, Any], *, intent_content_hash: str,
@@ -457,6 +531,9 @@ class LiveStrategyRuntimeSupervisor:
         broker: IbkrClientPortalAdapter | None = None
         runtimes: dict[str, dict[str, Any]] = {}
         try:
+            for owner in self._program_runs.values():
+                await owner._runtime.initialize()
+                await owner._runtime._program_execution_assembly.flush()
             while not self._stop.is_set():
                 try:
                     delivery = await asyncio.to_thread(self._queue.get,True,1.)
@@ -468,7 +545,11 @@ class LiveStrategyRuntimeSupervisor:
                 try:
                     kind = str(delivery.get("kind") or "signal")
                     work_id = delivery.get("signal_work_id") if kind == "signal" else None
-                    if kind == "market_row":
+                    if kind == 'program_boundary':
+                        delivery['result'].set_result(await self._process_program_boundary(delivery))
+                    elif self._program_runs:
+                        raise RuntimeError('Native programme host refuses legacy activation/observation delivery')
+                    elif kind == "market_row":
                         broker = await self._process_market_row(delivery, broker, runtimes)
                     elif kind == "external_intent":
                         broker, external_result = await self._process_external_intent(
@@ -503,7 +584,26 @@ class LiveStrategyRuntimeSupervisor:
                     with self._lock:
                         self._status["queued"] = self._queue.qsize()
                 await self._close_swing_sessions(runtimes)
+        except Exception as exc:
+            self._stop.set()
+            with self._lock:
+                self._status.update({'running': False, 'state': 'degraded', 'last_error': str(exc)})
+            while True:
+                try:
+                    pending = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                receipt = pending.get('result') if isinstance(pending, dict) else None
+                if isinstance(receipt, concurrent.futures.Future) and not receipt.done():
+                    receipt.set_exception(RuntimeError('Native runtime startup failed before queued boundary execution'))
         finally:
+            for owner in self._program_runs.values():
+                try:
+                    await owner._runtime.close_background_tasks()
+                    await owner._runtime._program_execution_assembly.flush()
+                except Exception as exc:
+                    with self._lock:
+                        self._status.update({'state': 'degraded', 'last_error': str(exc)})
             for state in runtimes.values():
                 try:
                     await state["runtime"].finish(status="stopped")

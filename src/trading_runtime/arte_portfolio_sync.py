@@ -615,12 +615,15 @@ class TypedPortfolioSyncAuthority:
 
     def __init__(self, *, client: Any, writer: Any, keeper: Any,
                  next_revision: Callable[..., int],
-                 batch_identity: Callable[..., dict[str, Any]]) -> None:
+                 batch_identity: Callable[..., dict[str, Any]], additional_leases=()) -> None:
         self._client = client
         self._writer = writer
         self._keeper = keeper
         self._revision = next_revision
         self._batch_identity = batch_identity
+        if type(additional_leases) is not tuple:
+            raise TypeError('Additional shared Portfolio claims require a bounded immutable tuple')
+        self._additional_leases = additional_leases
 
     def claim(self, run_id: str, account_id: str):
         return self._keeper.claim_portfolio_snapshot(run_id, account_id)
@@ -674,7 +677,8 @@ class TypedPortfolioSyncAuthority:
             self._keeper.attest_portfolio_snapshot_receipt,
             lease, captured.run_id, captured.account_id,
             captured.state_revision, batch.batch_id, digest,
-            marker_hash=marker_hash, fence_hash=fence_hash)
+            marker_hash=marker_hash, fence_hash=fence_hash,
+            **({'additional_leases': self._additional_leases} if self._additional_leases else {}))
         if not isinstance(proof, KeeperSyncAttestation):
             raise RuntimeError("Typed portfolio sync Keeper CAS attestation failed")
         admitted = await asyncio.to_thread(

@@ -595,7 +595,7 @@ class PortfolioManagementEngine:
                 publication_attempted = False
                 self._typed_admission_stage = []
                 try:
-                    now = datetime.now(timezone.utc)
+                    now = self._event_time()
                     candidate = copy.deepcopy(state)
                     candidate.summary = summary
                     candidate.ledger = ledger

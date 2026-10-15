@@ -34,6 +34,18 @@ async def dispatch_program_boundary(owner, block, population, *, ordinal: int,
     if type(lock) is not asyncio.Lock or lock.locked():
         raise RuntimeError("Program boundary dispatch is already active")
     async with lock:
+        from src.trading_runtime.runtime import TradingRuntime, RunMode
+        runtime = owner._runtime
+        if type(runtime) is TradingRuntime and runtime.config.mode is not RunMode.BACKTEST:
+            TradingRuntime.require_program_dispatch_mode(runtime)
+            from .program_runtime_assembly import ProgramRuntimeAssembly
+            assembly = runtime._program_execution_assembly
+            if type(assembly) is not ProgramRuntimeAssembly:
+                raise TypeError('Program boundary requires its concrete native execution assembly')
+            async with assembly.operation():
+                return await _dispatch_program_boundary(owner, block, population,
+                    ordinal=ordinal, assignment_id=assignment_id, execution_policy=execution_policy,
+                    protection_profile=protection_profile, outside_rth=outside_rth, terminal=terminal)
         return await _dispatch_program_boundary(owner, block, population,
             ordinal=ordinal, assignment_id=assignment_id, execution_policy=execution_policy,
             protection_profile=protection_profile, outside_rth=outside_rth, terminal=terminal)
@@ -84,10 +96,23 @@ async def _dispatch_program_boundary(owner, block, population, *, ordinal: int,
     boundary = block.boundary_for(actor.program_release, population, listing_id=listing,
         ticker=assignment.ticker, ordinal=ordinal)
     try:
+        from .program_execution_journal import ProgramExecutionJournal
+        native = type(owner._journal) is ProgramExecutionJournal
+        assembly = runtime._program_execution_assembly if native else None
         observation = _order_observation(runtime, actor, assignment_id=assignment_id, at=at)
         if observation.unobserved_order_ids:
             await owner._runtime.order_manager.reconcile()
             observation = _order_observation(runtime, actor, assignment_id=assignment_id, at=at)
+        capture = None
+        if native:
+            # Reconciliation source receipts precede the exact financial and
+            # policy basis captured for this selection.
+            await assembly.flush()
+            from .program_runtime_decision import capture_program_runtime_decision
+            capture = await capture_program_runtime_decision(runtime, source, block, population,
+                assignment_id=assignment_id, ordinal=ordinal,
+                portfolio_authority=assembly.portfolio_authority)
+            observation = capture.observation
         results = []
         basis_sequence = owner._journal.latest_sequence(owner.run_id)
         if (runtime.last_event_time != at or source.typed_source_boundary(at) != (sequence, source_hash, cutoff)
@@ -102,12 +127,24 @@ async def _dispatch_program_boundary(owner, block, population, *, ordinal: int,
             return {"status": selection.status, "results": results}
         intent_references = tuple(dict(stage=proposal.stage, strategy_intent_id=proposal.intent_id)
             for proposal in selection.proposals)
-        for proposal in selection.proposals:
-            results.extend(await owner._runtime.submit_program_proposal(proposal,
-                account_id=assignment.account_id, assignment_id=assignment_id,
-                execution_policy=execution_policy,
-                protection_profile=protection_profile if proposal.action in {"enter_long", "add_long"} else None,
-                outside_rth=outside_rth))
+        staged_intents = []
+        if native:
+            from src.trading_runtime.arte_intent_projection import RecoveredIntent
+            for proposal in selection.proposals:
+                intent = proposal.to_intent(execution_policy=execution_policy,
+                    protection_profile=protection_profile if proposal.action in {'enter_long', 'add_long'} else None,
+                    outside_rth=outside_rth)
+                record = owner._journal.append_program_intent(intent, account_id=assignment.account_id,
+                    assignment_id=assignment_id, strategy_id=actor.strategy_id, strategy_revision=actor.revision)
+                staged_intents.append(RecoveredIntent(record.sequence, record.account_id,
+                    record.record_id, record.record_id, intent))
+        else:
+            for proposal in selection.proposals:
+                results.extend(await owner._runtime.submit_program_proposal(proposal,
+                    account_id=assignment.account_id, assignment_id=assignment_id,
+                    execution_policy=execution_policy,
+                    protection_profile=protection_profile if proposal.action in {"enter_long", "add_long"} else None,
+                    outside_rth=outside_rth))
         identity = block.completion_identity(run_id=owner.run_id, assignment_id=assignment_id,
             source_hash=source_hash, listing_id=listing, ordinal=ordinal, terminal=terminal)
         reason = "program:" + selection.status
@@ -130,6 +167,20 @@ async def _dispatch_program_boundary(owner, block, population, *, ordinal: int,
         # Provisional microbatch identity; the fenced publisher must rekey
         # these scalar rows together with their original completion event.
         decision_basis = owner._journal.retain_rule_decision_basis(completion, parent, children)
+        if native:
+            from .program_runtime_decision import qualify_program_runtime_decision
+            qualification = qualify_program_runtime_decision(capture, parent, children, tuple(staged_intents),
+                execution_policy=execution_policy, protection_profile=protection_profile, outside_rth=outside_rth)
+            # This completion attests the selected policy, not broker outcome.
+            # Portfolio/OMS execution follows its actual durable qualified
+            # decision receipt and retains its separate typed result facts.
+            await assembly.flush(qualified_decisions={completion.record_id: qualification})
+            for proposal in selection.proposals:
+                results.extend(await runtime.submit_program_proposal(proposal,
+                    account_id=assignment.account_id, assignment_id=assignment_id,
+                    execution_policy=execution_policy,
+                    protection_profile=protection_profile if proposal.action in {'enter_long', 'add_long'} else None,
+                    outside_rth=outside_rth))
     except BaseException as exc:
         owner._program_dispatch_failure = exc
         raise

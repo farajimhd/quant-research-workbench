@@ -35,6 +35,25 @@ def test_workstation_loads_exact_private_files(tmp_path):
         tmp_path / "backtest_v3_read.env")
 
 
+def test_optional_program_runner_uses_exact_private_keys_without_generic_write_role(tmp_path):
+    from src.backend.program_app_credentials import program_app_writer_factory
+    _write_files(tmp_path)
+    (tmp_path / 'program_v4_runner.env').write_text(
+        'PROGRAM_V4_RUNNER_CLICKHOUSE_URL=http://example.test:18123\n'
+        'PROGRAM_V4_RUNNER_CLICKHOUSE_USER=program_v4_runner\n'
+        'PROGRAM_V4_RUNNER_CLICKHOUSE_PASSWORD=private-program\n', encoding='utf-8')
+    env = {}
+    assert load_managed_backtest_credentials(environment=env, workstation='DESKTOP-SAAI85T', secret_root=tmp_path)
+    assert env['PROGRAM_V4_RUNNER_CLICKHOUSE_USER'] == 'program_v4_runner'
+    with pytest.raises(ValueError, match='explicit publication role'):
+        program_app_writer_factory('program_v4_runner', query_limits={})
+    (tmp_path / 'program_v4_runner.env').write_text('UNRELATED_SECRET=private\n', encoding='utf-8')
+    untouched = {}
+    with pytest.raises(ValueError, match='credential contract'):
+        load_managed_backtest_credentials(environment=untouched, workstation='DESKTOP-SAAI85T', secret_root=tmp_path)
+    assert untouched == {}
+
+
 def test_other_host_or_missing_file_does_not_change_environment(tmp_path):
     _write_files(tmp_path)
     env = {}

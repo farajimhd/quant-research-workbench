@@ -237,6 +237,21 @@ class FillDetails:
     commission: dict[str, Any] | None
 
 
+def project_program_journal_record(record, *, journal, **scope):
+    """Exact scalar projection for a concrete native program execution journal.
+
+    Historical callers retain their original Backtest guard. This entry point
+    requires actual installed-program writer ownership, not a mode capability.
+    """
+    from src.backend.program_execution_journal import ProgramExecutionJournal
+    if type(journal) is not ProgramExecutionJournal or '_program_journal' in scope:
+        raise TypeError('Program projection requires its native owned execution journal')
+    journal.require_current()
+    if scope.get('expected_mode') != journal.mode or record.run_id != journal.run_id:
+        raise ValueError('Program record mode/run differs from its native writer')
+    return project_journal_record(record, _program_journal=journal, **scope)
+
+
 def project_journal_record(
     record: JournalRecord, *, run_month: date, attempt_id: str,
     batch_id: str, prior_batch_id: str, source_cursor: str,
@@ -250,6 +265,7 @@ def project_journal_record(
     exact_order_prices: bool = False,
     exact_execution_prices: bool = False,
     exact_signal_prices: bool = False,
+    _program_journal=None,
 ) -> TypedJournalBatch | ExactPriceOrderCommandBatch | ExactPriceExecutionBatch:
     """Strict shared entry point for existing live/Backtest journal records.
 
@@ -257,11 +273,20 @@ def project_journal_record(
     their original typed objects. A flattened payload is not sufficient to
     reconstruct arbitrary broker evidence, so unsupported records fail here.
     """
-    if type(exact_order_prices) is not bool or exact_order_prices and expected_mode != "backtest":
+    program_source = False
+    if _program_journal is not None:
+        from src.backend.program_execution_journal import ProgramExecutionJournal
+        if (type(_program_journal) is not ProgramExecutionJournal
+                or record.run_id != _program_journal.run_id
+                or expected_mode != _program_journal.mode):
+            raise ValueError('Program scalar projection lost its native source owner')
+        _program_journal.require_current()
+        program_source = True
+    if type(exact_order_prices) is not bool or exact_order_prices and expected_mode != "backtest" and not program_source:
         raise ValueError("Exact order journal projection requires the explicit Backtest mode")
-    if type(exact_execution_prices) is not bool or exact_execution_prices and expected_mode != "backtest":
+    if type(exact_execution_prices) is not bool or exact_execution_prices and expected_mode != "backtest" and not program_source:
         raise ValueError("Exact execution projection requires the explicit Backtest mode")
-    if type(exact_signal_prices) is not bool or exact_signal_prices and expected_mode != "backtest":
+    if type(exact_signal_prices) is not bool or exact_signal_prices and expected_mode != "backtest" and not program_source:
         raise ValueError("Exact signal projection requires the explicit Backtest mode")
     identity = dict(run_month=run_month, attempt_id=attempt_id,
                     batch_id=batch_id, prior_batch_id=prior_batch_id,
@@ -397,67 +422,11 @@ def project_journal_record(
     if kind == ("market_discovery_signal", "signal_occurrence"):
         raise ValueError("Squeeze episode needs operator-provisioned Backtest-only journal family")
     if kind == ("portfolio_management", "portfolio_reservation"):
-        from src.trading_runtime.portfolio import PortfolioReservation
-        if allow_v3_reservation_reasons:
-            if expected_mode != "backtest":
-                raise ValueError("V3 reservation reasons require Backtest mode")
-            from src.backend.backtest_reservation_reason_v3 import (
-                project_reservation_reasons_v3,
-            )
-            project_reservation_reasons_v3(record, batch_id=batch_id)
-
-        payload = dict(record.payload)
-        reservation_fields = {field.name for field in fields(PortfolioReservation)}
-        lineage = {"correlation_id", "causation_id"}
-        event = payload.get("event")
-        v3_extra = ({"reason"} if event == "reservation_released" else
-                    {"price", "reasons"} if event == "entry_reprice_authorized" else set())
-        allowed = {"reservation_created", "cash_tranche_budget_reserved",
-                   "reservation_updated"}
-        if allow_v3_reservation_reasons:
-            allowed |= {"reservation_released", "entry_reprice_authorized"}
-        if (set(payload) - lineage != reservation_fields | {"event"} | (
-                v3_extra if allow_v3_reservation_reasons else set())
-                or event not in allowed
-                or payload.get("reservation_id") != record.entity_id
-                or not record.account_id
-                or payload.get("account_id") != record.account_id
-                or not isinstance(payload.get("created_at"), datetime)
-                or payload["created_at"].tzinfo is None
-                or record.event_time.tzinfo is None
-                or record.recorded_at.tzinfo is None
-                or any(not isinstance(payload[key], str) for key in lineage
-                       if key in payload)):
-            raise ValueError("Portfolio reservation journal fact is incomplete")
-        numeric = ("quantity", "remaining_quantity", "reference_price",
-                   "reserved_notional", "reserved_planned_risk", "filled_quantity",
-                   "reserved_entry_fees", "cash_tranche_size", "cash_tranche_budget")
-        month = record.event_time.astimezone(timezone.utc).strftime("%Y-%m-01")
-        event = {
-            "run_id": record.run_id, "event_month": month,
-            "attempt_id": attempt_id, "batch_id": batch_id,
-            "record_id": record.record_id, "sequence": record.sequence,
-            "event_time": record.event_time.astimezone(timezone.utc).isoformat(),
-            "recorded_at": record.recorded_at.astimezone(timezone.utc).isoformat(),
-            "category": record.category, "entity_type": record.entity_type,
-            "entity_id": record.entity_id, "account_id": record.account_id,
-            "correlation_id": str(payload.get("correlation_id") or ""),
-            "causation_id": str(payload.get("causation_id") or ""),
-        }
-        detail = {
-            "record_id": record.record_id, "run_id": record.run_id,
-            "event_month": month, "batch_id": batch_id,
-            "event": payload["event"],
-            **{key: payload[key] for key in reservation_fields - set(numeric) - {"created_at"}},
-            **{key: _exact_decimal(payload[key], _MEASURE_SCALE,
-                                   field=f"portfolio_reservation.{key}") for key in numeric},
-            "created_at": payload["created_at"].astimezone(timezone.utc).isoformat(),
-        }
-        return TypedJournalBatch(
-            record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
-            record.sequence, record.sequence, source_cursor, "running", (event,),
-            portfolio_reservation_events=(detail,),
-        )
+        if allow_v3_reservation_reasons and expected_mode != 'backtest':
+            raise ValueError("V3 reservation reasons require Backtest mode")
+        return project_portfolio_reservation_record(record, run_month=run_month,
+            attempt_id=attempt_id, batch_id=batch_id, prior_batch_id=prior_batch_id,
+            source_cursor=source_cursor, allow_reasons=allow_v3_reservation_reasons)
     if kind == ("portfolio_management", "portfolio_decision"):
         from src.trading_runtime.portfolio import PortfolioDecision, PortfolioDecisionStatus
 
@@ -1613,6 +1582,7 @@ def order_command_batch(
     v4_lineage_oms_record_id: str | None = None,
     emit_v4_lineage: bool = False,
     exact_prices: bool = False,
+    program_registration=None,
 ) -> TypedJournalBatch | ExactPriceOrderCommandBatch:
     """Capture one broker command losslessly before external dispatch.
 
@@ -1621,6 +1591,15 @@ def order_command_batch(
     """
     if type(exact_prices) is not bool:
         raise ValueError("Exact order price mode must be an explicit boolean")
+    program_owned = False
+    if program_registration is not None:
+        from .strategy_registry import ProgramStrategyExecutorRegistration, program_strategy_executor
+        if (type(program_registration) is not ProgramStrategyExecutorRegistration
+                or program_strategy_executor(strategy_id, strategy_revision) is not program_registration
+                or program_registration.key != (strategy_id, strategy_revision)):
+            raise ValueError('Program order lineage requires its actual installed executor')
+        program_registration.verify()
+        program_owned = True
     if (is_numbered_fixed_strategy(strategy_id, strategy_revision)
             and not request.raw):
         raise ValueError("Strategy 1 command requires exact typed intent lineage")
@@ -1631,7 +1610,7 @@ def order_command_batch(
         if (source_intent is None or source_intent.metadata
                 or not strategy_intent_record_id or not strategy_intent_content_hash
                 or not source_intent_batch_id
-                or not is_numbered_fixed_strategy(strategy_id, strategy_revision)
+                or not (is_numbered_fixed_strategy(strategy_id, strategy_revision) or program_owned)
                 or source_intent.intent_id != strategy_intent_id
                 or source_intent.ticker.upper() != request.ticker.upper()
                 or not order_group_id or not policy_version):
@@ -1690,7 +1669,7 @@ def order_command_batch(
                              + ",".join(mismatched[:8]))
         request = flat
     if emit_v4_lineage:
-        if not is_numbered_fixed_strategy(strategy_id, strategy_revision):
+        if not (is_numbered_fixed_strategy(strategy_id, strategy_revision) or program_owned):
             raise ValueError("V4 command lineage applies only to Strategy 1")
         if amended_oms_lineage and not v4_lineage_oms_record_id:
             raise ValueError("V4 OMS command requires one exact group revision")
@@ -1973,3 +1952,68 @@ def recover_common_signal_decision_metadata(
         "correlation_id": event["correlation_id"],
         "causation_id": event["causation_id"],
     }
+
+
+def project_portfolio_reservation_record(record, *, run_month, attempt_id, batch_id,
+        prior_batch_id, source_cursor, allow_reasons):
+    """Shared closed scalar reservation codec; execution admission is separate."""
+    from src.trading_runtime.portfolio import PortfolioReservation
+    if (record.category, record.entity_type) != ('portfolio_management', 'portfolio_reservation'):
+        raise ValueError('Expected native Portfolio reservation fact')
+    if type(allow_reasons) is not bool:
+        raise ValueError('Reservation reason projection mode must be explicit')
+    if allow_reasons:
+        from src.backend.backtest_reservation_reason_v3 import project_reservation_reasons_v3
+        project_reservation_reasons_v3(record, batch_id=batch_id)
+    payload = dict(record.payload)
+    reservation_fields = {field.name for field in fields(PortfolioReservation)}
+    lineage = {"correlation_id", "causation_id"}
+    event = payload.get("event")
+    v3_extra = ({"reason"} if event == "reservation_released" else
+                {"price", "reasons"} if event == "entry_reprice_authorized" else set())
+    allowed = {"reservation_created", "cash_tranche_budget_reserved",
+               "reservation_updated"}
+    if allow_reasons:
+        allowed |= {"reservation_released", "entry_reprice_authorized"}
+    if (set(payload) - lineage != reservation_fields | {"event"} | (
+            v3_extra if allow_reasons else set())
+            or event not in allowed
+            or payload.get("reservation_id") != record.entity_id
+            or not record.account_id
+            or payload.get("account_id") != record.account_id
+            or not isinstance(payload.get("created_at"), datetime)
+            or payload["created_at"].tzinfo is None
+            or record.event_time.tzinfo is None
+            or record.recorded_at.tzinfo is None
+            or any(not isinstance(payload[key], str) for key in lineage
+                   if key in payload)):
+        raise ValueError("Portfolio reservation journal fact is incomplete")
+    numeric = ("quantity", "remaining_quantity", "reference_price",
+               "reserved_notional", "reserved_planned_risk", "filled_quantity",
+               "reserved_entry_fees", "cash_tranche_size", "cash_tranche_budget")
+    month = record.event_time.astimezone(timezone.utc).strftime("%Y-%m-01")
+    event = {
+        "run_id": record.run_id, "event_month": month,
+        "attempt_id": attempt_id, "batch_id": batch_id,
+        "record_id": record.record_id, "sequence": record.sequence,
+        "event_time": record.event_time.astimezone(timezone.utc).isoformat(),
+        "recorded_at": record.recorded_at.astimezone(timezone.utc).isoformat(),
+        "category": record.category, "entity_type": record.entity_type,
+        "entity_id": record.entity_id, "account_id": record.account_id,
+        "correlation_id": str(payload.get("correlation_id") or ""),
+        "causation_id": str(payload.get("causation_id") or ""),
+    }
+    detail = {
+        "record_id": record.record_id, "run_id": record.run_id,
+        "event_month": month, "batch_id": batch_id,
+        "event": payload["event"],
+        **{key: payload[key] for key in reservation_fields - set(numeric) - {"created_at"}},
+        **{key: _exact_decimal(payload[key], _MEASURE_SCALE,
+                               field=f"portfolio_reservation.{key}") for key in numeric},
+        "created_at": payload["created_at"].astimezone(timezone.utc).isoformat(),
+    }
+    return TypedJournalBatch(
+        record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
+        record.sequence, record.sequence, source_cursor, "running", (event,),
+        portfolio_reservation_events=(detail,),
+    )

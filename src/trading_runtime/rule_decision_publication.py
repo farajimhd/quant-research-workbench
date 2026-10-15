@@ -129,6 +129,16 @@ def prepare_rule_decision_commit(unit, *, committed_at, _observation_families=()
 
 
 def _check_rule_decision_qualification(unit, qualified):
+    from src.backend.program_runtime_decision import (
+        ProgramRuntimeDecisionQualification, require_program_runtime_qualification,
+    )
+    if type(qualified) is ProgramRuntimeDecisionQualification:
+        if type(unit) is not RuleDecisionBasisBatch:
+            raise ValueError('Program decision qualification requires its exact typed unit')
+        require_program_runtime_qualification(unit, qualified)
+        from .rule_decision_observation import qualified_observation_rows
+        qualified_observation_rows(unit, qualified)
+        return
     from src.backend.rule_decision_reselection import QualifiedRuleDecision, _NativeDecisionEvidence, _NATIVE_DECISION_PROOF
     from .rule_decision_basis_projection import rule_decision_semantic_hash
     evidence = getattr(qualified, "_proof", None)

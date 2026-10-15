@@ -186,7 +186,7 @@ class ProgramStrategyExecutorRegistration:
             _identity(value)
 
     async def build(self, assignments, listing_by_assignment, *, mode, client_factory,
-                    execution_risk=None):
+                    execution_risk=None, execution_journal=None):
         from .columnar_strategy_reader import load_program_release
         from .columnar_program_actor import AssignedProgramStrategy
         from .strategy_engine import StrategyAssignment
@@ -196,7 +196,12 @@ class ProgramStrategyExecutorRegistration:
         if self.requires_execution_risk and execution_risk is None:
             raise ValueError('Installed programme requires an explicit execution risk contract')
         if mode != self.mode:
-            raise ValueError("Programme executor is Backtest-only")
+            from src.backend.program_execution_journal import ProgramExecutionJournal
+            if (type(execution_journal) is not ProgramExecutionJournal
+                    or execution_journal.mode != mode or mode not in {'replay', 'paper', 'live'}
+                    or execution_journal.writer._live_v4_lease.registration is not self):
+                raise ValueError('Programme production actor requires its actual owned native execution journal')
+            execution_journal.require_current()
         selected = tuple(islice(assignments, 10001))
         if (not callable(client_factory) or not 1 <= len(selected) <= 10000
                 or any(type(row) is not StrategyAssignment or (row.strategy_id, row.strategy_revision) != self.key

@@ -434,6 +434,8 @@ class OrderManagementEngine:
             else asyncio.Lock()
         )
         self._groups: dict[str, _ManagedOrderGroup] = {}
+        self._program_state_callback_tasks = set()
+        self._program_state_callback_failure = None
         # Strategy execution asks for one assignment at each completed market
         # boundary. Index the authoritative mutable groups once at admission;
         # never sort/snapshot every historical group for each 100 ms read.
@@ -1847,6 +1849,15 @@ class OrderManagementEngine:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        await self.drain_program_state_callbacks()
+
+    async def drain_program_state_callbacks(self):
+        """Own generic callback tasks through their actual durable completion."""
+        while self._program_state_callback_tasks:
+            pending = tuple(self._program_state_callback_tasks)
+            await asyncio.gather(*pending, return_exceptions=True)
+        if self._program_state_callback_failure is not None:
+            raise RuntimeError('Native programme state callback failed; cold recovery required') from self._program_state_callback_failure
 
     def _record_protection(self, group, request, *, phase, broker_order_id="",
                            active=True, event_time=None,
@@ -3831,6 +3842,10 @@ class OrderManagementEngine:
                 async with self._command_lane(group.account_id):
                     for request in [*repairs, *([runner_repair] if runner_repair is not None else [])]:
                         self._record_protection(group, request, phase="requested")
+                    from .program_broker_gateway import ProgramBrokerGateway
+                    if type(self.broker) is ProgramBrokerGateway:
+                        await self.broker.stage_managed_repair_plan(group,
+                            (tuple(repairs), *(((runner_repair,),) if runner_repair is not None else ())))
                     response = await self.broker.place_orders(group.account_id, repairs)
                     if runner_repair is not None:
                         response += await self.broker.place_orders(group.account_id, [runner_repair])
@@ -4461,7 +4476,24 @@ class OrderManagementEngine:
                 OrderManagementState.POLICY_BLOCKED,
             }
         ):
-            asyncio.create_task(self.state_callback(group.snapshot(self.policy.version)))
+            from .program_broker_gateway import ProgramBrokerGateway
+            if type(self.broker) is ProgramBrokerGateway:
+                if len(self._program_state_callback_tasks) >= 256:
+                    self._program_state_callback_failure = RuntimeError('Native programme state callback bound exceeded')
+                    raise self._program_state_callback_failure
+                task = asyncio.create_task(self.state_callback(group.snapshot(self.policy.version)))
+                self._program_state_callback_tasks.add(task)
+                def completed(actual):
+                    self._program_state_callback_tasks.discard(actual)
+                    if actual.cancelled():
+                        self._program_state_callback_failure = RuntimeError('Native programme state callback cancelled')
+                    else:
+                        error = actual.exception()
+                        if error is not None:
+                            self._program_state_callback_failure = error
+                task.add_done_callback(completed)
+            else:
+                asyncio.create_task(self.state_callback(group.snapshot(self.policy.version)))
 
     def _record(
         self,
@@ -4477,6 +4509,12 @@ class OrderManagementEngine:
     ) -> None:
         enriched = dict(payload)
         group_id = str(enriched.get("order_group_id") or "")
+        if not group_id and category == 'command' and entity_type in {'order_cancel', 'order_modify'}:
+            from .program_broker_gateway import ProgramBrokerGateway
+            if type(self.broker) is ProgramBrokerGateway:
+                group_id = self._group_by_broker_id.get(entity_id, '')
+                if group_id:
+                    enriched['order_group_id'] = group_id
         group = self._groups.get(group_id) if group_id else None
         if group is not None:
             enriched.setdefault("ticker", group.intent.ticker)

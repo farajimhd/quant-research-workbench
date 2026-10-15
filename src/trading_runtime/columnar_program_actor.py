@@ -98,6 +98,10 @@ class AssignedProgramStrategy:
                         if position.position_open else Decimal(0)),
                     requested_cash=Decimal(str(proposal.requested_cash)),
                     execution_price=Decimal(str(proposal.reference_price)))
+                if self.execution_state.pending_fee_count:
+                    from dataclasses import replace
+                    decision = replace(decision, allowed=False,
+                        reasons=tuple(dict.fromkeys(('execution_commissions_pending', *decision.reasons))))
                 if not decision.allowed:
                     self.risk_rejections[assignment_id] = decision
                     continue

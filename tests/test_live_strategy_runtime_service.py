@@ -18,6 +18,24 @@ from tests.test_live_signal_work_completion import Keeper, Storage, _proof_input
 
 
 class LiveStrategyRuntimeSupervisorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_installed_programme_cannot_fall_back_to_legacy_observation_or_sqlite(self):
+        from src.trading_runtime import strategy_registry as registry
+        registration = registry.ProgramStrategyExecutorRegistration('generic-program', 62,
+            'a' * 64, 'b' * 64, 'c' * 64)
+        with patch.dict(registry._PROGRAM_REGISTRY, {registration.key: registration}), patch(
+                'src.backend.live_strategy_runtime_service.trading_journal',
+                side_effect=AssertionError('SQLite opened')):
+            with self.assertRaisesRegex(RuntimeError, 'native context-bound host'):
+                await _build_runtime({'payload': {'strategy': {'strategy_id': 'generic-program',
+                    'revision': 62}}}, object())
+
+    async def test_native_host_installation_rejects_capability_objects(self):
+        host = LiveStrategyRuntimeSupervisor()
+        with self.assertRaises(TypeError):
+            host.install_program_runtime(SimpleNamespace(mode='paper', native=True))
+        with self.assertRaises(ValueError):
+            host.submit_program_boundary('uninstalled', object(), object())
+
     async def test_strategy_one_cannot_construct_legacy_sqlite_runtime(self) -> None:
         from src.trading_runtime.strategy_one_contract import STRATEGY_ID, STRATEGY_NUMBER
         with patch("src.backend.live_strategy_runtime_service.trading_journal",

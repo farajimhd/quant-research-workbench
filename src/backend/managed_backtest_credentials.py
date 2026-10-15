@@ -26,6 +26,8 @@ _FILES = {
     ),
 }
 _OPTIONAL_FILES = {
+    'program_v4_runner.env': tuple('PROGRAM_V4_RUNNER_CLICKHOUSE_' + suffix
+        for suffix in ('URL', 'USER', 'PASSWORD')),
     "backtest_v4_program_runner.env": tuple(
         "BACKTEST_V4_PROGRAM_RUNNER_CLICKHOUSE_" + suffix
         for suffix in ("URL", "USER", "PASSWORD")

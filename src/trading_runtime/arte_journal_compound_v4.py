@@ -20,6 +20,8 @@ from .arte_journal_writer import (
 )
 from .arte_journal_commit_v4 import MAX_V4_COMMIT_EVENTS
 from .arte_portfolio_allocation_v4 import V4PortfolioAllocationBatch
+from .arte_portfolio_control_v4 import V4PortfolioControlBatch, CONTROL as PORTFOLIO_CONTROL, seal_portfolio_control_v3
+from .arte_broker_policy_v4 import V4BrokerPolicyBatch, POLICY_EVENT as BROKER_POLICY, MESSAGE as BROKER_POLICY_MESSAGE, seal_broker_reply_policy_v3
 from .arte_protection_reconciliation_v4 import V4ProtectionReconciliationBatch
 from .arte_reservation_reason_v4 import V4ReservationReasonBatch
 from .arte_risk_action_v4 import V4RiskActionBatch
@@ -46,6 +48,8 @@ from .arte_entry_activity_v4 import ENTRY_ACTIVITY, seal_certified_entry_activit
 from .arte_entry_spread_risk_v4 import ENTRY_SPREAD_RISK, seal_certified_entry_spread_risk_rows
 
 _CHILD_KEYS = (
+    'broker_policies', 'broker_policy_messages',
+    "portfolio_controls",
     "entry_freezes", "entry_freeze_groups",
     "exact_order_commands",
     "exact_executions",
@@ -59,6 +63,8 @@ _CHILD_KEYS = (
     "reconciliation_replies", "oms_tactics", "oms_tactic_steps",
 )
 _EVENT_PARENT_KEYS = frozenset({
+    'broker_policies',
+    "portfolio_controls",
     "entry_freezes",
     "exact_order_commands",
     "exact_executions",
@@ -97,6 +103,10 @@ class V4CompoundBatch:
 
 
 def _unit_children(unit: Any) -> tuple[tuple[str, Mapping[str, Any]], ...]:
+    if type(unit) is V4BrokerPolicyBatch:
+        return (('broker_policies', unit.policy),) + tuple(('broker_policy_messages', row) for row in unit.messages)
+    if type(unit) is V4PortfolioControlBatch:
+        return (("portfolio_controls", unit.control),)
     if type(unit) is EntryAcquisitionFreezeBatch:
         return (("entry_freezes", unit.freeze),) + tuple(("entry_freeze_groups", row) for row in unit.groups)
     if type(unit) is ExactPriceOrderCommandBatch:
@@ -240,6 +250,10 @@ def coalesce_v4_units(
 
 
 def _publication_kwargs(unit: Any) -> dict[str, Any]:
+    if type(unit) is V4BrokerPolicyBatch:
+        return {'broker_policy_rows': (unit.policy,), 'broker_policy_message_rows': unit.messages}
+    if type(unit) is V4PortfolioControlBatch:
+        return {'portfolio_control_rows': (unit.control,)}
     if type(unit) is EntryAcquisitionFreezeBatch:
         return {"entry_freeze": unit}
     if type(unit) is ExactPriceOrderCommandBatch:
@@ -349,6 +363,9 @@ def prepare_compound_v4_families(
     if getattr(client, "live_v4_lease", None) is not None and compound.children['profit_givebacks']:
         raise ValueError('Live V4 compound cannot publish profit-protection witnesses')
     table_for_key = {
+        'broker_policies': BROKER_POLICY.name,
+        'broker_policy_messages': BROKER_POLICY_MESSAGE.name,
+        "portfolio_controls": PORTFOLIO_CONTROL.name,
         "entry_freezes": FREEZE.name,
         "entry_freeze_groups": GROUP.name,
         "exact_order_commands": "trading_order_command_exact_price_v1",
@@ -431,6 +448,8 @@ def prepare_compound_v4_families(
     ids = lambda name: tuple(row["record_id"] for row in extra[name])
     base_families = _sealed_families(
         compound.base,
+        v3_control_ids=ids(PORTFOLIO_CONTROL.name),
+        v3_reply_policy_ids=ids(BROKER_POLICY.name),
         v4_broker_ack_ids=ids(ACKNOWLEDGEMENT.name),
         v4_allocation_ids=ids(V4_ALLOCATION.name),
         v4_order_cancel_ids=ids(CANCEL.name),
@@ -486,6 +505,10 @@ def prepare_compound_v4_families(
                 {key: value for key, value in row.items() if key != "content_hash"}
                 for row in extra[ADD_EVIDENCE.name])):
         raise ValueError("V4 compound add evidence differs from its parent")
+    seal_broker_reply_policy_v3(extra[BROKER_POLICY.name], extra[BROKER_POLICY_MESSAGE.name],
+        compound.base.events, run_id=compound.base.run_id, batch_id=compound.base.batch_id)
+    seal_portfolio_control_v3(extra[PORTFOLIO_CONTROL.name], compound.base.events,
+        run_id=compound.base.run_id, batch_id=compound.base.batch_id)
     seal_portfolio_allocation_v3(
         extra[V4_ALLOCATION.name], compound.base.events,
         run_id=compound.base.run_id, batch_id=compound.base.batch_id)

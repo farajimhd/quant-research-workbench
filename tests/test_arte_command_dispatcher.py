@@ -52,6 +52,27 @@ def _strategy_one_command():
                    intent_uses=(intent_use,)), request
 
 
+def test_generic_program_command_preflight_keeps_installed_identity_and_exact_lineage(monkeypatch):
+    from src.trading_runtime import strategy_registry as registry
+    from src.trading_runtime.arte_command_dispatcher import validate_program_command_batch
+    monkeypatch.setattr(registry, '_PROGRAM_REGISTRY', {})
+    registration = registry.ProgramStrategyExecutorRegistration('generic-program', 62,
+        'a' * 64, 'b' * 64, 'c' * 64, requires_execution_risk=True)
+    registry.register_program_strategy_executor(registration)
+    source, order = _strategy_one_command()
+    command = dict(source.order_commands[0], strategy_id='generic-program', strategy_revision=62)
+    packet = replace(source, order_commands=(command,))
+    validate_program_command_batch(packet, 'DU1', (order,), registration=registration)
+    with pytest.raises(ValueError, match='installed strategy identity'):
+        validate_program_command_batch(source, 'DU1', (order,), registration=registration)
+    with pytest.raises(ValueError, match='complete exact normalized lineage'):
+        validate_program_command_batch(replace(packet, intent_uses=()), 'DU1', (order,), registration=registration)
+    with pytest.raises(ValueError, match='native broker requests'):
+        validate_program_command_batch(packet, 'DU1', (replace(order, quantity=6),), registration=registration)
+    with pytest.raises(ValueError, match='installed executable identity'):
+        validate_program_command_batch(packet, 'DU1', (order,), registration=replace(registration))
+
+
 class _Writer:
     coalesce_batches = False
 

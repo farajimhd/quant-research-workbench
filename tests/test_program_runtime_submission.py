@@ -19,7 +19,7 @@ from tests.test_broker_liquidity_resolution import second_bar
 
 
 async def scenario(resolution, invalid=None, initial_cash=100000., stop_exit=False, target_reduce=False, cancel_reduce=False, partial_cancel=False, allocation_failure=None, add_before_reduce=False,
-                   risk_limit=None):
+                   risk_limit=None, unsupported_mode=None):
     release, boundary, position, management = inputs(entry=True)
     at = datetime(2026, 10, 12, 14, tzinfo=timezone.utc)
     boundary = replace(boundary, boundary_at=at, available_at=at)
@@ -43,6 +43,17 @@ async def scenario(resolution, invalid=None, initial_cash=100000., stop_exit=Fal
             strategy_id="shared-program", strategy_revision=62, run_id=journal.run_id))
     await runtime.initialize()
     try:
+        if unsupported_mode is not None:
+            prior = journal.latest_sequence(journal.run_id)
+            runtime.config = replace(runtime.config, mode=unsupported_mode, safety_supervisor_enabled=True)
+            with pytest.raises(RuntimeError, match='normalized decision receipts'):
+                runtime.require_program_dispatch_mode()
+            with pytest.raises(RuntimeError, match='normalized decision receipts'):
+                runtime._record_executions(())
+            assert journal.latest_sequence(journal.run_id) == prior
+            assert not broker._orders
+            return
+        assert runtime.require_program_dispatch_mode() == 'backtest'
         row = second_bar(boundary.boundary_at)
         row.update(ticker="ABC", ask_int=105000, bid_int=104900, close_int=105000,
                    high_int=105100, low_int=104800)
@@ -330,3 +341,8 @@ def test_program_risk_rejects_at_proposal_or_current_approved_quote_without_orde
 
 def test_program_risk_compatible_request_uses_normal_oms_and_broker():
     asyncio.run(scenario(100, risk_limit=300.))
+
+
+@pytest.mark.parametrize('mode', [RunMode.REPLAY, RunMode.PAPER, RunMode.LIVE])
+def test_program_mode_label_cannot_bypass_native_execution_receipts(mode):
+    asyncio.run(scenario(100, unsupported_mode=mode))

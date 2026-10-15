@@ -362,6 +362,7 @@ class KeeperOwnershipCoordinator:
         self, lease: Any, run_id: str, account_id: str,
         state_revision: int, batch_id: str, snapshot_hash: str, *,
         marker_hash: str | None = None, fence_hash: str | None = None,
+        additional_leases: tuple[dict[str, Any], ...] = (),
     ):
         """Atomically bind one CH fence digest to the current owner epoch.
 
@@ -396,6 +397,18 @@ class KeeperOwnershipCoordinator:
                     or session is None or holder_stat.ephemeralOwner != session[0]
                     or int(counter_value) != epoch):
                 raise KeeperUnavailable("Portfolio sync owner epoch changed before attestation")
+            additional_fences = []
+            for additional in additional_leases:
+                if (type(additional) is not dict or not self.portfolio_admission_lease_is_current(
+                        additional['resource_id'], owner_id=additional['owner_id'], epoch=additional['epoch'])):
+                    raise KeeperUnavailable('Shared Portfolio account/group claim expired')
+                resource = _path('portfolio', additional['resource_id'])
+                held, held_stat = self._client.get(resource + '/holder')
+                counter, counter_stat_extra = self._client.get(resource + '/epoch')
+                if (_decode(held) != (additional['owner_id'], additional['epoch'], 'portfolio')
+                        or held_stat.ephemeralOwner != session[0] or int(counter) != additional['epoch']):
+                    raise KeeperUnavailable('Shared Portfolio account/group owner changed')
+                additional_fences.append((resource, held_stat.version, counter_stat_extra.version))
             if v2:
                 from src.trading_runtime.arte_portfolio_sync import KeeperSyncAttestation
                 existing_proof = self.load_portfolio_snapshot_receipt(
@@ -414,6 +427,9 @@ class KeeperOwnershipCoordinator:
             txn = self._client.transaction()
             txn.check(f"{base}/holder", version=holder_stat.version)
             txn.check(f"{base}/epoch", version=counter_stat.version)
+            for resource, held_version, epoch_version in additional_fences:
+                txn.check(resource + '/holder', version=held_version)
+                txn.check(resource + '/epoch', version=epoch_version)
             txn.create(path, payload, ephemeral=False)
             if v2:
                 from src.trading_runtime.arte_portfolio_sync import (

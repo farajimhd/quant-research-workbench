@@ -103,6 +103,41 @@ class AcquisitionRiskDecision:
     modeled_stop_loss: Decimal
 
 
+@dataclass(frozen=True, slots=True)
+class FilledExecutionRiskDecision:
+    allowed: bool
+    reasons: tuple[str, ...]
+    filled_quantity: Decimal
+    filled_basis: Decimal
+    modeled_stop_loss: Decimal
+
+
+def evaluate_filled_execution_risk(contract, *, quantity, average_price, stop_price, episode_net_pnl):
+    """Classify actual surviving fills; never resize or alter broker protection."""
+    if type(contract) is not ConfigurationExecutionRisk:
+        raise TypeError('Filled risk classification requires an explicit normalized contract')
+    contract = restore_execution_risk(contract.rows)
+    values = (quantity, average_price, stop_price, episode_net_pnl)
+    if (any(type(v) is not Decimal or not v.is_finite() or abs(v) >= Decimal('1e28')
+            or v.as_tuple().exponent < -28 for v in values)
+            or quantity <= 0 or average_price <= 0 or stop_price <= 0):
+        raise ValueError('Filled risk classification requires actual positive Decimal position/stop facts')
+    h = contract.header
+    with localcontext() as context:
+        context.prec = 120
+        basis = quantity * average_price
+        fee = max(quantity * Decimal(str(h['fee_per_share'])), Decimal(str(h['minimum_order_fee'])))
+        risk = max(quantity * (average_price - stop_price), Decimal(0))
+        risk += max(-episode_net_pnl, Decimal(0)) + fee
+        risk += quantity * (average_price + stop_price) * Decimal(str(h['cost_bps'])) / 10000
+        reasons = []
+        if quantity * stop_price < (1 - Decimal(str(h['maximum_stop_distance'])) - Decimal('1e-12')) * basis:
+            reasons.append('post_fill_maximum_stop_distance_exceeded')
+        if risk > Decimal(str(h['maximum_position_risk'])):
+            reasons.append('post_fill_maximum_position_risk_exceeded')
+        return FilledExecutionRiskDecision(not reasons, tuple(reasons), quantity, basis, risk)
+
+
 def evaluate_acquisition_risk(contract: ConfigurationExecutionRisk, *, action: str,
         quantity: Decimal, average_price: Decimal, stop_price: Decimal,
         episode_paid_fees: Decimal, episode_realized_gross_pnl: Decimal,

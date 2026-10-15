@@ -62,6 +62,8 @@ from .arte_initial_momentum_entry_v4 import (
 from .arte_first_price_entry_v4 import FIRST_PRICE, seal_first_price_rows
 from .arte_entry_activity_v4 import ENTRY_ACTIVITY, seal_certified_entry_activity_rows
 from .arte_entry_spread_risk_v4 import ENTRY_SPREAD_RISK, seal_certified_entry_spread_risk_rows
+from .arte_portfolio_control_v4 import CONTROL as PORTFOLIO_CONTROL, seal_portfolio_control_v3
+from .arte_broker_policy_v4 import POLICY_EVENT as BROKER_POLICY, MESSAGE as BROKER_POLICY_MESSAGE, seal_broker_reply_policy_v3
 
 _MULTIROW_FAMILIES = frozenset({PROTECTION_ENTRY_ORDER.name,
                                 RESERVATION_REASON.name})
@@ -650,7 +652,8 @@ def _load_verified_details_v4(
                     ACKNOWLEDGEMENT.name,
                     ACKNOWLEDGEMENT_V5.name, CANCEL.name,
                     REPRICE.name, MODIFY_COMMAND.name,
-                    V4_ALLOCATION.name, RESERVATION_REASON.name,
+                    V4_ALLOCATION.name, RESERVATION_REASON.name, PORTFOLIO_CONTROL.name,
+                    BROKER_POLICY.name, BROKER_POLICY_MESSAGE.name,
                     "trading_portfolio_reservation_event_v1",
                     RISK_ACTION.name, RISK_REPLY.name,
                     PROTECTION_CHANGE.name, PROTECTION_ENTRY_ORDER.name,
@@ -912,6 +915,17 @@ def _load_verified_details_v4(
             run_id=run_id, batch_id=batch_id)
     except ValueError as exc:
         raise RuntimeError("V4 portfolio allocation differs from its parent") from exc
+    try:
+        seal_broker_reply_policy_v3(related_rows.get(BROKER_POLICY.name, ()),
+            related_rows.get(BROKER_POLICY_MESSAGE.name, ()), tuple(events.values()),
+            run_id=run_id, batch_id=batch_id)
+    except ValueError as exc:
+        raise RuntimeError('V4 broker policy differs from its original source') from exc
+    try:
+        seal_portfolio_control_v3(related_rows.get(PORTFOLIO_CONTROL.name, ()),
+            tuple(events.values()), run_id=run_id, batch_id=batch_id)
+    except ValueError as exc:
+        raise RuntimeError('V4 portfolio controls differ from their parent') from exc
     try:
         seal_reservation_reason_family_v3(
             related_rows.get(RESERVATION_REASON.name, ()),
@@ -1473,7 +1487,8 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
                            entry_activity_rows=(), entry_spread_risk_rows=(),
                             strategy_one_add_rows=(),
                             oms_tactic_rows=None,
-                            portfolio_allocation_row=None,
+                            portfolio_allocation_row=None, portfolio_control_rows=(),
+                            broker_policy_rows=(), broker_policy_message_rows=(),
                             reservation_reason_rows=(),
                             broker_acknowledgement_row=None,
                             broker_acknowledgement_v5_row=None,
@@ -1845,8 +1860,19 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         seal_reservation_reason_family_v3(
             reason_rows, batch.events, batch.portfolio_reservation_events,
             run_id=batch.run_id, batch_id=batch.batch_id)
+    control_rows = tuple(typed_row(PORTFOLIO_CONTROL.name, {
+        k: v for k, v in row.items() if k != 'content_hash'}) for row in portfolio_control_rows)
+    seal_portfolio_control_v3(control_rows, batch.events, run_id=batch.run_id, batch_id=batch.batch_id)
+    policy_rows = tuple(typed_row(BROKER_POLICY.name, {k: v for k, v in row.items()
+        if k != 'content_hash'}) for row in broker_policy_rows)
+    policy_messages = tuple(typed_row(BROKER_POLICY_MESSAGE.name, {k: v for k, v in row.items()
+        if k != 'content_hash'}) for row in broker_policy_message_rows)
+    seal_broker_reply_policy_v3(policy_rows, policy_messages, batch.events,
+        run_id=batch.run_id, batch_id=batch.batch_id)
     base_families = _sealed_families(
         batch, v4_broker_ack_ids=tuple(row["record_id"] for row in ack_rows),
+        v3_control_ids=tuple(row['record_id'] for row in control_rows),
+        v3_reply_policy_ids=tuple(row['record_id'] for row in policy_rows),
         v5_broker_ack_ids=tuple(row["record_id"] for row in ack_v5_rows),
         v4_allocation_ids=tuple(row["record_id"] for row in allocation_rows),
         v4_order_cancel_ids=tuple(row["record_id"] for row in cancel_rows),
@@ -2004,6 +2030,12 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         families += ((ADD_EVIDENCE.name, add_rows),)
     if allocation_rows:
         families += ((V4_ALLOCATION.name, allocation_rows),)
+    if control_rows:
+        families += ((PORTFOLIO_CONTROL.name, control_rows),)
+    if policy_rows:
+        families += ((BROKER_POLICY.name, policy_rows),)
+    if policy_messages:
+        families += ((BROKER_POLICY_MESSAGE.name, policy_messages),)
     if reason_rows:
         families += ((RESERVATION_REASON.name, reason_rows),)
     if ack_rows:

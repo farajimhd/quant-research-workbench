@@ -220,10 +220,13 @@ class LiveV4WriterClient:
             raise RuntimeError("Live V4 direct ClickHouse mutation is forbidden")
         return self._raw.execute(sql, **kwargs)
 
+    def insert_tables(self):
+        return desired_plan().insert_arte
+
     def execute_registered_insert(self, sql: str, *, query_id: str) -> Any:
         self.live_v4_lease.assert_current()
         match = re.match(r"^INSERT INTO arte\.([a-z][a-z0-9_]*) \(", sql)
-        if (match is None or match.group(1) not in desired_plan().insert_arte
+        if (match is None or match.group(1) not in self.insert_tables()
                 or not re.fullmatch(r"arte_(?:typed|sync)_[0-9a-f]{64}", query_id)
                 or "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1" not in sql):
             raise RuntimeError("Live V4 INSERT lacks a registered typed dispatch contract")

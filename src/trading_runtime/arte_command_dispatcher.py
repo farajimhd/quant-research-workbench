@@ -118,6 +118,50 @@ def _command_matches_order(row: Any, order: OrderRequest) -> bool:
                     for key, value in prices))
 
 
+def validate_program_command_batch(batch, account_id, orders, *, registration):
+    """Pure generic lineage preflight; grants no production dispatch capability.
+
+    The installed executable identity replaces Strategy 1 assumptions while
+    retaining the same normalized command/context/use/lineage graph. Existing
+    production writers and Portfolio cutover gates remain independently binding.
+    """
+    from .strategy_registry import ProgramStrategyExecutorRegistration, program_strategy_executor
+    if (type(registration) is not ProgramStrategyExecutorRegistration
+            or program_strategy_executor(*registration.key) is not registration):
+        raise ValueError('Program command requires its installed executable identity')
+    registration.verify()
+    from .arte_order_exact_prices import ExactPriceOrderCommandBatch
+    from .trading_price_rows import restore_exact_price_row
+    exact = type(batch) is ExactPriceOrderCommandBatch
+    rows = ((restore_exact_price_row('trading_order_command_v1', batch.command),)
+            if exact else batch.order_commands if type(batch) is TypedJournalBatch else ())
+    batch = batch.base if exact else batch
+    if (type(batch) is not TypedJournalBatch or type(orders) is not tuple
+            or not 1 <= len(orders) <= 4096 or not account_id
+            or batch.status != 'running' or len(rows) != len(orders)
+            or any(type(order) is not OrderRequest or order.acctId != account_id for order in orders)
+            or any(not _command_matches_order(row, order)
+                   for row, order in zip(rows, orders))):
+        raise ValueError('Program command batch differs from native broker requests')
+    commands = {str(row['record_id']): row for row in rows}
+    families = (batch.v4_command_lineages, batch.order_contexts, batch.intent_uses)
+    if len(commands) != len(orders) or any(
+            (row['strategy_id'], row['strategy_revision']) != registration.key
+            for row in commands.values()):
+        raise ValueError('Program command differs from installed strategy identity')
+    for family in families:
+        indexed = {str(row['parent_record_id']): row for row in family}
+        if (len(indexed) != len(orders) or set(indexed) != set(commands)
+                or any(row['run_id'] != batch.run_id or row['batch_id'] != batch.batch_id
+                       or row['account_id'] != account_id for row in indexed.values())):
+            raise ValueError('Program command lacks complete exact normalized lineage')
+    if (any(not row['order_group_id'] or not row['strategy_intent_id']
+            or not row['policy_version'] for row in batch.order_contexts)
+            or any(not row['intent_record_id'] or not row['intent_content_hash']
+                   for row in batch.intent_uses)):
+        raise ValueError('Program command lacks source intent and policy attribution')
+
+
 class ArteCommandDispatcher:
     """One ordered broker lane; never await this from a market-data callback."""
 
@@ -140,6 +184,12 @@ class ArteCommandDispatcher:
         if self._live_v4 and not callable(getattr(self._live_lease, "assert_current", None)):
             raise ValueError("Live V4 command lane requires its pinned Keeper lease")
         self._writer = writer
+        from src.backend.program_v4_principal import ProgramV4WriterClient
+        client = getattr(writer, '_client', None)
+        self._program_registration = (client.live_v4_lease.registration
+            if type(client) is ProgramV4WriterClient else None)
+        self._strategy_identity = (self._program_registration.key if self._program_registration is not None
+                                   else (STRATEGY_ID, STRATEGY_NUMBER))
         self._broker = broker
         self._queue: asyncio.Queue[_PendingCommand | _PendingCancel | _PendingModify | None] = asyncio.Queue(maxsize=capacity)
         self._task: asyncio.Task[None] | None = None
@@ -199,6 +249,8 @@ class ArteCommandDispatcher:
                        for row, order in zip(batch.order_commands, orders))):
             raise ValueError("Typed command batch differs from broker requests")
         if self._live_v4:
+            if self._program_registration is not None:
+                validate_program_command_batch(batch, account_id, orders, registration=self._program_registration)
             commands = {str(row.get("record_id")): row
                         for row in batch.order_commands}
             lineage = {str(row.get("parent_record_id")): row
@@ -214,7 +266,7 @@ class ArteCommandDispatcher:
                     or set(commands) != set(contexts)
                     or set(commands) != set(intent_uses)
                     or any((row.get("strategy_id"), row.get("strategy_revision"))
-                           != (STRATEGY_ID, STRATEGY_NUMBER)
+                           != self._strategy_identity
                            for row in commands.values())
                     or any(row.get("run_id") != batch.run_id
                            or row.get("batch_id") != batch.batch_id
@@ -279,7 +331,7 @@ class ArteCommandDispatcher:
                    != (detail["ticker"], detail["order_group_id"])
                 or (account_id, order_id) in self._canceling_targets
                 or (detail["strategy_id"], detail["strategy_revision"])
-                   != (STRATEGY_ID, STRATEGY_NUMBER)):
+                   != self._strategy_identity):
             raise ValueError("Live V4 cancellation lacks exact Strategy 1 lineage")
         result: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         try:
@@ -322,7 +374,7 @@ class ArteCommandDispatcher:
                    != (detail["ticker"], detail["order_group_id"])
                 or (account_id, order_id) in self._canceling_targets
                 or (detail["strategy_id"], detail["strategy_revision"])
-                   != (STRATEGY_ID, STRATEGY_NUMBER)
+                   != self._strategy_identity
                 or not _command_matches_order(detail, request)):
             raise ValueError("Live V4 modification lacks exact Strategy 1 lineage")
         result: asyncio.Future[list[dict[str, Any]]] = asyncio.get_running_loop().create_future()

@@ -31,11 +31,14 @@ class RuleDecisionBasisBatch:
     def from_pending_completion(cls, journal, record, base):
         """Rekey retained evidence under its publisher-selected microbatch ID."""
         from src.backend.backtest_journal_memory import BacktestMemoryJournal
+        from src.backend.program_execution_journal import ProgramExecutionJournal
         from .arte_journal_writer import TypedJournalBatch
         from .journal_contract import JournalRecord
-        if (type(journal) is not BacktestMemoryJournal or type(record) is not JournalRecord
+        if (type(journal) not in {BacktestMemoryJournal, ProgramExecutionJournal} or type(record) is not JournalRecord
                 or type(base) is not TypedJournalBatch or journal.run_id != record.run_id):
             raise ValueError("Rule decision projection requires its pending typed journal")
+        if type(journal) is ProgramExecutionJournal:
+            journal.require_current()
         retained = journal.rule_decision_basis_for_record(record.record_id)
         if retained is None:
             raise ValueError("Rule decision projection lacks retained pending evidence")
