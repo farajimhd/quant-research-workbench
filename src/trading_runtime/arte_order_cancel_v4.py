@@ -9,6 +9,7 @@ from datetime import timezone
 from datetime import date
 from typing import Any
 from uuid import UUID
+import re
 
 from .arte_journal_schema import TableContract
 from .journal_contract import JournalRecord
@@ -30,9 +31,9 @@ CANCEL = TableContract(
 
 
 def project_order_cancel_v4(
-    record: JournalRecord, *, attempt_id: str, batch_id: str,
+    record: JournalRecord, *, attempt_id: str, batch_id: str, program_registration=None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Tabularize an exact command or simulated broker cancellation reply."""
+    """Tabularize an exact command or a closed native cancellation reply."""
     from .arte_journal_writer import typed_row
 
     UUID(record.record_id)
@@ -47,6 +48,10 @@ def project_order_cancel_v4(
             or not isinstance(record.payload, dict)):
         raise ValueError("Cancellation event envelope is invalid")
     payload = record.payload
+    if program_registration is not None:
+        from .program_command_identity import require_installed_program_identity
+        require_installed_program_identity(program_registration,
+            payload.get('strategy_id'), payload.get('strategy_revision'))
     common = {"strategy_id", "strategy_revision", "correlation_id",
               "causation_id"}
     if (not common <= set(payload)
@@ -68,7 +73,9 @@ def project_order_cancel_v4(
         basic = common | {"reason", "ticker"}
         with_lineage = basic | {"order_group_id", "intent_id"}
         if (set(payload) not in (basic, with_lineage)
-                or reason != "replace_strategy_protection" or not ticker
+                or (reason != "replace_strategy_protection" if program_registration is None else
+                    set(payload) != with_lineage or re.fullmatch(r'[a-z][a-z0-9_]{0,127}', reason) is None)
+                or not ticker
                 or set(payload) == with_lineage and (not group_id or not intent_id)):
             raise ValueError("Cancellation command has unmodeled fields")
     else:
@@ -133,12 +140,13 @@ def project_order_cancel_v4(
 
 def order_cancel_batch_v4(
     record: JournalRecord, *, run_month: date, attempt_id: str,
-    batch_id: str, prior_batch_id: str, source_cursor: str,
+    batch_id: str, prior_batch_id: str, source_cursor: str, program_registration=None,
 ):
     from .arte_journal_writer import TypedJournalBatch, V4OrderCancelBatch
 
     event, detail = project_order_cancel_v4(
-        record, attempt_id=attempt_id, batch_id=batch_id)
+        record, attempt_id=attempt_id, batch_id=batch_id,
+        program_registration=program_registration)
     if run_month.day != 1:
         raise ValueError("Run month must start on day one")
     base = TypedJournalBatch(

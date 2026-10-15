@@ -56,3 +56,27 @@ def test_cancel_projection_rejects_opaque_reply():
     with pytest.raises(ValueError, match="closed simulated shape"):
         project_order_cancel_v4(source, attempt_id=str(uuid4()),
                                 batch_id=str(uuid4()))
+
+def test_generic_cancel_requires_installed_programme_and_full_group_intent_lineage():
+    from dataclasses import replace
+    from src.trading_runtime.strategy_registry import (
+        ProgramStrategyExecutorRegistration, register_program_strategy_executor)
+    registration = ProgramStrategyExecutorRegistration('test-program-cancel-20261015',
+        190002, '1'*64, '2'*64, '3'*64)
+    register_program_strategy_executor(registration)
+    source = record('command', 'order_cancel', dict(reason='execution_deadline',
+        ticker='AAA', order_group_id='group-1', intent_id='intent-1'))
+    source = replace(source, payload={**source.payload,
+        'strategy_id': registration.strategy_id, 'strategy_revision': registration.revision})
+    with pytest.raises(ValueError, match='unmodeled'):
+        project_order_cancel_v4(source, attempt_id=str(uuid4()), batch_id=str(uuid4()))
+    _, detail = project_order_cancel_v4(source, attempt_id=str(uuid4()), batch_id=str(uuid4()),
+        program_registration=registration)
+    assert detail['reason'] == 'execution_deadline' and detail['intent_id'] == 'intent-1'
+    with pytest.raises(ValueError, match='installed programme'):
+        project_order_cancel_v4(source, attempt_id=str(uuid4()), batch_id=str(uuid4()),
+            program_registration=replace(registration))
+    payload = dict(source.payload); payload.pop('intent_id');payload.pop('order_group_id')
+    with pytest.raises(ValueError, match='unmodeled'):
+        project_order_cancel_v4(replace(source, payload=payload), attempt_id=str(uuid4()),
+            batch_id=str(uuid4()), program_registration=registration)

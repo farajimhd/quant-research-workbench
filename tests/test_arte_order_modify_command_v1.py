@@ -69,3 +69,22 @@ def test_modify_command_rejects_unproved_source_identity():
     with pytest.raises(ValueError, match="lineage"):
         project_order_modify_command_v1(
             record, request, attempt_id=str(uuid4()), batch_id=str(uuid4()))
+
+def test_generic_modify_requires_exact_installed_registration_and_scalar_lineage():
+    from src.trading_runtime.strategy_registry import (
+        ProgramStrategyExecutorRegistration, register_program_strategy_executor)
+    registration = ProgramStrategyExecutorRegistration('test-program-modify-20261015',
+        190001, '1'*64, '2'*64, '3'*64)
+    register_program_strategy_executor(registration)
+    record, request = _inputs()
+    record = replace(record, payload={**record.payload,
+        'strategy_id': registration.strategy_id, 'strategy_revision': registration.revision})
+    with pytest.raises(ValueError, match='lineage'):
+        project_order_modify_command_v1(record, request, attempt_id=str(uuid4()), batch_id=str(uuid4()))
+    event, detail = project_order_modify_command_v1(record, request,
+        attempt_id=str(uuid4()), batch_id=str(uuid4()), program_registration=registration)
+    assert detail['strategy_id'] == registration.strategy_id
+    assert detail['source_intent_content_hash'] == record.payload['source_intent_content_hash']
+    with pytest.raises(ValueError, match='installed programme'):
+        project_order_modify_command_v1(record, request, attempt_id=str(uuid4()),
+            batch_id=str(uuid4()), program_registration=replace(registration))

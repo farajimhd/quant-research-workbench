@@ -1,4 +1,4 @@
-"""One normalized, exact broker modification command for Strategy 1.
+"""One normalized, exact broker modification command with explicit source lineage.
 
 The full desired OrderRequest is a new fact at each amendment. Its target
 broker order is explicit; no event payload, JSON, or simulated reply is used
@@ -72,7 +72,7 @@ def _decimal(value: Any) -> str | None:
 
 def project_order_modify_command_v1(
     record: JournalRecord, request: OrderRequest, *,
-    attempt_id: str, batch_id: str,
+    attempt_id: str, batch_id: str, program_registration=None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Seal a flat request and its causal source identities before dispatch."""
     from .arte_journal_writer import typed_row
@@ -93,20 +93,24 @@ def project_order_modify_command_v1(
             or not isinstance(record.payload, dict)):
         raise ValueError("Modify command lacks an exact flat broker request")
     payload = record.payload
+    if program_registration is not None:
+        from .program_command_identity import require_installed_program_identity
+        require_installed_program_identity(program_registration,
+            payload.get('strategy_id'), payload.get('strategy_revision'))
     expected = {"strategy_id", "strategy_revision", "correlation_id",
                 "causation_id", "order_group_id", "intent_id",
                 "source_intent_record_id", "source_intent_content_hash",
                 "oms_group_record_id", "reason"}
     if (set(payload) != expected
-            or (payload["strategy_id"], payload["strategy_revision"])
-               != (STRATEGY_ID, STRATEGY_NUMBER)
+            or (program_registration is None and (payload["strategy_id"], payload["strategy_revision"])
+               != (STRATEGY_ID, STRATEGY_NUMBER))
             or any(type(payload[key]) is not str or not payload[key]
                    for key in expected - {"strategy_revision"})
             or payload["causation_id"] != payload["intent_id"]
             or not re.fullmatch(r"[a-z][a-z0-9_]*", payload["reason"])
             or not re.fullmatch(r"[0-9a-f]{64}",
                                 payload["source_intent_content_hash"])):
-        raise ValueError("Modify command lacks normalized Strategy 1 lineage")
+        raise ValueError("Modify command lacks normalized strategy lineage")
     for key in ("source_intent_record_id", "oms_group_record_id"):
         UUID(payload[key])
     month = record.event_time.astimezone(timezone.utc).date().replace(day=1).isoformat()
@@ -160,13 +164,15 @@ def project_order_modify_command_v1(
 def order_modify_command_batch_v4(
     record: JournalRecord, request: OrderRequest, *, run_month: date,
     attempt_id: str, batch_id: str, prior_batch_id: str, source_cursor: str,
+    program_registration=None,
 ):
     from .arte_journal_writer import TypedJournalBatch, V4OrderModifyCommandBatch
 
     if run_month.day != 1:
         raise ValueError("Modify command run month must start on day one")
     event, detail = project_order_modify_command_v1(
-        record, request, attempt_id=attempt_id, batch_id=batch_id)
+        record, request, attempt_id=attempt_id, batch_id=batch_id,
+        program_registration=program_registration)
     base = TypedJournalBatch(
         record.run_id, run_month, attempt_id, batch_id, prior_batch_id,
         record.sequence, record.sequence, source_cursor, "running", (event,))
