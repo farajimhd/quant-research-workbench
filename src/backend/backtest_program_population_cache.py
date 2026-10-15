@@ -25,6 +25,16 @@ class ProgramPopulationCache:
             as_of=as_of, concurrency=concurrency)
         key = pin.source_revision
         async with self._lock:
+            from .qmd_columnar_population import CertifiedVolumePopulationPin, read_population_window
+            if type(pin) is CertifiedVolumePopulationPin:
+                # Certified interval snapshots are already run-owned and bounded;
+                # never expand the full population/session into a dense cache.
+                size = sum(history.retained_interval_bytes for history in pin.histories.values())
+                if size > self.maximum_retained_bytes:
+                    raise ValueError('Volume interval population exceeds its retained-byte budget')
+                self._key, self._frames, self.retained_bytes = key, None, size
+                return await read_population_window(pin, first_bucket=first_bucket,
+                    stop_bucket=stop_bucket, as_of=as_of, concurrency=concurrency)
             if key != self._key:
                 self._key = self._frames = None
                 self.retained_bytes = 0

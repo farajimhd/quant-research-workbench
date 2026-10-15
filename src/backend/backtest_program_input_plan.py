@@ -47,6 +47,7 @@ async def certify_program_session_input_plan(controller, request, *, reader_fact
     from .replay_run_service import ReplayRunController
     from .qmd_opening_reference import CertifiedOpeningReference
     from .qmd_columnar_history import HistoryPinRequest, certify_history_pins_async
+    from .qmd_volume_reader import VolumePinRequest
     from .qmd_columnar_population import certify_population_history_async
     from .backtest_program_inputs import required_program_history_fields, preflight_program_feature_catalog
     if (type(controller) is not ReplayRunController or controller._program_strategy is None
@@ -56,7 +57,8 @@ async def certify_program_session_input_plan(controller, request, *, reader_fact
             or not 1 <= request.concurrency <= 6
             or type(request.feature_requests) is not tuple or not request.feature_requests
             or type(request.volume_requests) is not tuple
-            or any(type(r) is not HistoryPinRequest for r in request.feature_requests + request.volume_requests)
+            or any(type(r) is not HistoryPinRequest for r in request.feature_requests)
+            or any(type(r) not in (HistoryPinRequest, VolumePinRequest) for r in request.volume_requests)
             or type(request.cohort_windows) is not tuple or not request.cohort_windows
             or len(request.cohort_windows) > 57600
             or type(request.first_ordinal) is not int or type(request.stop_ordinal) is not int
@@ -72,8 +74,11 @@ async def certify_program_session_input_plan(controller, request, *, reader_fact
     release = controller._program_strategy.program_release
     eligible = {row['listing_id']: row for row in request.opening.resolved_rows()
         if release.universe.minimum_prior_close <= row['adjusted_prior_close'] <= release.universe.maximum_prior_close}
-    for packet in (request.feature_requests, request.volume_requests):
-        if len(packet) != len(eligible) or {r.scope.listing_id for r in packet} != set(eligible):
+    compact_volume = bool(request.volume_requests) and all(type(r) is VolumePinRequest for r in request.volume_requests)
+    for index, packet in enumerate((request.feature_requests, request.volume_requests)):
+        identities = {r.scope.listing_id for r in packet}
+        if (len(packet) != len(identities) or not identities <= set(eligible)
+                or (index == 1 or not compact_volume) and identities != set(eligible)):
             raise ValueError('Published programme inputs differ from the complete eligible population')
         for source in packet:
             if (source.scope.ticker != eligible[source.scope.listing_id]['ticker']
@@ -85,15 +90,22 @@ async def certify_program_session_input_plan(controller, request, *, reader_fact
                     or source.parents.volume_window_seconds != release.universe.window_seconds):
                 raise ValueError('Published programme inputs differ from their opening lineage')
     required = set(required_program_history_fields(release))
+    from src.trading_runtime.columnar_program_input_contract import portable_revision
+    from src.market_engine.columnar_history_product import BY_NAME
+    selected = tuple(sorted((BY_NAME[name] for name in release.fields), key=lambda f: f.field_id))
     first_source = request.feature_requests[0].scope
     for source in request.feature_requests:
+        portable = portable_revision(selected, source.parents.producer_code_hash,
+            volume_window_seconds=source.parents.volume_window_seconds)
         if (not required <= {f.name for f in source.fields}
                 or source.scope.first_bucket != first_source.first_bucket
                 or source.scope.stop_bucket != first_source.stop_bucket
                 or request.stop_ordinal > source.scope.clock_count
-                or any(field.revision != source.scope.product_revision for field in release.fields.values())):
+                or any(field.revision not in (source.scope.product_revision, portable)
+                       for field in release.fields.values())):
             raise ValueError('Published programme features differ from their release or evaluation origin')
-    if any(source.fields or source.scope.first_bucket != first_source.first_bucket
+    if any((type(source) is HistoryPinRequest and source.fields)
+            or source.scope.first_bucket != first_source.first_bucket
             or source.scope.stop_bucket != first_source.stop_bucket for source in request.volume_requests):
         raise ValueError('Published programme volume clocks differ from their feature origin')
     previous = None
@@ -113,7 +125,23 @@ async def certify_program_session_input_plan(controller, request, *, reader_fact
             or request.cohort_windows[-1][1] != int(end_ms // 1000)):
         raise ValueError('Published programme cohorts differ from the requested session window')
     population = await certify_population_history_async(request.opening, release.universe,
-        request.volume_requests, reader_factory=reader_factory, concurrency=request.concurrency)
+        request.volume_requests, reader_factory=reader_factory, concurrency=request.concurrency,
+        maximum_retained_bytes=(request.maximum_retained_population_bytes
+            if request.maximum_retained_population_bytes is not None else 256 * 1024 * 1024))
+    if compact_volume:
+        from .qmd_columnar_population import read_population_window
+        # This is producer-funnel coverage admission, not future strategy input:
+        # only the current boundary is exposed later to the actor. Prove that
+        # preparing fewer feature listings cannot omit any ranked candidate.
+        ranked_listings = set()
+        for first, stop in request.cohort_windows:
+            window = await read_population_window(population, first_bucket=first,
+                stop_bucket=stop, as_of=request.as_of, concurrency=request.concurrency)
+            ranked_listings.update(window.ranked['listing_id'].to_list())
+        feature_listings = {source.scope.listing_id for source in request.feature_requests}
+        assignments = set(controller._program_strategy._listings.values())
+        if not ranked_listings <= feature_listings or feature_listings != assignments:
+            raise ValueError('Feature funnel omits ranked listings or differs from its exact assignments')
     pins = await certify_history_pins_async(reader_factory, request.feature_requests, concurrency=request.concurrency)
     preflight_program_feature_catalog(release, pins)
     cohorts = tuple(ProgramCohortInputPlan(pins, population, controller._program_strategy._listings,

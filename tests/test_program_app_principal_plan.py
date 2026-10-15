@@ -62,7 +62,8 @@ def test_writes_are_only_central_declared_products_and_never_source_parents():
     assert len(profiles) == len({p.principal for p in profiles}) == 8
     writes = set().union(*(p.writes for p in profiles))
     assert writes == (plan.scopes(plan.HISTORY) | plan.scopes(plan.OPENING) | plan.scopes(plan.PRIOR_CLOSE)
-        | plan.scopes(plan.LIQUIDITY) | plan.scopes(plan.RELEASE) | plan.scopes(plan.SELECTION))
+        | plan.scopes(plan.LIQUIDITY) | plan.scopes(plan.RELEASE) | plan.scopes(plan.SELECTION)
+        | plan.scopes(plan.VOLUME))
     assert not ({('arte', 'bars_v1'), ('arte', 'liquidity_100ms_v1'),
         ('arte', 'liquidity_execution_price_100ms_v1'),
         ('q_live', 'id_symbol_interval_v1'), ('q_live', 'market_stock_split_v1')} & writes)

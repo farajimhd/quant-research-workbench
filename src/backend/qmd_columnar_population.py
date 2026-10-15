@@ -58,11 +58,45 @@ class CertifiedPopulationPin:
             maximum_prior_close=self.rule.maximum_prior_close))
 
 
-async def certify_population_history_async(opening, rule, requests, *, reader_factory, concurrency):
+@dataclass(frozen=True)
+class CertifiedVolumePopulationPin(CertifiedPopulationPin):
+    """Same complete scanner authority over the shared volume-only QMD product."""
+    reader_factory: object = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self):
+        from .qmd_volume_reader import CertifiedVolumePin
+        if (type(self.opening) is not CertifiedOpeningReference
+                or type(self.rule) is not VolumeUniverseRule or not callable(self.reader_factory)):
+            raise TypeError('Volume population requires explicit native QMD authorities')
+        eligible = {row['listing_id']: row for row in self.opening.resolved_rows()
+            if self.rule.minimum_prior_close <= row['adjusted_prior_close'] <= self.rule.maximum_prior_close}
+        if set(self.histories) != set(eligible):
+            raise ValueError('Volume pins differ from the complete price-eligible population')
+        for listing, pin in self.histories.items():
+            row = eligible[listing]
+            if (type(pin) is not CertifiedVolumePin or pin.scope.listing_id != listing
+                    or pin.scope.ticker != row['ticker'] or pin.scope.build_id != self.opening.scope.build_id
+                    or pin.scope.session_date != self.opening.scope.session_date
+                    or pin.parents.market_plan_hash != self.opening.scope.market_plan_hash
+                    or pin.parents.opening_reference_hash != self.opening.content_hash
+                    or pin.parents.volume_window_seconds != self.rule.window_seconds):
+                raise ValueError('Volume pin differs from certified population lineage')
+        object.__setattr__(self, 'histories', MappingProxyType(dict(self.histories)))
+
+
+def is_certified_population_pin(pin):
+    return type(pin) in (CertifiedPopulationPin, CertifiedVolumePopulationPin)
+
+
+async def certify_population_history_async(opening, rule, requests, *, reader_factory, concurrency,
+        maximum_retained_bytes=256 * 1024 * 1024):
     """Load every eligible volume seal through the native bounded cold reader."""
     from .qmd_columnar_history import HistoryPinRequest, certify_history_pins_async
+    from .qmd_volume_reader import VolumePinRequest, certify_volume_pins_async
+    volume_only = bool(requests) and all(type(r) is VolumePinRequest for r in requests)
     if (type(opening) is not CertifiedOpeningReference or type(rule) is not VolumeUniverseRule
-            or type(requests) is not tuple or any(type(r) is not HistoryPinRequest for r in requests)):
+            or type(requests) is not tuple
+            or not volume_only and any(type(r) is not HistoryPinRequest for r in requests)):
         raise TypeError('Population loading requires native opening, ranking and history requests')
     eligible = {row['listing_id']: row for row in opening.resolved_rows()
         if rule.minimum_prior_close <= row['adjusted_prior_close'] <= rule.maximum_prior_close}
@@ -71,7 +105,7 @@ async def certify_population_history_async(opening, rule, requests, *, reader_fa
         raise ValueError('Population requests differ from the complete price-eligible population')
     for request in requests:
         row = eligible[request.scope.listing_id]
-        if (request.fields or request.scope.ticker != row['ticker']
+        if ((not volume_only and request.fields) or request.scope.ticker != row['ticker']
                 or request.scope.build_id != opening.scope.build_id
                 or request.scope.session_date != opening.scope.session_date
                 or request.parents.market_plan_hash != opening.scope.market_plan_hash
@@ -82,6 +116,10 @@ async def certify_population_history_async(opening, rule, requests, *, reader_fa
         if (not callable(reader_factory) or type(concurrency) is not int or not 1 <= concurrency <= 6):
             raise ValueError('Population loading requires a bounded native reader')
         return CertifiedPopulationPin(opening, {}, rule)
+    if volume_only:
+        histories = await certify_volume_pins_async(reader_factory, requests, concurrency=concurrency,
+            maximum_retained_bytes=maximum_retained_bytes)
+        return CertifiedVolumePopulationPin(opening, histories, rule, reader_factory)
     histories = await certify_history_pins_async(reader_factory, requests, concurrency=concurrency)
     return CertifiedPopulationPin(opening, histories, rule)
 
@@ -125,6 +163,17 @@ async def read_population_window(pin: CertifiedPopulationPin, *, first_bucket: i
     """
     _preflight_population_window(pin, first_bucket=first_bucket, stop_bucket=stop_bucket,
         as_of=as_of, concurrency=concurrency)
+    if type(pin) is CertifiedVolumePopulationPin:
+        from .qmd_volume_reader import volume_window
+        from .qmd_columnar_history_transport import _owned_worker
+        def project():
+            frames = {listing: _population_listing_frame(pin, listing,
+                volume_window(history,
+                    first_ordinal=first_bucket - history.scope.first_bucket,
+                    stop_ordinal=stop_bucket - history.scope.first_bucket, as_of=as_of))
+                for listing, history in sorted(pin.histories.items())}
+            return _population_window(pin, frames)
+        return await _owned_worker(project)
     iterator = iter(sorted(pin.histories.items()))
     results = {}
     async def worker():
@@ -145,7 +194,7 @@ async def read_population_window(pin: CertifiedPopulationPin, *, first_bucket: i
 
 
 def _preflight_population_window(pin, *, first_bucket, stop_bucket, as_of, concurrency):
-    if (type(pin) is not CertifiedPopulationPin or type(concurrency) is not int
+    if (not is_certified_population_pin(pin) or type(concurrency) is not int
             or not 1 <= concurrency <= 32 or type(first_bucket) is not int
             or type(stop_bucket) is not int or not 14400 <= first_bucket < stop_bucket <= 72000
             or stop_bucket - first_bucket > 4096
@@ -159,8 +208,13 @@ def _preflight_population_window(pin, *, first_bucket, stop_bucket, as_of, concu
     # Preflight every request before the first network read, not inside workers.
     from src.backend.qmd_columnar_history_transport import window_request
     for history in pin.histories.values():
-        window_request(history, first_ordinal=first_bucket - history.scope.first_bucket,
-            stop_ordinal=stop_bucket - history.scope.first_bucket, as_of=as_of)
+        if type(pin) is CertifiedVolumePopulationPin:
+            from .qmd_volume_reader import preflight_volume_window
+            preflight_volume_window(history, first_ordinal=first_bucket - history.scope.first_bucket,
+                stop_ordinal=stop_bucket - history.scope.first_bucket, as_of=as_of)
+        else:
+            window_request(history, first_ordinal=first_bucket - history.scope.first_bucket,
+                stop_ordinal=stop_bucket - history.scope.first_bucket, as_of=as_of)
 
 
 def _population_listing_frame(pin, listing, frame):

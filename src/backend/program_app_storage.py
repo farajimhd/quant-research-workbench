@@ -10,12 +10,16 @@ def program_app_storage_contracts():
     from src.market_engine.columnar_history_product import TABLES as HISTORY_TABLES
     from src.market_engine.opening_price_reference import TABLES as OPENING_TABLES
     from src.market_engine.regular_close_history import TABLES as PRIOR_CLOSE_TABLES
+    from src.market_engine.qmd_volume_product import TABLES as VOLUME_TABLES
+    from src.trading_runtime.configuration_execution_binding import TABLES as EXECUTION_TABLES
+    from src.trading_runtime.configuration_execution_risk import TABLES as RISK_TABLES
     from pipelines.market_sip.events.liquidity_resolution_sql import TABLES as LIQUIDITY_TABLES
     from .signal_stream_typed_cursor import TABLES as CURSOR_TABLES
     from .signal_stream_typed_occurrence import TABLES as OCCURRENCE_TABLES
     from .signal_dispatch_typed_cursor import DISPATCH_TABLES
     tables = (*rule_decision_storage_contracts(), *RELEASE_TABLES, *CONFIGURATION_TABLES,
-        *CONFIGURED_SIGNAL_TABLES, *HISTORY_TABLES, *OPENING_TABLES, *PRIOR_CLOSE_TABLES, *LIQUIDITY_TABLES)
+        *CONFIGURED_SIGNAL_TABLES, *HISTORY_TABLES, *OPENING_TABLES, *PRIOR_CLOSE_TABLES, *LIQUIDITY_TABLES,
+        *VOLUME_TABLES, *EXECUTION_TABLES, *RISK_TABLES)
     # These source contracts have one declared session-key partition. Adapt
     # their metadata to the same shared physical/schema auditor, without
     # adding a second schema or changing their existing scalar fields.

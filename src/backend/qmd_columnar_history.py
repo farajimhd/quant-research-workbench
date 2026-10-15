@@ -36,6 +36,8 @@ def permission_preflight(client, *, writable=False, feature_sources=False):
     targets = {t.name for t in c.TABLES}
     from src.market_engine.feature_source_plan import TABLES as FEATURE_TABLES
     feature_targets = {t.name for t in FEATURE_TABLES}
+    from src.market_engine.qmd_volume_product import TABLES as VOLUME_TABLES
+    volume_targets = {t.name for t in VOLUME_TABLES}
     if feature_sources:
         targets |= feature_targets
     required = {("q_live", name) for name in targets}
@@ -51,13 +53,15 @@ def permission_preflight(client, *, writable=False, feature_sources=False):
         for privilege in {v.strip() for v in match.group(1).split(",")}:
             if privilege == "SELECT":
                 reads.add(table)
-            elif privilege == "INSERT" and writable and table[0] == "q_live" and table[1] in targets | feature_targets:
+            elif privilege == "INSERT" and writable and table[0] == "q_live" and table[1] in targets | feature_targets | volume_targets:
                 writes.add(table[1])
             else:
                 raise ValueError("QMD history principal has unauthorized write or DDL authority")
     expected_writes = targets if writable else set()
     if writable and not feature_sources and feature_targets <= writes:
         expected_writes |= feature_targets
+    if writable and volume_targets <= writes:
+        expected_writes |= volume_targets
     if not required <= reads or writes != expected_writes:
         raise ValueError("QMD history product grants are incomplete")
     return user

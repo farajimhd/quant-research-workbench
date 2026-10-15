@@ -321,8 +321,8 @@ def preflight_program_cohort_inputs(release, pins, population_pin, listing_by_as
     The supplied feature origin includes its full warm-up. Only the supplied
     execution clocks require scanner rows. No producer, broker or run starts.
     """
-    from .qmd_columnar_population import CertifiedPopulationPin
-    if (type(release) is not ProgramRelease or type(population_pin) is not CertifiedPopulationPin
+    from .qmd_columnar_population import is_certified_population_pin, CertifiedVolumePopulationPin
+    if (type(release) is not ProgramRelease or not is_certified_population_pin(population_pin)
             or population_pin.rule != release.universe or not isinstance(pins, Mapping)
             or not isinstance(listing_by_assignment, Mapping) or not listing_by_assignment
             or any(type(key) is not str or not key or type(value) is not str or not value
@@ -349,8 +349,12 @@ def preflight_program_cohort_inputs(release, pins, population_pin, listing_by_as
         volume = population_pin.histories.get(listing)
         if (type(pin) is not CertifiedHistoryPin or volume is None
                 or any(getattr(pin.scope, name) != getattr(volume.scope, name) for name in identity)
-                or {k:v for k,v in pin.parents.payload().items() if k!='producer_code_hash'}
-                   != {k:v for k,v in volume.parents.payload().items() if k!='producer_code_hash'}
+                or (any(getattr(pin.parents, key) != getattr(volume.parents, key) for key in (
+                        'source_bar_attempt_id', 'source_bar_unit_hash', 'opening_reference_hash',
+                        'market_plan_hash', 'volume_window_seconds'))
+                    if type(population_pin) is CertifiedVolumePopulationPin else
+                    {k:v for k,v in pin.parents.payload().items() if k!='producer_code_hash'}
+                    != {k:v for k,v in volume.parents.payload().items() if k!='producer_code_hash'})
                 or first_ordinal > first_bucket - pin.scope.first_bucket
                 or stop_ordinal < stop_bucket - pin.scope.first_bucket):
             raise ValueError("Programme feature origin differs from its complete scanner lineage")
@@ -358,8 +362,13 @@ def preflight_program_cohort_inputs(release, pins, population_pin, listing_by_as
         preflight_program_history_packets(release, pin, first_ordinal=first_ordinal,
                                           stop_ordinal=stop_ordinal, as_of=as_of)
     for pin in population_pin.histories.values():
-        window_request(pin, first_ordinal=first_bucket - pin.scope.first_bucket,
-            stop_ordinal=stop_bucket - pin.scope.first_bucket, as_of=as_of)
+        if type(population_pin) is CertifiedVolumePopulationPin:
+            from .qmd_volume_reader import preflight_volume_window
+            preflight_volume_window(pin, first_ordinal=first_bucket - pin.scope.first_bucket,
+                stop_ordinal=stop_bucket - pin.scope.first_bucket, as_of=as_of)
+        else:
+            window_request(pin, first_ordinal=first_bucket - pin.scope.first_bucket,
+                stop_ordinal=stop_bucket - pin.scope.first_bucket, as_of=as_of)
     return MappingProxyType(owned), MappingProxyType(assignments)
 
 
@@ -430,12 +439,12 @@ async def prepare_program_cohort_work(controller, pins, population_pin, *, scope
     """Prepare native scheduler work without changing policy or execution state."""
     from .replay_run_service import ReplayRunController
     from .backtest_program_session import PreparedProgramCohortWork
-    from .qmd_columnar_population import CertifiedPopulationPin
+    from .qmd_columnar_population import is_certified_population_pin
     from src.trading_runtime.columnar_program_actor import AssignedProgramStrategy
     if type(controller) is not ReplayRunController:
         raise ValueError("Programme preparation requires its native controller")
     actor = controller._program_strategy
-    if (type(actor) is not AssignedProgramStrategy or type(population_pin) is not CertifiedPopulationPin
+    if (type(actor) is not AssignedProgramStrategy or not is_certified_population_pin(population_pin)
             or population_pin.opening.scope.session_date != controller.definition.session_date):
         raise ValueError("Programme preparation lacks its installed actor or exact certified session")
     assignments = actor.assignments()
