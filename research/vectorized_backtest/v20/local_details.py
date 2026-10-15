@@ -57,13 +57,14 @@ class DetailObserver:
     def select(self,day):self.day=day
     def refresh(self):
         owner=read_progress(self.active);root=Path(owner['campaign']);status=read_progress(root/'status.json');manifest=read_progress(root/'manifest.json');days=manifest.get('days',[])
-        day=self.day if self.day in days else next((d for d in days if (root/'local'/d/'checkpoint.json').exists()),days[0] if days else None)
+        workers=status.get('workers',{})
+        day=self.day if self.day in days else next((d for d in days if d in workers and workers[d].get('status')=='running'),next((d for d in days if (root/'local'/d/'checkpoint.json').exists()),days[0] if days else None))
         running=False
         try:running=abs(psutil.Process(owner['pid']).create_time()-owner['creation_time'])<.01
         except (psutil.NoSuchProcess,KeyError,TypeError):pass
         state=dict(root=str(root),days=days,day=day,status=status.get('status','starting'),stage=status.get('stage',''),running=running,
                    completed_sessions=status.get('completed',0),target=manifest.get('local_generations',30),rows=[],payloads={},generation=0,
-                   workers=status.get('workers',{}),global_output=str(root/'global') if (root/'global'/'status.json').exists() else None)
+                   workers=workers,queued=status.get('queued',0),failed=status.get('failed',0),updated_epoch=status.get('updated_epoch'),global_output=str(root/'global') if (root/'global'/'status.json').exists() else None)
         if day:
             folder=root/'local'/day;cp=folder/'checkpoint.json';key=(str(root),day)
             state['session_progress']=read_progress(folder/'status.json')
@@ -146,15 +147,36 @@ def detail_lines(row,payload,view,stage):
         'Training-session results only. No cross-session or validation performance implied.']
 
 
+def bar(label,done,total,width):
+    """Only completed units fill the bar; an in-flight generation stays unfilled."""
+    done=max(0,min(done,total));size=max(6,min(24,width-len(label)-20));filled=int(size*done/total) if total else 0
+    return f"{label} [{'#'*filled}{'-'*(size-filled)}] {done}/{total}"
+
+
+def progress_lines(data,width):
+    days=data.get('days',[]);target=data.get('target',30);workers=data.get('workers',{})
+    lines=[bar('Phase 1 sessions',data.get('completed_sessions',0),len(days),width),f"{len(workers)} active | {data.get('queued',0)} queued | {data.get('failed',0)} failed | Phase 2 waits for all sessions"]
+    for day,w in sorted(workers.items()):
+        done=w.get('completed_generations',0);stage=w.get('stage','Starting');sub=''
+        if stage=='Evaluate rules' and w.get('total_rule_tiles'):
+            sub=f" | rule tiles {w.get('rule_tiles',0)}/{w['total_rule_tiles']}"
+        lines.append(bar(f"{day} generations",done,w.get('total_generations',target),width))
+        lines.append(f"  NOW: generation {w.get('generation',done+1)} - {stage}{sub}")
+    selected=data.get('day','pending');done=data.get('generation',0);wall=data.get('last_wall')
+    label='COMPLETE' if done>=target else ('ACTIVE' if selected in workers else 'QUEUED')
+    lines.append(f"Viewing {selected}: {label} | sealed generation {done}/{target}"+(f" | last {wall:.1f}s" if wall else ''))
+    if data.get('display_error'):lines.append('STALE DISPLAY: '+data['display_error'])
+    return lines
+
+
 def render(data,width=110,height=38,mode='profit',selection=0,view='financial',stage='entry',detail_page=0):
-    rows=ordered_rows(data.get('rows',[]),mode);selection=min(max(0,selection),max(0,len(rows)-1));detail_height=12 if height>=34 else 7
-    page_size=max(1,min(50,height-(3+3+detail_height+4+4)));page=selection//page_size
-    layout=Layout();layout.split_column(Layout(name='header',size=3),Layout(name='progress',size=3),Layout(name='leaders',ratio=1),Layout(name='details',size=detail_height),Layout(name='keys',size=4))
+    rows=ordered_rows(data.get('rows',[]),mode);selection=min(max(0,selection),max(0,len(rows)-1));detail_height=10 if height>=34 else 5
+    progress=progress_lines(data,width);progress_height=len(progress)
+    page_size=max(1,min(50,height-(3+progress_height+detail_height+4+4)));page=selection//page_size
+    layout=Layout();layout.split_column(Layout(name='header',size=3),Layout(name='progress',size=progress_height),Layout(name='leaders',ratio=1),Layout(name='details',size=detail_height),Layout(name='keys',size=4))
     days=data.get('days',[]);day=data.get('day','pending');number=days.index(day)+1 if day in days else 0
     layout['header'].update(Text(f"V20 {'RUNNING' if data.get('running') else 'OPTIMIZER STOPPED'} | PHASE 1 | Session {number}/{len(days)}: {day}\nDetailed training rankings | sealed generation {data.get('generation',0)} | sort: {mode} | read only",style='cyan' if data.get('running') else 'bold red'))
-    current=data.get('session_progress',{});text=f"Sessions {data.get('completed_sessions',0)}/{len(days)} complete | session generation {current.get('generation',data.get('generation',0))}/{data.get('target',30)} | {current.get('stage',data.get('stage','Starting'))}"
-    error=data.get('display_error');wall=data.get('last_wall');timing=f"Last full generation {wall:.1f}s | session ETA ~{max(0,data.get('target',30)-data.get('generation',0))*wall/60:.1f} min" if wall else 'Timing available after a sealed generation.'
-    layout['progress'].update(Text(text+'\n'+timing+('\nSTALE: '+error if error else ''),style='yellow' if error else None))
+    layout['progress'].update(Text('\n'.join(progress),style='yellow' if data.get('display_error') else 'green'))
     table=Table(expand=True,padding=(0,0));columns=['Rank','Serial','Net P&L $','Win %','Positions','Risk $','E']
     if width>=95:columns=['Rank','Serial','Local score','Net P&L $','Win %','Positions','Risk $','Stop %','E']
     for c in columns:table.add_column(c,justify='right',no_wrap=True)
@@ -170,7 +192,7 @@ def render(data,width=110,height=38,mode='profit',selection=0,view='financial',s
     wrapped=[part for line in lines for part in textwrap.wrap(line,max(20,width-4),replace_whitespace=False,drop_whitespace=False) or ['']]
     pages=max(1,math.ceil(len(wrapped)/available));p=detail_page%pages
     layout['details'].update(Panel(Text('\n'.join(wrapped[p*available:(p+1)*available])),title=f"Candidate {row['serial'] if row else '-'} | {view}{' / '+stage if view=='rules' else ''} | detail {p+1}/{pages}"))
-    layout['keys'].update(Text('[/] session | J/K candidate | N/B page | 1 profit 2 score\n3 win 4 low risk | F financial O score P policy R rules\nE/X/A/D/T entry/exit/add/reduce/trail | U/I detail | Q close\nRank = session profit rank. N = ineligible parent.'))
+    layout['keys'].update(Text('[/] session | V follow active | J/K candidate | N/B page\n1 profit 2 score 3 win 4 risk | F financial O score P policy\nE/X/A/D/T rules: entry/exit/add/reduce/trail | U/I detail\nQ close observer | Rank = profit rank. N = ineligible parent.'))
     return layout
 
 
@@ -203,9 +225,10 @@ def main():
                         if key=='q':return 0
                         if key in '[]' and days:
                             i=days.index(observer.day if observer.day in days else data['day']);observer.select(days[(i+(1 if key==']' else -1))%len(days)]);selection=0;detail_page=0
+                        elif key=='v':observer.select(None);selection=0;detail_page=0
                         elif key in '1234':mode={'1':'profit','2':'score','3':'win','4':'risk'}[key];selection=0
                         elif key in ('j','k','n','b'):
-                            step=1 if key in ('j','k') else max(1,min(50,console.height-(3+3+(12 if console.height>=34 else 7)+8)))
+                            step=1 if key in ('j','k') else max(1,min(50,console.height-(3+len(progress_lines(data,console.width))+(10 if console.height>=34 else 5)+8)))
                             selection=max(0,min(max(0,len(data.get('rows',[]))-1),selection+(step if key in ('j','n') else -step)));detail_page=0
                         elif key in ('f','o','p','r'):view={'f':'financial','o':'objective','p':'policy','r':'rules'}[key];detail_page=0
                         elif key in 'exadt':view='rules';stage={'e':'entry','x':'exit','a':'add','d':'reduce','t':'trail'}[key];detail_page=0

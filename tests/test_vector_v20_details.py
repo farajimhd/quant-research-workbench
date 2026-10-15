@@ -69,3 +69,25 @@ def test_population_identity_mismatch_is_not_displayed(tmp_path):
     folder,_=fixture(tmp_path)
     write_json(folder/'generation-0030'/'complete.json',dict(population_sha256='different'))
     with pytest.raises(ValueError,match='identity mismatch'):d.load_generation(folder,30)
+
+
+def test_default_follows_active_session_but_manual_selection_is_preserved(tmp_path):
+    fixture(tmp_path);fixture(tmp_path,'2026-07-31',generation=5)
+    write_json(tmp_path/'manifest.json',dict(days=['2026-07-30','2026-07-31'],local_generations=30))
+    write_json(tmp_path/'status.json',dict(status='running',completed=1,workers={'2026-07-31':dict(status='running')}))
+    active=tmp_path/'pointer.json';write_json(active,dict(campaign=str(tmp_path)))
+    observer=d.DetailObserver(active);observer.refresh();assert observer.read()['day']=='2026-07-31'
+    observer.select('2026-07-30');observer.refresh();assert observer.read()['day']=='2026-07-30'
+    observer.select(None);observer.refresh();assert observer.read()['day']=='2026-07-31'
+
+
+@pytest.mark.parametrize('width,height',[(110,38),(70,24)])
+def test_worker_bars_use_completed_generations_and_keep_activity_visible(tmp_path,width,height):
+    folder,payload=fixture(tmp_path);rows=d.load_generation(folder,30)
+    workers={day:dict(completed_generations=11,generation=12,total_generations=30,stage='Evaluate rules',rule_tiles=1664,total_rule_tiles=3752,status='running') for day in ['2026-08-07','2026-08-10']}
+    data=dict(rows=rows,payloads={11:payload,12:payload},days=[folder.name],day=folder.name,generation=30,running=True,completed_sessions=1,target=30,workers=workers,queued=16)
+    output=StringIO();Console(file=output,width=width,height=height,color_system=None).print(d.render(data,width,height))
+    text=output.getvalue()
+    for expected in ('Phase 1 sessions','11/30','generation 12','Evaluate rules','2026-08-07','2026-08-10','COMPLETE','Net P&L','Risk $','follow active'):
+        assert expected in text
+    assert '[########' in text and '12/30' not in text
