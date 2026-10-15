@@ -4,10 +4,10 @@ os.environ['PYTHONDONTWRITEBYTECODE']='1'
 import argparse,json,mmap,re,time,threading,math
 from pathlib import Path
 from collections import OrderedDict
+from contextlib import nullcontext
 import psutil
 from rich.console import Console
-from rich.live import Live
-from rich.layout import Layout
+from .fixed_terminal import FixedTerminal
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -48,13 +48,17 @@ def load_generation(folder,generation):
 class DetailObserver:
     """One idle-priority reader, selected session only, two-generation cache."""
     def __init__(self,active):
-        self.active=Path(active);self.day=None;self.data={};self.lock=threading.Lock();self.stop=threading.Event();self.cache=OrderedDict();self.genomes=OrderedDict();self.cp_stamps={};self.archive_stamps={}
+        self.active=Path(active);self.day=None;self.data={};self.lock=threading.Lock();self.stop=threading.Event();self.wake=threading.Event();self.cache=OrderedDict();self.genomes=OrderedDict();self.cp_stamps={};self.archive_stamps={}
         self.thread=threading.Thread(target=self.pump,daemon=True,name='v20-detail-reader')
     def start(self):self.thread.start();return self
-    def close(self):self.stop.set();self.thread.join(2)
+    def close(self):self.stop.set();self.wake.set();self.thread.join(2)
     def read(self):
         with self.lock:return dict(self.data)
-    def select(self,day):self.day=day
+    def select(self,day):
+        self.day=day
+        with self.lock:
+            self.data={**self.data,'day':day,'rows':[],'payloads':{},'generation':0,'session_progress':{}}
+        self.wake.set()
     def refresh(self):
         owner=read_progress(self.active);root=Path(owner['campaign']);status=read_progress(root/'status.json');manifest=read_progress(root/'manifest.json');days=manifest.get('days',[])
         workers=status.get('workers',{})
@@ -93,7 +97,7 @@ class DetailObserver:
             try:self.refresh()
             except (OSError,ValueError,KeyError,TypeError) as error:
                 with self.lock:self.data={**self.data,'display_error':str(error)}
-            self.stop.wait(3)
+            self.wake.wait(3);self.wake.clear()
 
 
 def ordered_rows(rows,mode):
@@ -147,52 +151,66 @@ def detail_lines(row,payload,view,stage):
         'Training-session results only. No cross-session or validation performance implied.']
 
 
-def bar(label,done,total,width):
-    """Only completed units fill the bar; an in-flight generation stays unfilled."""
-    done=max(0,min(done,total));size=max(6,min(24,width-len(label)-20));filled=int(size*done/total) if total else 0
-    return f"{label} [{'#'*filled}{'-'*(size-filled)}] {done}/{total}"
+def ranking_size(height):
+    return max(1,min(50,height-(2+4+(10 if height>=34 else 5)+(2 if height>=34 else 1)+(3 if height>=34 else 1)+2+4)))
 
 
-def progress_lines(data,width):
-    days=data.get('days',[]);target=data.get('target',30);workers=data.get('workers',{})
-    lines=[bar('Phase 1 sessions',data.get('completed_sessions',0),len(days),width),f"{len(workers)} active | {data.get('queued',0)} queued | {data.get('failed',0)} failed | Phase 2 waits for all sessions"]
-    for day,w in sorted(workers.items()):
-        done=w.get('completed_generations',0);stage=w.get('stage','Starting');sub=''
-        if stage=='Evaluate rules' and w.get('total_rule_tiles'):
-            sub=f" | rule tiles {w.get('rule_tiles',0)}/{w['total_rule_tiles']}"
-        lines.append(bar(f"{day} generations",done,w.get('total_generations',target),width))
-        lines.append(f"  NOW: generation {w.get('generation',done+1)} - {stage}{sub}")
-    selected=data.get('day','pending');done=data.get('generation',0);wall=data.get('last_wall')
-    label='COMPLETE' if done>=target else ('ACTIVE' if selected in workers else 'QUEUED')
-    lines.append(f"Viewing {selected}: {label} | sealed generation {done}/{target}"+(f" | last {wall:.1f}s" if wall else ''))
-    if data.get('display_error'):lines.append('STALE DISPLAY: '+data['display_error'])
-    return lines
+def session_layout(data,width,height):
+    """Use the Phase-2 canvas; adapt only the session-local data and labels."""
+    from .terminal import render as phase2_render
+    from rich.progress import Progress,TextColumn,BarColumn,TaskProgressColumn
+    from rich.table import Column
+    day=data.get('day','pending');target=data.get('target',30);done=data.get('generation',0)
+    lane=data.get('workers',{}).get(day,data.get('session_progress',{}));complete=done>=target
+    state='complete' if complete else lane.get('status','queued') if data.get('running') else 'stopped'
+    stage='All local generations completed' if complete else lane.get('stage','Waiting for session worker')
+    layout=phase2_render(dict(status=state,stage=stage,config=dict(population=1024,generations=target,training_sessions=1),top_strategies=[]),width=width,height=height)
+    days=data.get('days',[]);number=days.index(day)+1 if day in days else 0
+    current=f"Generation {lane.get('generation',done+1)}: " if not complete else ''
+    layout['header'].update(Text(f"V20 PHASE 1 | SESSION {number}/{len(days)}: {day} | {state.upper()}\n{current}{stage} | {data.get('completed_sessions',0)}/{len(days)} sessions complete",style='cyan'))
+    bars=Progress(TextColumn('{task.description}',table_column=Column(width=19,no_wrap=True)),BarColumn(bar_width=None),TaskProgressColumn(),TextColumn('{task.fields[units]}',table_column=Column(width=16,no_wrap=True)),expand=True)
+    tasks=[('Session generations',done,target)]
+    if not complete:
+        if lane.get('total_rule_tiles'):tasks.append(('Current batch rules',lane.get('rule_tiles',0),lane['total_rule_tiles']))
+        if lane.get('total_seconds'):tasks.append(('Backtest timestamps',lane.get('completed_seconds',0),lane['total_seconds']))
+        if lane.get('completed_local_batches') is not None:tasks.append(('Candidate batches',lane['completed_local_batches'],2))
+    for label,count,total in tasks:
+        bars.add_task(label,total=total,completed=count,units=f'{count:,}/{total:,}')
+    layout['progress'].update(bars);layout['progress'].size=4
+    layout['leaders'].size=ranking_size(height)+4
+    layout['metrics'].size=10 if height>=34 else 5
+    layout['timing'].size=2 if height>=34 else 1
+    wall=data.get('last_wall');timing=f"Last full generation: {wall:.1f}s" if wall else 'Timing: awaiting first completed generation'
+    if wall and not complete:timing+=f" | session remaining ~{max(0,target-done)*wall/60:.1f} min (estimate)"
+    layout['timing'].update(Text(timing))
+    layout['messages'].size=3 if height>=34 else 1
+    note=data.get('display_error') or 'One session only. Rank = profit rank. E = eligible parent. Phase 2 waits for all sessions.'
+    layout['messages'].update(Panel(Text(note),title='STALE DISPLAY' if data.get('display_error') else 'Session scope',padding=0) if height>=34 else Text(data.get('display_error') or 'Session only | Rank = profit rank | E = eligible parent'))
+    layout['keys'].size=2
+    keys='S next session | W previous | J/K candidate | N/B ranking page | 1 profit 2 score 3 win 4 risk\nF financial O score P policy | E/X/A/D/T rules | U/I detail page | Q close observer' if width>=105 else 'S/W session | J/K candidate | N/B page | F/O/P details\n1-4 sort | E/X/A/D/T rules | U/I detail page | Q close'
+    layout['keys'].update(Text(keys))
+    return layout
 
 
 def render(data,width=110,height=38,mode='profit',selection=0,view='financial',stage='entry',detail_page=0):
-    rows=ordered_rows(data.get('rows',[]),mode);selection=min(max(0,selection),max(0,len(rows)-1));detail_height=10 if height>=34 else 5
-    progress=progress_lines(data,width);progress_height=len(progress)
-    page_size=max(1,min(50,height-(3+progress_height+detail_height+4+4)));page=selection//page_size
-    layout=Layout();layout.split_column(Layout(name='header',size=3),Layout(name='progress',size=progress_height),Layout(name='leaders',ratio=1),Layout(name='details',size=detail_height),Layout(name='keys',size=4))
-    days=data.get('days',[]);day=data.get('day','pending');number=days.index(day)+1 if day in days else 0
-    layout['header'].update(Text(f"V20 {'RUNNING' if data.get('running') else 'OPTIMIZER STOPPED'} | PHASE 1 | Session {number}/{len(days)}: {day}\nDetailed training rankings | sealed generation {data.get('generation',0)} | sort: {mode} | read only",style='cyan' if data.get('running') else 'bold red'))
-    layout['progress'].update(Text('\n'.join(progress),style='yellow' if data.get('display_error') else 'green'))
-    table=Table(expand=True,padding=(0,0));columns=['Rank','Serial','Net P&L $','Win %','Positions','Risk $','E']
+    layout=session_layout(data,width,height)
+    rows=ordered_rows(data.get('rows',[]),mode);selection=min(max(0,selection),max(0,len(rows)-1));page_size=ranking_size(height);page=selection//page_size
+    table=Table(expand=True,padding=(0,0),show_edge=False)
+    columns=['Rank','Serial','Net P&L $','Win %','Positions','Risk $','E']
     if width>=95:columns=['Rank','Serial','Local score','Net P&L $','Win %','Positions','Risk $','Stop %','E']
     for c in columns:table.add_column(c,justify='right',no_wrap=True)
     for i,row in enumerate(rows[page*page_size:(page+1)*page_size],page*page_size):
         m=row['metrics'];values=[str(row['rank'])+(' *' if i==selection else ''),str(row['serial']),f"{m['net_pnl']:,.1f}",'-' if m['win_rate'] is None else f"{100*m['win_rate']:.1f}",str(int(m['closed_positions'])),f"{m['maximum_position_risk']:.1f}",'Y' if row['eligible'] else 'N']
         if width>=95:values.insert(2,f"{row['score']:,.1f}");values.insert(-1,f"{100*m['maximum_stop_distance']:.2f}")
         table.add_row(*values,style='bold cyan' if i==selection else None)
-    layout['leaders'].update(Panel(table,title=f"Session ranking | {len(rows)} candidates | page {page+1}/{max(1,math.ceil(len(rows)/page_size))} | E = eligible parent"))
+    title=f"{data.get('day','pending')} ranking | sealed gen {data.get('generation',0)} | {len(rows)} candidates | {mode} | page {page+1}/{max(1,math.ceil(len(rows)/page_size))}" if width>=105 else f"{data.get('day','pending')} | gen {data.get('generation',0)} | {mode} | page {page+1}/{max(1,math.ceil(len(rows)/page_size))}"
+    layout['leaders'].update(Panel(table,title=title,padding=0))
     row=rows[selection] if rows else None;payload=data.get('payloads',{}).get(row['serial']) if row else None
-    lines=detail_lines(row,payload,view,stage);available=max(1,detail_height-2)
-    # Wrap before pagination so long expressions remain fully accessible.
+    lines=detail_lines(row,payload,view,stage);available=max(1,layout['metrics'].size-2)
     import textwrap
     wrapped=[part for line in lines for part in textwrap.wrap(line,max(20,width-4),replace_whitespace=False,drop_whitespace=False) or ['']]
     pages=max(1,math.ceil(len(wrapped)/available));p=detail_page%pages
-    layout['details'].update(Panel(Text('\n'.join(wrapped[p*available:(p+1)*available])),title=f"Candidate {row['serial'] if row else '-'} | {view}{' / '+stage if view=='rules' else ''} | detail {p+1}/{pages}"))
-    layout['keys'].update(Text('[/] session | V follow active | J/K candidate | N/B page\n1 profit 2 score 3 win 4 risk | F financial O score P policy\nE/X/A/D/T rules: entry/exit/add/reduce/trail | U/I detail\nQ close observer | Rank = profit rank. N = ineligible parent.'))
+    layout['metrics'].update(Panel(Text('\n'.join(wrapped[p*available:(p+1)*available])),title=f"Candidate {row['serial'] if row else '-'} | {view}{' / '+stage if view=='rules' else ''} | detail {p+1}/{pages}"))
     return layout
 
 
@@ -203,32 +221,32 @@ def main():
         if os.name=='nt':proc.nice(psutil.IDLE_PRIORITY_CLASS);proc.ionice(1)
         proc.cpu_affinity([proc.cpu_affinity()[-1]])
     except (psutil.Error,AttributeError):pass
-    console=Console();observer=DetailObserver(args.active).start();selection=0;mode='profit';view='financial';stage='entry';detail_page=0;switch=None
+    console=Console();once=args.once or not console.is_terminal;observer=DetailObserver(args.active).start();selection=0;mode='profit';view='financial';stage='entry';detail_page=0;switch=None
     if os.name=='nt' and console.is_terminal:
         import ctypes
         from ctypes import wintypes
         k=ctypes.windll.kernel32;k.SetConsoleTitleW('V20 detailed session monitor - read only');k.GetConsoleWindow.restype=wintypes.HWND
         u=ctypes.windll.user32;u.ShowWindow.argtypes=[wintypes.HWND,ctypes.c_int];u.ShowWindow(k.GetConsoleWindow(),3)
     try:
-        with Live(console=console,screen=console.is_terminal and not args.once,auto_refresh=False) as live:
+        with FixedTerminal(console) if not once else nullcontext() as live:
             while True:
                 data=observer.read()
+                if not data:time.sleep(.1);continue
                 if data.get('global_output'):switch=Path(data['global_output']);break
-                live.update(render(data,console.width,console.height,mode,selection,view,stage,detail_page),refresh=True)
-                if args.once:
-                    if not data and observer.thread.is_alive():time.sleep(.1);continue
-                    break
+                if live is not None:live.update(lambda w,h:render(data,w,h,mode,selection,view,stage,detail_page))
+                else:console.print(render(data,console.width,console.height,mode,selection,view,stage,detail_page))
+                if once:break
                 if os.name=='nt':
                     import msvcrt
                     while msvcrt.kbhit():
                         key=msvcrt.getwch().lower();days=data.get('days',[])
                         if key=='q':return 0
-                        if key in '[]' and days:
-                            i=days.index(observer.day if observer.day in days else data['day']);observer.select(days[(i+(1 if key==']' else -1))%len(days)]);selection=0;detail_page=0
+                        if key in '[]sw' and days:
+                            i=days.index(observer.day if observer.day in days else data['day']);observer.select(days[(i+(1 if key in (']','s') else -1))%len(days)]);selection=0;detail_page=0
                         elif key=='v':observer.select(None);selection=0;detail_page=0
                         elif key in '1234':mode={'1':'profit','2':'score','3':'win','4':'risk'}[key];selection=0
                         elif key in ('j','k','n','b'):
-                            step=1 if key in ('j','k') else max(1,min(50,console.height-(3+len(progress_lines(data,console.width))+(10 if console.height>=34 else 5)+8)))
+                            step=1 if key in ('j','k') else ranking_size(live.dimensions()[1] if live is not None else console.height)
                             selection=max(0,min(max(0,len(data.get('rows',[]))-1),selection+(step if key in ('j','n') else -step)));detail_page=0
                         elif key in ('f','o','p','r'):view={'f':'financial','o':'objective','p':'policy','r':'rules'}[key];detail_page=0
                         elif key in 'exadt':view='rules';stage={'e':'entry','x':'exit','a':'add','d':'reduce','t':'trail'}[key];detail_page=0

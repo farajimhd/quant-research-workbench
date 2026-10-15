@@ -56,7 +56,7 @@ def test_detail_panel_has_financial_fields_and_rule_view(tmp_path,width,height):
     data=dict(rows=rows,payloads={11:payload,12:payload},days=[folder.name],day=folder.name,generation=30,running=True,completed_sessions=1,target=30)
     for view in ('financial','rules'):
         output=StringIO();Console(file=output,width=width,height=height,color_system=None).print(d.render(data,width,height,view=view))
-        text=output.getvalue();assert 'V20 RUNNING' in text and 'Net P&L' in text and 'Risk $' in text and 'Positions' in text
+        text=output.getvalue();assert 'V20 PHASE 1' in text and 'Net P&L' in text and 'Risk $' in text and 'Positions' in text
         if view=='rules':assert 'OUTPUT' in text and 'minimum age' in text
         assert '\x1b' not in text
 
@@ -82,12 +82,22 @@ def test_default_follows_active_session_but_manual_selection_is_preserved(tmp_pa
 
 
 @pytest.mark.parametrize('width,height',[(110,38),(70,24)])
-def test_worker_bars_use_completed_generations_and_keep_activity_visible(tmp_path,width,height):
+def test_phase2_canvas_keeps_only_selected_session_progress_and_ranking(tmp_path,width,height):
     folder,payload=fixture(tmp_path);rows=d.load_generation(folder,30)
     workers={day:dict(completed_generations=11,generation=12,total_generations=30,stage='Evaluate rules',rule_tiles=1664,total_rule_tiles=3752,status='running') for day in ['2026-08-07','2026-08-10']}
-    data=dict(rows=rows,payloads={11:payload,12:payload},days=[folder.name],day=folder.name,generation=30,running=True,completed_sessions=1,target=30,workers=workers,queued=16)
+    data=dict(rows=rows,payloads={11:payload,12:payload},days=[folder.name,*workers],day='2026-08-07',generation=11,running=True,completed_sessions=1,target=30,workers=workers,queued=16)
     output=StringIO();Console(file=output,width=width,height=height,color_system=None).print(d.render(data,width,height))
     text=output.getvalue()
-    for expected in ('Phase 1 sessions','11/30','generation 12','Evaluate rules','2026-08-07','2026-08-10','COMPLETE','Net P&L','Risk $','follow active'):
+    for expected in ('Session generations','11/30','Evaluate rules','2026-08-07','Net P&L','Risk $'):
         assert expected in text
-    assert '[########' in text and '12/30' not in text
+    assert ('S next session' in text and 'W previous' in text) if width>=105 else 'S/W session' in text
+    assert 'Q close' in text and 'U/I detail page' in text
+    assert '2026-08-10' not in text and '12/30' not in text and '[########' not in text
+    assert len(text.splitlines())==height
+
+
+def test_switch_clears_old_ranking_before_loading_new_session(tmp_path):
+    observer=d.DetailObserver(tmp_path/'pointer.json');observer.data=dict(day='old',rows=[{'serial':1}],payloads={1:{}},generation=30)
+    observer.select('new')
+    assert observer.read()['day']=='new' and observer.read()['rows']==[] and not observer.read()['payloads']
+    assert observer.wake.is_set()
