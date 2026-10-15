@@ -25,6 +25,8 @@ from src.trading_runtime.keeper_ownership import (
 _ZERO = "0" * 64
 _TABLES = frozenset(table.name for table in (*OCCURRENCE_TABLES, *CURSOR_TABLES))
 _STRATEGY_ONE_TABLES = frozenset(LEGACY_TO_STRATEGY_ONE_SIGNAL.values())
+from .signal_context_schema import context_table
+_CONTEXT_TABLES = frozenset(context_table(table).name for table in (*OCCURRENCE_TABLES, *CURSOR_TABLES))
 
 
 def source_insert_run_id(session_key: str, configuration_revision: str, *,
@@ -78,7 +80,7 @@ def _decode(value: bytes) -> _Gate:
                 or gate.status not in {"empty", "pending", "ack"}
                 or (gate.status == "empty") != (gate.table == "")
                 or (gate.status != "empty" and gate.table not in
-                    (_TABLES | _STRATEGY_ONE_TABLES))
+                    (_TABLES | _STRATEGY_ONE_TABLES | _CONTEXT_TABLES))
                 or (not gate.active and (gate.status != "empty" or gate.count))
                 or (gate.mode == "closed" and gate.active)
                 or any(re.fullmatch(r"[0-9a-f]{64}", digest) is None

@@ -22,6 +22,7 @@ from pipelines.market_sip.events.liquidity_resolution_sql import TABLES as LIQUI
 from src.trading_runtime.columnar_strategy_release import TABLES as RELEASE
 from src.trading_runtime.strategy_configuration_schema import TABLES as SELECTION
 from src.backend.program_app_credentials import PROGRAM_APP_PRINCIPALS as PRINCIPALS
+from src.backend.signal_context_schema import TABLES as CONTEXT_TABLES
 
 SYSTEM = frozenset(('system', name) for name in
     ('tables', 'columns', 'parts', 'storage_policies', 'data_skipping_indices'))
@@ -56,6 +57,7 @@ def desired_plans():
     history, opening, liquidity = scopes(HISTORY), scopes(OPENING), scopes(LIQUIDITY)
     prior_close, volume = scopes(PRIOR_CLOSE), scopes(VOLUME)
     release, selection = scopes(RELEASE), scopes(SELECTION)
+    contextual_source = frozenset(('arte', table.name) for table in CONTEXT_TABLES)
     opening_parents = frozenset((('arte', 'bars_v1'),
         ('q_live', 'id_symbol_interval_v1'), ('q_live', 'market_stock_split_v1'),
         ('q_live', 'security_routing_fact_v1'), ('q_live', 'security_tradability_fact_v1'),
@@ -64,7 +66,7 @@ def desired_plans():
         ('arte', 'liquidity_execution_price_100ms_v1')))
     return (
         ProgramPrincipalPlan(PRINCIPALS['market_input_reader'],
-            frozenset(inherited) | SYSTEM | history | volume | opening | prior_close | liquidity | opening_parents | liquidity_parents),
+            frozenset(inherited) | SYSTEM | history | volume | opening | prior_close | liquidity | opening_parents | liquidity_parents | contextual_source),
         ProgramPrincipalPlan(PRINCIPALS['history_publisher'], SYSTEM | history | volume, history | volume),
         ProgramPrincipalPlan(PRINCIPALS['opening_reference_publisher'],
             SYSTEM | opening | prior_close | opening_parents, opening | prior_close),
@@ -73,6 +75,7 @@ def desired_plans():
         ProgramPrincipalPlan(PRINCIPALS['release_publisher'], SYSTEM | release, release),
         ProgramPrincipalPlan(PRINCIPALS['selection_reader'], SYSTEM | selection),
         ProgramPrincipalPlan(PRINCIPALS['selection_publisher'], SYSTEM | selection, selection),
+        ProgramPrincipalPlan(PRINCIPALS['signal_source_publisher'], SYSTEM | contextual_source, contextual_source),
     )
 
 
@@ -81,7 +84,7 @@ def main(argv=None):
     parser.add_argument('--show-grants', action='store_true',
         help='Print the complete explicit table grants for review')
     args = parser.parse_args(argv)
-    print('PLAN ONLY | 8 isolated principals | No connection or operational change')
+    print(f'PLAN ONLY | {len(desired_plans())} isolated principals | No connection or operational change')
     for plan in desired_plans():
         print(f'{plan.principal}: SELECT {len(plan.reads)}, INSERT {len(plan.writes)}')
         if args.show_grants:

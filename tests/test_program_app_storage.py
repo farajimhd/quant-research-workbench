@@ -19,11 +19,19 @@ def test_inventory_reuses_unique_normalized_contracts():
     for table in contracts:
         assert "storage_policy = 'live_market_ssd'" in table.ddl()
     market = [table for table in contracts if table.database == 'q_live']
-    assert len(market) == 10 and all(table.name.startswith('qmd_') for table in market)
+    assert len(market) == 12 and all(table.name.startswith('qmd_') for table in market)
     assert all(table.database == 'q_live' for table in contracts if table.name.startswith('qmd_'))
     assert 'trading_strategy_signal_exact_price_v1' not in {table.name for table in contracts}
     assert 'trading_oms_observation_snapshot_v1' not in {table.name for table in contracts}
     assert 'trading_strategy_one_oms_observation_snapshot_v1' in {table.name for table in contracts}
+    from src.market_engine.qmd_volume_product import TABLES as volume
+    from src.backend.signal_context_schema import TABLES as contexts
+    assert set(volume) <= set(contracts)
+    by_name = {table.name: table for table in contracts}
+    assert {table.name for table in contexts} <= set(by_name)
+    for source in contexts:
+        assert by_name[source.name].columns == source.columns
+        assert by_name[source.name].database == 'arte'
     from pipelines.market_sip.events.liquidity_resolution_sql import TABLES as liquidity
     assert set(liquidity) <= set(contracts)
     assert all(table.database == 'arte' for table in liquidity)

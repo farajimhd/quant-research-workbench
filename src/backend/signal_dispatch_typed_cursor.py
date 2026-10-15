@@ -259,6 +259,14 @@ def read_committed_dispatch_prefix(
             or not configuration_revision_id):
         raise ValueError("dispatch cold scope is invalid")
     hashes = tuple(_hex(value) for value in source_commit_hashes)
+    context = getattr(registered_dispatch, "source_context", None)
+    if getattr(storage, "source_context", None) is not None and context is None:
+        raise ValueError("Contextual dispatch cold read requires its registered context authority")
+    if context is not None:
+        from .signal_context_transport import require_context_components
+        require_context_components(context, storage)
+        if (context.session_key != session_key or context.configuration_revision != configuration_revision_id):
+            raise ValueError("Dispatch cold prefix crossed native execution context")
     strategy_one = getattr(registered_dispatch, "strategy_one", False)
     if (registered_dispatch is not None
             and (type(strategy_one) is not bool
@@ -274,8 +282,8 @@ def read_committed_dispatch_prefix(
             raise ValueError("dispatch empty prefix has uncommitted rows")
         from src.backend.signal_dispatch_insert_dispatch import dispatch_run_id
         registered_dispatch.assert_cold_receipts(
-            dispatch_run_id(session_key, configuration_revision_id,
-                            strategy_one=strategy_one), {})
+            (registered_dispatch.run_id if context is not None else dispatch_run_id(session_key, configuration_revision_id,
+                            strategy_one=strategy_one)), {})
         return ()
     listed_intents = [canonical_row(INTENT_COMMIT, row) for row in
                       storage.list_dispatch_commits(INTENT_COMMIT.name, session_key=session_key)]
@@ -313,8 +321,8 @@ def read_committed_dispatch_prefix(
         recovered.append((intents, acks))
     if registered_dispatch is not None:
         from src.backend.signal_dispatch_insert_dispatch import dispatch_run_id
-        run_id = dispatch_run_id(session_key, configuration_revision_id,
-                                 strategy_one=strategy_one)
+        run_id = (registered_dispatch.run_id if context is not None else dispatch_run_id(session_key, configuration_revision_id,
+                                 strategy_one=strategy_one))
         registered_dispatch.assert_cold_receipts(run_id, {
             sequence: (intents["commit"]["content_hash"],
                        acks["commit"]["content_hash"])

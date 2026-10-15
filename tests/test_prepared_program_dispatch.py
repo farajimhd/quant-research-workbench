@@ -46,7 +46,8 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
     controller = ReplayRunController(definition, runtime_root=tmp_path, program_strategy=actor,
         program_liquidity_resolution_ms=resolution)
     controller._journal = BacktestMemoryJournal(run_id=controller.run_id)
-    publisher = TypedSignalPublicationQueue(FakeStorage(), capacity=1)
+    from tests.test_program_signal_source import executable_contextual_publisher, source_context_for
+    publisher = executable_contextual_publisher(source_context_for(controller, scope['source_revision']), scope['catalogs'])
     def post(path, request, timeout):
         return response_for(certificate, request["first_ordinal"], request["stop_ordinal"], request["field_ids"])
     async def run():

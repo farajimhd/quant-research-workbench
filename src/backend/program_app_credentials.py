@@ -10,6 +10,7 @@ PROGRAM_APP_PRINCIPALS = MappingProxyType({
     'release_publisher': 'program_release_publisher',
     'selection_reader': 'program_selection_reader',
     'selection_publisher': 'program_selection_publisher',
+    'signal_source_publisher': 'program_signal_source_publisher',
 })
 
 PROGRAM_APP_CREDENTIAL_FILES = MappingProxyType({
@@ -25,7 +26,7 @@ _READ_PROFILES = MappingProxyType({
 })
 
 _WRITE_ROLES = frozenset(('history_publisher', 'opening_reference_publisher',
-    'liquidity_publisher', 'release_publisher', 'selection_publisher'))
+    'liquidity_publisher', 'release_publisher', 'selection_publisher', 'signal_source_publisher'))
 
 
 def _open_managed_client(principal, *, timeout_seconds, settings):

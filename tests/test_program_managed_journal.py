@@ -12,6 +12,7 @@ from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionIn
 from src.backend.replay_run_service import ReplayRunController
 from src.trading_runtime.journal_contract import canonical_json
 from tests.test_program_controller_runtime import definition_and_actor
+from tests.test_program_signal_source import contextual_publisher, source_context_for
 
 
 def controller_request(tmp_path):
@@ -129,7 +130,7 @@ def test_native_app_preparation_opens_managed_lane_after_inputs_and_stages_only(
     monkeypatch.setattr('src.backend.backtest_journal_clickhouse.backtest_code_hash',
         lambda _: controller._program_strategy.program_release.header['code_hash'])
     stages = []
-    run_service, publisher = object(), object()
+    run_service, publisher = object(), contextual_publisher(source_context_for(controller))
     selector = SimpleNamespace(_prepared_lock=Lock(), _prepared=None)
     async def review(service, actual):
         assert service is run_service and actual is controller
@@ -180,7 +181,7 @@ def test_native_app_preparation_opens_managed_lane_after_inputs_and_stages_only(
     controller._close_fixed_journal = close_journal
     async def run():
         pending = flow.complete_program_app_preparation(run_service, controller,
-            cohorts=(object(),), scopes=({'source_publisher': publisher},), journal_scope=request,
+            cohorts=(SimpleNamespace(population_pin=SimpleNamespace(source_revision='source-origin')),), scopes=({'source_publisher': publisher},), journal_scope=request,
             signal_publisher=publisher, signal_scope={}, checkpoint_connection_factory=lambda: None,
             checkpoint_concurrency=2)
         if cleanup_failure:
@@ -192,5 +193,8 @@ def test_native_app_preparation_opens_managed_lane_after_inputs_and_stages_only(
             assert await pending is controller
             assert selector._prepared == (run_service, controller)
         assert controller._task is None
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    finally:
+        publisher.close()
     assert stages[:8] == ['inputs', 'owned-controls', 'journal', 'runtime', 'signals', 'bind', 'stage', 'close-controls']

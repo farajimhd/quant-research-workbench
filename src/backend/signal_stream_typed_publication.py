@@ -178,6 +178,10 @@ class TypedSignalPublicationQueue:
                 is not getattr(attestor, "strategy_one", False)):
             raise ValueError("registered Signal Stream source and Keeper table scope differ")
         self._storage = storage
+        self.source_context = getattr(storage, "source_context", None)
+        if self.source_context is not None:
+            from .signal_context_transport import require_context_components
+            require_context_components(self.source_context, attestor._keeper)
         self._attestor = attestor
         self._capacity = capacity
         self._queue: queue.Queue[tuple[PublicationBatch, Future[str]]] = queue.Queue()
@@ -195,6 +199,8 @@ class TypedSignalPublicationQueue:
     def bootstrap_session(self, *, session_key: str, configuration_revision: str,
                           source_revision: str, catalogs: Mapping[str, SourceCatalog]):
         """Control-plane cold verification; never call on the realtime submit path."""
+        if self.source_context is not None and (session_key, configuration_revision, source_revision) != (self.source_context.session_key, self.source_context.configuration_revision, self.source_context.source_revision):
+            raise ValueError("Source bootstrap differs from its native context")
         with self._lock:
             if self._started or self._closing or self._pending or self._fatal is not None:
                 raise RuntimeError("typed Signal Stream bootstrap is unavailable")
@@ -236,6 +242,7 @@ class TypedSignalPublicationQueue:
         head = self.bootstrap_session(**scope)
         runtime._install_committed_source(head,
             configuration_revision=scope["configuration_revision"], source_revision=scope["source_revision"])
+        runtime.source_context = self.source_context
         return head
 
     async def bootstrap_runtime_session_async(self, runtime, **scope):

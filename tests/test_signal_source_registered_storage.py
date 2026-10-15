@@ -28,8 +28,9 @@ class _InsertClient:
 
 
 class _Attestor:
-    def __init__(self):
+    def __init__(self, *, strategy_one=False):
         self.seen = []
+        self.strategy_one = strategy_one
 
     def bootstrap(self, recovered, *, configuration_revision, source_revision):
         assert recovered.sequence == 0
@@ -141,7 +142,7 @@ def test_strategy_one_registered_source_publishes_only_isolated_families():
         configuration_revision=batch.configuration_revision,
         strategy_one=True)
     dispatch.initialize_new_session(storage.run_id, has_ch_rows=False)
-    publisher = TypedSignalPublicationQueue(storage, attestor=_Attestor())
+    publisher = TypedSignalPublicationQueue(storage, attestor=_Attestor(strategy_one=True))
     try:
         publisher.bootstrap_session(
             session_key=batch.session_key,

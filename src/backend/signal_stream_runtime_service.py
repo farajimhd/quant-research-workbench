@@ -208,6 +208,7 @@ class SignalStreamRuntime:
         self._live_occurrences: tuple[str, list[dict[str, Any]]] | None = None
         self._generation = 0
         self._typed_pending: PendingSignalTransition | None = None
+        self.source_context = None
         self._typed_scope: tuple[str, str] | None = None
         self._typed_cursor: tuple[int, str, datetime | None] | None = None
         self._typed_prefix: list[str] = []

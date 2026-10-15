@@ -9,6 +9,7 @@ from .replay_run_service import ReplayRunDefinition, ReplayRunService
 from .backtest_program_input_plan import ProgramPublishedInputRequest
 from .program_managed_journal import ManagedProgramJournalRequest
 from .signal_stream_typed_publication import TypedSignalPublicationQueue
+from .program_signal_source import ProgramSignalPublisherFactory
 from src.trading_runtime.strategy_engine import StrategyAssignment
 
 HANDOFF_KEY = 'approved_program_app_preparation'
@@ -84,7 +85,7 @@ class ProgramAppHandoff:
     published_inputs: ProgramPublishedInputRequest
     scopes: tuple
     journal: ManagedProgramJournalRequest
-    signal_publisher: TypedSignalPublicationQueue
+    signal_publisher: TypedSignalPublicationQueue | ProgramSignalPublisherFactory
     signal_scope: Mapping
     checkpoint_connection_factory: object
     checkpoint_concurrency: int
@@ -93,7 +94,7 @@ class ProgramAppHandoff:
         if (type(self.definition) is not ReplayRunDefinition
                 or type(self.published_inputs) is not ProgramPublishedInputRequest
                 or type(self.journal) is not ManagedProgramJournalRequest
-                or type(self.signal_publisher) is not TypedSignalPublicationQueue
+                or type(self.signal_publisher) not in (TypedSignalPublicationQueue, ProgramSignalPublisherFactory)
                 or type(self.assignments) is not tuple or not self.assignments
                 or any(type(row) is not StrategyAssignment for row in self.assignments)
                 or not isinstance(self.listing_by_assignment, Mapping)

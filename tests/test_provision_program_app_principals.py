@@ -96,7 +96,7 @@ def approval_payload():
 def test_exact_storage_grants_and_idempotent_resume():
     admin = Admin()
     clients = run(admin)
-    assert len(admin.accounts) == len(clients) == 8
+    assert len(admin.accounts) == len(clients) == 9
     assert all(c.closed for c in clients)
     assert len(admin.tables) == 31
     assert set(operator.PRIOR_CLOSE) <= set(admin.tables)
@@ -140,8 +140,8 @@ def test_interruption_keeps_existing_state_for_same_plan_resume():
     assert len(admin.accounts) == 1
     assert all(c.closed for c in clients)
     run(admin)
-    assert len(admin.accounts) == 8
-    assert sum(kind == 'create' for kind, _ in admin.changes) == 8
+    assert len(admin.accounts) == 9
+    assert sum(kind == 'create' for kind, _ in admin.changes) == 9
 
 
 def test_shared_password_is_rejected_before_account_creation():
@@ -161,7 +161,7 @@ def test_client_cleanup_settles_every_owned_connection(monkeypatch):
     monkeypatch.setattr(Client, 'close', close)
     with pytest.raises(ExceptionGroup, match='cleanup failed'):
         run(admin, clients=clients)
-    assert len(clients) == 8 and all(client.closed for client in clients)
+    assert len(clients) == 9 and all(client.closed for client in clients)
 
 
 def test_private_credential_is_protected_before_write_and_reused(tmp_path, monkeypatch):

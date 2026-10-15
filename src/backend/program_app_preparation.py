@@ -37,10 +37,17 @@ async def complete_program_app_preparation(run_service, controller, *, cohorts, 
     await selector._review_controller(run_service, controller)
     if controller._runtime is not None or controller._journal is not None:
         raise ValueError("App programme preparation requires its fresh unadopted controller")
+    from .program_signal_source import (ProgramSignalPublisherFactory, require_program_signal_publisher)
+    from .signal_execution_context import SignalExecutionContext
+    from .qmd_columnar_history_transport import _owned_worker
+    if type(cohorts) is not tuple or not cohorts:
+        raise ValueError('Program source binding requires certified native input cohorts')
+    context = SignalExecutionContext(controller.run_id, controller.definition.mode.value,
+        controller.definition.session_date.isoformat(),
+        controller.definition.configuration_revision['revision_id'],
+        cohorts[0].population_pin.source_revision)
+    created_publisher = False
     contracts = None
-    if managed:
-        from .qmd_columnar_history_transport import _owned_worker
-        contracts = await _owned_worker(prepare_managed_journal_contracts, controller, journal_scope)
     async def adopt_and_stage(scope, work):
         await controller.attach_prepared_program_journal(**scope)
         if type(scope) is ManagedProgramJournalScope:
@@ -52,6 +59,13 @@ async def complete_program_app_preparation(run_service, controller, *, cohorts, 
             checkpoint_concurrency=checkpoint_concurrency)
         return await selector.stage_controller(run_service, controller)
     try:
+        if type(signal_publisher) is ProgramSignalPublisherFactory:
+            signal_publisher = await signal_publisher.create(context)
+            created_publisher = True
+            scopes = tuple({**scope, 'source_publisher': signal_publisher} for scope in scopes)
+        require_program_signal_publisher(context, signal_publisher)
+        if managed:
+            contracts = await _owned_worker(prepare_managed_journal_contracts, controller, journal_scope)
         # Complete input proof and read preparation precede publication.
         work = await prepare_program_session_input_plan(controller, cohorts, scopes=scopes, history_post=history_post)
         if managed:
@@ -67,6 +81,7 @@ async def complete_program_app_preparation(run_service, controller, *, cohorts, 
         controller._program_launch_plan = None
         controller._program_feature_cache = None
         controller._program_population_cache = None
+        cleanup_errors = []
         if controller._journal is not None or controller._runtime is not None:
             controller._program_dispatch_failure = exc
             async def close_owned():
@@ -85,7 +100,15 @@ async def complete_program_app_preparation(run_service, controller, *, cohorts, 
             try:
                 await _settle_owned_task(asyncio.create_task(close_owned()))
             except BaseException as cleanup_error:
-                raise BaseExceptionGroup("Programme preparation and cleanup failed", [exc, cleanup_error])
+                cleanup_errors.append(cleanup_error)
+        if created_publisher:
+            try:
+                await _owned_worker(signal_publisher.close)
+            except BaseException as cleanup_error:
+                cleanup_errors.append(cleanup_error)
+        if cleanup_errors:
+            raise BaseExceptionGroup('Programme preparation and cleanup failed', [exc, *cleanup_errors])
+
         raise
 
 
@@ -114,6 +137,12 @@ async def complete_recovered_program_app_preparation(run_service, controller, *,
     if (journal_scope["recovery_evidence"] is not evidence
             or journal_scope["release"] is not controller._program_strategy.program_release):
         raise ValueError("Recovered app preparation differs from its joined evidence")
+    from .signal_execution_context import SignalExecutionContext
+    expected_context = SignalExecutionContext(controller.run_id, controller.definition.mode.value,
+        controller.definition.session_date.isoformat(),
+        controller.definition.configuration_revision['revision_id'], population.source_revision)
+    if getattr(source, 'source_context', None) != expected_context:
+        raise ValueError('Recovered programme source differs from its exact native execution context')
     await selector._review_controller(run_service, controller)
     if controller._runtime is not None or controller._journal is not None:
         raise ValueError("Recovered app preparation requires its unadopted controller")

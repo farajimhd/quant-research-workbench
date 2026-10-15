@@ -17,6 +17,7 @@ from .qmd_columnar_history_transport import _owned_worker
 class DispatchRecovery:
     completed: tuple
     pending_source_sequences: tuple[int, ...]
+    source_context: object | None = None
 
 
 def recover_dispatch_backlog(storage, *, session_key: str, source_commit_hashes: tuple[str, ...],
@@ -24,6 +25,10 @@ def recover_dispatch_backlog(storage, *, session_key: str, source_commit_hashes:
     """Keep the dispatch gate cold while proving a complete ACK prefix and empty tail."""
     if registered_dispatch is None:
         raise ValueError("Dispatch recovery requires registered cold receipt authority")
+    context = getattr(registered_dispatch, "source_context", None)
+    if context is not None:
+        from .signal_context_transport import require_context_components
+        require_context_components(context, storage)
     hashes = tuple(_hex(value) for value in source_commit_hashes)
     inventory = getattr(storage, "has_dispatch_rows_after", None)
     if not callable(inventory):
@@ -39,7 +44,7 @@ def recover_dispatch_backlog(storage, *, session_key: str, source_commit_hashes:
     completed = read_committed_dispatch_prefix(storage, session_key=session_key,
         source_commit_hashes=hashes[:count], configuration_revision_id=configuration_revision_id,
         registered_dispatch=registered_dispatch)
-    return DispatchRecovery(completed, tuple(range(count + 1, len(hashes) + 1)))
+    return DispatchRecovery(completed, tuple(range(count + 1, len(hashes) + 1)), context)
 
 
 async def recover_dispatch_backlog_async(storage, **scope) -> DispatchRecovery:

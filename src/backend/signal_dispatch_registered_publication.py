@@ -27,7 +27,13 @@ def _literal(value: str) -> str:
 def _exact_rows(client: Any, table: TypedTable, *,
                 physical_name: str,
                 session_key: str, sequence: int,
-                maximum: int) -> list[dict[str, Any]]:
+                maximum: int, source_context=None) -> list[dict[str, Any]]:
+    if source_context is not None:
+        from .signal_context_transport import read_context_rows
+        result = read_context_rows(client, source_context, table, f"session_key={_literal(session_key)} AND source_batch_sequence={sequence}", maximum)
+        if table in (INTENT, ACK):
+            result.sort(key=lambda row: row["ordinal"])
+        return result
     columns = ",".join(name for name, _ in table.columns)
     sql = (f"SELECT {columns} FROM arte.{physical_name} "
            f"WHERE session_key={_literal(session_key)} "
@@ -42,25 +48,49 @@ def _exact_rows(client: Any, table: TypedTable, *,
     return result
 
 
+def _wire_rows(dispatch, table, rows):
+    context = getattr(dispatch, "source_context", None)
+    if context is None:
+        return rows
+    from .signal_execution_context import project_context_row
+    return [project_context_row(context, table, row) for row in rows]
+
+
+def _family_hash(dispatch, table, rows):
+    context = getattr(dispatch, "source_context", None)
+    if context is None:
+        return dispatch_family_hash(tuple(row["content_hash"] for row in rows))
+    from .signal_context_transport import context_logical_hash
+    _wire_rows(dispatch, table, rows)  # independently validate full scalar-row integrity
+    return dispatch_family_hash(tuple(context_logical_hash(context, table, row["content_hash"]) for row in rows))
+
+
 def _publish_family(
     client: Any, dispatch: SignalDispatchInsertDispatch, *,
     run_id: str, session_key: str, sequence: int, phase: str,
     table: TypedTable, rows: list[Mapping[str, Any]], maximum: int,
 ) -> None:
-    digest = dispatch_family_hash(tuple(row["content_hash"] for row in rows)) if rows else None
+    digest = _family_hash(dispatch, table, rows) if rows else None
     physical = dispatch.physical(table.name)
+    wire_rows = rows
+    context = getattr(dispatch, "source_context", None)
+    if context is not None:
+        from .signal_execution_context import project_context_row
+        wire_rows = [project_context_row(context, table, row) for row in rows]
     if rows:
-        columns = ",".join(name for name, _ in table.columns)
+        from .signal_typed_json_wire import typed_json_wire_row
+        transport_rows = [typed_json_wire_row(table, row) for row in wire_rows]
+        columns = ",".join(wire_rows[0])
         token = f"dispatch:{run_id}:{sequence}:{physical}:{digest}"
         sql = (f"INSERT INTO arte.{physical} ({columns}) SETTINGS "
                "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
                f"insert_deduplication_token='{token}' FORMAT JSONEachRow\n" +
-               "\n".join(canonical_json(row) for row in rows))
+               "\n".join(canonical_json(row) for row in transport_rows))
         dispatch.execute(client, run_id=run_id, sequence=sequence,
                          phase=phase, table=physical, row_hash=digest, sql=sql)
     readback = _exact_rows(client, table, physical_name=physical,
                            session_key=session_key,
-                           sequence=sequence, maximum=maximum)
+                           sequence=sequence, maximum=maximum, source_context=context)
     if readback != rows:
         raise ValueError(f"typed dispatch {table.name} readback differs")
     if digest is not None:
@@ -81,8 +111,7 @@ def publish_registered_intents(
     session_key, sequence = commit["session_key"], commit["source_batch_sequence"]
     families = ((INTENT, intents), (INTENT_COMMIT, [commit]))
     dispatch.reserve(run_id, sequence=sequence, phase="intent",
-                     row_hashes={dispatch.physical(table.name): dispatch_family_hash(tuple(
-                         row["content_hash"] for row in rows)) if rows else None
+                     row_hashes={dispatch.physical(table.name): _family_hash(dispatch, table, rows) if rows else None
                                  for table, rows in families})
     for table, rows in families:
         _publish_family(client, dispatch, run_id=run_id,
@@ -92,7 +121,7 @@ def publish_registered_intents(
     dispatch.finish_intent(
         run_id=run_id, sequence=sequence,
         intent_commit_hash=commit["content_hash"],
-        commit_family_hash=dispatch_family_hash((commit["content_hash"],)))
+        commit_family_hash=_family_hash(dispatch, INTENT_COMMIT, [commit]))
     return commit["content_hash"]
 
 
@@ -112,13 +141,13 @@ def publish_registered_ack(
         if _exact_rows(client, table, physical_name=dispatch.physical(table.name),
                        session_key=session_key,
                        sequence=sequence,
-                       maximum=256 if table == INTENT else 1) != expected:
+                       maximum=256 if table == INTENT else 1,
+                       source_context=getattr(dispatch, "source_context", None)) != expected:
             raise ValueError("typed dispatch intent predecessor differs")
     families = ((ACK, rows), (ACK_COMMIT, [commit]))
     dispatch.reserve(run_id, sequence=sequence, phase="ack",
                      intent_commit_hash=intents["commit"]["content_hash"],
-                     row_hashes={dispatch.physical(table.name): dispatch_family_hash(tuple(
-                         row["content_hash"] for row in family)) if family else None
+                     row_hashes={dispatch.physical(table.name): _family_hash(dispatch, table, family) if family else None
                                  for table, family in families})
     for table, family in families:
         _publish_family(client, dispatch, run_id=run_id,
@@ -129,5 +158,5 @@ def publish_registered_ack(
         run_id=run_id, sequence=sequence,
         intent_commit_hash=intents["commit"]["content_hash"],
         ack_commit_hash=commit["content_hash"],
-        commit_family_hash=dispatch_family_hash((commit["content_hash"],)))
+        commit_family_hash=_family_hash(dispatch, ACK_COMMIT, [commit]))
     return commit["content_hash"]

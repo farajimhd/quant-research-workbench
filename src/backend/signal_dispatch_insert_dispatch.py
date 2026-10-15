@@ -269,6 +269,9 @@ class SignalDispatchInsertDispatch:
                 return
         raise KeeperUnavailable("Dispatch typed seal CAS contended")
 
+    def _commit_family_hash(self, commit_hash: str, *, phase: str) -> str:
+        return dispatch_family_hash((commit_hash,))
+
     def finish_intent(self, *, run_id: str, sequence: int,
                       intent_commit_hash: str, commit_family_hash: str) -> None:
         if re.fullmatch(r"[0-9a-f]{64}", intent_commit_hash) is None:
@@ -279,8 +282,7 @@ class SignalDispatchInsertDispatch:
                     or gate.sequence != sequence or not gate.active
                     or any(op.status not in {"sealed", "empty"} for op in gate.operations)
                     or gate.operations[1].row_hash != commit_family_hash
-                    or commit_family_hash != dispatch_family_hash(
-                        (intent_commit_hash,))):
+                    or commit_family_hash != self._commit_family_hash(intent_commit_hash, phase="intent")):
                 raise KeeperUnavailable("Dispatch intent phase has unresolved INSERTs")
             if self._cas(run_id, version, replace(
                     gate, phase="ack", active=False,
@@ -300,8 +302,7 @@ class SignalDispatchInsertDispatch:
                     or gate.intent_hash != intent_commit_hash
                     or any(op.status not in {"sealed", "empty"} for op in gate.operations)
                     or gate.operations[1].row_hash != commit_family_hash
-                    or commit_family_hash != dispatch_family_hash(
-                        (ack_commit_hash,))):
+                    or commit_family_hash != self._commit_family_hash(ack_commit_hash, phase="ack")):
                 raise KeeperUnavailable("Dispatch ACK phase has unresolved INSERTs")
             txn = self.keeper.transaction()
             txn.check(_gate_path(run_id), version=version)

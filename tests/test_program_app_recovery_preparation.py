@@ -1,5 +1,6 @@
 """Composition and custody cleanup; native component proofs have separate tests."""
 import asyncio
+from datetime import date
 from inspect import signature, Parameter
 from types import SimpleNamespace
 from threading import Event
@@ -10,17 +11,22 @@ from src.backend import program_app_preparation as flow
 from src.backend import backtest_program_journal_bootstrap as journal
 from src.backend import program_runtime_recovery as runtime_builder
 from src.backend import backtest_v4_run_context as accounts
+from tests.test_program_signal_source import source_context_for
 
 
 @pytest.mark.parametrize("failure", [None, "build", "initialize", "adopt", "bind", "cancel"])
 def test_recovered_app_preparation_orders_native_steps_and_closes_owned_failure(monkeypatch, failure):
     calls = []
-    release, service, source, packet, population = (object() for _ in range(5))
+    release, service, packet = (object() for _ in range(3))
+    population = SimpleNamespace(source_revision='recovered-source-origin')
     evidence = SimpleNamespace(financial=SimpleNamespace(portfolio=object(), completed_at=object()))
     controller = SimpleNamespace(_runtime=None, _journal=None,
         _program_strategy=SimpleNamespace(program_release=release),
-        definition=SimpleNamespace(configuration_revision={"payload": {"strategy": {}}}),
+        run_id='actual-recovered-run',
+        definition=SimpleNamespace(mode=SimpleNamespace(value='backtest'), session_date=date(2026, 10, 15),
+            configuration_revision={"revision_id": 'recovered-config', "payload": {"strategy": {}}}),
         _program_launch_plan=None, _program_feature_cache=object(), _program_dispatch_failure=None)
+    source = SimpleNamespace(source_context=source_context_for(controller, population.source_revision))
     async def review(*args): calls.append("review")
     async def stage(*args): calls.append("stage"); return controller
     monkeypatch.setattr(flow, "program_configuration_selection_service",

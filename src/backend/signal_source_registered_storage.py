@@ -32,13 +32,21 @@ class RegisteredSignalSourceStorage:
     def __init__(self, read_storage: Any, insert_client: Any,
                  dispatch: SignalSourceInsertDispatch, *, session_key: str,
                  configuration_revision: str,
-                 strategy_one: bool = False) -> None:
+                 strategy_one: bool = False, source_context=None) -> None:
         if (type(strategy_one) is not bool
                 or dispatch.strategy_one != strategy_one
                 or getattr(read_storage, "strategy_one", False) is not strategy_one):
             raise ValueError("Registered source reader, dispatch and table mode differ")
+        self.source_context = source_context
+        if source_context is not None:
+            from .signal_context_transport import require_context_components
+            require_context_components(source_context, read_storage, dispatch)
+            if (session_key != source_context.session_key or configuration_revision != source_context.configuration_revision):
+                raise ValueError("Registered source context scope differs")
         self.run_id = source_insert_run_id(
             session_key, configuration_revision, strategy_one=strategy_one)
+        if source_context is not None:
+            self.run_id = dispatch.run_id
         self.strategy_one = strategy_one
         self._session_key = session_key
         self._configuration_revision = configuration_revision
@@ -76,6 +84,8 @@ class RegisteredSignalSourceStorage:
             self.run_id, sequence=fence[0], commit_hash=fence[1])
 
     def begin_batch(self, batch: Any) -> None:
+        if self.source_context is not None and batch.source_revision != self.source_context.source_revision:
+            raise ValueError("Registered source batch source revision differs from context")
         if (self._active_sequence is not None
                 or batch.session_key != self._session_key
                 or batch.configuration_revision != self._configuration_revision):
@@ -107,14 +117,24 @@ class RegisteredSignalSourceStorage:
         normalized = [canonical_row(table, row) for row in rows]
         physical = (strategy_one_signal_table(table_name) if self.strategy_one
                     else table_name)
+        wire_rows = normalized
+        if self.source_context is not None:
+            from .signal_execution_context import project_context_row
+            from .signal_context_schema import context_table
+            physical = context_table(table).name
+            wire_rows = [project_context_row(self.source_context, table, row) for row in normalized]
         digest = sha256(canonical_json(tuple(
-            row["content_hash"] for row in normalized)).encode()).hexdigest()
+            row.get("context_content_hash", row["content_hash"]) for row in wire_rows)).encode()).hexdigest()
         token = f"source:{sequence}:{physical}:{sha256(key.encode()).hexdigest()[:16]}:{digest}"
-        columns = ",".join(name for name, _ in table.columns)
+        if self.source_context is not None:
+            token = f"source:{self.source_context.context_id}:{sequence}:{physical}:{sha256(key.encode()).hexdigest()[:16]}:{digest}"
+        from .signal_typed_json_wire import typed_json_wire_row
+        transport_rows = [typed_json_wire_row(table, row) for row in wire_rows]
+        columns = ",".join(wire_rows[0])
         sql = (f"INSERT INTO arte.{physical} ({columns}) SETTINGS "
                "async_insert=1,wait_for_async_insert=1,insert_deduplicate=1,"
                f"insert_deduplication_token='{token}' FORMAT JSONEachRow\n"
-               + "\n".join(canonical_json(row) for row in normalized))
+               + "\n".join(canonical_json(row) for row in transport_rows))
         self._dispatch.execute(
             self._client, run_id=self.run_id, sequence=sequence,
             table=physical, token=token, row_hash=digest, sql=sql)

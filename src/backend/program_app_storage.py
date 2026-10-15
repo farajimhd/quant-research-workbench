@@ -14,6 +14,7 @@ def program_app_storage_contracts():
     from src.trading_runtime.configuration_execution_binding import TABLES as EXECUTION_TABLES
     from src.trading_runtime.configuration_execution_risk import TABLES as RISK_TABLES
     from pipelines.market_sip.events.liquidity_resolution_sql import TABLES as LIQUIDITY_TABLES
+    from .signal_context_schema import TABLES as CONTEXT_TABLES
     from .signal_stream_typed_cursor import TABLES as CURSOR_TABLES
     from .signal_stream_typed_occurrence import TABLES as OCCURRENCE_TABLES
     from .signal_dispatch_typed_cursor import DISPATCH_TABLES
@@ -24,7 +25,7 @@ def program_app_storage_contracts():
     # their metadata to the same shared physical/schema auditor, without
     # adding a second schema or changing their existing scalar fields.
     source = tuple(TableContract(table.name, table.columns, 'toYYYYMM(session_key)', table.order)
-        for table in (*CURSOR_TABLES, *OCCURRENCE_TABLES, *DISPATCH_TABLES))
+        for table in (*CURSOR_TABLES, *OCCURRENCE_TABLES, *DISPATCH_TABLES, *CONTEXT_TABLES))
     contracts = {}
     for table in (*tables, *source):
         prior = contracts.setdefault((table.database, table.name), table)

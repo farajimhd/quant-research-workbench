@@ -45,18 +45,39 @@ class ClickHouseSignalSourceReadStorage:
     def __init__(self, client: Any, catalogs: Mapping[str, Any], *,
                  max_family_rows: int = 65_536,
                  max_commits: int = 100_000,
-                 strategy_one: bool = False) -> None:
+                 strategy_one: bool = False, source_context=None) -> None:
         if (type(max_family_rows) is not int or not 1 <= max_family_rows <= 65_536
                 or type(max_commits) is not int or not 1 <= max_commits <= 100_000
                 or type(strategy_one) is not bool):
             raise ValueError("Signal source read bounds are invalid")
+        if source_context is not None:
+            from .signal_execution_context import SignalExecutionContext
+            if type(source_context) is not SignalExecutionContext or strategy_one:
+                raise ValueError("Contextual source requires its concrete generic run context")
+        self.source_context = source_context
+        self._context_seal_verified = False
         self._client = client
         self._catalogs = catalogs
         self._max_family_rows = max_family_rows
         self._max_commits = max_commits
         self.strategy_one = strategy_one
 
+    def verify_source_context(self) -> None:
+        if self.source_context is not None and not self._context_seal_verified:
+            from .signal_context_transport import verify_context_seal
+            verify_context_seal(self._client, self.source_context)
+            self._context_seal_verified = True
+
+    def _context_predicate(self) -> str:
+        self.verify_source_context()
+        if self.source_context is None:
+            return ""
+        return f"source_context_id='{self.source_context.context_id}' AND "
+
     def _physical(self, logical_name: str) -> str:
+        if self.source_context is not None:
+            from .signal_context_schema import context_table
+            return context_table(logical_name).name
         return (strategy_one_signal_table(logical_name) if self.strategy_one
                 else logical_name)
 
@@ -64,6 +85,10 @@ class ClickHouseSignalSourceReadStorage:
         table = _TABLES.get(table_name)
         if table is None:
             raise ValueError("Signal source read table is not registered")
+        if self.source_context is not None:
+            self.verify_source_context()
+            from .signal_context_transport import read_context_rows
+            return read_context_rows(self._client, self.source_context, table, predicate, maximum)
         columns = ",".join(name for name, _ in table.columns)
         sql = (f"SELECT {columns} FROM arte.{self._physical(table_name)} WHERE {predicate} "
                f"LIMIT {maximum + 1} FORMAT JSONEachRow")
@@ -101,7 +126,7 @@ class ClickHouseSignalSourceReadStorage:
         day = _session(session_key)
         for table_name in _TABLES:
             sql = (f"SELECT 1 FROM arte.{self._physical(table_name)} "
-                   f"WHERE session_key=toDate('{day}') LIMIT 1 FORMAT JSONEachRow")
+                   f"WHERE {self._context_predicate()}session_key=toDate('{day}') LIMIT 1 FORMAT JSONEachRow")
             if self._client.execute(sql).strip():
                 return True
         return False

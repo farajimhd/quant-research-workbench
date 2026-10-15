@@ -1,5 +1,6 @@
 """Native preparation composition; each authority has separate integration tests."""
 import asyncio
+from datetime import date
 from inspect import signature, Parameter
 from types import SimpleNamespace
 
@@ -8,21 +9,34 @@ import pytest
 from src.backend import program_app_preparation as flow
 from src.backend import program_configuration_selection_service as selection
 from src.backend.replay_run_service import ReplayRunCapacityError
+from tests.test_program_signal_source import contextual_publisher, source_context_for
+from src.backend.program_signal_source import ProgramSignalPublisherFactory
 
 
 @pytest.mark.parametrize("failure,cleanup_failure", [(None, None), ("signals", None),
     ("signals", "runtime"), ("signals", "journal")])
-def test_preparation_orders_existing_gates_and_closes_adopted_failure(monkeypatch, failure, cleanup_failure):
+@pytest.mark.parametrize('deferred', [False, True])
+def test_preparation_orders_existing_gates_and_closes_adopted_failure(monkeypatch, failure, cleanup_failure, deferred):
     stages = []
     controller = SimpleNamespace(_runtime=None, _journal=None, _task=None,
-        _program_feature_cache=object(), _program_launch_plan=None, _program_dispatch_failure=None)
-    publisher = object()
+        _program_feature_cache=object(), _program_launch_plan=None, _program_dispatch_failure=None,
+        run_id='actual-preparation-run', definition=SimpleNamespace(mode=SimpleNamespace(value='backtest'),
+            session_date=date(2026, 10, 15), configuration_revision={'revision_id': 'config'}))
+    publisher = contextual_publisher(source_context_for(controller))
+    constructed = []
+    async def build_source(context):
+        assert stages == ['review']
+        assert context == source_context_for(controller)
+        constructed.append(context)
+        return publisher
+    supplied_publisher = ProgramSignalPublisherFactory(build_source) if deferred else publisher
     service = object()
     async def review(owned_service, owned):
         assert owned_service is service and owned is controller
         stages.append("review")
     async def prepare(owned, cohorts, **kwargs):
         assert owned is controller
+        assert kwargs['scopes'][0]['source_publisher'] is publisher
         stages.append("inputs")
         return ("prepared",)
     async def journal(**kwargs):
@@ -60,8 +74,8 @@ def test_preparation_orders_existing_gates_and_closes_adopted_failure(monkeypatc
     journal_scope = {name: object() for name, parameter in signature(flow.attach_program_journal).parameters.items()
         if name != "controller" and parameter.default is Parameter.empty}
     async def run():
-        kwargs = dict(cohorts=(object(),), scopes=({"source_publisher": publisher},),
-            journal_scope=journal_scope, signal_publisher=publisher, signal_scope={},
+        kwargs = dict(cohorts=(SimpleNamespace(population_pin=SimpleNamespace(source_revision='source-origin')),), scopes=({"source_publisher": supplied_publisher},),
+            journal_scope=journal_scope, signal_publisher=supplied_publisher, signal_scope={},
             checkpoint_connection_factory=lambda: None, checkpoint_concurrency=2)
         if failure:
             if cleanup_failure:
@@ -77,7 +91,12 @@ def test_preparation_orders_existing_gates_and_closes_adopted_failure(monkeypatc
             assert await flow.complete_program_app_preparation(service, controller, **kwargs) is controller
             assert stages == ["review", "inputs", "journal", "runtime", "signals", "bind", "stage"]
         assert controller._task is None
-    asyncio.run(run())
+        assert len(constructed) == int(deferred)
+        assert publisher._closing is bool(deferred and failure)
+    try:
+        asyncio.run(run())
+    finally:
+        publisher.close()
 
 
 def test_startup_reservation_blocks_foreign_staging_and_launch(monkeypatch):

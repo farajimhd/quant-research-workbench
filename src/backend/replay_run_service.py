@@ -4937,6 +4937,12 @@ class ReplayRunController:
                 or scope.get("configuration_revision") !=
                    self.definition.configuration_revision["revision_id"]):
             raise ValueError("Program Signal Stream bootstrap differs from its controller scope")
+        from .signal_execution_context import SignalExecutionContext
+        from .program_signal_source import require_program_signal_publisher
+        context = SignalExecutionContext(self.run_id, self.definition.mode.value,
+            self.definition.session_date.isoformat(),
+            self.definition.configuration_revision['revision_id'], scope['source_revision'])
+        require_program_signal_publisher(context, publisher)
         runtime = SignalStreamRuntime()
         head = await publisher.bootstrap_runtime_session_async(runtime, **scope)
         self._program_signal_runtime = runtime

@@ -41,6 +41,7 @@ class RegisteredDispatchCursorWriter:
         preflight: Callable[[Any], None] | None = None,
         strategy_one: bool = False,
         recovered_prefix: Any | None = None,
+        source_context=None,
     ) -> None:
         if (not callable(source_commit_verifier)
                 or type(strategy_one) is not bool
@@ -50,6 +51,13 @@ class RegisteredDispatchCursorWriter:
         self.run_id = dispatch_run_id(
             session_key, configuration_revision_id,
             strategy_one=strategy_one)
+        self.source_context = source_context
+        if source_context is not None:
+            from .signal_context_transport import require_context_components
+            require_context_components(source_context, dispatch)
+            if (source_context.session_key != session_key or source_context.configuration_revision != configuration_revision_id or preflight is None):
+                raise ValueError("Context writer requires exact native scope and v2 storage preflight")
+            self.run_id = dispatch.run_id
         self.strategy_one = strategy_one
         if strategy_one:
             from src.backend.live_strategy_one_v4_principal import live_v4_preflight
@@ -64,6 +72,8 @@ class RegisteredDispatchCursorWriter:
             from .signal_dispatch_recovery import DispatchRecovery
             if type(recovered_prefix) is not DispatchRecovery:
                 raise ValueError("Registered dispatch resume requires its verified recovery projection")
+            if source_context is not None and recovered_prefix.source_context != source_context:
+                raise ValueError("Dispatch recovered prefix crossed native execution context")
             expected = {}
             for sequence, (intents, acks) in enumerate(recovered_prefix.completed, 1):
                 verify_dispatch_cursor(intents, acks)
