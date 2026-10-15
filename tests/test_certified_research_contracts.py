@@ -1622,7 +1622,7 @@ class ClickHouseIntegration(unittest.TestCase):
             self.client.query(f'DROP TABLE {database}.{name}',read=False)
         logs.clear()
         result=installation.install(query,database,FixtureClaim())
-        self.assertEqual(result['tables'],28)
+        self.assertEqual(result['tables'],29)
         self.assertEqual(installation.verify(query,database,require_tables=True)['installation_hash'],result['installation_hash'])
         logs.clear()
         self.assertEqual(installation.install(query,database,FixtureClaim())['created'],0)

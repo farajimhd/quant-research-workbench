@@ -97,6 +97,16 @@ def plan(config: CampaignConfig,*,indicator_seed: StateSeed|None=None,v7_seed: S
 def preparation_start(config,requested,*,rebuild_origin=None):
     """Definition-derived source dates; a missing state is never inferred warmup."""
     if type(requested) is not date or requested>config.start:raise ValueError('Invalid requested source context')
+    if config.product_scope=='market_bars':
+        from datetime import datetime,time,timedelta
+        # Activity is clock-based, not a 20-session short-interest or indicator
+        # lookback. Include the actual configured rolling-time boundary only.
+        targets=exchange_sessions(config.start,config.end)
+        if not targets:raise ValueError('Independent market scope has no exchange sessions')
+        required=(datetime.combine(targets[0],time(4))-timedelta(seconds=max(config.volume_windows_seconds))).date()
+        start=min(requested,required)
+        if start<date(2019,1,2):raise ValueError('Source preparation context precedes canonical history')
+        return start
     demand=plan(config,rebuild_origin=rebuild_origin)
     fatal=[reason for reason in demand['blocked'] if 'compatible prior state' not in reason]
     if fatal:raise ValueError('; '.join(fatal))

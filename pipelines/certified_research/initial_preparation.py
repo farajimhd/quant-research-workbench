@@ -17,8 +17,11 @@ def discover_and_prepare(query,config,dataset_id,claim,client_factory,source_gua
     claim.check();source_guard()
     if stop.is_set():raise InterruptedError('Initial discovery stopped')
     source.require_ready(query,canonical,reporting)
-    start=min((*canonical['expected'],short_start))
+    start=min(canonical['expected']) if config.product_scope=='market_bars' else min((*canonical['expected'],short_start))
     snapshot=cohorts.select(universe.load_for_config(query,start,config.end,anchor_date,config),config.issuer_keys)
+    if config.product_scope=='market_bars':
+        from .independent_market import assemble
+        return assemble(config,snapshot,canonical,reporting,definition,rules,anchor_date,query=query,guard=source_guard)
     references=reference_discovery.discover(query,config,dataset_id,claim,client_factory,source_guard,snapshot,
         canonical['expected'],fundamental_start=fundamental_start,short_start=short_start,stop=stop,progress=progress)
     if not references['ready']:
@@ -31,6 +34,7 @@ def discover_and_prepare(query,config,dataset_id,claim,client_factory,source_gua
         anchor_date=str(anchor_date),source_hash=snapshot['source_hash']))
     if config.issuer_keys:authority=PlannedUnit(authority.unit,dict(authority.arguments,issuer_keys=config.issuer_keys))
     if config.conid_review_hash:authority=PlannedUnit(authority.unit,dict(authority.arguments,conid_review_hash=config.conid_review_hash))
+    if config.identity_policy!='dated':authority=PlannedUnit(authority.unit,dict(authority.arguments,identity_policy=config.identity_policy))
     assembled=prepare(query,config,claim,client_factory,source_guard,canonical,reporting,definition,rules,
         references['issuers'],references['securities'],prerequisites=(authority,*references['prerequisites']),
         universe_parent='universe',corporate_parents=references['corporate_parents'],adjustment_hashes=adjustment_hashes,
@@ -156,6 +160,8 @@ def prepare(query,config,claim,client_factory,source_guard,canonical,reporting,d
     universe_unit=PlannedUnit(authority.unit,dict(context_start=str(membership_start),end=str(config.end),
         anchor_date=str(anchor_date),source_hash=snapshot['source_hash']))
     if config.issuer_keys:universe_unit=PlannedUnit(universe_unit.unit,dict(universe_unit.arguments,issuer_keys=config.issuer_keys))
+    if config.conid_review_hash:universe_unit=PlannedUnit(universe_unit.unit,dict(universe_unit.arguments,conid_review_hash=config.conid_review_hash))
+    if config.identity_policy!='dated':universe_unit=PlannedUnit(universe_unit.unit,dict(universe_unit.arguments,identity_policy=config.identity_policy))
     prerequisites=tuple(universe_unit if p.unit.key==universe_parent else p for p in prerequisites)
     assembled=initial_plan.assemble(config,prepared,frozen,frozen_reporting,definition,rules,issuers,securities,
         prerequisites=prerequisites,universe_parent=universe_parent,corporate_parents=corporate_parents,

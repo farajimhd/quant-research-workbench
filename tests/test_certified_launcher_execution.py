@@ -233,6 +233,35 @@ def test_launch_selections_share_one_configuration_and_cannot_omit_v7_input():
     with pytest.raises(ValueError,match='V7 requires'):launcher.campaign_config(args,args.end_date)
 
 
+def test_independent_market_launch_does_not_wait_for_ingestion_lease_or_sec(capsys):
+    from uuid import uuid4
+    inspection=Mock();client=Mock();client.query.return_value=[dict(n=0)];client.clean_error.side_effect=str
+    keeper=SimpleNamespace(client=Mock(),close=Mock());claim=Mock();dictionary=Mock()
+    with patch('scripts.build_market_day.Client',side_effect=[inspection,client]),\
+         patch('pipelines.certified_research.capacity_profile.load',return_value={}),\
+         patch('pipelines.certified_research.capacity_profile.factory',return_value=Mock()),\
+         patch('pipelines.market_sip.flatfiles.download_update_events.load_env_files'),\
+         patch('src.trading_runtime.keeper_session.open_workstation_keeper_session',return_value=keeper),\
+         patch('pipelines.certified_research.publication.SourceClaim') as source_claim,\
+         patch('pipelines.certified_research.publication.KeeperClaim',return_value=claim),\
+         patch('pipelines.certified_research.publication.DictionaryClaim',return_value=dictionary),\
+         patch('pipelines.certified_research.acquisition.IngestionPaths'),\
+         patch('pipelines.certified_research.installation.install'),\
+         patch('pipelines.certified_research.source.inventory',return_value={}),\
+         patch('pipelines.certified_research.source.reporting_inventory',return_value={}),\
+         patch('pipelines.certified_research.source.require_ready',return_value='a'*64),\
+         patch('pipelines.certified_research.sec_acquisition.prepare') as sec,\
+         patch('pipelines.certified_research.acquisition.prepare_sources') as ingest,\
+         patch('pipelines.certified_research.fresh_execution.run',return_value=dict(status='blocked',errors={},seal=None)) as run:
+        code=launcher.main(['launch','--dataset-id',str(uuid4()),'--capacity-profile','pilot.json',
+            '--product-scope','market_bars','--start-date','2026-01-02','--context-start-date','2026-01-02','--end-date','2026-01-02','--format','json'])
+    assert code==2
+    assert run.call_args.args[1].product_scope=='market_bars'
+    assert run.call_args.kwargs['sec_scope_preparer'] is None
+    source_claim.assert_not_called();sec.assert_not_called();ingest.assert_not_called()
+    assert '"combined_dataset_complete": false' in capsys.readouterr().out
+
+
 def test_cohort_plan_cli_is_read_only_and_does_not_claim_execution_ready(capsys):
     from tests.test_certified_cohorts import snapshot
     client=Mock();client.clean_error.side_effect=str

@@ -291,6 +291,9 @@ def load(query,context_start,end,anchor_date,*,database='q_live',maximum_rows=10
 
 def load_for_config(query,context_start,end,anchor_date,config):
     """Keep legacy datasets unchanged; pinned pools bind every new/resumed read."""
+    if config.identity_policy!='dated':
+        from .retrospective_identity import load as retrospective_load
+        return retrospective_load(query,context_start,end,anchor_date,config.conid_review_hash)
     options={} if config.conid_review_hash is None else dict(conid_review_hash=config.conid_review_hash)
     return load(query,context_start,end,anchor_date,**options)
 

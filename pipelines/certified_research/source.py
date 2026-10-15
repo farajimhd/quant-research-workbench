@@ -178,9 +178,48 @@ def reporting_inventory(query,source):
             proof=details.get('evidence_hash','')
             if not re.fullmatch('[0-9a-f]{64}',proof):raise ValueError(f'{day}: native reporting input fingerprint migration required')
             verified[str(day)]['evidence_hash']=proof
-    active=query("SELECT mutation_id FROM system.mutations WHERE database='market_sip_compact' "
-                 "AND startsWith(table,'events_') AND NOT is_done LIMIT 1")
-    return dict(missing=tuple(missing),verified=verified,unqualified=unqualified,mutating=bool(active),content_hash=digest(verified))
+    active=query("SELECT mutation_id,table,command,parts_to_do_names FROM system.mutations WHERE database='market_sip_compact' "
+                 "AND startsWith(table,'events_') AND NOT is_done LIMIT 129")
+    mutating=mutations_overlap(query,active,source)
+    return dict(missing=tuple(missing),verified=verified,unqualified=unqualified,mutating=mutating,content_hash=digest(verified))
+
+
+def mutations_overlap(query,active,inventory):
+    """Only proven, disjoint ingestion-owned flag repairs may run in parallel.
+
+    Unknown mutations remain global blockers. Pending physical part names must
+    be disjoint from every UTC month touched by the selected source days.
+    This reads bounded control metadata, never scans canonical market rows.
+    """
+    if not active:return False
+    import re
+    from datetime import datetime,timezone,timedelta
+    if len(active)>128:return True
+    if any(not re.match(r'^UPDATE\s+event_meta\s*=',r.get('command',''),re.I)
+            or not r.get('parts_to_do_names') or not r.get('table') for r in active):return True
+    exists=query("SELECT count() n FROM system.tables WHERE database='q_live' AND name='historical_native_reporting_repair_v1'")
+    if exists!=[dict(n=1)]:return True
+    headers=query('SELECT target,marker FROM q_live.historical_native_reporting_repair_v1 LIMIT 10001')
+    if len(headers)>10000:return True
+    for row in active:
+        if not any(h['target']=='market_sip_compact.'+row['table'] and
+                re.fullmatch('[0-9a-f]{64}',h['marker']) and h['marker'] in row['command'] for h in headers):return True
+    selected=set();epoch=datetime(1970,1,1,tzinfo=timezone.utc)
+    for day in inventory['expected']:
+        row=inventory['rows'].get(day,{})
+        first=row.get('first_sip_timestamp_us');last=row.get('last_sip_timestamp_us')
+        if isinstance(first,str) and first.isdecimal():first=int(first)
+        if isinstance(last,str) and last.isdecimal():last=int(last)
+        if type(first) is not int or type(last) is not int or not 0<first<=last:return True
+        a=(epoch+timedelta(microseconds=first)).date();b=(epoch+timedelta(microseconds=last)).date()
+        if (b-a).days>2:return True
+        while a<=b:
+            selected.add((f'events_{day.year}',a.strftime('%Y%m')));a+=timedelta(days=1)
+    for row in active:
+        for name in row['parts_to_do_names']:
+            match=re.match(r'^(\d{6})_',name)
+            if match is None or (row['table'],match.group(1)) in selected:return True
+    return False
 
 
 def require_ready(query,source,reporting):

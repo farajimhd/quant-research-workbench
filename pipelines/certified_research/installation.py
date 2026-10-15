@@ -29,9 +29,9 @@ def _market_tables(database):
 
 
 def catalog(database='arte'):
-    from . import activity,float_data,reference_producer,short_pressure,historical_identity
+    from . import activity,float_data,reference_producer,short_pressure,historical_identity,reference_availability
     identifier(database)
-    groups=(('published',schema.TABLES),('acquisition',(historical_identity.persistence_table(),)),
+    groups=(('published',schema.TABLES),('acquisition',(historical_identity.persistence_table(),reference_availability.persistence_table())),
         ('staging',(*_market_tables(database),reference_producer.staging_table(),float_data.staging_table(),
                     activity.staging_table(),short_pressure.staging_table())))
     result=tuple((group,table) for group,tables in groups for table in tables)

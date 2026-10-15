@@ -42,4 +42,5 @@ def verify(query,database,dataset_id,claim,client_factory,dictionary_claim_facto
             or seals[0]['root_hash']!=root or int(seals[0]['units'])!=len(saved.units)):
         raise ValueError('Published campaign seal is missing, duplicated or differs from verified authority')
     return dict(status='verified',dataset_id=dataset_id,plan_hash=saved.plan_hash,source_hash=saved.source_hash,
-        root_hash=root,units=len(saved.units),read_only=True)
+        root_hash=root,units=len(saved.units),read_only=True,product_scope=saved.config.product_scope,
+        combined_dataset_complete=saved.config.product_scope=='full')

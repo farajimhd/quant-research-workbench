@@ -36,7 +36,7 @@ def prepare(query,config,collection_id,claim,child_claim_factory,client_factory,
     claim.check()
     targets=source.exchange_sessions(config.start,config.end)
     if not targets:raise ValueError('Fresh collection has no target exchange sessions')
-    short_days=context.preceding_sessions(targets[0],max(config.short_windows_sessions))
+    short_days=() if config.product_scope=='market_bars' else context.preceding_sessions(targets[0],max(config.short_windows_sessions))
     start=min((context_start,*short_days,*targets))
     days=source.exchange_sessions(start,config.end)
     snapshot=universe.load_for_config(query,start,config.end,anchor_date,config)

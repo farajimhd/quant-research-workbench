@@ -19,6 +19,7 @@ is the current status authority; fixture passes do not prove production coverage
 
 | Page | What you will find |
 | --- | --- |
+| [Independent market publication](certified_research_dataset/13vn-independent-market-publication.md) | Approved retrospective identity assumption, bars-only launch, explicit unknown reference features and remaining state-product work. |
 | [Current implementation audit](certified_research_dataset/13i-completion-audit.md) | Verified work, live evidence gaps and remaining completion requirements. |
 | [Current RL/optimization input review](certified_research_dataset/13t-consumer-input-review.md) | Source primitive mapping and legacy reader compatibility gaps; no downstream generation. |
 | [Bounded issuer collection launch](certified_research_dataset/13r-issuer-cohorts.md) | Current launch/resume/verification routes, exact collection metadata schemas and capacity contracts. |

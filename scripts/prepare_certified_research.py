@@ -37,6 +37,8 @@ def parse_args(argv=None):
     p.add_argument('--backfill-start-date',type=date.fromisoformat,help='Optional narrower target range inside the source plan')
     p.add_argument('--backfill-end-date',type=date.fromisoformat,help='Optional narrower target range inside the source plan')
     p.add_argument('--database',default='arte')
+    p.add_argument('--product-scope',choices=('full','market_bars'),default='full',help='Independent bars/liquidity/activity publication; missing reference features remain explicitly unknown')
+    p.add_argument('--identity-policy',choices=('dated','current_conid_retrospective_v1'),default='dated',help='Explicit reviewed current-identity retrospective assumption; never historical broker proof')
     p.add_argument('--start-date',type=date.fromisoformat,default=date(2026,1,1))
     p.add_argument('--end-date',type=date.fromisoformat)
     p.add_argument('--context-start-date',type=date.fromisoformat,help='Explicit earlier source prerequisite bound; target start is unchanged')
@@ -188,8 +190,11 @@ def parse_args(argv=None):
             p.error('backfill-v7 reads certified ClickHouse inputs only; prepare sources before backfill')
     elif any(v is not None for v in (args.source_dataset_id,args.backfill_start_date,args.backfill_end_date)):
         p.error('Source dataset and backfill bounds belong to backfill-v7')
-    if args.command in ('launch','launch-collection') and any(v is None for v in (args.context_start_date,args.fundamental_start_date)):
-        p.error('launch requires --context-start-date and --fundamental-start-date')
+    if args.command in ('launch','launch-collection'):
+        if args.context_start_date is None or (args.product_scope=='full' and args.fundamental_start_date is None):
+            p.error('launch requires --context-start-date; full scope also requires --fundamental-start-date')
+        if args.product_scope=='market_bars' and args.fundamental_start_date is None:
+            args.fundamental_start_date=args.context_start_date
     if args.rebuild_origin_date is not None and args.command not in ('launch','launch-collection'):
         p.error('--rebuild-origin-date belongs to fresh launch; resume uses the frozen plan')
     if args.command=='prepare-sources' and (args.end_date is None or args.format!='text'):
@@ -232,7 +237,8 @@ def campaign_config(args,end):
         query_threads=args.query_threads,query_memory_bytes=args.query_memory_gib*1024**3,
         global_memory_bytes=args.global_memory_gib*1024**3,volume_windows_seconds=args.volume_windows_seconds,
         short_windows_sessions=args.short_windows_sessions,resolutions_ms=args.resolutions_ms,issuer_keys=args.issuer_keys,
-        conid_review_hash=args.conid_review_hash,query_timeout_seconds=args.query_timeout_seconds)
+        conid_review_hash=args.conid_review_hash,query_timeout_seconds=args.query_timeout_seconds,
+        product_scope=args.product_scope,identity_policy=args.identity_policy)
 
 
 def prepare_identity(args,claim,client_factory,dictionary_factory,stop,progress=None):
@@ -669,25 +675,34 @@ def main(argv=None):
                             exists=client.query(f"SELECT count() n FROM system.tables WHERE database='{args.database}' AND name='research_collection_v1'")[0]['n']
                             if int(exists) and int(client.query(f"SELECT count() n FROM {args.database}.research_collection_v1 WHERE collection_id=toUUID('{args.dataset_id}')")[0]['n']):
                                 raise ValueError('Collection already has a frozen definition; use resume-collection')
-                        source_claim=SourceClaim(keeper.client)
-                        try:
-                            prepare_identity(args,source_claim,lambda:factory(config),
-                                lambda:DictionaryClaim(keeper.client,args.database),stop,progress)
-                            prepare_retained_symbols(args,client,source_claim,lambda:DictionaryClaim(keeper.client,'q_live'),stop,config.end,
-                                context_start=source_context)
-                            from pipelines.certified_research import sec_acquisition
-                            sec_acquisition.prepare(client.query,paths,config,source_claim,stop,
-                                fundamental_start=args.fundamental_start_date,acquire_missing=args.acquire_sec_missing,
-                                runtime_root_ch=args.sec_runtime_root_ch,
-                                emit=print if args.format=='text' else lambda text:None)
-                            sec_candidates=prepare_sec_share_sources(args,client,config,source_claim,lambda:factory(config),
-                                lambda:DictionaryClaim(keeper.client,'q_live'),stop,progress)
-                            acquisition.prepare_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),paths,config,source_claim,
-                                stop,acquire_missing=args.acquire_missing,stage_archive=args.stage_archive,context_start=source_context,
-                                writer_query=client.query,recover_retained_reporting=args.recover_retained_reporting,
-                                staging_reserve_bytes=args.staging_reserve_gib*1024**3,staging_reserve_fraction=args.staging_reserve_fraction,
-                                staging_chunk_bytes=args.staging_chunk_gib*1024**3)
-                        finally:source_claim.close()
+                        independent_read=(config.product_scope=='market_bars' and not any((
+                            args.acquire_missing,args.stage_archive,args.recover_retained_reporting,
+                            args.identity_point,args.repair_retained_symbols)))
+                        if independent_read:
+                            canonical=source.inventory(client.query,source_context,config.end)
+                            reporting=source.reporting_inventory(client.query,canonical)
+                            source.require_ready(client.query,canonical,reporting)
+                        else:
+                            source_claim=SourceClaim(keeper.client)
+                            try:
+                                prepare_identity(args,source_claim,lambda:factory(config),
+                                    lambda:DictionaryClaim(keeper.client,args.database),stop,progress)
+                                prepare_retained_symbols(args,client,source_claim,lambda:DictionaryClaim(keeper.client,'q_live'),stop,config.end,
+                                    context_start=source_context)
+                                if config.product_scope=='full':
+                                    from pipelines.certified_research import sec_acquisition
+                                    sec_acquisition.prepare(client.query,paths,config,source_claim,stop,
+                                        fundamental_start=args.fundamental_start_date,acquire_missing=args.acquire_sec_missing,
+                                        runtime_root_ch=args.sec_runtime_root_ch,
+                                        emit=print if args.format=='text' else lambda text:None)
+                                    sec_candidates=prepare_sec_share_sources(args,client,config,source_claim,lambda:factory(config),
+                                        lambda:DictionaryClaim(keeper.client,'q_live'),stop,progress)
+                                acquisition.prepare_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),paths,config,source_claim,
+                                    stop,acquire_missing=args.acquire_missing,stage_archive=args.stage_archive,context_start=source_context,
+                                    writer_query=client.query,recover_retained_reporting=args.recover_retained_reporting,
+                                    staging_reserve_bytes=args.staging_reserve_gib*1024**3,staging_reserve_fraction=args.staging_reserve_fraction,
+                                    staging_chunk_bytes=args.staging_chunk_gib*1024**3)
+                            finally:source_claim.close()
                     claim=KeeperClaim(keeper.client,str(args.dataset_id))
                     try:
                         dictionary_factory=lambda:DictionaryClaim(keeper.client,args.database)
@@ -727,9 +742,9 @@ def main(argv=None):
                                 context_start=source_context,fundamental_start=args.fundamental_start_date,
                                 anchor_date=args.universe_anchor_date,maximum_issuers=args.cohort_max_issuers,
                                 maximum_sessions=args.cohort_max_sessions,stop=stop,progress=progress,
-                                rebuild_origin=args.rebuild_origin_date,source_preparer=prepare_discovered_sources,sec_scope_preparer=prepare_sec_scopes,
+                                rebuild_origin=args.rebuild_origin_date,source_preparer=prepare_discovered_sources,sec_scope_preparer=prepare_sec_scopes if config.product_scope=='full' else None,
                                 sec_scope_preparation_hash=sec_scope_preparation.selection_hash(forms=args.sec_census_forms or sec_scope_preparation.DEFAULT_FORMS,
-                                    numeric_mode=args.sec_numeric_mode,public_time_mode=args.sec_public_time_mode))
+                                    numeric_mode=args.sec_numeric_mode,public_time_mode=args.sec_public_time_mode) if config.product_scope=='full' else None)
                             result=collection_execution.execute(client.query,args.database,str(args.dataset_id),claim,
                                 lambda id_:KeeperClaim(keeper.client,id_),factory,dictionary_factory,
                                 profile=profile,stop=stop,progress=progress) if prepared['status']=='prepared' else prepared
@@ -737,7 +752,7 @@ def main(argv=None):
                             result=fresh_execution.run(client.query,config,str(args.dataset_id),claim,factory,
                                 dictionary_factory,admission,context_start=source_context,fundamental_start=args.fundamental_start_date,
                                 anchor_date=args.universe_anchor_date,stop=stop,progress=progress,
-                                rebuild_origin=args.rebuild_origin_date,source_preparer=prepare_discovered_sources,sec_scope_preparer=prepare_sec_scopes)
+                                rebuild_origin=args.rebuild_origin_date,source_preparer=prepare_discovered_sources,sec_scope_preparer=prepare_sec_scopes if config.product_scope=='full' else None)
                         elif args.command=='backfill-v7':
                             result=checkpoint_backfill.run(client.query,args.database,str(args.source_dataset_id),str(args.dataset_id),
                                 claim,factory,dictionary_factory,admission,stop=stop,progress=progress,
@@ -750,6 +765,9 @@ def main(argv=None):
             if args.sec_share_document and args.command=='launch-collection' and sec_candidates is not None:
                 result['sec_source_candidates']={k:sec_candidates[k] for k in ('status','captured','reused','candidate_only','allocation_certified','original_vintage_qualified')}
             if args.command=='launch-collection':
+                if config.product_scope!='full':
+                    result.update(product_scope=config.product_scope,combined_dataset_complete=False,
+                        reference_features='unknown',deferred_products=('technical','v7'))
                 if args.format=='json':print(json.dumps(result,default=str))
                 else:
                     print('Collection '+result['status']+' | '+str(result.get('certificate',{}).get('root_hash','unsealed')))
@@ -761,6 +779,9 @@ def main(argv=None):
             summary=dict(status=result['status'],counts=counts,seal=result.get('seal'),
                 failures={k:client.clean_error(v)[:256] for k,v in list(result['errors'].items())[:20]},
                 failed_units=len(result['errors']))
+            if config.product_scope!='full':
+                summary.update(product_scope=config.product_scope,combined_dataset_complete=False,
+                    reference_features='unknown',deferred_products=('technical','v7'))
             if args.sec_share_document and args.command=='launch' and sec_candidates is not None:
                 summary['sec_source_candidates']={k:sec_candidates[k] for k in ('status','captured','reused','candidate_only','allocation_certified','original_vintage_qualified')}
             if 'measurements' in result:summary['measurements']=result['measurements']

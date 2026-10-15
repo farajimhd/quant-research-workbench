@@ -91,7 +91,24 @@ class UniversePublisher:
         expected=self.expected(snapshot);found=self.stored(expected)
         self.dictionaries(snapshot['intervals'],write=True)
         projection=fixture_projection or universe.candidates_sql(context_start,end,anchor_date,database=source_database)
+        if snapshot.get('identity_policy'):
+            from .retrospective_identity import POLICY
+            if snapshot['identity_policy']!=POLICY:raise ValueError('Unsupported retrospective identity assumption')
+            # These proofs explicitly name the assumption. They must never be
+            # substituted for Gateway's dated observation proof.
+            listing_by_hash={i.evidence_hash:i.listing_id for i in snapshot['intervals']}
+            for offset in range(0,len(expected),1024):
+                batch=expected[offset:offset+1024];ids=','.join(literal(r['evidence_hash']) for r in batch)
+                existing=self.query(f'SELECT evidence_hash FROM {self.database}.research_provenance_v1 WHERE evidence_hash IN ({ids})')
+                found_hashes={r['evidence_hash'] for r in existing}
+                rows=[dict(evidence_hash=r['evidence_hash'],source_system='reference_gateway',source_record=listing_by_hash[r['evidence_hash']],
+                    source_hash=r['evidence_hash'],proof=snapshot['assumption_proofs'][r['evidence_hash']])
+                    for r in batch if r['evidence_hash'] not in found_hashes]
+                self.guard()
+                if rows:insert_rows(self.query,self.database,'research_provenance_v1',rows)
+            projection=None
         for offset in range(0,len(expected),1024):
+            if projection is None:break
             batch=expected[offset:offset+1024];ids=','.join(literal(r['evidence_hash']) for r in batch)
             self.guard()
             self.query(f'INSERT INTO {self.database}.research_provenance_v1 '

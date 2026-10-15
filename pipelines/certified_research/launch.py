@@ -55,6 +55,12 @@ class ExecutionLaunch:
         self.claim=claim;self.source_guard=source_guard;self.capacity_guard=capacity_guard
         self.query=query
         self.config=config;self.plans=tuple(plans)
+        if config.product_scope=='market_bars':
+            allowed={'canonical_source','condition_rules','calculation_recipe','universe',
+                'market_aggregate','activity','reference_availability'}
+            if any(p.unit.product not in allowed for p in self.plans) or not any(
+                    p.unit.product=='reference_availability' for p in self.plans):
+                raise ValueError('Independent market scope cannot certify reference features or state products')
         if original_parity_guard is None and any(p.unit.product=='fundamentals' and 'original_specification_hash' in p.arguments for p in self.plans):
             from .sec_scope_specification import StoredGuard
             original_parity_guard=StoredGuard(query,self.plans,claim,source_guard)
@@ -65,6 +71,8 @@ class ExecutionLaunch:
                 raise ValueError('Universe issuer cohort differs from the frozen configuration')
             if plan.unit.product=='universe' and plan.arguments.get('conid_review_hash')!=config.conid_review_hash:
                 raise ValueError('Universe conid review differs from the frozen configuration')
+            if plan.unit.product=='universe' and plan.arguments.get('identity_policy','dated')!=config.identity_policy:
+                raise ValueError('Universe identity assumption differs from frozen configuration')
         if (market_runtime.dataset!=dataset_id or market_runtime.database!=config.database
                 or market_runtime.claim is not claim):
             raise ValueError('Market runtime ownership/dataset differs from execution launch')
@@ -73,7 +81,9 @@ class ExecutionLaunch:
             if (market_runtime.recipe_hash!=frozen['recipe_hash'] or market_runtime.definition!=frozen['definition']
                     or market_runtime.rules!=frozen['rules']):
                 raise ValueError('Market runtime differs from the frozen plan descriptor')
-        registries=(CanonicalSourceHandlers(claim,client_factory,source_guard),
+        from .reference_availability import Handlers as AvailabilityHandlers
+        registries=(AvailabilityHandlers(dataset_id,config,claim,client_factory,source_guard),
+            CanonicalSourceHandlers(claim,client_factory,source_guard),
             runtime_plan.Handlers(config,self.plans,claim,source_guard,market_runtime),
             ReferenceAuthorityHandlers(dataset_id,config.database,claim,client_factory,source_guard),
             ReferenceImportHandlers(dataset_id,config.database,claim,client_factory,source_guard),
