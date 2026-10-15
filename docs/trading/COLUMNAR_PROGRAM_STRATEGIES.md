@@ -58,6 +58,13 @@ require exact reconciliation; no data deletion, implicit retry or raw SIP
 fallback is permitted. Imported days use canonical ClickHouse authorities.
 Research shards are comparison evidence and never app market inputs.
 
+Continuous history uses the explicitly selected identity basis for every source
+day. Shared Reference Gateway captures are bound to that day's certified market
+identity, routing and tradability facts, including historical ticker changes.
+Their scalar dependencies name the actual source tables and are cold-verified
+again before publication. A current opening proof cannot stand in for earlier
+source days, and an absent shared proof cannot fall back to symbol intervals.
+
 ## Immutable translation and execution parameters
 
 `optimized_candidate_evidence.py` freezes the selected generation's programs,

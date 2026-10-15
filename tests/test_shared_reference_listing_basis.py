@@ -147,3 +147,94 @@ def test_native_opening_builder_reverifies_shared_basis_and_retains_parent_check
     assert parent_reads == ['2026-07-29', '2026-07-29']
     parts[2][0]['block_status'] = 'blocked'
     with pytest.raises(ValueError, match='tradability'): source.verify(object())
+
+
+@pytest.mark.parametrize('failure', [None,'late','ambiguous','security','capture','conid','blocked'])
+def test_feature_source_day_needs_only_current_timely_capture(failure):
+    fact,routes,states,retained=deepcopy(packet())
+    retained=retained[1:]
+    if failure=='late': routes[0]['inserted_at']='2026-07-30 08:00:00'
+    if failure=='ambiguous': routes.append(deepcopy(routes[0]))
+    if failure=='security': states[0]['security_id']='other'
+    if failure=='capture': retained[0]['source_run_id']='other'
+    if failure=='conid': routes[0]['ibkr_conid']='99'
+    if failure=='blocked': states[0]['is_tradable']=0
+    if failure:
+        with pytest.raises(ValueError): b.source_day_proof(fact,routes,states,retained,day=date(2026,7,30))
+    else:
+        proof=b.source_day_proof(fact,routes,states,retained,day=date(2026,7,30))
+        assert proof['basis']==b.FEATURE_BASIS and len(proof['retained'])==1
+
+
+def test_feature_identity_cache_certifies_all_three_days_and_historical_alias(monkeypatch):
+    from pipelines.market_sip.events import qmd_feature_preparation as q
+    from pipelines.market_sip.events import opening_price_reference_producer as opening
+    from src.backend.backtest_market_data import CertifiedMarketDayPlan, ExecutionInterval
+    from src.backend.backtest_strategy_one_identity import CertifiedIdentityPlan
+    from src.market_engine.opening_price_reference import OpeningListing
+    days=('2026-07-30','2026-07-31','2026-08-03')
+    plans=[CertifiedMarketDayPlan(ExecutionInterval.fixed(100), 'build', 'a'*64,
+        (day,),('OLD' if i==0 else 'GORO',),(),(100,),'b'*64) for i,day in enumerate(days)]
+    row=OpeningListing('gold-resource','GORO','symbol','resource-security','proof','c'*64,date(2026,7,31),None)
+    request=SimpleNamespace(opening_source=SimpleNamespace(listing_basis=b.BASIS,market=plans[-1],listings=(row,)),
+        continuity=tuple((p,None) for p in plans),prior_volume=(plans[1],None),tickers=('GORO',))
+    certified=[]; facts={}; packets={}
+    for i,plan in enumerate(plans):
+        fact,routes,states,retained=deepcopy(packet());ticker=plan.tickers[0]
+        fact.update(ticker=ticker,symbol_id='old-symbol' if i==0 else 'symbol',source_inserted_at=days[i]+' 07:00:00')
+        for group in (routes,states):
+            for item in group:item.update(provider_ticker=ticker,symbol_id=fact['symbol_id'])
+        retained=[dict(retained[-1],universe_date=days[i],ticker=ticker,symbol_id=fact['symbol_id'],inserted_at=fact['source_inserted_at'])]
+        facts[days[i]]={ticker:fact};packets[days[i]]=(routes,states,retained)
+    def certify(plan,**kw):
+        certified.append(plan.sessions[0]);return CertifiedIdentityPlan('build',plan.sessions[0],
+            '00000000-0000-0000-0000-000000000001',plan.token,plan.tickers,(40743577,),'d'*64,'e'*64)
+    monkeypatch.setattr(opening,'source_storage_preflight',lambda *a,**kw: None)
+    monkeypatch.setattr(opening,'certify_identity_plan',certify)
+    monkeypatch.setattr(opening,'_identity_rows',lambda reader,plan,identity:facts[plan.sessions[0]])
+    def read(reader,sql,bound=25001):
+        if 'system.tables' in sql:return [{'name':'strategy_one_identity_v3'}]
+        day=next(day for day in days if day in sql)
+        if 'FROM arte.strategy_one_identity_v3' in sql:return list(facts[day].values())
+        for table,packet_rows in zip(b.TABLES,packets[day],strict=True):
+            if table in sql:return deepcopy(packet_rows)
+        raise AssertionError(sql)
+    monkeypatch.setattr(q,'_rows',read)
+    cache=q._source_identity_cache(object(),request)
+    assert certified==list(days)
+    ticker,deps=q._feature_identity(None,row,date(2026,7,30),cache)
+    assert ticker=='OLD' and len(deps)==4
+    assert {v.source_table for v in deps}=={'strategy_one_identity_v3',*b.TABLES}
+    first={v for _,rows in cache.values() for item in rows.values() for v in item[1]}
+    from src.market_engine.feature_source_plan import FeatureDependency
+    universe=FeatureDependency('universe','q_live','feature_tradable_universe_snapshot_v2',date(2026,8,3),'','snapshot',1,'a'*64)
+    prepared=SimpleNamespace(request=request,plan=SimpleNamespace(dependencies=tuple(first)+(universe,),algorithm_hash=q.algorithm_hash()),references={})
+    monkeypatch.setattr(q,'_placement',lambda reader:None)
+    monkeypatch.setattr(q,'_population',lambda *args:((),(),'a'*64,'snapshot'))
+    ownership=SimpleNamespace(assert_owner=lambda:None)
+    q.PreparedQmdFeatureDay.verify_sources(prepared,object(),ownership=ownership)
+    packets[days[0]][0][0]['source_content_sha256']='f'*64
+    reloaded=q._source_identity_cache(object(),request)
+    second={v for _,rows in reloaded.values() for item in rows.values() for v in item[1]}
+    assert first!=second and len(first)==12 and len(second)==12
+    with pytest.raises(ValueError,match='identity changed'):
+        q.PreparedQmdFeatureDay.verify_sources(prepared,object(),ownership=ownership)
+    facts[days[0]]['OLD']['security_id']='wrong'
+    with pytest.raises(ValueError,match='2026-07-30.*GORO'):q._source_identity_cache(object(),request)
+    facts[days[0]]['OLD']['security_id']='resource-security'
+    facts[days[-1]].clear()
+    with pytest.raises(ValueError,match='missing|changed'):
+        q._source_identity_cache(object(),request)
+    with pytest.raises(ValueError,match='2026-08-03.*GORO'):
+        q._feature_identity(None,row,date(2026,8,3),{})
+
+
+def test_legacy_feature_identity_dispatch_remains_interval_owned(monkeypatch):
+    from pipelines.market_sip.events import qmd_feature_preparation as q
+    request=SimpleNamespace(opening_source=SimpleNamespace(listing_basis='symbol-intervals-v1'))
+    assert q._source_identity_cache(None,request) is None
+    calls=[]
+    monkeypatch.setattr(q,'_listing_identity',lambda *args:calls.append(args) or [{'ticker_normalized':'OLD'}])
+    listing=SimpleNamespace(ticker='NEW',listing_id='stable')
+    ticker,deps=q._feature_identity(None,listing,date(2026,7,30),None)
+    assert ticker=='OLD' and len(calls)==1 and deps[0].source_table=='id_symbol_interval_v1'

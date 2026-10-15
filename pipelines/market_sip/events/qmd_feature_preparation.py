@@ -78,11 +78,12 @@ def algorithm_hash():
     from src.market_engine import qmd_feature_catalog, causal_context_features, causal_market_context
     from src.market_engine import continuous_indicator_features, candle_feature_projection, qmd_feature_projection
     from . import qmd_feature_reference
+    from . import shared_reference_listing_basis
     from src.market_engine import causal_market_history, columnar_history_product, causal_volume_history, feature_share_basis
     modules={m.__name__:sha256(Path(m.__file__).read_bytes()).hexdigest() for m in
         (qmd_feature_catalog,causal_context_features,causal_market_context,continuous_indicator_features,
          candle_feature_projection,qmd_feature_projection,qmd_feature_reference,causal_market_history,
-         columnar_history_product,causal_volume_history,feature_share_basis)}
+         columnar_history_product,causal_volume_history,feature_share_basis,shared_reference_listing_basis)}
     modules[__name__]=sha256(Path(__file__).read_bytes()).hexdigest()
     return content_hash(modules)
 
@@ -228,6 +229,86 @@ def _listing_identity(reader, listing, day):
     return rows
 
 
+def _source_identity_cache(reader, request):
+    """Cold certify full day identities once; retain exact shared source proofs."""
+    from .shared_reference_listing_basis import BASIS, load_source_day_proofs, TABLES
+    from .opening_price_reference_producer import _identity_rows, certify_identity_plan, source_storage_preflight
+    from types import SimpleNamespace
+    if request.opening_source.listing_basis == 'symbol-intervals-v1':
+        return None
+    if request.opening_source.listing_basis != BASIS:
+        raise ValueError('Unknown feature listing source basis')
+    source_storage_preflight(reader,listing_basis=BASIS)
+    cache = {}
+    requested = {v.listing_id: v for v in request.opening_source.listings if v.ticker in request.tickers}
+    for market, audit in request.continuity + ((request.prior_volume,) if request.prior_volume is not None else ()):
+        day = date.fromisoformat(market.sessions[0])
+        if day in cache:
+            if cache[day][0] != market:
+                raise ValueError('Conflicting source-day feature market authorities')
+            continue
+        identity = certify_identity_plan(market, client=reader)
+        facts = _identity_rows(reader, market, identity)
+        by_listing = {}
+        for fact in facts.values():
+            if fact['listing_id'] in by_listing:
+                raise ValueError(f'{BASIS} {day} {fact["ticker"]}: ambiguous stable listing')
+            by_listing[fact['listing_id']] = fact
+        # Discover the actual sealed version, never relabel a composite proof as V1.
+        present = _rows(reader,"SELECT name FROM system.tables WHERE database='arte' AND name IN "
+            "('strategy_one_identity_v1','strategy_one_identity_v2','strategy_one_identity_v3')",3)
+        tables = []
+        for table in present:
+            name = table['name']
+            if name not in ('strategy_one_identity_v1','strategy_one_identity_v2','strategy_one_identity_v3'):
+                raise ValueError('Unexpected feature identity authority')
+            rows = _rows(reader, 'SELECT ticker,symbol_id,listing_id,security_id,ibkr_conid,source_run_id,source_inserted_at '
+                f'FROM arte.{name} WHERE source_build_id={literal(market.build_id)} '
+                f'AND session_date=toDate({literal(day)}) AND identity_attempt_id=toUUID({literal(identity.attempt_id)}) ORDER BY ticker LIMIT 25001',25001)
+            if rows:
+                if rows != [facts[key] for key in sorted(facts)]:
+                    raise ValueError('Feature identity table changed after certification')
+                tables.append(name)
+        if len(tables) != 1:
+            raise ValueError('Feature identity version is missing or ambiguous')
+        chosen = {}
+        for listing_id, listing in requested.items():
+            matches = [by_listing[listing_id]] if listing_id in by_listing else []
+            if (len(matches) != 1 or matches[0]['security_id'] != listing.security_id
+                    or day.isoformat() == request.opening_source.market.sessions[0]
+                    and (matches[0]['symbol_id'] != listing.symbol_id or matches[0]['ticker'] != listing.ticker)):
+                raise ValueError(f'{BASIS} {day} {listing.ticker}: missing or ambiguous stable listing')
+            chosen[matches[0]['ticker']] = matches[0]
+        proofs = load_source_day_proofs(reader, SimpleNamespace(sessions=market.sessions,
+            tickers=tuple(sorted(chosen))), chosen, read_rows=_rows)
+        resolved = {}
+        for ticker, proof in proofs.items():
+            fact = chosen[ticker]
+            dependencies = [FeatureDependency('identity_shared_source_day_v1','arte',tables[0],day,
+                requested[fact['listing_id']].ticker,identity.token,1,
+                content_hash(dict(identity_token=identity.token,identity_hash=identity.content_hash,
+                    market_token=market.token,fact=fact,basis=proof['basis'])))]
+            for table, key in zip(TABLES, ('routing','tradability','retained'), strict=True):
+                dependencies.append(FeatureDependency('identity_shared_source_day_v1','q_live',table,day,
+                    requested[fact['listing_id']].ticker,proof['basis']+':'+table+':'+fact['listing_id'],
+                    len(proof[key]),content_hash(proof[key])))
+            resolved[fact['listing_id']] = (ticker,tuple(dependencies),int(fact['ibkr_conid']))
+        cache[day] = (market,resolved)
+    return cache
+
+
+def _feature_identity(reader, listing, day, cache, *, prior=False):
+    if cache is None:
+        rows = _listing_identity(reader,listing,day)
+        dependency = FeatureDependency('prior_identity' if prior else 'identity','q_live',
+            'id_symbol_interval_v1',day,listing.ticker,listing.listing_id,len(rows),content_hash(rows))
+        return (rows[0]['ticker_normalized'] if rows else None), (dependency,)
+    try:
+        return cache[day][1][listing.listing_id][:2]
+    except KeyError as error:
+        raise ValueError(f'Shared feature identity missing: {day} {listing.ticker}') from error
+
+
 def _read_context_units(reader, plan, tickers, *, stop_bucket):
     """Read a bounded census packet after the same exact per-unit hash audit."""
     if (type(tickers) is not tuple or not 1 <= len(tickers) <= 32
@@ -290,6 +371,12 @@ class PreparedQmdFeatureDay:
 
     def verify_sources(self, reader, *, ownership):
         ownership.assert_owner();_placement(reader)
+        identity_cache = _source_identity_cache(reader,self.request)
+        if identity_cache is not None:
+            observed = {v for _, rows in identity_cache.values() for row in rows.values() for v in row[1]}
+            expected = {v for v in self.plan.dependencies if v.source_kind == 'identity_shared_source_day_v1'}
+            if observed != expected:
+                raise ValueError('Shared source-day feature identity changed during preparation')
         universe,unavailable,observed,_=_population(reader,self.request)
         expected=next(v.content_hash for v in self.plan.dependencies if v.source_kind=='universe')
         if observed!=expected:raise ValueError('Feature universe changed during preparation')
@@ -352,6 +439,7 @@ def prepare_feature_day(reader, request, *, ownership, progress=None, stop_reque
             progress(dict(stage='qmd_feature_sources',active=active,queued=len(request.opening_source.market.tickers)-completed-active,
                 completed=completed,skipped=0,retried=0,failed=0,**extra))
     ownership.assert_owner();_placement(reader)
+    identity_cache = _source_identity_cache(reader,request)
     universe,unavailable,universe_hash,snapshot=_population(reader,request)
     market=request.opening_source.market;day=date.fromisoformat(market.sessions[0])
     # Source frames and output context are separately admitted; no hidden spill
@@ -359,6 +447,8 @@ def prepare_feature_day(reader, request, *, ownership, progress=None, stop_reque
     expected=sum(min(u.output_rows,request.stop_bucket-14400) for u in market.units if u.stage=='bars')*40
     if expected>request.maximum_source_bytes:raise MemoryError('Certified source frames exceed feature admission')
     dependencies=[FeatureDependency('universe','q_live','feature_tradable_universe_snapshot_v2',day,'',snapshot,len(universe),universe_hash)]
+    if identity_cache is not None:
+        dependencies.extend(v for _, rows in identity_cache.values() for row in rows.values() for v in row[1])
     if request.mask_prior_volume_at_origin:
         dependencies.append(FeatureDependency('history_origin','arte','market_day_source_session_v1',day,'',
             'masked-prior-volume-at-certified-origin-v1',0,content_hash(dict(origin=day,
@@ -396,11 +486,12 @@ def prepare_feature_day(reader, request, *, ownership, progress=None, stop_reque
         last_day=None;state,counts=initial_state();continuous_values=None
         for p,a in request.continuity:
             source_day=date.fromisoformat(p.sessions[0])
-            identity=_listing_identity(reader,row,source_day)
-            dependencies.append(FeatureDependency('identity','q_live','id_symbol_interval_v1',source_day,
-                ticker,row.listing_id,len(identity),content_hash(identity)))
-            source_ticker=identity[0]['ticker_normalized'] if identity else None
+            source_ticker, identity_dependencies = _feature_identity(reader,row,source_day,identity_cache)
+            if identity_cache is None:
+                dependencies.extend(identity_dependencies)
             if source_ticker not in p.tickers:
+                if identity_cache is not None:
+                    raise ValueError(f'Shared source-day feature bars missing: {source_day} {ticker}')
                 continue
             if source_day==day and source_ticker==ticker:
                 candles,unit=current,current_unit
@@ -422,10 +513,9 @@ def prepare_feature_day(reader, request, *, ownership, progress=None, stop_reque
         if request.prior_volume is not None:
             prior_plan=request.prior_volume[0]
             prior_day=date.fromisoformat(prior_plan.sessions[0])
-            old_identity=_listing_identity(reader,row,prior_day)
-            dependencies.append(FeatureDependency('prior_identity','q_live','id_symbol_interval_v1',prior_day,
-                ticker,row.listing_id,len(old_identity),content_hash(old_identity)))
-            old_ticker=old_identity[0]['ticker_normalized'] if old_identity else None
+            old_ticker, identity_dependencies = _feature_identity(reader,row,prior_day,identity_cache,prior=True)
+            if identity_cache is None:
+                dependencies.extend(identity_dependencies)
             if old_ticker in prior_plan.tickers:
                 previous,prior_unit=_read_unit(reader,prior_plan,old_ticker,'bars',('bucket_index','volume'),stop_bucket=72000)
                 dependencies.append(FeatureDependency('prior_volume','arte','bars_v1',date.fromisoformat(prior_plan.sessions[0]),

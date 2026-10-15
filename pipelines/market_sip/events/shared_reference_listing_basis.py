@@ -11,6 +11,7 @@ from src.market_engine import opening_price_reference as c
 BASIS = 'shared-reference-routing-tradability-v1'
 TABLES = ('security_routing_fact_v1', 'security_tradability_fact_v1',
           'feature_tradable_universe_v1')
+FEATURE_BASIS = 'shared-reference-source-day-v1'
 ROUTING = ('routing_fact_id', 'symbol_id', 'listing_id', 'security_id',
     'provider_ticker', 'ibkr_conid', 'broker', 'sec_type', 'currency_code',
     'routing_status', 'valid_from_utc',
@@ -127,3 +128,72 @@ def load_listings(reader, market, facts, *, read_rows):
                 for packet, key in zip(packets, ('provider_ticker', 'provider_ticker', 'ticker'), strict=True))
             listings.append(resolve_listing(facts[name], *rows, day=day, regular=regular, cutoff=cutoff))
     return tuple(sorted(listings, key=lambda value: value.listing_id))
+
+
+def source_day_proof(fact, routing, tradability, retained, *, day):
+    """Prove one certified source-day capture, without a prior RTH requirement."""
+    cutoff = datetime.combine(day, datetime.min.time(), c.NEW_YORK).replace(hour=4).astimezone(timezone.utc)
+    identity = _tuple(fact, 'ticker')
+    conid = str(fact['ibkr_conid'])
+    if not conid.isdecimal() or int(conid) <= 0:
+        raise ValueError('Source-day identity lacks certified broker conid')
+    for rows, columns, key in ((routing, ROUTING, 'provider_ticker'),
+            (tradability, TRADABILITY, 'provider_ticker'), (retained, RETAINED, 'ticker')):
+        if any(set(row) != set(columns) or _tuple(row, key) != identity for row in rows):
+            raise ValueError('Source-day evidence crossed certified listing identity')
+    if (len(retained) != 1 or str(retained[0]['universe_date']) != day.isoformat()
+            or str(retained[0]['ibkr_conid']) != conid
+            or type(retained[0]['is_tradable']) not in (int, str)
+            or retained[0]['is_tradable'] not in (1, '1')
+            or retained[0]['source_run_id'] != fact['source_run_id']
+            or stamp(retained[0]['inserted_at']) != stamp(fact['source_inserted_at'])
+            or stamp(retained[0]['inserted_at']) >= cutoff):
+        raise ValueError('Source-day retained capture differs from certified timely identity')
+    for row in routing + tradability:
+        if (stamp(row['inserted_at']) >= cutoff or any(type(row[k]) is not str or not row[k]
+                for k in ('source_table', 'source_event_id', 'source_content_sha256', 'source_run_id'))):
+            raise ValueError('Source-day shared provenance is late or incomplete')
+    if any(stamp(row['observed_at_utc']) >= cutoff for row in tradability):
+        raise ValueError('Source-day tradability was observed after cutoff')
+    route = _latest(routing, 'valid_from_utc', cutoff)
+    state = _latest(tradability, 'effective_at_utc', cutoff)
+    if (route['routing_status'] != 'valid' or str(route['ibkr_conid']) != conid
+            or str(route['broker']).lower() != 'ibkr' or route['sec_type'] != 'STK'
+            or route['currency_code'] != 'USD'
+            or route['valid_to_utc'] is not None and stamp(route['valid_to_utc']) <= cutoff):
+        raise ValueError('Source-day routing is blocked, expired or has another broker identity')
+    if (type(state['is_tradable']) not in (int, str) or state['is_tradable'] not in (1, '1')
+            or state['block_status'] != 'tradable'):
+        raise ValueError('Source-day tradability is blocked')
+    return dict(basis=FEATURE_BASIS, day=day, identity=fact,
+        routing=routing, tradability=tradability, retained=retained)
+
+
+def load_source_day_proofs(reader, market, facts, *, read_rows):
+    """Bounded exact source-day reads; no symbol aliases or prior captures."""
+    day = date.fromisoformat(market.sessions[0])
+    cutoff = datetime.combine(day, datetime.min.time(), c.NEW_YORK).replace(hour=4).astimezone(timezone.utc)
+    result = {}
+    for offset in range(0, len(market.tickers), 128):
+        names = market.tickers[offset:offset + 128]
+        keys = ','.join('(' + ','.join(literal(facts[name][k]) for k in
+            ('ticker', 'symbol_id', 'listing_id', 'security_id')) + ')' for name in names)
+        packets = []
+        for table, columns, key in ((TABLES[0], ROUTING, 'provider_ticker'),
+                (TABLES[1], TRADABILITY, 'provider_ticker'), (TABLES[2], RETAINED, 'ticker')):
+            predicate = f'({key},symbol_id,listing_id,security_id) IN ({keys})'
+            predicate += (f' AND universe_date=toDate({literal(day.isoformat())})' if table == TABLES[2]
+                else f' AND inserted_at<toDateTime64({literal(cutoff.strftime("%Y-%m-%d %H:%M:%S.%f"))},6,\'UTC\')')
+            rows = read_rows(reader, f'SELECT {",".join(columns)} FROM q_live.{table} FINAL WHERE {predicate} '
+                f'ORDER BY {key},{columns[0]} LIMIT 4097', bound=4097)
+            if len(rows) > 4096:
+                raise ValueError('Source-day reference packet exceeds bounded source contract')
+            packets.append(rows)
+        for name in names:
+            rows = tuple([row for row in packet if row[key] == name]
+                for packet, key in zip(packets, ('provider_ticker', 'provider_ticker', 'ticker'), strict=True))
+            try:
+                result[name] = source_day_proof(facts[name], *rows, day=day)
+            except ValueError as error:
+                raise ValueError(f'{FEATURE_BASIS} {day} {name}: {error}') from error
+    return result
