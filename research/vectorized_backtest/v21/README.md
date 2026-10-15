@@ -1,6 +1,6 @@
 # V21: session discovery and global score-only evolution
 
-V21 is an isolated copy of V20. Implementation is authorized; profiling, stopping V20 and launching V21 await a separate decision. No automatic job is installed. `run_train` requires `--authorize-run` for compute; `--check-only` reads readiness only. Predecessor/ownership gates remain in force. DESIGN.md contains the approval ledger and baseline inventory.
+V21 is an isolated copy of V20. The user authorized stopping V20 at a sealed boundary, bounded profiling/optimization and launching V21 on 2026-10-15; lengthy qualifications are excluded. No automatic job is installed. `run_train` requires `--authorize-run` for compute; `--check-only` reads readiness only. Predecessor/ownership gates remain in force. DESIGN.md contains the approval ledger and baseline inventory.
 
 ## Search and execution
 
@@ -35,3 +35,5 @@ Initialization balances requested rule-size bins (3..9, 10..19, 20..32), compati
 Generations retain evaluation, scoring, archive, reproduction and publication timings, source/data contracts, receipts, seals, RNG, population and ancestry. Source changes cannot silently resume checkpoints. Detailed read-only observers retain session navigation, progress bars, candidate rules, ranks, profit, win rate, positions and risk; objective labels reflect V21.
 
 Generated data belongs below `D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v21`. Commit/push precedes immutable workstation synchronization. CPU tests cover costs, risk checks, selection, archives, expanded initialization, sealed restart, replay/cache reuse, display rendering and validation independence. GPU compilation and end-to-end speed remain unverified until authorized profiling. Larger initial pools and larger sampled expressions intentionally increase work; vectorization alone does not prove equal wall time.
+
+`--capture-gib` records the retained CUDA graph-cache budget per worker (default 4, supported .25..16 GiB) in both phase contracts. Physical-headroom checks remain active; changing capacity requires a new run contract, never mutation of an active checkpoint.

@@ -80,7 +80,7 @@ def verify_pool(pool,days):
     if experts!=pool['expert_count'] or len(seen)-experts!=pool['fresh_count']:raise ValueError('Seed expert/fresh counts changed')
 
 
-def run_global(training,validation,phase1,output,population_size=1024,generations=50,seed=2020,predecessor_job=None,predecessor_proof=None,batch_size=512,session_workers=2):
+def run_global(training,validation,phase1,output,population_size=1024,generations=50,seed=2020,predecessor_job=None,predecessor_proof=None,batch_size=512,session_workers=2,capture_gib=4.):
     from .completion_gate import require_complete
     require_complete(predecessor_job,predecessor_proof)
     from .run_search import bind_dataset
@@ -90,5 +90,5 @@ def run_global(training,validation,phase1,output,population_size=1024,generation
     else:
         pool=seed_pool(phase1,dataset['days'],population_size,seed=seed,dataset=dataset);write_json(path,pool)
     return run(training,validation,output,population_size=population_size,generations=generations,batch_size=batch_size,session_workers=session_workers,seed=seed,
-               selection=Selection(global_fraction=1.,champion_partners=0),initial_population=pool,maximum_gate_gib=8.,capture_gib=4.,
+               selection=Selection(global_fraction=1.,champion_partners=0),initial_population=pool,maximum_gate_gib=8.,capture_gib=capture_gib,
                predecessor_job=predecessor_job,predecessor_proof=predecessor_proof)
