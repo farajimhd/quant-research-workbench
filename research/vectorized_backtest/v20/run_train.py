@@ -12,6 +12,7 @@ from .completion_gate import completion,require_complete
 from .run_search import bind_dataset,source_hash,digest
 from .local_runner import run_session
 from .evaluator import Execution
+from .progress_io import read_progress
 from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime,write_json,file_hash
 from research.vectorized_backtest.v6.torch_backtest.materialize import owned_run
 ROOT=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v20')
@@ -57,7 +58,7 @@ def local_phase(config,days,output,*,generations,population,workers,seed,archive
             states={}
             for day in pending.values():
                 path=output/'local'/day/'status.json'
-                if path.exists():states[day]=json.loads(path.read_bytes())
+                states[day]=read_progress(path)
             snapshot(output,'running' if not interrupted else 'stopping',stage='Local session evolution',completed=len(completed),total=len(days),
                      active=len(pending),queued=max(0,len(days)-len(completed)-len(pending)-len(failed)),failed=len(failed),workers=states)
     write_json(output/'local-results.json',dict(completed=completed,failed=failed,interrupted=interrupted))
