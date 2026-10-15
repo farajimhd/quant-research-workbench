@@ -10,6 +10,10 @@ Baseline inspected: V20 source at commit a55e3a139, 2026-10-15.
 | A01 | Leave the current V20 optimization running. | User: "Let's keep that going" |
 | A02 | Discuss V20 parts separately and record V21 agreements as the discussion proceeds. | User request, 2026-10-15 |
 | A03 | Implement V21 only after the user's later implementation instruction. | User: "at the end ask you to implement" |
+| A04 confirmed | Normalize average absolute movement as movement / close, without subtracting one; version semantics and threshold sampling. | User explicitly agreed in follow-up annotation. |
+| A05 | Expand the evolvable maximum_adds integer range from 0..5 to 0..20 in V21. Update validation, initialization/mutation and normalized diversity descriptor consistently. | User: "make this 0 to 20" |
+
+A05 does not change the $200 addition size or hard distance/risk limits. Twenty additions would permit $5000 cumulative purchases including the initial $1000 if every addition passes the existing checks; this is not a market-value ceiling. No V20 runtime changes are authorized by these V21 decisions.
 
 The earlier discussion of score-only selection is an open design topic, not authorization to remove filters. This document is the design record; existing task-history files are unchanged.
 
@@ -111,6 +115,18 @@ Current V20 Phase 1: positive trade-trimmed profit, >=3 completed positions, fin
 V21 selection, activity thresholds, trimming, risk limits, feature additions/removals and ranges remain open. Do not infer approval from this inventory.
 
 ## Discussion queue
+
+### Follow-up: temporal expressions and Phase 1 selection audit
+
+- The evaluator supports LAG plus DIVIDE, so x / LAG(x, h) is representable for suitable numeric inputs. Raw market.close is available; open/high/low are exposed as logs. DIFFERENCE(log_high, h), and similarly log_open/log_low/log_close, is an evolvable log-return expression. These temporal operations use observed candles, not fixed elapsed seconds. Dividing log prices is not a price return; there is no EXP operator to recover raw OHLC ratios from log differences.
+- Representable is not the same as directly sampled: the current numeric expression generator uses a ratio-valued denominator for division, rather than explicitly generating same-unit raw-price/raw-price ratios. Ratio-valued features can participate in temporal ratios, and log-price differences are directly sampled. Whether V21 should add an explicit ratio-change operator/template or additional elapsed-clock OHLC return channels remains open.
+- Phase 1 score: T - 0.10*D - 0.01*R - 0.0004*C - 0.05*N*L - 0.50*P. T is positive-only top-10%-position-trimmed net profit; D is session drawdown; R planned-stop-risk dollar-hours; C capital dollar-hours; N completed positions; L nonnegative loss magnitude of the mean worst 10% of completed-position P&Ls (fractional boundary); P peak per-stock planned position risk. Other-session loss is zero for this single-session stage. Cost is negative score; higher score is better. No separate session trim, win-rate reward or active complexity penalty in this local score.
+- Local parent/archive eligibility: T>0, N>=3, valid terminal accounting and risk bounds. Score need not be positive. All sessions evolve independently from 1024 fresh candidates for 30 generations in the current campaign; no validation feedback.
+- Each next local population nominally has up to 102 unique eligible score elites, 205 unique fresh candidates, and 717 crossover children when elite capacity is filled. Missing elites or failed unrelated-parent mating increase fresh/crossover allocation as specified by lineage.next_population; failed mating uses fresh candidates, never weaker eligibility. Parents use best-of-three rank tournaments with replacement among eligible candidates; second parent must not share tracked ancestry within five parent-child links. Up to eight mating attempts. No cross-session mating in Phase 1 despite reuse of the selector's internal global route.
+- Each generation draws a mutation rate uniformly from 20%..85% of crossover children; rounded count is selected without replacement. Each selected child gets 1..5 distinct effective edits. Elites and fresh candidates are not in that mutation pass. Effective duplicates are rejected.
+- Archive selection is separate from breeding: merge previous archive with eligible current candidates, canonical dedup, best 256 by score, retain up to 64. If more than 64, start with best score and greedily maximize 70% normalized score + 30% normalized squared parameter distance to the nearest selected member. This is parameter diversity, not trade-behavior diversity. Only retained archive, not every historical eligible candidate, carries across archive updates. At Phase 2 initialization, up to 768 unique experts are drawn round-robin across sessions and at least 256 fresh candidates fill 1024; shortages become fresh candidates.
+
+The above selection/cost details are audited V20 behavior, not newly approved V21 choices.
 
 1. Feature families, clocks, availability and rank representation.
 2. Expression operations, complexity and threshold bounds.
