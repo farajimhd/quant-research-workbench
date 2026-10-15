@@ -15,17 +15,23 @@ _ROOT = '/quant-research-workbench/trading/configuration-execution-v1'
 
 
 class ClickHouseExecutionBindingStorage(ClickHouseConfigurationStorage):
+    restore = staticmethod(restore_execution_binding)
+    tables = TABLES
+    seal = SEAL
+    children = (POLICY,)
+    root = _ROOT
+    writer_requirements = {'require_execution_bindings': True}
     def __init__(self, reader, reader_factory, writer_factory, session, selected, concurrency):
         if (type(session) is not ManagedKeeperSession or not callable(reader_factory)
                 or not callable(writer_factory) or type(concurrency) is not int or not 1 <= concurrency <= 6
                 or type(getattr(reader, 'base_url', None)) is not str or not reader.base_url):
             raise ValueError('Execution publication lacks managed bounded authorities')
-        self.selected = restore_execution_binding(selected.rows)
+        self.selected = self.restore(selected.rows)
         self.reader, self.reader_factory, self.writer_factory = reader, reader_factory, writer_factory
         self.session, self.keeper = session, session.client
         self.generation, self.client_id = session._generation, session.client.client_id
         self.concurrency = concurrency
-        self.path = _ROOT + '/' + selected.header['configuration_id']
+        self.path = self.root + '/' + selected.header['configuration_id']
         self.claim = self.creation_id = None
         self.committed = False
         self.connections, self.lock = [reader], Lock()
@@ -33,10 +39,10 @@ class ClickHouseExecutionBindingStorage(ClickHouseConfigurationStorage):
     def preflight(self):
         if self.reader.execute("SELECT getSetting('readonly')").strip() != '1':
             raise ValueError('Execution publication reader must be SELECT-only')
-        storage_preflight(self.reader, tables=TABLES)
+        storage_preflight(self.reader, tables=self.tables)
         writer = self._owned(self.writer_factory)
         try:
-            configuration_writer_preflight(writer, require_execution_bindings=True)
+            configuration_writer_preflight(writer, **self.writer_requirements)
         finally:
             writer.close()
         self._session()
@@ -44,14 +50,14 @@ class ClickHouseExecutionBindingStorage(ClickHouseConfigurationStorage):
         started, committed = f'1\nstarted\n{digest}'.encode(), f'1\ncommitted\n{digest}'.encode()
         existing = self.read_selection(self.selected.header['configuration_id'])
         if existing is not None:
-            if restore_execution_binding(existing).header['content_hash'] != digest:
+            if self.restore(existing).header['content_hash'] != digest:
                 raise ValueError('Execution identity already has another immutable binding')
             value, stat = self.keeper.get(self.path)
             if value != committed:
                 raise RuntimeError('Execution seal lacks committed ownership; reconcile explicitly')
             self.claim, self.committed = committed, True
         else:
-            self.keeper.ensure_path(_ROOT)
+            self.keeper.ensure_path(self.root)
             self._session()
             try:
                 self.keeper.create(self.path, started, ephemeral=False)
@@ -81,14 +87,14 @@ class ClickHouseExecutionBindingStorage(ClickHouseConfigurationStorage):
         try:
             if client.execute("SELECT getSetting('readonly')").strip() != '1':
                 raise ValueError('Execution child reader must be SELECT-only')
-            return {POLICY.name: _select(client, POLICY, identity)}
+            return {table.name: _select(client, table, identity) for table in self.children}
         finally:
             client.close()
 
     def read_selection(self, identity):
         self._identity(identity)
-        head = _select(self.reader, SEAL, identity)
-        return {SEAL.name: head, **self.read_children(identity)} if head else None
+        head = _select(self.reader, self.seal, identity)
+        return {self.seal.name: head, **self.read_children(identity)} if head else None
 
     def _insert(self, table, rows):
         self.assert_owner()
@@ -96,7 +102,7 @@ class ClickHouseExecutionBindingStorage(ClickHouseConfigurationStorage):
             raise ValueError('Execution insert differs from its immutable publication')
         client = self._owned(self.writer_factory)
         try:
-            configuration_writer_preflight(client, require_execution_bindings=True)
+            configuration_writer_preflight(client, **self.writer_requirements)
             self.assert_owner()
             insert_product_rows(client, table, [dict(row) for row in rows])
             self.assert_owner()
@@ -109,7 +115,7 @@ class ClickHouseExecutionBindingStorage(ClickHouseConfigurationStorage):
         self._insert(POLICY, rows)
 
     def insert_seal(self, rows):
-        self._insert(SEAL, rows)
+        self._insert(self.seal, rows)
 
 
 async def publish_configuration_execution_binding(*, reader_factory, writer_factory, session,
@@ -121,6 +127,46 @@ async def publish_configuration_execution_binding(*, reader_factory, writer_fact
             storage = ClickHouseExecutionBindingStorage(reader, reader_factory, writer_factory,
                 session, selected, concurrency)
             result = ConfigurationExecutionBindingPublisher(storage, concurrency=concurrency)._publish(selected)
+            storage.mark_committed()
+            return result
+        finally:
+            reader.close()
+    return await _owned_worker(run)
+
+
+from src.trading_runtime.configuration_execution_risk import RISK, restore_execution_risk
+from .configuration_execution_binding_publication import ConfigurationExecutionRiskPublisher
+
+
+class ClickHouseExecutionRiskStorage(ClickHouseExecutionBindingStorage):
+    restore = staticmethod(restore_execution_risk)
+    tables = (RISK,)
+    seal = RISK
+    children = ()
+    root = '/quant-research-workbench/trading/configuration-execution-risk-v1'
+    writer_requirements = {'require_execution_risk': True}
+
+    def verify_references(self, selected):
+        self.assert_owner()
+        read_configuration_selection(self.reader_factory,
+            configuration_id=selected.header['configuration_id'],
+            expected_content_hash=selected.header['configuration_hash'], concurrency=self.concurrency)
+        self.assert_owner()
+
+    def insert_child(self, name, rows):
+        raise ValueError('Execution risk has no child row families')
+
+
+async def publish_configuration_execution_risk(*, reader_factory, writer_factory, session,
+        source, concurrency):
+    """Explicit operator publication; never called by app selection or startup."""
+    selected = restore_execution_risk(source)
+    def run():
+        reader = reader_factory()
+        try:
+            storage = ClickHouseExecutionRiskStorage(reader, reader_factory, writer_factory,
+                session, selected, concurrency)
+            result = ConfigurationExecutionRiskPublisher(storage, concurrency=concurrency)._publish(selected)
             storage.mark_committed()
             return result
         finally:

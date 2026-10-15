@@ -18,14 +18,19 @@ from tests.test_columnar_program_coordinator import inputs
 from tests.test_broker_liquidity_resolution import second_bar
 
 
-async def scenario(resolution, invalid=None, initial_cash=100000., stop_exit=False, target_reduce=False, cancel_reduce=False, partial_cancel=False, allocation_failure=None, add_before_reduce=False):
+async def scenario(resolution, invalid=None, initial_cash=100000., stop_exit=False, target_reduce=False, cancel_reduce=False, partial_cancel=False, allocation_failure=None, add_before_reduce=False,
+                   risk_limit=None):
     release, boundary, position, management = inputs(entry=True)
     at = datetime(2026, 10, 12, 14, tzinfo=timezone.utc)
     boundary = replace(boundary, boundary_at=at, available_at=at)
     management = replace(management, observed_at=at)
     assignment = StrategyAssignment("assignment", "shared-program", 62, "account", "ABC", 1,
         AssignmentStatus.WATCHING, StrategyPermissions(enter=True, add=True), {})
-    strategy = AssignedProgramStrategy(release, (assignment,), {"assignment": "listing"})
+    risk = None
+    if risk_limit is not None:
+        from tests.test_configuration_execution_risk import contract
+        risk = contract(maximum_position_risk=risk_limit)
+    strategy = AssignedProgramStrategy(release, (assignment,), {"assignment": "listing"}, execution_risk=risk)
     broker = SimulatedBrokerAdapter(["account"],
         SimulationConfig(liquidity_resolution_ms=resolution, initial_cash=initial_cash), mode=RunMode.BACKTEST,
         initial_time=boundary.boundary_at - timedelta(seconds=1), fixed_bar_mode=True)
@@ -69,6 +74,13 @@ async def scenario(resolution, invalid=None, initial_cash=100000., stop_exit=Fal
             assert not broker._orders
             return
         result = await runtime.submit_program_proposal(proposal, **kwargs)
+        if risk_limit is not None and risk_limit < 150:
+            assert result[0]['decision']['status'] == 'rejected'
+            assert 'maximum_position_risk_exceeded' in result[0]['decision']['reasons']
+            assert not broker._orders
+            assert not any(r.status == 'reserved' for r in runtime.portfolio.reservations.values())
+            assert journal.latest_sequence(journal.run_id) > before
+            return
         if initial_cash < 1000:
             assert result[0]["decision"]["status"] == "rejected"
             assert result[0]["decision"]["reasons"]
@@ -309,3 +321,12 @@ def test_portfolio_rejects_request_above_actual_cash_under_its_policy():
 @pytest.mark.parametrize("resolution", [100, 1000])
 def test_actual_protective_fill_closes_actor_position_with_fees(resolution):
     asyncio.run(scenario(resolution, stop_exit=True))
+
+
+@pytest.mark.parametrize('risk_limit', [100., 120.])
+def test_program_risk_rejects_at_proposal_or_current_approved_quote_without_orders(risk_limit):
+    asyncio.run(scenario(100, risk_limit=risk_limit))
+
+
+def test_program_risk_compatible_request_uses_normal_oms_and_broker():
+    asyncio.run(scenario(100, risk_limit=300.))

@@ -1333,6 +1333,26 @@ class TradingRuntime:
                     "Typed portfolio live order submission remains disabled until "
                     "all state transitions use verified typed receipts")
             assignment = self._assignment_for_intent(approved_intent)
+            if (program_assignment_id is not None
+                    and approved_intent.action in {'enter_long', 'add_long'}
+                    and getattr(self.strategy, 'execution_risk', None) is not None):
+                from .portfolio import _worst_entry_price, PortfolioDecisionStatus
+                from decimal import Decimal
+                price = _worst_entry_price(approved_intent)
+                quote = self.order_manager._execution_quote(approved_intent)
+                if quote is not None:
+                    price = max(price, quote.ask)
+                risk = self._program_acquisition_risk(approved_intent,
+                    assignment_id=program_assignment_id,
+                    requested_cash=Decimal(str(approved_intent.quantity)) * Decimal(str(price)),
+                    execution_price=Decimal(str(price)))
+                if not risk.allowed:
+                    self.portfolio.release_intent(approved_intent.intent_id, reason='program_execution_risk_rejected')
+                    rejected = replace(decision, status=PortfolioDecisionStatus.REJECTED,
+                        approved_quantity=0., approved_notional=0., reasons=risk.reasons)
+                    await self._record_intent_rejection(approved_intent, account_id, rejected)
+                    results.append({'decision': rejected.payload(), 'order_group': None})
+                    continue
             if str(approved_intent.action) in ENTRY_ACTIONS:
                 funded = getattr(self.strategy, "on_capital_request_funded", None)
                 if funded is not None:
@@ -1584,6 +1604,16 @@ class TradingRuntime:
         from .strategy_one_intent import strategy_one_entry_intent
         return strategy_one_entry_intent(proposal, session_date=self.config.anchor_date)
 
+    def _program_acquisition_risk(self, intent, *, assignment_id, requested_cash, execution_price):
+        from decimal import Decimal
+        from .configuration_execution_risk import evaluate_acquisition_risk
+        position = self.strategy.position_for(assignment_id)
+        return evaluate_acquisition_risk(self.strategy.execution_risk, action=intent.action,
+            quantity=position.quantity, average_price=position.average_price,
+            stop_price=Decimal(str(intent.invalidation_price)), episode_paid_fees=Decimal(0),
+            episode_realized_gross_pnl=position.episode_net_pnl if position.position_open else Decimal(0),
+            requested_cash=requested_cash, execution_price=execution_price)
+
     async def submit_program_proposal(
         self, proposal: Any, *, account_id: str, assignment_id: str,
         execution_policy: Any, protection_profile: Any, outside_rth: bool,
@@ -1628,6 +1658,17 @@ class TradingRuntime:
             raise ValueError("Program proposal violates assignment permissions or cadence")
         intent = proposal.to_intent(execution_policy=execution_policy,
             protection_profile=protection_profile, outside_rth=outside_rth)
+        if (intent.action in {'enter_long', 'add_long'}
+                and getattr(self.strategy, 'execution_risk', None) is not None):
+            from decimal import Decimal
+            risk = self._program_acquisition_risk(intent, assignment_id=assignment_id,
+                requested_cash=Decimal(str(proposal.requested_cash)),
+                execution_price=Decimal(str(proposal.reference_price)))
+            if not risk.allowed:
+                from types import SimpleNamespace
+                await self._record_intent_rejection(intent, account_id,
+                    SimpleNamespace(reasons=risk.reasons, status='rejected'))
+                return [{'decision': {'status': 'rejected', 'reasons': list(risk.reasons)}, 'order_group': None}]
         if intent.action in ENTRY_ACTIONS:
             envelope = intent.execution_policy.envelope
             resolution = getattr(getattr(self.broker, "config", None), "liquidity_resolution_ms", None)

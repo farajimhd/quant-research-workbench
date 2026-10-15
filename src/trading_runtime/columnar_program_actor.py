@@ -31,10 +31,16 @@ class AssignedProgramStrategy:
     automatic = True
 
     def __init__(self, release: ProgramRelease, assignments: Sequence[StrategyAssignment],
-                 listing_by_assignment: Mapping[str, str]):
+                 listing_by_assignment: Mapping[str, str], *, execution_risk=None):
         if not isinstance(release, ProgramRelease) or not 1 <= len(assignments) <= 10000:
             raise ValueError("Program actor needs a sealed release and bounded assignments")
         self.program_release = release
+        from .configuration_execution_risk import ConfigurationExecutionRisk, restore_execution_risk
+        if execution_risk is not None and type(execution_risk) is not ConfigurationExecutionRisk:
+            raise TypeError("Program actor risk must be its explicit normalized contract")
+        self.execution_risk = (restore_execution_risk(execution_risk.rows)
+                               if execution_risk is not None else None)
+        self.risk_rejections = {}
         self.strategy_id = release.header["strategy_id"]
         self.revision = release.header["strategy_number"]
         if any(type(row) is not StrategyAssignment or
@@ -75,8 +81,28 @@ class AssignedProgramStrategy:
 
     def proposals(self, boundary: ProgramBoundary, *, assignment_id: str,
                   management: ManagementState, terminal: bool = False):
-        return select_program_proposal(self.program_release, boundary,
+        proposals = select_program_proposal(self.program_release, boundary,
             position=self.position_for(assignment_id), management=management, terminal=terminal)
+        if self.execution_risk is None:
+            return proposals
+        from .configuration_execution_risk import evaluate_acquisition_risk
+        position = self.position_for(assignment_id)
+        self.risk_rejections.pop(assignment_id, None)
+        accepted = []
+        for proposal in proposals:
+            if proposal.action in {"enter_long", "add_long"}:
+                decision = evaluate_acquisition_risk(self.execution_risk, action=proposal.action,
+                    quantity=position.quantity, average_price=position.average_price,
+                    stop_price=Decimal(str(proposal.stop_price)), episode_paid_fees=Decimal(0),
+                    episode_realized_gross_pnl=(position.episode_net_pnl
+                        if position.position_open else Decimal(0)),
+                    requested_cash=Decimal(str(proposal.requested_cash)),
+                    execution_price=Decimal(str(proposal.reference_price)))
+                if not decision.allowed:
+                    self.risk_rejections[assignment_id] = decision
+                    continue
+            accepted.append(proposal)
+        return tuple(accepted)
 
     def select_from_orders(self, boundary: ProgramBoundary, *, assignment_id: str,
             observation: AssignmentOrderObservation, terminal: bool = False) -> ProgramSelection:
@@ -128,6 +154,9 @@ class AssignedProgramStrategy:
                 management=management, terminal=terminal)
             status = "selected" if proposals else "pending_reduction" if observation.pending_reduction else (
                 "pending_acquisition" if observation.pending_acquisition else "wait")
+            rejected = self.risk_rejections.get(assignment_id)
+            if rejected is not None:
+                status = 'risk_rejected:' + ','.join(rejected.reasons)
         self._selection_clocks[assignment_id] = (boundary.boundary_at, signature)
         return ProgramSelection(status, proposals)
 

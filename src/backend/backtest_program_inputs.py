@@ -20,6 +20,7 @@ from .qmd_columnar_history import CertifiedHistoryPin
 from .qmd_columnar_history_transport import read_history_window_async, window_request, _owned_worker
 from src.trading_runtime.columnar_rule_program import evaluate_rules
 from src.trading_runtime.columnar_strategy_release import ProgramRelease
+from src.trading_runtime.columnar_program_input_contract import validate_program_input_contract
 
 
 @dataclass(frozen=True)
@@ -247,12 +248,7 @@ def preflight_program_feature_catalog(release, pins):
         if session is not None and session != identity:
             raise ValueError("Program inputs differ in their certified session or clock origin")
         session = identity
-        catalog = {field.name: field for field in pin.fields}
-        for name, field in release.fields.items():
-            if (name not in catalog or field.unit != catalog[name].unit
-                    or field.product != "q_live.qmd_causal_history_value_v1"
-                    or field.revision != pin.scope.product_revision or field.resolution_ms != 1000):
-                raise ValueError("Program field differs from its producer-owned history contract")
+        validate_program_input_contract(release.fields, pin)
 
 
 async def prepare_program_block(release: ProgramRelease, pins: Mapping[str, CertifiedHistoryPin], *,
@@ -358,12 +354,7 @@ def preflight_program_cohort_inputs(release, pins, population_pin, listing_by_as
                 or first_ordinal > first_bucket - pin.scope.first_bucket
                 or stop_ordinal < stop_bucket - pin.scope.first_bucket):
             raise ValueError("Programme feature origin differs from its complete scanner lineage")
-        catalog = {field.name: field for field in pin.fields}
-        for name, field in release.fields.items():
-            if (name not in catalog or field.unit != catalog[name].unit
-                    or field.product != "q_live.qmd_causal_history_value_v1"
-                    or field.revision != pin.scope.product_revision or field.resolution_ms != 1000):
-                raise ValueError("Programme field differs from its certified history contract")
+        validate_program_input_contract(release.fields, pin)
         preflight_program_history_packets(release, pin, first_ordinal=first_ordinal,
                                           stop_ordinal=stop_ordinal, as_of=as_of)
     for pin in population_pin.histories.values():

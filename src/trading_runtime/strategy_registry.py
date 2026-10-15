@@ -168,6 +168,7 @@ class ProgramStrategyExecutorRegistration:
     expected_winner_hash: str
     evaluation_interval: str = "1000ms"
     mode: str = "backtest"
+    requires_execution_risk: bool = False
 
     @property
     def key(self) -> tuple[str, int]:
@@ -178,18 +179,22 @@ class ProgramStrategyExecutorRegistration:
         if (type(self.strategy_id) is not str or not self.strategy_id
                 or self.strategy_id.strip() != self.strategy_id or len(self.strategy_id) > 128
                 or type(self.revision) is not int or not 1 <= self.revision < 2**32
-                or self.mode != "backtest" or self.evaluation_interval != "1000ms"):
+                or self.mode != "backtest" or self.evaluation_interval != "1000ms"
+                or type(self.requires_execution_risk) is not bool):
             raise ValueError("Programme executor requires an immutable Backtest-only identity")
         for value in (self.expected_content_hash, self.expected_code_hash, self.expected_winner_hash):
             _identity(value)
 
-    async def build(self, assignments, listing_by_assignment, *, mode, client_factory):
+    async def build(self, assignments, listing_by_assignment, *, mode, client_factory,
+                    execution_risk=None):
         from .columnar_strategy_reader import load_program_release
         from .columnar_program_actor import AssignedProgramStrategy
         from .strategy_engine import StrategyAssignment
         from collections.abc import Mapping
         from itertools import islice
         self.verify()
+        if self.requires_execution_risk and execution_risk is None:
+            raise ValueError('Installed programme requires an explicit execution risk contract')
         if mode != self.mode:
             raise ValueError("Programme executor is Backtest-only")
         selected = tuple(islice(assignments, 10001))
@@ -210,7 +215,7 @@ class ProgramStrategyExecutorRegistration:
         if (release.header["strategy_id"], release.header["strategy_number"], release.header["evaluation_interval_ms"]) != (
                 self.strategy_id, self.revision, 1000):
             raise ValueError("Central programme release differs from its installed executor")
-        return AssignedProgramStrategy(release, selected, listings)
+        return AssignedProgramStrategy(release, selected, listings, execution_risk=execution_risk)
 
 
 _PROGRAM_REGISTRY: dict[tuple[str, int], ProgramStrategyExecutorRegistration] = {}

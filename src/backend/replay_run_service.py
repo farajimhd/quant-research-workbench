@@ -10328,7 +10328,7 @@ class ReplayRunService:
     async def prepare_certified_program_controller(self, definition: ReplayRunDefinition, *, assignments,
             listing_by_assignment, liquidity_resolution_ms, selection_client_factory,
             release_client_factory, policy_client_factory, policy_dispatch, concurrency,
-            expected_execution_binding_hash=None):
+            expected_execution_binding_hash=None, expected_execution_risk_hash=None):
         """Prepare the normal programme lane from the exact UI-reviewed selection.
 
         Only central read authorities are consulted. This neither publishes a
@@ -10344,6 +10344,8 @@ class ReplayRunService:
         selection_hash = revision.get("selection_hash")
         if revision.get('execution_binding_hash') != expected_execution_binding_hash:
             raise ValueError('Programme execution selection differs from reviewed approval')
+        if revision.get('execution_risk_hash') != expected_execution_risk_hash:
+            raise ValueError('Programme execution risk differs from reviewed approval')
         if (type(revision_id) is not str or not revision_id.startswith("strategy-configuration:")
                 or type(selection_hash) is not str):
             raise ValueError("Programme configuration lacks its reviewed central selection")
@@ -10351,6 +10353,8 @@ class ReplayRunService:
         reviewed_payload = canonical_json(revision["payload"])
         extra = {} if expected_execution_binding_hash is None else {
             'expected_execution_binding_hash': expected_execution_binding_hash}
+        if expected_execution_risk_hash is not None:
+            extra['expected_execution_risk_hash'] = expected_execution_risk_hash
         certified = await load_certified_program_configuration(
             selection_client_factory=selection_client_factory,
             release_client_factory=release_client_factory, policy_client_factory=policy_client_factory,
@@ -10367,7 +10371,7 @@ class ReplayRunService:
             raise ValueError("Programme configuration changed since UI review")
         controller = await self.prepare_program_controller(definition, assignments=assignments,
             listing_by_assignment=listing_by_assignment, liquidity_resolution_ms=liquidity_resolution_ms,
-            release_client_factory=release_client_factory)
+            release_client_factory=release_client_factory, execution_risk=certified.execution_risk)
         if (_configuration_hash(definition) != reviewed_hash
                 or definition.configuration_revision.get("revision_id") != revision_id
                 or definition.configuration_revision.get("selection_hash") != selection_hash):
@@ -10419,7 +10423,8 @@ class ReplayRunService:
         return controller
 
     async def prepare_program_controller(self, definition: ReplayRunDefinition, *, assignments,
-            listing_by_assignment, liquidity_resolution_ms, release_client_factory) -> ReplayRunController:
+            listing_by_assignment, liquidity_resolution_ms, release_client_factory,
+            execution_risk=None) -> ReplayRunController:
         """Prepare the installed central programme on this service's native lane.
 
         This performs SELECT-only release verification. It neither admits nor
@@ -10440,8 +10445,15 @@ class ReplayRunService:
         configuration_hash = _configuration_hash(definition)
         strategy = dict(definition.configuration_revision["payload"].get("strategy") or {})
         registration = program_strategy_executor(strategy.get("strategy_id"), strategy.get("revision"))
+        risk_hash = definition.configuration_revision.get('execution_risk_hash')
+        if risk_hash is not None or execution_risk is not None:
+            from src.trading_runtime.configuration_execution_risk import bind_execution_risk
+            if execution_risk is None or execution_risk.header['content_hash'] != risk_hash:
+                raise ValueError('Programme actor requires its explicitly approved risk contract')
+            bind_execution_risk(definition.configuration_revision, execution_risk)
+        risk_arguments = {} if execution_risk is None else {'execution_risk': execution_risk}
         actor = await registration.build(assignments, listing_by_assignment, mode="backtest",
-            client_factory=release_client_factory)
+            client_factory=release_client_factory, **risk_arguments)
         if (definition.configuration_revision.get("revision_id") != revision_id
                 or _configuration_hash(definition) != configuration_hash
                 or program_strategy_executor(*registration.key) is not registration):

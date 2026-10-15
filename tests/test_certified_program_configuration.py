@@ -14,6 +14,23 @@ from tests.test_columnar_strategy_release import Reader
 from tests.test_strategy_configuration_selection import children, prepare, ID
 
 
+def test_installed_protected_programme_requires_approved_risk_hash_before_reference_reads(monkeypatch):
+    from types import SimpleNamespace
+    from tests.test_strategy_configuration_materialization import configured
+    _, actor, selected, _ = configured()
+    async def selection(*args, **kwargs): return selected
+    monkeypatch.setattr(module, 'load_configuration_selection', selection)
+    monkeypatch.setattr(module, 'program_strategy_executor', lambda *_:
+        SimpleNamespace(requires_execution_risk=True))
+    async def references(*args, **kwargs): pytest.fail('missing risk approval must fail before reference reads')
+    monkeypatch.setattr(module, 'load_program_configuration_references', references)
+    with pytest.raises(ValueError, match='explicitly approved execution risk'):
+        asyncio.run(module.load_certified_program_configuration(selection_client_factory=lambda: None,
+            release_client_factory=lambda: None, policy_client_factory=lambda: None, policy_dispatch=object(),
+            configuration_id=selected.header['configuration_id'], expected_content_hash=selected.header['content_hash'],
+            concurrency=1, expected_execution_binding_hash='a' * 64))
+
+
 @pytest.mark.parametrize('foreign_parent', [False, True])
 def test_certified_selection_joins_approved_execution_binding_and_rechecks_selection(monkeypatch, foreign_parent):
     from types import SimpleNamespace

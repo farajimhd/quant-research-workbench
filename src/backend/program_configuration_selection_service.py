@@ -18,9 +18,10 @@ _SERVICE = None
 class ProgramConfigurationSelectionService:
     def __init__(self, *, approved_selections, selection_client_factory,
             release_client_factory, policy_client_factory, policy_dispatch, concurrency,
-            approved_execution_bindings=None):
+            approved_execution_bindings=None, approved_execution_risks=None):
         pins = dict(approved_selections)
         execution_pins = dict(approved_execution_bindings or {})
+        risk_pins = dict(approved_execution_risks or {})
         if (not 1 <= len(pins) <= 256 or type(concurrency) is not int or not 1 <= concurrency <= 6
                 or any(type(identity) is not str or str(UUID(identity)) != identity
                        or type(digest) is not str or re.fullmatch(r"[0-9a-f]{64}", digest) is None
@@ -33,6 +34,10 @@ class ProgramConfigurationSelectionService:
             raise ValueError('Programme execution approvals differ from selected configurations')
         self.pins = MappingProxyType(pins)
         self.execution_pins = MappingProxyType(execution_pins)
+        if (set(risk_pins) - set(execution_pins) or any(type(value) is not str
+                or re.fullmatch('[0-9a-f]{64}', value) is None for value in risk_pins.values())):
+            raise ValueError('Programme risk approvals require corresponding execution approvals')
+        self.risk_pins = MappingProxyType(risk_pins)
         self.authorities = MappingProxyType(dict(selection_client_factory=selection_client_factory,
             release_client_factory=release_client_factory, policy_client_factory=policy_client_factory,
             policy_dispatch=policy_dispatch, concurrency=concurrency))
@@ -85,11 +90,16 @@ class ProgramConfigurationSelectionService:
             raise ValueError("Programme configuration selection is not approved for this app")
         binding_pin = self.execution_pins.get(identity)
         extra = {} if binding_pin is None else {'expected_execution_binding_hash': binding_pin}
+        risk_pin = self.risk_pins.get(identity)
+        if risk_pin is not None:
+            extra['expected_execution_risk_hash'] = risk_pin
         certified = await load_certified_program_configuration(configuration_id=identity,
             expected_content_hash=digest, **self.authorities, **extra)
         revision = deepcopy(certified.revision)
         if revision.get('execution_binding_hash') != binding_pin:
             raise ValueError('Programme snapshot execution binding differs from its approval')
+        if revision.get('execution_risk_hash') != risk_pin:
+            raise ValueError('Programme snapshot execution risk differs from its approval')
         if run_plan_id and revision["run_plan_id"] != run_plan_id:
             raise ValueError("Programme selection differs from the requested run plan")
         revision["available_run_plans"] = [{
@@ -125,6 +135,11 @@ class ProgramConfigurationSelectionService:
         if revision.get('execution_binding_hash') != binding_pin:
             raise ValueError('Programme execution selection is not approved for this app')
         extra = {} if binding_pin is None else {'expected_execution_binding_hash': binding_pin}
+        risk_pin = self.risk_pins.get(candidate.removeprefix('strategy-configuration:'))
+        if revision.get('execution_risk_hash') != risk_pin:
+            raise ValueError('Programme execution risk is not approved for this app')
+        if risk_pin is not None:
+            extra['expected_execution_risk_hash'] = risk_pin
         controller = await run_service.prepare_certified_program_controller(definition,
             assignments=assignments, listing_by_assignment=listing_by_assignment,
             liquidity_resolution_ms=liquidity_resolution_ms, **self.authorities, **extra)
@@ -188,6 +203,11 @@ class ProgramConfigurationSelectionService:
         if revision.get('execution_binding_hash') != binding_pin:
             raise ValueError('Programme resume execution selection is not approved')
         extra = {} if binding_pin is None else {'expected_execution_binding_hash': binding_pin}
+        risk_pin = self.risk_pins.get(candidate.removeprefix('strategy-configuration:'))
+        if revision.get('execution_risk_hash') != risk_pin:
+            raise ValueError('Programme resume execution risk is not approved')
+        if risk_pin is not None:
+            extra['expected_execution_risk_hash'] = risk_pin
         controller = await run_service.prepare_certified_program_resume_controller(evidence,
             assignments=assignments, listing_by_assignment=listing_by_assignment,
             liquidity_resolution_ms=liquidity_resolution_ms, **self.authorities, **extra)

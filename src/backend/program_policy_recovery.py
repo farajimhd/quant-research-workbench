@@ -227,6 +227,8 @@ def _program_policy_fingerprint_value(actor):
         targets=pairs(actor.target_state._targets), entry_intents=pairs(actor.target_state._entry_intents),
         advanced_intents=pairs(actor.target_state._advanced_intents, sets=True),
         trail=pairs(actor.trail_state._water), clocks=pairs(actor._selection_clocks))
+    if actor.execution_risk is not None:
+        value['execution_risk_hash'] = actor.execution_risk.header['content_hash']
     return scalar(value)
 
 
@@ -267,7 +269,8 @@ def clone_recovered_program_actor(packet):
             or program_policy_fingerprint(packet.actor) != packet.state_hash):
         raise ValueError("Programme actor clone requires an unchanged recovered policy")
     original = packet.actor
-    actor = AssignedProgramStrategy(original.program_release, deepcopy(original.assignments()), dict(original._listings))
+    actor = AssignedProgramStrategy(original.program_release, deepcopy(original.assignments()), dict(original._listings),
+        execution_risk=original.execution_risk)
     actor.execution_state = deepcopy(original.execution_state)
     actor.target_state = deepcopy(original.target_state)
     actor.trail_state = deepcopy(original.trail_state)
@@ -326,7 +329,8 @@ def rebuild_program_policy_events(template, events, *, run_id, source_hashes,
                 or len(cached) >= min(maximum_events, 1_000_000)):
             raise ValueError("Program policy recovery execution cache is invalid or duplicate")
         cached[execution.execution_id] = execution
-    actor = AssignedProgramStrategy(template.program_release, template.assignments(), template._listings)
+    actor = AssignedProgramStrategy(template.program_release, template.assignments(), template._listings,
+        execution_risk=template.execution_risk)
     seen, fees, completed = set(), set(), {}
     sequence = completions = 0
     if initial_packet is not None:
@@ -420,12 +424,14 @@ def rebuild_program_policy_events(template, events, *, run_id, source_hashes,
             source_sequence = source_sequences.get(source_hash)
             at = _clock(detail["source_event_time"])
             status = detail["decision_reason_detail"]
+            from src.trading_runtime.configuration_execution_risk import is_risk_rejection_status
             if (assignment is None or source_sequence is None
                     or source_sequence <= completed.get(assignment_id, 0)
                     or (detail["strategy_id"], detail["strategy_revision"], detail["account_id"], detail["ticker"])
                        != (actor.strategy_id, actor.revision, assignment.account_id, assignment.ticker)
                     or detail["decision_status"] != "completed" or detail["action"] != "wait"
                     or status not in {"selected", "wait", "pending_reduction", "pending_acquisition", "awaiting_protection_observation"}
+                        and not is_risk_rejection_status(status)
                     or detail["reason"] != "program:" + status or detail["working_timeframe"] != "1s"
                     or event["entity_id"] != detail["signal_id"] or event["correlation_id"] != detail["signal_id"]
                     or _clock(event["event_time"]) != at):

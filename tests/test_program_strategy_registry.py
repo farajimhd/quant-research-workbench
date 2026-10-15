@@ -71,6 +71,21 @@ def test_programme_numbered_release_uses_same_shared_identity(monkeypatch):
         registry.register_numbered_strategy(changed)
 
 
+def test_installed_protected_programme_cannot_build_without_explicit_risk(monkeypatch):
+    registration, rows, selected = installed(monkeypatch)
+    protected = replace(registration, requires_execution_risk=True)
+    with pytest.raises(ValueError, match='requires an explicit execution risk'):
+        asyncio.run(protected.build((selected,), {selected.assignment_id: 'listing'},
+            mode='backtest', client_factory=lambda: pytest.fail('must reject before market/release reads')))
+    from tests.test_configuration_execution_risk import contract
+    risk = contract()
+    actor = asyncio.run(protected.build((selected,), {selected.assignment_id: 'listing'},
+        mode='backtest', client_factory=lambda: Reader(rows), execution_risk=risk))
+    assert actor.execution_risk == risk
+    with pytest.raises(ValueError):
+        replace(registration, requires_execution_risk=1).verify()
+
+
 @pytest.mark.parametrize("worker_failure", [False, True])
 def test_cancelled_programme_read_settles_worker_and_closes_reader(monkeypatch, worker_failure):
     registration, rows, selected = installed(monkeypatch)

@@ -83,9 +83,11 @@ class ReferenceClockWindow:
         return self.clocks - 1
 
 
-def _read_reference_clock_window(input_root, day, input_hash):
+def _read_reference_clock_window(input_root, day, input_hash, *, validation_opened=False, role=None):
     """Read sealed clock metadata only; never supply app market observations."""
     import numpy as np
+    if type(validation_opened) is not bool or role not in (None, 'training', 'validation'):
+        raise ValueError('Explicit clock metadata role and validation flag required')
     target = (input_root / day).resolve()
     if not target.is_relative_to(input_root):
         raise ValueError('Frozen optimizer clock path escaped its declared authority')
@@ -94,7 +96,8 @@ def _read_reference_clock_window(input_root, day, input_hash):
         raise ValueError(f'Frozen optimizer input identity changed: {day}')
     metadata = json.loads(complete)
     if (metadata['status'] != 'complete' or metadata['ready_for_replay'] is not True
-            or metadata['validation_opened'] is not False
+            or metadata['validation_opened'] is not validation_opened
+            or (role is not None and metadata.get('split', role) != role)
             or metadata['identity']['session']['day'] != day
             or metadata['identity']['top_n'] != 10 or metadata['identity']['window'] != 30):
         raise ValueError(f'Frozen optimizer clock metadata differs: {day}')
@@ -125,6 +128,7 @@ class OptimizationReference:
     execution: Mapping
     sessions: Mapping
     clock_windows: Mapping | None = None
+    candidate_envelope: object | None = None
 
 
 def read_reference(root: str | Path, *, concurrency: int = 1, input_root=None) -> OptimizationReference:
@@ -243,6 +247,63 @@ def read_reference(root: str | Path, *, concurrency: int = 1, input_root=None) -
             windows = MappingProxyType(measured)
     return OptimizationReference(GENERATION, WINNER_SHA256, candidate,
         json.loads(contents['winner.json']), execution, sessions, windows)
+
+
+def read_candidate_reference(root, serial, *, concurrency=1, input_roots=None):
+    """Bridge every frozen candidate session into the native comparison contract.
+
+    Only hash-bound clock metadata and clocks.npy are opened from input roots;
+    these reference clocks never provide app market or feature observations.
+    """
+    from .optimized_candidate_evidence import read_frozen_candidate_evidence
+    from .optimized_candidate import restore_candidate
+    if type(concurrency) is not int or not 1 <= concurrency <= 8:
+        raise ValueError('Candidate reference reads require bounded concurrency')
+    if type(serial) is not int or serial < 1:
+        raise ValueError('Explicit candidate serial required')
+    root = Path(root).resolve(strict=True)
+    manifest = read_frozen_candidate_evidence(root, workers=concurrency)
+    envelopes = [value for value in manifest['candidate_envelopes'] if value['serial'] == serial]
+    if len(envelopes) != 1:
+        raise ValueError('Candidate serial absent or duplicated in frozen evidence')
+    candidate = restore_candidate(envelopes[0])
+    selected = manifest['sessions'][str(serial)]
+    sessions, jobs = {}, []
+    if input_roots is not None and set(input_roots) != {'training', 'validation'}:
+        raise ValueError('Explicit input roots required for both source splits')
+    for role in ('training', 'validation'):
+        for session in selected[role]:
+            day = session['day']
+            if day in sessions:
+                raise ValueError('Candidate comparison sessions overlap')
+            metrics = {name: value for name, value in session['metrics'].items() if name in METRICS}
+            _validate_metrics(metrics, day=day, origin='reference', complete=True)
+            sessions[day] = MappingProxyType(metrics)
+            if input_roots is not None:
+                relative = f'{role}/generation-{candidate.generation:04d}/{day}/receipt.json'
+                raw = (root / relative).read_bytes()
+                if sha256(raw).hexdigest() != manifest['sources'][relative]:
+                    raise ValueError('Frozen candidate receipt changed during clock binding')
+                receipt = json.loads(raw)
+                checksum = receipt['identity']['input_sha256']
+                input_root = Path(input_roots[role]).resolve(strict=True)
+                # The source input certificate may retain validation_opened=False
+                # even for a display-only optimizer receipt. Bind its exact flag.
+                certificate = (input_root / day / 'complete.json').read_bytes()
+                if sha256(certificate).hexdigest() != checksum:
+                    raise ValueError('Candidate input certificate differs from receipt')
+                flag = json.loads(certificate)['validation_opened']
+                jobs.append((day, input_root, checksum, flag, role))
+    windows = None
+    if jobs:
+        def read(job):
+            day, input_root, checksum, flag, role = job
+            return day, _read_reference_clock_window(input_root, day, checksum,
+                validation_opened=flag, role=role)
+        with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix='candidate-clocks') as pool:
+            windows = MappingProxyType(dict(pool.map(read, jobs)))
+    return OptimizationReference(candidate.generation, candidate.program_hash, candidate.candidate,
+        candidate.program, candidate.execution, MappingProxyType(sessions), windows, candidate)
 
 
 async def load_reference(root, *, concurrency, input_root=None):

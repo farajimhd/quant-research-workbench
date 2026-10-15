@@ -7,3 +7,12 @@ class ConfigurationExecutionBindingPublisher(ConfigurationSelectionPublisher):
     children = (POLICY,)
     seal = SEAL
     restore = staticmethod(restore_execution_binding)
+
+
+from src.trading_runtime.configuration_execution_risk import RISK, restore_execution_risk
+
+
+class ConfigurationExecutionRiskPublisher(ConfigurationSelectionPublisher):
+    children = ()
+    seal = RISK
+    restore = staticmethod(restore_execution_risk)

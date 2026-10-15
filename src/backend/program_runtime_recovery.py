@@ -56,7 +56,7 @@ def build_recovered_program_runtime(config, strategy, journal, *, portfolio_reco
     # independently replayed and qualified policy packet may install fills,
     # targets, trail water and consumed decision clocks afterward.
     staged_strategy = AssignedProgramStrategy(strategy.program_release,
-        deepcopy(strategy.assignments()), dict(strategy._listings))
+        deepcopy(strategy.assignments()), dict(strategy._listings), execution_risk=strategy.execution_risk)
     staged_planner = RuntimeIbkrStrategyOrderPlanner(deepcopy(intent_planner.instruments),
         strategy_id=config.strategy_id, strategy_revision=config.strategy_revision,
         run_id=config.run_id, limit_offset_bps=intent_planner.limit_offset_bps)

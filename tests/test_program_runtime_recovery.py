@@ -20,10 +20,14 @@ from tests.test_program_controller_runtime import definition_and_actor
 
 
 @pytest.mark.parametrize("resolution", [100, 1000])
-def test_shared_runtime_initializes_from_real_normalized_cold_portfolio(monkeypatch, resolution, tmp_path):
+@pytest.mark.parametrize('protected', [False, True])
+def test_shared_runtime_initializes_from_real_normalized_cold_portfolio(monkeypatch, resolution, tmp_path, protected):
     definition, template = definition_and_actor()
     assignment = replace(template.assignments()[0], account_id="account-id")
-    strategy = AssignedProgramStrategy(template.program_release, (assignment,), {"assignment": "listing"})
+    from tests.test_configuration_execution_risk import contract
+    risk = contract() if protected else None
+    strategy = AssignedProgramStrategy(template.program_release, (assignment,), {"assignment": "listing"},
+        execution_risk=risk)
     profile = replace(profiles_for_runtime(("account-id",), mode="backtest")[0], account_key="account-key")
     client = SnapshotClient()
     raw = _state()
@@ -48,6 +52,7 @@ def test_shared_runtime_initializes_from_real_normalized_cold_portfolio(monkeypa
     with pytest.raises(ValueError, match="financial scope"):
         build_recovered_program_runtime(replace(config, run_id="foreign"), strategy, journal, **kwargs)
     runtime = build_recovered_program_runtime(config, strategy, journal, **kwargs)
+    assert runtime.strategy.execution_risk == risk
     async def run():
         from src.backend.replay_run_service import ReplayRunController
         controller = ReplayRunController(replace(definition, session_date=AT.date()),

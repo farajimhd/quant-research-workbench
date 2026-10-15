@@ -44,3 +44,33 @@ def test_cold_reader_checks_exact_seal_and_closes_its_owned_connection(monkeypat
         with pytest.raises(ValueError):
             asyncio.run(reader.load_configuration_execution_binding(lambda: client, **pins))
     assert client.closed
+
+
+@pytest.mark.parametrize('changed', [False, True])
+def test_risk_reader_pins_both_reads_and_closes(monkeypatch, changed):
+    from tests.test_configuration_execution_risk import contract
+    from src.trading_runtime.configuration_execution_risk import RISK
+    selected = contract()
+    class Client:
+        reads = 0
+        closed = False
+        def execute(self, query):
+            if query == "SELECT getSetting('readonly')":
+                return '1'
+            self.reads += 1
+            if changed and self.reads == 2:
+                return ''
+            assert 'FROM arte.' + RISK.name in query and 'LIMIT 4097' in query
+            return json.dumps(dict(selected.header), default=str)
+        def close(self): self.closed = True
+    client = Client()
+    monkeypatch.setattr(reader, 'storage_preflight', lambda owned, tables: None)
+    pins = dict(configuration_id=selected.header['configuration_id'],
+        expected_configuration_hash=selected.header['configuration_hash'],
+        expected_content_hash=selected.header['content_hash'])
+    if changed:
+        with pytest.raises(ValueError, match='changed'):
+            asyncio.run(reader.load_configuration_execution_risk(lambda: client, **pins))
+    else:
+        assert asyncio.run(reader.load_configuration_execution_risk(lambda: client, **pins)).header == selected.header
+    assert client.closed

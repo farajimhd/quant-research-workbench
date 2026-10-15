@@ -73,3 +73,52 @@ def test_concrete_execution_transport_preserves_immutable_claims_and_seal_last(m
         assert writes == [POLICY.name, SEAL.name]
         assert publish() == packet and len(writes) == 2
     assert all(client.closed for client in clients)
+
+
+@pytest.mark.parametrize('failure', [None, 'grant', 'ack'])
+def test_risk_publication_uses_normalized_owner_and_fail_stop_claim(monkeypatch, failure):
+    from tests.test_configuration_execution_risk import contract
+    from src.trading_runtime.configuration_execution_risk import RISK
+    packet = contract()
+    monkeypatch.setattr(transport, 'storage_preflight', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(base, 'storage_preflight', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(transport, 'read_configuration_selection', lambda *_args, **_kwargs: object())
+    keeper = Keeper()
+    keeper.client_id = (1, b'test')
+    keeper.add_listener = lambda *_: None
+    session = ManagedKeeperSession(keeper)
+    session._on_state('CONNECTED')
+    stored, clients = [], []
+    class Client:
+        base_url = 'http://test'
+        closed = False
+        def __init__(self, writer=False): self.writer = writer; clients.append(self)
+        def close(self): self.closed = True
+        def execute(self, query):
+            if isinstance(query, bytes): query = product_request_as_json(query, (RISK,))
+            if query == "SELECT getSetting('readonly')": return '0' if self.writer else '1'
+            if query == 'SELECT currentUser()': return 'configuration_writer'
+            if query == 'SHOW GRANTS FINAL':
+                scopes = selections.TABLES if failure == 'grant' else (*selections.TABLES, RISK)
+                return '\n'.join([f'GRANT SELECT, INSERT ON arte.{t.name} TO configuration_writer' for t in scopes]
+                    + [f'GRANT SELECT ON system.{n} TO configuration_writer' for n in
+                       ('tables', 'columns', 'parts', 'storage_policies', 'data_skipping_indices')])
+            if query.startswith('INSERT'):
+                assert self.writer and RISK.name in query
+                stored.extend(json.loads(line) for line in query.splitlines()[1:])
+                if failure == 'ack': raise RuntimeError('Unknown acknowledgement')
+                return ''
+            assert 'FROM arte.' + RISK.name in query
+            return '\n'.join(json.dumps(row, default=str) for row in stored)
+    def publish():
+        return asyncio.run(transport.publish_configuration_execution_risk(reader_factory=Client,
+            writer_factory=lambda: Client(True), session=session, source=packet.rows, concurrency=1))
+    if failure:
+        with pytest.raises((ValueError, RuntimeError)):
+            publish()
+        if failure == 'ack':
+            with pytest.raises(RuntimeError, match='reconcile explicitly'):
+                publish()
+    else:
+        assert publish() == packet and publish() == packet and len(stored) == 1
+    assert all(c.closed for c in clients)

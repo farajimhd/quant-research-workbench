@@ -23,7 +23,8 @@ def packet(tmp_path):
     header = actor.program_release.header
     registration = registry.ProgramStrategyExecutorRegistration(header['strategy_id'],
         header['strategy_number'], header['content_hash'], header['code_hash'], header['source_winner_hash'])
-    fields = {k: v for k, v in asdict(registration).items() if k not in ('mode', 'evaluation_interval')}
+    fields = {k: v for k, v in asdict(registration).items()
+              if k not in ('mode', 'evaluation_interval', 'requires_execution_risk')}
     plan = dict(contract='approved-program-app-startup-v1',
         approved_selections={selected.header['configuration_id']: selected.header['content_hash']},
         executors=[fields], concurrency=2)
@@ -31,6 +32,24 @@ def packet(tmp_path):
     raw = json.dumps(plan).encode()
     path.write_bytes(raw)
     return str(path), sha256(raw).hexdigest(), plan, actor.program_release
+
+
+def test_startup_v3_has_separate_explicit_execution_risk_approval(tmp_path):
+    path, _, plan, _ = packet(tmp_path)
+    identity = next(iter(plan['approved_selections']))
+    plan.update(contract='approved-program-app-startup-v3',
+        approved_execution_bindings={identity: 'b' * 64}, approved_execution_risks={identity: 'c' * 64})
+    plan['executors'][0]['requires_execution_risk'] = True
+    raw = json.dumps(plan).encode()
+    from pathlib import Path
+    Path(path).write_bytes(raw)
+    approved = bootstrap.read_startup_plan(path, sha256(raw).hexdigest())
+    assert len(approved) == 5 and approved[3][identity] == 'b' * 64 and approved[4][identity] == 'c' * 64
+    plan['approved_execution_risks'] = {'00000000-0000-0000-0000-000000000099': 'c' * 64}
+    raw = json.dumps(plan).encode()
+    Path(path).write_bytes(raw)
+    with pytest.raises(ValueError, match='risk approvals'):
+        bootstrap.read_startup_plan(path, sha256(raw).hexdigest())
 
 
 def supplied(tmp_path, monkeypatch):

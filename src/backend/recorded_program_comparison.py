@@ -57,6 +57,16 @@ def _clock(value):
 
 def verify_frozen_program_release(reference, release):
     """Recompile the sealed winner through the same shared specification adapter."""
+    candidate = getattr(reference, 'candidate_envelope', None)
+    if candidate is not None:
+        from .optimized_strategy_import import verify_imported_release
+        if ((reference.winner_sha256, reference.generation, reference.candidate)
+                != (candidate.program_hash, candidate.generation, candidate.candidate)
+                or dict(reference.program) != dict(candidate.program)
+                or dict(reference.execution) != dict(candidate.execution)):
+            raise ValueError('Recorded candidate reference identity differs from its envelope')
+        verify_imported_release(candidate, release)
+        return
     from src.trading_runtime.optimized_program_specification import compile_frozen_winner, STAGES
     from src.trading_runtime.columnar_strategy_release import POLICY
     rule = release.universe

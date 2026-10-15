@@ -55,6 +55,20 @@ def test_execution_binding_pin_is_forwarded_and_uncertified_snapshot_rejected(mo
     with pytest.raises(TypeError): service.pins["other"] = "a" * 64
 
 
+def test_execution_risk_pin_is_independent_explicit_and_forwarded(monkeypatch):
+    original, revision, reads = installed(monkeypatch)
+    identity = revision['revision_id'].removeprefix('strategy-configuration:')
+    service = selection_service.ProgramConfigurationSelectionService(approved_selections=original.pins,
+        approved_execution_bindings={identity: 'b' * 64}, approved_execution_risks={identity: 'c' * 64},
+        **dict(original.authorities))
+    revision['execution_binding_hash'] = 'b' * 64
+    with pytest.raises(ValueError, match='execution risk'):
+        asyncio.run(service.snapshot(revision['revision_id']))
+    revision['execution_risk_hash'] = 'c' * 64
+    assert asyncio.run(service.snapshot(revision['revision_id']))['execution_risk_hash'] == 'c' * 64
+    assert reads[-1]['expected_execution_risk_hash'] == 'c' * 64
+
+
 def test_current_http_configuration_options_include_certified_programme(monkeypatch):
     _, revision, reads = installed(monkeypatch)
     monkeypatch.setattr(legacy, "certified_configuration_options", lambda candidate_id: pytest.fail("Unrelated legacy catalogue read"))

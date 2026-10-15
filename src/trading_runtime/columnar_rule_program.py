@@ -35,12 +35,15 @@ class Operation(IntEnum):
     CROSS_ABOVE = 18
     CROSS_BELOW = 19
     ABS = 20
+    BOOL_RATIO = 21
+    STD = 23
 
 
 UNARY = {Operation.NOT, Operation.LAG, Operation.MEAN, Operation.MINIMUM,
-         Operation.MAXIMUM, Operation.DIFFERENCE, Operation.ABS}
+         Operation.MAXIMUM, Operation.DIFFERENCE, Operation.ABS, Operation.BOOL_RATIO,
+         Operation.STD}
 TEMPORAL = {Operation.LAG, Operation.MEAN, Operation.MINIMUM,
-            Operation.MAXIMUM, Operation.DIFFERENCE}
+            Operation.MAXIMUM, Operation.DIFFERENCE, Operation.STD}
 WINDOWS = {1, 2, 3, 5, 10, 20, 30, 60, 120}
 GROUP = ["listing_id", "evaluation_block"]
 
@@ -97,6 +100,10 @@ class RuleProgram:
         if (not 1 <= len(self.nodes) <= 32 or type(self.output) is not int
                 or not 0 <= self.output < len(self.nodes)):
             raise ValueError("Rule program exceeds bounded DAG contract")
+        from src.market_engine.qmd_feature_catalog import CATALOG as MARKET_CATALOG
+        # A projected input contract need not reference every dimensional literal
+        # used in a certified search program, including its inactive nodes.
+        literal_units = {f.unit for f in fields.values()} | {f.unit for f in MARKET_CATALOG} | {"bool", "ratio"}
         units, context = [], []
         for index, node in enumerate(self.nodes):
             if (type(node.operation) not in (int, Operation)
@@ -113,7 +120,7 @@ class RuleProgram:
                 unit = fields[node.field].unit
             elif op == Operation.CONSTANT:
                 unit = node.unit
-                if unit not in {f.unit for f in fields.values()} | {"bool", "ratio"}:
+                if unit not in literal_units:
                     raise ValueError("Unknown rule literal unit")
                 if unit == "bool" and node.literal not in (0, 1):
                     raise ValueError("Boolean rule literal must be 0 or 1")
@@ -130,6 +137,10 @@ class RuleProgram:
                     if a != "bool" or b != "bool":
                         raise ValueError("Boolean rule operands required")
                     unit = "bool"
+                elif op == Operation.BOOL_RATIO:
+                    if a != "bool":
+                        raise ValueError("Boolean conversion requires bool")
+                    unit = "ratio"
                 elif op in {Operation.GREATER, Operation.GREATER_EQUAL, Operation.LESS,
                             Operation.LESS_EQUAL, Operation.CROSS_ABOVE, Operation.CROSS_BELOW}:
                     if a != b:
@@ -149,7 +160,8 @@ class RuleProgram:
                         raise ValueError("Division rule units differ")
                     unit = "ratio" if a == b else a
                 else:
-                    if a == "bool" and op in {Operation.MEAN, Operation.DIFFERENCE, Operation.ABS}:
+                    if a == "bool" and op in {Operation.MEAN, Operation.DIFFERENCE,
+                                               Operation.ABS, Operation.STD}:
                         raise ValueError("Numeric rule operand required")
                     unit = a
                     depth += (node.window if op in {Operation.LAG, Operation.DIFFERENCE}
@@ -231,6 +243,10 @@ def evaluate_rules(frame: pl.DataFrame, programs: Mapping[str, RuleProgram],
                             sums - sums.shift(k).over(GROUP).fill_null(0)) / pl.lit(k, dtype=pl.Float32)
                     elif op == Operation.MINIMUM:
                         value = safe.rolling_min(k, min_samples=k).over(GROUP)
+                    elif op == Operation.STD:
+                        # V19 uses population standard deviation over the full
+                        # observed-row window; invalid evidence masks the result.
+                        value = safe.rolling_std(k, min_samples=k, ddof=0).over(GROUP)
                     else:
                         value = safe.rolling_max(k, min_samples=k).over(GROUP)
             else:
@@ -249,6 +265,7 @@ def evaluate_rules(frame: pl.DataFrame, programs: Mapping[str, RuleProgram],
                 elif op == Operation.OR: value = (a != 0) | (b != 0)
                 elif op == Operation.NOT: value = a == 0
                 elif op == Operation.ABS: value = a.abs()
+                elif op == Operation.BOOL_RATIO: value = a != 0
                 else:
                     mask = mask & (av & bv).shift(1).over(GROUP).fill_null(False)
                     prior_a, prior_b = a.shift(1).over(GROUP), b.shift(1).over(GROUP)

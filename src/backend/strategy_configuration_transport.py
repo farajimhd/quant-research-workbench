@@ -20,16 +20,18 @@ from .certified_program_configuration import ConfigurationReferenceReader
 _ROOT = "/quant-research-workbench/trading/strategy-configuration-v1"
 
 
-def configuration_writer_preflight(client, *, require_execution_bindings=False):
+def configuration_writer_preflight(client, *, require_execution_bindings=False, require_execution_risk=False):
     from src.trading_runtime.configuration_execution_binding import TABLES as execution_tables
-    if type(require_execution_bindings) is not bool:
+    from src.trading_runtime.configuration_execution_risk import TABLES as risk_tables
+    if type(require_execution_bindings) is not bool or type(require_execution_risk) is not bool:
         raise ValueError('Execution binding grant mode must be explicit')
     user = client.execute("SELECT currentUser()").strip()
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", user) is None:
         raise ValueError("Configuration writer principal is invalid")
     tables = {("arte", table.name) for table in schema.TABLES}
     execution_scopes = {('arte', table.name) for table in execution_tables}
-    recognized_tables = tables | execution_scopes
+    risk_scopes = {('arte', table.name) for table in risk_tables}
+    recognized_tables = tables | execution_scopes | risk_scopes
     allowed_reads = recognized_tables | {("system", name) for name in
         ("tables", "columns", "parts", "storage_policies", "data_skipping_indices")}
     reads, writes = set(), set()
@@ -49,13 +51,19 @@ def configuration_writer_preflight(client, *, require_execution_bindings=False):
     system_reads = {('system', name) for name in
         ('tables', 'columns', 'parts', 'storage_policies', 'data_skipping_indices')}
     extra_reads, extra_writes = reads & execution_scopes, writes & execution_scopes
-    if (reads - execution_scopes != tables | system_reads or writes - execution_scopes != tables
+    risk_reads, risk_writes = reads & risk_scopes, writes & risk_scopes
+    if (reads - execution_scopes - risk_scopes != tables | system_reads
+            or writes - execution_scopes - risk_scopes != tables
             or extra_reads != extra_writes or extra_reads not in (set(), execution_scopes)
-            or require_execution_bindings and extra_reads != execution_scopes):
+            or risk_reads != risk_writes or risk_reads not in (set(), risk_scopes)
+            or require_execution_bindings and extra_reads != execution_scopes
+            or require_execution_risk and risk_reads != risk_scopes):
         raise ValueError("Configuration writer grants are incomplete")
     storage_preflight(client, tables=schema.TABLES)
     if extra_reads:
         storage_preflight(client, tables=execution_tables)
+    if risk_reads:
+        storage_preflight(client, tables=risk_tables)
 
 
 class ClickHouseConfigurationStorage:

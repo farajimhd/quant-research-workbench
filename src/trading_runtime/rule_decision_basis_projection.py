@@ -205,7 +205,11 @@ def verify_rule_decision_basis(parent, children):
             or not all(parent[key] for key in ("run_id", "account_id", "assignment_id", "listing_id", "evaluation_block"))):
         raise ValueError("Rule decision scope, sequence or intent coverage differs")
     statuses = {"selected", "wait", "pending_reduction", "pending_acquisition", "awaiting_protection_observation"}
-    if parent["selection_status"] not in statuses or (parent["selection_status"] == "selected") != bool(children):
+    from .configuration_execution_risk import is_risk_rejection_status
+    risk_rejected = is_risk_rejection_status(parent['selection_status'])
+    if ((parent["selection_status"] not in statuses and not risk_rejected)
+            or not risk_rejected and (parent["selection_status"] == "selected") != bool(children)
+            or risk_rejected and any(child['stage'] in {'entry', 'add'} for child in children)):
         raise ValueError("Rule decision status differs from selected intents")
     seen = set()
     for index, child in enumerate(children):

@@ -30,6 +30,7 @@ class CertifiedProgramConfiguration:
     release: object
     revision: object
     execution_binding: object = None
+    execution_risk: object = None
 
 
 class _BoundedPolicyReader:
@@ -142,13 +143,18 @@ async def load_program_configuration_references(selected, *,
 
 async def load_certified_program_configuration(*, selection_client_factory,
         release_client_factory, policy_client_factory, policy_dispatch,
-        configuration_id, expected_content_hash, concurrency, expected_execution_binding_hash=None):
+        configuration_id, expected_content_hash, concurrency, expected_execution_binding_hash=None,
+        expected_execution_risk_hash=None):
     """Verify persisted selection and settle every owned reference read."""
     if any(not callable(factory) for factory in (selection_client_factory, release_client_factory, policy_client_factory)):
         raise ValueError("Programme configuration needs its explicit central readers")
     if expected_execution_binding_hash is not None and (type(expected_execution_binding_hash) is not str
             or re.fullmatch('[0-9a-f]{64}', expected_execution_binding_hash) is None):
         raise ValueError('Programme execution binding requires its approved hash')
+    if expected_execution_risk_hash is not None and (expected_execution_binding_hash is None
+            or type(expected_execution_risk_hash) is not str
+            or re.fullmatch('[0-9a-f]{64}', expected_execution_risk_hash) is None):
+        raise ValueError('Programme execution risk requires approved execution and risk hashes')
     lock, used = Lock(), []
     def distinct(factory):
         def owned():
@@ -164,6 +170,8 @@ async def load_certified_program_configuration(*, selection_client_factory,
                     concurrency=concurrency)
     selected = await load_configuration_selection(selection_factory, **identity)
     registration = program_strategy_executor(selected.header["strategy_id"], selected.header["strategy_revision"])
+    if getattr(registration, 'requires_execution_risk', False) and expected_execution_risk_hash is None:
+        raise ValueError('Installed programme requires its explicitly approved execution risk hash')
     result = await load_program_configuration_references(selected,
         release_client_factory=distinct(release_client_factory), policy_client_factory=distinct(policy_client_factory),
         policy_dispatch=policy_dispatch, concurrency=concurrency)
@@ -176,6 +184,14 @@ async def load_certified_program_configuration(*, selection_client_factory,
             expected_content_hash=expected_execution_binding_hash)
         result = replace(result, revision=bind_execution_configuration(result.revision, binding),
             execution_binding=binding)
+    if expected_execution_risk_hash is not None:
+        from dataclasses import replace
+        from .configuration_execution_binding_reader import load_configuration_execution_risk
+        from src.trading_runtime.configuration_execution_risk import bind_execution_risk
+        risk = await load_configuration_execution_risk(selection_factory,
+            configuration_id=configuration_id, expected_configuration_hash=expected_content_hash,
+            expected_content_hash=expected_execution_risk_hash)
+        result = replace(result, revision=bind_execution_risk(result.revision, risk), execution_risk=risk)
     current = await load_configuration_selection(selection_factory, **identity)
     if current != selected or program_strategy_executor(*registration.key) is not registration:
         raise ValueError("Configuration selection or installed pins changed during reference admission")

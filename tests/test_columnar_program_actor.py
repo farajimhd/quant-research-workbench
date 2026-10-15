@@ -25,6 +25,19 @@ def actor_inputs():
     return actor, boundary, management, execution, manager
 
 
+def test_risk_rejection_has_native_selection_reason_and_no_acquisition():
+    from tests.test_configuration_execution_risk import contract
+    from src.trading_runtime.oms_assignment_observation import AssignmentOrderObservation
+    actor, boundary, _, _, _ = actor_inputs()
+    actor = AssignedProgramStrategy(actor.program_release, actor.assignments(), actor._listings,
+        execution_risk=contract(maximum_position_risk=100.))
+    observation = AssignmentOrderObservation('account', 'assignment', 'ABC', boundary.boundary_at,
+        False, False, (), (), 0.)
+    selected = actor.select_from_orders(boundary, assignment_id='assignment', observation=observation)
+    assert selected.proposals == ()
+    assert selected.status == 'risk_rejected:maximum_position_risk_exceeded'
+
+
 def test_actual_partial_fill_and_fee_choose_open_branch_and_age():
     actor, boundary, management, execution, manager = actor_inputs()
     assert actor.proposals(boundary, assignment_id="assignment", management=management)[0].stage == "entry"
