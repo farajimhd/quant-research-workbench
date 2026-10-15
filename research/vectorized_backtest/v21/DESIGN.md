@@ -11,7 +11,16 @@ Baseline inspected: V20 source at commit a55e3a139, 2026-10-15.
 | A02 | Discuss V20 parts separately and record V21 agreements as the discussion proceeds. | User request, 2026-10-15 |
 | A03 | Implement V21 only after the user's later implementation instruction. | User: "at the end ask you to implement" |
 
-No V21 feature, parameter, objective, eligibility or selection changes have been agreed yet. The earlier discussion of score-only selection is an open design topic, not authorization to remove filters. This document is the design record; existing task-history files are unchanged.
+The earlier discussion of score-only selection is an open design topic, not authorization to remove filters. This document is the design record; existing task-history files are unchanged.
+
+### Follow-up: feature semantics and action limits
+
+- A04: User conditionally requested correcting average-movement normalization if no rationale was found. Inspection traced `movement / close - 1` to the blanket price-history normalization introduced in V7 commit 56b9706c8. The only explicit later rationale is compatibility with persisted authority (V20 search_space.py); no independent magnitude-normalization rationale was found. Record the V21 correction as `average absolute movement / close`, with an explicit new semantic identity and corresponding threshold priors. Implement only at the later V21 implementation stage; do not reinterpret V20 feature IDs, certificates or results. This shift loses no mathematical information in the old representation but makes the new representation meaningful around zero.
+- Swing right is a confirmation window after the pivot, not future information available at the pivot. history_bank.calculate requires the full left/pivot/right window and then exposes only confirmation state through the previous clock. A pivot at t with right=3 cannot be used at t; availability is after confirmation, with the producer's additional previous-clock shift. Preserve this causal rule.
+- Existing enriched return channels are close-to-close log returns, `log(close_t / close_(t-h))`; they are not a set of OHLC-to-previous-OHLC returns. Completed-candle body/range/location are separate. No additional return channels agreed yet.
+- One position per candidate/listing at a time; no explicit per-session entry-count cap. After full closure later re-entry is possible. Add count is 0..5 per position, reset on new entry, not replenished by partial reductions. Reduction/trail counts have no analogous explicit numeric cap; signal, holding, cooldown/profit/age rules apply as relevant. The trail high-water is updated when the trail rule fires, not an unconditional maximum of every intervening price.
+- Addition size remains $200 and requires the evolved add rule, minimum profit, age, cooldown, remaining add count and prospective whole-position risk checks. Five additions permit $2000 cumulative buys including the initial $1000 within one position; this is not a market-value ceiling.
+- Entry checks are separate: stop distance `(fill-stop)/fill <= 0.20`; planned loss `quantity*(fill-stop) + modeled costs <= $300`. Thus a $1000 entry has at most $200 price-to-stop risk plus fees, with the $300 cap still checked. Additions retest the entire resulting position, not a fresh $300 allowance for each add. Invalid requests are rejected, not automatically resized.
 
 ## Big picture: current V20 baseline, not V21 decisions
 
