@@ -180,3 +180,12 @@ The above selection/cost details are audited V20 behavior, not newly approved V2
 - V20: features.py, enriched_math.py, prepare_enriched.py, search_space.py, genome.py, program.py, expressions.py, variation.py, semantics.py, evaluator.py, protected_transition.py, run_train.py, objectives.py, README.md.
 - Inherited catalog: ../v7/features.py and ../v6/torch_backtest/feature_bank.py, history_bank.py.
 - Catalog count verified by importing V20 features with bytecode writing disabled: 957 total = 764 inherited + 138 indicator variants + 55 enriched.
+
+
+## Implementation authorization and resolved defaults (2026-10-15)
+
+The user's explicit instruction to copy V20 and implement the recorded changes authorizes A04-A15 and the global recommendation above. V21 code is isolated; V20 must remain running. Profiling, workstation launch and stopping V20 remain pending a separate user decision.
+
+Implemented defaults: initial_multiplier=6 (configurable 1..64, total population <=65536), size bins 3..9 / 10..19 / 20..32 nodes, existing per-feature finite metadata bounds, 50/50 uniform/log-magnitude numeric draws, raw positive-unit ratio literals .01..4 (baseline 1). Mutation rate remains 20..85% across all non-survivors with 1..5 distinct edits. Reproduction budgets are fixed to the approved proportions. Archive history is a bounded 1024-entry canonical-hash-priority reservoir plus a guaranteed raw-profit leader, configurable through 4096; profit percentiles are computed within that retained pool, not all candidates ever evaluated. No parameter-distance matrix is computed.
+
+Both phase contracts bind v21-magnitude-ratio-v1. Original feature certificates remain unchanged; projection semantics and source hash are V21-specific. Selection, cost, sampling and display changes are implemented; CPU tests are correctness evidence, not GPU timing acceptance. The sixfold first generation and potentially larger expressions deliberately do more work and cannot be claimed to cost the same as V20 before measurement.
