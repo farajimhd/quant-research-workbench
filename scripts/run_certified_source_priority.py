@@ -47,11 +47,14 @@ def execute_worker(path,*,inspect_only=False):
     from threading import Event
     import signal
     config=preparation.campaign_config(parsed,parsed.end_date)
+    from types import SimpleNamespace
+    options=SimpleNamespace(env_file=parsed.env_file,max_threads=config.query_threads,
+        max_memory_gb=config.query_memory_bytes/1024**3,query_timeout=config.query_timeout_seconds)
     paths=acquisition.IngestionPaths(parsed.env_file,parsed.runtime_root,parsed.cache_root,
         parsed.archive_root,parsed.clickhouse_cache_root)
     if inspect_only:
         from pipelines.certified_research import source
-        with closing(builder.Client(parsed,persistent=True,readonly=True)) as client:
+        with closing(builder.Client(options,persistent=True,readonly=True)) as client:
             if client.secrets[0]!=request['endpoint']:raise ValueError('Worker effective endpoint differs')
             inventory=source.inventory(client.query,PRIORITY_DAYS[0],config.end,sessions=PRIORITY_DAYS)
             reporting=source.reporting_inventory(client.query,inventory)
@@ -62,7 +65,7 @@ def execute_worker(path,*,inspect_only=False):
         return 0
     stop=Event();signal.signal(signal.SIGINT,lambda *unused:stop.set())
     print('Priority source context | '+','.join(map(str,PRIORITY_DAYS))+' | original 2026 target retained',flush=True)
-    with closing(builder.Client(parsed,persistent=True)) as client,acquisition.stop_marker(stop,parsed.stop_file),closing(open_workstation_keeper_session()) as keeper:
+    with closing(builder.Client(options,persistent=True)) as client,acquisition.stop_marker(stop,parsed.stop_file),closing(open_workstation_keeper_session()) as keeper:
         claim=SourceClaim(keeper.client)
         try:
             prepare_priority(parsed,config,paths,lambda sql:client.query(sql+' SETTINGS readonly=1'),
