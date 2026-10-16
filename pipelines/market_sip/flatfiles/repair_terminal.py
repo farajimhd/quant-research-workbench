@@ -91,7 +91,7 @@ def render(state,width=110,height=30):
     scope=Text(f'{state.get("start", "")} to {state.get("end", "")}  |  Backfill  |  PID {state.get("pid", "-")}',style='dim',no_wrap=True,overflow='ellipsis')
     summary=Table.grid(expand=True,padding=(0,1))
     summary.add_column(width=16);summary.add_column(ratio=1);summary.add_column(width=18,justify='right')
-    summary.add_row('Certified days',ProgressBar(total=max(1,total),completed=certified,width=None,
+    summary.add_row(state.get('coverage_label','Certified days'),ProgressBar(total=max(1,total),completed=certified,width=None,
         complete_style='green',finished_style='green'),f'{certified}/{total}  {certified/max(total,1):.1%}')
     counters=Text(f'New {completed}   Reused {reused}   Remaining {max(0,total-certified)}   '
                   f'Failed {state.get("failed",0)}   Retried {state.get("retried",0)}',no_wrap=True,overflow='ellipsis')

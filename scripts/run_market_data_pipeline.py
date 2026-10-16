@@ -57,6 +57,8 @@ def arguments(argv=None):
     p.add_argument('--plan-only',action='store_true')
     p.add_argument('--benchmark-sql',action='store_true',help='Read-only serial/two-worker classification benchmark; exactly two already-staged days')
     p.add_argument('--resume',action='store_true')
+    p.add_argument('--repair-engine',choices=('compact-v2','legacy-v1'),default='compact-v2',
+                   help='compact-v2 classifies once, retains exception keys only, and consolidates partition updates')
     p.add_argument('--once',action='store_true',help='monitor: print one snapshot')
     p.add_argument('--progress',choices=('auto','text'),default='auto')
     a=p.parse_args(argv)
@@ -122,6 +124,7 @@ def main(argv=None):
         request=dict(version='trade-reporting-repair-v1',mode=a.mode,step=a.step,start=str(a.start_date),
             end=str(end),source_hash=inventory['content_hash'],endpoint=a.endpoint,
             archive=str(a.archive_root),cache=str(a.cache_root),clickhouse_cache=a.clickhouse_cache_root)
+        if a.repair_engine=='compact-v2':request.update(version='trade-reporting-repair-v2',repair_engine=a.repair_engine)
         if a.benchmark_sql:request['benchmark_sql']=True
         pending=list(reporting['missing'])
         plan=dict(request,total=len(inventory['expected']),reused=len(reporting['verified']),
@@ -199,6 +202,12 @@ def main(argv=None):
                 progress.update(status='complete')
                 return 0
             with acquisition.stop_marker(stop,a.run_dir/'stop.request'),closing(open_workstation_keeper_session()) as keeper,closing(SourceClaim(keeper.client)) as claim:
+                if a.repair_engine=='compact-v2':
+                    from pipelines.market_sip.flatfiles.compact_reporting_repair import run
+                    run(client.query,inventory,reporting['verified'],paths,claim,stop,progress,
+                        lambda:Client(options,persistent=True),a,active_preparation)
+                    progress.update(status='complete',queued=0)
+                    return 0
                 # Discover capture receipts before staging; completed days never open CSVs.
                 has=client.query("SELECT count() n FROM system.tables WHERE database='q_live' AND name="+literal(retained_reporting.RECEIPTS))[0]['n']
                 captured=client.query('SELECT source_date,source_digest FROM q_live.'+retained_reporting.RECEIPTS+
