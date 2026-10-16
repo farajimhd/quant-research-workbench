@@ -190,8 +190,10 @@ def main(argv=None):
             if a.benchmark_sql:
                 from pipelines.market_sip.flatfiles.repair_benchmark import run
                 with acquisition.stop_marker(stop,a.run_dir/'stop.request'):
+                    # ClickHouse forbids file() even in SELECT under readonly=1.
+                    # This bounded benchmark generates SELECT statements only.
                     report=run(tuple(inventory['expected']),paths,inventory,
-                               lambda:Client(options,persistent=True,readonly=True),progress,a.sql_workers,stop)
+                               lambda:Client(options,persistent=True),progress,a.sql_workers,stop)
                 progress.emit(f'Benchmark complete | classification speedup {report["speedup"]:.2f}x | see benchmark.json')
                 progress.update(status='complete')
                 return 0
