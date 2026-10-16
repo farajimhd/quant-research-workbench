@@ -121,7 +121,8 @@ class Arguments(unittest.TestCase):
             controller=B.Client(B.parse_args(['--date','2026-08-18']),persistent=False)
         try:
             self.assertTrue(client.http.persistent)
-            self.assertFalse(client.cancel_http.persistent)
+            self.assertTrue(client.cancel_http.persistent)
+            self.assertIsNot(client.http,client.cancel_http)
             self.assertIsNot(client.http,client.cancel_http)
             self.assertFalse(controller.http.persistent)
         finally:
