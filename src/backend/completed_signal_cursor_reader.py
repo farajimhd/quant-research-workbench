@@ -43,6 +43,11 @@ class CompletedSignalCursorReadAhead:
         if session_key != self._context.session_key:
             raise ValueError('Completed source session differs')
         rows = self._base.list_cursor_commits(session_key=session_key)
+        # ClickHouse does not promise response order without ORDER BY. Compare
+        # the complete contiguous inventory in the native verifier's ordering.
+        rows.sort(key=lambda row: row['batch_sequence'])
+        if [row['batch_sequence'] for row in rows] != list(range(1, len(rows)+1)):
+            raise ValueError('Completed source commit inventory is duplicate or gapped')
         saved = tuple(MappingProxyType(dict(row)) for row in rows)
         if self._listed is not None and saved != self._listed:
             raise ValueError('Completed source commit inventory changed')

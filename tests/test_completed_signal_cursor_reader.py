@@ -132,6 +132,21 @@ def test_inventory_change_is_detected_after_cold_verification():
     reader = CompletedSignalCursorReadAhead(Client(selected, families), {}, source_context=selected,
         prefix=prefix(selected))
     reader.list_cursor_commits(session_key=selected.session_key)
-    reader._base.list_cursor_commits = lambda **_: [{'changed': True}]
+    reader._base.list_cursor_commits = lambda **_: [{'batch_sequence': 1}]
+    with pytest.raises(ValueError, match='inventory changed'):
+        reader.verify_unchanged()
+
+
+def test_commit_inventory_fence_uses_complete_sequence_order_not_http_response_order():
+    selected, families = rows_fixture()
+    reader = CompletedSignalCursorReadAhead(Client(selected, families), {}, source_context=selected,
+        prefix=prefix(selected))
+    first = [{'batch_sequence': 2, 'content_hash': 'b'}, {'batch_sequence': 1, 'content_hash': 'a'}]
+    second = list(reversed(first))
+    reader._base.list_cursor_commits = lambda **_: deepcopy(first)
+    assert [v['batch_sequence'] for v in reader.list_cursor_commits(session_key=selected.session_key)] == [1,2]
+    reader._base.list_cursor_commits = lambda **_: deepcopy(second)
+    reader.verify_unchanged()
+    second[0]['content_hash'] = 'changed'
     with pytest.raises(ValueError, match='inventory changed'):
         reader.verify_unchanged()
