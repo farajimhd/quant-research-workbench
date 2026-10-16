@@ -154,6 +154,45 @@ class Publisher:
         self.claim.check()
         return row
 
+    def market_receipts(self,scopes):
+        """Vectorized readback of independent bars/liquidity authorities.
+
+        Every existing receipt still gets its complete SHA256/key/count scan;
+        only transport round trips are combined. No authority cache or TTL.
+        """
+        scopes=tuple(scopes)
+        if (not scopes or len(scopes)>2 or len({s.product for s in scopes})!=len(scopes)
+                or any(s.product not in ('bars','broker_100ms') for s in scopes)):
+            raise ValueError('Batched market authority requires unique bars/liquidity scopes')
+        predicate=' OR '.join('('+s.where()+' AND product='+literal(s.product)+')' for s in scopes)
+        rows=self.query(f'SELECT * FROM {self.database}.research_unit_receipt_v1 WHERE '+predicate)
+        wanted={s.product:s for s in scopes};found={};selects=[]
+        for row in rows:
+            kind=row['product'];scope=wanted.get(kind)
+            if scope is None or kind in found:raise ValueError('Ambiguous publication receipts; explicit reconciliation required')
+            if (str(row['dataset_id'])!=scope.dataset_id or str(row['session_date'])!=str(scope.session_date)
+                    or int(row['listing_key'])!=scope.listing_key or row['parent_hash']!=scope.parent_hash
+                    or int(row['status']) not in (CERTIFIED,COVERED_EMPTY)):
+                raise ValueError('Receipt does not match current dependencies')
+            found[kind]=row
+            table=next(t for t in TABLES if t.name==PRODUCTS[kind])
+            proof=evidence_sql(table,f'SELECT * FROM {self.database}.{table.name} WHERE '+scope.where(row['attempt_id']),
+                               'tuple(resolution_ms,bucket_index)')
+            selects.append('SELECT '+literal(kind)+' product,* FROM ('+proof+')')
+        if selects:
+            proofs=self.query(' UNION ALL '.join(selects));checked=set()
+            for raw in proofs:
+                raw=dict(raw);kind=raw.pop('product');row=found.get(kind)
+                if row is None or kind in checked:raise ValueError('Output evidence is absent or ambiguous')
+                checked.add(kind);proof={k:int(v) for k,v in raw.items()}
+                if proof['n']!=proof['unique_keys']:raise ValueError('Duplicate output keys')
+                if (int(row['output_rows'])!=proof['n'] or row['output_hash']!=digest(proof)
+                        or (int(row['status'])==COVERED_EMPTY)!=(proof['n']==0)):
+                    raise ValueError('Published output changed or its empty status is invalid')
+            if checked!=set(found):raise ValueError('Output evidence is absent or ambiguous')
+        self.claim.check()
+        return {s.product:found.get(s.product) for s in scopes}
+
     def publish(self,scope: Scope,attempt: str,*,expected=None,empty_proof=None):
         self.claim.check()
         existing=self.receipt(scope)

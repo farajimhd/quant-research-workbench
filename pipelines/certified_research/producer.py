@@ -128,10 +128,9 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
             if storage_observer:storage_observer(u.product,'before_write',query)
             if u.product=='aggregate':
                 # If both products have receipts, no canonical scan is needed.
-                found={}
-                for product in ('broker_100ms','bars'):
-                    receipt=publisher.receipt(Scope(base.dataset_id,base.day,base.listing_key,product,request.parent(product)))
-                    if receipt:found[product]=receipt
+                checked=publisher.market_receipts(Scope(base.dataset_id,base.day,base.listing_key,product,request.parent(product))
+                    for product in ('broker_100ms','bars'))
+                found={product:receipt for product,receipt in checked.items() if receipt is not None}
                 if len(found)==2:return dict(reused=True,receipts=found,attempt=base.attempt_id)
                 unit=market.MarketUnit(base.dataset_id,base.day,base.ticker,base.listing_key,str(uuid4()),base.source_ticker)
                 query(market.aggregate_sql(unit,request.rules,database,source=fixture_source),read=False)

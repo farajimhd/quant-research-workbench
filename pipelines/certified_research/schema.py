@@ -153,20 +153,50 @@ def ddl(database="arte"):
     return tuple(t.ddl(database) for t in TABLES)
 
 
+class BatchedStorageQuery:
+    """Combine fresh metadata reads; never cache table/part authority."""
+    def __init__(self,query):self.query=query
+    def __call__(self,*args,**kwargs):return self.query(*args,**kwargs)
+    def storage_snapshot(self,database,names,*,auxiliary=False):
+        identifier(database)
+        for name in names:identifier(name)
+        selected=','.join(literal(name) for name in names)
+        def branch(kind,columns,origin):
+            values=list(columns)+["''"]*(5-len(columns))
+            return 'SELECT '+literal(kind)+' kind,'+','.join(v+' v'+str(i) for i,v in enumerate(values))+' FROM '+origin
+        tables=f'system.tables WHERE database={literal(database)} AND name IN ({selected})'
+        parts=f'system.parts WHERE active AND database={literal(database)} AND table IN ({selected}) GROUP BY table,disk_name'
+        branches=[branch('tables',('name','storage_policy') if auxiliary else ('name','storage_policy','engine','sorting_key','partition_key'),tables),
+                  branch('parts',('table','disk_name'),parts)]
+        keys=dict(tables=('name','storage_policy') if auxiliary else ('name','storage_policy','engine','sorting_key','partition_key'),
+                  parts=('table','disk_name'))
+        if not auxiliary:
+            branches.extend((branch('policy',('policy_name','disk_name'),"system.storage_policies ARRAY JOIN disks AS disk_name WHERE policy_name="+literal(STORAGE_POLICY)),
+                branch('columns',('table','name','type','compression_codec'),f'system.columns WHERE database={literal(database)} AND table IN ({selected})')))
+            keys.update(policy=('policy_name','disk_name'),columns=('table','name','type','compression_codec'))
+        result={kind:[] for kind in keys}
+        for row in self.query(' UNION ALL '.join(branches)):
+            kind=row['kind']
+            if kind not in keys:raise ValueError('Unexpected storage metadata branch')
+            result[kind].append({key:row['v'+str(i)] for i,key in enumerate(keys[kind])})
+        return result
+
+
 def verify_storage(query, database="arte", *, require_tables=False):
     """Read both policy routes and actual parts; never silently fix placement."""
     identifier(database)
-    policy = query("SELECT policy_name,disk_name FROM system.storage_policies "
+    snapshot=query.storage_snapshot(database,tuple(t.name for t in TABLES)) if isinstance(query,BatchedStorageQuery) else None
+    policy = snapshot['policy'] if snapshot is not None else query("SELECT policy_name,disk_name FROM system.storage_policies "
                    f"ARRAY JOIN disks AS disk_name WHERE policy_name={literal(STORAGE_POLICY)}")
     if not policy or any(r["disk_name"] != STORAGE_POLICY for r in policy):
         raise ValueError("live_market_ssd policy is absent or routes outside live_market_ssd")
     names = ",".join(literal(t.name) for t in TABLES)
-    rows = query(f"SELECT name,storage_policy,engine,sorting_key,partition_key FROM system.tables WHERE database={literal(database)} AND name IN ({names})")
+    rows = snapshot['tables'] if snapshot is not None else query(f"SELECT name,storage_policy,engine,sorting_key,partition_key FROM system.tables WHERE database={literal(database)} AND name IN ({names})")
     if require_tables and {r["name"] for r in rows} != {t.name for t in TABLES}:
         raise ValueError("Required research tables are missing")
     if any(r["storage_policy"] != STORAGE_POLICY for r in rows):
         raise ValueError("Research table has incorrect storage policy")
-    parts = query(f"SELECT table,disk_name FROM system.parts WHERE active AND database={literal(database)} AND table IN ({names}) GROUP BY table,disk_name")
+    parts = snapshot['parts'] if snapshot is not None else query(f"SELECT table,disk_name FROM system.parts WHERE active AND database={literal(database)} AND table IN ({names}) GROUP BY table,disk_name")
     if any(r["disk_name"] != STORAGE_POLICY for r in parts):
         raise ValueError("Research parts are outside live_market_ssd")
     if rows:
@@ -177,7 +207,7 @@ def verify_storage(query, database="arte", *, require_tables=False):
             if (row['engine']!='MergeTree' or compact(row['sorting_key'])!=','.join(table.order)
                     or compact(row['partition_key'])!=compact(table.partition)):
                 raise ValueError('Existing research engine/sorting/partition differs; explicit migration required')
-        columns = query(f"SELECT table,name,type,compression_codec FROM system.columns "
+        columns = snapshot['columns'] if snapshot is not None else query(f"SELECT table,name,type,compression_codec FROM system.columns "
                         f"WHERE database={literal(database)} AND table IN ({names})")
         actual={(r['table'],r['name']):(r['type'].replace(' ',''),r['compression_codec'].replace(' ','')) for r in columns}
         present={r['name'] for r in rows}
@@ -196,11 +226,12 @@ def verify_auxiliary_storage(query,database,names):
     for name in names:identifier(name)
     if not names:raise ValueError('Auxiliary table inventory is empty')
     selected=','.join(literal(name) for name in names)
-    rows=query(f'SELECT name,storage_policy FROM system.tables WHERE database={literal(database)} '
+    snapshot=query.storage_snapshot(database,names,auxiliary=True) if isinstance(query,BatchedStorageQuery) else None
+    rows=snapshot['tables'] if snapshot is not None else query(f'SELECT name,storage_policy FROM system.tables WHERE database={literal(database)} '
                f'AND name IN ({selected})')
     if {r['name'] for r in rows}!=set(names) or any(r['storage_policy']!=STORAGE_POLICY for r in rows):
         raise ValueError('Required staging tables are absent or misplaced')
-    parts=query(f'SELECT table,disk_name FROM system.parts WHERE active AND database={literal(database)} '
+    parts=snapshot['parts'] if snapshot is not None else query(f'SELECT table,disk_name FROM system.parts WHERE active AND database={literal(database)} '
                 f'AND table IN ({selected}) GROUP BY table,disk_name')
     if any(r['disk_name']!=STORAGE_POLICY for r in parts):
         raise ValueError('Staging parts are outside live_market_ssd')

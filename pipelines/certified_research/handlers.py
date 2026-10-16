@@ -377,8 +377,8 @@ class MarketHandlers:
 
     def receipts(self,request,query):
         publisher=Publisher(query,self.database,self.claim);base=request.unit
-        found={kind:publisher.receipt(Scope(self.dataset,base.day,base.listing_key,kind,request.parent(kind)))
-               for kind in ('bars','broker_100ms')}
+        found=publisher.market_receipts(Scope(self.dataset,base.day,base.listing_key,kind,request.parent(kind))
+               for kind in ('bars','broker_100ms'))
         if any(r is None for r in found.values()):return None
         return dict(output_hash=digest({k:r['output_hash'] for k,r in sorted(found.items())}),receipts=found)
 
