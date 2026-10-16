@@ -218,7 +218,8 @@ class ProgramRuntimeAssembly:
             else:
                 stop, quantity, average = next(iter(stops)), position.quantity, position.average_price
                 classified = evaluate_filled_execution_risk(contract, quantity=quantity,
-                    average_price=average, stop_price=stop, episode_net_pnl=position.episode_net_pnl)
+                    average_price=average, stop_price=stop, episode_net_pnl=position.episode_net_pnl,
+                    filled_position=position)
                 reasons.extend(classified.reasons)
             if not reasons:
                 continue

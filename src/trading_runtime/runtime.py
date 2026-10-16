@@ -1696,7 +1696,7 @@ class TradingRuntime:
             quantity=position.quantity, average_price=position.average_price,
             stop_price=Decimal(str(intent.invalidation_price)), episode_paid_fees=Decimal(0),
             episode_realized_gross_pnl=position.episode_net_pnl if position.position_open else Decimal(0),
-            requested_cash=requested_cash, execution_price=execution_price)
+            requested_cash=requested_cash, execution_price=execution_price, filled_position=position)
         if self.strategy.execution_state.pending_fee_count:
             return replace(decision, allowed=False,
                 reasons=tuple(dict.fromkeys(('execution_commissions_pending', *decision.reasons))))

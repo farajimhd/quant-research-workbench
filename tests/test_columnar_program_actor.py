@@ -78,6 +78,28 @@ def test_actual_partial_fill_and_fee_choose_open_branch_and_age():
     assert proposals and proposals[0].stage == "add" and proposals[0].requested_cash == 200
 
 
+def test_actor_and_runtime_risk_accept_actual_repeating_partial_fill_basis():
+    from tests.test_configuration_execution_risk import contract
+    from src.trading_runtime.runtime import TradingRuntime
+    actor, boundary, management, execution, manager = actor_inputs()
+    actor = AssignedProgramStrategy(actor.program_release, actor.assignments(), actor._listings,
+        execution_risk=contract())
+    actor.on_broker_executions((replace(execution, size=1., price=10.000000000000002),
+        replace(execution, execution_id='partial-two', size=2., price=10.01,
+            trade_time=execution.trade_time + timedelta(seconds=1), commission=0.)), manager)
+    position = actor.position_for('assignment')
+    assert position.average_price.as_tuple().exponent < -28
+    at = boundary.boundary_at + timedelta(seconds=600)
+    proposal, = actor.proposals(replace(boundary, boundary_at=at, available_at=at),
+        assignment_id='assignment', management=replace(management, observed_at=at))
+    assert proposal.stage == 'add' and proposal.requested_cash == 200
+    selected = TradingRuntime._program_acquisition_risk(SimpleNamespace(strategy=actor),
+        SimpleNamespace(action=proposal.action, invalidation_price=proposal.stop_price),
+        assignment_id='assignment', requested_cash=Decimal(200),
+        execution_price=Decimal(str(proposal.reference_price)))
+    assert selected.allowed and position == actor.position_for('assignment')
+
+
 @pytest.mark.parametrize("change", [dict(account_id="other"), dict(assignment_id="other"),
     dict(action="add_short"), dict(role="entry", action="exit")])
 def test_conflicting_assignment_or_role_does_not_create_a_position(change):

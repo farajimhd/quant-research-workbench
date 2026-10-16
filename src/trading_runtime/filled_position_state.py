@@ -15,12 +15,14 @@ from types import MappingProxyType
 from typing import Mapping
 from functools import wraps
 
+FILLED_STATE_DECIMAL_PRECISION = 80
+
 
 def _exact_math(function):
     @wraps(function)
     def call(*args, **kwargs):
         with localcontext() as context:
-            context.prec = 80
+            context.prec = FILLED_STATE_DECIMAL_PRECISION
             return function(*args, **kwargs)
     return call
 
@@ -31,7 +33,7 @@ def _cash_sum(values):
     if not values:
         return Decimal(0)
     with localcontext() as context:
-        context.prec = max(80, max(value.adjusted() for value in values)
+        context.prec = max(FILLED_STATE_DECIMAL_PRECISION, max(value.adjusted() for value in values)
             - min(value.as_tuple().exponent for value in values) + len(str(len(values))) + 2)
         return sum(values, Decimal(0))
 
@@ -230,7 +232,7 @@ class FilledPositionState:
         if buying:
             q = state.quantity + fact.quantity
             with localcontext() as context:
-                context.prec = 80
+                context.prec = FILLED_STATE_DECIMAL_PRECISION
                 basis = (state.quantity * state.average_price + fact.quantity * fact.price) / q
             values.update(quantity=q, average_price=basis,
                 opened_at=state.opened_at if state.position_open else fact.filled_at,
@@ -245,7 +247,7 @@ class FilledPositionState:
                 self._add_intents[fact.key].add(fact.intent_id)
         else:
             with localcontext() as context:
-                context.prec = 80
+                context.prec = FILLED_STATE_DECIMAL_PRECISION
                 gain = fact.quantity * (fact.price - state.average_price)
             values.update(quantity=state.quantity - fact.quantity,
                 realized_gross_pnl=state.realized_gross_pnl + gain,

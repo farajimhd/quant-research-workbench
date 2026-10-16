@@ -102,6 +102,55 @@ def test_addition_reserves_existing_episode_losses_and_future_exit_fee():
     assert result.modeled_stop_loss == D(242)
 
 
+def test_risk_consumes_repeating_filled_basis_and_episode_loss_without_rounding():
+    from src.trading_runtime.filled_position_state import FilledPositionState, FeeFact
+    from tests.test_filled_position_state import fill
+    from src.trading_runtime.configuration_execution_risk import evaluate_filled_execution_risk
+    state = FilledPositionState()
+    state.apply_fill(fill(q='.1', price='10.000000000000002'))
+    state.apply_fee(FeeFact('e1', D(1), 'USD'))
+    state.apply_fill(fill(execution='e2', q='.2', price='10.01', second=1))
+    state.apply_fee(FeeFact('e2', D(0), 'USD'))
+    state.apply_fill(fill(execution='e3', intent='reduce', action='reduce_long',
+        q='.1', price='9.5', second=2))
+    position = state.apply_fee(FeeFact('e3', D(1), 'USD'))
+    assert position.average_price.as_tuple().exponent < -28
+    assert position.episode_net_pnl.as_tuple().exponent < -28
+    values = entry(action='add_long', quantity=position.quantity,
+        average_price=position.average_price, requested_cash=D(200), stop_price=D('8.1'),
+        episode_realized_gross_pnl=position.episode_net_pnl)
+    with pytest.raises(ValueError, match='bounded finite'):
+        evaluate_acquisition_risk(contract(), **values)
+    acquired = evaluate_acquisition_risk(contract(), **values, filled_position=position)
+    assert acquired.allowed
+    filled = evaluate_filled_execution_risk(contract(), quantity=position.quantity,
+        average_price=position.average_price, stop_price=D('8.1'),
+        episode_net_pnl=position.episode_net_pnl, filled_position=position)
+    assert filled.allowed
+    assert position == state.positions[next(iter(state.positions))]
+    # The same actual loss still rejects risk excess; precision is not a waiver.
+    rejected = evaluate_acquisition_risk(contract(maximum_position_risk=1.),
+        **values, filled_position=position)
+    assert not rejected.allowed and 'maximum_position_risk_exceeded' in rejected.reasons
+    with pytest.raises(ValueError, match='projection'):
+        evaluate_acquisition_risk(contract(), **(values | {'average_price': D(10)}),
+            filled_position=position)
+    with pytest.raises(ValueError, match='bounded finite'):
+        evaluate_acquisition_risk(contract(), **(values | {'requested_cash': D('1e-29')}),
+            filled_position=position)
+
+
+@pytest.mark.parametrize('bad', [D('NaN'), D('Infinity'), D('1e28'), D('1e-109'),
+    D('1.' + '1' * 80)])
+def test_derived_projection_is_still_finite_magnitude_and_precision_bounded(bad):
+    from src.trading_runtime.filled_position_state import FilledPosition
+    position = FilledPosition('account', 'program', 'assignment', 'listing', 'ABC',
+        quantity=D(1), average_price=bad)
+    with pytest.raises(ValueError, match='bounded finite'):
+        evaluate_acquisition_risk(contract(), **entry(action='add_long', quantity=D(1),
+            average_price=bad), filled_position=position)
+
+
 def test_entry_includes_both_sides_of_bps_cost():
     result = evaluate_acquisition_risk(contract(cost_bps=10.), **entry())
     assert result.modeled_stop_loss == D("203.8")

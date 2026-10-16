@@ -112,15 +112,41 @@ class FilledExecutionRiskDecision:
     modeled_stop_loss: Decimal
 
 
-def evaluate_filled_execution_risk(contract, *, quantity, average_price, stop_price, episode_net_pnl):
+def _validate_position_risk_inputs(values, *, filled_position, quantity, average_price,
+        episode_net_pnl, derived_indexes):
+    """Keep ingress bounds; derived precision requires the matching fill projection."""
+    from .filled_position_state import FilledPosition, FILLED_STATE_DECIMAL_PRECISION
+    if filled_position is not None and type(filled_position) is not FilledPosition:
+        raise TypeError('Risk precision requires a typed filled position projection')
+    for index, value in enumerate(values):
+        derived = filled_position is not None and index in derived_indexes
+        if (type(value) is not Decimal or not value.is_finite()
+                or value.copy_abs() >= Decimal('1e28')
+                or value.as_tuple().exponent < (-(FILLED_STATE_DECIMAL_PRECISION + 28) if derived else -28)
+                or derived and len(value.as_tuple().digits) > FILLED_STATE_DECIMAL_PRECISION):
+            raise ValueError('Risk gate requires bounded finite typed Decimal inputs')
+    if filled_position is not None:
+        if any(type(value) is not Decimal for value in (filled_position.quantity,
+                filled_position.average_price, filled_position.episode_net_pnl)):
+            raise ValueError('Risk requires a typed Decimal filled position projection')
+        if quantity.as_tuple().exponent < -10:
+            raise ValueError('Filled position projection exceeds the normalized quantity scale')
+        expected_net = filled_position.episode_net_pnl if filled_position.position_open else Decimal(0)
+        if (quantity != filled_position.quantity or average_price != filled_position.average_price
+                or episode_net_pnl != expected_net):
+            raise ValueError('Risk inputs differ from the actual filled position projection')
+
+
+def evaluate_filled_execution_risk(contract, *, quantity, average_price, stop_price, episode_net_pnl,
+        filled_position=None):
     """Classify actual surviving fills; never resize or alter broker protection."""
     if type(contract) is not ConfigurationExecutionRisk:
         raise TypeError('Filled risk classification requires an explicit normalized contract')
     contract = restore_execution_risk(contract.rows)
     values = (quantity, average_price, stop_price, episode_net_pnl)
-    if (any(type(v) is not Decimal or not v.is_finite() or abs(v) >= Decimal('1e28')
-            or v.as_tuple().exponent < -28 for v in values)
-            or quantity <= 0 or average_price <= 0 or stop_price <= 0):
+    _validate_position_risk_inputs(values, filled_position=filled_position, quantity=quantity,
+        average_price=average_price, episode_net_pnl=episode_net_pnl, derived_indexes=(1, 3))
+    if quantity <= 0 or average_price <= 0 or stop_price <= 0:
         raise ValueError('Filled risk classification requires actual positive Decimal position/stop facts')
     h = contract.header
     with localcontext() as context:
@@ -141,7 +167,7 @@ def evaluate_filled_execution_risk(contract, *, quantity, average_price, stop_pr
 def evaluate_acquisition_risk(contract: ConfigurationExecutionRisk, *, action: str,
         quantity: Decimal, average_price: Decimal, stop_price: Decimal,
         episode_paid_fees: Decimal, episode_realized_gross_pnl: Decimal,
-        requested_cash: Decimal, execution_price: Decimal) -> AcquisitionRiskDecision:
+        requested_cash: Decimal, execution_price: Decimal, filled_position=None) -> AcquisitionRiskDecision:
     """Reject rather than resize or move stops; fees/losses belong to this episode.
 
     Quantity is actual surviving filled quantity, excluding pending orders.
@@ -153,9 +179,11 @@ def evaluate_acquisition_risk(contract: ConfigurationExecutionRisk, *, action: s
     contract = restore_execution_risk(contract.rows)
     values = (quantity, average_price, stop_price, episode_paid_fees,
               episode_realized_gross_pnl, requested_cash, execution_price)
-    if any(type(v) is not Decimal or not v.is_finite() or abs(v) >= Decimal("1e28")
-           or v.as_tuple().exponent < -28 for v in values):
-        raise ValueError("Risk gate requires bounded finite typed Decimal inputs")
+    _validate_position_risk_inputs(values, filled_position=filled_position, quantity=quantity,
+        average_price=average_price, episode_net_pnl=episode_realized_gross_pnl,
+        derived_indexes=(1, 4))
+    if filled_position is not None and episode_paid_fees != 0:
+        raise ValueError('Filled position projection already includes episode commissions')
     if (action not in {"enter_long", "add_long"} or quantity < 0
             or episode_paid_fees < 0 or requested_cash <= 0 or execution_price <= 0
             or stop_price <= 0 or average_price < 0

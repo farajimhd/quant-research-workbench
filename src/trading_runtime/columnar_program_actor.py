@@ -97,7 +97,7 @@ class AssignedProgramStrategy:
                     episode_realized_gross_pnl=(position.episode_net_pnl
                         if position.position_open else Decimal(0)),
                     requested_cash=Decimal(str(proposal.requested_cash)),
-                    execution_price=Decimal(str(proposal.reference_price)))
+                    execution_price=Decimal(str(proposal.reference_price)), filled_position=position)
                 if self.execution_state.pending_fee_count:
                     from dataclasses import replace
                     decision = replace(decision, allowed=False,
