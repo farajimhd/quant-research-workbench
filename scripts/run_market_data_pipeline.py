@@ -81,9 +81,10 @@ def monitor(a):
         return 0
     try:
         with Live(console=console,refresh_per_second=1,vertical_overflow='crop') as live:
+            state=None
             while True:
-                state=snapshot(a.run_dir);live.update(render(state,console.width,console.height))
-                if state['status'] in ('complete','failed','interrupted'):break
+                state=snapshot(a.run_dir,state);live.update(render(state,console.width,console.height))
+                if not state.get('monitor_warning') and state['status'] in ('complete','failed','interrupted'):break
                 sleep(1)
     except KeyboardInterrupt:pass
     return 0

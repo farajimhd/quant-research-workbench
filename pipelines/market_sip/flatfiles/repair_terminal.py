@@ -30,10 +30,19 @@ def recent_events(path, limit=8):
     return list(grouped.values())[-limit:]
 
 
-def snapshot(root):
+def snapshot(root, previous=None):
     root=Path(root)
-    state=json.loads((root/'status.json').read_text(encoding='utf-8'))
-    state['recent_events']=recent_events(root/'events.log')
+    try:
+        state=json.loads((root/'status.json').read_text(encoding='utf-8'))
+    except (PermissionError, FileNotFoundError) as error:
+        state=dict(previous or {'status':'starting'})
+        state['monitor_warning']=f'status.json: {type(error).__name__}; retaining last snapshot; retrying next refresh'
+        return state
+    try:
+        state['recent_events']=recent_events(root/'events.log')
+    except PermissionError:
+        state['recent_events']=(previous or {}).get('recent_events',[])
+        state['monitor_warning']='events.log: PermissionError; retrying next refresh'
     return state
 
 
@@ -87,6 +96,8 @@ def render(state,width=110,height=30):
     counters=Text(f'New {completed}   Reused {reused}   Remaining {max(0,total-certified)}   '
                   f'Failed {state.get("failed",0)}   Retried {state.get("retried",0)}',no_wrap=True,overflow='ellipsis')
     parts=[title,scope,summary,counters]
+    if state.get('monitor_warning'):
+        parts.append(Text(state['monitor_warning'],style='bold yellow',no_wrap=True,overflow='ellipsis'))
     if 'prepared' in state:
         parts.append(Text(f'Prepared CSV days {state["prepared"]}  |  SQL workers {state.get("sql_workers",1)}  |  '
                           f'Copy workers {state.get("copy_workers",2)}  |  Awaiting certification',style='dim',no_wrap=True,overflow='ellipsis'))

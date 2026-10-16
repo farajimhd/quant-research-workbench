@@ -10,6 +10,24 @@ from pipelines.market_sip.flatfiles.repair_progress import Prefetch,Progress,ren
 from scripts.run_market_data_pipeline import arguments,classify
 
 
+def test_monitor_retains_snapshot_on_access_denied_and_recovers(tmp_path,monkeypatch):
+    from pipelines.market_sip.flatfiles.repair_terminal import snapshot
+    previous={'status':'running','completed':3,'updated_at':'2026-10-16T20:00:00+00:00'}
+    original=Path.read_text
+    def denied(*args,**kwargs):
+        raise PermissionError('status.json is temporarily inaccessible')
+    monkeypatch.setattr(Path,'read_text',denied)
+    state=snapshot(tmp_path,previous)
+    assert state['completed']==3 and state['updated_at']==previous['updated_at']
+    assert 'PermissionError' in state['monitor_warning']
+    assert 'monitor_warning' not in previous
+    assert snapshot(tmp_path)['status']=='starting'
+    monkeypatch.setattr(Path,'read_text',original)
+    (tmp_path/'status.json').write_text(json.dumps({'status':'running','completed':4}))
+    recovered=snapshot(tmp_path,state)
+    assert recovered['completed']==4 and 'monitor_warning' not in recovered
+
+
 def test_historical_dates_and_forwardfill_fail_closed():
     a=arguments(['backfill','--start-date','2025-01-02','--run-dir','D:/TradingML/runtimes/example'])
     assert a.start_date==date(2025,1,2) and a.copy_workers==2
