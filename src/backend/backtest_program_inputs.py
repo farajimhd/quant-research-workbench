@@ -192,7 +192,8 @@ class PreparedProgramBlock:
                 raise ValueError("Program dispatch lacks its certified initial-stop field")
             stop = row[stop_field] if row[stop_field + "__valid"] else None
         else:
-            stop = row["reference_close"] * (1 - policy["stop_fraction"])
+            stop = (row["reference_close"] * (1 - policy["stop_fraction"])
+                    if row["reference_close"] is not None else None)
         return ProgramBoundary(row["boundary_at"], row["available_at"], listing_id, ticker,
             row["reference_close"], population.is_ranked(listing_id, row["boundary_at"]),
             {stage: mask[stage] for stage in release.programs},

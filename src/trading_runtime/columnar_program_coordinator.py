@@ -27,7 +27,7 @@ class ProgramBoundary:
     available_at: datetime
     listing_id: str
     ticker: str
-    close: float
+    close: float | None
     eligible: bool
     rules: Mapping[str, bool]
     validity: Mapping[str, bool]
@@ -146,6 +146,10 @@ def select_program_proposal(release: ProgramRelease, boundary: ProgramBoundary, 
             or type(management.pending_acquisition) is not bool
             or type(management.pending_reduction) is not bool):
         raise ValueError("Program coordinator needs complete typed stage masks")
+    if boundary.close is None:
+        if position.position_open or boundary.eligible or management.pending_acquisition or management.pending_reduction:
+            raise ValueError("Unobserved price conflicts with active position, ranking or orders")
+        return ()
     if not isfinite(boundary.close) or boundary.close <= 0:
         raise ValueError("Program coordinator needs a completed price-bearing mark")
     age = position.age_seconds(at)

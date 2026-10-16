@@ -38,6 +38,30 @@ def test_risk_rejection_has_native_selection_reason_and_no_acquisition():
     assert selected.status == 'risk_rejected:maximum_position_risk_exceeded'
 
 
+def test_unobserved_initial_price_is_an_explicit_consumed_wait_then_first_price_can_enter():
+    from src.trading_runtime.oms_assignment_observation import AssignmentOrderObservation
+    actor, boundary, _, _, _ = actor_inputs()
+    missing = replace(boundary, close=None, initial_stop=None, eligible=False)
+    observation = AssignmentOrderObservation('account', 'assignment', 'ABC', boundary.boundary_at,
+        False, False, (), (), 0.)
+    result = actor.select_from_orders(missing, assignment_id='assignment', observation=observation)
+    assert result.status == 'awaiting_price_observation' and result.proposals == ()
+    assert actor.select_from_orders(missing, assignment_id='assignment', observation=observation).status == 'already_consumed'
+    assert not actor.execution_state.positions and not actor.trail_state._water
+    at = boundary.boundary_at + timedelta(seconds=1)
+    result = actor.select_from_orders(replace(boundary, boundary_at=at, available_at=at),
+        assignment_id='assignment', observation=replace(observation, observed_at=at))
+    assert result.status == 'selected' and result.proposals[0].stage == 'entry'
+
+
+def test_missing_price_cannot_hide_a_filled_position():
+    actor, boundary, _, execution, manager = actor_inputs()
+    actor.on_broker_executions((execution,), manager)
+    with pytest.raises(ValueError, match='Unobserved price'):
+        actor.trail_state.observe(replace(boundary, close=None, eligible=False),
+            actor.position_for('assignment'), minimum_age_seconds=0)
+
+
 def test_actual_partial_fill_and_fee_choose_open_branch_and_age():
     actor, boundary, management, execution, manager = actor_inputs()
     assert actor.proposals(boundary, assignment_id="assignment", management=management)[0].stage == "entry"

@@ -430,7 +430,7 @@ def rebuild_program_policy_events(template, events, *, run_id, source_hashes,
                     or (detail["strategy_id"], detail["strategy_revision"], detail["account_id"], detail["ticker"])
                        != (actor.strategy_id, actor.revision, assignment.account_id, assignment.ticker)
                     or detail["decision_status"] != "completed" or detail["action"] != "wait"
-                    or status not in {"selected", "wait", "pending_reduction", "pending_acquisition", "awaiting_protection_observation"}
+                    or status not in {"selected", "wait", "pending_reduction", "pending_acquisition", "awaiting_protection_observation", "awaiting_price_observation"}
                         and not is_risk_rejection_status(status)
                     or detail["reason"] != "program:" + status or detail["working_timeframe"] != "1s"
                     or event["entity_id"] != detail["signal_id"] or event["correlation_id"] != detail["signal_id"]
@@ -450,7 +450,10 @@ def rebuild_program_policy_events(template, events, *, run_id, source_hashes,
                 raise ValueError("Program completion prepared identity changed")
             boundary = block.boundary_for(actor.program_release, population, listing_id=listing,
                 ticker=assignment.ticker, ordinal=ordinal)
-            if Decimal(str(boundary.close)) != Decimal(str(detail["decision_reference_price"])):
+            reference = detail["decision_reference_price"]
+            if ((boundary.close is None) != (reference is None)
+                    or boundary.close is not None and Decimal(str(boundary.close)) != Decimal(str(reference))
+                    or (boundary.close is None) != (status == "awaiting_price_observation")):
                 raise ValueError("Program completion reference mark changed")
             position = actor.position_for(assignment_id)
             if position.last_management_fill_at is not None and position.last_management_fill_at > at:

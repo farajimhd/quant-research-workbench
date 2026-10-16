@@ -1901,7 +1901,7 @@ def strategy_signal_batch(
                                    if decision_metadata is not None else None),
         "decision_reference_price": ((decision_metadata["reference_price"] if exact_prices else
             _exact_decimal(decision_metadata["reference_price"], field="signal.decision_reference_price"))
-                                     if decision_metadata is not None else None),
+                                     if decision_metadata is not None and decision_metadata["reference_price"] is not None else None),
         "decision_status": (decision_metadata["status"]
                             if decision_metadata is not None else None),
         "decision_reason_detail": (decision_metadata["reason_detail"]
@@ -1933,15 +1933,20 @@ def recover_common_signal_decision_metadata(
     values = tuple(detail.get(name) for name in names)
     if all(value is None for value in values):
         return {}
-    if (any(value is None for value in values)
+    unpriced = (detail.get("signal_type") == "program_boundary_completed"
+                and detail.get("decision_reason_detail") == "awaiting_price_observation"
+                and detail.get("decision_status") == "completed" and detail.get("action") == "wait"
+                and detail.get("reason") == "program:awaiting_price_observation")
+    if (any(value is None for index, value in enumerate(values) if index != 1 or not unpriced)
+            or unpriced and detail.get("decision_reference_price") is not None
             or event.get("record_id") != detail.get("record_id")
             or any(not isinstance(value, str) or not value for value in (
                 detail["decision_assignment_id"], detail["decision_status"],
                 detail["decision_reason_detail"], detail.get("reason"),
                 event.get("correlation_id"), event.get("causation_id")))):
         raise ValueError("Typed Backtest signal decision metadata is incomplete")
-    price = float(detail["decision_reference_price"])
-    if _exact_decimal(price, field="signal.reference_price") != detail["decision_reference_price"]:
+    price = float(detail["decision_reference_price"]) if detail["decision_reference_price"] is not None else None
+    if price is not None and _exact_decimal(price, field="signal.reference_price") != detail["decision_reference_price"]:
         raise ValueError("Typed Backtest signal reference price cannot round-trip")
     return {
         "assignment_id": detail["decision_assignment_id"],

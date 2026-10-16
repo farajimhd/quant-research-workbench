@@ -29,6 +29,22 @@ from tests.test_arte_journal_writer import MemoryClient
 AT = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
 
 
+def test_unpriced_program_completion_recovers_nullable_price_without_inventing_a_mark():
+    from src.trading_runtime.arte_journal_projection import recover_common_signal_decision_metadata
+    event = dict(record_id='record', correlation_id='decision', causation_id='source')
+    detail = dict(record_id='record', signal_type='program_boundary_completed', action='wait',
+        decision_assignment_id='assignment', decision_reference_price=None,
+        decision_status='completed', decision_reason_detail='awaiting_price_observation',
+        reason='program:awaiting_price_observation')
+    recovered = recover_common_signal_decision_metadata(event, detail)
+    assert recovered['reference_price'] is None
+    assert recovered['reason_detail'] == 'awaiting_price_observation'
+    for changes in (dict(signal_type='other'), dict(action='enter_long'),
+                    dict(decision_reason_detail='wait'), dict(decision_assignment_id=None)):
+        with pytest.raises(ValueError, match='incomplete'):
+            recover_common_signal_decision_metadata(event, {**detail, **changes})
+
+
 def test_shared_record_projection_is_typed_and_rejects_unknown_payloads() -> None:
     record = JournalRecord(
         "00000000-0000-0000-0000-000000000013", "live:DU1", 1,

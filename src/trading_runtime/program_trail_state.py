@@ -27,6 +27,13 @@ class ProgramTrailState:
         return self._water[key]
 
     def observe(self, boundary, position, *, minimum_age_seconds):
+        if boundary.close is None:
+            if (position.position_open or boundary.eligible
+                    or boundary.available_at > boundary.boundary_at
+                    or type(boundary.rules.get("trail")) is not bool
+                    or type(boundary.validity.get("trail")) is not bool):
+                raise ValueError("Unobserved price conflicts with an active program position or ranking")
+            return
         if (not isfinite(boundary.close) or boundary.close <= 0
                 or boundary.available_at > boundary.boundary_at
                 or type(boundary.rules.get("trail")) is not bool

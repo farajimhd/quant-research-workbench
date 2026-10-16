@@ -140,6 +140,10 @@ class AssignedProgramStrategy:
             if boundary.boundary_at == previous[0] and signature == previous[1]:
                 return ProgramSelection("already_consumed", ())
             raise ValueError("Program selection boundary is conflicting or out of order")
+        if boundary.close is None and (position.position_open or boundary.eligible
+                or observation.pending_acquisition or observation.pending_reduction
+                or observation.working_orders or observation.unobserved_order_ids):
+            raise ValueError("Unobserved price conflicts with active position, ranking or orders")
         self.trail_state.observe(boundary, position,
             minimum_age_seconds=self.program_release.minimum_age_seconds["trail"])
         stops = [order for order in observation.working_orders
@@ -156,7 +160,7 @@ class AssignedProgramStrategy:
         else:
             proposals = self.proposals(boundary, assignment_id=assignment_id,
                 management=management, terminal=terminal)
-            status = "selected" if proposals else "pending_reduction" if observation.pending_reduction else (
+            status = "awaiting_price_observation" if boundary.close is None else "selected" if proposals else "pending_reduction" if observation.pending_reduction else (
                 "pending_acquisition" if observation.pending_acquisition else "wait")
             rejected = self.risk_rejections.get(assignment_id)
             if rejected is not None:

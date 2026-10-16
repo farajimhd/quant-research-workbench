@@ -30,6 +30,31 @@ def release_for(pin, *, minimum_age_seconds=None):
         {field.name: contract}, **kwargs))
 
 
+def test_prepared_block_retains_unpriced_clock_without_computing_a_stop():
+    from datetime import datetime, UTC, timedelta
+    from types import SimpleNamespace
+    from src.backend.backtest_program_inputs import PreparedProgramBlock
+    spec, fields, kwargs = bundle()
+    spec = replace(spec, policy={**spec.policy, 'swing_left': 0, 'swing_right': 0})
+    release = restore_release(project_release(spec, fields, **kwargs))
+    at = datetime(2026, 8, 3, 13, 30, tzinfo=UTC)
+    rows = [dict(listing_id='listing', evaluation_block='origin', observed_ordinal=i,
+        boundary_at=at + timedelta(seconds=i), available_at=at + timedelta(seconds=i),
+        reference_close=price) for i, price in enumerate((None, 10.))]
+    market = pl.DataFrame(rows, schema_overrides={'reference_close': pl.Float64})
+    masks = market.select('listing_id', 'evaluation_block', 'observed_ordinal', 'boundary_at').with_columns(
+        *[pl.lit(True).alias(stage) for stage in release.programs],
+        *[pl.lit(True).alias(stage+'__valid') for stage in release.programs])
+    block = PreparedProgramBlock(release.header['content_hash'], 'origin', 0, 2,
+        {'listing': 'a'*64}, market, masks)
+    population = SimpleNamespace(is_ranked=lambda listing, clock: clock > at)
+    missing = block.boundary_for(release, population, listing_id='listing', ticker='ABC', ordinal=0)
+    assert missing.close is None and missing.initial_stop is None and not missing.eligible
+    observed = block.boundary_for(release, population, listing_id='listing', ticker='ABC', ordinal=1)
+    assert observed.close == 10. and observed.initial_stop == 10. * (1-release.header['stop_fraction'])
+    assert block.market.height == 2 and missing.boundary_at == at
+
+
 @pytest.mark.parametrize("concurrency", [1, 2])
 def test_cohort_preparation_reuses_full_feature_origin_and_bounds_parallel_io(prepared_source, concurrency):
     from threading import Lock, Barrier
