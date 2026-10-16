@@ -48,19 +48,32 @@ def classify_sql(raw,day,database='q_live'):
 
 
 def match_sql(target,day,bounds,database='q_live'):
-    """Join only exception groups, retaining multiplicity proof for duplicates."""
+    """Allocate indistinguishable events by ordinal, preserving exception counts.
+
+    User-approved ambiguity policy: delayed groups precede unknown groups;
+    remaining identical events receive the timely default. Never invent capacity.
+    """
     if not bounds:raise ValueError('No certified ordinal bounds')
     predicate=' OR '.join(f'(ticker={literal(t)} AND ordinal>={int(a)} AND ordinal<{int(b)})' for t,a,b in bounds)
     tickers=','.join(literal(t) for t,_,_ in bounds)
     keys=','.join(KEYS)
     return f"""INSERT INTO {database}.{EXCEPTIONS}
       SELECT toDate({literal(day)}),ticker,ordinal,expected_bits,
-        count() OVER (PARTITION BY {keys}),source_rows
-      FROM (SELECT *,bitAnd(event_meta,7) encoding FROM {target}
-        PREWHERE ({predicate}) WHERE bitAnd(event_meta,1)=1) e
-      INNER JOIN (SELECT * FROM {database}.{CANDIDATES}
+        available_rows,required_rows
+      FROM (SELECT *,count() OVER (PARTITION BY {keys}) available_rows,
+        row_number() OVER (PARTITION BY {keys} ORDER BY ordinal) match_rank
+        FROM (SELECT *,bitAnd(event_meta,7) encoding FROM {target}
+        PREWHERE ({predicate}) WHERE bitAnd(event_meta,1)=1
+          AND ({keys}) IN (SELECT {keys} FROM {database}.{CANDIDATES}
+            WHERE source_date=toDate({literal(day)}) AND expected_bits!=64 AND ticker IN ({tickers})))) e
+      INNER JOIN (SELECT *,sum(source_rows) OVER (PARTITION BY {keys}) required_rows,
+        sum(source_rows) OVER (PARTITION BY {keys} ORDER BY expected_bits DESC
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) allocation_end
+        FROM {database}.{CANDIDATES}
         WHERE source_date=toDate({literal(day)}) AND expected_bits!=64 AND ticker IN ({tickers})) c
-      USING ({keys}) SETTINGS join_algorithm='full_sorting_merge',max_bytes_before_external_sort=268435456"""
+      USING ({keys})
+      WHERE match_rank>allocation_end-source_rows AND match_rank<=allocation_end
+      SETTINGS join_algorithm='full_sorting_merge',max_bytes_before_external_sort=268435456"""
 
 
 def desired_sql(days,database='q_live'):
@@ -185,10 +198,13 @@ def prepare(query,day,inventory,paths,prefetch,files,claim,stop,progress,reserve
         for i,batch in enumerate(batches):
             guard();stage('Match exceptions',f'{len(wanted)} candidate tickers',i,len(batches))
             query(match_sql(f'market_sip_compact.events_{day.year}',day,batch),read=False)
-        audit=query(f'SELECT count() n,uniqExact(ticker,ordinal) unique_keys,countIf(matched_rows!=source_rows) ambiguous FROM q_live.{EXCEPTIONS} WHERE source_date=toDate({literal(day)})')[0]
+        audit=query(f'SELECT count() n,uniqExact(ticker,ordinal) unique_keys,countIf(matched_rows<source_rows) ambiguous,countIf(matched_rows>source_rows) allocated FROM q_live.{EXCEPTIONS} WHERE source_date=toDate({literal(day)})')[0]
         if int(audit['n'])!=int(counts['exceptions']) or int(audit['n'])!=int(audit['unique_keys']) or int(audit['ambiguous']):
             stage('Unresolved',f"expected={counts['exceptions']} matched={audit['n']} ambiguous={audit['ambiguous']}")
             raise ValueError('Exception mapping is incomplete or ambiguous; timely default is forbidden')
+        if int(audit['allocated']):
+            stage('Resolved identical matches',f"{audit['allocated']} exceptions allocated by ascending ordinal; policy=identical-key-ordinal-v1")
+            identity+=';identical-key-ordinal-v1;allocated='+str(audit['allocated'])
     guard();frozen,n=fingerprint(query,day)
     record(query,day,'prepared',inventory,frozen,n,identity)
     query(f'ALTER TABLE q_live.{CANDIDATES} DROP PARTITION {literal(day)}',read=False)
