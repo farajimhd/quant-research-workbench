@@ -1,7 +1,7 @@
 """Native cold seals become compact app pins without a producer fallback."""
 import asyncio
 from dataclasses import replace
-from threading import Barrier, Lock
+from threading import Barrier, Event, Lock
 
 import pytest
 
@@ -110,4 +110,40 @@ def test_fixed_worker_pool_bounds_live_clients(prepared_source, monkeypatch):
         return products[scope.listing_id]
     monkeypatch.setattr(history, 'certify_history_product', certify)
     pins = asyncio.run(history.certify_history_pins_async(Reader, requests, concurrency=2))
-    assert len(pins) == 6 and peak == 2 and active == 0 and closed == 6
+    assert len(pins) == 6 and peak == 2 and active == 0 and closed == 2
+
+
+@pytest.mark.parametrize('phase', ['open', 'read'])
+def test_cancelled_worker_drains_and_closes_owned_connection(prepared_source, monkeypatch, phase):
+    store = Store()
+    publish(store, prepared_source)
+    product = consume(store, prepared_source)
+    started, release = Event(), Event()
+    closed = []
+    def block():
+        started.set()
+        assert release.wait(5)
+    class Reader:
+        def __init__(self):
+            if phase == 'open':
+                block()
+        def close(self):
+            assert release.is_set()
+            closed.append(self)
+    def certify(*args, **kwargs):
+        if phase == 'read':
+            block()
+        return product
+    monkeypatch.setattr(history, 'certify_history_product', certify)
+    async def run():
+        task = asyncio.create_task(history.certify_history_pins_async(
+            Reader, (request(product),), concurrency=1))
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            task.cancel()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    asyncio.run(run())
+    assert len(closed) == 1

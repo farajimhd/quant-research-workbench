@@ -286,18 +286,23 @@ async def certify_history_pins_async(reader_factory, requests, *, concurrency):
     if any(origin(request) != origin(requests[0]) for request in requests):
         raise ValueError('History pin packet differs in its certified session or origin')
     iterator, result = iter(requests), {}
-    def certify(request):
-        reader = reader_factory()
-        try:
-            return certify_history_product(reader, request.scope, request.fields,
-                request.parents, expected_content_hash=request.expected_content_hash,
-                feature_plan_cache=feature_plan_cache).pin()
-        finally:
-            reader.close()
     async def worker():
-        while (request := next(iterator, None)) is not None:
-            pin = await _owned_worker(certify, request)
-            result[request.scope.listing_id] = pin
+        owned = []
+        def open_reader():
+            owned.append(reader_factory())
+        try:
+            # Retain ownership even if cancellation arrives during construction.
+            await _owned_worker(open_reader)
+            while (request := next(iterator, None)) is not None:
+                def certify():
+                    return certify_history_product(owned[0], request.scope, request.fields,
+                        request.parents, expected_content_hash=request.expected_content_hash,
+                        feature_plan_cache=feature_plan_cache).pin()
+                pin = await _owned_worker(certify)
+                result[request.scope.listing_id] = pin
+        finally:
+            if owned:
+                await _owned_worker(owned[0].close)
     async with asyncio.TaskGroup() as tasks:
         for _ in range(min(concurrency, len(requests))):
             tasks.create_task(worker())

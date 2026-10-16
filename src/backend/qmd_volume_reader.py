@@ -199,18 +199,21 @@ async def certify_volume_pins_async(reader_factory, requests, *, concurrency,
     pending, result, retained_bytes = iter(requests), {}, 0
     async def worker():
         nonlocal retained_bytes
-        while (request := next(pending, None)) is not None:
-            def read():
-                reader = reader_factory()
-                try:
-                    return _read_certified_pin(reader, request)
-                finally:
-                    reader.close()
-            pin = await _owned_worker(read)
-            retained_bytes += pin.retained_interval_bytes
-            if retained_bytes > maximum_retained_bytes:
-                raise MemoryError('Certified volume interval population exceeds its admitted byte budget')
-            result[pin.scope.listing_id] = pin
+        owned = []
+        def open_reader():
+            owned.append(reader_factory())
+        try:
+            # One persistent connection per admitted worker, not per listing.
+            await _owned_worker(open_reader)
+            while (request := next(pending, None)) is not None:
+                pin = await _owned_worker(_read_certified_pin, owned[0], request)
+                retained_bytes += pin.retained_interval_bytes
+                if retained_bytes > maximum_retained_bytes:
+                    raise MemoryError('Certified volume interval population exceeds its admitted byte budget')
+                result[pin.scope.listing_id] = pin
+        finally:
+            if owned:
+                await _owned_worker(owned[0].close)
     async with asyncio.TaskGroup() as group:
         for _ in range(min(concurrency, len(requests))):
             group.create_task(worker())

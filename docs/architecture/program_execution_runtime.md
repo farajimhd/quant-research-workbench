@@ -5,6 +5,12 @@ Portfolio account/group authority and the selected native broker. It consumes
 completed contextual QMD/Signal Stream boundaries; it does not recreate market
 features or infer fills from a programme proposal.
 
+Cold QMD feature and volume certification retain one owned persistent
+ClickHouse connection per admitted reader worker across listings. Every listing
+still receives its original seal, source and content checks; cancellation drains
+in-flight I/O before closing the worker connection. The volume census retains
+its independent source verification before and after the complete packet.
+
 ## Current composition
 
 1. Load the explicitly selected certified configuration, execution binding,

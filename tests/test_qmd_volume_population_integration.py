@@ -31,6 +31,36 @@ def no_database():
     pytest.fail('Snapshot projection opened a database reader')
 
 
+def test_volume_census_reuses_reader_between_listings(population_fixture, monkeypatch):
+    from src.backend import qmd_volume_reader as reader
+    from pipelines.market_sip.events import qmd_volume_producer as producer
+    _, population, _ = population_fixture
+    clients, checked = [], []
+    class Client:
+        closed = False
+        def close(self):
+            assert not self.closed
+            self.closed = True
+    def factory():
+        client = Client()
+        clients.append(client)
+        return client
+    pins = population.histories
+    requests = tuple(VolumePinRequest(pin.scope, pin.parents, pin.header['content_hash'], pin.source)
+                     for pin in pins.values())
+    monkeypatch.setattr(reader, 'permission_preflight', lambda client: None)
+    monkeypatch.setattr(reader, 'storage_preflight', lambda client, **kwargs: None)
+    monkeypatch.setattr(producer, 'verify_volume_sources', lambda client, sources: checked.append(sources))
+    def read(client, request):
+        assert not client.closed
+        return pins[request.scope.listing_id]
+    monkeypatch.setattr(reader, '_read_certified_pin', read)
+    result = asyncio.run(reader.certify_volume_pins_async(factory, requests, concurrency=1))
+    assert dict(result) == dict(pins)
+    assert len(checked) == 2 and checked[0] == checked[1] == tuple(r.source for r in requests)
+    assert len(clients) == 3 and all(client.closed for client in clients)
+
+
 def volume_pin(source, values):
     scope = source.scope('00000000-0000-0000-0000-000000000091', CODE)
     parents = source.parents(CODE)
