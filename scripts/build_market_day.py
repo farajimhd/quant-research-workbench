@@ -942,7 +942,7 @@ def build_ticker(args, ledger, build, plan, ticker, rows, requested, calculation
                 continue
             attempt = str(uuid.uuid4())
             mark(day,attempt,'broker 100ms / VWAP / NBBO')
-            broker_query=sql.broker_sql(args.database,build,day,ticker,attempt,plan['rules'])
+            broker_query=sql.broker_sql(args.database,build,day,ticker,attempt,plan['rules'],verified_timely=True)
             if int(row['event_count'])>=4_000_000 and args.max_memory_gb<8:
                 # The ordered window for dense tickers can exceed the ordinary
                 # 2 GiB query cap. Limit concurrent 8 GiB scans separately;
@@ -1074,7 +1074,7 @@ def run(args, *, typed_certificate_publisher=None):
             plan = source_plan(client,args)
             reporting = reporting_coverage(client,args.start,args.end)
             definition = dict(version=sql.VERSION, emas=sql.EMAS, frames=sql.FRAMES, warmup_days=sql.WARMUP_DAYS,
-                indicator_set='core', calculation_source=digest(Path(sql.__file__).read_text()),
+                indicator_set='core', calculation_source=digest([Path(sql.__file__).read_text(),'verified-timely-reporting-v1']),
                 rules_hash=digest(plan['rules']),seed_policy='preceding-session-certified-state-or-first-bar',
                 controller_source=digest(Path(__file__).read_text()), plan=plan, database=args.database,
                 start=str(args.start),end=str(args.end),
@@ -1090,6 +1090,7 @@ def run(args, *, typed_certificate_publisher=None):
                         reset='session',source_cursor=['sip_timestamp_us','ordinal'],availability='completed 100ms bucket')),
                 price_scale=10000,session_timezone='America/New_York',session_hours=['04:00','20:00'],
                 trade_eligibility=dict(session_start='04:00',excluded_reporting_flag=sql.DELAYED,
+                    reporting_mask=192,required_reporting_bits=64,
                     reporting_revision=sql.REPORTING_REVISION,
                     coverage_authority='q_live.historical_trade_reporting_coverage_v1',
                     verified_coverage=reporting),storage_policy=sql.POLICY,
