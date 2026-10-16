@@ -37,6 +37,32 @@ def test_current_identity_never_overwrites_contrary_historical_security():
     assert snap['quarantine_counts']=={'conflicting_historical_identity':1}
 
 
+@pytest.mark.parametrize('kind',['ETF','PFD','WARRANT','SP','UNIT','FUND','RIGHT','ETN','ETS','ETV','ADRP','ADRR',''])
+def test_retrospective_admission_uses_canonical_tradability_not_provider_type(kind):
+    base,pool,metadata=inputs();pool['rows'][0]['provider_type']=kind
+    snap=ri.compile_snapshot(base,pool,metadata,DAY,DAY,DAY)
+    assert len(snap['intervals'])==1 and not snap['intervals'][0].reason
+    assert snap['eligibility_census']=={kind or '<missing>':{'admitted':1}}
+
+
+@pytest.mark.parametrize('change,reason',[
+    ({'product_type':'IND'},'unsupported_security'),
+    ({'exchange_code':''},'unproven_exchange'),
+    ({'exchange_code':'XNYS','exchange_name':'OTC Markets'},'unsupported_otc_venue'),
+    ({'exchange_country':'CA'},'unproven_us_security')])
+def test_provider_type_does_not_override_missing_exchange_tradability(change,reason):
+    base,pool,metadata=inputs();pool['rows'][0]['provider_type']='ETF';metadata[0].update(change)
+    snap=ri.compile_snapshot(base,pool,metadata,DAY,DAY,DAY)
+    assert not snap['intervals'] and snap['quarantine_counts']=={reason:1}
+    assert snap['eligibility_census']=={'ETF':{'quarantined':1}}
+
+
+def test_noncommon_unresolved_candidate_is_explicitly_quarantined():
+    base,pool,metadata=inputs();pool['rows'][0].update(provider_type='WARRANT',status='blocked',conid=0)
+    snap=ri.compile_snapshot(base,pool,metadata,DAY,DAY,DAY)
+    assert snap['quarantine_counts']=={'unresolved_conid':1}
+
+
 def test_current_identity_keeps_known_rename_intervals():
     base,pool,metadata=inputs()
     base['source_rows']=[dict(listing_id='listing',interval_security_id='security',ticker=t,

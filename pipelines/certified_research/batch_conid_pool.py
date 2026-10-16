@@ -134,7 +134,7 @@ def attach(snapshot,pool):
         evidence_hash=digest(dict(pool_hash=pool['pool_hash'],ticker=ticker)))
         for ticker in pool['unrepresented_event_tickers'])
     for row in pool['rows']:
-        if not row['event_backed'] or row['provider_type'] not in ('CS','ADRC'):continue
+        if not row['event_backed']:continue
         reason=''
         if row['status']!='resolved':reason='batch_conid_unresolved'
         elif row['remaining_issues']:reason='batch_identity_dependencies_unresolved'

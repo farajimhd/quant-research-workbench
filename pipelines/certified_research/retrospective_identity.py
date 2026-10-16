@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from . import batch_conid_pool,universe
 from .contracts import digest,literal
 from .identity import ListingInterval,validate_intervals
+from services.reference_gateway.tradability import is_otc_venue,SUPPORTED_PRODUCT_TYPES
 
 POLICY='current_conid_retrospective_v1'
 
@@ -19,9 +20,11 @@ def compile_snapshot(base,pool,metadata,start,end,anchor):
     by_listing={r['listing_id']:r for r in metadata}
     history=defaultdict(list)
     for row in base['source_rows']:history[row['listing_id']].append(row)
-    ny=ZoneInfo('America/New_York');intervals=[];proofs={};quarantine=[]
+    ny=ZoneInfo('America/New_York');intervals=[];proofs={};quarantine=[];census=Counter();outside=0
     for candidate in pool['rows']:
-        if not candidate['event_backed'] or candidate['provider_type'] not in ('CS','ADRC'):continue
+        kind=candidate['provider_type'] or '<missing>'
+        if not candidate['event_backed']:
+            census[(kind,'no_target_events')]+=1;continue
         reason=''
         listings=[by_listing[i] for i in candidate['listing_ids'] if i in by_listing]
         if candidate['status']!='resolved' or candidate['conid']<=0:reason='unresolved_conid'
@@ -30,14 +33,19 @@ def compile_snapshot(base,pool,metadata,start,end,anchor):
             current=listings[0]
             if current['security_id']!=candidate['security_id'] or not current['issuer_id']:
                 reason='conflicting_current_identity'
-            elif current.get('currency_code')!='USD' or current.get('product_type','').upper() not in ('STK','STOCK','STOCKS'):
+            elif current.get('currency_code')!='USD' or current.get('product_type','').upper() not in SUPPORTED_PRODUCT_TYPES:
                 reason='unsupported_security'
             elif current.get('exchange_country','').upper()!='US':reason='unproven_us_security'
+            elif not current.get('exchange_code'):reason='unproven_exchange'
+            elif is_otc_venue(*(current.get(k) for k in ('exchange_code','acronym','mic','operating_mic','exchange_name'))):
+                reason='unsupported_otc_venue'
         if reason:
+            census[(kind,'quarantined')]+=1
             quarantine.append(dict(entity_key=candidate['entity_key'],ticker=candidate['ticker'],reason=reason));continue
         listing=current['listing_id'];known=history[listing]
         conflict=any(r.get('interval_security_id') and r['interval_security_id']!=candidate['security_id'] for r in known)
         if conflict:
+            census[(kind,'quarantined')]+=1
             quarantine.append(dict(entity_key=candidate['entity_key'],ticker=candidate['ticker'],reason='conflicting_historical_identity'));continue
         # Keep known rename intervals; infer the current symbol only if there
         # are no retained symbols. Never overwrite contrary symbol evidence.
@@ -45,6 +53,7 @@ def compile_snapshot(base,pool,metadata,start,end,anchor):
         if not symbols:symbols=[dict(ticker=candidate['ticker'],valid_from_date=None,valid_to_date_exclusive=None)]
         symbols=list({(r['ticker'],str(r.get('valid_from_date')),str(r.get('valid_to_date_exclusive'))):r for r in symbols}.values())
         symbols.sort(key=lambda r:str(r.get('valid_from_date') or start))
+        before=len(intervals)
         for index,symbol in enumerate(symbols):
             # Earliest retained observation is not proof of identity birth.
             # The approved retrospective assumption fills earlier unknown
@@ -61,11 +70,15 @@ def compile_snapshot(base,pool,metadata,start,end,anchor):
             intervals.append(ListingInterval(listing,candidate['security_id'],current['issuer_id'],symbol['ticker'],
                 int(candidate['conid']),datetime.combine(first,time(),ny),datetime.combine(last,time(),ny),
                 'US',current['exchange_code'],current['currency_code'],current['product_type'],True,True,False,False,fingerprint))
+        if len(intervals)>before:census[(kind,'admitted')]+=1
+        else:census[(kind,'outside_context')]+=1;outside+=1
     intervals=validate_intervals(tuple(intervals))
     result=dict(intervals=intervals,rejected=(),rejection_counts={},ready=bool(intervals),source_rows=(),
         context_start=start,end=end,anchor_date=anchor,identity_policy=POLICY,assumption_proofs=proofs,
         historical_membership_certified=False,quarantine=tuple(quarantine),
-        quarantine_counts=dict(Counter(r['reason'] for r in quarantine)),outside_context=0,outside_scope={},
+        quarantine_counts=dict(Counter(r['reason'] for r in quarantine)),outside_context=outside,outside_scope={},
+        eligibility_census={kind:{outcome:n for (k,outcome),n in sorted(census.items()) if k==kind}
+            for kind in sorted({k for k,_ in census})},
         conid_pool=dict(pool_hash=pool['pool_hash'],review_hash=pool['review_hash'],summary=pool['summary']))
     result['source_hash']=digest(dict(policy=POLICY,base=base['source_hash'],pool=pool['pool_hash'],
         metadata=metadata,proofs=sorted(proofs),quarantine=quarantine,start=start,end=end,anchor=anchor))
@@ -82,7 +95,8 @@ def load(query,start,end,anchor,review_hash):
         keys=','.join(map(literal,ids[offset:offset+256]))
         metadata.extend(query('SELECT l.listing_id AS listing_id,l.security_id AS security_id,s.issuer_id AS issuer_id,'
             'l.exchange_code AS exchange_code,l.currency_code AS currency_code,'
-            'l.list_date AS list_date,l.delisted_date AS delisted_date,s.product_type AS product_type,e.iso_country_code AS exchange_country '
+            'l.list_date AS list_date,l.delisted_date AS delisted_date,s.product_type AS product_type,e.iso_country_code AS exchange_country,'
+            'e.acronym AS acronym,e.mic AS mic,e.operating_mic AS operating_mic,e.name AS exchange_name '
             'FROM q_live.id_listing_v1 l FINAL LEFT JOIN q_live.id_security_v1 s FINAL ON l.security_id=s.security_id '
             'LEFT JOIN q_live.ref_exchange_v1 e FINAL ON l.exchange_code=e.exchange_code '
             f'WHERE l.listing_id IN ({keys}) ORDER BY l.listing_id'))
