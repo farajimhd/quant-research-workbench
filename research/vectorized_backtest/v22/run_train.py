@@ -91,7 +91,7 @@ def execute(args):
     generations=args.profile_generations if args.mode=='profile' else args.local_generations
     contract=dict(maximum_rule_nodes=MAX_NODES,feature_semantics='v22-magnitude-ratio-v1',version='v22-two-phase-controller-v1',commit=args.commit,source_sha256=source_hash(),mode=args.mode,days=days,
                   local_generations=generations,global_generations=args.global_generations,population=args.population,batch_size=args.batch_size,
-                  workers=args.workers,seed=args.seed,archive_capacity=args.archive_capacity,archive_shortlist=args.archive_shortlist,
+                  workers=args.workers,seed=args.seed,capture_gib=args.capture_gib,archive_capacity=args.archive_capacity,archive_shortlist=args.archive_shortlist,
                   training_sha256=file_hash(args.training),validation_sha256=file_hash(args.validation),predecessor=proof,validation_feedback=False)
     path=output/'manifest.json'
     if path.exists() and json.loads(path.read_bytes())!=contract:raise ValueError('Exact controller resume identity changed')
@@ -99,7 +99,7 @@ def execute(args):
     config=dict(inputs=train['inputs'],history=train['history'],feature_cache=train.get('feature_cache'),indicator_root=train['indicator_root'],
                 enriched_root=train['enriched_root'],input_receipts=train['receipts'],indicator_receipts=train['indicator_receipts'],enriched_receipts=train['enriched_receipts'],
                 predecessor_job=str(args.predecessor_job),predecessor_proof=proof,source_sha256=contract['source_sha256'],device='cuda',backend='compile',batch_size=args.batch_size,
-                maximum_data_gib=4.,maximum_gate_gib=8.,capture_gib=4.,plan_limit=2,episode_capacity=65536,
+                maximum_data_gib=4.,maximum_gate_gib=8.,capture_gib=args.capture_gib,plan_limit=2,episode_capacity=65536,
                 execution=asdict(Execution(fee_per_share=.005,minimum_order_fee=1)))
     with owned_run(output,version=contract['version']):
         owner=dict(pid=os.getpid(),creation_time=psutil.Process().create_time(),campaign=str(output),code=str(Path(__file__).resolve().parents[3]),
@@ -128,7 +128,7 @@ def execute(args):
             try:
                 result=run_global(args.training,args.validation,output/'local',global_root,population_size=args.population,
                                   generations=args.global_generations,seed=args.seed,predecessor_job=args.predecessor_job,
-                                  batch_size=args.batch_size,session_workers=args.workers,predecessor_proof=proof)
+                                  batch_size=args.batch_size,session_workers=args.workers,capture_gib=args.capture_gib,predecessor_proof=proof)
             finally:stop_monitor.set();thread.join()
             snapshot(output,'complete' if result==0 else 'interrupted',stage='Global evolution ended',completed=len(days),total=len(days))
             return result
@@ -143,8 +143,10 @@ def main():
     parser.add_argument('--commit',required=True);parser.add_argument('--mode',choices=('profile','full'),default='profile')
     for name,default in [('local-generations',30),('global-generations',50),('profile-generations',3),('profile-sessions',2),('population',1024),
                          ('batch-size',512),('workers',2),('archive-capacity',64),('archive-shortlist',256),('seed',2020),('poll-seconds',30)]:parser.add_argument('--'+name,type=int,default=default)
+    parser.add_argument('--capture-gib',type=float,default=4.,help='CUDA graph cache GiB per worker (0.25..16)')
     parser.add_argument('--check-only',action='store_true',help='One readiness read; never profile or run')
     args=parser.parse_args()
+    if not .25<=args.capture_gib<=16.:parser.error("Capture cache must be between 0.25 and 16 GiB per worker")
     if not 1<=args.poll_seconds<=60 or not 1<=args.profile_sessions<=24 or not 1<=args.profile_generations<=5:parser.error('Bounded wait/profile required')
     if not 1<=args.workers<=2 or not 10<=args.population<=65536 or not 1<=args.batch_size<=1024:parser.error('Bounded population/workers/batches required')
     if not 1<=args.archive_capacity<=args.archive_shortlist<=1024 or not 1<=args.local_generations<=500 or not 1<=args.global_generations<=500:parser.error('Bounded archive/generations required')

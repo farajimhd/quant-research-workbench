@@ -50,11 +50,13 @@ def run_session(config,day,output,generations=30,population_size=1024,seed=2020,
     if not 1<=archive_capacity<=archive_shortlist<=1024:raise ValueError('Bounded archive required')
     from .evaluator import Execution
     if not Execution(**config['execution']).validate().risk_protection:raise ValueError('Local search requires V19 risk protection')
+    capture_gib=float(config.get('capture_gib',4.))
+    if not .25<=capture_gib<=16.:raise ValueError('Capture cache must be between 0.25 and 16 GiB per worker')
     output=require_runtime(output);objective=Objective();selection=Selection(global_fraction=1.,global_fresh_fraction=.2,champion_partners=0)
     contract=dict(maximum_rule_nodes=MAX_NODES,feature_semantics='v22-magnitude-ratio-v1',version='v22-local-session-v1',source_sha256=source_hash(),day=day,generations=generations,population=population_size,seed=seed,
                   local_profit_trim="positive-fractional-top-ticker-v1",objective=asdict(objective),selection=asdict(selection),archive_capacity=archive_capacity,archive_shortlist=archive_shortlist,
                   dataset={k:config.get(k) for k in ['inputs','history','indicator_root','enriched_root','input_receipts','indicator_receipts','enriched_receipts']},execution=config['execution'],
-                  backend=config['backend'],device=config['device'],batch_size=config['batch_size'],local_other_session_penalty='omitted: unavailable in single-session stage',validation_opened=False)
+                  backend=config['backend'],device=config['device'],batch_size=config['batch_size'],capture_gib=capture_gib,local_other_session_penalty='omitted: unavailable in single-session stage',validation_opened=False)
     rng=np.random.default_rng(np.random.SeedSequence([seed,int(day.replace('-',''))]));pedigree=CompactPedigree(selection.ancestry_generations);archive=[];completed=0
     checkpoint=output/'checkpoint.json';seals={}
     with owned_run(output,version='v22-local-session-v1'):

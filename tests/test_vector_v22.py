@@ -403,3 +403,10 @@ def test_global_score_is_v20_exact_despite_different_ticker_grouping():
             for k in a:equal(a[k],b[k])
         else:np.testing.assert_array_equal(a,b)
     equal(actual,expected)
+
+
+def test_local_resume_binds_capture_budget(tmp_path,local_config):
+    options=dict(generations=1,population_size=16,seed=20,archive_capacity=8,archive_shortlist=16,worker_factory=FakeWorker)
+    local_runner.run_session(dict(local_config,capture_gib=8.),'2026-08-01',tmp_path,**options)
+    with pytest.raises(ValueError,match='resume identity'):
+        local_runner.run_session(dict(local_config,capture_gib=4.),'2026-08-01',tmp_path,**options)
