@@ -18,11 +18,13 @@ def source_guard(query,saved):
     if not expected:raise ValueError('Saved verification requires explicit canonical/reporting day bindings')
     days=tuple(sorted(expected))
     def guard():
-        canonical=source.inventory(query,days[0],days[-1],sessions=days)
-        reporting=source.reporting_inventory(query,canonical)
+        from .source_guard_batch import RoundQuery
+        fresh=RoundQuery(query,days)
+        canonical=source.inventory(fresh,days[0],days[-1],sessions=days)
+        reporting=source.reporting_inventory(fresh,canonical)
         actual=source.market_day_hashes(canonical,reporting)
         if actual!=expected:raise ValueError('Saved canonical/reporting day bindings changed')
-        epoch=source.require_ready(query,canonical,reporting)
+        epoch=source.require_ready(fresh,canonical,reporting)
         if epoch!=saved.source_hash:raise ValueError('Saved canonical/reporting source epoch changed')
     return guard
 
