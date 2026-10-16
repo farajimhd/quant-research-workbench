@@ -53,6 +53,41 @@ def test_prepared_block_retains_unpriced_clock_without_computing_a_stop():
     observed = block.boundary_for(release, population, listing_id='listing', ticker='ABC', ordinal=1)
     assert observed.close == 10. and observed.initial_stop == 10. * (1-release.header['stop_fraction'])
     assert block.market.height == 2 and missing.boundary_at == at
+    for ordinal in range(2):
+        clock = at + timedelta(seconds=ordinal)
+        assert block.boundary_at(release, population, listing_id='listing', ticker='ABC', at=clock) == (
+            ordinal, block.boundary_for(release, population, listing_id='listing', ticker='ABC',
+                                       ordinal=block.ordinal_for('listing', clock)))
+
+
+@pytest.mark.parametrize('fault', ['first_identity', 'target_identity', 'target_clock', 'fractional', 'after'])
+def test_combined_boundary_lookup_retains_exact_origin_and_target_guards(fault):
+    from datetime import datetime, UTC, timedelta
+    from types import SimpleNamespace
+    from src.backend.backtest_program_inputs import PreparedProgramBlock
+    spec, fields, kwargs = bundle()
+    spec = replace(spec, policy={**spec.policy, 'swing_left': 0, 'swing_right': 0})
+    release = restore_release(project_release(spec, fields, **kwargs))
+    at = datetime(2026, 8, 3, 13, 30, tzinfo=UTC)
+    market = pl.DataFrame([dict(listing_id='listing', evaluation_block='origin', observed_ordinal=i,
+        boundary_at=at + timedelta(seconds=i), available_at=at + timedelta(seconds=i),
+        reference_close=10.) for i in range(3)])
+    masks = market.select('listing_id', 'evaluation_block', 'observed_ordinal', 'boundary_at').with_columns(
+        *[pl.lit(True).alias(stage) for stage in release.programs],
+        *[pl.lit(True).alias(stage+'__valid') for stage in release.programs])
+    block = PreparedProgramBlock(release.header['content_hash'], 'origin', 0, 3,
+        {'listing': 'a'*64}, market, masks)
+    # In-place corruption must still be detected; no cached mutable row is trusted.
+    if fault.endswith('identity'):
+        block.masks[0 if fault == 'first_identity' else 1, 'evaluation_block'] = 'other'
+    elif fault == 'target_clock':
+        block.market[1, 'boundary_at'] = at + timedelta(seconds=2)
+    clock = at + timedelta(seconds=1, microseconds=1 if fault == 'fractional' else 0)
+    if fault == 'after':
+        clock = at + timedelta(seconds=3)
+    with pytest.raises(ValueError):
+        block.boundary_at(release, SimpleNamespace(is_ranked=lambda *_: True),
+                          listing_id='listing', ticker='ABC', at=clock)
 
 
 @pytest.mark.parametrize("concurrency", [1, 2])

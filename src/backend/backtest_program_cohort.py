@@ -180,8 +180,8 @@ async def run_prepared_program_cohort(controller, blocks, population, projection
             assignment = actor._by_assignment[identity]
             if block.release_hash != actor.program_release.header["content_hash"]:
                 raise ValueError("Program cohort block differs from its immutable release")
-            block.boundary_for(actor.program_release, population, listing_id=actor._listings[identity],
-                ticker=assignment.ticker, ordinal=block.ordinal_for(actor._listings[identity], at))
+            block.boundary_at(actor.program_release, population, listing_id=actor._listings[identity],
+                ticker=assignment.ticker, at=at)
     tickers = {row.ticker for row in actor.assignments()}
     if controller._stop_requested:
         return ProgramCohortResult("stopped", 0, 0, 0, initial_packet)

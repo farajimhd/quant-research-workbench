@@ -186,10 +186,9 @@ async def dispatch_prepared_program_clock(controller, blocks, population, *, at,
         block = blocks[identity]
         if type(block) is not PreparedProgramBlock or block.release_hash != actor.program_release.header["content_hash"]:
             raise ValueError("Program clock block differs from its immutable release")
-        ordinal = block.ordinal_for(actor._listings[identity], at)
         assignment = actor._by_assignment[identity]
-        candidate = block.boundary_for(actor.program_release, population, listing_id=actor._listings[identity],
-            ticker=assignment.ticker, ordinal=ordinal)
+        ordinal, candidate = block.boundary_at(actor.program_release, population,
+            listing_id=actor._listings[identity], ticker=assignment.ticker, at=at)
         # Fresh rejected assignments own no prior programme state to advance.
         # Retain every previously visited assignment conservatively: it may
         # still own deferred capital, OMS or policy lifecycle work.

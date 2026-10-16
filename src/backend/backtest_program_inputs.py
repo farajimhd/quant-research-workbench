@@ -170,21 +170,36 @@ class PreparedProgramBlock:
 
     def ordinal_for(self, listing_id: str, at: datetime) -> int:
         """Locate an exact certified dense 1s clock, including cold readback."""
-        first, _ = self.row_for(listing_id, self.first_ordinal)
+        ordinal, _, _ = self._rows_at(listing_id, at)
+        return ordinal
+
+    def _rows_at(self, listing_id: str, at: datetime):
+        first, first_mask = self.row_for(listing_id, self.first_ordinal)
         elapsed = at - first["boundary_at"]
         if elapsed < timedelta(0) or elapsed % timedelta(seconds=1):
             raise ValueError("Program completion is outside its exact dense clock")
         ordinal = self.first_ordinal + elapsed // timedelta(seconds=1)
-        row, _ = self.row_for(listing_id, ordinal)
+        row, mask = ((first, first_mask) if ordinal == self.first_ordinal
+                     else self.row_for(listing_id, ordinal))
         if row["boundary_at"] != at:
             raise ValueError("Program completion differs from its prepared clock")
-        return ordinal
+        return ordinal, row, mask
+
+    def boundary_at(self, release, population, *, listing_id, ticker, at):
+        """Resolve a clock and boundary without materializing its rows twice."""
+        ordinal, row, mask = self._rows_at(listing_id, at)
+        return ordinal, self._boundary_from_rows(release, population,
+            listing_id=listing_id, ticker=ticker, row=row, mask=mask)
 
     def boundary_for(self, release, population, *, listing_id, ticker, ordinal):
+        row, mask = self.row_for(listing_id, ordinal)
+        return self._boundary_from_rows(release, population,
+            listing_id=listing_id, ticker=ticker, row=row, mask=mask)
+
+    def _boundary_from_rows(self, release, population, *, listing_id, ticker, row, mask):
         from src.trading_runtime.columnar_program_coordinator import ProgramBoundary
         if self.release_hash != release.header["content_hash"]:
             raise ValueError("Program boundary release differs from prepared inputs")
-        row, mask = self.row_for(listing_id, ordinal)
         policy = release.header
         stop_field = f"history.swing_low.{policy['swing_left']}.{policy['swing_right']}"
         if policy["swing_left"]:
