@@ -131,7 +131,8 @@ def file_plan(paths,days,*,reserve_bytes=256*1024**3,reserve_fraction=.10,maximu
 
 
 def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,reserve_fraction=.10,
-            maximum_chunk_bytes=256*1024**3,emit=print,query_threads=2,query_memory_bytes=2*1024**3):
+            maximum_chunk_bytes=256*1024**3,emit=print,query_threads=2,query_memory_bytes=2*1024**3,
+            staged_copy=None,capture_tape=True):
     """Capture bounded daily evidence, then repair each month exactly once."""
     if not days:return dict(completed=(),reused=())
     if not isinstance(claim,SourceClaim):raise ValueError('Retained reporting recovery requires canonical source ownership')
@@ -161,7 +162,7 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
         if rows:receipt_days.add(day)
     missing=[d for d in plan['missing'] if date.fromisoformat(d) not in receipt_days]
     if missing:raise ValueError('Retained reporting source files are missing: '+','.join(missing[:20]))
-    tape_missing=set(tape.inventory(query,dict(inventory,expected=tuple(days))))
+    tape_missing=set(tape.inventory(query,dict(inventory,expected=tuple(days)))) if capture_tape else set()
     plan.update(archive_staging.plan_chunks(((day,1 if day in receipt_days and day not in tape_missing else plan['files'][day]['bytes'])
         for day in sorted(days)),plan['space'],maximum_chunk_bytes=maximum_chunk_bytes))
     private=paths.cache/'_retained_reporting'
@@ -220,11 +221,11 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                         if candidate.stat().st_size!=int(receipts[0]['file_bytes']) or _file_hash(candidate,stop)!=receipts[0]['file_digest']:
                             raise ValueError('Resumed private staged file differs from certified capture')
                         staged_file=candidate
-                has_tape=query(f"SELECT count() n FROM system.tables WHERE database='q_live' AND name={literal(tape.RECEIPTS)}")[0]['n']
+                has_tape=query(f"SELECT count() n FROM system.tables WHERE database='q_live' AND name={literal(tape.RECEIPTS)}")[0]['n'] if capture_tape else 0
                 tape_receipts=query(f'SELECT * FROM q_live.{tape.RECEIPTS} WHERE source_date=toDate({literal(day)})') if has_tape else []
                 if tape_receipts:
                     tape.publish(query,day,source_hash,frozen,receipts[0]['file_digest'],int(source['trade_event_rows']),STAGE,guard,emit=emit)
-                else:
+                elif capture_tape:
                     staged_file=recover_prior_tape(query,paths,plan,day,source,source_hash,receipts[0],private,stop,guard,
                         reserve_bytes=reserve_bytes,reserve_fraction=reserve_fraction,query_threads=query_threads,
                         query_memory_bytes=query_memory_bytes,emit=emit)
@@ -232,8 +233,9 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                 info=plan['files'][day]
                 if info['origin']==1:
                     staged_file=private/info['key']
-                    copied=archive_staging.copy_file(info['source'],staged_file,paths.archive,private,size,
-                        stop=stop,reserve_bytes=reserve_bytes,reserve_fraction=reserve_fraction)
+                    copied=(staged_copy(day) if staged_copy is not None else
+                        archive_staging.copy_file(info['source'],staged_file,paths.archive,private,size,
+                            stop=stop,reserve_bytes=reserve_bytes,reserve_fraction=reserve_fraction))
                     if copied['status']=='cached':
                         before=info['source'].stat()
                         file_hash=_file_hash(info['source'],stop)
@@ -258,6 +260,7 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                     'exchange_primary','exchange_secondary']+[f'condition_token_{n}' for n in range(1,6)]+['event_date']
                 raw=updater.raw_event_union_sql(args,files,trade_only=True,
                     include_reporting_reason=True,include_reporting_evidence=True,include_listing_tape=True)
+                emit(f'Retained reporting {day} | classify CSV: sizing necessary fields')
                 # Budget in uncompressed semantic bytes, with room for staging,
                 # publication and merge work; do not infer it from gzip size.
                 footprint=query('SELECT count() n,sum(length(ticker)+128+arraySum(arrayMap(x -> length(x)+9,reporting_condition_entries))) bytes '
@@ -274,6 +277,7 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                 schema.verify_auxiliary_storage(query,'q_live',(RAW,))
                 verify_table_columns(query,raw_table())
                 query(f'ALTER TABLE q_live.{RAW} DELETE WHERE {stage_where} SETTINGS mutations_sync=2',read=False)
+                emit(f'Retained reporting {day} | classify CSV: materialize on SSD')
                 query(raw_insert_sql(raw,day,query_threads=query_threads,query_memory_bytes=query_memory_bytes,listing_tape=True),read=False)
                 raw_count=query(f'SELECT count() n FROM q_live.{RAW} WHERE {stage_where}')[0]['n']
                 if int(raw_count)!=int(source['trade_event_rows']):raise ValueError('SSD raw staging count differs from canonical trades')
@@ -282,6 +286,7 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                 guard();query(canonical_table().ddl('q_live'),read=False)
                 schema.verify_auxiliary_storage(query,'q_live',(CANONICAL,));verify_table_columns(query,canonical_table())
                 query(f'ALTER TABLE q_live.{CANONICAL} DELETE WHERE {stage_where} SETTINGS mutations_sync=2',read=False)
+                emit(f'Retained reporting {day} | match events: canonical verification projection')
                 query(canonical_insert_sql(target,day,int(source['first_sip_timestamp_us']),int(source['last_sip_timestamp_us']),
                     query_threads=query_threads,query_memory_bytes=query_memory_bytes),read=False)
                 if int(query(f'SELECT count() n FROM q_live.{CANONICAL} WHERE {stage_where}')[0]['n'])!=int(source['trade_event_rows']):
@@ -302,6 +307,7 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                 expected=int(source['trade_event_rows'])
                 if int(audit['n'])!=expected or int(audit['unique_keys'])!=expected or int(audit['bad']):
                     raise ValueError('Retained reporting reconstruction is incomplete, mismatched or ambiguous')
+                emit(f'Retained reporting {day} | verify source file after extraction')
                 if _file_hash(input_file,stop)!=file_hash:raise ValueError('Retained reporting input file changed during extraction')
                 # Fill only absent keys after complete source reconciliation.
                 frozen=publish_evidence(query,day,guard,emit=emit)
@@ -313,7 +319,7 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                     file_key=str(info['key']).replace('\\','/'),source_origin=info['origin'])
                 if len(readback)!=1 or readback[0]!=expected_receipt:
                     raise ValueError('Retained acquisition receipt did not read back exactly')
-                tape.publish(query,day,source_hash,frozen,file_hash,expected,STAGE,guard,emit=emit)
+                if capture_tape:tape.publish(query,day,source_hash,frozen,file_hash,expected,STAGE,guard,emit=emit)
             pending.append((source,frozen))
             emit(f'Retained reporting {day} | captured | awaiting monthly flag repair')
             schema.verify_auxiliary_storage(query,'q_live',(ns.TABLE,STAGE,RECEIPTS))

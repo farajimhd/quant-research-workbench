@@ -1,5 +1,57 @@
 # Compact trade reporting flags
 
+## Global launcher: Trade Reporting Repair
+
+The supervised `trade-reporting-repair` step is available through
+`scripts/run_market_data_pipeline.py backfill`. It repairs reporting flags only:
+no provider downloads, bars, indicators, V7, or original-trade-tape expansion.
+`forwardfill` is reserved and rejects execution until its ingestion integration
+is implemented. The explicit historical migration authorization permits staging
+retained G trade CSVs on D; downstream consumers still use canonical ClickHouse.
+
+Run on DESKTOP-SAAI85T from the committed workstation code copy:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B scripts/run_market_data_pipeline.py backfill --step trade-reporting-repair --start-date 2026-01-01 --run-dir D:/TradingML/runtimes/market-data-pipeline/repair-2026 --copy-workers 2 --prefetch-gib 32 --query-threads 4 --query-memory-gib 8 --plan-only
+```
+
+Remove `--plan-only` to run. The default end is the latest imported source day,
+frozen in `request.json`; `--end-date` explicitly bounds earlier campaigns.
+Use an earlier `--start-date` and a new run directory for pre-2026 history.
+Defaults use `D:/TradingML/secrets/.env`, G archive and D cache roots, and
+`http://desktop-saai85t:18123`; each has an explicit argument override.
+Resume with the same command and `--resume`. The frozen end date is restored.
+Completed receipts are checked against source identity, revision, counts and
+original-nanosecond evidence. Legacy `complete` without that evidence is
+reported as unqualified, not silently adopted as a current certificate.
+
+Two copy threads by default overlap each other and SQL execution. At most four
+files and 32 GiB are prefetched, plus the currently consumed SQL file. Copies
+use atomic installation and SHA256 readback. SQL reconciliation and monthly
+mutations remain serialized under the canonical source claim; existing owned
+mutations resume before new mutations. Exact matching still verifies original
+canonical fields server-side: CSV sequence numbers are not canonical keys.
+The existing sizing read and classification read remain separate; this step
+does not claim a one-read CSV implementation or qualified production throughput.
+
+Monitor with the same interpreter/code copy:
+
+```powershell
+python -B scripts/run_market_data_pipeline.py monitor --run-dir D:/TradingML/runtimes/market-data-pipeline/repair-2026
+```
+
+The monitor shows per-copy byte progress, rate/ETA, verification, SQL query
+rows/bytes/memory, mutation status, reused/completed/queued counts and freshness.
+`--once` prints one snapshot; redirected output is plain text. Durable outputs
+are `request.json`, `status.json`, `events.log`, and `completion.json` only on
+success. A failed or interrupted run retains resumable evidence. Create
+`stop.request` inside the run directory to stop admission and drain copy workers;
+active SQL finishes its bounded query and already submitted server mutations
+remain resumable. Remove that owned marker only for an intentional resume.
+
+The terminal is a monitor, not the writer: closing it does not stop the run.
+
 `market_sip_compact.events_YYYY.event_meta` keeps bits 0–5 unchanged. Bit 6
 (`0x40`) means this trade's reporting evidence was evaluated under
 `trade_reporting_v1_conditions_5_13_30_31_32_33_prior_date_lag_gt10s`.
