@@ -2,7 +2,7 @@
 from dataclasses import asdict
 import numpy as np
 from .genome import STAGES,effective_rules
-from .program import Op
+from .program import Op,MAX_NODES
 from .features import CATALOG
 from .complexity import simplify
 from .lineage import program_key
@@ -16,13 +16,13 @@ def descriptor(member):
     from .semantics import identity,disabled
     effective=identity(member);parts=[]
     for stage in STAGES:
-        p=simplify(effective_rules(member)[stage]);features=np.zeros(len(CATALOG));ops=np.zeros(24);nodes=np.zeros((32,6))
+        p=simplify(effective_rules(member)[stage]);features=np.zeros(len(CATALOG));ops=np.zeros(24);nodes=np.zeros((MAX_NODES,6))
         reachable=not disabled(p) and not (stage=='add' and member.policy.maximum_adds==0)
         for i,n in (enumerate(p.nodes) if reachable else []):
             ops[int(n.op)]=1
             if n.op==Op.FEATURE:features[n.feature]=1
             lo,hi=units.get(n.unit,(-1.,1.));constant=np.clip((n.value-lo)/max(hi-lo,1e-12),0,1) if n.op==Op.CONSTANT else 0
-            nodes[i]=[int(n.op)/23,max(n.a,0)/31,max(n.b,0)/31,np.log1p(n.window)/np.log(121),constant,n.op==Op.CONSTANT]
+            nodes[i]=[int(n.op)/23,max(n.a,0)/(MAX_NODES-1),max(n.b,0)/(MAX_NODES-1),np.log1p(n.window)/np.log(121),constant,n.op==Op.CONSTANT]
         weight=2. if stage=='entry' else 1.
         parts.extend([features*weight,ops*weight,nodes.ravel()*.25*weight])
     policy=effective['policy']

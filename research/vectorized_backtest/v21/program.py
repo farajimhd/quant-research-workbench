@@ -16,7 +16,7 @@ class Op(IntEnum):
     DIFFERENCE=17; CROSS_ABOVE=18; CROSS_BELOW=19; ABS=20; BOOL_RATIO=21; STD=23
 
 WINDOWS=(1,2,3,5,10,20,30,60,120)
-MAX_NODES=32
+MAX_NODES=128
 
 @dataclass(frozen=True)
 class Node:

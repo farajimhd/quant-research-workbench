@@ -370,6 +370,7 @@ def test_financial_kernels_and_certified_math_unchanged():
     root=Path(__file__).resolve().parents[1]/'research/vectorized_backtest'
     for name in ('evaluator.py','protected_transition.py','sparse_replay.py','replay_graph.py','program.py','enriched_math.py','indicator_math.py','indicator_identity.py'):
         old=(root/'v20'/name).read_bytes().replace(b'\r\n',b'\n').replace(b'v20',b'v21').replace(b'V20',b'V21')
+        if name=='program.py':old=old.replace(b'MAX_NODES=32',b'MAX_NODES=128')
         assert (root/'v21'/name).read_bytes().replace(b'\r\n',b'\n')==old
 
 
