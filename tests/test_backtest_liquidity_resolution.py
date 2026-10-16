@@ -109,6 +109,66 @@ def test_owned_async_reader_drains_and_closes_before_cancellation_returns(monkey
     asyncio.run(run_test())
 
 
+@pytest.mark.parametrize('fault', [None, 'duplicate', 'order', 'ticker', 'session',
+    'clock', 'before', 'after', 'resolution', 'indicator'])
+def test_fixed_liquidity_batches_tickers_without_changing_sparse_rows(fault):
+    import asyncio
+    from tests.test_backtest_market_data import BacktestMarketDataTests
+    from src.backend.backtest_liquidity_price import PriceLevelPlan, PriceLevelUnit
+    from src.backend.backtest_liquidity_resolution import read_fixed_liquidity_cohort_async
+    parent = BacktestMarketDataTests()._plan()
+    tickers = ('AAA', 'BBB', 'CCC')
+    units = tuple(replace(unit, ticker=ticker) for ticker in tickers for unit in parent.units)
+    plan = replace(parent, tickers=tickers, units=units)
+    prices = PriceLevelPlan(plan.build_id, tuple(PriceLevelUnit(unit.session_date,
+        unit.ticker, unit.attempt_id, '00000000-0000-0000-0000-000000000002',
+        1, 1, 0., 'a' * 64) for unit in units if unit.stage == 'broker_100ms'), 'b' * 64)
+    rows = [dict(session_date=plan.sessions[0], ticker=ticker, boundary_ms=boundary,
+        resolution_ms=100, bucket_index=147000 + (boundary - 300100) // 100,
+        price_valid=0, execution_price_levels=[[12300, 2.5]])
+        for boundary, ticker in ((300100, 'AAA'), (300100, 'BBB'), (300200, 'BBB'))]
+    if fault == 'duplicate': rows.insert(1, dict(rows[0]))
+    elif fault == 'order': rows.reverse()
+    elif fault == 'ticker': rows[0]['ticker'] = 'OTHER'
+    elif fault == 'session': rows[0]['session_date'] = '2026-08-19'
+    elif fault == 'clock': rows[0]['bucket_index'] += 1
+    elif fault == 'before': rows[0].update(boundary_ms=300000, bucket_index=146999)
+    elif fault == 'after': rows[-1].update(boundary_ms=300300, bucket_index=147002)
+    elif fault == 'resolution': rows[0]['resolution_ms'] = 1000
+    elif fault == 'indicator': rows[0].update(price_valid=1, indicator_resolution_ms=1000)
+    clients = []
+    class Reader:
+        def __init__(self):
+            self.closed = self.stream_closed = False
+            self.queries = []
+            clients.append(self)
+        def iter_json_each_row(self, query):
+            self.queries.append(query)
+            assert all(ticker in query for ticker in tickers)
+            assert prices.units[0].derivation_attempt_id in query
+            try:
+                yield from (dict(row) for row in rows)
+            finally:
+                self.stream_closed = True
+        def close(self): self.closed = True
+    async def check():
+        request = read_fixed_liquidity_cohort_async(Reader, plan, prices,
+            after_boundary_ms=300000, through_boundary_ms=300200, concurrency=2)
+        if fault:
+            with pytest.raises(ExceptionGroup): await request
+        else:
+            result = await request
+            assert tuple(result) == tickers
+            assert [row['boundary_ms'] for row in result['AAA']] == [300100]
+            assert [row['boundary_ms'] for row in result['BBB']] == [300100, 300200]
+            assert result['CCC'] == ()
+            assert result['AAA'][0]['execution_price_levels'] == ({'price_int': 12300, 'volume': 2.5},)
+            with pytest.raises(TypeError): result['CCC'] = ()
+        assert len(clients) == 1 and len(clients[0].queries) == 1
+        assert clients[0].closed and clients[0].stream_closed
+    asyncio.run(check())
+
+
 @pytest.mark.parametrize("failure", [False, True])
 def test_liquidity_cohort_bounds_concurrent_clients_and_closes_every_reader(monkeypatch, failure):
     import asyncio

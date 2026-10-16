@@ -301,7 +301,7 @@ def fixed_liquidity_read_plan(market_plan):
 async def read_fixed_liquidity_cohort_async(reader_factory, market_plan, price_plan, *,
         after_boundary_ms, through_boundary_ms, concurrency):
     """Bounded100ms windows from the existing certified market/price readers."""
-    from .backtest_market_data import (CertifiedMarketDayPlan, project_market_day_plan,
+    from .backtest_market_data import (CertifiedMarketDayPlan,
         market_day_source_sqls, iter_market_day_rows, CompletedBoundaryValidator)
     from .backtest_liquidity_price import PriceLevelPlan
     if (not callable(reader_factory) or type(market_plan) is not CertifiedMarketDayPlan
@@ -313,37 +313,44 @@ async def read_fixed_liquidity_cohort_async(reader_factory, market_plan, price_p
             or len(market_plan.tickers) * ((through_boundary_ms - after_boundary_ms) // 100) > 262144):
         raise ValueError("Fixed liquidity cohort exceeds its certified100ms scope or reader bounds")
     market_plan = fixed_liquidity_read_plan(market_plan)
-    scopes = {}
-    for ticker in market_plan.tickers:
-        plan = project_market_day_plan(market_plan, (ticker,))
-        prices = price_plan.projected(plan)
-        market_day_source_sqls(plan, after_boundary_ms=after_boundary_ms,
-            through_boundary_ms=through_boundary_ms, price_plan=prices)
-        scopes[ticker] = (plan, prices)
-    async def read(scope):
-        def run():
-            plan, prices = scope
-            reader = reader_factory()
-            stream = iter_market_day_rows(plan, reader, after_boundary_ms=after_boundary_ms,
+    # The existing certified reader supports the whole bounded ticker scope.
+    # One HTTP stream per ticker churned ephemeral ports for every cohort.
+    prices = price_plan.projected(market_plan)
+    market_day_source_sqls(market_plan, after_boundary_ms=after_boundary_ms,
+        through_boundary_ms=through_boundary_ms, price_plan=prices)
+    def run():
+        from types import MappingProxyType
+        reader = reader_factory()
+        stream = None
+        try:
+            stream = iter_market_day_rows(market_plan, reader,
+                after_boundary_ms=after_boundary_ms,
                 through_boundary_ms=through_boundary_ms, price_plan=prices)
+            rows = {ticker: [] for ticker in sorted(market_plan.tickers)}
+            previous = None
+            maximum_rows = (through_boundary_ms - after_boundary_ms) // 100
+            validator = CompletedBoundaryValidator(market_plan)
+            for row in stream:
+                if row.get('resolution_ms') != 100:
+                    raise ValueError('Fixed liquidity cannot consume a strategy-resolution row')
+                boundary, ticker = row['boundary_ms'], row['ticker']
+                validator.validate(row['session_date'], boundary, [(ticker, {100: row})])
+                key = (boundary, ticker)
+                if (not after_boundary_ms < boundary <= through_boundary_ms
+                        or previous is not None and key <= previous):
+                    raise ValueError('Fixed liquidity cohort ordering or window differs')
+                rows[ticker].append(row)
+                previous = key
+                if len(rows[ticker]) > maximum_rows:
+                    raise ValueError('Fixed liquidity cohort exceeds its completed-bucket bound')
+            return MappingProxyType({ticker: tuple(values) for ticker, values in rows.items()})
+        finally:
             try:
-                rows = []
-                previous = after_boundary_ms
-                validator = CompletedBoundaryValidator(plan)
-                for row in stream:
-                    if row.get('resolution_ms') != 100:
-                        raise ValueError('Fixed liquidity cannot consume a strategy-resolution row')
-                    boundary = row["boundary_ms"]
-                    if not previous < boundary <= through_boundary_ms:
-                        raise ValueError("Fixed liquidity cohort ordering or window differs")
-                    validator.validate(row["session_date"], boundary, [(row["ticker"], {100: row})])
-                    rows.append(row)
-                    previous = boundary
-                    if len(rows) > (through_boundary_ms - after_boundary_ms) // 100:
-                        raise ValueError("Fixed liquidity cohort exceeds its completed-bucket bound")
-                return tuple(rows)
+                if stream is not None:
+                    stream.close()
             finally:
-                stream.close()
                 reader.close()
-        return await _owned_worker(run)
-    return await _read_liquidity_pool(scopes, concurrency, read)
+    # Retain structured cancellation/error semantics and owned worker drainage.
+    async with asyncio.TaskGroup() as group:
+        task = group.create_task(_owned_worker(run))
+    return task.result()
