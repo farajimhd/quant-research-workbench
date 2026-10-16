@@ -20,7 +20,7 @@ def compile_snapshot(base,pool,metadata,start,end,anchor):
     by_listing={r['listing_id']:r for r in metadata}
     history=defaultdict(list)
     for row in base['source_rows']:history[row['listing_id']].append(row)
-    ny=ZoneInfo('America/New_York');intervals=[];proofs={};quarantine=[];census=Counter();outside=0
+    ny=ZoneInfo('America/New_York');intervals=[];proofs={};quarantine=[];census=Counter();outside=0;owners={}
     for candidate in pool['rows']:
         kind=candidate['provider_type'] or '<missing>'
         if not candidate['event_backed']:
@@ -65,6 +65,7 @@ def compile_snapshot(base,pool,metadata,start,end,anchor):
             proof=json.dumps(dict(policy=POLICY,pool_hash=pool['pool_hash'],candidate=candidate,
                 current=current,symbol=symbol,start=str(first),end_exclusive=str(last)),sort_keys=True,default=str,separators=(',',':'))
             fingerprint=hashlib.sha256(proof.encode()).hexdigest();proofs[fingerprint]=proof
+            owners[fingerprint]=candidate
             # This interval describes research identity, not dated exchange or
             # broker availability. Event venue filtering remains a separate concern.
             intervals.append(ListingInterval(listing,candidate['security_id'],current['issuer_id'],symbol['ticker'],
@@ -72,12 +73,33 @@ def compile_snapshot(base,pool,metadata,start,end,anchor):
                 'US',current['exchange_code'],current['currency_code'],current['product_type'],True,True,False,False,fingerprint))
         if len(intervals)>before:census[(kind,'admitted')]+=1
         else:census[(kind,'outside_context')]+=1;outside+=1
-    intervals=validate_intervals(tuple(intervals))
+    # Provider aliases can claim the same listing or symbol after broadening
+    # instrument coverage. Quarantine every competing candidate, never select
+    # one by iteration order or let an overlap abort unrelated securities.
+    groups=defaultdict(list);conflicts=set()
+    for interval in intervals:
+        groups[('listing',interval.listing_id)].append(interval)
+        groups[('ticker',interval.ticker)].append(interval)
+    for rows in groups.values():
+        active=[]
+        for current in sorted(rows,key=lambda r:r.valid_from):
+            active=[previous for previous in active if previous.valid_to>current.valid_from]
+            if active:
+                conflicts.add(owners[current.evidence_hash]['entity_key'])
+                conflicts.update(owners[previous.evidence_hash]['entity_key'] for previous in active)
+            active.append(current)
+    for entity in sorted(conflicts):
+        candidate=next(r for r in pool['rows'] if r['entity_key']==entity)
+        kind=candidate['provider_type'] or '<missing>'
+        census[(kind,'admitted')]-=1;census[(kind,'quarantined')]+=1
+        quarantine.append(dict(entity_key=entity,ticker=candidate['ticker'],reason='competing_retrospective_assignment',
+            evidence_hashes=sorted(h for h,r in owners.items() if r['entity_key']==entity)))
+    intervals=validate_intervals(tuple(i for i in intervals if owners[i.evidence_hash]['entity_key'] not in conflicts))
     result=dict(intervals=intervals,rejected=(),rejection_counts={},ready=bool(intervals),source_rows=(),
         context_start=start,end=end,anchor_date=anchor,identity_policy=POLICY,assumption_proofs=proofs,
         historical_membership_certified=False,quarantine=tuple(quarantine),
         quarantine_counts=dict(Counter(r['reason'] for r in quarantine)),outside_context=outside,outside_scope={},
-        eligibility_census={kind:{outcome:n for (k,outcome),n in sorted(census.items()) if k==kind}
+        eligibility_census={kind:{outcome:n for (k,outcome),n in sorted(census.items()) if k==kind and n}
             for kind in sorted({k for k,_ in census})},
         conid_pool=dict(pool_hash=pool['pool_hash'],review_hash=pool['review_hash'],summary=pool['summary']))
     result['source_hash']=digest(dict(policy=POLICY,base=base['source_hash'],pool=pool['pool_hash'],

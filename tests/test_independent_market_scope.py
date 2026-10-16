@@ -63,6 +63,16 @@ def test_noncommon_unresolved_candidate_is_explicitly_quarantined():
     assert snap['quarantine_counts']=={'unresolved_conid':1}
 
 
+def test_competing_provider_assignments_quarantine_both_without_choosing_one():
+    base,pool,metadata=inputs()
+    pool['rows'].append(dict(pool['rows'][0],entity_key='provider:alias',provider_type='ETF'))
+    snap=ri.compile_snapshot(base,pool,metadata,DAY,DAY,DAY)
+    assert not snap['intervals'] and len(snap['assumption_proofs'])==2
+    assert all(r['evidence_hashes'] for r in snap['quarantine'])
+    assert snap['quarantine_counts']=={'competing_retrospective_assignment':2}
+    assert snap['eligibility_census']=={'CS':{'quarantined':1},'ETF':{'quarantined':1}}
+
+
 def test_current_identity_keeps_known_rename_intervals():
     base,pool,metadata=inputs()
     base['source_rows']=[dict(listing_id='listing',interval_security_id='security',ticker=t,
