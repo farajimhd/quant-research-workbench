@@ -464,7 +464,7 @@ def main(argv=None):
         return 0
     from scripts import build_market_day as builder
     args.max_threads=args.query_threads;args.max_memory_gb=args.query_memory_gib;args.query_timeout=args.query_timeout_seconds
-    client=builder.Client(args,persistent=False,readonly=args.command in
+    client=builder.Client(args,persistent=True,readonly=args.command in
         ('preflight','plan','plan-cohorts','status','stored-plan','verify','verify-collection','measure-storage','measure-sec-extraction','estimate-storage','audit-sec-submissions') or
         (args.command in ('reconcile-conids','review-conid-issues') and not args.publish_conid_mappings))
     try:
@@ -579,7 +579,7 @@ def main(argv=None):
             def factory(config):
                 options=SimpleNamespace(env_file=args.env_file,max_threads=config.query_threads,
                     max_memory_gb=config.query_memory_bytes/1024**3,query_timeout=config.query_timeout_seconds)
-                real=builder.Client(options,persistent=False,readonly=verify_only)
+                real=builder.Client(options,persistent=True,readonly=verify_only)
                 if not verify_only:return real
                 class Reader:
                     def query(self,sql):return real.query(sql)
@@ -628,7 +628,7 @@ def main(argv=None):
             def factory(config):
                 options=SimpleNamespace(env_file=args.env_file,max_threads=config.query_threads,
                     max_memory_gb=config.query_memory_bytes/1024**3,query_timeout=config.query_timeout_seconds)
-                return builder.Client(options,persistent=False)
+                return builder.Client(options,persistent=True)
             saved=None if args.command in ('launch','launch-collection') else campaign.load_plan(lambda sql:client.query(sql+' SETTINGS readonly=1'),args.database,
                 str(args.source_dataset_id if args.command=='backfill-v7' else args.dataset_id))
             if saved is None:
@@ -839,7 +839,7 @@ def main(argv=None):
             def factory(config):
                 options=SimpleNamespace(env_file=args.env_file,max_threads=config.query_threads,
                     max_memory_gb=config.query_memory_bytes/1024**3,query_timeout=config.query_timeout_seconds)
-                real=builder.Client(options,persistent=False,readonly=True)
+                real=builder.Client(options,persistent=True,readonly=True)
                 class Reader:
                     def query(self,sql):return real.query(sql)
                     def close(self):real.close()
@@ -892,7 +892,7 @@ def main(argv=None):
                 with acquisition.stop_marker(stop,args.stop_file),closing(open_workstation_keeper_session()) as keeper:
                     claim=SourceClaim(keeper.client)
                     try:
-                        prepare_identity(args,claim,lambda:builder.Client(args,persistent=False),
+                        prepare_identity(args,claim,lambda:builder.Client(args,persistent=True),
                             lambda:DictionaryClaim(keeper.client,args.database),stop)
                         prepare_retained_symbols(args,client,claim,lambda:DictionaryClaim(keeper.client,'q_live'),stop,config.end)
                         if args.fundamental_start_date is not None:
@@ -900,7 +900,7 @@ def main(argv=None):
                             sec_acquisition.prepare(client.query,paths,config,claim,stop,
                                 fundamental_start=args.fundamental_start_date,acquire_missing=args.acquire_sec_missing,
                                 runtime_root_ch=args.sec_runtime_root_ch)
-                        prepare_sec_share_sources(args,client,config,claim,lambda:builder.Client(args,persistent=False),
+                        prepare_sec_share_sources(args,client,config,claim,lambda:builder.Client(args,persistent=True),
                             lambda:DictionaryClaim(keeper.client,'q_live'),stop)
                         result=acquisition.prepare_sources(lambda sql:client.query(sql+' SETTINGS readonly=1'),paths,config,claim,
                             stop,acquire_missing=args.acquire_missing,stage_archive=args.stage_archive,context_start=args.context_start_date,

@@ -227,12 +227,14 @@ class Client:
         self.secrets = (endpoint, password)
         self.http = ClickHouseHttpClient(endpoint, user, password, timeout_seconds=args.query_timeout + 30,
             persistent=persistent,
+            max_persistent_idle_seconds=2 if persistent else None,
             default_query_params=dict(max_threads=args.max_threads, max_insert_threads=1,
                 max_memory_usage=int(args.max_memory_gb * 1024**3), max_execution_time=args.query_timeout,
                 max_result_rows=100000, max_result_bytes=16000000, result_overflow_mode="throw",
                 **({'readonly':1} if readonly else {})))
         # Cancellation must not wait behind the active persistent-query lock.
-        self.cancel_http = ClickHouseHttpClient(endpoint,user,password,timeout_seconds=30)
+        self.cancel_http = ClickHouseHttpClient(endpoint,user,password,timeout_seconds=30,
+            persistent=True,max_persistent_idle_seconds=2)
         self.active = None
         self.profiles = []
         self.profile_totals = {}
@@ -244,9 +246,12 @@ class Client:
         try:
             result = self.http.execute(query + (" FORMAT JSONEachRow" if read else ""), query_id=query_id)
             return [json.loads(line) for line in result.splitlines()] if read else []
-        except BaseException:
+        except BaseException as error:
             # Stop our query before permitting a retry with a fresh attempt ID.
-            self.cancel()
+            try:
+                self.cancel()
+            except Exception:
+                error.add_note('Cancellation could not be confirmed; reconcile the owned query before resuming writes.')
             raise
         finally:
             self.active = None
