@@ -98,6 +98,17 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                 monkeypatch.setattr(audit, "require_rule_decision_writer_audit", lambda client: None)
                 queued_writer = writer_module.ArteJournalWriter(persisted, run_id=controller.run_id,
                     journal_profile="backtest_v4", capacity=1, coalesce_batches=False)
+                # Snapshot SQL is controlled in this transport fixture. Real
+                # leased writer-lane selection/publication is tested in
+                # test_shared_broker_snapshot_publication.
+                from src.backend import backtest_program_checkpoint as checkpoint_module
+                synthetic_checkpoint_factory = lambda: pytest.fail("Controlled snapshot opened a SQL writer")
+                def controlled_factory(owner, *, session, lease):
+                    assert owner is queued_writer
+                    assert session is controller._fixed_keeper_session
+                    assert lease is controller._fixed_v4_lease
+                    return synthetic_checkpoint_factory
+                monkeypatch.setattr(checkpoint_module, "program_checkpoint_publication_factory", controlled_factory)
                 writer = queued_writer
             controller._journal_publisher = BacktestTypedJournalPublisher(controller._journal, writer,
                 attempt_id="00000000-0000-0000-0000-000000000001", run_month=pin.scope.session_date.replace(day=1),
@@ -483,11 +494,13 @@ def test_cohort_schedules_native_liquidity_sources_and_qualified_decisions(prepa
                         return "f" * 64
                     monkeypatch.setattr(portfolio_snapshot, "publish_prepared_portfolio_snapshot", controlled_account)
                     def controlled_checkpoint(client, session, rows, **kwargs):
+                        assert kwargs['connection_factory'] is checkpoint_factory
                         checkpoint_rows.append(rows)
                         checkpoint_entered.set()
                         assert checkpoint_release.wait(timeout=5)
                     monkeypatch.setattr(shared_broker, "publish_shared_broker_snapshot", controlled_checkpoint)
                     monkeypatch.setattr(persisted, "manager_keeper_session", None, raising=False)
+                    checkpoint_factory = synthetic_checkpoint_factory
                     checkpoint = asyncio.create_task(controller.publish_program_broker_checkpoint(
                         connection_factory=lambda: None, concurrency=2))
                     try:

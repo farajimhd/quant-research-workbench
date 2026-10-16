@@ -79,9 +79,12 @@ def test_queue_receipt_waits_for_central_readback_and_head_selection(monkeypatch
     # This fixture separately established a real compacted dispatch prefix;
     # its admitted run context is the explicitly mocked external seam above.
     lane._last_commit_id = BATCH_ID
+    from src.backend.backtest_program_checkpoint import program_checkpoint_publication_factory
+    root_client.v4_insert_lane_factory = client
+    publication_factory = program_checkpoint_publication_factory(lane, session=session, lease=lease)
     try:
         receipt = lane.submit_shared_broker_match_snapshot(rows, broker_contract=contract,
-            journal_batch_id=BATCH_ID, connection_factory=client, concurrency=2)
+            journal_batch_id=BATCH_ID, connection_factory=publication_factory, concurrency=2)
         if failure:
             with pytest.raises((OSError, RuntimeError, ExceptionGroup)):
                 receipt.result(timeout=5)

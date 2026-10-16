@@ -286,8 +286,25 @@ def test_v4_client_requires_isolated_runner_identity(monkeypatch) -> None:
         assert all(lane is not client and lane.typed_insert_dispatch
                    is client.typed_insert_dispatch
                    and lane.backtest_v4_lease is lease
+                   and lane.manager_keeper_session is session
                    for lane in client.v4_insert_lane_cache)
+        from types import SimpleNamespace
+        from src.backend.backtest_program_checkpoint import program_checkpoint_publication_factory
+        owner = SimpleNamespace(_client=client, journal_profile='backtest_v4')
+        factory = program_checkpoint_publication_factory(owner, session=session, lease=lease)
+        child = factory()
+        try:
+            assert child is not client and child not in client.v4_insert_lane_cache
+            assert child.manager_keeper_session is session
+            assert child.typed_insert_dispatch is client.typed_insert_dispatch
+            assert child.backtest_v4_lease is lease and child.typed_insert_strict is True
+        finally:
+            child.close()
+        with pytest.raises(RuntimeError, match='strict writer lanes'):
+            program_checkpoint_publication_factory(owner, session=object(), lease=lease)
         assert lease.release()
+        with pytest.raises(RuntimeError, match='lease lost'):
+            program_checkpoint_publication_factory(owner, session=session, lease=lease)
         with pytest.raises(RuntimeError, match="lease lost"):
             client.execute("INSERT INTO arte.trading_event_v1")
         with pytest.raises(RuntimeError, match="lease lost"):

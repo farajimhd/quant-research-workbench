@@ -2,6 +2,26 @@
 import asyncio
 
 
+def program_checkpoint_publication_factory(writer, *, session, lease):
+    """Resolve child writers from the adopted journal, never a read factory."""
+    from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
+    from src.trading_runtime.keeper_session import ManagedKeeperSession
+    from .backtest_v4_keeper_lease import BacktestV4KeeperLease
+    client = writer._client
+    dispatch = getattr(client, 'typed_insert_dispatch', None)
+    factory = getattr(client, 'v4_insert_lane_factory', None)
+    if (type(session) is not ManagedKeeperSession or type(lease) is not BacktestV4KeeperLease
+            or writer.journal_profile != 'backtest_v4' or not callable(factory)
+            or getattr(client, 'typed_insert_strict', False) is not True
+            or type(dispatch) is not TypedInsertDispatch
+            or getattr(client, 'manager_keeper_session', None) is not session
+            or getattr(client, 'backtest_v4_lease', None) is not lease
+            or dispatch.keeper is not session.client):
+        raise RuntimeError('Programme checkpoint requires its adopted strict writer lanes')
+    lease.assert_current()
+    return factory
+
+
 async def publish_program_broker_checkpoint(controller, *, connection_factory, concurrency):
     """Publish the native broker image without advancing market or strategy state.
 
@@ -84,8 +104,14 @@ async def publish_program_broker_checkpoint(controller, *, connection_factory, c
             session_date=day, checkpoint_sequence=sequence, boundary_ms=boundary,
             state=captured, simulation_config=broker.config, broker_contract=contract)
         require_owner()
+        # Parallel publication borrows the existing strict writer authority.
+        # The caller's checkpoint reader intentionally has readonly=1 and
+        # must never acquire insert dispatch merely by being used here.
+        publication_factory = await _owned_worker(program_checkpoint_publication_factory, writer,
+            session=controller._fixed_keeper_session, lease=controller._fixed_v4_lease)
+        require_owner()
         future = writer.submit_shared_broker_match_snapshot(rows, broker_contract=contract,
-            journal_batch_id=batch, connection_factory=connection_factory, concurrency=concurrency)
+            journal_batch_id=batch, connection_factory=publication_factory, concurrency=concurrency)
         submitted = True
         job = asyncio.ensure_future(asyncio.wrap_future(future))
         try:

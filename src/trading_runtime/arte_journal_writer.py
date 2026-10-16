@@ -389,6 +389,7 @@ def backtest_v4_journal_client_from_env(*, keeper_session=None,
         lane.typed_insert_dispatch = client.typed_insert_dispatch
         lane.typed_insert_strict = True
         lane.backtest_v4_lease = lease
+        lane.manager_keeper_session = keeper_session
         if program_decisions:
             lane.program_decision_profile = True
         return lane
