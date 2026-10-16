@@ -2,10 +2,17 @@ from datetime import date
 from dataclasses import replace
 from unittest.mock import Mock
 import pytest
-from scripts.profile_certified_market import pilot_guard
+from scripts.profile_certified_market import pilot_guard,ticker_scope
 from pipelines.certified_research.contracts import CampaignConfig,digest
 from pipelines.certified_research.campaign import PlannedUnit
 from pipelines.certified_research.execution import Unit
+
+
+def test_explicit_pilot_strata_are_bounded_and_exact():
+    import argparse
+    assert ticker_scope('F,GE,BRID')==('F','GE','BRID')
+    for value in ('', 'AAPL,AAPL', ',AAPL', 'AAPL;SELECT', ','.join('T'+str(i) for i in range(9))):
+        with pytest.raises(argparse.ArgumentTypeError):ticker_scope(value)
 
 
 def test_pilot_reservation_binds_scope_and_preserves_reserve():

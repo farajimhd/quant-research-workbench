@@ -24,6 +24,14 @@ from pipelines.market_sip.flatfiles.download_update_events import load_env_files
 from src.trading_runtime.keeper_session import open_workstation_keeper_session
 
 
+def ticker_scope(value):
+    values=tuple(value.split(','))
+    if (not 1<=len(values)<=8 or len(set(values))!=len(values)
+            or any(not t or len(t)>32 or not all(c.isalnum() or c in '.-' for c in t) for t in values)):
+        raise argparse.ArgumentTypeError('Use one to eight unique exact source tickers')
+    return values
+
+
 def pilot_guard(query,config,plans):
     """Finite pilot reservation, not a fabricated production pilot rate.
 
@@ -60,6 +68,8 @@ def main(argv=None):
     p.add_argument('--date',type=date.fromisoformat,default=date(2026,1,2))
     p.add_argument('--conid-review-hash',required=True)
     p.add_argument('--anchor-date',type=date.fromisoformat,required=True)
+    p.add_argument('--tickers',type=ticker_scope,default=('AAPL','NVDA','TSLA'),
+                   help='Explicit representative pilot stratum, one to eight exact tickers')
     a=p.parse_args(argv)
     if not a.runtime_root.is_dir():raise ValueError('Required runtime root is unavailable')
     run=a.runtime_root/('market-pilot-'+uuid4().hex[:12]);run.mkdir()
@@ -70,7 +80,7 @@ def main(argv=None):
     load_env_files([a.env_file],verbose=False)
     def clients(cfg=config):
         return builder.Client(SimpleNamespace(env_file=a.env_file,max_threads=cfg.query_threads,
-            max_memory_gb=cfg.query_memory_bytes/1024**3,query_timeout=cfg.query_timeout_seconds),persistent=False)
+            max_memory_gb=cfg.query_memory_bytes/1024**3,query_timeout=cfg.query_timeout_seconds),persistent=True)
     with closing(clients()) as client,closing(open_workstation_keeper_session()) as keeper:
         canonical=source.inventory(client.query,a.date,a.date)
         reporting=source.reporting_inventory(client.query,canonical)
@@ -78,8 +88,8 @@ def main(argv=None):
         def guard():
             if source.require_ready(client.query,canonical,reporting)!=epoch:raise ValueError('Pilot source changed')
         snapshot=universe.load_for_config(client.query,a.date,a.date,a.anchor_date,config)
-        selected=[i for i in snapshot['intervals'] if i.ticker in ('AAPL','NVDA','TSLA')]
-        if {i.ticker for i in selected}!={'AAPL','NVDA','TSLA'}:raise ValueError('Dense pilot identities unavailable')
+        selected=[i for i in snapshot['intervals'] if i.ticker in a.tickers]
+        if {i.ticker for i in selected}!=set(a.tickers):raise ValueError('Requested pilot identities unavailable')
         config=replace(config,issuer_keys=tuple(sorted({identity_key(ISSUER,i.issuer_id) for i in selected})))
         snapshot=cohorts.select(snapshot,config.issuer_keys)
         rules=client.query("SELECT token_id,modifier_int,update_high_low,update_last,update_volume FROM market_sip_compact.event_condition_token_reference WHERE source_family='trade_conditions' AND is_join_canonical=1 ORDER BY token_id")
