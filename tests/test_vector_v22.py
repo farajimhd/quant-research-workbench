@@ -288,6 +288,7 @@ def test_v20_selection_objective_and_execution_sources_preserved():
     for name in ('objectives.py','lineage.py','evaluator.py','protected_transition.py','sparse_replay.py',
                  'replay_graph.py','program.py','variation.py','semantics.py','enriched_math.py','indicator_math.py'):
         old=(root/'v20'/name).read_text().replace('v20','v22').replace('V20','V22')
+        if name=='program.py':old=old.replace('MAX_NODES=32','MAX_NODES=128')
         assert old==(root/'v22'/name).read_text(),name
 
 

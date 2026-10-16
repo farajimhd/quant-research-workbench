@@ -13,6 +13,7 @@ import torch
 from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime,write_json,file_hash
 from research.vectorized_backtest.v6.torch_backtest.materialize import owned_run
 from .genome import Individual,sample
+from .program import MAX_NODES
 from .lineage import Pedigree,Selection,next_population,session_order,training_shortlist
 from .objectives import Objective,score,session_scores
 from .evaluator import Execution
@@ -140,7 +141,7 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
     if set(train['days'])&set(valid['days']) or max(train['days'])>=min(valid['days']):
         raise ValueError('Chronologically disjoint validation required')
     output=require_runtime(Path(output));version_hash=source_hash()
-    contract=dict(feature_semantics="v22-magnitude-ratio-v1",version=VERSION,source_sha256=version_hash,training=train,validation=valid,
+    contract=dict(maximum_rule_nodes=MAX_NODES,feature_semantics="v22-magnitude-ratio-v1",version=VERSION,source_sha256=version_hash,training=train,validation=valid,
         population=population_size,generations=generations,batch_size=batch_size,session_workers=session_workers,
         seed=seed,device=device,backend=backend,execution=asdict(execution),objective=asdict(objective),selection=asdict(selection),
         episode_capacity=episode_capacity,maximum_gate_gib=maximum_gate_gib,maximum_data_gib=maximum_data_gib,

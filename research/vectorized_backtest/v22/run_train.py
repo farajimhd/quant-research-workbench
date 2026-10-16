@@ -11,6 +11,7 @@ import psutil
 from .completion_gate import completion,require_complete
 from .run_search import bind_dataset,source_hash,digest
 from .local_runner import run_session
+from .program import MAX_NODES
 from .evaluator import Execution
 from .progress_io import read_progress
 from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime,write_json,file_hash
@@ -88,7 +89,7 @@ def execute(args):
     if train!=prior['training'] or valid!=prior['validation']:raise ValueError('V22 must retain the approved V19 dataset and exposure provenance')
     days=train['days'][:args.profile_sessions] if args.mode=='profile' else train['days']
     generations=args.profile_generations if args.mode=='profile' else args.local_generations
-    contract=dict(feature_semantics='v22-magnitude-ratio-v1',version='v22-two-phase-controller-v1',commit=args.commit,source_sha256=source_hash(),mode=args.mode,days=days,
+    contract=dict(maximum_rule_nodes=MAX_NODES,feature_semantics='v22-magnitude-ratio-v1',version='v22-two-phase-controller-v1',commit=args.commit,source_sha256=source_hash(),mode=args.mode,days=days,
                   local_generations=generations,global_generations=args.global_generations,population=args.population,batch_size=args.batch_size,
                   workers=args.workers,seed=args.seed,archive_capacity=args.archive_capacity,archive_shortlist=args.archive_shortlist,
                   training_sha256=file_hash(args.training),validation_sha256=file_hash(args.validation),predecessor=proof,validation_feedback=False)

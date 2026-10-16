@@ -6,6 +6,7 @@ from pathlib import Path
 from dataclasses import asdict
 import numpy as np
 from .genome import Individual
+from .program import MAX_NODES
 from .initial_population import initialize
 from .lineage import Selection,next_population,program_key
 from .complexity import count
@@ -50,7 +51,7 @@ def run_session(config,day,output,generations=30,population_size=1024,seed=2020,
     from .evaluator import Execution
     if not Execution(**config['execution']).validate().risk_protection:raise ValueError('Local search requires V19 risk protection')
     output=require_runtime(output);objective=Objective();selection=Selection(global_fraction=1.,global_fresh_fraction=.2,champion_partners=0)
-    contract=dict(feature_semantics='v22-magnitude-ratio-v1',version='v22-local-session-v1',source_sha256=source_hash(),day=day,generations=generations,population=population_size,seed=seed,
+    contract=dict(maximum_rule_nodes=MAX_NODES,feature_semantics='v22-magnitude-ratio-v1',version='v22-local-session-v1',source_sha256=source_hash(),day=day,generations=generations,population=population_size,seed=seed,
                   objective=asdict(objective),selection=asdict(selection),archive_capacity=archive_capacity,archive_shortlist=archive_shortlist,
                   dataset={k:config.get(k) for k in ['inputs','history','indicator_root','enriched_root','input_receipts','indicator_receipts','enriched_receipts']},execution=config['execution'],
                   backend=config['backend'],device=config['device'],batch_size=config['batch_size'],local_other_session_penalty='omitted: unavailable in single-session stage',validation_opened=False)
