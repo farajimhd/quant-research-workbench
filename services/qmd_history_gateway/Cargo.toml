@@ -38,7 +38,8 @@ mimalloc = "0.1"
 qmd_core = { package = "qmd-gateway", path = "../qmd-gateway", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["gzip", "json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# Canonical Float64 clocks must survive database JSON and HTTP without ULP drift.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tower-http = { version = "0.6", features = ["cors"] }

@@ -740,6 +740,27 @@ mod tests {
         assert_eq!(response.rolling_volume, vec![1.25, 2.5]);
     }
 
+    #[test]
+    fn canonical_clock_decimals_round_trip_without_changing_bits() {
+        // Actual canonical clock values that exposed one-ULP parser drift.
+        for (text, expected) in [
+            ("1.4519960284233093", 1.4519960284233093_f64),
+            ("0.9960940182209015", 0.9960940182209015_f64),
+            ("467.82719999551773", 467.82719999551773_f64),
+            ("157.22607803344727", 157.22607803344727_f64),
+        ] {
+            let line = format!("{{\"bucket_index\":14400,\"source_known\":1,\"observed\":1,\"extremes_valid\":1,\"reference_close\":{text},\"share_volume\":{text},\"execution_notional\":{text},\"rolling_volume\":{text}}}");
+            let clock: ClockRow = serde_json::from_str(&line).unwrap();
+            for actual in [clock.reference_close.unwrap(), clock.share_volume,
+                           clock.execution_notional, clock.rolling_volume] {
+                assert_eq!(actual.to_bits(), expected.to_bits(), "{text}");
+                let encoded = serde_json::to_string(&actual).unwrap();
+                let decoded: f64 = serde_json::from_str(&encoded).unwrap();
+                assert_eq!(decoded.to_bits(), expected.to_bits(), "{text}");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn source_placement_seals_clocks_and_intervals_fail_closed() {
         for case in [

@@ -10,6 +10,11 @@ concrete durable assembly and its source context pass their qualification.
 
 ## One native compute and execution path
 
+QMD History preserves the exact Float64 clock values across database JSON and
+HTTP transport. The gateway enables round-trip float parsing; scanner/history
+equality checks remain exact. A transport correction does not rebuild or relabel
+the sealed input products.
+
 The current path is:
 
 1. Certified canonical ClickHouse market products feed QMD History.
