@@ -148,4 +148,3 @@ def activate_nonblocking(data,device):
     if hasattr(data,'resident_features'):
         for tensor in data.resident_features.tensors.values():tensor.record_stream(torch.cuda.current_stream(device))
     data.device=device
-
