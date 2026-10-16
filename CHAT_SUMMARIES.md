@@ -7,6 +7,10 @@ each year.
 
 ## 2026
 
+### [2026-10-16 - Certified research launcher incomplete; archive handoff](docs/codex/chat-summaries/2026/CHAT-20261011-0705-certified-research-launcher-handoff.md)
+
+TASK-0226; related TASK-0215/0206/0208. Source socket recovery, four December strict certificates, AAPL bars and partial all-admitted bars/indicators delivered. General efficient end-to-end launcher, live normalized V7, fundamentals and terminal monitor remain unfinished. Performance profiling identified excessive metadata/readback round trips; committed batching and execution overrides were not activated. Thirty-six workstation tests passed for 8c18cb7ad; source-batch candidate 09cb93183 lacks live parity validation. User stopped implementation, paused monitoring, then requested all chat-owned scripts terminate. Preserve receipts and explicit quarantines; no automatic restart. Summary records exact shutdown evidence and resumption dependencies. Early chat content partial.
+
 ### [2026-10-13 - V7 through V16 optimization archive handoff](docs/codex/chat-summaries/2026/CHAT-20261011-1305-v7-v16-optimization-handoff.md)
 
 TASK-0223. Preserves V7-V15 experiments and final V16 independent global/local selection, random initialization and continuous indicators. Original V16 generation1 sealed then stopped. Compute-only 938bbe914 pushed/deployed; 57 tests and real-tile exact parity passed. Matched feature projection is9-10x faster and rules~7% faster. Source-qualified checkpoint transfer preserves population, lineage and RNG; generation2 runs with separate maximized terminal/W&B. Full-generation speed remains unverified. Original V16gen1 took1735.65s versus V15gen1 1513.65s. Four optimized sessions healthy at updated handoff. Preserve costs/search flexibility, no validation feedback, immutable ranks and stopped predecessors. Extra holdout withdrawn; no monitor restart.
