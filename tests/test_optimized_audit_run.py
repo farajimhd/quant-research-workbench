@@ -58,6 +58,19 @@ def test_static_native_admission_checks_same_candidate_100ms_and_protected_costs
         validate_native_audit_preparation(controller, reference)
 
 
+def test_native_audit_retains_actual_app_baseline_fill_slippage(tmp_path):
+    from src.backend.replay_run_service import _simulation_config
+    controller, reference = source_admission_fixture(tmp_path)
+    actual = _simulation_config(controller.definition)
+    assert actual.market_slippage_bps == 5.
+    controller._runtime.broker.config = actual
+    _, report = validate_native_audit_preparation(controller, reference)
+    assert report.compatible
+    assert report.modeled_notional_cost_bps == 0.
+    assert report.native_market_slippage_bps == 5.
+    assert controller._runtime.broker.config is actual
+
+
 def test_native_admission_rejects_unprotected_or_different_source_release(tmp_path):
     controller, reference = source_admission_fixture(tmp_path)
     controller._program_strategy.execution_risk = None

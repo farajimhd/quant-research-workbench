@@ -54,13 +54,25 @@ def test_exact_selected_configuration_is_required():
         verify_optimized_execution_contract(execution, mode="live", **selected)
 
 
-def test_cost_and_cadence_drift_are_all_reported():
+def test_fee_and_cadence_drift_are_reported_separately_from_fill_slippage():
     execution, selected = inputs()
     report = verify_optimized_execution_contract(execution, mode="replay", **selected,
         broker_config=replace(SimulationConfig(), commission_per_share=.01,
             minimum_commission=2., market_slippage_bps=1., liquidity_resolution_ms=1000),
         liquidity_plan_hash="b" * 64)
-    assert len(report.blockers) == 5
+    assert len(report.blockers) == 4
+    assert report.modeled_notional_cost_bps == 0.
+    assert report.native_market_slippage_bps == 1.
+
+
+def test_matching_number_does_not_substitute_slippage_for_notional_charge():
+    execution, selected = inputs()
+    report = verify_optimized_execution_contract({**execution, 'cost_bps': 5.},
+        mode='backtest', **selected, broker_config=replace(SimulationConfig(), market_slippage_bps=5.),
+        liquidity_plan_hash='b' * 64)
+    assert not report.compatible
+    assert report.modeled_notional_cost_bps == report.native_market_slippage_bps == 5.
+    assert any('notional transaction costs' in reason for reason in report.blockers)
 
 
 @pytest.mark.parametrize("mode", ["paper", "live"])

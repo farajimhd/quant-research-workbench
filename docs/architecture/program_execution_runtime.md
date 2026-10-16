@@ -14,6 +14,12 @@ The Backtest runner's exact read catalogue includes the shared contextual Signal
 Stream tables. Its storage preflight verifies those schemas and SSD placement;
 the journal principal has no INSERT authority on the source tables.
 
+Audit admission preserves the selected broker's fill model. V19 `cost_bps`
+deducts a modeled notional charge; native market slippage changes fill prices
+and is reported separately, even when both numbers happen to match. Commission
+and fee-inclusive risk contracts must still match. Nonzero modeled notional
+charges remain blocked until an explicit native charge implementation exists.
+
 ## Current composition
 
 1. Load the explicitly selected certified configuration, execution binding,

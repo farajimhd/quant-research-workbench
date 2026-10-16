@@ -1,4 +1,4 @@
-"""Read-only compatibility checks; a matching cost model is not run admission.
+"""Read-only fee/risk admission with separately reported native fill assumptions.
 
 Optimization uses assumed fills. Native OMS, liquidity and portfolio admission
 remain authoritative. This module chooses no configuration and publishes nothing.
@@ -21,6 +21,8 @@ class OptimizedExecutionCompatibility:
     execution_binding_hash: str
     broker_contract_hash: str | None
     blockers: tuple[str, ...]
+    modeled_notional_cost_bps: float = 0.
+    native_market_slippage_bps: float | None = None
 
     @property
     def compatible(self) -> bool:
@@ -61,19 +63,26 @@ def verify_optimized_execution_contract(execution: Mapping, *, mode: str,
     bind_execution_configuration(configuration_revision, binding)
     blockers = []
     broker_hash = None
+    native_slippage = None
     if mode in {"backtest", "replay"}:
         if type(broker_config) is not SimulationConfig:
             raise ValueError("Simulation mode requires an explicitly selected native broker config")
         broker = project_broker_contract("optimized-compatibility", broker_config,
                                          liquidity_plan_hash=liquidity_plan_hash)
         broker_hash = broker["content_hash"]
+        native_slippage = broker_config.market_slippage_bps
         if broker_config.liquidity_resolution_ms != 100:
             blockers.append("audit100ms requires native 100ms liquidity")
         for frozen, native in (("fee_per_share", "commission_per_share"),
-                               ("minimum_order_fee", "minimum_commission"),
-                               ("cost_bps", "market_slippage_bps")):
+                               ("minimum_order_fee", "minimum_commission")):
             if execution[frozen] != getattr(broker_config, native):
                 blockers.append("frozen " + frozen + " differs from selected broker " + native)
+        # V19 deducts cost_bps from notional without changing its assumed fill.
+        # Native market slippage changes fill prices, quantities and cash. Equal
+        # numbers do not implement the same charge, and real fill assumptions
+        # must not be replaced merely to make a reference comparison pass.
+        if execution['cost_bps'] != 0:
+            blockers.append('native broker does not implement frozen modeled notional transaction costs')
     else:
         if broker_config is not None or liquidity_plan_hash is not None:
             raise ValueError("Paper/live cannot use a simulated broker contract as qualification")
@@ -92,4 +101,5 @@ def verify_optimized_execution_contract(execution: Mapping, *, mode: str,
                     'minimum_order_fee', 'cost_bps')):
                 blockers.append('frozen risk values differ from selected native risk contract')
     return OptimizedExecutionCompatibility(mode, binding.header["configuration_hash"],
-        binding.header["content_hash"], broker_hash, tuple(blockers))
+        binding.header["content_hash"], broker_hash, tuple(blockers),
+        float(execution['cost_bps']), native_slippage)
