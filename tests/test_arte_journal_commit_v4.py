@@ -28,6 +28,7 @@ from src.trading_runtime.arte_journal_writer import _sealed_families
 from src.trading_runtime.arte_journal_writer import ArteJournalWriter
 from src.trading_runtime import arte_journal_writer as writer_module
 from src.trading_runtime.arte_journal_writer import typed_row
+from src.trading_runtime.arte_portfolio_reconciliation_v4 import DIFFERENCE as PORTFOLIO_DIFFERENCE
 from src.trading_runtime.arte_typed_insert_dispatch import TypedInsertDispatch
 from src.trading_runtime.arte_journal_projection import commission_revision_batch
 from src.trading_runtime.arte_broker_acknowledgement_v4 import (
@@ -1445,7 +1446,7 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
         table.name for table in (*fixed_backtest_v2_contracts(),
                                  *V4_COMMIT_TABLES, V4_ORDER_COMMAND_LINEAGE, FAILURE, PROFIT_GIVEBACK, CONFIRMED_AH_FAILURE, LIQUIDITY_FADE_FAILURE, MOMENTUM, INITIAL_MOMENTUM, FIRST_PRICE, ENTRY_ACTIVITY,
                                  ENTRY_EVIDENCE, ADD_EVIDENCE, V4_ALLOCATION,
-                                 RESERVATION_REASON,
+                                 RESERVATION_REASON, PORTFOLIO_DIFFERENCE,
                                      ACKNOWLEDGEMENT, CANCEL, REPRICE,
                                      *OMS_TACTIC_TABLES,
                                      *RISK_ACTION_TABLES,
@@ -1464,7 +1465,7 @@ def test_v4_opt_in_writer_queues_base_batch_and_keeps_live_contract_isolated(mon
             frozenset(table.name for table in V4_COMMIT_TABLES) | PORTFOLIO_SNAPSHOT_WRITE_TABLES | {
                 V4_ORDER_COMMAND_LINEAGE.name, FAILURE.name, PROFIT_GIVEBACK.name, CONFIRMED_AH_FAILURE.name, LIQUIDITY_FADE_FAILURE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name, ENTRY_ACTIVITY.name,
             ENTRY_EVIDENCE.name, ADD_EVIDENCE.name,
-            V4_ALLOCATION.name, RESERVATION_REASON.name,
+            V4_ALLOCATION.name, RESERVATION_REASON.name, PORTFOLIO_DIFFERENCE.name,
             ACKNOWLEDGEMENT.name, CANCEL.name,
             REPRICE.name,
             *(table.name for table in OMS_TACTIC_TABLES),

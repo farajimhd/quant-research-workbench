@@ -11,6 +11,7 @@ from typing import Mapping
 from uuid import UUID, NAMESPACE_URL, uuid5
 
 from src.backend.backtest_journal_memory import BacktestMemoryJournal
+from src.trading_runtime.arte_portfolio_reconciliation_v4 import V4PortfolioReconciliationBatch
 from src.trading_runtime.arte_journal_projection import project_journal_record
 from src.trading_runtime.arte_journal_writer import TypedJournalBatch
 from src.trading_runtime.arte_profit_giveback_v4 import V4ProfitGivebackBatch
@@ -137,7 +138,7 @@ def project_pending_backtest_v4_prefix(
            | V4BrokerAcknowledgementBatch | V4OrderCancelBatch
            | V4OrderRepriceBatch | V4RiskActionBatch | V4ProtectionChangeBatch
            | V4ProtectionReconciliationBatch | V4PortfolioAllocationBatch
-           | V4ReservationReasonBatch, ...]:
+           | V4ReservationReasonBatch | V4PortfolioReconciliationBatch, ...]:
     """Project one bounded V4 prefix; special families never enter a base batch."""
     if type(exact_oms_prices) is not bool:
         raise ValueError("V4 exact OMS price projection requires an explicit boolean")
@@ -406,6 +407,14 @@ def project_pending_backtest_v4_prefix(
                     order_lineage_proofs[client_order_id] = str(UUID(proof.record_id))
                 else:
                     order_lineage_proofs.pop(client_order_id, None)
+        elif kind == ("portfolio_management", "portfolio_reconciliation"):
+            from src.trading_runtime.arte_portfolio_reconciliation_v4 import project_reconciliation_v3
+            projected = project_reconciliation_v3(record, attempt_id=attempt,
+                batch_id=batch_id, account_key=record.entity_id)
+            base = TypedJournalBatch(record.run_id, run_month, attempt, batch_id,
+                previous, sequence, sequence, cursor, "running", (projected.event,),
+                portfolio_reconciliation_events=(projected.parent,))
+            unit = V4PortfolioReconciliationBatch(base, projected.differences)
         elif kind == ("portfolio_management", "portfolio_allocation"):
             projected = project_portfolio_allocation_v3(
                 record, attempt_id=attempt, batch_id=batch_id)

@@ -28,7 +28,8 @@ def test_program_plan_preserves_legacy_and_uses_central_contracts():
     assert len(checkpoints) == 8
     assert plan.insert_arte - before.insert_arte == tables | exact | FAMILY_NAMES | {PRICE_CONTRACT.name, BROKER.name} | checkpoints
     sources = {table.name for table in program.program_signal_source_read_contracts()}
-    assert plan.select_arte - before.select_arte == tables | exact | FAMILY_NAMES | {PRICE_CONTRACT.name, BROKER.name} | checkpoints | sources
+    from src.trading_runtime.arte_portfolio_reconciliation_v4 import DIFFERENCE
+    assert plan.select_arte - before.select_arte == tables | exact | FAMILY_NAMES | {PRICE_CONTRACT.name, BROKER.name, DIFFERENCE.name} | checkpoints | sources
     assert sources.isdisjoint(plan.insert_arte)
     assert before.select_arte - plan.select_arte == {program.ENTRY_CONTEXT_TABLE.split(".")[1]}
     assert plan.select_reference == before.select_reference

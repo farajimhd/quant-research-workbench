@@ -30,10 +30,11 @@ from src.trading_runtime.trading_price_contracts import program_exact_price_stor
 from src.trading_runtime.arte_entry_acquisition_freeze import TABLES as ENTRY_FREEZE_TABLES
 from src.trading_runtime.backtest_journal_price_contract import PRICE_CONTRACT
 from src.trading_runtime.columnar_strategy_schema import BROKER
+from src.trading_runtime.arte_portfolio_reconciliation_v4 import DIFFERENCE
 from src.trading_runtime.rule_decision_writer_preflight import rule_decision_write_tables, program_checkpoint_storage_contracts, program_signal_source_read_contracts
 from src.backend.strategy_one_entry_context import TABLE as ENTRY_CONTEXT_TABLE
 
-TABLES = (*STAGED_TABLES, *program_exact_price_storage_contracts(), *ENTRY_FREEZE_TABLES, PRICE_CONTRACT, BROKER,
+TABLES = (*STAGED_TABLES, *program_exact_price_storage_contracts(), *ENTRY_FREEZE_TABLES, PRICE_CONTRACT, BROKER, DIFFERENCE,
           *program_checkpoint_storage_contracts())
 PRINCIPAL = 'backtest_v4_program_runner'
 SECRET_PATH = SECRET_ROOT / (PRINCIPAL + '.env')

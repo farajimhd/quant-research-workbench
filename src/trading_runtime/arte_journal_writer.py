@@ -48,6 +48,9 @@ from src.trading_runtime.arte_oms_tactic_schema import TABLES as OMS_TACTIC_TABL
 from src.trading_runtime.arte_portfolio_allocation_v4 import (
     ALLOCATION as V4_ALLOCATION, V4PortfolioAllocationBatch,
 )
+from src.trading_runtime.arte_portfolio_reconciliation_v4 import (
+    DIFFERENCE as V4_PORTFOLIO_DIFFERENCE, V4PortfolioReconciliationBatch,
+)
 from src.trading_runtime.arte_reservation_reason_v4 import V4ReservationReasonBatch
 from src.trading_runtime.arte_risk_action_v4 import (
     TABLES as RISK_ACTION_TABLES, V4RiskActionBatch,
@@ -148,6 +151,7 @@ _CONTRACTS[CANCEL.name] = CANCEL
 _CONTRACTS[REPRICE.name] = REPRICE
 _CONTRACTS[MODIFY_COMMAND.name] = MODIFY_COMMAND
 _CONTRACTS[V4_ALLOCATION.name] = V4_ALLOCATION
+_CONTRACTS[V4_PORTFOLIO_DIFFERENCE.name] = V4_PORTFOLIO_DIFFERENCE
 _CONTRACTS.update({table.name: table for table in RISK_ACTION_TABLES})
 _CONTRACTS.update({table.name: table for table in PROTECTION_RECONCILIATION_TABLES})
 _CONTRACTS.update({table.name: table for table in V4_COMMIT_TABLES})
@@ -2327,7 +2331,7 @@ def v4_storage_contracts() -> tuple[Any, ...]:
     installed = fixed_backtest_v2_contracts()
     contracts = (*installed, *V4_COMMIT_TABLES, V4_ORDER_COMMAND_LINEAGE,
                  ENTRY_EVIDENCE, ADD_EVIDENCE, MOMENTUM, INITIAL_MOMENTUM, FIRST_PRICE, ENTRY_ACTIVITY, V4_ALLOCATION,
-                 RESERVATION_REASON,
+                 RESERVATION_REASON, V4_PORTFOLIO_DIFFERENCE,
                  ACKNOWLEDGEMENT, CANCEL, REPRICE, *RISK_ACTION_TABLES,
                  *OMS_TACTIC_TABLES, FAILURE, PROFIT_GIVEBACK, CONFIRMED_AH_FAILURE,
                  LIQUIDITY_FADE_FAILURE,
@@ -2354,7 +2358,7 @@ def v4_journal_write_tables() -> frozenset[str]:
             | PORTFOLIO_SNAPSHOT_WRITE_TABLES
             | frozenset({
                 ENTRY_EVIDENCE.name, ADD_EVIDENCE.name, MOMENTUM.name, INITIAL_MOMENTUM.name, FIRST_PRICE.name, ENTRY_ACTIVITY.name, V4_ALLOCATION.name,
-                RESERVATION_REASON.name, ACKNOWLEDGEMENT.name,
+                RESERVATION_REASON.name, V4_PORTFOLIO_DIFFERENCE.name, ACKNOWLEDGEMENT.name,
                 CANCEL.name, REPRICE.name,
                 "trading_backtest_account_snapshot_v2",
                 "trading_backtest_position_snapshot_v2",
@@ -4133,7 +4137,7 @@ class ArteJournalWriter:
         self._coalesce_batches = coalesce_batches
         self._queue: Queue[
             tuple[TypedJournalBatch | PreparedPortfolioSnapshot | CapturedPortfolioSnapshot
-                  | V4StrategyOneEntryBatch | V4FollowThroughFailureBatch | V4PortfolioAllocationBatch
+                  | V4StrategyOneEntryBatch | V4FollowThroughFailureBatch | V4PortfolioAllocationBatch | V4PortfolioReconciliationBatch
                   | V4ReservationReasonBatch
                   | V4BrokerAcknowledgementBatch
                   | V5BrokerAcknowledgementBatch
@@ -4573,6 +4577,23 @@ class ArteJournalWriter:
                 or not isinstance(unit, V4PortfolioAllocationBatch)
                 or unit.base.run_id != self._run_id):
             raise ValueError("V4 allocation requires its pinned writer")
+        with self._submission_lock:
+            if self._closed or self._error is not None:
+                raise RuntimeError("V4 writer is closed or failed")
+            receipt: Future[str] = Future()
+            try:
+                self._queue.put_nowait((unit, receipt))
+            except Full as exc:
+                raise JournalQueueFull("V4 journal queue is full; stop admission") from exc
+            self._accepted_writes = True
+            return receipt
+
+    def submit_portfolio_reconciliation_v4(self, unit: V4PortfolioReconciliationBatch) -> Future[str]:
+        """Queue the complete normalized reconciliation without caller I/O."""
+        if (self._journal_profile not in self._V4_PROFILES
+                or type(unit) is not V4PortfolioReconciliationBatch
+                or unit.base.run_id != self._run_id):
+            raise ValueError("V4 reconciliation requires its pinned writer")
         with self._submission_lock:
             if self._closed or self._error is not None:
                 raise RuntimeError("V4 writer is closed or failed")
@@ -5295,7 +5316,7 @@ class ArteJournalWriter:
                                             V4CompoundBatch,
                                             V4StrategyOneEntryBatch, V4FollowThroughFailureBatch,
                                             V4OmsTacticBatch,
-                                            V4PortfolioAllocationBatch,
+                                            V4PortfolioAllocationBatch, V4PortfolioReconciliationBatch,
                                             V4ReservationReasonBatch,
                                             V4BrokerAcknowledgementBatch,
                                             V5BrokerAcknowledgementBatch,
@@ -5470,6 +5491,11 @@ class ArteJournalWriter:
                     unit = group[0][0]
                     committed_id = _publish_typed_batch_v4(self._client, unit.base,
                         portfolio_control_rows=(unit.control,))
+                elif isinstance(group[0][0], V4PortfolioReconciliationBatch):
+                    from .arte_journal_commit_v4 import _publish_typed_batch_v4
+                    unit = group[0][0]
+                    committed_id = _publish_typed_batch_v4(self._client, unit.base,
+                        portfolio_reconciliation_differences=unit.differences)
                 elif isinstance(group[0][0], V4PortfolioAllocationBatch):
                     from src.trading_runtime.arte_journal_commit_v4 import (
                         publish_portfolio_allocation_batch_v4,

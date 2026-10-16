@@ -31,6 +31,7 @@ from src.trading_runtime.arte_protection_reconciliation_v4 import (
     V4ProtectionReconciliationBatch,
 )
 from src.trading_runtime.arte_risk_action_v4 import V4RiskActionBatch
+from src.trading_runtime.arte_portfolio_reconciliation_v4 import V4PortfolioReconciliationBatch
 from src.trading_runtime.arte_portfolio_allocation_v4 import V4PortfolioAllocationBatch
 from src.trading_runtime.arte_reservation_reason_v4 import V4ReservationReasonBatch
 from src.trading_runtime.arte_journal_compound_v4 import (
@@ -400,7 +401,7 @@ class BacktestTypedJournalPublisher:
             | V4ProfitGivebackBatch
             | V4ConfirmedAhFailureBatch
             | V4LiquidityFadeFailureBatch
-            | V4PortfolioAllocationBatch | V4ReservationReasonBatch
+            | V4PortfolioAllocationBatch | V4PortfolioReconciliationBatch | V4ReservationReasonBatch
             | V4BrokerAcknowledgementBatch | V4OrderCancelBatch
             | V4OrderRepriceBatch | V4RiskActionBatch | V4ProtectionChangeBatch
             | V4ProtectionReconciliationBatch, ...]:
@@ -481,7 +482,7 @@ class BacktestTypedJournalPublisher:
                         unit, (EntryAcquisitionFreezeBatch, ExactPriceOrderCommandBatch, ExactPriceExecutionBatch, ExactPriceOmsStateBatch, QualifiedRuleDecisionBatch, V3SqueezeBatch, V4CompoundBatch, V4AutomaticLadderBatch,
                                V4StrategyOneEntryBatch, V4FollowThroughFailureBatch, V4ProfitGivebackBatch, V4ConfirmedAhFailureBatch, V4LiquidityFadeFailureBatch,
                                V4OmsTacticBatch,
-                               V4PortfolioAllocationBatch, V4ReservationReasonBatch,
+                               V4PortfolioAllocationBatch, V4PortfolioReconciliationBatch, V4ReservationReasonBatch,
                                V4BrokerAcknowledgementBatch, V4OrderCancelBatch,
                                V4OrderRepriceBatch,
                                V4RiskActionBatch,
@@ -521,6 +522,8 @@ class BacktestTypedJournalPublisher:
                                if isinstance(unit, V4StrategyOneEntryBatch)
                                else self.writer.submit_oms_tactic_v4(unit)
                                if isinstance(unit, V4OmsTacticBatch)
+                               else self.writer.submit_portfolio_reconciliation_v4(unit)
+                               if isinstance(unit, V4PortfolioReconciliationBatch)
                                else self.writer.submit_portfolio_allocation_v4(unit)
                                if isinstance(unit, V4PortfolioAllocationBatch)
                                else self.writer.submit_reservation_reason_v4(unit)

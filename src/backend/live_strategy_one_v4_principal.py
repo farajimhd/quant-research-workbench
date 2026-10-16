@@ -53,6 +53,7 @@ _V4_LIVE_DETAIL = frozenset({
     "trading_strategy_one_entry_evidence_v1",
     "trading_strategy_one_add_evidence_v1",
     "trading_portfolio_allocation_fill_v4",
+    "trading_portfolio_reconciliation_difference_v4",
     "trading_portfolio_reservation_reason_v1",
     "trading_broker_acknowledgement_v4",
     "trading_order_cancel_activity_v4", "trading_order_reprice_v4",

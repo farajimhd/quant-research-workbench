@@ -19,6 +19,10 @@ from .arte_journal_writer import (
     _can_coalesce, _coalesce_unpublished,
 )
 from .arte_journal_commit_v4 import MAX_V4_COMMIT_EVENTS
+from .arte_portfolio_reconciliation_v4 import (
+    DIFFERENCE as PORTFOLIO_DIFFERENCE, V4PortfolioReconciliationBatch,
+    seal_portfolio_reconciliation_v4,
+)
 from .arte_portfolio_allocation_v4 import V4PortfolioAllocationBatch
 from .arte_portfolio_control_v4 import V4PortfolioControlBatch, CONTROL as PORTFOLIO_CONTROL, seal_portfolio_control_v3
 from .arte_broker_policy_v4 import V4BrokerPolicyBatch, POLICY_EVENT as BROKER_POLICY, MESSAGE as BROKER_POLICY_MESSAGE, seal_broker_reply_policy_v3
@@ -49,7 +53,7 @@ from .arte_entry_spread_risk_v4 import ENTRY_SPREAD_RISK, seal_certified_entry_s
 
 _CHILD_KEYS = (
     'broker_policies', 'broker_policy_messages',
-    "portfolio_controls",
+    "portfolio_controls", "portfolio_reconciliation_differences",
     "entry_freezes", "entry_freeze_groups",
     "exact_order_commands",
     "exact_executions",
@@ -144,6 +148,8 @@ def _unit_children(unit: Any) -> tuple[tuple[str, Mapping[str, Any]], ...]:
                 + tuple(("first_price_evidence", row) for row in unit.first_price_evidence)
                 + tuple(("entry_activity_evidence", row) for row in unit.entry_activity_evidence)
                 + tuple(("entry_spread_risk_evidence", row) for row in unit.entry_spread_risk_evidence))
+    if type(unit) is V4PortfolioReconciliationBatch:
+        return tuple(("portfolio_reconciliation_differences", row) for row in unit.differences)
     if type(unit) is V4PortfolioAllocationBatch:
         return (("allocations", unit.allocation),)
     if type(unit) is V4ReservationReasonBatch:
@@ -282,6 +288,8 @@ def _publication_kwargs(unit: Any) -> dict[str, Any]:
                 "first_price_authorities": unit.first_price_authorities,
                 "entry_activity_rows": unit.entry_activity_evidence,
                 "entry_spread_risk_rows": unit.entry_spread_risk_evidence}
+    if type(unit) is V4PortfolioReconciliationBatch:
+        return {"portfolio_reconciliation_differences": unit.differences}
     if type(unit) is V4PortfolioAllocationBatch:
         return {"portfolio_allocation_row": unit.allocation}
     if type(unit) is V4ReservationReasonBatch:
@@ -385,6 +393,7 @@ def prepare_compound_v4_families(
         "entry_spread_risk_evidence": ENTRY_SPREAD_RISK.name,
         "add_evidence": ADD_EVIDENCE.name,
         "allocations": V4_ALLOCATION.name,
+        "portfolio_reconciliation_differences": PORTFOLIO_DIFFERENCE.name,
         "reservation_reasons": RESERVATION_REASON.name,
         "acknowledgements": ACKNOWLEDGEMENT.name,
         "cancellations": CANCEL.name,
@@ -518,6 +527,10 @@ def prepare_compound_v4_families(
         run_id=compound.base.run_id, batch_id=compound.base.batch_id)
     seal_risk_action_v4(
         extra[RISK_ACTION.name], extra[RISK_REPLY.name], compound.base.events,
+        run_id=compound.base.run_id, batch_id=compound.base.batch_id)
+    seal_portfolio_reconciliation_v4(
+        extra[PORTFOLIO_DIFFERENCE.name], compound.base.events,
+        dict(base_families)["trading_portfolio_reconciliation_event_v1"],
         run_id=compound.base.run_id, batch_id=compound.base.batch_id)
     seal_entry_freeze_rows(tuple(extra[FREEZE.name]), tuple(extra[GROUP.name]), compound.base.events,
         run_id=compound.base.run_id, batch_id=compound.base.batch_id)

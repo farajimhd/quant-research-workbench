@@ -30,6 +30,9 @@ from src.trading_runtime.arte_order_modify_command_v1 import MODIFY_COMMAND
 from src.trading_runtime.arte_portfolio_allocation_v4 import (
     ALLOCATION as V4_ALLOCATION, seal_portfolio_allocation_v3,
 )
+from src.trading_runtime.arte_portfolio_reconciliation_v4 import (
+    DIFFERENCE as PORTFOLIO_DIFFERENCE, seal_portfolio_reconciliation_v4,
+)
 from src.trading_runtime.arte_reservation_reason_v4 import (
     RESERVATION_REASON, seal_reservation_reason_family_v3,
 )
@@ -655,6 +658,7 @@ def _load_verified_details_v4(
                     V4_ALLOCATION.name, RESERVATION_REASON.name, PORTFOLIO_CONTROL.name,
                     BROKER_POLICY.name, BROKER_POLICY_MESSAGE.name,
                     "trading_portfolio_reservation_event_v1",
+                    "trading_portfolio_reconciliation_event_v1", PORTFOLIO_DIFFERENCE.name,
                     RISK_ACTION.name, RISK_REPLY.name,
                     PROTECTION_CHANGE.name, PROTECTION_ENTRY_ORDER.name,
                     PROTECTION_RECONCILIATION.name,
@@ -667,6 +671,14 @@ def _load_verified_details_v4(
                     "trading_oms_execution_tactic_v1",
                     "trading_oms_execution_step_v1"}:
             related_rows[name] = rows
+    try:
+        seal_portfolio_reconciliation_v4(
+            related_rows.get(PORTFOLIO_DIFFERENCE.name, ()),
+            related_rows.get("trading_event_v1", ()),
+            related_rows.get("trading_portfolio_reconciliation_event_v1", ()),
+            run_id=run_id, batch_id=batch_id, stored_utc=True)
+    except ValueError as exc:
+        raise RuntimeError("V4 Portfolio reconciliation differs from its typed differences") from exc
     if ENTRY_FREEZE_FAMILIES & set(related_rows):
         from .arte_entry_acquisition_freeze import FREEZE, GROUP, seal_entry_freeze_rows
         try:
@@ -1490,6 +1502,7 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
                             portfolio_allocation_row=None, portfolio_control_rows=(),
                             broker_policy_rows=(), broker_policy_message_rows=(),
                             reservation_reason_rows=(),
+                            portfolio_reconciliation_differences=(),
                             broker_acknowledgement_row=None,
                             broker_acknowledgement_v5_row=None,
                             order_cancel_row=None,
@@ -1889,6 +1902,15 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         exact_execution_rows=(exact_execution_prices.execution,)
             if exact_execution_prices is not None and exact_execution_prices.execution is not None else None,
         v4_entry_freeze_ids=tuple(row['record_id'] for row in freeze_rows))
+    portfolio_difference_rows = tuple(typed_row(PORTFOLIO_DIFFERENCE.name,
+        {key: value for key, value in row.items() if key != "content_hash"})
+        for row in portfolio_reconciliation_differences)
+    if any("content_hash" in source and source["content_hash"] != row["content_hash"]
+           for source, row in zip(portfolio_reconciliation_differences, portfolio_difference_rows)):
+        raise ValueError("V4 Portfolio difference source hash changed")
+    seal_portfolio_reconciliation_v4(portfolio_difference_rows, batch.events,
+        dict(base_families)["trading_portfolio_reconciliation_event_v1"],
+        run_id=batch.run_id, batch_id=batch.batch_id)
     command_rows = _order_command_identity_rows(dict(base_families))
     from .numbered_fixed_strategy import is_numbered_fixed_strategy
     strategy_one_commands = {
@@ -2000,6 +2022,8 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
             run_id=batch.run_id, batch_id=batch.batch_id)
     families = tuple((_v4_family_table(name), rows)
                      for name, rows in base_families)
+    if portfolio_difference_rows:
+        families += ((PORTFOLIO_DIFFERENCE.name, portfolio_difference_rows),)
     if lineage_rows:
         families += ((V4_ORDER_COMMAND_LINEAGE.name, lineage_rows),)
     if tactic_states:
