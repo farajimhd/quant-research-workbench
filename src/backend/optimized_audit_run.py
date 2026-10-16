@@ -82,6 +82,12 @@ class NativeAuditRunResult:
     execution_compatibility: object
 
 
+def _native_run_failure(controller):
+    detail = controller.error or 'No native runtime error detail was recorded'
+    return RuntimeError(f'Native audit run {controller.run_id} finished with status '
+                        f'{controller.status}: {detail}')
+
+
 def validate_native_audit_preparation(controller, reference):
     """Require real prepared native contracts and unchanged frozen sizing/risk."""
     if (type(controller) is not ReplayRunController or type(reference) is not OptimizationReference
@@ -176,7 +182,7 @@ async def run_native_candidate_audit(*, run_service, selector, handoff, referenc
             raise RuntimeError('Native service launch did not retain its owned task')
         await asyncio.wait_for(asyncio.shield(controller._task), bounds.run_seconds)
         if controller.status != 'completed' or controller._program_dispatch_failure is not None:
-            raise RuntimeError(f'Native audit run {controller.run_id} finished with status {controller.status}')
+            raise _native_run_failure(controller) from controller._program_dispatch_failure
         context = await asyncio.wait_for(evidence_factory(controller), bounds.evidence_seconds)
         _validate_context(context, controller)
         audit = await asyncio.wait_for(collect_native_execution_audit(reader_factory,

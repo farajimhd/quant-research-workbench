@@ -4398,6 +4398,9 @@ class ReplayRunController:
             raise
         except Exception as exc:
             self.error = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+            if self._program_strategy is not None:
+                logging.getLogger(__name__).exception(
+                    'Native programme run %s failed', self.run_id)
             try:
                 await self._finish("failed")
             except Exception as terminal_exc:

@@ -71,6 +71,30 @@ def test_native_audit_retains_actual_app_baseline_fill_slippage(tmp_path):
     assert controller._runtime.broker.config is actual
 
 
+def test_native_failure_retains_runtime_and_incomplete_terminal_detail():
+    from src.backend.optimized_audit_run import _native_run_failure
+    detail = 'ValueError: invalid source fence; V4 terminal incomplete: missing cursor'
+    error = _native_run_failure(SimpleNamespace(run_id='native-unit', status='failed', error=detail))
+    assert str(error) == 'Native audit run native-unit finished with status failed: ' + detail
+
+
+def test_program_engine_failure_logs_original_traceback(tmp_path, monkeypatch, caplog):
+    from src.backend import backtest_program_launch
+    controller, _ = source_admission_fixture(tmp_path)
+    async def fail(owner):
+        assert owner is controller
+        raise ValueError('unit native source failure')
+    async def finish(status):
+        controller.status = status
+    monkeypatch.setattr(backtest_program_launch, 'run_bound_program_engine', fail)
+    monkeypatch.setattr(controller, '_finish', finish)
+    with caplog.at_level('ERROR', logger='src.backend.replay_run_service'):
+        asyncio.run(controller._run_engine())
+    assert controller.status == 'failed' and controller.error == 'ValueError: unit native source failure'
+    assert any(record.exc_info and 'Native programme run' in record.getMessage() for record in caplog.records)
+    assert 'unit native source failure' in caplog.text
+
+
 def test_native_admission_rejects_unprotected_or_different_source_release(tmp_path):
     controller, reference = source_admission_fixture(tmp_path)
     controller._program_strategy.execution_risk = None

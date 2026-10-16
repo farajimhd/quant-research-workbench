@@ -19,6 +19,9 @@ deducts a modeled notional charge; native market slippage changes fill prices
 and is reported separately, even when both numbers happen to match. Commission
 and fee-inclusive risk contracts must still match. Nonzero modeled notional
 charges remain blocked until an explicit native charge implementation exists.
+Programme-run failures log the original exception traceback before terminal
+cleanup. Audit failures retain the controller's runtime and incomplete-terminal
+detail; these diagnostics do not replace the verified ClickHouse event prefix.
 
 ## Current composition
 
