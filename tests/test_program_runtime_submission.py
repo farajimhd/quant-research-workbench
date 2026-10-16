@@ -19,7 +19,7 @@ from tests.test_broker_liquidity_resolution import second_bar
 
 
 async def scenario(resolution, invalid=None, initial_cash=100000., stop_exit=False, target_reduce=False, cancel_reduce=False, partial_cancel=False, allocation_failure=None, add_before_reduce=False,
-                   risk_limit=None, unsupported_mode=None):
+                   risk_limit=None, unsupported_mode=None, minimum_lot_reduction=False):
     release, boundary, position, management = inputs(entry=True)
     at = datetime(2026, 10, 12, 14, tzinfo=timezone.utc)
     boundary = replace(boundary, boundary_at=at, available_at=at)
@@ -263,6 +263,69 @@ async def scenario(resolution, invalid=None, initial_cash=100000., stop_exit=Fal
             rebuilt = AssignedProgramStrategy(release, (assignment,), {"assignment": "listing"})
             rebuilt.on_broker_executions(tuple(broker._executions), runtime.order_manager)
             assert rebuilt.target_state.target_for(rebuilt.position_for("assignment")) == strategy.target_state.target_for(strategy.position_for("assignment"))
+            if minimum_lot_reduction:
+                for _ in range(12):
+                    jump = int(max(release.minimum_age_seconds['reduce'],
+                        release.header['cooldown_seconds'])) + 1
+                    at += timedelta(seconds=jump)
+                    row.update(last_event_us=int(at.timestamp() * 1_000_000) - 1,
+                        quote_timestamp_us=int(at.timestamp() * 1_000_000) - 10001,
+                        bucket_index=row['bucket_index'] + jump * 1000 // resolution)
+                    await runtime.process_liquidity_boundary((row,), at=at)
+                    await runtime.order_manager.reconcile()
+                    observation = observe_assignment_orders(runtime.order_manager, account_id='account',
+                        assignment_id='assignment', ticker='ABC', at=at)
+                    before_position = strategy.position_for('assignment')
+                    selected, = strategy.proposals(replace(boundary, boundary_at=at, available_at=at,
+                        close=20., rules=dict(boundary.rules, entry=False, add=False, reduce=True)),
+                        assignment_id='assignment', management=replace(management, observed_at=at,
+                            stop_price=9., target_price=float(strategy.target_state.target_for(before_position)),
+                            high_water_price=observation.high_water_price))
+                    orders_before = tuple(await broker.live_orders())
+                    result = await runtime.submit_program_proposal(selected, account_id='account',
+                        assignment_id='assignment', execution_policy=kwargs['execution_policy'],
+                        protection_profile=None, outside_rth=False)
+                    if before_position.quantity == 1:
+                        assert selected.quantity == .5
+                        assert result[0]['decision']['status'] == 'rejected'
+                        assert result[0]['decision']['reasons'] == ('quantity_below_instrument_minimum',)
+                        assert result[0]['order_group'] is None
+                        assert tuple(await broker.live_orders()) == orders_before
+                        assert strategy.position_for('assignment') == before_position
+                        assert not any(r.intent_id == selected.intent_id and r.status == 'reserved'
+                            for r in runtime.portfolio.reservations.values())
+                        assert any(r.entity_type == 'intent_rejection' and
+                            'quantity_below_instrument_minimum' in r.payload.get('rejection_reasons', ())
+                            for r in journal.records(journal.run_id))
+                        break
+                    at += timedelta(seconds=1)
+                    row.update(last_event_us=int(at.timestamp() * 1_000_000) - 1,
+                        quote_timestamp_us=int(at.timestamp() * 1_000_000) - 10001,
+                        bucket_index=row['bucket_index'] + 1000 // resolution)
+                    await runtime.process_liquidity_boundary((row,), at=at)
+                else:
+                    raise AssertionError('Actual reductions did not reach one remaining share')
+                jump = release.minimum_age_seconds['exit'] + 1
+                at += timedelta(seconds=jump)
+                row.update(last_event_us=int(at.timestamp() * 1_000_000) - 1,
+                    quote_timestamp_us=int(at.timestamp() * 1_000_000) - 10001,
+                    bucket_index=row['bucket_index'] + jump * 1000 // resolution)
+                await runtime.process_liquidity_boundary((row,), at=at)
+                exit_proposal, = strategy.proposals(replace(boundary, boundary_at=at, available_at=at,
+                    close=20., rules=dict(boundary.rules, entry=False, reduce=False, exit=True)),
+                    assignment_id='assignment', management=replace(management, observed_at=at,
+                        stop_price=9., target_price=float(strategy.target_state.target_for(strategy.position_for('assignment')))))
+                assert exit_proposal.quantity == 1
+                await runtime.submit_program_proposal(exit_proposal, account_id='account',
+                    assignment_id='assignment', execution_policy=kwargs['execution_policy'],
+                    protection_profile=None, outside_rth=False)
+                at += timedelta(seconds=1)
+                row.update(last_event_us=int(at.timestamp() * 1_000_000) - 1,
+                    quote_timestamp_us=int(at.timestamp() * 1_000_000) - 10001,
+                    bucket_index=row['bucket_index'] + 1000 // resolution)
+                await runtime.process_liquidity_boundary((row,), at=at)
+                assert not strategy.position_for('assignment').position_open
+                assert broker.position_quantity('account', 1, 'ABC') == 0
         if stop_exit:
             at += timedelta(seconds=1)
             row.update(last_event_us=int(at.timestamp() * 1_000_000) - 1,
@@ -298,6 +361,11 @@ def test_program_uses_actual_cash_oms_and_later_broker_fills(resolution):
 @pytest.mark.parametrize("resolution", [100, 1000])
 def test_target_advances_after_actual_oms_reduction_fill_and_rebuilds(resolution):
     asyncio.run(scenario(resolution, target_reduce=True))
+
+
+@pytest.mark.parametrize('resolution', [100, 1000])
+def test_sub_lot_program_reduction_is_rejected_without_rounding_or_cancelling_protection(resolution):
+    asyncio.run(scenario(resolution, target_reduce=True, minimum_lot_reduction=True))
 
 
 @pytest.mark.parametrize("resolution", [100, 1000])

@@ -24,6 +24,10 @@ from src.trading_runtime.signals import StrategyIntent
 from src.market_engine.events import MarketEvent
 
 
+class UnexecutableOrderQuantity(ValueError):
+    """A positive semantic quantity is below this instrument's executable lot."""
+
+
 @dataclass(frozen=True, slots=True)
 class StrategyOrderPlan:
     orders: tuple[OrderRequest, ...]
@@ -104,6 +108,8 @@ class IbkrStrategyOrderPlanner:
             raise ValueError("Independent fixed lots currently require enter_long")
         quantity = _executable_quantity(instrument, float(intent.quantity))
         if quantity <= 0:
+            if float(intent.quantity) > 0:
+                raise UnexecutableOrderQuantity('Order planning requires at least one executable share')
             raise ValueError("Order planning requires at least one executable share")
         prefix = f"{strategy_id[:14]}-v{strategy_revision}-{uuid4().hex[:12]}"
         position_side = str(intent.metadata.get("position_side") or "long").lower()

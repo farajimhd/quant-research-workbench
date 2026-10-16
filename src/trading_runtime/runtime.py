@@ -33,7 +33,7 @@ from src.trading_runtime.signals import (
     normalize_strategy_evaluation,
 )
 from src.trading_runtime.strategy_engine import StrategyObservation, StrategyAssignment
-from src.trading_runtime.strategy_orders import StrategyOrderPlan
+from src.trading_runtime.strategy_orders import StrategyOrderPlan, UnexecutableOrderQuantity
 
 
 class RunMode(StrEnum):
@@ -1499,10 +1499,13 @@ class TradingRuntime:
                         await handler(approved_intent, reasons=("broker_replacement_not_confirmed",),
                                       event_time=approved_intent.event_time)
                 snapshot = self.order_manager.snapshot_for_intent(approved_intent.intent_id)
+                quantity_rejected = (program_assignment_id is not None
+                    and isinstance(exc, UnexecutableOrderQuantity) and snapshot is None)
                 if snapshot is None or snapshot.state != OrderManagementState.OUTCOME_UNKNOWN:
                     self.portfolio.release_intent(
                         approved_intent.intent_id,
-                        reason="order_management_submission_failed",
+                        reason=('quantity_below_instrument_minimum' if quantity_rejected
+                            else 'order_management_submission_failed'),
                     )
                     if opening_entry and assignment is not None:
                         self.control_plane.campaigns.release_reservation(assignment)
@@ -1514,6 +1517,14 @@ class TradingRuntime:
                                         payload={"action": str(approved_intent.action), "reason": str(exc)})
                     results.append({"decision": {"status": "protection_replacement_deferred", "reason": str(exc)},
                                     "order_group": None})
+                    continue
+                if quantity_rejected:
+                    from .portfolio import PortfolioDecisionStatus
+                    rejected = replace(decision, status=PortfolioDecisionStatus.REJECTED,
+                        approved_quantity=0., approved_notional=0.,
+                        reasons=('quantity_below_instrument_minimum',))
+                    await self._record_intent_rejection(approved_intent, account_id, rejected)
+                    results.append({'decision': rejected.payload(), 'order_group': None})
                     continue
                 if isinstance(exc, EntryExecutionRejected) and snapshot is None:
                     handler = getattr(self.strategy, 'on_intent_rejected', None)
