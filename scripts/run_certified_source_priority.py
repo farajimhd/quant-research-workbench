@@ -29,7 +29,7 @@ def prepare_priority(parsed,config,paths,query,writer,claim,stop,prepare):
         staging_chunk_bytes=parsed.staging_chunk_gib*1024**3)
 
 
-def execute_worker(path,*,inspect_only=False):
+def execute_worker(path,*,inspect_only=False,verify_only=False):
     request=json.loads(Path(path).read_text())
     sys.path.insert(0,request['source_code'])
     # Existing imports may load environment defaults. Pin transport afterward,
@@ -39,7 +39,7 @@ def execute_worker(path,*,inspect_only=False):
     parsed=preparation.parse_args(request['arguments'])
     load_env_files([parsed.env_file],verbose=False)
     os.environ['QMD_CLICKHOUSE_URL']=request['endpoint']
-    if request['name']=='original_resume' and not inspect_only:return preparation.main(request['arguments'])
+    if request['name']=='original_resume' and not inspect_only and not verify_only:return preparation.main(request['arguments'])
     from scripts import build_market_day as builder
     from pipelines.certified_research import acquisition
     from pipelines.certified_research.publication import SourceClaim
@@ -52,12 +52,18 @@ def execute_worker(path,*,inspect_only=False):
         max_memory_gb=config.query_memory_bytes/1024**3,query_timeout=config.query_timeout_seconds)
     paths=acquisition.IngestionPaths(parsed.env_file,parsed.runtime_root,parsed.cache_root,
         parsed.archive_root,parsed.clickhouse_cache_root)
-    if inspect_only:
+    if inspect_only or verify_only:
         from pipelines.certified_research import source
         with closing(builder.Client(options,persistent=True,readonly=True)) as client:
             if client.secrets[0]!=request['endpoint']:raise ValueError('Worker effective endpoint differs')
-            inventory=source.inventory(client.query,PRIORITY_DAYS[0],config.end,sessions=PRIORITY_DAYS)
+            selected=PRIORITY_DAYS if request['name']=='priority' else None
+            inventory=source.inventory(client.query,PRIORITY_DAYS[0] if selected else config.start,config.end,sessions=selected)
             reporting=source.reporting_inventory(client.query,inventory)
+            if verify_only:
+                fingerprint=source.require_ready(client.query,inventory,reporting)
+                print(json.dumps(dict(source_hash=fingerprint,sessions=list(map(str,inventory['expected'])),
+                    canonical_hash=inventory['content_hash'],reporting_hash=reporting['content_hash'])))
+                return 0
             print(json.dumps(dict(config_start=str(config.start),config_end=str(config.end),
                 sessions=list(map(str,inventory['expected'])),canonical_missing=list(map(str,inventory['missing'])),
                 canonical_incomplete=list(map(str,inventory['incomplete'])),reporting_missing=list(map(str,reporting['missing'])),
@@ -184,7 +190,8 @@ class Controller:
         while (self.run/f'{name}.{index}.stdout.log').exists():index+=1
         out=self.run/f'{name}.{index}.stdout.log';err=self.run/f'{name}.{index}.stderr.log'
         request=self.run/f'{name}.{index}.request.json'
-        write_json(request,dict(name=name,source_code=str(self.args.source_code),endpoint=self.args.endpoint,arguments=arguments))
+        code=self.args.priority_source_code if name=='priority' else self.args.source_code
+        write_json(request,dict(name=name,source_code=str(code),endpoint=self.args.endpoint,arguments=arguments))
         command=[sys.executable,'-B','-u',str(Path(__file__).resolve()),'--execute-worker',str(request)]
         self.save(name+'_starting',worker=None)
         with out.open('x',encoding='utf-8') as stdout,err.open('x',encoding='utf-8') as stderr:
@@ -199,17 +206,16 @@ class Controller:
             return child.wait()
 
     def verify(self,start,end):
-        from scripts import build_market_day as builder
-        from pipelines.certified_research import source
-        from types import SimpleNamespace
-        options=SimpleNamespace(env_file=Path(option(self.state['original']['arguments'],'--env-file')),
-            max_threads=2,max_memory_gb=2,query_timeout=120)
-        with closing(builder.Client(options,persistent=True,readonly=True)) as client:
-            inventory=source.inventory(client.query,start,end)
-            reporting=source.reporting_inventory(client.query,inventory)
-            fingerprint=source.require_ready(client.query,inventory,reporting)
-            return dict(source_hash=fingerprint,sessions=list(map(str,inventory['expected'])),
-                canonical_hash=inventory['content_hash'],reporting_hash=reporting['content_hash'])
+        name='priority' if start==PRIORITY_DAYS[0] else 'original_resume'
+        request=self.run/(name+'.verify.request.json')
+        code=self.args.priority_source_code if name=='priority' else self.args.source_code
+        write_json(request,dict(name=name,source_code=str(code),endpoint=self.args.endpoint,
+            arguments=self.state['original']['arguments']))
+        result=subprocess.run([sys.executable,'-B',str(Path(__file__).resolve()),'--verify-worker',str(request)],
+            capture_output=True,text=True,check=True,timeout=900,
+            creationflags=subprocess.BELOW_NORMAL_PRIORITY_CLASS,
+            env=dict(os.environ,PYTHONDONTWRITEBYTECODE='1',CUDA_VISIBLE_DEVICES='-1',HIP_VISIBLE_DEVICES='-1'))
+        return json.loads(result.stdout)
 
     def priority(self):
         if self.state.get('priority_finished'):return
@@ -236,8 +242,10 @@ def main(argv=None):
     if argv is None:argv=sys.argv[1:]
     if len(argv)==2 and argv[0]=='--execute-worker':return execute_worker(argv[1])
     if len(argv)==2 and argv[0]=='--inspect-worker':return execute_worker(argv[1],inspect_only=True)
+    if len(argv)==2 and argv[0]=='--verify-worker':return execute_worker(argv[1],verify_only=True)
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--source-code',type=Path,required=True)
+    p.add_argument('--priority-source-code',type=Path,required=True)
     p.add_argument('--original-run',type=Path,required=True)
     p.add_argument('--run-dir',type=Path,required=True)
     p.add_argument('--endpoint',required=True)
@@ -252,7 +260,8 @@ def main(argv=None):
     original_hash=hashlib.sha256(original_file.read_bytes()).hexdigest()
     if a.resume:
         state=json.loads((a.run_dir/'status.json').read_text())
-        if (state['source_code']!=str(a.source_code) or state['original_run_hash']!=original_hash
+        if (state['source_code']!=str(a.source_code) or state['priority_source_code']!=str(a.priority_source_code)
+                or state['original_run_hash']!=original_hash
                 or state['endpoint']!=a.endpoint):
             raise ValueError('Handoff resume identity differs')
         if state['phase']=='complete':return 0
@@ -276,7 +285,7 @@ def main(argv=None):
         a.run_dir.mkdir()
         state=dict(version='certified-source-priority-v1',original=original,original_process=identity,
             source_code=str(a.source_code),original_run_hash=original_hash,endpoint=a.endpoint,
-            started_at=stamp(),phase='ready',gpu=False)
+            priority_source_code=str(a.priority_source_code),started_at=stamp(),phase='ready',gpu=False)
         if a.previous_handoff:state.update(previous_handoff=str(a.previous_handoff),previous_controller_pid=previous['controller_pid'])
     os.environ['QMD_CLICKHOUSE_URL']=a.endpoint
     sys.path.insert(0,str(a.source_code))
