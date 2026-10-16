@@ -519,7 +519,8 @@ class HistoryProductPipeline:
         self._loop = None
         self._opening_proof_cache = OpeningProofCache(maximum_entries=2)
 
-    async def publish(self, source, *, ownership, code_hash):
+    async def publish(self, source, *, ownership, code_hash,
+                      reconcile_attempt_id=None, expected_content_hash=None):
         if type(source) is not CertifiedHistoryInput:
             raise TypeError("History pipeline requires a certified source unit")
         c.require_hash(code_hash)
@@ -543,7 +544,10 @@ class HistoryProductPipeline:
             try:
                 writer = self.writer_factory()
                 try:
-                    status = publish_history(reader, writer, source, ownership=ownership, code_hash=code_hash)
+                    reconciliation = ({} if reconcile_attempt_id is None and expected_content_hash is None else
+                        dict(reconcile_attempt_id=reconcile_attempt_id, expected_content_hash=expected_content_hash))
+                    status = publish_history(reader, writer, source, ownership=ownership,
+                        code_hash=code_hash, **reconciliation)
                     headers = read_seal(reader, scope)
                     if len(headers) != 1:
                         raise ValueError("History publication receipt has no unique seal")

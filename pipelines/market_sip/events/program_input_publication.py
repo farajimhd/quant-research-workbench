@@ -95,9 +95,12 @@ class ProgramInputPublication:
             ownership=ownership, code_hash=code_hash,
             listing_basis='shared-reference-routing-tradability-v1')
 
-    async def publish_history(self, source, *, ownership, code_hash):
+    async def publish_history(self, source, *, ownership, code_hash,
+                              reconcile_attempt_id=None, expected_content_hash=None):
+        reconciliation = ({} if reconcile_attempt_id is None and expected_content_hash is None else
+            dict(reconcile_attempt_id=reconcile_attempt_id, expected_content_hash=expected_content_hash))
         return await self._execute(self.history.publish, source,
-            ownership=ownership, code_hash=code_hash)
+            ownership=ownership, code_hash=code_hash, **reconciliation)
 
     async def prepare_features(self, request, *, ownership, progress=None, stop_requested=None):
         """Prepare the shared catalog once, then seal normalized source lineage.

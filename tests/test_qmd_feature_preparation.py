@@ -25,6 +25,55 @@ from test_qmd_feature_source_publication import Store,Client,Owner
 from test_qmd_columnar_history_transport import response_for
 
 
+@pytest.mark.parametrize('split_from,corrupt', [(1,False),(30,False),(30,True)])
+def test_repeated_projection_owns_consumed_seed_and_preserves_integrity(monkeypatch,split_from,corrupt):
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from src.backend.fixed_v7_stream import FixedV7Stream
+    from src.market_engine.streaming_level_book import StreamingLevelBook,EXTRACTION_VERSION
+    from src.market_engine.historical_level_checkpoint import digest
+    from src.market_engine.reaction_band import CONFIG
+    ny=ZoneInfo('America/New_York')
+    start=datetime(2026,7,31,4,tzinfo=ny).timestamp()
+    end=datetime(2026,7,31,20,tzinfo=ny).timestamp()
+    seed=dict(ticker='ABC',session='2026-07-30',available_at=start-1,
+        source_extraction_version=EXTRACTION_VERSION,band_config={**CONFIG,'coverage':.8},levels=[])
+    seed['checkpoint_hash']=digest(seed)
+    book=StreamingLevelBook(seed,ticker='ABC',session='2026-07-31',start=start,end=end)
+    for index,price in enumerate((10.,10.001,9.999)):
+        at=start+100+index*10
+        book._proposal(price,at,'support',{'t':at+2},.1)
+    retained=book.historical_checkpoint('fixture')
+    assert retained['levels']
+    if corrupt:retained['levels'][0]['price']+=1
+    original=deepcopy(retained)
+    src=replace(source(400),first_bucket=14400,stop_bucket=14800)
+    scope=src.scope('00000000-0000-0000-0000-000000000001','a'*64)
+    req=SimpleNamespace(opening_source=src.opening_source,tickers=('ABC',),prior_volume_day=None)
+    plan=SimpleNamespace(first_bucket=14400,stop_bucket=14800)
+    b=candles();other={'ABC':None}
+    prepared=prep.PreparedQmdFeatureDay(req,plan,{'ABC':b},other,
+        {'ABC':(retained,[{'split_from':split_from,'split_to':1}],{}, {})},
+        other,other,other,other,other)
+    seen=[]
+    def consuming_projection(scope,dense,*,seed,splits,**kwargs):
+        stream=FixedV7Stream(seed,ticker='ABC',session=scope.session_date,splits=splits,consume_seed=True)
+        seen.append(deepcopy(stream.engine.rows))
+        return pl.DataFrame({'value':[stream.engine.rows[0]['lower']]})
+    monkeypatch.setattr(prep,'project_listing',consuming_projection)
+    liquid=pl.DataFrame({'bucket_index':b['bucket_index'],'execution_notional':np.full(400,70.)})
+    if corrupt:
+        with pytest.raises(ValueError,match='integrity'):prepared.project(src,scope,b,liquid)
+    else:
+        first=prepared.project(src,scope,b,liquid)
+        second=prepared.project(src,scope,b,liquid)
+        assert first.equals(second) and seen[0]==seen[1]
+        assert retained['checkpoint_hash']==digest({k:v for k,v in retained.items() if k!='checkpoint_hash'})
+    assert retained==original
+
+
 def audit(market):
     certificate=MarketDayCertificate(market.build_id,market.definition_hash,
         tuple((market.sessions[0],t) for t in market.tickers),

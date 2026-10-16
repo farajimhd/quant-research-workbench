@@ -67,6 +67,13 @@ its exact source, schema, part checksums and Keeper receipts remain unchanged.
 Any parent change requires the full proof again. Child materialization, exact
 readback and coverage-last publication remain mandatory for every listing.
 
+Retained structural seeds remain immutable across repeated feature projections;
+each consuming candle encoder receives a private copy, including across splits.
+An unsealed history may be reconciled only with an explicit existing attempt and
+projected content hash. The managed producer rechecks its complete children and
+source projection before publishing coverage; it never silently reinserts or
+deletes those children.
+
 Continuous history uses the explicitly selected identity basis for every source
 day. Shared Reference Gateway captures are bound to that day's certified market
 identity, routing and tradability facts, including historical ticker changes.

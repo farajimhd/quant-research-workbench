@@ -65,6 +65,26 @@ def test_failure_releases_aggregate_capacity(monkeypatch):
     assert lane.active == 0
 
 
+def test_managed_composition_reconciles_only_explicit_complete_history_attempt(prepared_source):
+    from test_columnar_history_publication import Store,Client,Owner,CODE,publish,c
+    store=Store()
+    assert publish(store,prepared_source)=='published'
+    header=store.records[c.COVERAGE.name].pop()
+    before=tuple(store.writes)
+    lane=publication.ProgramInputPublication(query_limits=dict(max_threads=1,
+        max_memory_usage=100000000,max_execution_time=30,max_result_rows=10000,max_result_bytes=1000000),
+        maximum_concurrent_units=1)
+    lane.history.reader_factory=lambda:Client(store)
+    lane.history.writer_factory=lambda:Client(store,True)
+    try:
+        result=asyncio.run(lane.publish_history(prepared_source,ownership=Owner(),code_hash=CODE,
+            reconcile_attempt_id=header['derivation_attempt_id'],expected_content_hash=header['content_hash']))
+        assert result.content_hash==header['content_hash']
+        assert tuple(store.writes)==before+(c.COVERAGE.name,)
+        assert lane.active==0 and not lane.history.active
+    finally:lane.history.close()
+
+
 def test_duplicate_liquidity_is_rejected_before_second_publication(monkeypatch):
     lane = publication.ProgramInputPublication(query_limits=dict(max_threads=2,
         max_memory_usage=1024, max_execution_time=30, max_result_rows=10, max_result_bytes=2048),

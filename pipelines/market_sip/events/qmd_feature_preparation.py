@@ -5,6 +5,7 @@ accepted. The caller supplies the existing cold-certified source population and
 an explicit continuous-indicator origin. I/O belongs to the producer funnel.
 """
 from dataclasses import dataclass, asdict, field
+from copy import deepcopy
 from datetime import date, datetime, time, timezone
 from zoneinfo import ZoneInfo
 from hashlib import sha256
@@ -519,8 +520,11 @@ class PreparedQmdFeatureDay:
         ticker=source.ticker
         dense=elapsed_volume_history(prepare_dense_inputs(scope,bars,liquidity),source.volume_window_seconds)
         seed,splits,fundamentals,_=self.references[ticker]
+        # The candle encoder consumes its private seed (including split
+        # adjustment). Retain the certified reference for independent readback
+        # projections and hand each materialization its own owned copy.
         return project_listing(scope,dense,bars=self.bars[ticker],indicators=self.indicators[ticker],
-            prior_bars=self.prior_bars[ticker],seed=seed,splits=splits,fundamentals=fundamentals,
+            prior_bars=self.prior_bars[ticker],seed=deepcopy(seed),splits=splits,fundamentals=fundamentals,
             quotes=self.quotes[ticker],activity=self.activity[ticker],
             continuous_history=self.continuous[ticker],context=self.contexts[ticker],
             opening_splits=self.references[ticker][3].get('splits',[]),

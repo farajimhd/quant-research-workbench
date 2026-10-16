@@ -460,6 +460,29 @@ def test_failed_pipeline_unit_requires_reconciliation(prepared_source):
     assert not store.records[c.COVERAGE.name]
 
 
+@pytest.mark.parametrize('wrong_pin', [False, True])
+def test_owned_pipeline_explicit_reconciliation_only_seals_exact_retained_children(prepared_source, wrong_pin):
+    store=Store()
+    assert publish(store,prepared_source)=='published'
+    header=store.records[c.COVERAGE.name].pop()
+    before=tuple(store.writes)
+    pipeline=p.HistoryProductPipeline(lambda:Client(store),lambda:Client(store,True),maximum_concurrent_units=1)
+    async def scenario():
+        return await pipeline.publish(prepared_source,ownership=Owner(),code_hash=CODE,
+            reconcile_attempt_id=header['derivation_attempt_id'],
+            expected_content_hash='0'*64 if wrong_pin else header['content_hash'])
+    try:
+        if wrong_pin:
+            with pytest.raises(ValueError):asyncio.run(scenario())
+            assert tuple(store.writes)==before and not store.records[c.COVERAGE.name]
+        else:
+            receipt=asyncio.run(scenario())
+            assert receipt.content_hash==header['content_hash']
+            assert receipt.scope.attempt_id==header['derivation_attempt_id']
+            assert tuple(store.writes)==before+(c.COVERAGE.name,)
+    finally:pipeline.close()
+
+
 def test_multi_page_clocks_and_intervals_preserve_exact_window_values(prepared_source):
     src = source(2200)
     src = replace(src, fields=tuple(sorted((*src.fields, c.BY_NAME["history.momentum_close.1"]), key=lambda f: f.field_id)))
