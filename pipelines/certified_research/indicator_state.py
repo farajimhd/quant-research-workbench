@@ -99,7 +99,7 @@ def publish(request,bars,technical,query,database,claim,source_guard):
     from .producer import indicator_state
     scope=scope_for(request,technical);publisher=Publisher(query,database,claim)
     base=request.unit
-    bar_scope=Scope(base.dataset_id,base.day,base.listing_key,'bars',request.parent('bars'))
+    bar_scope=request.bar_scope()
     technical_scope=Scope(base.dataset_id,base.day,base.listing_key,'technical',request.parent('technical',(bars['output_hash'],)))
     if publisher.receipt(bar_scope)!=bars or publisher.receipt(technical_scope)!=technical:
         raise ValueError('Indicator state requires its exact certified bar/technical parents')
@@ -107,7 +107,7 @@ def publish(request,bars,technical,query,database,claim,source_guard):
         source_hash=request.source_hash,rules_hash=digest(request.rules),frames=request.frames)
     if loaded:return combined(technical,loaded['receipt'],request)
     state=indicator_state(query,database,request.unit,technical['attempt_id'],request.prior_indicators,
-        bar_attempt=bars['attempt_id'],frames=request.frames)
+        bar_attempt=bars['attempt_id'],frames=request.frames,bars_dataset_id=request.bars_dataset_id or None)
     if not state:state={f:{n:0 if n=='sample_count' else 0. for n in STATE_FIELDS} for f in request.frames}
     validate(state,request.frames);attempt=str(uuid4());table=next(t for t in TABLES if t.name=='research_indicator_state_v1')
     selects=[]

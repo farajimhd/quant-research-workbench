@@ -94,7 +94,7 @@ def verify_definition(definition,rules):
     from datetime import date
     from .contracts import CampaignConfig
     params=definition['v7_parameters']
-    config=CampaignConfig(date(2026,1,1),date(2026,1,1),resolutions_ms=tuple(definition['frames']))
+    config=CampaignConfig(date(2026,1,1),date(2026,1,1),resolutions_ms=tuple(definition['frames']),product_scope='market_bars')
     current=market_recipe(config,rules,settings=Settings(**params['settings']),
         discovery_prominence=params['discovery_prominence'],coverage=params['coverage'])
     if current['definition']!=definition:raise ValueError('Market state recipe differs from loaded algorithms, rules or numerical dependencies')

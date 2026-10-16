@@ -31,11 +31,15 @@ class MarketRequest:
     recipe_definition: dict|None=None
     adjustment_hash: str=''
     bars_dataset_id: str=''
+    bars_parent_hash: str=''
 
     def __post_init__(self):
         if self.bars_dataset_id:
             from uuid import UUID
             UUID(self.bars_dataset_id)
+        if self.bars_parent_hash and (not self.bars_dataset_id or len(self.bars_parent_hash)!=64
+                or any(c not in '0123456789abcdef' for c in self.bars_parent_hash)):
+            raise ValueError('Explicit bar parent requires its certified dataset and hash')
         for value in (self.dataset_hash,self.source_hash,self.prior_indicator_hash,self.prior_v7_hash):
             if len(value)!=64 or any(c not in '0123456789abcdef' for c in value):raise ValueError('Invalid producer dependency hash')
         if self.regular_close.tzinfo is None or not self.rules:raise ValueError('Calendar close/rules are required')
@@ -51,11 +55,17 @@ class MarketRequest:
             predecessor=self.prior_indicator_hash if product=='technical' else self.prior_v7_hash if product=='v7' else '',
             parents=parents,regular_close=self.regular_close.astimezone(timezone.utc).isoformat() if product=='v7' else '',
             adjustment=self.adjustment_hash if product in ('technical','v7') else '')
-        if product=='v7' and self.bars_dataset_id and self.bars_dataset_id!=self.unit.dataset_id:
+        if product in ('technical','v7') and self.bars_dataset_id and self.bars_dataset_id!=self.unit.dataset_id:
             value['bars_dataset_id']=self.bars_dataset_id
+            if self.bars_parent_hash:value['bars_parent_hash']=self.bars_parent_hash
         if self.unit.source_ticker is not None and self.unit.source_ticker!=self.unit.ticker:
             value['source_spelling']=dict(version='explicit-case-source-v1',ticker=self.unit.source_ticker)
         return digest(value)
+
+    def bar_scope(self):
+        base=self.unit
+        return Scope(self.bars_dataset_id or base.dataset_id,base.day,base.listing_key,'bars',
+                     self.bars_parent_hash or self.parent('bars'))
 
     @property
     def frames(self):
@@ -63,7 +73,7 @@ class MarketRequest:
         return market.selected_frames(self.recipe_definition['frames'] if self.recipe_definition is not None else FRAMES)
 
 
-def indicator_state(query,database,unit,attempt,prior,*,bar_attempt,frames=None):
+def indicator_state(query,database,unit,attempt,prior,*,bar_attempt,frames=None,bars_dataset_id=None):
     """Price-empty frames carry the verified predecessor; no fabricated rows."""
     from pipelines.market_sip.events.market_day_sql import FRAMES
     frames=market.selected_frames(FRAMES if frames is None else frames)
@@ -72,9 +82,11 @@ def indicator_state(query,database,unit,attempt,prior,*,bar_attempt,frames=None)
     rows=query(f"SELECT i.resolution_ms resolution_ms,{','.join('argMax(i.'+n+',i.bucket_index) AS '+n for n in persisted)},"
                'argMax(b.close_int/10000.,i.bucket_index) close FROM '
                f'{identifier(database)}.research_bars_v1 b INNER JOIN '
-               f'{identifier(database)}.research_indicators_v1 i USING '
-               '(dataset_id,session_date,listing_key,resolution_ms,bucket_index) '
-               f"WHERE b.dataset_id=toUUID({literal(unit.dataset_id)}) AND b.session_date=toDate({literal(unit.day)}) "
+               f'{identifier(database)}.research_indicators_v1 i ON '
+               'b.session_date=i.session_date AND b.listing_key=i.listing_key '
+               'AND b.resolution_ms=i.resolution_ms AND b.bucket_index=i.bucket_index '
+               f"WHERE b.dataset_id=toUUID({literal(bars_dataset_id or unit.dataset_id)}) "
+               f"AND i.dataset_id=toUUID({literal(unit.dataset_id)}) AND b.session_date=toDate({literal(unit.day)}) "
                f'AND b.listing_key={unit.listing_key} AND i.attempt_id=toUUID({literal(attempt)}) '
                f'AND b.attempt_id=toUUID({literal(bar_attempt)}) GROUP BY i.resolution_ms')
     result={int(r['resolution_ms']):{n:int(r[n]) if n=='sample_count' else float(r[n]) for n in names} for r in rows}
@@ -141,11 +153,11 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
                 return receipt
             bar_receipt=parents['bars'];parent=request.parent(u.product,(bar_receipt['output_hash'],))
             bar_dataset=request.bars_dataset_id or base.dataset_id
-            bar_scope=Scope(bar_dataset,base.day,base.listing_key,'bars',request.parent('bars'))
+            bar_scope=request.bar_scope()
             if publisher.receipt(bar_scope)!=bar_receipt:
                 raise ValueError('Market consumer requires its exact certified bar authority')
-            if u.product!='v7' and bar_dataset!=base.dataset_id:
-                raise ValueError('Foreign bar authority is supported only by checkpoint backfill')
+            if u.product not in ('technical','v7') and bar_dataset!=base.dataset_id:
+                raise ValueError('Foreign bar authority is supported only by certified state consumers')
             scope=Scope(base.dataset_id,base.day,base.listing_key,u.product,parent)
             old=publisher.receipt(scope)
             if old:
@@ -155,7 +167,7 @@ def market_execution(request: MarketRequest,client_factory,claim,source_guard,en
             if u.product=='technical':
                 source=(f'SELECT session_date,resolution_ms,bucket_index,close_int,high_int,low_int '
                     f'FROM {database}.research_bars_v1 WHERE '
-                    f'dataset_id=toUUID({literal(base.dataset_id)}) AND session_date=toDate({literal(base.day)}) '
+                    f'dataset_id=toUUID({literal(bar_dataset)}) AND session_date=toDate({literal(base.day)}) '
                     f'AND listing_key={base.listing_key} AND attempt_id=toUUID({literal(bar_receipt["attempt_id"])}) '
                     'AND price_valid=1 AND extremes_valid=1')
                 query(indicators.technical_sql(database,unit,source,request.prior_indicators,frames=request.frames),read=False)

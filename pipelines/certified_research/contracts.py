@@ -92,7 +92,7 @@ class CampaignConfig:
                 raise ValueError("Windows/resolutions must be sorted unique positive integers")
         if any(v not in (100,1000,5000,10000,30000,60000,300000,3600000) for v in self.resolutions_ms):
             raise ValueError("Unsupported market resolution")
-        if 1000 not in self.resolutions_ms:
+        if self.product_scope=='full' and 1000 not in self.resolutions_ms:
             raise ValueError('Causal V7 requires certified 1000ms bars')
         if self.checkpoints != ("PM", "REGULAR", "AH"):
             raise ValueError("All three causal session checkpoints are required")
