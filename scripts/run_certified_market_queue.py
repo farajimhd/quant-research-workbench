@@ -20,7 +20,7 @@ from uuid import uuid4,uuid5,NAMESPACE_URL
 
 from scripts import build_market_day as builder
 from pipelines.certified_research import contracts,source,universe,cohorts,recipe,independent_market
-from pipelines.certified_research import installation,campaign,verification,runtime_plan,acquisition
+from pipelines.certified_research import installation,campaign,verification,runtime_plan,acquisition,schema
 from pipelines.certified_research.launch import ExecutionLaunch
 from pipelines.certified_research.publication import KeeperClaim,DictionaryClaim
 from pipelines.market_sip.flatfiles.download_update_events import load_env_files
@@ -88,8 +88,10 @@ def write_json(path,value):
 
 class SynchronizedClient:
     """Shared control connection; worker factories still own separate clients."""
-    def __init__(self,client):self.client=client;self.lock=RLock()
-    def query(self,*args,**kwargs):
+    def __init__(self,client):
+        self.client=client;self.lock=RLock()
+        self.query=schema.BatchedStorageQuery(self._query)
+    def _query(self,*args,**kwargs):
         with self.lock:return self.client.query(*args,**kwargs)
     def close(self):
         with self.lock:return self.client.close()
@@ -136,8 +138,10 @@ def main(argv=None):
     load_env_files([a.env_file],verbose=False)
     os.environ['QMD_CLICKHOUSE_URL']=a.endpoint
     def clients(config=cfg):
-        return builder.Client(SimpleNamespace(env_file=a.env_file,max_threads=config.query_threads,
+        client=builder.Client(SimpleNamespace(env_file=a.env_file,max_threads=config.query_threads,
             max_memory_gb=config.query_memory_bytes/GIB,query_timeout=config.query_timeout_seconds),persistent=True)
+        client.query=schema.BatchedStorageQuery(client.query)
+        return client
     try:
         with closing(SynchronizedClient(clients())) as client,closing(open_workstation_keeper_session()) as keeper,acquisition.stop_marker(stop,a.run_dir/'stop.request'):
             with closing(KeeperClaim(keeper.client,GLOBAL_CLAIM)) as global_claim:
