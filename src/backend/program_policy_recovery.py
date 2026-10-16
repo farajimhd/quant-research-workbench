@@ -17,7 +17,9 @@ from typing import Mapping
 from .backtest_program_inputs import PreparedProgramBlock
 from .qmd_columnar_population import CertifiedPopulationWindow
 from .qmd_columnar_history_transport import _owned_worker
-from src.trading_runtime.arte_journal_reader import TypedJournalEvent, load_typed_event_page
+from src.trading_runtime.arte_journal_reader import (
+    TypedJournalEvent, load_typed_event_page, restore_typed_utc_clock,
+)
 from src.trading_runtime.columnar_program_actor import AssignedProgramStrategy
 from src.trading_runtime.ibkr_schema import Execution
 from src.trading_runtime.filled_position_state import FeeFact
@@ -288,6 +290,22 @@ def _clock(value):
     if at.tzinfo is None or at.utcoffset() is None:
         raise ValueError("Program policy recovery requires timezone-aware clocks")
     return at
+
+
+def restore_stored_program_policy_event(item):
+    """Restore only clocks consumed by policy replay, after typed row verification."""
+    if type(item) is not TypedJournalEvent:
+        raise ValueError("Stored policy replay requires a verified typed event")
+    event = {**item.event, "event_time": restore_typed_utc_clock(
+        "trading_event_v1", "event_time", item.event["event_time"])}
+    detail = item.detail
+    if detail is not None and (
+            (event["category"], event["entity_type"])
+            in {("execution", "fill"), ("execution", "commission")}
+            or detail.get("signal_type") == "program_boundary_completed"):
+        detail = {**detail, "source_event_time": restore_typed_utc_clock(
+            item.detail_family, "source_event_time", detail["source_event_time"])}
+    return TypedJournalEvent(event, item.detail_family, detail)
 
 
 def rebuild_program_policy_events(template, events, *, run_id, source_hashes,
@@ -614,7 +632,7 @@ async def recover_program_policy_async(reader_factory, prefix, template, *, thro
                         raise ValueError("Program policy recovery page did not advance")
                     if int(page[-1].event["sequence"]) > basis_sequence:
                         raise ValueError("Program policy recovery page exceeds historical basis")
-                    yield from page
+                    yield from map(restore_stored_program_policy_event, page)
                     after = int(page[-1].event["sequence"])
             result = rebuild_program_policy_events(template, events(), run_id=prefix.run_id,
                 last_sequence=basis_sequence, **scope)

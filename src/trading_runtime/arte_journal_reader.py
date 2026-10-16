@@ -218,6 +218,25 @@ def _verified_row(name: str, row: dict[str, Any]) -> dict[str, Any]:
     return canonical
 
 
+def restore_typed_utc_clock(family: str, column: str, value: Any) -> datetime:
+    """Restore an already-verified UTC DateTime64 field for Python consumers.
+
+    Canonical stored strings deliberately omit their timezone. Only the
+    declared UTC column contract authorizes restoring it; arbitrary naive
+    Python clocks remain invalid. Policy clocks cannot lose nanoseconds.
+    """
+    from .arte_journal_writer import _datetime_wire
+
+    contract = _CONTRACTS.get(family)
+    kind = dict(contract.columns).get(column) if contract is not None else None
+    if kind not in {"DateTime64(6, 'UTC')", "DateTime64(9, 'UTC')"}:
+        raise ValueError("Policy clock requires an explicit UTC DateTime64 column")
+    stored = isinstance(value, str) and re.fullmatch(
+        r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}(?:\d{3})?", value) is not None
+    canonical = _datetime_wire(value, 6, stored_utc=stored)
+    return datetime.fromisoformat(canonical).replace(tzinfo=timezone.utc)
+
+
 def load_typed_event_page(
     client: Any, prefix: VerifiedPrefix, *, after_sequence: int = 0,
     limit: int = 500,
