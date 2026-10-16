@@ -21,3 +21,9 @@ Use the V20-compatible controller: python -B -u -m research.vectorized_backtest.
 The CPU regression suite is tests/test_vector_v22.py. It covers retained financial/objective/selection behavior, local restart/RNG/lineage/seals, archive seeding, actual CPU worker replay/cache publication, completion/ownership gates, and the ported feature/sampling changes. CUDA throughput and full campaign results require separate runtime validation. Existing hard limits remain $1,000 entries, $200 additions, 20% stop distance and $300 planned position risk.
 
 The 128-node increase is user-authorized. Random-rule sampling bands remain 3..9 / 10..19 / 20..32; crossover may grow larger rules. Controller, local and global contracts bind maximum_rule_nodes=128. Archive descriptors allocate 128 node slots and normalize links by 127; V20 archive selection algorithm and weights remain unchanged. Existing 32-node checkpoints cannot silently resume under this source/contract.
+
+## Local ticker trimming (user-approved)
+
+Phase 1 now aggregates full fee-adjusted completed-position P&L per traded ticker, then removes the positive-only fractional top 10% of ticker contributions. Losses remain fully counted; a single traded ticker loses 10% of positive net profit to this trim. This retains V20's full trim strength, not V21's 0.25 concentration coefficient. All other local penalties and minimum-three-position/positive-trimmed-profit eligibility remain. Ticker totals must reconcile with the complete position ledger and session net profit; missing or changed summaries fail closed. The local checkpoint binds positive-fractional-top-ticker-v1.
+
+Phase 2's objective, global session trimming, pooled trade-trimmed reward, eligibility and historical local diagnostics remain exactly V20's. This local-only change supersedes the earlier statement that all local/global objective details are unchanged. No campaign is launched by this change.

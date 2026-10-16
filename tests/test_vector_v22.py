@@ -12,7 +12,13 @@ from research.vectorized_backtest.v22.run_search import digest,source_hash
 from research.vectorized_backtest.v22.objectives import Objective,score,local_panel
 from research.vectorized_backtest.v22.evaluator import Execution
 from research.vectorized_backtest.v6.torch_backtest.runtime import write_json,file_hash
-from test_vector_v17_regressions import metrics
+from test_vector_v17_regressions import metrics as baseline_metrics
+
+def metrics(profits):
+    result=baseline_metrics(profits)
+    result["ticker_pnl"]=[{str(i):float(v) for i,v in enumerate(row)} for row in profits]
+    return result
+
 
 
 def test_v19_cost_and_risk_arithmetic_unchanged():
@@ -285,7 +291,7 @@ def test_global_parent_routes_and_mutation_remain_active():
 
 def test_v20_selection_objective_and_execution_sources_preserved():
     root=Path(__file__).resolve().parents[1]/'research'/'vectorized_backtest'
-    for name in ('objectives.py','lineage.py','evaluator.py','protected_transition.py','sparse_replay.py',
+    for name in ('lineage.py','evaluator.py','protected_transition.py','sparse_replay.py',
                  'replay_graph.py','program.py','variation.py','semantics.py','enriched_math.py','indicator_math.py'):
         old=(root/'v20'/name).read_text().replace('v20','v22').replace('V20','V22')
         if name=='program.py':old=old.replace('MAX_NODES=32','MAX_NODES=128')
@@ -358,3 +364,42 @@ def test_fixed_population_selection_order_and_lineage_match_v20():
     expected=old.session_order(values,eligible,old_ids)
     for a,b in zip(actual,expected):np.testing.assert_array_equal(a,b)
     assert p.records==q.records
+
+
+def test_local_trims_full_ticker_totals_not_individual_positions():
+    m=metrics([[100.,100.,-50.,10.]])
+    m['ticker_pnl']=[{'A':150.,'B':10.}]
+    actual=local_panel([m],Objective())
+    baseline=local_panel([m],Objective(),trim_basis='position')
+    # Two traded tickers: remove .2 * 150 = 30, not .4 * 100 = 40.
+    assert actual['trimmed'][0,0]==130.
+    assert baseline['trimmed'][0,0]==120.
+    assert actual['values'][0,0]==baseline['values'][0,0]+10.
+    assert actual['eligible'][0,0]
+    # Holding ticker totals fixed, splitting a winning position does not change trim.
+    split=metrics([[50.,50.,100.,-50.,10.]])
+    split['ticker_pnl']=m['ticker_pnl']
+    assert local_panel([split],Objective())['trimmed'][0,0]==130.
+
+
+def test_local_ticker_trim_keeps_losses_empty_and_reconciles():
+    m=metrics([[100.,-50.,-30.],[]])
+    m['ticker_pnl']=[{'A':100.,'B':-50.,'C':-30.},{}]
+    actual=local_panel([m],Objective())
+    np.testing.assert_allclose(actual['trimmed'],[[-10.,0.]])
+    assert actual['eligible'].tolist()==[[False,False]]
+    m['ticker_pnl'][0]['A']=101.
+    with pytest.raises(ValueError,match='reconcile'):local_panel([m],Objective())
+
+
+def test_global_score_is_v20_exact_despite_different_ticker_grouping():
+    from research.vectorized_backtest.v20.objectives import score as reference
+    ordered=[metrics([[100.,100.,-50.,10.]]) for _ in range(24)]
+    for m in ordered:m['ticker_pnl']=[{'A':150.,'B':10.}]
+    actual=score(ordered,[50]);expected=reference(ordered,[50])
+    def equal(a,b):
+        if isinstance(a,dict):
+            assert a.keys()==b.keys()
+            for k in a:equal(a[k],b[k])
+        else:np.testing.assert_array_equal(a,b)
+    equal(actual,expected)

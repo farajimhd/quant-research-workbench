@@ -134,7 +134,7 @@ def detail_lines(row,payload,view,stage):
     if row is None:return ['No sealed ranking yet for this session. Active sessions publish results after each complete generation.']
     m=row['metrics'];win='â€”' if m['win_rate'] is None else f"{100*m['win_rate']:.2f}%"
     if view=='rules':return rule_lines(payload,stage)
-    if view=='objective':return [f"Saved local score {row['score']:,.4f} | parent eligible: {row['eligible']}",'Local eligibility: positive trade-trimmed profit, at least three completed positions, valid financial/risk checks.',f"Observed drawdown ${m['drawdown']:,.2f} | peak stock risk ${m['maximum_position_risk']:,.2f}",'Exact trade trimming and tail-loss terms are not in this summary projection; trade ledgers are deliberately not reprocessed.']
+    if view=='objective':return [f"Saved local score {row['score']:,.4f} | parent eligible: {row['eligible']}",'Local eligibility: positive ticker-trimmed profit, at least three completed positions, valid financial/risk checks.',f"Observed drawdown ${m['drawdown']:,.2f} | peak stock risk ${m['maximum_position_risk']:,.2f}",'Exact ticker trimming and trade tail-loss terms are not in this summary projection; trade ledgers are deliberately not reprocessed.']
     if view=='policy':
         if payload is None:return rule_lines(None,stage)
         p=payload['policy'];stop=f"Swing low: {p['swing_left']} left / {p['swing_right']} right" if p['swing_left'] else f"Initial fixed stop: {100*p['stop_fraction']:.3f}%"

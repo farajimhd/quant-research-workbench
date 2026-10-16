@@ -6,7 +6,7 @@ import numpy as np
 
 @dataclass(frozen=True)
 class Objective:
-    top_trim_fraction: float = .10  # Local complete-position trim.
+    top_trim_fraction: float = .10  # Local ticker trim; pooled global complete-position reward trim.
     session_trim_fraction: float = .10
     other_session_loss_weight: float = .25
     trade_tail_fraction: float = .10
@@ -122,14 +122,37 @@ def positive_trim(panel, fraction):
     return x.sum(0)-removed,removed
 
 
-def local_panel(ordered,config):
+def ticker_summary(records,fraction=.1):
+    """Ragged ticker totals -> one native segmented ordering; no position ledger."""
+    sizes=np.fromiter((len(r) for r in records),dtype=np.int64,count=len(records))
+    values=np.fromiter((v for r in records for v in r.values()),dtype=np.float64,count=int(sizes.sum()))
+    if not np.isfinite(values).all():raise ValueError('Nonfinite ticker profit')
+    owner=np.repeat(np.arange(len(records)),sizes)
+    totals=np.bincount(owner,weights=values,minlength=len(records))
+    order=np.lexsort((-values,owner));ranked=values[order]
+    starts=np.cumsum(sizes)-sizes
+    ordinal=np.arange(len(values))-starts[owner]
+    weights=np.clip(fraction*sizes[owner]-ordinal,0,1)
+    removed=np.bincount(owner,weights=np.maximum(ranked,0)*weights,minlength=len(records))
+    return totals,removed,sizes
+
+
+def local_panel(ordered,config,*,trim_basis='ticker'):
     panel=lambda k:np.asarray([m[k] for m in ordered],dtype=np.float64)
     pnl=panel('net_pnl');closed=panel('closed_positions')
     if pnl.ndim!=2 or not pnl.size or not np.isfinite(pnl).all():raise ValueError('Finite complete panel required')
     stats=episode_statistics([p for m in ordered for p in m['episode_profits']],config)
     if not np.array_equal(stats['closed_positions'].reshape(pnl.shape),closed):raise ValueError('Position counts differ from complete ledger')
     if not np.allclose(stats['total_pnl'].reshape(pnl.shape),pnl,rtol=1e-10,atol=1e-7):raise ValueError('Position profits differ from session profits')
-    trimmed=stats['trimmed_profit'].reshape(pnl.shape)
+    if trim_basis=='ticker':
+        records=[r for m in ordered for r in m['ticker_pnl']]
+        if len(records)!=pnl.size:raise ValueError('Ticker candidate alignment changed')
+        totals,removed,_=ticker_summary(records,config.top_trim_fraction)
+        if not np.allclose(totals.reshape(pnl.shape),pnl,rtol=1e-10,atol=1e-7):raise ValueError('Ticker P&L does not reconcile')
+        trimmed=pnl-removed.reshape(pnl.shape)
+    elif trim_basis=='position':
+        trimmed=stats['trimmed_profit'].reshape(pnl.shape)
+    else:raise ValueError('Unknown local trim basis')
     other=(trimmed.sum(0,keepdims=True)-trimmed)/(len(pnl)-1) if len(pnl)>1 else np.zeros_like(trimmed)
     other_loss=config.other_session_loss_weight*np.maximum(0,-other)
     dd=panel('drawdown');risk=panel('stop_risk_dollar_seconds')/3600;capital=panel('capital_dollar_seconds')/3600
@@ -155,7 +178,8 @@ def score(ordered, complexity, config=Objective()):
         raise ValueError('Invalid reachable complexity')
     profits = [np.concatenate([np.asarray(m['episode_profits'][i], dtype=np.float64) for m in ordered]) for i in range(count)]
     stats = episode_statistics(profits, config)
-    local=local_panel(ordered,config)
+    # Global objective and its historical local diagnostics remain V20-exact.
+    local=local_panel(ordered,config,trim_basis='position')
     global_profit,session_removed=positive_trim(pnl,config.session_trim_fraction)
     if not np.allclose(stats['total_pnl'], pnl.sum(0), rtol=1e-10, atol=1e-7):
         raise ValueError('Complete-position profits do not reconcile to session P&L')
