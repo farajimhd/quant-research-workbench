@@ -27,7 +27,9 @@ def test_program_plan_preserves_legacy_and_uses_central_contracts():
     checkpoints = {table.name for table in program_checkpoint_storage_contracts()}
     assert len(checkpoints) == 8
     assert plan.insert_arte - before.insert_arte == tables | exact | FAMILY_NAMES | {PRICE_CONTRACT.name, BROKER.name} | checkpoints
-    assert plan.select_arte - before.select_arte == tables | exact | FAMILY_NAMES | {PRICE_CONTRACT.name, BROKER.name} | checkpoints
+    sources = {table.name for table in program.program_signal_source_read_contracts()}
+    assert plan.select_arte - before.select_arte == tables | exact | FAMILY_NAMES | {PRICE_CONTRACT.name, BROKER.name} | checkpoints | sources
+    assert sources.isdisjoint(plan.insert_arte)
     assert before.select_arte - plan.select_arte == {program.ENTRY_CONTEXT_TABLE.split(".")[1]}
     assert plan.select_reference == before.select_reference
     assert plan.select_system == before.select_system

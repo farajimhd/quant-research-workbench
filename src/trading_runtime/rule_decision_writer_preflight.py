@@ -36,6 +36,14 @@ def program_checkpoint_storage_contracts():
     return (*BROKER_TABLES, *OBSERVATION_TABLES)
 
 
+def program_signal_source_read_contracts():
+    """Shared contextual source schemas, consumed read-only by the runner."""
+    from src.backend.signal_context_schema import TABLES
+    from .arte_journal_schema import TableContract
+    return tuple(TableContract(t.name, t.columns, 'toYYYYMM(session_key)', t.order)
+                 for t in TABLES)
+
+
 def rule_decision_write_tables():
     from .arte_journal_writer import v4_journal_write_tables
     from .trading_price_contracts import program_exact_price_storage_contracts
@@ -66,7 +74,8 @@ def preflight_rule_decision_writer(client):
         raise RuntimeError("Program writer requires its dedicated principal")
     preflight_rule_decision_storage(client)
     writable = rule_decision_write_tables()
-    readonly = frozenset(table.name for table in fixed_backtest_v2_contracts()) - writable
+    readonly = (frozenset(table.name for table in fixed_backtest_v2_contracts())
+        | frozenset(table.name for table in program_signal_source_read_contracts())) - writable
     journal_permission_preflight(client, journal_tables=writable, read_only_tables=readonly)
     audit = _ProgramWriterAudit(client, getattr(client, "typed_insert_dispatch", None),
         getattr(client, "backtest_v4_lease", None), getattr(client, "user", None),

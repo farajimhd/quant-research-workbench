@@ -15,6 +15,10 @@ def test_opt_in_catalog_preserves_original_v4_and_declares_shared_tables_once():
     from src.trading_runtime.columnar_strategy_schema import BROKER
     from src.trading_runtime.rule_decision_writer_preflight import program_checkpoint_storage_contracts
     checkpoints = program_checkpoint_storage_contracts()
+    from src.trading_runtime.rule_decision_writer_preflight import program_signal_source_read_contracts
+    sources = program_signal_source_read_contracts()
+    assert combined[-len(sources):] == sources
+    combined = combined[:-len(sources)]
     assert len(checkpoints) == 8
     assert len(combined) == len(original) + len(STAGED_TABLES) + len(exact) + len(freeze) + 2 + len(checkpoints)
     assert combined[:len(original)] == original

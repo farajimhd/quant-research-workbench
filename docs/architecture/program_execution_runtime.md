@@ -10,6 +10,9 @@ ClickHouse connection per admitted reader worker across listings. Every listing
 still receives its original seal, source and content checks; cancellation drains
 in-flight I/O before closing the worker connection. The volume census retains
 its independent source verification before and after the complete packet.
+The Backtest runner's exact read catalogue includes the shared contextual Signal
+Stream tables. Its storage preflight verifies those schemas and SSD placement;
+the journal principal has no INSERT authority on the source tables.
 
 ## Current composition
 

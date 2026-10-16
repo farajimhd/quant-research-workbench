@@ -30,7 +30,7 @@ from src.trading_runtime.trading_price_contracts import program_exact_price_stor
 from src.trading_runtime.arte_entry_acquisition_freeze import TABLES as ENTRY_FREEZE_TABLES
 from src.trading_runtime.backtest_journal_price_contract import PRICE_CONTRACT
 from src.trading_runtime.columnar_strategy_schema import BROKER
-from src.trading_runtime.rule_decision_writer_preflight import rule_decision_write_tables, program_checkpoint_storage_contracts
+from src.trading_runtime.rule_decision_writer_preflight import rule_decision_write_tables, program_checkpoint_storage_contracts, program_signal_source_read_contracts
 from src.backend.strategy_one_entry_context import TABLE as ENTRY_CONTEXT_TABLE
 
 TABLES = (*STAGED_TABLES, *program_exact_price_storage_contracts(), *ENTRY_FREEZE_TABLES, PRICE_CONTRACT, BROKER,
@@ -44,7 +44,8 @@ def desired_plan():
     base = base_plan()
     tables = frozenset(table.name for table in TABLES)
     return replace(base, principal=PRINCIPAL,
-        select_arte=(base.select_arte - {ENTRY_CONTEXT_TABLE.split(".", 1)[1]}) | tables,
+        select_arte=(base.select_arte - {ENTRY_CONTEXT_TABLE.split(".", 1)[1]}) | tables
+            | frozenset(table.name for table in program_signal_source_read_contracts()),
         insert_arte=rule_decision_write_tables())
 
 
@@ -75,7 +76,7 @@ def apply_with_clients(*, admin, credential, client_factory):
     present = admin.execute(f"SELECT count() FROM system.users WHERE name='{PRINCIPAL}' FORMAT TabSeparated").strip()
     if present not in {'0', '1'}:
         raise RuntimeError('Program principal inventory is ambiguous')
-    storage_preflight(admin, tables=(*v4_storage_contracts(), *TABLES))
+    storage_preflight(admin, tables=(*v4_storage_contracts(), *TABLES, *program_signal_source_read_contracts()))
     password = credential(account_exists=present == '1')
     if not isinstance(password, str) or len(password) < 40:
         raise RuntimeError('Program principal requires its private complete credential')

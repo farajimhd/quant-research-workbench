@@ -7,6 +7,50 @@ from src.trading_runtime import rule_decision_publication as publication
 from src.trading_runtime.rule_decision_basis_schema import STAGED_TABLES
 
 
+@pytest.mark.parametrize('corruption', [None, 'missing', 'insert', 'unknown', 'wildcard'])
+def test_native_runner_read_catalog_passes_real_grant_guard_and_rejects_expansion(monkeypatch, corruption):
+    import json
+    import re
+    from scripts.clickhouse.provision_backtest_v4_program_runner import desired_plan
+    from src.backend.signal_context_schema import TABLES
+    from src.trading_runtime.arte_journal_schema import TableContract
+    plan = desired_plan()
+    sources = module.program_signal_source_read_contracts()
+    assert sources == tuple(TableContract(t.name, t.columns, 'toYYYYMM(session_key)', t.order) for t in TABLES)
+    assert {t.name for t in sources}.isdisjoint(plan.insert_arte)
+    grants = list(plan.grants())
+    target = sources[0].name
+    if corruption == 'missing':
+        grants.remove(f'GRANT SELECT ON arte.{target} TO {plan.principal}')
+    elif corruption == 'insert':
+        grants.append(f'GRANT INSERT ON arte.{target} TO {plan.principal}')
+    elif corruption == 'unknown':
+        grants.append(f'GRANT SELECT ON arte.unrelated_table TO {plan.principal}')
+    elif corruption == 'wildcard':
+        grants.append(f'GRANT SELECT ON arte.* TO {plan.principal}')
+    def execute(sql):
+        if sql == 'SELECT currentUser()':
+            return plan.principal
+        if sql == 'SHOW GRANTS FINAL':
+            return '\n'.join(grants)
+        if 'FROM system.tables' in sql:
+            match = re.search(r'name IN \((.*?)\)', sql)
+            names = re.findall(r"'([^']+)'", match[1]) if match else []
+            return '\n'.join(json.dumps(dict(name=n)) for n in names)
+        if sql.startswith('CHECK GRANT '):
+            return '0'
+        raise AssertionError(sql)
+    client = SimpleNamespace(program_decision_profile=True, execute=execute)
+    monkeypatch.setattr(publication, 'preflight_rule_decision_storage', lambda actual: None)
+    from src.trading_runtime import arte_journal_schema
+    monkeypatch.setattr(arte_journal_schema, 'storage_preflight', lambda actual, **kwargs: None)
+    if corruption:
+        with pytest.raises(ValueError, match='cannot read|unauthorized'):
+            module.preflight_rule_decision_writer(client)
+    else:
+        module.preflight_rule_decision_writer(client)
+
+
 def test_program_write_catalog_is_exact_extension_without_legacy_mutation():
     original = writer.v4_journal_write_tables()
     from src.trading_runtime.trading_price_contracts import program_exact_price_storage_contracts
@@ -39,7 +83,8 @@ def test_preflight_orders_readonly_storage_and_exact_grant_audits(monkeypatch, f
     def grants(actual, *, journal_tables, read_only_tables):
         assert actual is client
         assert journal_tables == module.rule_decision_write_tables()
-        assert read_only_tables == {table.name for table in writer.fixed_backtest_v2_contracts()} - journal_tables
+        assert read_only_tables == ({table.name for table in writer.fixed_backtest_v2_contracts()}
+            | {table.name for table in module.program_signal_source_read_contracts()}) - journal_tables
         calls.append("grants")
         if failure == "grants":
             raise RuntimeError("grants")
