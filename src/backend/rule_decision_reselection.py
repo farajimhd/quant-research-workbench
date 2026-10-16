@@ -183,9 +183,10 @@ def reselect_recovered_rule_decision(parent, children, records, *, packet, **sco
             or program_policy_fingerprint(packet.actor) != packet.state_hash):
         raise ValueError("Rule reselection recovery packet differs from historical basis")
     original = packet.actor
-    actor = AssignedProgramStrategy(original.program_release, original.assignments(), original._listings)
-    # Selection only reads fills and target policy. Copy the two caches it
-    # advances, avoiding a duplicate of the entire historical execution ledger.
+    actor = AssignedProgramStrategy(original.program_release, original.assignments(), original._listings,
+        execution_risk=original.execution_risk)
+    # Keep the selected immutable risk contract and financial basis. Copy the
+    # caches selection advances, avoiding another historical execution ledger.
     actor.execution_state = original.execution_state
     actor.target_state = original.target_state
     actor.trail_state = deepcopy(original.trail_state)
