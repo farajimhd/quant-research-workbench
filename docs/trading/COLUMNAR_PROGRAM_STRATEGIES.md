@@ -15,6 +15,10 @@ HTTP transport. The gateway enables round-trip float parsing; scanner/history
 equality checks remain exact. A transport correction does not rebuild or relabel
 the sealed input products.
 
+Journal price contracts use the shared run context's UTC creation-month
+partition. The historical market session remains the runtime anchor date;
+running a July session in October does not change its market-data scope.
+
 The current path is:
 
 1. Certified canonical ClickHouse market products feed QMD History.

@@ -3,6 +3,7 @@ import asyncio
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
+from datetime import date
 from pathlib import Path
 from types import MappingProxyType
 from uuid import uuid4
@@ -36,7 +37,7 @@ def prepare_managed_journal_contracts(controller, request):
     """Local native projections before ownership or database connections open."""
     from .replay_run_service import ReplayRunController, _simulation_config
     from .backtest_program_journal_bootstrap import _configuration_hash
-    from .backtest_v4_run_context import historical_runtime_config
+    from .backtest_v4_run_context import historical_runtime_config, program_v4_context_rows
     from .backtest_journal_clickhouse import backtest_code_hash
     from src.trading_runtime.backtest_broker_contract import project_broker_contract, BacktestBrokerContract
     from src.trading_runtime.backtest_journal_price_contract import (
@@ -57,12 +58,16 @@ def prepare_managed_journal_contracts(controller, request):
     runtime_config = historical_runtime_config(mode=definition.mode,
         configuration=definition.configuration_revision['payload'], account_ids=accounts,
         anchor_date=definition.session_date, run_id=controller.run_id)
+    run, _ = program_v4_context_rows(runtime_config, release=actor.program_release,
+        expected_release_hash=actor.program_release.header['content_hash'],
+        execution_interval=definition.execution_interval, configuration_hash=_configuration_hash(definition),
+        code_hash=code_hash, market_plan_token=request.market_parent.token, started_at=controller.created_at)
     simulation = replace(_simulation_config(definition),
         liquidity_resolution_ms=controller._program_liquidity_resolution_ms)
     broker = BacktestBrokerContract(project_broker_contract(controller.run_id, simulation,
         liquidity_plan_hash=request.liquidity_plan_hash), definition.initial_cash)
     price = BacktestJournalPriceContract(project_journal_price_contract(run_id=controller.run_id,
-        run_month=definition.session_date.replace(day=1), configuration_hash=_configuration_hash(definition),
+        run_month=date.fromisoformat(run['run_month']), configuration_hash=run['configuration_hash'],
         price_codec=EXACT_PRICE_CODEC))
     return dict(runtime_config=runtime_config, expected_release_hash=actor.program_release.header['content_hash'],
         code_hash=code_hash, fixed_market_parent_plan=request.market_parent,

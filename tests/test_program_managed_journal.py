@@ -1,6 +1,7 @@
 """Managed native contracts and ownership transfer; no real database operations."""
 import asyncio
 from dataclasses import replace
+from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 from threading import Event, get_ident
 from types import SimpleNamespace
@@ -15,8 +16,10 @@ from tests.test_program_controller_runtime import definition_and_actor
 from tests.test_program_signal_source import contextual_publisher, source_context_for
 
 
-def controller_request(tmp_path):
+def controller_request(tmp_path, session_date=None):
     definition, actor = definition_and_actor()
+    if session_date is not None:
+        definition = replace(definition, session_date=session_date)
     plan = CertifiedMarketDayPlan(ExecutionInterval.fixed(100), 'synthetic-build', 'b' * 64,
         (definition.session_date.isoformat(),), ('ABC',), (), (100,), 'a' * 64)
     revision = {**definition.configuration_revision, 'content_hash':
@@ -39,6 +42,31 @@ def test_local_contracts_preserve_native_broker_settings_and_exact_prices(tmp_pa
     assert values['journal_price_contract'].row['price_codec'] == 'binary64-v1'
     assert values['runtime_config'].run_id == controller.run_id
     assert controller._runtime is controller._journal is None
+
+
+@pytest.mark.parametrize('created_at', [
+    datetime(2026, 10, 16, 12, tzinfo=timezone.utc),
+    datetime(2026, 11, 1, 0, 30, tzinfo=timezone(timedelta(hours=2))),
+])
+def test_historical_price_contract_matches_actual_utc_journal_run_scope(tmp_path, monkeypatch, created_at):
+    from src.backend.backtest_program_journal_bootstrap import _configuration_hash
+    from src.backend.backtest_v4_run_context import program_v4_context_rows
+    controller, request = controller_request(tmp_path, session_date=date(2026, 7, 31))
+    controller.created_at = created_at
+    release = controller._program_strategy.program_release
+    monkeypatch.setattr('src.backend.backtest_journal_clickhouse.backtest_code_hash',
+        lambda _: release.header['code_hash'])
+    values = managed.prepare_managed_journal_contracts(controller, request)
+    run, _ = program_v4_context_rows(values['runtime_config'], release=release,
+        expected_release_hash=values['expected_release_hash'],
+        execution_interval=controller.definition.execution_interval,
+        configuration_hash=_configuration_hash(controller.definition), code_hash=values['code_hash'],
+        market_plan_token=request.market_parent.token, started_at=controller.created_at)
+    assert run['run_month'] == '2026-10-01'
+    assert values['runtime_config'].anchor_date == date(2026, 7, 31)
+    assert values['journal_price_contract'].require_scope(run_id=run['run_id'],
+        run_month=date.fromisoformat(run['run_month']), configuration_hash=run['configuration_hash'],
+        content_hash=values['expected_journal_price_contract_hash'])
 
 
 @pytest.mark.parametrize('mode', ['adopt', 'unadopted', 'failure', 'cancel_open'])
