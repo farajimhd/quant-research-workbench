@@ -245,7 +245,8 @@ def preflight_program_liquidity_scope(controller, work):
     from .backtest_market_data import (CertifiedMarketDayPlan, project_market_day_plan,
         market_day_source_sqls, SESSION_OPEN_OFFSET_MS)
     from .backtest_liquidity_price import PriceLevelPlan
-    from .backtest_liquidity_resolution import CertifiedLiquidityResolution, liquidity_window_sql
+    from .backtest_liquidity_resolution import (
+        CertifiedLiquidityResolution, liquidity_window_sql, fixed_liquidity_read_plan)
     scope = work.scope
     from src.trading_runtime.configuration_execution_binding import ConfigurationExecutionBinding
     execution = scope['execution_policy']
@@ -268,11 +269,11 @@ def preflight_program_liquidity_scope(controller, work):
     if controller._program_liquidity_resolution_ms == 100:
         if (certificates is not None or type(market) is not CertifiedMarketDayPlan
                 or type(prices) is not PriceLevelPlan or market.sessions != (day.isoformat(),)
-                or set(market.tickers) != tickers or len(market.tickers) != len(tickers)
-                or market.required_resolutions_ms != (100,)):
+                or set(market.tickers) != tickers or len(market.tickers) != len(tickers)):
             raise ValueError("Programme liquidity scope differs from certified100ms assignments")
-        for ticker in market.tickers:
-            projected = project_market_day_plan(market, (ticker,))
+        broker_read = fixed_liquidity_read_plan(market)
+        for ticker in broker_read.tickers:
+            projected = project_market_day_plan(broker_read, (ticker,))
             market_day_source_sqls(projected,
                 after_boundary_ms=work.first_bucket * 1000 - SESSION_OPEN_OFFSET_MS,
                 through_boundary_ms=work.stop_bucket * 1000 - SESSION_OPEN_OFFSET_MS,

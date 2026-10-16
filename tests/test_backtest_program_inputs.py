@@ -183,6 +183,12 @@ def test_cohort_preparation_reuses_full_feature_origin_and_bounds_parallel_io(pr
     assert len(session_work) == 1 and session_work[0].blocks["first"] is native.blocks["first"]
     assert calls[before_session:] == [(False, 80, 90)]
     from src.backend.backtest_program_input_plan import preflight_program_liquidity_scope
+    # The real dependency compiler returns both strategy1s and broker100ms.
+    # Scope preflight must preserve that parent without opening any reader.
+    mixed_parent = replace(market, required_resolutions_ms=(100, 1000))
+    preflight_program_liquidity_scope(controller, replace(session_work[0],
+        scope=dict(session_scope, market_plan=mixed_parent)))
+    assert mixed_parent.required_resolutions_ms == (100, 1000)
     from src.backend.backtest_liquidity_resolution import CertifiedLiquidityResolution
     from tests.test_liquidity_resolution_producer import source as liquidity_source
     unit = replace(liquidity_source().unit, session_date=controller.definition.session_date, ticker=ticker)

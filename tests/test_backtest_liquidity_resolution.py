@@ -168,18 +168,54 @@ def test_liquidity_cohort_bounds_concurrent_clients_and_closes_every_reader(monk
     asyncio.run(run_test())
 
 
+def test_broker_read_projection_keeps_parent_units_and_source_identity():
+    from tests.test_backtest_market_data import BacktestMarketDataTests
+    from src.backend.backtest_liquidity_resolution import fixed_liquidity_read_plan
+    parent = BacktestMarketDataTests()._plan()
+    view = fixed_liquidity_read_plan(parent)
+    assert parent.required_resolutions_ms == (100, 1000)
+    assert view.required_resolutions_ms == (100,)
+    assert view.token != parent.token
+    assert view.units is parent.units and view.tickers == parent.tickers
+    assert (view.build_id, view.definition_hash, view.sessions, view.execution_interval) == (
+        parent.build_id, parent.definition_hash, parent.sessions, parent.execution_interval)
+    assert fixed_liquidity_read_plan(view) is view
+    assert fixed_liquidity_read_plan(parent).token == view.token
+
+
+@pytest.mark.parametrize('resolutions', [(1000,), (100, 100), (1000, 100), (100, 999), (True, 100)])
+def test_broker_read_projection_rejects_missing_or_malformed_clock_coverage(resolutions):
+    from tests.test_backtest_market_data import BacktestMarketDataTests
+    from src.backend.backtest_liquidity_resolution import fixed_liquidity_read_plan
+    with pytest.raises(ValueError, match='certified100ms'):
+        fixed_liquidity_read_plan(replace(BacktestMarketDataTests()._plan(),
+            required_resolutions_ms=resolutions))
+
+
+def test_broker_read_projection_rejects_a_different_execution_clock():
+    from tests.test_backtest_market_data import BacktestMarketDataTests
+    from src.backend.backtest_market_data import ExecutionInterval
+    from src.backend.backtest_liquidity_resolution import fixed_liquidity_read_plan
+    with pytest.raises(ValueError, match='certified100ms'):
+        fixed_liquidity_read_plan(replace(BacktestMarketDataTests()._plan(),
+            execution_interval=ExecutionInterval.fixed(1000)))
+
+
 @pytest.mark.parametrize("duplicate", [False, True])
-def test_fixed_liquidity_cohort_uses_native_pinned_query_and_closes_stream(duplicate):
+@pytest.mark.parametrize("full_source", [False, True])
+@pytest.mark.parametrize("strategy_row", [False, True])
+def test_fixed_liquidity_cohort_uses_native_pinned_query_and_closes_stream(duplicate, full_source, strategy_row):
     import asyncio
     from tests.test_backtest_market_data import BacktestMarketDataTests
     from src.backend.backtest_liquidity_price import PriceLevelPlan, PriceLevelUnit
     from src.backend.backtest_liquidity_resolution import read_fixed_liquidity_cohort_async
-    plan = replace(BacktestMarketDataTests()._plan(), required_resolutions_ms=(100,))
+    parent = BacktestMarketDataTests()._plan()
+    plan = parent if full_source else replace(parent, required_resolutions_ms=(100,))
     source = next(unit for unit in plan.units if unit.stage == "broker_100ms")
     prices = PriceLevelPlan(plan.build_id, (PriceLevelUnit(source.session_date, source.ticker,
         source.attempt_id, "00000000-0000-0000-0000-000000000002", 1, 1, 0., "a" * 64),), "b" * 64)
     row = dict(session_date=source.session_date, ticker=source.ticker, boundary_ms=300100,
-        resolution_ms=100, bucket_index=147000, price_valid=0, execution_price_levels=[])
+        resolution_ms=1000 if strategy_row else 100, bucket_index=147000, price_valid=0, execution_price_levels=[])
     clients = []
     class Reader:
         def __init__(self):
@@ -188,6 +224,7 @@ def test_fixed_liquidity_cohort_uses_native_pinned_query_and_closes_stream(dupli
         def iter_json_each_row(self, query):
             assert query.startswith("SELECT") and "execution_price_levels" in query
             assert source.attempt_id in query and prices.units[0].derivation_attempt_id in query
+            assert 'resolution_ms IN (1000)' not in query and 'resolution_ms=1000' not in query
             try:
                 yield dict(row)
                 if duplicate:
@@ -199,7 +236,7 @@ def test_fixed_liquidity_cohort_uses_native_pinned_query_and_closes_stream(dupli
     async def run_test():
         request = read_fixed_liquidity_cohort_async(Reader, plan, prices,
             after_boundary_ms=300000, through_boundary_ms=300200, concurrency=2)
-        if duplicate:
+        if duplicate or strategy_row:
             with pytest.raises(ExceptionGroup, match="TaskGroup"):
                 await request
         else:

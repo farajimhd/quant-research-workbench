@@ -105,6 +105,11 @@ Execution binding and risk selection use normalized shared configuration
 contracts. Broker liquidity resolution is an explicit backtest parameter;
 this audit selects 100ms. Choosing a one-second liquidity product does not
 change the program's one-second evaluation cadence or its input causality.
+The certified market parent retains the dependency compiler's full resolution
+set, including one-second strategy bars. A 100ms broker reads an explicit
+parent-bound 100ms projection through the same native market/price reader;
+strategy-resolution rows are rejected before reaching the broker. The full
+parent and execution authority remain pinned in the journal.
 Session-end exit requests must precede the last eligible liquidity bar so the
 existing broker can attempt fills. An unfilled request is not a position exit.
 

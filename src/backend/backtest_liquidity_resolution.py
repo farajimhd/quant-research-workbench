@@ -7,7 +7,7 @@ The strategy decision interval is deliberately absent from this contract.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from hashlib import sha256
 import json
@@ -275,6 +275,29 @@ async def _read_liquidity_pool(scopes, concurrency, read):
     return MappingProxyType({ticker: results[ticker] for ticker in sorted(results)})
 
 
+def fixed_liquidity_read_plan(market_plan):
+    """Read only the broker clock from the certified multi-resolution parent.
+
+    The normal dependency compiler also requires one-second strategy bars.
+    Those remain in the journal authority, but must never become broker rows.
+    This read view retains all source units and binds its token to the parent.
+    """
+    from .backtest_market_data import (
+        CertifiedMarketDayPlan, ExecutionInterval, FIXED_RESOLUTIONS_MS, _stable_hash)
+    if type(market_plan) is not CertifiedMarketDayPlan:
+        raise ValueError('Fixed liquidity requires a certified100ms parent')
+    resolutions = market_plan.required_resolutions_ms
+    if (market_plan.execution_interval != ExecutionInterval.fixed(100)
+            or type(resolutions) is not tuple or not resolutions
+            or any(type(value) is not int or value not in FIXED_RESOLUTIONS_MS for value in resolutions)
+            or resolutions != tuple(sorted(set(resolutions))) or 100 not in resolutions):
+        raise ValueError('Fixed liquidity requires certified100ms source coverage')
+    if resolutions == (100,):
+        return market_plan
+    return replace(market_plan, required_resolutions_ms=(100,), token=_stable_hash(
+        {'parent_token': market_plan.token, 'broker_read_resolution_ms': 100}))
+
+
 async def read_fixed_liquidity_cohort_async(reader_factory, market_plan, price_plan, *,
         after_boundary_ms, through_boundary_ms, concurrency):
     """Bounded100ms windows from the existing certified market/price readers."""
@@ -284,12 +307,12 @@ async def read_fixed_liquidity_cohort_async(reader_factory, market_plan, price_p
     if (not callable(reader_factory) or type(market_plan) is not CertifiedMarketDayPlan
             or type(price_plan) is not PriceLevelPlan or len(market_plan.sessions) != 1
             or not market_plan.tickers or len(set(market_plan.tickers)) != len(market_plan.tickers)
-            or market_plan.required_resolutions_ms != (100,)
             or type(concurrency) is not int or not 1 <= concurrency <= 32
             or type(after_boundary_ms) is not int or type(through_boundary_ms) is not int
             or not 0 < through_boundary_ms - after_boundary_ms <= 256000
             or len(market_plan.tickers) * ((through_boundary_ms - after_boundary_ms) // 100) > 262144):
         raise ValueError("Fixed liquidity cohort exceeds its certified100ms scope or reader bounds")
+    market_plan = fixed_liquidity_read_plan(market_plan)
     scopes = {}
     for ticker in market_plan.tickers:
         plan = project_market_day_plan(market_plan, (ticker,))
@@ -308,6 +331,8 @@ async def read_fixed_liquidity_cohort_async(reader_factory, market_plan, price_p
                 previous = after_boundary_ms
                 validator = CompletedBoundaryValidator(plan)
                 for row in stream:
+                    if row.get('resolution_ms') != 100:
+                        raise ValueError('Fixed liquidity cannot consume a strategy-resolution row')
                     boundary = row["boundary_ms"]
                     if not previous < boundary <= through_boundary_ms:
                         raise ValueError("Fixed liquidity cohort ordering or window differs")
