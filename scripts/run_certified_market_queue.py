@@ -96,7 +96,7 @@ def main(argv=None):
         if meta['request']!=request:raise ValueError('Resume request differs from frozen queue')
     else:
         a.run_dir.mkdir();meta=None
-    stop=Event()
+    stop=Event();budget=None
     def save(status,**values):
         write_json(a.run_dir/'status.json',dict(status=status,pid=os.getpid(),
             updated_at=datetime.now(timezone.utc).isoformat(),**values))
@@ -178,6 +178,9 @@ def main(argv=None):
                     budget_reason=budget.reason,combined_dataset_complete=False)
                 return 0 if status=='complete' else 2
     except BaseException as error:
+        if budget is not None and budget.reason:
+            save('budget_paused',reason=budget.reason,combined_dataset_complete=False)
+            return 2
         save('failed',error_type=type(error).__name__,reason=str(error)[:500]);raise
 
 
