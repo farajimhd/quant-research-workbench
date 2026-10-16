@@ -119,6 +119,7 @@ def main(argv=None):
                     baseline=int(client.query("SELECT coalesce(sum(bytes_on_disk),0) n FROM system.parts WHERE database='arte'")[0]['n'])
                     meta=dict(request=request,source_epoch=epoch,partition=partition,baseline_bytes=baseline,
                         full_source_hash=snapshot['source_hash'],quarantine_counts=snapshot.get('quarantine_counts',{}),
+                        eligibility_census=snapshot.get('eligibility_census',{}),
                         quarantine=snapshot.get('quarantine',()),historical_membership_certified=snapshot.get('historical_membership_certified'),
                         independent_existing_datasets_preserved=True,existing_receipts_reused=False,
                         cohorts=[dict(dataset_id=str(uuid4()),issuer_keys=group,status='queued') for group in partition['groups']])
