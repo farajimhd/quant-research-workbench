@@ -2,7 +2,9 @@ from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import Mock
 import pytest
-from scripts.run_certified_source_priority import sequence,Controller,validate_arguments,replace_option
+from scripts.run_certified_source_priority import sequence,Controller,validate_arguments,replace_option,prepare_priority,PRIORITY_DAYS
+from pipelines.certified_research.contracts import CampaignConfig
+from datetime import date
 
 
 def test_original_resumes_even_when_december_preparation_fails():
@@ -48,3 +50,16 @@ def test_limits_and_network_acquisition_fail_closed():
     validate_arguments(arguments)
     with pytest.raises(ValueError):validate_arguments(arguments+['--acquire-missing'])
     with pytest.raises(ValueError):validate_arguments(replace_option(arguments,'--query-threads','16'))
+
+
+def test_priority_uses_2026_config_and_only_four_explicit_december_context_sessions():
+    config=CampaignConfig(date(2026,1,1),date(2026,10,2),query_threads=8,query_memory_bytes=8*1024**3,
+        workers=2,global_memory_bytes=16*1024**3)
+    parsed=SimpleNamespace(staging_reserve_gib=256,staging_reserve_fraction=.10,staging_chunk_gib=256)
+    prepare=Mock()
+    prepare_priority(parsed,config,'paths','query','writer','claim','stop',prepare)
+    args,kwargs=prepare.call_args
+    assert args[2].start==date(2026,1,1)
+    assert kwargs['sessions']==PRIORITY_DAYS==tuple(date(2025,12,d) for d in (26,29,30,31))
+    assert kwargs['context_start']==date(2025,12,26)
+    assert kwargs['staging_reserve_bytes']==256*1024**3

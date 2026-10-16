@@ -17,6 +17,59 @@ from pathlib import Path
 import subprocess
 import time
 
+PRIORITY_DAYS=tuple(date(2025,12,d) for d in (26,29,30,31))
+
+
+def prepare_priority(parsed,config,paths,query,writer,claim,stop,prepare):
+    """December is an explicit source context, never a pre-2026 target."""
+    return prepare(query,paths,config,claim,stop,writer_query=writer,
+        context_start=PRIORITY_DAYS[0],sessions=PRIORITY_DAYS,recover_retained_reporting=True,
+        staging_reserve_bytes=parsed.staging_reserve_gib*1024**3,
+        staging_reserve_fraction=parsed.staging_reserve_fraction,
+        staging_chunk_bytes=parsed.staging_chunk_gib*1024**3)
+
+
+def execute_worker(path,*,inspect_only=False):
+    request=json.loads(Path(path).read_text())
+    sys.path.insert(0,request['source_code'])
+    # Existing imports may load environment defaults. Pin transport afterward,
+    # exactly as the original immutable worker did.
+    from scripts import prepare_certified_research as preparation
+    from pipelines.market_sip.flatfiles.download_update_events import load_env_files
+    parsed=preparation.parse_args(request['arguments'])
+    load_env_files([parsed.env_file],verbose=False)
+    os.environ['QMD_CLICKHOUSE_URL']=request['endpoint']
+    if request['name']=='original_resume' and not inspect_only:return preparation.main(request['arguments'])
+    from scripts import build_market_day as builder
+    from pipelines.certified_research import acquisition
+    from pipelines.certified_research.publication import SourceClaim
+    from src.trading_runtime.keeper_session import open_workstation_keeper_session
+    from threading import Event
+    import signal
+    config=preparation.campaign_config(parsed,parsed.end_date)
+    paths=acquisition.IngestionPaths(parsed.env_file,parsed.runtime_root,parsed.cache_root,
+        parsed.archive_root,parsed.clickhouse_cache_root)
+    if inspect_only:
+        from pipelines.certified_research import source
+        with closing(builder.Client(parsed,persistent=True,readonly=True)) as client:
+            if client.secrets[0]!=request['endpoint']:raise ValueError('Worker effective endpoint differs')
+            inventory=source.inventory(client.query,PRIORITY_DAYS[0],config.end,sessions=PRIORITY_DAYS)
+            reporting=source.reporting_inventory(client.query,inventory)
+            print(json.dumps(dict(config_start=str(config.start),config_end=str(config.end),
+                sessions=list(map(str,inventory['expected'])),canonical_missing=list(map(str,inventory['missing'])),
+                canonical_incomplete=list(map(str,inventory['incomplete'])),reporting_missing=list(map(str,reporting['missing'])),
+                overlapping_mutation=reporting['mutating'],effective_endpoint_verified=True)))
+        return 0
+    stop=Event();signal.signal(signal.SIGINT,lambda *unused:stop.set())
+    print('Priority source context | '+','.join(map(str,PRIORITY_DAYS))+' | original 2026 target retained',flush=True)
+    with closing(builder.Client(parsed,persistent=True)) as client,acquisition.stop_marker(stop,parsed.stop_file),closing(open_workstation_keeper_session()) as keeper:
+        claim=SourceClaim(keeper.client)
+        try:
+            prepare_priority(parsed,config,paths,lambda sql:client.query(sql+' SETTINGS readonly=1'),
+                client.query,claim,stop,acquisition.prepare_sources)
+        finally:claim.close()
+    return 0
+
 
 def stamp():return datetime.now(timezone.utc).isoformat()
 
@@ -99,15 +152,22 @@ class Controller:
         self.save('waiting_original_drain',stop_requested_at=self.state.get('stop_requested_at',stamp()))
         while process(pid) is not None:
             self.save();time.sleep(5)
-        terminal=json.loads((self.args.original_run/'status.json').read_text())
-        if terminal.get('pid')!=pid or terminal.get('status') not in ('complete','interrupted','failed'):
+        previous=self.state.get('previous_handoff')
+        if previous:
+            while process(self.state['previous_controller_pid']) is not None:self.save();time.sleep(5)
+            terminal=json.loads((Path(previous)/'status.json').read_text())
+            valid=(terminal.get('worker',{}).get('pid')==pid and terminal.get('phase') in ('complete','failed'))
+        else:
+            terminal=json.loads((self.args.original_run/'status.json').read_text())
+            valid=(terminal.get('pid')==pid and terminal.get('status') in ('complete','interrupted','failed'))
+        if not valid:
             raise RuntimeError('Original process ended without a matching terminal receipt')
         self.verify_release()
         # Preserve the exact stop request and terminal receipt before allowing
         # the original immutable code to run again with the same arguments.
         write_json(self.run/'original_terminal.json',terminal)
         marker.rename(self.run/'original_stop.request')
-        self.save('original_drained',drained=True,original_terminal_status=terminal['status'])
+        self.save('original_drained',drained=True,original_terminal_status=terminal.get('status',terminal.get('phase')))
 
     def wait_child(self,name,arguments):
         worker=self.state.get('worker')
@@ -120,11 +180,15 @@ class Controller:
         index=1
         while (self.run/f'{name}.{index}.stdout.log').exists():index+=1
         out=self.run/f'{name}.{index}.stdout.log';err=self.run/f'{name}.{index}.stderr.log'
-        command=[sys.executable,'-B','-u',str(self.args.source_code/'scripts/prepare_certified_research.py'),*arguments]
+        request=self.run/f'{name}.{index}.request.json'
+        write_json(request,dict(name=name,source_code=str(self.args.source_code),endpoint=self.args.endpoint,arguments=arguments))
+        command=[sys.executable,'-B','-u',str(Path(__file__).resolve()),'--execute-worker',str(request)]
         self.save(name+'_starting',worker=None)
         with out.open('x',encoding='utf-8') as stdout,err.open('x',encoding='utf-8') as stderr:
             child=subprocess.Popen(command,cwd=self.args.source_code,stdout=stdout,stderr=stderr,
-                env=dict(os.environ,PYTHONDONTWRITEBYTECODE='1',OMP_NUM_THREADS='2',MKL_NUM_THREADS='2'))
+                creationflags=subprocess.BELOW_NORMAL_PRIORITY_CLASS,
+                env=dict(os.environ,PYTHONDONTWRITEBYTECODE='1',OMP_NUM_THREADS='2',MKL_NUM_THREADS='2',
+                    CUDA_VISIBLE_DEVICES='-1',HIP_VISIBLE_DEVICES='-1'))
             identity=process(child.pid)
             self.save(name+'_running',worker=dict(name=name,pid=child.pid,identity=identity,
                 stdout=str(out),stderr=str(err),started_at=stamp()))
@@ -147,8 +211,6 @@ class Controller:
     def priority(self):
         if self.state.get('priority_finished'):return
         arguments=self.state['original']['arguments']
-        arguments=replace_option(arguments,'--start-date','2025-12-26')
-        arguments=replace_option(arguments,'--end-date','2025-12-31')
         arguments=replace_option(arguments,'--stop-file',self.run/'priority.stop.request')
         code=self.wait_child('priority',arguments)
         if code not in (0,None):raise RuntimeError('December source worker failed; inspect retained stderr')
@@ -168,11 +230,15 @@ class Controller:
 
 
 def main(argv=None):
+    if argv is None:argv=sys.argv[1:]
+    if len(argv)==2 and argv[0]=='--execute-worker':return execute_worker(argv[1])
+    if len(argv)==2 and argv[0]=='--inspect-worker':return execute_worker(argv[1],inspect_only=True)
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--source-code',type=Path,required=True)
     p.add_argument('--original-run',type=Path,required=True)
     p.add_argument('--run-dir',type=Path,required=True)
     p.add_argument('--endpoint',required=True)
+    p.add_argument('--previous-handoff',type=Path)
     p.add_argument('--resume',action='store_true')
     a=p.parse_args(argv)
     if os.name!='nt':raise RuntimeError('Source handoff requires the Windows workstation')
@@ -188,15 +254,27 @@ def main(argv=None):
             raise ValueError('Handoff resume identity differs')
         if state['phase']=='complete':return 0
     else:
-        original=json.loads((a.original_run/'status.json').read_text());validate_arguments(original['arguments'])
-        identity=process(int(original['pid']))
-        if original['status']!='running' or not identity or str(original_file).replace('\\','/').lower() not in identity['CommandLine'].replace('\\','/').lower():
-            raise ValueError('Original live source worker identity is unproven')
+        if a.previous_handoff:
+            previous=json.loads((a.previous_handoff/'status.json').read_text())
+            if previous['phase']!='original_resume_running' or previous['worker']['name']!='original_resume':
+                raise ValueError('Prior handoff is not running the original resumed worker')
+            original=dict(previous['original'],pid=previous['worker']['pid'],status='running')
+            identity=process(int(original['pid']))
+            if (identity!=previous['worker']['identity'] or previous['source_code']!=str(a.source_code)
+                    or previous['original_run_hash']!=original_hash):
+                raise ValueError('Previous handoff worker identity differs')
+        else:
+            original=json.loads((a.original_run/'status.json').read_text())
+            identity=process(int(original['pid']))
+            if original['status']!='running' or not identity or str(original_file).replace('\\','/').lower() not in identity['CommandLine'].replace('\\','/').lower():
+                raise ValueError('Original live source worker identity is unproven')
+        validate_arguments(original['arguments'])
         if Path(option(original['arguments'],'--stop-file')).exists():raise ValueError('Original stop marker already exists')
         a.run_dir.mkdir()
         state=dict(version='certified-source-priority-v1',original=original,original_process=identity,
             source_code=str(a.source_code),original_run_hash=original_hash,endpoint=a.endpoint,
             started_at=stamp(),phase='ready',gpu=False)
+        if a.previous_handoff:state.update(previous_handoff=str(a.previous_handoff),previous_controller_pid=previous['controller_pid'])
     os.environ['QMD_CLICKHOUSE_URL']=a.endpoint
     sys.path.insert(0,str(a.source_code))
     import msvcrt
