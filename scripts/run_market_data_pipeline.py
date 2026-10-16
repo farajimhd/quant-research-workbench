@@ -142,7 +142,7 @@ def main(argv=None):
             query_threads=a.query_threads,query_memory_gib=a.query_memory_gib,
             prefetch_gib=a.prefetch_gib,sql_workers=a.sql_workers,
             global_memory_gib=a.global_memory_gib,code_root=str(Path(__file__).resolve().parents[1]))
-        stop=Event();finished=Event();active_preparation=[]
+        stop=Event();finished=Event();active_preparation=[];prefetch=None
         def heartbeat():
             while not finished.wait(1):
                 with progress.lock:progress.flush(force=True)
@@ -249,6 +249,8 @@ def main(argv=None):
         except BaseException as error:
             if active_preparation and active_preparation[0].error:
                 error=active_preparation[0].error
+            if prefetch is not None and prefetch.error:
+                error=prefetch.error
             interrupted=isinstance(error,(InterruptedError,KeyboardInterrupt))
             progress.update(status='interrupted' if interrupted else 'failed',failed=0 if interrupted else 1)
             progress.emit(type(error).__name__+': '+str(error))

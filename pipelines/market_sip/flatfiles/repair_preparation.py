@@ -83,6 +83,7 @@ class Preparation:
                     query_memory_bytes=self.query_memory_bytes,emit=emit,staged_copy=self.prefetch.get,
                     capture_tape=False,capture_only=True,storage_admit=lambda n:self.space.admit(day,n))
                 if tuple(d for d,_ in result['captured'])!=(str(day),):raise ValueError('Prepared day receipt missing')
+                self.prefetch.release(day)
                 self.progress.worker(worker,'Prepared',day=day,detail='Evidence saved; awaiting flag update')
                 with self.lock:
                     self.prepared+=1;self.progress.update(prepared=self.prepared)

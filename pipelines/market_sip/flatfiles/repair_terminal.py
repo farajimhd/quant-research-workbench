@@ -93,6 +93,11 @@ def render(state,width=110,height=30):
     if mutation:
         text=f'FLAG UPDATE  {mutation.get("day", "")}  |  {mutation.get("stage", "")}  |  {mutation.get("detail", "")}'
         parts.append(Text(text,style='yellow',overflow='ellipsis',no_wrap=True))
+    if 'staging_bytes' in state and height>=24:
+        parts.append(Text(f'SSD cache {state["staging_bytes"]/1024**3:.1f}/{state["staging_limit_bytes"]/1024**3:.0f} GiB | '
+            f'Ready {state.get("staged_ready",0)} | In use {state.get("staging_in_use",0)} | '
+            f'Queued {state.get("copy_queued",0)} | {state.get("copy_queue_status", "")}',
+            style='dim',no_wrap=True,overflow='ellipsis'))
     if state.get('mutation_parts') and height>=24:
         rewrites=Table.grid(expand=True,padding=(0,1))
         rewrites.add_column(width=24);rewrites.add_column(ratio=1);rewrites.add_column(width=15,justify='right')

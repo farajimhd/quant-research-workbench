@@ -91,6 +91,34 @@ def test_prefetch_budget_rejects_oversized_file(tmp_path):
         Prefetch([(date(2026,1,2),dict(bytes=100))],None,Event(),None,max_bytes=99)
 
 
+def test_copy_feeder_fills_byte_budget_without_sql_and_refills_after_cleanup(tmp_path):
+    from time import monotonic,sleep
+    archive=tmp_path/'g';cache=tmp_path/'d';runtime=tmp_path/'run'
+    archive.mkdir();cache.mkdir();runtime.mkdir()
+    files=[]
+    for n in range(7):
+        key=Path(f'{n}.csv.gz');(archive/key).write_bytes(b'data')
+        files.append((date(2026,4,n+1),dict(key=key,source=archive/key,bytes=4)))
+    def until(predicate):
+        deadline=monotonic()+10
+        while not predicate():
+            assert monotonic()<deadline
+            sleep(.05)
+    with Prefetch(files,SimpleNamespace(cache=cache,archive=archive),Event(),Progress(runtime),
+                  max_bytes=24,reserve_bytes=0,reserve_fraction=0) as pool:
+        until(lambda:len(pool.pending)==6 and all(f.done() for f,_ in pool.pending.values()))
+        assert pool.bytes==24 and len(pool.todo)==1
+        day,info=files[0];pool.get(day)
+        assert pool.bytes==24 # SQL handoff must not release resident bytes.
+        with pytest.raises(ValueError,match='before file deletion'):pool.release(day)
+        (cache/'_retained_reporting'/info['key']).unlink()
+        pool.release(day)
+        until(lambda:files[-1][0] in pool.pending and pool.pending[files[-1][0]][0].done())
+        assert pool.bytes==24 and not pool.todo
+        assert all(info['source'].exists() for _,info in files)
+    assert not pool.feeder.is_alive()
+
+
 def test_two_sql_workers_prepare_independent_days_and_drain(tmp_path,monkeypatch):
     from pipelines.market_sip.flatfiles import repair_preparation as prep
     days=(date(2026,4,1),date(2026,4,2))
@@ -111,7 +139,7 @@ def test_two_sql_workers_prepare_independent_days_and_drain(tmp_path,monkeypatch
     monkeypatch.setattr(prep.retained_reporting,'recover',recover)
     stop=Event()
     with prep.Preparation({(2026,4):days},{},set(),SimpleNamespace(cache=tmp_path),
-            SimpleNamespace(check=lambda:None),stop,Progress(tmp_path),Client,SimpleNamespace(get=lambda d:None)) as pool:
+            SimpleNamespace(check=lambda:None),stop,Progress(tmp_path),Client,SimpleNamespace(get=lambda d:None,release=lambda d:None)) as pool:
         pool.wait((2026,4));pool.release((2026,4))
         assert pool.prepared==2
     assert sorted(seen)==list(days) and len(clients)==2 and all(c.closed for c in clients)

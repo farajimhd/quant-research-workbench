@@ -5,7 +5,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
-from threading import RLock, current_thread
+from threading import RLock, Thread, current_thread
 from time import monotonic,sleep
 
 from . import archive_staging
@@ -65,7 +65,7 @@ class Progress:
 
 
 class Prefetch:
-    """At most workers*2 files and max_bytes outstanding, plus the consumed SQL file.
+    """Continuously stage up to max_bytes, including files leased to SQL.
 
     No SQL clients are shared with these threads. All workers are joined on exit.
     Cached files are hash-compared against G before they can be handed to repair.
@@ -82,30 +82,56 @@ class Prefetch:
         self.reserve_bytes,self.reserve_fraction = reserve_bytes,reserve_fraction
         self.pool = ThreadPoolExecutor(max_workers=workers,thread_name_prefix='COPY')
         self.pending = {}
+        self.info=dict(files)
+        self.leased=set()
+        self.error=None
         self.bytes = 0
         self.lock=RLock()
+        self.feeder=Thread(target=self.feed,name='copy-feeder',daemon=False)
 
     def __enter__(self):
         try:
             self.fill()
+            self.feeder.start()
             return self
         except BaseException:
             self.close()
             raise
 
     def fill(self):
-        while self.todo and len(self.pending) < self.workers*2 and not self.stop.is_set():
+        # Caller owns the lock once the feeder has started. Bound active copies,
+        # not the number of ready files; every resident byte stays reserved.
+        while self.todo and sum(not f.done() for f,_ in self.pending.values()) < self.workers and not self.stop.is_set():
             day,info = self.todo[0]
             if self.bytes+info['bytes'] > self.max_bytes:
                 break
             # Reserve the complete outstanding set before admitting more copies.
             space=archive_staging.space_budget(self.paths.cache,reserve_bytes=self.reserve_bytes,
                                                reserve_fraction=self.reserve_fraction)
-            if self.bytes+info['bytes'] > space['usable_bytes']:
-                raise ValueError('Concurrent copy reservations exceed SSD headroom')
+            inflight=sum(size for future,size in self.pending.values() if not future.done())
+            if inflight+info['bytes'] > space['usable_bytes']:break
             self.todo.pop(0)
             self.bytes += info['bytes']
             self.pending[day]=(self.pool.submit(self.copy,day,info),info['bytes'])
+
+    def feed(self):
+        try:
+            while not self.stop.wait(1):
+                with self.lock:
+                    for future,_ in self.pending.values():
+                        if future.done() and future.exception():raise future.exception()
+                    self.fill()
+                    values=dict(staging_bytes=self.bytes,staging_limit_bytes=self.max_bytes,
+                        copy_queued=len(self.todo),staged_ready=sum(f.done() for d,(f,_) in self.pending.items() if d not in self.leased),
+                        staging_in_use=len(self.leased),copy_active=sum(not f.done() for f,_ in self.pending.values()))
+                    values['copy_queue_status']=('Copying' if values['copy_active'] else
+                        'All files staged' if not self.todo else
+                        'Cache full; waiting for SQL cleanup' if self.bytes+self.todo[0][1]['bytes']>self.max_bytes else
+                        'Waiting for SSD headroom')
+                    self.progress.update(**values)
+        except BaseException as error:
+            self.error=error;self.stop.set()
+            self.progress.emit('Copy feeder failed: '+str(error))
 
     def copy(self, day, info):
         worker=current_thread().name
@@ -148,18 +174,32 @@ class Prefetch:
     def get(self, day):
         while True:
             with self.lock:
+                if self.error:raise self.error
                 if day in self.pending:
                     future,size=self.pending[day];break
                 if not any(d==day for d,_ in self.todo):raise ValueError('Unplanned staged source: '+str(day))
             if self.stop.wait(.1):raise InterruptedError('Stopped while waiting for prefetch admission')
         result=future.result()
         with self.lock:
-            del self.pending[day];self.bytes-=size
-            self.fill()
+            self.leased.add(day)
         return result
+
+    def release(self,day):
+        """Recovery has verified its receipt and deleted this owned staged file."""
+        with self.lock:
+            if day not in self.pending:return # D originals are not owned copies.
+            if day not in self.leased:raise ValueError('Cannot release an unconsumed staged file')
+            target=(self.paths.cache/'_retained_reporting'/self.info[day]['key']).resolve()
+            if not target.is_relative_to((self.paths.cache/'_retained_reporting').resolve()):
+                raise ValueError('Staged file escaped owned root')
+            if target.exists():raise ValueError('Cannot release staging budget before file deletion')
+            _,size=self.pending.pop(day);self.bytes-=size;self.leased.remove(day)
+            self.progress.emit(f'Copy {day} | completed staging file removed | released {size} bytes')
+            self.fill()
 
     def close(self):
         self.stop.set()
+        if self.feeder.is_alive():self.feeder.join()
         self.pool.shutdown(wait=True,cancel_futures=True)
 
     def __exit__(self,*unused):

@@ -26,8 +26,13 @@ Completed receipts are checked against source identity, revision, counts and
 original-nanosecond evidence. Legacy `complete` without that evidence is
 reported as unqualified, not silently adopted as a current certificate.
 
-Two copy threads by default overlap each other and SQL execution. At most four
-files and 32 GiB are prefetched, plus the files consumed by SQL workers. Copies
+Two copy threads by default overlap each other and SQL execution. An independent
+feeder keeps copying until the 32 GiB staging budget is full; there is no four-file
+queue cap. The budget includes files in use by SQL and is released only after a
+verified capture receipt and deletion of the owned staging copy. Completed copies
+are removed from `D:/market-data/flatfiles/us_stocks_sip/_retained_reporting/`;
+G archive files and pre-existing D originals are retained. Copying resumes as
+space is released; the terminal exposes ready/in-use/queued files and space waits. Copies
 use atomic installation and SHA256 readback. Two SQL workers prepare independent
 days using private connections, date-scoped staging, and combined SSD reservations.
 One preparing/prepared month may lead the mutation coordinator. Daily preparation
