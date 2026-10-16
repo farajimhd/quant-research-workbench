@@ -13,7 +13,7 @@ Run on DESKTOP-SAAI85T from the committed workstation code copy:
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
-python -B scripts/run_market_data_pipeline.py backfill --step trade-reporting-repair --start-date 2026-01-01 --run-dir D:/TradingML/runtimes/market-data-pipeline/repair-2026 --copy-workers 2 --prefetch-gib 32 --query-threads 4 --query-memory-gib 8 --plan-only
+python -B scripts/run_market_data_pipeline.py backfill --step trade-reporting-repair --start-date 2026-01-01 --run-dir D:/TradingML/runtimes/market-data-pipeline/repair-2026 --endpoint http://192.168.1.218:18123 --copy-workers 2 --sql-workers 2 --prefetch-gib 32 --query-threads 4 --query-memory-gib 8 --global-memory-gib 32 --plan-only
 ```
 
 Remove `--plan-only` to run. The default end is the latest imported source day,
@@ -27,13 +27,30 @@ original-nanosecond evidence. Legacy `complete` without that evidence is
 reported as unqualified, not silently adopted as a current certificate.
 
 Two copy threads by default overlap each other and SQL execution. At most four
-files and 32 GiB are prefetched, plus the currently consumed SQL file. Copies
-use atomic installation and SHA256 readback. SQL reconciliation and monthly
-mutations remain serialized under the canonical source claim; existing owned
-mutations resume before new mutations. Exact matching still verifies original
+files and 32 GiB are prefetched, plus the files consumed by SQL workers. Copies
+use atomic installation and SHA256 readback. Two SQL workers prepare independent
+days using private connections, date-scoped staging, and combined SSD reservations.
+One preparing/prepared month may lead the mutation coordinator. Daily preparation
+classifies CSVs while a prior mutation runs; canonical matching waits when its
+physical source parts overlap. A month boundary alone does not prove independence.
+One coordinator serializes canonical monthly updates under the source claim;
+existing owned mutations resume before new mutations. The default query-memory
+admission is 2 x 8 GiB preparation + 8 GiB coordinator + 1 GiB observer within
+`--global-memory-gib 32`. This bounds these queries, not all ClickHouse background
+work or other users. Exact matching still verifies original
 canonical fields server-side: CSV sequence numbers are not canonical keys.
 The existing sizing read and classification read remain separate; this step
-does not claim a one-read CSV implementation or qualified production throughput.
+does not claim a one-read CSV implementation. A bounded read-only classification
+benchmark is integrated into the same launcher:
+
+```powershell
+python -B scripts/run_market_data_pipeline.py backfill --start-date 2026-04-01 --end-date 2026-04-02 --run-dir D:/TradingML/runtimes/market-data-pipeline/sql-benchmark --endpoint http://192.168.1.218:18123 --sql-workers 2 --benchmark-sql
+```
+
+It requires two already-staged SSD files, compares serial and concurrent results
+against canonical trade counts, and saves timings in `benchmark.json`. Serial
+runs first, so cache warming may favor the concurrent result. It performs no
+canonical writes and does not measure end-to-end mutation throughput.
 
 Monitor with the same interpreter/code copy:
 
@@ -43,6 +60,11 @@ python -B scripts/run_market_data_pipeline.py monitor --run-dir D:/TradingML/run
 
 The monitor shows per-copy byte progress, rate/ETA, verification, SQL query
 rows/bytes/memory, mutation status, reused/completed/queued counts and freshness.
+Known copying and matching totals use progress bars; unknown query totals use
+activity indicators. ClickHouse part-rewrite fractions are shown separately from
+certified days. Repeated polls are grouped in the bounded recent-event feed;
+the full timestamped log remains in `events.log`. Compact terminals collapse
+secondary detail, and stale snapshots remain visible with a warning.
 `--once` prints one snapshot; redirected output is plain text. Durable outputs
 are `request.json`, `status.json`, `events.log`, and `completion.json` only on
 success. A failed or interrupted run retains resumable evidence. Create

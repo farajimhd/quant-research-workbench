@@ -24,7 +24,7 @@ class Progress:
             self.state.update(values)
             self.flush(force=True)
 
-    def worker(self, worker, stage, *, day='', done=None, total=None, detail=''):
+    def worker(self, worker, stage, *, day='', done=None, total=None, detail='',unit='bytes',kind=None):
         with self.lock:
             old = self.state['workers'].get(worker, {})
             now = monotonic()
@@ -32,8 +32,8 @@ class Progress:
             started = old.get('started', now) if same else now
             elapsed = now-started
             self.state['workers'][worker] = dict(stage=stage,day=str(day),done=done,total=total,
-                detail=detail,started=started,elapsed_seconds=elapsed,
-                rate_bytes_second=(done/elapsed if done is not None and elapsed > 0 else None),
+                detail=detail,started=started,elapsed_seconds=elapsed,unit=unit,kind=kind,
+                rate_bytes_second=(done/elapsed if unit=='bytes' and done is not None and elapsed > 0 else None),
                 updated_at=datetime.now(timezone.utc).isoformat())
             self.flush(force=not same)
 
@@ -75,6 +75,7 @@ class Prefetch:
         self.pool = ThreadPoolExecutor(max_workers=workers,thread_name_prefix='COPY')
         self.pending = {}
         self.bytes = 0
+        self.lock=RLock()
 
     def __enter__(self):
         try:
@@ -137,11 +138,16 @@ class Prefetch:
             raise
 
     def get(self, day):
-        if day not in self.pending:raise ValueError('Unplanned staged source: '+str(day))
-        future,size=self.pending[day]
+        while True:
+            with self.lock:
+                if day in self.pending:
+                    future,size=self.pending[day];break
+                if not any(d==day for d,_ in self.todo):raise ValueError('Unplanned staged source: '+str(day))
+            if self.stop.wait(.1):raise InterruptedError('Stopped while waiting for prefetch admission')
         result=future.result()
-        del self.pending[day];self.bytes-=size
-        self.fill()
+        with self.lock:
+            del self.pending[day];self.bytes-=size
+            self.fill()
         return result
 
     def close(self):
@@ -152,32 +158,5 @@ class Prefetch:
         self.close()
 
 
-def render(state, width=110, height=30):
-    """One bounded viewport. Snapshot timestamps expose stale telemetry."""
-    from rich.table import Table
-    from rich.console import Group
-    from rich.text import Text
-    title=f'Trade Reporting Repair | {state.get("status")} | {state.get("start", "")} -> {state.get("end", "")}'
-    summary=f'Days {state.get("total",0)} | '+'  '.join(f'{name} {state.get(name,0)}' for name in ('completed','reused','queued','failed','retried'))
-    updated=state.get('updated_at','')
-    try:age=(datetime.now(timezone.utc)-datetime.fromisoformat(updated)).total_seconds()
-    except ValueError:age=0
-    table=Table(expand=True,box=None)
-    table.add_column('Worker',width=7,min_width=7,no_wrap=True)
-    table.add_column('Day',width=10,min_width=10,no_wrap=True)
-    table.add_column('Stage',width=18 if width>=75 else 12,no_wrap=True,overflow='ellipsis')
-    table.add_column('Progress',ratio=1,overflow='ellipsis',no_wrap=True)
-    if width>=110:table.add_column('Elapsed / rate / ETA',width=28,overflow='ellipsis',no_wrap=True)
-    for worker,row in sorted(state.get('workers',{}).items())[:max(1,height-8)]:
-        done,total=row.get('done'),row.get('total')
-        amount=(f'{done/1024**3:.2f}/{total/1024**3:.2f} GiB ({done/total:.0%})' if total else row.get('detail',''))
-        cells=[worker,row.get('day',''),row.get('stage',''),amount]
-        if width>=110:
-            rate=row.get('rate_bytes_second')
-            eta=(f' ETA {(total-done)/rate:.0f}s' if rate and total and done<total else '')
-            cells.append(f'{row.get("elapsed_seconds",0):.0f}s'+(f' / {rate/1024**2:.1f} MiB/s{eta}' if rate else ''))
-        table.add_row(*cells)
-    return Group(Text(title,style='bold'),Text(summary),table,
-                 Text(state.get('message',''),overflow='ellipsis',no_wrap=True),
-                 Text(f'UTC snapshot {updated} | age {age:.0f}s'+(' | STALE' if age>15 else '')),
-                 Text('Ctrl+C: leave monitor. Stop worker: create stop.request in the run directory.'))
+# Kept as an import for callers of the original public renderer.
+from .repair_terminal import render

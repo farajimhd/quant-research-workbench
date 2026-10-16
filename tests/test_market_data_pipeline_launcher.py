@@ -89,3 +89,52 @@ def test_progress_snapshot_and_compact_render(tmp_path):
 def test_prefetch_budget_rejects_oversized_file(tmp_path):
     with pytest.raises(ValueError,match='exceeds'):
         Prefetch([(date(2026,1,2),dict(bytes=100))],None,Event(),None,max_bytes=99)
+
+
+def test_two_sql_workers_prepare_independent_days_and_drain(tmp_path,monkeypatch):
+    from pipelines.market_sip.flatfiles import repair_preparation as prep
+    days=(date(2026,4,1),date(2026,4,2))
+    barrier=Barrier(2);clients=[];seen=[]
+    class Client:
+        def __init__(self):self.closed=False;clients.append(self)
+        def query(self,*args,**kwargs):return []
+        def close(self):self.closed=True
+    def recover(query,paths,inventory,selected,claim,stop,**kwargs):
+        assert kwargs['capture_only'] and not kwargs['capture_tape']
+        seen.extend(selected);barrier.wait(timeout=5)
+        return dict(captured=((str(selected[0]),'hash'),))
+    monkeypatch.setattr(prep.source,'inventory',lambda *a,**k:{})
+    monkeypatch.setattr(prep.source,'mutations_overlap',lambda *a:False)
+    monkeypatch.setattr(prep.retained_reporting,'recover',recover)
+    stop=Event()
+    with prep.Preparation({(2026,4):days},{},set(),SimpleNamespace(cache=tmp_path),
+            SimpleNamespace(check=lambda:None),stop,Progress(tmp_path),Client,SimpleNamespace(get=lambda d:None)) as pool:
+        pool.wait((2026,4));pool.release((2026,4))
+        assert pool.prepared==2
+    assert sorted(seen)==list(days) and len(clients)==2 and all(c.closed for c in clients)
+    assert not pool.thread.is_alive()
+
+
+def test_sql_worker_memory_budget():
+    assert arguments(['backfill','--start-date','2026-01-01','--run-dir','x']).sql_workers==2
+    with pytest.raises(SystemExit):
+        arguments(['backfill','--start-date','2026-01-01','--run-dir','x','--sql-workers','4'])
+
+
+def test_terminal_stale_failure_and_bounded_logs(tmp_path):
+    from pipelines.market_sip.flatfiles.repair_terminal import recent_events
+    from rich.console import Console
+    from io import StringIO
+    path=tmp_path/'events.log'
+    path.write_text('2026-01-01T01:02:03+00:00 SQL_0 | captured\n'*50+
+                    '2026-01-01T01:02:04+00:00 COPY_0 | bytes (20%)\n')
+    events=recent_events(path)
+    assert len(events)==1 and events[0]['repeats']==50
+    state=dict(status='running',updated_at='2020-01-01T00:00:00+00:00',total=10,reused=2,workers={},recent_events=events)
+    stream=StringIO();console=Console(file=stream,width=80,height=24,color_system=None)
+    console.print(render(state,80,24));assert 'STALE' in stream.getvalue()
+    state.update(status='failed',message='SSD reservation exhausted')
+    stream=StringIO();console=Console(file=stream,width=80,height=24,color_system=None)
+    console.print(render(state,80,24))
+    assert 'FAILED' in stream.getvalue() and 'SSD reservation exhausted' in stream.getvalue()
+    assert 'STALE' not in stream.getvalue() and '\x1b' not in stream.getvalue()

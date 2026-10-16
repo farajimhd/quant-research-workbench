@@ -132,9 +132,11 @@ def file_plan(paths,days,*,reserve_bytes=256*1024**3,reserve_fraction=.10,maximu
 
 def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,reserve_fraction=.10,
             maximum_chunk_bytes=256*1024**3,emit=print,query_threads=2,query_memory_bytes=2*1024**3,
-            staged_copy=None,capture_tape=True):
+            staged_copy=None,capture_tape=True,capture_only=False,storage_admit=None,canonical_admit=None):
     """Capture bounded daily evidence, then repair each month exactly once."""
     if not days:return dict(completed=(),reused=())
+    if capture_only and (capture_tape or len(days)!=1):
+        raise ValueError('Capture-only preparation requires one day and no tape expansion')
     if not isinstance(claim,SourceClaim):raise ValueError('Retained reporting recovery requires canonical source ownership')
     if (type(query_threads) is not int or not 1<=query_threads<=8 or type(query_memory_bytes) is not int
             or not 64*1024**2<=query_memory_bytes<=32*1024**3):
@@ -170,6 +172,7 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
     ordered_days=sorted(days)
     def repair_pending():
         if not pending:return
+        if capture_only:return
         def batch_guard():
             claim.check()
             if stop.is_set():raise InterruptedError('Retained reporting stopped; submitted mutations may continue')
@@ -269,6 +272,7 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                 if int(footprint['n'])!=int(source['trade_event_rows']):raise ValueError('Retained trade count differs from canonical source')
                 if 4*int(footprint['bytes'])+256*1024**2>fresh['usable_bytes']:
                     raise ValueError('Retained evidence staging/publication would consume reserved SSD headroom')
+                if storage_admit is not None:storage_admit(4*int(footprint['bytes'])+256*1024**2)
                 stage_where=f'source_date=toDate({literal(day)})'
                 settings=f'max_threads={query_threads},max_memory_usage={query_memory_bytes}'
                 # After the sizing pass, materialize once; subsequent
@@ -281,6 +285,7 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                 query(raw_insert_sql(raw,day,query_threads=query_threads,query_memory_bytes=query_memory_bytes,listing_tape=True),read=False)
                 raw_count=query(f'SELECT count() n FROM q_live.{RAW} WHERE {stage_where}')[0]['n']
                 if int(raw_count)!=int(source['trade_event_rows']):raise ValueError('SSD raw staging count differs from canonical trades')
+                if canonical_admit is not None:canonical_admit()
                 # Read the canonical month once, then reuse its compact trade
                 # snapshot for every bucket. Never reread the archive for joins.
                 guard();query(canonical_table().ddl('q_live'),read=False)
@@ -335,7 +340,9 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
             index=ordered_days.index(day)
             following=ordered_days[index+1] if index+1<len(ordered_days) else None
             if following is None or (following.year,following.month)!=(day.year,day.month):repair_pending()
-    return dict(completed=tuple(completed),reused=tuple(reused))
+    result=dict(completed=tuple(completed),reused=tuple(reused))
+    if capture_only:result['captured']=tuple((str(row['source_date']),frozen) for row,frozen in pending)
+    return result
 
 
 def recover_prior_tape(query,paths,plan,day,source,source_hash,receipt,private,stop,guard,*,
