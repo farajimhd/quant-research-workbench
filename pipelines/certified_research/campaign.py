@@ -234,7 +234,21 @@ class Campaign:
             raise ValueError('Unit authority verifier did not return a valid output fingerprint')
         return result
 
-    def run(self,*,stop=None,progress=None):
+    def execution_resources(self,execution_workers=None,execution_memory_bytes=None):
+        """Execution limits never replace the immutable campaign configuration."""
+        workers=self.config.workers if execution_workers is None else execution_workers
+        memory=self.config.global_memory_bytes if execution_memory_bytes is None else execution_memory_bytes
+        if type(workers) is not int or not 1<=workers<=32:
+            raise ValueError('Execution worker override must be between 1 and 32')
+        if (type(memory) is not int or memory<=0 or
+                (execution_memory_bytes is not None and memory>64*1024**3)):
+            raise ValueError('Execution memory override must be positive and at most 64 GiB')
+        if any(p.unit.memory_bytes>memory for p in self.units):
+            raise ValueError('Execution memory override cannot fit a frozen unit')
+        return workers,memory
+
+    def run(self,*,stop=None,progress=None,execution_workers=None,execution_memory_bytes=None):
+        workers,memory=self.execution_resources(execution_workers,execution_memory_bytes)
         self.guard();verify_storage(self.query,self.database,require_tables=True)
         if self.query(f'SELECT count() n FROM {self.database}.research_campaign_seal_v1 WHERE {self.where}')[0]['n']:
             return dict(status='complete',units={},results={},errors={},seal=self.seal())
@@ -251,7 +265,7 @@ class Campaign:
             if result is None:raise ValueError('Producer completed without independently verified authority')
             return result
         result=execute(tuple(p.unit for p in self.units),{kind:produce for kind in self.producers},
-            workers=self.config.workers,memory_bytes=self.config.global_memory_bytes,reuse=self.authority,
+            workers=workers,memory_bytes=memory,reuse=self.authority,
             progress=event,stop=stop)
         if result['status']=='complete':result['seal']=self.seal()
         return result

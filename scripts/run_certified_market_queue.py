@@ -1,6 +1,6 @@
 """Run the complete admitted market universe with an explicit incremental budget.
 
-The frozen queue is complete; storage admission covers only bounded serial
+The frozen queue is complete; storage admission covers only bounded
 increments, never a fabricated whole-population compression-rate projection.
 Existing pilot/tranche datasets remain independent and are not overwritten.
 """
@@ -35,13 +35,25 @@ GLOBAL_CLAIM=str(uuid5(NAMESPACE_URL,'certified-research/arte/market-full-popula
 class IncrementalBudget:
     """Engineering allowance, rechecked before every guarded producer step.
 
-    One worker can hold at most one listing-day market write. Its finite
-    128 GiB allowance is inherited from the eight-listing-day pilot envelope.
+    One worker can hold at most one listing-day market write. The default
+    128 GiB allowance retains the earlier pilot envelope; an explicit 16 to
+    128 GiB per-worker allowance is an engineering reservation, never a
+    qualified population compression rate.
     All arte parts (including inactive merge copies and concurrent products)
     count conservatively against the campaign's baseline growth budget.
     """
-    def __init__(self,query,baseline,budget,stop):
+    def __init__(self,query,baseline,budget,stop,*,execution_workers=1,execution_memory_bytes=2*GIB,
+                 per_worker_envelope_bytes=ENVELOPE):
+        if type(execution_workers) is not int or not 1<=execution_workers<=8:
+            raise ValueError('Incremental queue requires between 1 and 8 execution workers')
+        if (type(execution_memory_bytes) is not int or not execution_workers*2*GIB<=execution_memory_bytes<=16*GIB):
+            raise ValueError('Incremental queue needs 2 GiB per worker and at most 16 GiB')
+        if type(per_worker_envelope_bytes) is not int or not 16*GIB<=per_worker_envelope_bytes<=ENVELOPE:
+            raise ValueError('Per-worker engineering envelope must be between 16 and 128 GiB')
         self.query=query;self.baseline=baseline;self.budget=budget;self.stop=stop
+        self.execution_workers=execution_workers;self.execution_memory_bytes=execution_memory_bytes
+        self.per_worker_envelope=per_worker_envelope_bytes
+        self.envelope=execution_workers*per_worker_envelope_bytes
         self.lock=RLock();self.reason=None
 
     def check(self):
@@ -51,18 +63,20 @@ class IncrementalBudget:
             growth=max(0,used-self.baseline)
             reason=None
             if {r['name'] for r in disks}!={'live_market_ssd','sip_raw_ssd'}:reason='required SSD disk missing'
-            elif min(min(int(r['free_space']),int(r['unreserved_space'])) for r in disks)<RESERVE+ENVELOPE:
-                reason='SSD free space below 1 TiB reserve plus 128 GiB increment envelope'
-            elif growth+ENVELOPE>self.budget:reason='retained growth plus next 128 GiB envelope exceeds campaign budget'
+            elif min(min(int(r['free_space']),int(r['unreserved_space'])) for r in disks)<RESERVE+self.envelope:
+                reason=f'SSD free space below 1 TiB reserve plus {self.execution_workers} worker increment envelopes'
+            elif growth+self.envelope>self.budget:reason='retained growth plus parallel increment envelopes exceeds campaign budget'
             if reason:
                 self.reason=reason;self.stop.set();raise RuntimeError('Incremental budget pause: '+reason)
             return dict(mode='incremental-engineering-budget-v1',retained_growth_bytes=growth,
-                total_budget_bytes=self.budget,next_increment_envelope_bytes=ENVELOPE,
+                total_budget_bytes=self.budget,next_increment_envelope_bytes=self.envelope,
+                per_worker_envelope_bytes=self.per_worker_envelope,execution_workers=self.execution_workers,
+                execution_memory_bytes=self.execution_memory_bytes,
                 reserve_bytes=RESERVE,whole_population_capacity_qualified=False,disks=disks)
 
     def admit(self,plan_hash,plans):
         proof=dict(self.check(),status='admitted',plan_hash=plan_hash,
-            admitted_scope='serial guarded increments only',queued_units=len(plans))
+            admitted_scope='serial guarded increments only' if self.execution_workers==1 else 'bounded parallel guarded increments only',queued_units=len(plans))
         return dict(proof,certificate_hash=contracts.digest(proof))
 
 
@@ -70,6 +84,15 @@ def write_json(path,value):
     temporary=path.with_suffix('.tmp')
     temporary.write_text(json.dumps(value,indent=2,default=str))
     temporary.replace(path)
+
+
+class SynchronizedClient:
+    """Shared control connection; worker factories still own separate clients."""
+    def __init__(self,client):self.client=client;self.lock=RLock()
+    def query(self,*args,**kwargs):
+        with self.lock:return self.client.query(*args,**kwargs)
+    def close(self):
+        with self.lock:return self.client.close()
 
 
 def main(argv=None):
@@ -83,6 +106,10 @@ def main(argv=None):
     p.add_argument('--budget-gib',type=int,default=512)
     p.add_argument('--endpoint',required=True)
     p.add_argument('--resume',action='store_true')
+    p.add_argument('--execution-workers',type=int,choices=range(1,9),default=1,
+        help='Runtime-only override; retains frozen dataset configuration and plans')
+    p.add_argument('--execution-envelope-gib',type=int,choices=range(16,129),default=128,
+        help='Explicit per-worker engineering reservation; not a qualified population rate')
     a=p.parse_args(argv)
     if not a.run_dir.parent.is_dir():raise ValueError('Required runtime parent unavailable')
     if not 256<=a.budget_gib<=1024:raise ValueError('Explicit budget must be 256 to 1024 GiB')
@@ -97,17 +124,22 @@ def main(argv=None):
     else:
         a.run_dir.mkdir();meta=None
     stop=Event();budget=None
+    execution=dict(version='market-queue-execution-resources-v1',execution_workers=a.execution_workers,
+        execution_memory_bytes=a.execution_workers*2*GIB,per_worker_envelope_bytes=a.execution_envelope_gib*GIB)
     def save(status,**values):
         write_json(a.run_dir/'status.json',dict(status=status,pid=os.getpid(),
             updated_at=datetime.now(timezone.utc).isoformat(),**values))
-    save('preparing',scope='complete admitted universe',budget_gib=a.budget_gib)
+    save('preparing',scope='complete admitted universe',budget_gib=a.budget_gib,execution_resources=execution)
+    execution_receipt=dict(execution,started_at=datetime.now(timezone.utc).isoformat(),pid=os.getpid(),
+        frozen_request_hash=contracts.digest(request),resume=a.resume)
+    receipt_path=a.run_dir/('execution-'+uuid4().hex+'.json');write_json(receipt_path,execution_receipt)
     load_env_files([a.env_file],verbose=False)
     os.environ['QMD_CLICKHOUSE_URL']=a.endpoint
     def clients(config=cfg):
         return builder.Client(SimpleNamespace(env_file=a.env_file,max_threads=config.query_threads,
             max_memory_gb=config.query_memory_bytes/GIB,query_timeout=config.query_timeout_seconds),persistent=True)
     try:
-        with closing(clients()) as client,closing(open_workstation_keeper_session()) as keeper,acquisition.stop_marker(stop,a.run_dir/'stop.request'):
+        with closing(SynchronizedClient(clients())) as client,closing(open_workstation_keeper_session()) as keeper,acquisition.stop_marker(stop,a.run_dir/'stop.request'):
             with closing(KeeperClaim(keeper.client,GLOBAL_CLAIM)) as global_claim:
                 installation.verify(client.query,'arte',require_tables=True)
                 canonical=source.inventory(client.query,a.start_date,a.end_date)
@@ -129,7 +161,9 @@ def main(argv=None):
                     raise ValueError('Frozen full population or canonical source changed')
                 if [tuple(c['issuer_keys']) for c in meta['cohorts']]!=list(partition['groups']):
                     raise ValueError('Queue cohorts differ from complete frozen partition')
-                budget=IncrementalBudget(client.query,meta['baseline_bytes'],a.budget_gib*GIB,stop)
+                budget=IncrementalBudget(client.query,meta['baseline_bytes'],a.budget_gib*GIB,stop,
+                    execution_workers=a.execution_workers,execution_memory_bytes=execution['execution_memory_bytes'],
+                    per_worker_envelope_bytes=execution['per_worker_envelope_bytes'])
                 rules=client.query("SELECT token_id,modifier_int,update_high_low,update_last,update_volume FROM market_sip_compact.event_condition_token_reference WHERE source_family='trade_conditions' AND is_join_canonical=1 ORDER BY token_id")
                 total=len(meta['cohorts']);completed=sum(c['status']=='complete' for c in meta['cohorts'])
                 print(f'Market queue | {total} cohorts | {len(partition["issuer_keys"])} issuers | incremental budget {a.budget_gib} GiB',flush=True)
@@ -164,11 +198,15 @@ def main(argv=None):
                         def progress(event):
                             save('running',cohort=index+1,cohorts=total,completed_cohorts=completed,
                                 queued_cohorts=total-completed-1,active_cohorts=1,dataset_id=dataset,event=event,
-                                quarantine_counts=meta['quarantine_counts'])
+                                quarantine_counts=meta['quarantine_counts'],execution_resources=execution)
                             if event['status'] in ('certified','failed','blocked'):
                                 print(f'Cohort {index+1}/{total} | {event["product"]} {event["status"]} | {event["unit"]}',flush=True)
                         child['status']='active';write_json(a.run_dir/'queue.json',meta)
-                        result=launch.run(stop=stop,progress=progress)
+                        execution_receipt.update(dataset_id=dataset,plan_hash=launch.controller.plan_hash,
+                            frozen_config_hash=config.content_hash,updated_at=datetime.now(timezone.utc).isoformat())
+                        write_json(receipt_path,execution_receipt)
+                        result=launch.run(stop=stop,progress=progress,execution_workers=a.execution_workers,
+                            execution_memory_bytes=execution['execution_memory_bytes'])
                         child['status']=result['status'];child['seal']=result.get('seal')
                         child['errors']={k:str(v) for k,v in result.get('errors',{}).items()}
                         write_json(a.run_dir/'queue.json',meta)

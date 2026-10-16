@@ -125,9 +125,15 @@ class ExecutionLaunch:
         self.claim.check();self.source_guard()
         return certificate
 
-    def run(self,*,stop=None,progress=None):
-        self.admit()
-        return self.controller.run(stop=stop,progress=progress)
+    def run(self,*,stop=None,progress=None,execution_workers=None,execution_memory_bytes=None):
+        workers,memory=self.controller.execution_resources(execution_workers,execution_memory_bytes)
+        certificate=self.admit()
+        overrides={}
+        if execution_workers is not None or execution_memory_bytes is not None:
+            if (certificate.get('execution_workers')!=workers or certificate.get('execution_memory_bytes')!=memory):
+                raise ValueError('Storage admission does not bind the requested execution resources')
+            overrides=dict(execution_workers=workers,execution_memory_bytes=memory)
+        return self.controller.run(stop=stop,progress=progress,**overrides)
 
     def verify(self):
         # Verification is read-only and does not consume future write headroom.
