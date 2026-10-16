@@ -17,11 +17,12 @@ from dataclasses import replace
 from datetime import date,datetime,timezone
 from types import SimpleNamespace
 from uuid import uuid4
+from threading import Event
 
 from scripts import build_market_day as builder
 from scripts.profile_certified_market import ticker_scope,pilot_guard
 from pipelines.certified_research import contracts,source,universe,cohorts,recipe,independent_market
-from pipelines.certified_research import initial_plan,installation,campaign,verification
+from pipelines.certified_research import initial_plan,installation,campaign,verification,acquisition
 from pipelines.certified_research.launch import ExecutionLaunch
 from pipelines.certified_research.identity import identity_key,ISSUER
 from pipelines.certified_research.publication import KeeperClaim,DictionaryClaim
@@ -34,6 +35,24 @@ def request_identity(args):
         raise ValueError('Tranche exceeds eight requested ticker-sessions')
     return dict(start=str(args.start_date),end=str(args.end_date),tickers=args.tickers,
                 anchor=str(args.anchor_date),conid_review_hash=args.conid_review_hash,database='arte')
+
+
+def run_launch(launch,run,progress):
+    stop=Event()
+    if (run/'stop.request').exists():stop.set()
+    with acquisition.stop_marker(stop,run/'stop.request'):
+        return launch.run(stop=stop,progress=progress)
+
+
+def validate_saved(saved,metadata,request):
+    config=saved.config
+    if (metadata.get('config_hash')!=config.content_hash or str(config.start)!=request['start']
+            or str(config.end)!=request['end'] or config.database!=request['database']
+            or config.conid_review_hash!=request['conid_review_hash'] or config.product_scope!='market_bars'
+            or config.identity_policy!='current_conid_retrospective_v1'):
+        raise ValueError('Stored tranche configuration differs from pinned request')
+    tickers={p.arguments['ticker'] for p in saved.units if p.unit.product=='market_aggregate'}
+    if not set(request['tickers'])<=tickers:raise ValueError('Stored tranche tickers differ from request')
 
 
 def main(argv=None):
@@ -50,7 +69,8 @@ def main(argv=None):
     if not args.run_dir.parent.is_dir():raise ValueError('Required runtime parent is unavailable')
     if args.resume:
         metadata=json.loads((args.run_dir/'run.json').read_text())
-        if metadata['request_hash']!=contracts.digest(request):raise ValueError('Resume request differs from saved tranche')
+        if metadata['request_hash']!=contracts.digest(request) or metadata['request_hash']!=contracts.digest(metadata['request']):
+            raise ValueError('Resume request differs from saved tranche')
     else:
         args.run_dir.mkdir()
         metadata=dict(dataset_id=str(uuid4()),request=request,request_hash=contracts.digest(request))
@@ -77,12 +97,11 @@ def main(argv=None):
                 dictionary=lambda:DictionaryClaim(keeper.client,'arte')
                 if present:
                     saved=campaign.load_plan(client.query,'arte',dataset)
-                    if saved.config.start!=args.start_date or saved.config.end!=args.end_date:
-                        raise ValueError('Stored tranche dates differ')
+                    validate_saved(saved,metadata,request)
                     guard=verification.source_guard(client.query,saved)
                     launch=ExecutionLaunch.from_stored(client.query,'arte',dataset,claim,lambda:clients(saved.config),guard,
                         pilot_guard(client.query,saved.config,saved.units),dictionary)
-                    result=launch.run(stop=lambda:(run/'stop.request').exists(),progress=progress)
+                    result=run_launch(launch,run,progress)
                 else:
                     canonical=source.inventory(client.query,args.start_date,args.end_date)
                     reporting=source.reporting_inventory(client.query,canonical)
@@ -98,8 +117,11 @@ def main(argv=None):
                     frozen=recipe.market_recipe(config,rules)
                     assembled=independent_market.assemble(config,snapshot,canonical,reporting,frozen['definition'],rules,args.anchor_date,query=client.query,guard=guard)
                     pilot_guard(client.query,config,assembled['plans'])
-                    result=initial_plan.run(client.query,config,dataset,assembled,claim,clients,dictionary,
-                        lambda cfg,plans:pilot_guard(client.query,cfg,plans),stop=lambda:(run/'stop.request').exists(),progress=progress)
+                    metadata['config_hash']=config.content_hash
+                    temporary=run/'run.tmp';temporary.write_text(json.dumps(metadata,indent=2,default=str));temporary.replace(run/'run.json')
+                    launch=initial_plan.build_launch(client.query,config,dataset,assembled,claim,clients,dictionary,
+                        lambda cfg,plans:pilot_guard(client.query,cfg,plans))
+                    result=run_launch(launch,run,progress)
         summary=dict(status=result['status'],seal=result.get('seal'),errors={k:str(v) for k,v in result.get('errors',{}).items()},
             requested_scope=request,combined_dataset_complete=False,deferred=('technical','v7'))
         (run/'result.json').write_text(json.dumps(summary,indent=2,default=str));save(summary)
