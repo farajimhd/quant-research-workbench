@@ -89,6 +89,12 @@ def test_ingestion_array_materialization_preserves_full_conditions_and_unknown_c
             'a'*64,fields,first_sip_us=first,last_sip_us=first,repair_reporting_flags=True,canonical_stage=True)
         assert sorted(client.query(direct),key=lambda r:r['ordinal'])==sorted(client.query(cached),key=lambda r:r['ordinal'])
         assert all(r['mismatch']==0 and r['ambiguous']==0 for r in client.query(cached))
+        # A canonical snapshot may contain old and new reporting bits while a
+        # mutation replaces parts. Neither state may change ordinal matching.
+        client.query(f'ALTER TABLE {database}.{retained.CANONICAL} UPDATE '
+            'event_meta=bitXor(event_meta,192) WHERE ordinal%20=0 SETTINGS mutations_sync=2',read=False)
+        assert sorted(client.query(direct),key=lambda r:r['ordinal'])==sorted(client.query(cached),key=lambda r:r['ordinal'])
+        assert all(r['mismatch']==0 and r['ambiguous']==0 for r in client.query(cached))
         verify_auxiliary_storage(client.query,database,(retained.CANONICAL,))
         client.query(ns.ddl(database,retained.STAGE,stage=True),read=False)
         client.query(ns.ddl(database,ns.TABLE),read=False)

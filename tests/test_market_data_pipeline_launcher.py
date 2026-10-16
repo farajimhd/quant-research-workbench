@@ -101,10 +101,13 @@ def test_two_sql_workers_prepare_independent_days_and_drain(tmp_path,monkeypatch
         def close(self):self.closed=True
     def recover(query,paths,inventory,selected,claim,stop,**kwargs):
         assert kwargs['capture_only'] and not kwargs['capture_tape']
+        assert 'canonical_admit' not in kwargs
         seen.extend(selected);barrier.wait(timeout=5)
         return dict(captured=((str(selected[0]),'hash'),))
     monkeypatch.setattr(prep.source,'inventory',lambda *a,**k:{})
-    monkeypatch.setattr(prep.source,'mutations_overlap',lambda *a:False)
+    def forbidden_overlap_wait(*args):
+        raise AssertionError('Reporting-bit mutations must not block preparation')
+    monkeypatch.setattr(prep.source,'mutations_overlap',forbidden_overlap_wait)
     monkeypatch.setattr(prep.retained_reporting,'recover',recover)
     stop=Event()
     with prep.Preparation({(2026,4):days},{},set(),SimpleNamespace(cache=tmp_path),

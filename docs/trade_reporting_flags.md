@@ -31,8 +31,11 @@ files and 32 GiB are prefetched, plus the files consumed by SQL workers. Copies
 use atomic installation and SHA256 readback. Two SQL workers prepare independent
 days using private connections, date-scoped staging, and combined SSD reservations.
 One preparing/prepared month may lead the mutation coordinator. Daily preparation
-classifies CSVs while a prior mutation runs; canonical matching waits when its
-physical source parts overlap. A month boundary alone does not prove independence.
+and matching continue while the coordinator's reporting-bit mutation runs, even
+when physical parts overlap. Matching compares preserved fields and only the low
+six event-meta bits; old/new reporting bits cannot alter the match. ClickHouse
+manages part snapshots. Corrected-flag verification and certification still wait
+for mutation completion; the exclusive source claim and source checks remain.
 One coordinator serializes canonical monthly updates under the source claim;
 existing owned mutations resume before new mutations. The default query-memory
 admission is 2 x 8 GiB preparation + 8 GiB coordinator + 1 GiB observer within

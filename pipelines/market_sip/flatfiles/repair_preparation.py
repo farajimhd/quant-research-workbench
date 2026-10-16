@@ -1,7 +1,6 @@
 """Independent daily evidence preparation, one month ahead of canonical updates."""
 from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED
 from contextlib import closing
-from datetime import date
 import re
 from threading import Event,Lock,Semaphore,Thread,current_thread
 
@@ -73,24 +72,16 @@ class Preparation:
         try:
             with closing(self.client_factory()) as client:
                 with self.lock:self.clients[worker]=client
-                # Existing mutations may touch physical parts beyond their source dates.
-                scope=source.inventory(client.query,day,day,sessions=(day,))
-                def canonical_admit():
-                    while True:
-                        self.claim.check()
-                        if self.stop.is_set():raise InterruptedError('Preparation stopped')
-                        active=client.query("SELECT mutation_id,table,command,parts_to_do_names FROM system.mutations WHERE database='market_sip_compact' AND startsWith(table,'events_') AND NOT is_done LIMIT 129")
-                        if not source.mutations_overlap(client.query,active,scope):return
-                        self.progress.worker(worker,'Wait source parts',day=day,
-                            detail='CSV classified; overlapping canonical part still mutating')
-                        self.stop.wait(5)
+                # ClickHouse owns part snapshots. Reconciliation compares only
+                # preserved fields and event_meta & 63, so the coordinator's
+                # high-bit mutation cannot change its matching inputs.
+                # Corrected-flag verification still waits in the coordinator.
                 self.progress.worker(worker,'Waiting for SSD',day=day,detail='Waiting for verified CSV copy')
                 result=retained_reporting.recover(client.query,self.paths,self.inventory,(day,),self.claim,self.stop,
                     reserve_bytes=self.reserve_bytes,reserve_fraction=self.reserve_fraction,
                     maximum_chunk_bytes=self.prefetch_bytes,query_threads=self.query_threads,
                     query_memory_bytes=self.query_memory_bytes,emit=emit,staged_copy=self.prefetch.get,
-                    capture_tape=False,capture_only=True,storage_admit=lambda n:self.space.admit(day,n),
-                    canonical_admit=canonical_admit)
+                    capture_tape=False,capture_only=True,storage_admit=lambda n:self.space.admit(day,n))
                 if tuple(d for d,_ in result['captured'])!=(str(day),):raise ValueError('Prepared day receipt missing')
                 self.progress.worker(worker,'Prepared',day=day,detail='Evidence saved; awaiting flag update')
                 with self.lock:

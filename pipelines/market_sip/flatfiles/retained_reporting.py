@@ -132,7 +132,7 @@ def file_plan(paths,days,*,reserve_bytes=256*1024**3,reserve_fraction=.10,maximu
 
 def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,reserve_fraction=.10,
             maximum_chunk_bytes=256*1024**3,emit=print,query_threads=2,query_memory_bytes=2*1024**3,
-            staged_copy=None,capture_tape=True,capture_only=False,storage_admit=None,canonical_admit=None):
+            staged_copy=None,capture_tape=True,capture_only=False,storage_admit=None):
     """Capture bounded daily evidence, then repair each month exactly once."""
     if not days:return dict(completed=(),reused=())
     if capture_only and (capture_tape or len(days)!=1):
@@ -285,7 +285,6 @@ def recover(query,paths,inventory,days,claim,stop,*,reserve_bytes=256*1024**3,re
                 query(raw_insert_sql(raw,day,query_threads=query_threads,query_memory_bytes=query_memory_bytes,listing_tape=True),read=False)
                 raw_count=query(f'SELECT count() n FROM q_live.{RAW} WHERE {stage_where}')[0]['n']
                 if int(raw_count)!=int(source['trade_event_rows']):raise ValueError('SSD raw staging count differs from canonical trades')
-                if canonical_admit is not None:canonical_admit()
                 # Read the canonical month once, then reuse its compact trade
                 # snapshot for every bucket. Never reread the archive for joins.
                 guard();query(canonical_table().ddl('q_live'),read=False)
