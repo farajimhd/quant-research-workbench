@@ -172,7 +172,10 @@ def parse_args(argv=None):
     p.add_argument("--date")
     p.add_argument("--start-date")
     p.add_argument("--end-date")
-    p.add_argument("--tickers", default="", help="Comma-separated symbols; default is dated-tradable tickers with certified events")
+    p.add_argument("--tickers", default="", help="Comma-separated symbols; default is eligible tickers under the selected identity policy with certified events")
+    p.add_argument('--identity-policy', choices=('dated','current_conid_retrospective_v1'), default='dated')
+    p.add_argument('--conid-review-hash')
+    p.add_argument('--identity-anchor-date', type=date.fromisoformat)
     p.add_argument("--database", default="arte")
     p.add_argument("--env-file", type=Path, default=DEFAULT_ENV)
     p.add_argument("--runtime", type=Path, default=RUNTIME / "market-day")
@@ -204,6 +207,13 @@ def parse_args(argv=None):
             raise ValueError("Invalid query resource limits")
         if max(8.,args.max_memory_gb)+(args.workers-1)*args.max_memory_gb+1>args.global_memory_gb:
             raise ValueError('Worker queries, one dense query and controller exceed --global-memory-gb')
+        if args.identity_policy != 'dated':
+            if not args.conid_review_hash or not re.fullmatch('[0-9a-f]{64}',args.conid_review_hash) or not args.identity_anchor_date:
+                raise ValueError('Retrospective population requires --conid-review-hash and --identity-anchor-date')
+            if args.allow_carried_forward_universe:
+                raise ValueError('Retrospective and carried-forward populations cannot be combined')
+        elif args.conid_review_hash or args.identity_anchor_date:
+            raise ValueError('Identity review arguments require the retrospective policy')
         args.symbols = sorted(set(x.strip().upper() for x in args.tickers.split(",") if x.strip()))
         if any(len(x) > 32 or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for c in x) for x in args.symbols):
             raise ValueError("Invalid ticker")
@@ -405,16 +415,17 @@ class Progress:
             print(self.render(),flush=True)
 
 
-def storage_preflight(client, db, require_tables=False, *, include_liquidity_1s=False):
+def storage_preflight(client, db, require_tables=False, *, include_liquidity_1s=False, identity_policy="dated"):
     policies = client.query("SELECT disks FROM system.storage_policies WHERE policy_name='live_market_ssd'", "storage_policy")
     if not policies or any(row["disks"] != ["live_market_ssd"] for row in policies):
         raise ValueError("Required SSD-only live_market_ssd policy is unavailable")
-    universe = client.query("SELECT name,storage_policy FROM system.tables WHERE database='q_live' AND name IN ('feature_tradable_universe_snapshot_v2','feature_tradable_universe_snapshot_coverage_v2')", "population_policy")
-    if len(universe) != 2 or any(row['storage_policy'] != sql.POLICY for row in universe):
-        raise ValueError("Certified pre-open tradable universe is absent or not on live_market_ssd")
-    misplaced_universe = client.query("SELECT table,disk_name FROM system.parts WHERE active AND database='q_live' AND table IN ('feature_tradable_universe_snapshot_v2','feature_tradable_universe_snapshot_coverage_v2') AND disk_name!='live_market_ssd' LIMIT 1", "population_parts")
-    if misplaced_universe:
-        raise ValueError("Dated tradable universe has parts outside live_market_ssd")
+    if identity_policy == 'dated':
+        universe = client.query("SELECT name,storage_policy FROM system.tables WHERE database='q_live' AND name IN ('feature_tradable_universe_snapshot_v2','feature_tradable_universe_snapshot_coverage_v2')", "population_policy")
+        if len(universe) != 2 or any(row['storage_policy'] != sql.POLICY for row in universe):
+            raise ValueError("Certified pre-open tradable universe is absent or not on live_market_ssd")
+        misplaced_universe = client.query("SELECT table,disk_name FROM system.parts WHERE active AND database='q_live' AND table IN ('feature_tradable_universe_snapshot_v2','feature_tradable_universe_snapshot_coverage_v2') AND disk_name!='live_market_ssd' LIMIT 1", "population_parts")
+        if misplaced_universe:
+            raise ValueError("Dated tradable universe has parts outside live_market_ssd")
     names=('bars_v1','indicators_v1','liquidity_100ms_v1')
     if include_liquidity_1s:names+=('liquidity_1s_v1',)
     metadata=client.query(f"SELECT name,storage_policy FROM system.tables WHERE database={sql.literal(db)} AND startsWith(name,'market_day_')",'market_day_metadata_tables')
@@ -470,52 +481,57 @@ def source_plan(client, args):
         raise ValueError("Canonical day statistics and ticker continuity totals disagree")
     populations = []
     tradable_by_day = {}
-    for day in sessions:
-        certificate = client.query(f"SELECT snapshot_id,source_universe_date,captured_at_utc,available_at_utc,cutoff_utc,row_count,tradable_count,source_hash,revision,status "
-            f"FROM q_live.feature_tradable_universe_snapshot_coverage_v2 FINAL WHERE session_date={sql.literal(day)}", "population_certificate")
-        if len(certificate) != 1:
-            raise ValueError(f"Missing certified pre-open tradable universe for {day}")
-        certificate = certificate[0]
-        exact = (certificate['status'],certificate['revision']) == ('certified','preopen-tradable-snapshot-v3')
-        carried = (certificate['status'],certificate['revision']) == ('carried_forward','preopen-tradable-carry-forward-v1')
-        if not exact and not (carried and args.allow_carried_forward_universe):
-            raise ValueError(f"Missing certified pre-open tradable universe for {day}; "
-                "use --allow-carried-forward-universe only if labeled reconstruction is acceptable")
-        if (certificate['captured_at_utc'] >= certificate['cutoff_utc']
-                or certificate['available_at_utc'] >= certificate['cutoff_utc']
-                or certificate['available_at_utc'] < certificate['captured_at_utc']):
-            raise ValueError(f"Tradable universe was captured or published after the {day} pre-open cutoff")
-        if carried:
-            origin = client.query(f"SELECT session_date,snapshot_id,source_universe_date,captured_at_utc,available_at_utc,row_count,tradable_count,source_hash "
-                f"FROM q_live.feature_tradable_universe_snapshot_coverage_v2 FINAL WHERE session_date<{sql.literal(day)} "
-                "AND status='certified' AND revision='preopen-tradable-snapshot-v3' ORDER BY session_date DESC LIMIT 1",
-                "carried_forward_origin")
-            if len(origin) != 1 or any(certificate[key] != origin[0][key] for key in
-                ('source_universe_date','captured_at_utc','available_at_utc','row_count','tradable_count','source_hash')):
-                raise ValueError(f"Carried-forward universe source integrity failed for {day}")
-            import hashlib
-            expected_id = hashlib.sha256(
-                f"preopen-tradable-carry-forward-v1|{day}|{origin[0]['snapshot_id']}".encode()).hexdigest()
-            if certificate['snapshot_id'] != expected_id:
-                raise ValueError(f"Carried-forward universe identity failed for {day}")
-            certificate['source_session_date'] = origin[0]['session_date']
-        snapshot_id = certificate['snapshot_id']
-        proof = client.query(f"SELECT count() AS n,countIf(is_tradable=1) AS tradable,"
-            "sum(cityHash64(tuple(ticker,symbol_id,listing_id,security_id,is_tradable,exclusion_reason,source_run_id,captured_at_utc))) AS source_hash "
-            f"FROM q_live.feature_tradable_universe_snapshot_v2 WHERE session_date={sql.literal(day)} AND snapshot_id={sql.literal(snapshot_id)}", "population_integrity")[0]
-        if (int(proof['n']) != int(certificate['row_count']) or int(proof['tradable']) != int(certificate['tradable_count'])
-                or int(proof['source_hash']) != int(certificate['source_hash'])):
-            raise ValueError(f"Certified pre-open tradable universe integrity failed for {day}")
-        members = client.query(f"SELECT ticker,symbol_id,listing_id,security_id,source_run_id,inserted_at "
-            f"FROM (SELECT ticker,symbol_id,listing_id,security_id,source_run_id,captured_at_utc AS inserted_at "
-            f"FROM q_live.feature_tradable_universe_snapshot_v2 WHERE session_date={sql.literal(day)} "
-            f"AND snapshot_id={sql.literal(snapshot_id)} AND is_tradable=1) ORDER BY ticker,symbol_id,listing_id", "dated_tradable_universe")
-        if not members or any(not row['ticker'] for row in members):
-            raise ValueError(f"Missing or invalid dated tradable universe for {day}; current membership is not a historical substitute")
-        tickers = {row['ticker'] for row in members}
-        tradable_by_day[str(day)] = tickers
-        populations.append(dict(session_date=str(day),authority='q_live.feature_tradable_universe_snapshot_v2',
-            certificate=certificate,tradable_tickers=len(tickers),snapshot_rows=len(members),snapshot_hash=digest(members)))
+    population_evidence = None
+    if args.identity_policy != 'dated':
+        from scripts.market_day_population import retrospective_population
+        populations, tradable_by_day, population_evidence = retrospective_population(client,args,sessions)
+    else:
+        for day in sessions:
+            certificate = client.query(f"SELECT snapshot_id,source_universe_date,captured_at_utc,available_at_utc,cutoff_utc,row_count,tradable_count,source_hash,revision,status "
+                f"FROM q_live.feature_tradable_universe_snapshot_coverage_v2 FINAL WHERE session_date={sql.literal(day)}", "population_certificate")
+            if len(certificate) != 1:
+                raise ValueError(f"Missing certified pre-open tradable universe for {day}")
+            certificate = certificate[0]
+            exact = (certificate['status'],certificate['revision']) == ('certified','preopen-tradable-snapshot-v3')
+            carried = (certificate['status'],certificate['revision']) == ('carried_forward','preopen-tradable-carry-forward-v1')
+            if not exact and not (carried and args.allow_carried_forward_universe):
+                raise ValueError(f"Missing certified pre-open tradable universe for {day}; "
+                    "use --allow-carried-forward-universe only if labeled reconstruction is acceptable")
+            if (certificate['captured_at_utc'] >= certificate['cutoff_utc']
+                    or certificate['available_at_utc'] >= certificate['cutoff_utc']
+                    or certificate['available_at_utc'] < certificate['captured_at_utc']):
+                raise ValueError(f"Tradable universe was captured or published after the {day} pre-open cutoff")
+            if carried:
+                origin = client.query(f"SELECT session_date,snapshot_id,source_universe_date,captured_at_utc,available_at_utc,row_count,tradable_count,source_hash "
+                    f"FROM q_live.feature_tradable_universe_snapshot_coverage_v2 FINAL WHERE session_date<{sql.literal(day)} "
+                    "AND status='certified' AND revision='preopen-tradable-snapshot-v3' ORDER BY session_date DESC LIMIT 1",
+                    "carried_forward_origin")
+                if len(origin) != 1 or any(certificate[key] != origin[0][key] for key in
+                    ('source_universe_date','captured_at_utc','available_at_utc','row_count','tradable_count','source_hash')):
+                    raise ValueError(f"Carried-forward universe source integrity failed for {day}")
+                import hashlib
+                expected_id = hashlib.sha256(
+                    f"preopen-tradable-carry-forward-v1|{day}|{origin[0]['snapshot_id']}".encode()).hexdigest()
+                if certificate['snapshot_id'] != expected_id:
+                    raise ValueError(f"Carried-forward universe identity failed for {day}")
+                certificate['source_session_date'] = origin[0]['session_date']
+            snapshot_id = certificate['snapshot_id']
+            proof = client.query(f"SELECT count() AS n,countIf(is_tradable=1) AS tradable,"
+                "sum(cityHash64(tuple(ticker,symbol_id,listing_id,security_id,is_tradable,exclusion_reason,source_run_id,captured_at_utc))) AS source_hash "
+                f"FROM q_live.feature_tradable_universe_snapshot_v2 WHERE session_date={sql.literal(day)} AND snapshot_id={sql.literal(snapshot_id)}", "population_integrity")[0]
+            if (int(proof['n']) != int(certificate['row_count']) or int(proof['tradable']) != int(certificate['tradable_count'])
+                    or int(proof['source_hash']) != int(certificate['source_hash'])):
+                raise ValueError(f"Certified pre-open tradable universe integrity failed for {day}")
+            members = client.query(f"SELECT ticker,symbol_id,listing_id,security_id,source_run_id,inserted_at "
+                f"FROM (SELECT ticker,symbol_id,listing_id,security_id,source_run_id,captured_at_utc AS inserted_at "
+                f"FROM q_live.feature_tradable_universe_snapshot_v2 WHERE session_date={sql.literal(day)} "
+                f"AND snapshot_id={sql.literal(snapshot_id)} AND is_tradable=1) ORDER BY ticker,symbol_id,listing_id", "dated_tradable_universe")
+            if not members or any(not row['ticker'] for row in members):
+                raise ValueError(f"Missing or invalid dated tradable universe for {day}; current membership is not a historical substitute")
+            tickers = {row['ticker'] for row in members}
+            tradable_by_day[str(day)] = tickers
+            populations.append(dict(session_date=str(day),authority='q_live.feature_tradable_universe_snapshot_v2',
+                certificate=certificate,tradable_tickers=len(tickers),snapshot_rows=len(members),snapshot_hash=digest(members)))
     coverage = []
     for day, population in zip(sessions, populations):
         batch=client.query(f"SELECT source_date,ticker,event_count,next_ordinal,last_ordinal,first_sip_timestamp_us,last_sip_timestamp_us,build_step,updated_at FROM market_sip_compact.events_ordinal_continuity FINAL WHERE source_date={sql.literal(day)}{restriction} ORDER BY ticker", "ticker_coverage")
@@ -523,7 +539,7 @@ def source_plan(client, args):
         if args.symbols and day in requested:
             absent=set(args.symbols)-{row['ticker'] for row in selected}
             if absent:
-                raise ValueError(f"Requested tickers lack dated tradability or canonical events on {day}: "+','.join(sorted(absent)))
+                raise ValueError(f"Requested tickers lack selected population eligibility or canonical events on {day}: "+','.join(sorted(absent)))
         if not args.symbols and day in requested and not selected:
             raise ValueError(f"No tradable tickers with certified events on {day}")
         population['selected_ticker_days']=len(selected)
@@ -555,7 +571,7 @@ def source_plan(client, args):
             raise ValueError('Conflicting corporate-action split ratios')
         actions[key]=row
     return dict(sessions=list(map(str,sessions)), requested=list(map(str,requested)), predecessors=predecessors, stats=stats,
-        population=populations,units=units,rules=rules,
+        population=populations,population_evidence=population_evidence,units=units,rules=rules,
         splits=list(actions.values()),
         excluded_calendar_dates=[str(first+timedelta(days=i)) for i in range((args.end-first).days+1) if first+timedelta(days=i) not in sessions])
 
@@ -1154,7 +1170,7 @@ def run(args, *, typed_certificate_publisher=None, progress_sink=None):
         database_ready=False
         ledger=None
         try:
-            storage_preflight(client,args.database,include_liquidity_1s=True)
+            storage_preflight(client,args.database,include_liquidity_1s=True,identity_policy=args.identity_policy)
             plan = source_plan(client,args)
             reporting = reporting_coverage(client,args.start,args.end)
             definition = dict(version=sql.VERSION, emas=sql.EMAS, frames=sql.FRAMES, warmup_days=sql.WARMUP_DAYS,
@@ -1163,9 +1179,11 @@ def run(args, *, typed_certificate_publisher=None, progress_sink=None):
                 rules_hash=digest(plan['rules']),seed_policy='preceding-session-certified-state-or-first-bar',
                 controller_source=digest(Path(__file__).read_text()), plan=plan, database=args.database,
                 start=str(args.start),end=str(args.end),
-                population_authority=dict(table='q_live.feature_tradable_universe_snapshot_v2',
-                    coverage='q_live.feature_tradable_universe_snapshot_coverage_v2',
-                    membership='certified pre-open or explicitly allowed labeled carry-forward is_tradable=1 and canonical ticker events',
+                population_authority=dict(policy=args.identity_policy,conid_review_hash=args.conid_review_hash,
+                    identity_anchor_date=str(args.identity_anchor_date) if args.identity_anchor_date else None,
+                    table='q_live.feature_tradable_universe_snapshot_v2' if args.identity_policy=='dated' else 'current_conid_retrospective_v1',
+                    coverage='q_live.feature_tradable_universe_snapshot_coverage_v2' if args.identity_policy=='dated' else 'pinned conid review and lifecycle intervals',
+                    membership='certified pre-open or explicitly allowed labeled carry-forward is_tradable=1 and canonical ticker events' if args.identity_policy=='dated' else 'approved retrospective eligible intervals intersect canonical ticker events',
                     allow_carried_forward=args.allow_carried_forward_universe,
                     warmup='none',missing_date='fail_closed'),
                 indicators=dict(ema=dict(periods=sql.EMAS,seed='first eligible close',basis='completed nonempty bars'),
@@ -1206,8 +1224,10 @@ def run(args, *, typed_certificate_publisher=None, progress_sink=None):
             if not args.symbols:
                 excluded=sum(row['excluded_canonical_tickers'] for row in plan['population'] if row['session_date'] in plan['requested'])
                 without_source=sum(row['tradable_without_canonical_events'] for row in plan['population'] if row['session_date'] in plan['requested'])
-                scope+=f" | excluded non-tradable {excluded} | tradable without canonical events {without_source}"
+                scope+=f" | outside selected population {excluded} | tradable without canonical events {without_source}"
             print(f"{scope} | policy {sql.POLICY} | workers {args.workers}",flush=True)
+            if plan.get('population_evidence'):
+                print('Population: approved retrospective current conid; quarantines '+json.dumps(plan['population_evidence']['quarantine_counts'],sort_keys=True),flush=True)
             carried_days=[row for row in plan['population'] if row['certificate']['status']=='carried_forward']
             if carried_days:
                 print("Carried-forward universe: " + ", ".join(
@@ -1218,7 +1238,7 @@ def run(args, *, typed_certificate_publisher=None, progress_sink=None):
             client.query(f"CREATE DATABASE IF NOT EXISTS {sql.identifier(args.database)}", "database",False)
             for statement in sql.ddl(args.database,include_liquidity_1s=True):
                 client.query(statement,"schema",False)
-            storage_preflight(client,args.database,True,include_liquidity_1s=True)
+            storage_preflight(client,args.database,True,include_liquidity_1s=True,identity_policy=args.identity_policy)
             database_ready=True
             ledger=Ledger(runtime.parent / 'build-ledger-v2.sqlite3')
             ledger.build(build,definition,'building')
@@ -1276,7 +1296,7 @@ def run(args, *, typed_certificate_publisher=None, progress_sink=None):
                         for future in pending:
                             future.cancel()
                         raise
-                storage_preflight(client,args.database,True,include_liquidity_1s=True)
+                storage_preflight(client,args.database,True,include_liquidity_1s=True,identity_policy=args.identity_policy)
                 if source_plan(client,args) != plan:
                     raise ValueError("Source certificates or rules changed during the build")
                 progress.current='finished'

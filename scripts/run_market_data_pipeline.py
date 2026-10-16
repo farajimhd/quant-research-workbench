@@ -40,6 +40,10 @@ def arguments(argv=None):
     p.add_argument('--bar-workers',type=int,choices=range(1,33),default=8)
     p.add_argument('--bar-query-memory-gib',type=float,default=2.)
     p.add_argument('--tickers',default='')
+    p.add_argument('--identity-policy',choices=('dated','current_conid_retrospective_v1'),default='dated')
+    p.add_argument('--conid-review-hash')
+    p.add_argument('--identity-anchor-date',type=date.fromisoformat)
+    p.add_argument('--max-plan-units',type=int,default=250000)
     p.add_argument('--allow-carried-forward-universe',action='store_true')
     p.add_argument('--with-indicators',action='store_true')
     p.add_argument('--start-date',type=date.fromisoformat)
@@ -114,6 +118,9 @@ def run_bars(a):
         '--max-memory-gb',str(a.bar_query_memory_gib),'--global-memory-gb',str(a.global_memory_gib),
         '--query-timeout',str(a.query_timeout),'--tickers',a.tickers,'--progress',a.progress,
         '--products','bars-indicators' if a.with_indicators else 'bars']
+    values.extend(['--identity-policy',a.identity_policy,'--max-plan-units',str(a.max_plan_units)])
+    if a.conid_review_hash:values.extend(['--conid-review-hash',a.conid_review_hash])
+    if a.identity_anchor_date:values.extend(['--identity-anchor-date',str(a.identity_anchor_date)])
     if a.allow_carried_forward_universe:values.append('--allow-carried-forward-universe')
     if a.plan_only:values.append('--plan-only')
     args=builder.parse_args(values)
@@ -121,6 +128,9 @@ def run_bars(a):
     a.run_dir.mkdir(parents=True,exist_ok=True)
     request=dict(step='bars',start=str(a.start_date),end=str(a.end_date),tickers=a.tickers,
         products=args.products,allow_carried_forward=a.allow_carried_forward_universe,endpoint=a.endpoint)
+    if a.identity_policy!='dated':
+        request.update(identity_policy=a.identity_policy,conid_review_hash=a.conid_review_hash,
+            identity_anchor_date=str(a.identity_anchor_date))
     path=a.run_dir/'bars-request.json'
     if path.exists():
         if not a.resume and not a.plan_only:raise ValueError('Existing bars run requires --resume')
