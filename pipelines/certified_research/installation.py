@@ -77,6 +77,8 @@ def verify(query,database,*,require_tables=False):
 
 
 def install(query,database,claim):
+    from .retired_market import require_available
+    require_available(database)
     from .publication import DictionaryClaim
     if (not isinstance(claim,DictionaryClaim) or claim.dictionary_database!=database):
         raise ValueError('Installation requires global database dictionary ownership')

@@ -39,6 +39,8 @@ class Table:
             raise ValueError("Duplicate columns or invalid sorting key")
 
     def ddl(self, database):
+        from .retired_market import TABLES,require_available
+        if self.name in TABLES:require_available(database)
         cols = ",\n    ".join(c.sql() for c in self.columns)
         nullable_order=any(c.name in self.order and c.type.startswith('Nullable(') for c in self.columns)
         return (f"CREATE TABLE IF NOT EXISTS {identifier(database)}.{self.name} (\n    {cols}\n) "

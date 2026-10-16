@@ -112,6 +112,8 @@ def validate_recipe(request,database,*,product=None):
 def market_execution(request: MarketRequest,client_factory,claim,source_guard,engine_factory,*,database='arte',
                      query_memory_bytes=2*1024**3,fixture_source=None,storage_observer=None):
     """Expose stages to either the bounded pilot or the campaign's global pool."""
+    from .retired_market import require_available
+    require_available(database)
     identifier(database);validate_recipe(request,database)
     if fixture_source is not None and not database.startswith('certified_research_test_'):
         raise ValueError('Fixture source overrides are forbidden outside isolated test namespaces')

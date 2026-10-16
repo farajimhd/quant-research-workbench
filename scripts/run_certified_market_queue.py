@@ -98,6 +98,8 @@ class SynchronizedClient:
 
 
 def main(argv=None):
+    from pipelines.certified_research.retired_market import MESSAGE
+    raise SystemExit(MESSAGE)
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--env-file',type=Path,required=True)
     p.add_argument('--run-dir',type=Path,required=True)

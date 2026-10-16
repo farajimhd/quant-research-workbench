@@ -1,8 +1,8 @@
-"""Global market-data launcher. Step 1: Trade Reporting Repair, workstation only.
+"""Workstation market-data launcher: reporting repair or sequential bar funnel.
 
-Backfill repairs reporting bits from retained trade CSV evidence. Forwardfill is
-reserved but fails closed until its approved ingestion stage is implemented.
-No bars, levels, downloads, or original-tape expansion run in this step.
+Backfill --step bars reuses the ticker worker pool, persists 100ms/1s liquidity,
+and rolls trade bars through successive frames. --with-indicators adds the
+existing indicator stage. Forwardfill acquisition remains a separate next step.
 """
 import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
@@ -36,7 +36,12 @@ GIB=1024**3
 def arguments(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('mode',choices=('backfill','forwardfill','monitor'))
-    p.add_argument('--step',choices=('trade-reporting-repair',),default='trade-reporting-repair')
+    p.add_argument('--step',choices=('trade-reporting-repair','bars'),default='trade-reporting-repair')
+    p.add_argument('--bar-workers',type=int,choices=range(1,33),default=8)
+    p.add_argument('--bar-query-memory-gib',type=float,default=2.)
+    p.add_argument('--tickers',default='')
+    p.add_argument('--allow-carried-forward-universe',action='store_true')
+    p.add_argument('--with-indicators',action='store_true')
     p.add_argument('--start-date',type=date.fromisoformat)
     p.add_argument('--end-date',type=date.fromisoformat,help='Inclusive; defaults to latest certified imported source day')
     p.add_argument('--run-dir',type=Path,required=True)
@@ -68,7 +73,8 @@ def arguments(argv=None):
     if not 1<=a.prefetch_gib<=256 or not 0<=a.reserve_gib or not 0<=a.reserve_fraction<1:
         p.error('Invalid SSD staging budget')
     if not 1<=a.query_memory_gib<=32 or not 1<=a.query_timeout<=3600:p.error('Invalid query budget')
-    if (a.sql_workers+1)*a.query_memory_gib+1>a.global_memory_gib:
+    if a.step=='bars' and a.mode=='backfill' and a.end_date is None:p.error('Bars requires --end-date')
+    if a.step!='bars' and (a.sql_workers+1)*a.query_memory_gib+1>a.global_memory_gib:
         p.error('SQL workers, coordinator and telemetry exceed the global query-memory budget')
     return a
 
@@ -101,6 +107,49 @@ def classify(query,start,end):
     return inventory,reporting
 
 
+def run_bars(a):
+    from scripts import build_market_day as builder
+    values=['--start-date',str(a.start_date),'--end-date',str(a.end_date),'--runtime',str(a.run_dir/'build'),
+        '--env-file',str(a.env_file),'--workers',str(a.bar_workers),'--max-threads',str(a.query_threads),
+        '--max-memory-gb',str(a.bar_query_memory_gib),'--global-memory-gb',str(a.global_memory_gib),
+        '--query-timeout',str(a.query_timeout),'--tickers',a.tickers,'--progress',a.progress,
+        '--products','bars-indicators' if a.with_indicators else 'bars']
+    if a.allow_carried_forward_universe:values.append('--allow-carried-forward-universe')
+    if a.plan_only:values.append('--plan-only')
+    args=builder.parse_args(values)
+    os.environ['QMD_CLICKHOUSE_URL']=a.endpoint
+    a.run_dir.mkdir(parents=True,exist_ok=True)
+    request=dict(step='bars',start=str(a.start_date),end=str(a.end_date),tickers=a.tickers,
+        products=args.products,allow_carried_forward=a.allow_carried_forward_universe,endpoint=a.endpoint)
+    path=a.run_dir/'bars-request.json'
+    if path.exists():
+        if not a.resume and not a.plan_only:raise ValueError('Existing bars run requires --resume')
+        if json.loads(path.read_text())!=request:raise ValueError('Bars resume scope differs from frozen request')
+    elif a.resume:raise ValueError('No bars request exists to resume')
+    elif not a.plan_only:path.write_text(json.dumps(request,indent=2),encoding='utf-8')
+    if a.plan_only:return builder.run(args)
+    progress=Progress(a.run_dir)
+    progress.update(step='bars',title='Market bars and liquidity',status='running',start=str(a.start_date),end=str(a.end_date))
+    progress.emit('Starting sequential bar funnel; liquidity 100ms -> 1s; trade bars '+str(builder.sql.FRAMES))
+    finished=Event()
+    def heartbeat():
+        while not finished.wait(1):
+            with progress.lock:progress.flush(force=True)
+    thread=Thread(target=heartbeat,daemon=True);thread.start()
+    try:
+        result=builder.run(args,progress_sink=progress.update)
+        progress.update(status='complete' if result==0 else 'interrupted' if result==130 else 'failed',failed=int(result not in (0,130)))
+        report=a.run_dir/'build'/'latest.json'
+        if result and report.exists():progress.emit(json.loads(report.read_text()).get('error','Build interrupted; published units remain resumable'))
+        progress.emit('Builder finished with exit code '+str(result))
+        return result
+    except BaseException as error:
+        progress.update(status='interrupted' if isinstance(error,KeyboardInterrupt) else 'failed',failed=int(not isinstance(error,KeyboardInterrupt)))
+        progress.emit(type(error).__name__+': '+str(error));raise
+    finally:
+        finished.set();thread.join()
+
+
 def main(argv=None):
     a=arguments(argv)
     if a.mode=='monitor':return monitor(a)
@@ -109,6 +158,7 @@ def main(argv=None):
         raise ValueError('Run directory must be under the available D:/TradingML/runtimes')
     if not a.plan_only and os.environ.get('COMPUTERNAME','').upper()!='DESKTOP-SAAI85T':
         raise ValueError('Execute this writer on DESKTOP-SAAI85T')
+    if a.step=='bars':return run_bars(a)
     paths=acquisition.IngestionPaths(a.env_file,a.run_dir,a.cache_root,a.archive_root,a.clickhouse_cache_root)
     load_env_files([a.env_file],verbose=False)
     os.environ['QMD_CLICKHOUSE_URL']=a.endpoint

@@ -86,7 +86,7 @@ def render(state,width=110,height=30):
     mutation=next((r for k,r in workers.items() if r.get('kind')=='mutation' or k=='MUTATE'),None)
     total=int(state.get('total',0));reused=int(state.get('reused',0));completed=int(state.get('completed',0))
     certified=min(total,reused+completed)
-    title=Text('TRADE REPORTING REPAIR',style='bold')
+    title=Text(state.get('title','TRADE REPORTING REPAIR').upper(),style='bold')
     title.append('  '+('STALE' if stale else status),style=color)
     scope=Text(f'{state.get("start", "")} to {state.get("end", "")}  |  Backfill  |  PID {state.get("pid", "-")}',style='dim',no_wrap=True,overflow='ellipsis')
     summary=Table.grid(expand=True,padding=(0,1))

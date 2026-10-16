@@ -40,6 +40,8 @@ class MarketUnit:
 
 
 def staging_ddl(database='arte'):
+    from .retired_market import require_available
+    require_available(database)
     for ddl in core.ddl(database):
         for name in STAGING:
             ddl=ddl.replace(core.table(database,name),core.table(database,name,STAGING))

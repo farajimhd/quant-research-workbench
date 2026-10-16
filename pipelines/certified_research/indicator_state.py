@@ -96,6 +96,8 @@ def authority(request,bars,query,database,claim):
 
 
 def publish(request,bars,technical,query,database,claim,source_guard):
+    from .retired_market import require_available
+    require_available(database)
     from .producer import indicator_state
     scope=scope_for(request,technical);publisher=Publisher(query,database,claim)
     base=request.unit

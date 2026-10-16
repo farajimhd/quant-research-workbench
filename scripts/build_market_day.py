@@ -178,7 +178,9 @@ def parse_args(argv=None):
     p.add_argument("--runtime", type=Path, default=RUNTIME / "market-day")
     p.add_argument("--max-threads", type=int, default=4)
     p.add_argument("--workers", type=int, default=4, help="Concurrent ticker workers (1-32); each uses its own bounded ClickHouse client")
+    p.add_argument('--products',choices=('bars','bars-indicators'),default='bars-indicators')
     p.add_argument("--max-memory-gb", type=float, default=2.)
+    p.add_argument('--global-memory-gb',type=float,default=64.)
     p.add_argument("--query-timeout", type=int, default=600)
     p.add_argument("--max-plan-units", type=int, default=250000,
         help="Bound in-memory ticker-day metadata; split larger ranges or raise explicitly")
@@ -200,6 +202,8 @@ def parse_args(argv=None):
             raise ValueError("Invalid build ID")
         if args.max_threads < 1 or not 1 <= args.workers <= 32 or not 0 < args.max_memory_gb <= 64 or args.query_timeout < 1 or args.max_plan_units<1:
             raise ValueError("Invalid query resource limits")
+        if max(8.,args.max_memory_gb)+(args.workers-1)*args.max_memory_gb+1>args.global_memory_gb:
+            raise ValueError('Worker queries, one dense query and controller exceed --global-memory-gb')
         args.symbols = sorted(set(x.strip().upper() for x in args.tickers.split(",") if x.strip()))
         if any(len(x) > 32 or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for c in x) for x in args.symbols):
             raise ValueError("Invalid ticker")
@@ -282,13 +286,17 @@ class Client:
 
 class Progress:
     """One durable unit is one published ticker-day stage, not one SQL query."""
-    def __init__(self, bars_total, technical_total, workers, mode="auto"):
+    def __init__(self, bars_total, technical_total, workers, mode="auto", sink=None):
         self.bars_total, self.technical_total = bars_total, technical_total
         self.workers = workers
         self.completed = self.skipped = self.failed = self.retried = 0
         self.bars_done = self.technical_done = 0
         self.bootstrap = self.carried = 0
         self.active = {}
+        self.worker_states={}
+        self.assigned={}
+        self.finished_by_ticker={}
+        self.sink=sink
         self.current = "building"
         self.started = time.monotonic()
         self.lock = threading.Lock()
@@ -309,6 +317,7 @@ class Progress:
             total = self.bars_total + self.technical_total
             done = self.completed + self.skipped
             active = list(self.active.values())
+            worker_states=dict(self.worker_states)
             queued = max(0, total-done-self.failed-len(active))
             lines = [f"Market day {self.current}  |  workers {self.workers}  |  live_market_ssd",
                 f"Bars {self.bars_done}/{self.bars_total}  |  Technical {self.technical_done}/{self.technical_total}",
@@ -321,28 +330,47 @@ class Progress:
             if not active and self.current == 'building':
                 lines.append('  Waiting for next ticker or final certification')
         if self.live:
-            from rich.panel import Panel
-            return Panel('\n'.join(lines), title='ClickHouse market-day build', expand=False)
+            from pipelines.market_sip.flatfiles.repair_terminal import render
+            return render(dict(title='Market bars and liquidity',step='bars',status=self.current,
+                total=total,completed=self.completed,reused=self.skipped,failed=self.failed,
+                workers=worker_states,coverage_label='Ticker-day stages',pid=os.getpid()),
+                self.live.console.width,self.live.console.height)
         return '\n'.join(lines)
 
     def __enter__(self):
         if self.live:
             self.live.start()
-            def refresh():
-                while not self.stop.wait(.5):
-                    self.live.update(self.render())
-            self.thread = threading.Thread(target=refresh, daemon=True)
-            self.thread.start()
+        def refresh():
+            while not self.stop.wait(1):
+                if self.live:self.live.update(self.render())
+                self.publish_snapshot()
+        self.thread = threading.Thread(target=refresh, daemon=True)
+        self.thread.start()
         return self
+
+    def publish_snapshot(self):
+        if self.sink is None:return
+        with self.lock:
+            total=self.bars_total+self.technical_total
+            values=dict(total=total,completed=self.completed,reused=self.skipped,failed=self.failed,
+                queued=max(0,total-self.completed-self.skipped-self.failed-len(self.active)),
+                workers=dict(self.worker_states),coverage_label='Ticker-day stages',
+                bars_done=self.bars_done,technical_done=self.technical_done)
+        self.sink(**values)
 
     def update(self, ticker, day, stage):
         with self.lock:
             self.active[ticker] = f"{day}  {ticker}  {stage}"
+            self.worker_states[threading.current_thread().name]=dict(day=str(day),stage=stage,
+                detail=ticker,done=self.finished_by_ticker.get(ticker,0),total=self.assigned.get(ticker),unit='ticker-day stages')
         self._text_snapshot()
 
     def finish(self, ticker, kind, skipped=False):
         with self.lock:
             self.active.pop(ticker, None)
+            self.finished_by_ticker[ticker]=self.finished_by_ticker.get(ticker,0)+1
+            self.worker_states[threading.current_thread().name]=dict(stage='Ready',day='',detail=ticker,
+                done=self.finished_by_ticker[ticker],total=self.assigned.get(ticker),unit='ticker-day stages')
             self.skipped += int(skipped)
             self.completed += int(not skipped)
             if kind == 'bars': self.bars_done += 1
@@ -377,7 +405,7 @@ class Progress:
             print(self.render(),flush=True)
 
 
-def storage_preflight(client, db, require_tables=False):
+def storage_preflight(client, db, require_tables=False, *, include_liquidity_1s=False):
     policies = client.query("SELECT disks FROM system.storage_policies WHERE policy_name='live_market_ssd'", "storage_policy")
     if not policies or any(row["disks"] != ["live_market_ssd"] for row in policies):
         raise ValueError("Required SSD-only live_market_ssd policy is unavailable")
@@ -388,6 +416,7 @@ def storage_preflight(client, db, require_tables=False):
     if misplaced_universe:
         raise ValueError("Dated tradable universe has parts outside live_market_ssd")
     names=('bars_v1','indicators_v1','liquidity_100ms_v1')
+    if include_liquidity_1s:names+=('liquidity_1s_v1',)
     metadata=client.query(f"SELECT name,storage_policy FROM system.tables WHERE database={sql.literal(db)} AND startsWith(name,'market_day_')",'market_day_metadata_tables')
     certificate_names={table.name for table in CERTIFICATE_TABLES} | {SESSION_SEAL.name}
     unknown=sorted(row['name'] for row in metadata if row['name'] not in certificate_names)
@@ -408,7 +437,7 @@ def storage_preflight(client, db, require_tables=False):
         actual={r['name']:[] for r in rows}
         for column in columns:
             actual[column['table']].append((column['name'],column['type'].replace(' ','')))
-        for statement in sql.ddl(db):
+        for statement in sql.ddl(db,include_liquidity_1s=include_liquidity_1s):
             name=statement.split(' (',1)[0].split('.')[-1]
             body=statement.split(' (',1)[1].split('ENGINE=',1)[0]
             expected=re.findall(r"(?:^|,)\s*(\w+)\s+(LowCardinality\(String\)|DateTime64\(6,'UTC'\)|[A-Za-z]+[0-9]*)",body)
@@ -538,11 +567,26 @@ def reporting_coverage(client, start, end):
     by_day = {row['source_date']: row for row in rows}
     if len(by_day) != len(rows):
         raise ValueError('Ambiguous trade reporting coverage')
+    compact={}
+    if any(not by_day.get(s['source_date']) or by_day[s['source_date']]['status']!='complete' for s in sources):
+        present=client.query("SELECT count() n FROM system.tables WHERE database='q_live' AND name='reporting_flag_receipts_v2'",'compact_reporting_table')
+        if present and int(present[0]['n']):
+            receipts=client.query(f"SELECT * FROM q_live.reporting_flag_receipts_v2 WHERE stage='complete' AND source_date BETWEEN {sql.literal(start)} AND {sql.literal(end)}",'compact_reporting_receipts')
+            for row in receipts:
+                if row['source_date'] in compact:raise ValueError('Ambiguous compact reporting receipt')
+                compact[row['source_date']]=row
     proof = []
     for source in sources:
         day = source['source_date']; row = by_day.get(day)
         if not row or row['status'] != 'complete':
-            raise ValueError(f'{day}: verified trade reporting coverage is required before building bars')
+            repaired=compact.get(day)
+            if (not repaired or repaired['source_digest']!=digest({k:v for k,v in source.items() if k!='updated_at'})
+                    or int(repaired['total_trades'])!=int(source['trade_event_rows'])):
+                raise ValueError(f'{day}: verified trade reporting coverage is required before building bars')
+            proof.append(dict(source_date=day,revision=sql.REPORTING_REVISION,source_digest=repaired['source_digest'],
+                status='complete',authority='q_live.reporting_flag_receipts_v2',exception_digest=repaired['exception_digest'],
+                counts=dict(n=int(repaired['total_trades']),bad=0)))
+            continue
         counts = json.loads(row['details'])['counts']
         if (row['source_digest'] != digest({k:v for k,v in source.items() if k != 'updated_at'})
                 or counts['n'] != int(source['trade_event_rows']) or counts['bad'] != 0):
@@ -550,8 +594,16 @@ def reporting_coverage(client, start, end):
         proof.append({k:row[k] for k in ('source_date','revision','source_digest','status')} | {'counts':counts})
     if not proof:
         raise ValueError('No verified trade reporting coverage')
-    active = client.query("SELECT mutation_id FROM system.mutations WHERE database='market_sip_compact' AND startsWith(table,'events_') AND is_done=0 LIMIT 1", 'reporting_active_mutations')
-    if active:
+    # Partition-scoped admission: unrelated months must not stall independent builds.
+    months=sorted({(start+timedelta(days=i)).strftime('%Y%m') for i in range((end-start).days+2)})
+    tables=tuple('events_'+str(year) for year in range(start.year,(end+timedelta(days=1)).year+1))
+    active = client.query(f"SELECT mutation_id FROM system.mutations WHERE database='market_sip_compact' "
+        f"AND table IN ({','.join(sql.literal(t) for t in tables)}) AND is_done=0 AND "
+        f"(empty(parts_to_do_names) OR arrayExists(p->has({months},splitByChar('_',p)[1]),parts_to_do_names)) LIMIT 1", 'reporting_active_mutations')
+    merging=client.query(f"SELECT result_part_name FROM system.merges WHERE database='market_sip_compact' "
+        f"AND table IN ({','.join(sql.literal(t) for t in tables)}) AND is_mutation "
+        f"AND has({months},splitByChar('_',result_part_name)[1]) LIMIT 1",'reporting_active_parts')
+    if active or merging:
         raise ValueError('Canonical event mutation is active; wait before building bars')
     return proof
 
@@ -668,7 +720,7 @@ def prefetch_certified_evidence(ledger, client, db, build, ticker, rows):
     days=sorted({row['source_date'] for row in rows})
     if not days:
         return
-    for stage in ('broker_100ms','bars','technical'):
+    for stage in ('broker_100ms','broker_1s','bars','technical'):
         published={day:ledger.unit(build,day,ticker,stage) for day in days}
         published={day:unit for day,unit in published.items() if unit is not None}
         if not published:
@@ -737,6 +789,30 @@ def validate_bars(client, db, build, day, ticker, attempt):
       WHERE a.resolution_ms!=b.resolution_ms OR a.bucket!=b.bucket_index OR (a.o,a.h,a.l,a.c)!=(b.open_int,b.high_int,b.low_int,b.close_int)""", "direct_rollup_parity")[0]
     if int(mismatch['n']):
         raise ValueError("Direct/hierarchical rollup parity failed")
+
+
+def validate_liquidity_rollup(client,db,build,day,ticker,attempt):
+    where=sql.selection(build,day,ticker,attempt)
+    metrics=('event_count','source_trade_count','quote_event_count','trade_count','volume','notional',
+             'execution_volume','execution_notional','reporting_delayed_trades')
+    projection=','.join(f'sum({name}) {name}' for name in metrics)
+    rows=[client.query(f'SELECT {projection} FROM {sql.table(db,kind)} WHERE {where}',
+                      'liquidity_rollup_conservation')[0] for kind in ('broker_100ms','broker_1s')]
+    for name in metrics:
+        if abs(float(rows[0][name])-float(rows[1][name]))>1e-9*max(1.,abs(float(rows[0][name]))):
+            raise ValueError('Liquidity rollup conservation failed: '+name)
+    proof=client.query(f'''SELECT count() bad FROM (
+        SELECT intDiv(bucket_index,10) bucket,min(first_event_us) first_us,max(last_event_us) last_us,
+          argMax(tuple(quote_timestamp_us,bid_int,ask_int,bid_size,ask_size,cumulative_volume,
+            cumulative_notional,cumulative_execution_volume,cumulative_execution_notional,quote_valid),bucket_index) state
+        FROM {sql.table(db,'broker_100ms')} WHERE {where} GROUP BY bucket) a
+        FULL OUTER JOIN (SELECT * FROM {sql.table(db,'broker_1s')} WHERE {where}) b
+        ON a.bucket=b.bucket_index
+        WHERE b.resolution_ms!=1000 OR a.first_us!=b.first_event_us OR a.last_us!=b.last_event_us
+          OR a.state!=tuple(b.quote_timestamp_us,b.bid_int,b.ask_int,b.bid_size,b.ask_size,b.cumulative_volume,
+            b.cumulative_notional,b.cumulative_execution_volume,b.cumulative_execution_notional,b.quote_valid)''',
+        'liquidity_rollup_state')[0]
+    if int(proof['bad']):raise ValueError('Liquidity rollup final state or bucket coverage differs')
 
 
 def validate_broker(client,db,build,day,ticker,attempt,source):
@@ -907,6 +983,9 @@ def build_ticker(args, ledger, build, plan, ticker, rows, requested, calculation
                  checkpoint_clock, worker_local,
                  state_lock, progress, stop, clients, dense_slots):
     """Own one ticker's chronological bars and then its requested technical days."""
+    with progress.lock:
+        progress.assigned[ticker]=len(rows)+(sum(r['source_date'] in requested for r in rows) if args.products=='bars-indicators' else 0)
+    progress.update(ticker,'','Checking saved output')
     client = getattr(worker_local,'client',None)
     if client is None:
         client = Client(args)
@@ -938,6 +1017,8 @@ def build_ticker(args, ledger, build, plan, ticker, rows, requested, calculation
             if completed(ledger,client,args.database,build,day,ticker,'bars',source_hash):
                 if not completed(ledger,client,args.database,build,day,ticker,'broker_100ms',source_hash):
                     raise ValueError(f'{day} {ticker}: published bars lack certified broker 100ms inputs')
+                if not completed(ledger,client,args.database,build,day,ticker,'broker_1s',source_hash):
+                    raise ValueError(f'{day} {ticker}: published bars lack certified 1s liquidity')
                 progress.finish(ticker,'bars',skipped=True)
                 continue
             attempt = str(uuid.uuid4())
@@ -957,14 +1038,17 @@ def build_ticker(args, ledger, build, plan, ticker, rows, requested, calculation
                 raise ValueError(f'{day} {ticker}: duplicate broker 100ms bucket keys')
             mark(day,attempt,'100ms bars')
             client.query(sql.base_sql(args.database,build,day,ticker,attempt),"100ms",False)
-            mark(day,attempt,'fine / higher rollups')
-            client.query(sql.rollup_sql(args.database,build,day,ticker,attempt,100,(1000,5000,10000,30000)),"fine_rollup",False)
-            client.query(sql.rollup_sql(args.database,build,day,ticker,attempt,30000,(60000,300000,3600000)),"higher_rollup",False)
+            mark(day,attempt,'1s liquidity from 100ms')
+            client.query(sql.liquidity_rollup_sql(args.database,build,day,ticker,attempt),'liquidity_1s',False)
+            validate_liquidity_rollup(client,args.database,build,day,ticker,attempt)
+            for parent,target,query in zip(sql.FRAMES,sql.FRAMES[1:],sql.funnel_queries(args.database,build,day,ticker,attempt)):
+                mark(day,attempt,f'trade bars {parent}ms -> {target}ms')
+                client.query(query,f'rollup_{parent}_{target}',False)
             validate_bars(client,args.database,build,day,ticker,attempt)
             metrics=validate_broker(client,args.database,build,day,ticker,attempt,source)
             if source_evidence(client,row) != source:
                 raise ValueError(f'{day} {ticker}: canonical source changed during build')
-            for stage in ('broker_100ms','bars'):
+            for stage in ('broker_100ms','broker_1s','bars'):
                 result=evidence(client,args.database,stage,build,day,ticker,attempt)
                 if result['n'] != result['unique_keys']:
                     raise ValueError(f'{day} {ticker}: duplicate {stage} output keys')
@@ -976,7 +1060,7 @@ def build_ticker(args, ledger, build, plan, ticker, rows, requested, calculation
                     os.fsync(stream.fileno())
             progress.finish(ticker,'bars')
 
-        for row in rows:
+        for row in rows if args.products=='bars-indicators' else ():
             if row['source_date'] not in requested or stop.is_set(): continue
             day = date.fromisoformat(row['source_date'])
             mark(day,'','indicator dependencies')
@@ -1056,7 +1140,7 @@ def _publish_injected_typed_certificate(definition, build_id, ledger, publisher)
     require_attested_inventory(proof, prepared['market_day_build_fence_v1'][0])
 
 
-def run(args, *, typed_certificate_publisher=None):
+def run(args, *, typed_certificate_publisher=None, progress_sink=None):
     runtime = args.runtime.resolve()
     if not RUNTIME.is_dir() or not runtime.is_relative_to(RUNTIME.resolve()):
         raise ValueError("Runtime must be beneath the available D:/TradingML/runtimes")
@@ -1070,11 +1154,12 @@ def run(args, *, typed_certificate_publisher=None):
         database_ready=False
         ledger=None
         try:
-            storage_preflight(client,args.database)
+            storage_preflight(client,args.database,include_liquidity_1s=True)
             plan = source_plan(client,args)
             reporting = reporting_coverage(client,args.start,args.end)
             definition = dict(version=sql.VERSION, emas=sql.EMAS, frames=sql.FRAMES, warmup_days=sql.WARMUP_DAYS,
-                indicator_set='core', calculation_source=digest([Path(sql.__file__).read_text(),'verified-timely-reporting-v1']),
+                indicator_set='core', products=args.products,funnel_version=sql.FUNNEL_VERSION,
+                calculation_source=digest([Path(sql.__file__).read_text(),'verified-timely-reporting-v1']),
                 rules_hash=digest(plan['rules']),seed_policy='preceding-session-certified-state-or-first-bar',
                 controller_source=digest(Path(__file__).read_text()), plan=plan, database=args.database,
                 start=str(args.start),end=str(args.end),
@@ -1131,9 +1216,9 @@ def run(args, *, typed_certificate_publisher=None):
                 print(f"Read-only plan complete: {len(plan['units'])} requested ticker-days. {report_path}",flush=True)
                 return 0
             client.query(f"CREATE DATABASE IF NOT EXISTS {sql.identifier(args.database)}", "database",False)
-            for statement in sql.ddl(args.database):
+            for statement in sql.ddl(args.database,include_liquidity_1s=True):
                 client.query(statement,"schema",False)
-            storage_preflight(client,args.database,True)
+            storage_preflight(client,args.database,True,include_liquidity_1s=True)
             database_ready=True
             ledger=Ledger(runtime.parent / 'build-ledger-v2.sqlite3')
             ledger.build(build,definition,'building')
@@ -1143,7 +1228,7 @@ def run(args, *, typed_certificate_publisher=None):
                     f"bars {retained.get('bars',0)}, indicators {retained.get('technical',0)}. "
                     "Progress starts at zero for this invocation's verification; certified rows are skipped.",flush=True)
             save(runtime / (build+'.json'),report)
-            wanted = [r for r in plan['units'] if r['source_date'] in plan['requested']]
+            wanted = [r for r in plan['units'] if r['source_date'] in plan['requested']] if args.products=='bars-indicators' else []
             by_ticker = {}
             for row in plan['units']:
                 by_ticker.setdefault(row['ticker'],[]).append(row)
@@ -1152,11 +1237,13 @@ def run(args, *, typed_certificate_publisher=None):
             state_lock = threading.Lock()
             stop = threading.Event()
             clients = []
-            dense_slots = threading.BoundedSemaphore(4)
+            dense_count=(int((args.global_memory_gb-1-args.workers*args.max_memory_gb)//(8-args.max_memory_gb))
+                         if args.max_memory_gb<8 else args.workers)
+            dense_slots = threading.BoundedSemaphore(max(1,min(args.workers,dense_count)))
             worker_local = threading.local()
             checkpoint_clock = [time.monotonic()]
             report['active'] = {}
-            with Progress(len(plan['units']),len(wanted),min(args.workers,len(by_ticker)),args.progress) as progress:
+            with Progress(len(plan['units']),len(wanted),min(args.workers,len(by_ticker)),args.progress,sink=progress_sink) as progress:
                 with ThreadPoolExecutor(max_workers=min(args.workers,len(by_ticker)),thread_name_prefix='market-day') as pool:
                     pending = {}
                     ticker_iter = iter(by_ticker.items())
@@ -1189,12 +1276,13 @@ def run(args, *, typed_certificate_publisher=None):
                         for future in pending:
                             future.cancel()
                         raise
-                storage_preflight(client,args.database,True)
+                storage_preflight(client,args.database,True,include_liquidity_1s=True)
                 if source_plan(client,args) != plan:
                     raise ValueError("Source certificates or rules changed during the build")
                 progress.current='finished'
                 report.update(status='core_complete',completed=progress.completed,skipped=progress.skipped,
                     backtest_consumer_cutover=False)
+                progress.publish_snapshot()
             return 0
         except KeyboardInterrupt:
             report['status'] = 'interrupted'

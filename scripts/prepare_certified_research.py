@@ -420,6 +420,8 @@ def qualify_plan(result):
 
 
 def main(argv=None):
+    from pipelines.certified_research.retired_market import MESSAGE
+    raise SystemExit(MESSAGE)
     args=parse_args(argv)
     if args.command=='schema':
         catalog=installation.catalog(args.database)

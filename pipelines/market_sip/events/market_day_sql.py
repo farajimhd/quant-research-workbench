@@ -14,6 +14,7 @@ from pipelines.market_sip.events.trade_reporting_flags import DELAYED, REVISION 
 VERSION = "market-day-core-v5"
 EMAS = (7, 9, 12, 15, 20, 26, 50)
 FRAMES = (100, 1000, 5000, 10000, 30000, 60000, 300000, 3600000)
+FUNNEL_VERSION = 'market-day-sequential-funnel-v1'
 POLICY = "live_market_ssd"
 WARMUP_DAYS = 0
 
@@ -29,11 +30,11 @@ def identifier(value):
 
 
 def table(db, name, names=None):
-    names = names or {'bars':'bars_v1','technical':'indicators_v1','broker_100ms':'liquidity_100ms_v1'}
+    names = names or {'bars':'bars_v1','technical':'indicators_v1','broker_100ms':'liquidity_100ms_v1','broker_1s':'liquidity_1s_v1'}
     return f"{identifier(db)}.{identifier(names[name])}"
 
 
-def ddl(db):
+def ddl(db, *, include_liquidity_1s=False):
     common = "build_id String, session_date Date, ticker LowCardinality(String), attempt_id UUID"
     definitions = {
         "broker_100ms": (f"""{common}, resolution_ms UInt32, bucket_index UInt32,
@@ -68,6 +69,8 @@ def ddl(db):
             avg_gain Float64, avg_loss Float64""",
             "build_id, session_date, ticker, attempt_id, resolution_ms, bucket_index"),
     }
+    if include_liquidity_1s:
+        definitions['broker_1s']=definitions['broker_100ms']
     for name, (columns, order) in definitions.items():
         yield f"""CREATE TABLE IF NOT EXISTS {table(db,name)} ({columns})
             ENGINE=MergeTree PARTITION BY toYYYYMM(session_date) ORDER BY ({order})
@@ -190,6 +193,34 @@ def broker_sql(db, build, day, ticker, attempt, rules, source=None, *, verified_
         AND argMax(q.2,tuple(sip_timestamp_us,ordinal))>0
         AND argMax(q.3,tuple(sip_timestamp_us,ordinal))>=argMax(q.2,tuple(sip_timestamp_us,ordinal)))
       FROM cumulative GROUP BY bucket"""
+
+
+def liquidity_rollup_sql(db, build, day, ticker, attempt):
+    """Only 100ms input; sums flows and carries final cumulative/quote state."""
+    counts=('event_count','source_trade_count','quote_event_count','reporting_delayed_trades',
+        'volume_ineligible_trades','price_ineligible_trades','execution_ineligible_trades',
+        'pre_0405_trades','pre_0405_volume_eligible_trades','invalid_trade_values')
+    last=('quote_timestamp_us','bid_int','ask_int','bid_size','ask_size',
+        'cumulative_volume','cumulative_notional','cumulative_execution_volume','cumulative_execution_notional')
+    return f"""INSERT INTO {table(db,'broker_1s')}
+    SELECT build_id,session_date,ticker,attempt_id,toUInt32(1000),
+      toUInt32(intDiv(bucket_index,10)) bucket,min(first_event_us),max(last_event_us),
+      {','.join('accurateCast(sum('+c+"),'UInt32')" for c in counts)},
+      argMinIf(open_int,bucket_index,price_valid),maxIf(high_int,extremes_valid),
+      minIf(low_int,extremes_valid),argMaxIf(close_int,bucket_index,price_valid),
+      sum(volume),accurateCast(sum(trade_count),'UInt32'),sum(notional),
+      sum(execution_volume),sum(execution_notional),max(price_valid),max(extremes_valid),max(volume_valid),
+      {','.join('argMax('+c+',bucket_index)' for c in last)},
+      if(argMax(cumulative_execution_volume,bucket_index)>0,
+        argMax(cumulative_execution_notional,bucket_index)/argMax(cumulative_execution_volume,bucket_index),0.),
+      argMax(spread,bucket_index),argMax(quote_valid,bucket_index)
+    FROM {table(db,'broker_100ms')} WHERE {selection(build,day,ticker,attempt)} AND resolution_ms=100
+    GROUP BY build_id,session_date,ticker,attempt_id,bucket"""
+
+
+def funnel_queries(db, build, day, ticker, attempt):
+    return tuple(rollup_sql(db,build,day,ticker,attempt,parent,(target,))
+                 for parent,target in zip(FRAMES,FRAMES[1:]))
 
 
 def base_sql(db, build, day, ticker, attempt, *, table_names=None):

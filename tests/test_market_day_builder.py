@@ -54,7 +54,8 @@ class Arguments(unittest.TestCase):
         class Client:
             def query(self, query, label):
                 return {'reporting_source_certificates':[source], 'reporting_coverage':[row],
-                    'reporting_active_mutations':[]}[label]
+                    'reporting_active_mutations':[],'reporting_active_parts':[],
+                    'compact_reporting_table':[{'n':0}]}[label]
         result = B.reporting_coverage(Client(), date(2026,7,31), date(2026,7,31))
         self.assertEqual(result[0]['counts']['delayed'],1)
         row['status']='staged'
@@ -144,7 +145,7 @@ class Arguments(unittest.TestCase):
         self.assertTrue(all(len(line)<80 for line in output.splitlines()))
 
     def test_32_workers_and_bounded_active_display(self):
-        args=B.parse_args(['--date','2026-09-18','--workers','32'])
+        args=B.parse_args(['--date','2026-09-18','--workers','32','--global-memory-gb','80'])
         self.assertEqual(args.workers,32)
         self.assertEqual(args.max_plan_units,250000)
         with redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
@@ -521,8 +522,8 @@ class ClickHouseParity(unittest.TestCase):
         ledger=B.Ledger(runtime.parent/'build-ledger-v2.sqlite3')
         published=ledger.db.execute("SELECT ticker,stage,count(*) FROM units WHERE build_id=? AND status='complete' GROUP BY ticker,stage",(report['build_id'],)).fetchall()
         self.assertEqual({(ticker,stage):n for ticker,stage,n in published},
-            {('CD','bars'):2,('CD','broker_100ms'):2,('CD','technical'):2,
-             ('TGLS','bars'):2,('TGLS','broker_100ms'):2,('TGLS','technical'):2})
+            {('CD','bars'):2,('CD','broker_100ms'):2,('CD','broker_1s'):2,('CD','technical'):2,
+             ('TGLS','bars'):2,('TGLS','broker_100ms'):2,('TGLS','broker_1s'):2,('TGLS','technical'):2})
         prior=self.c.query(f"SELECT ema_7 FROM {S.table(self.db,'technical')} WHERE "
             f"build_id={S.literal(report['build_id'])} AND ticker='CD' "
             "AND session_date='2026-08-18' AND resolution_ms=1000 "

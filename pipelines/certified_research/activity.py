@@ -78,6 +78,8 @@ def bounds_expr():
 
 
 def run(scope,windows,parent_scopes,query,claim,source_guard,*,database='arte'):
+    from .retired_market import require_available
+    require_available(database)
     from uuid import uuid4
     from .schema import TABLES
     from .publication import evidence_sql
