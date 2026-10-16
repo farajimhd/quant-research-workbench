@@ -21,6 +21,21 @@ from src.trading_runtime.order_management import OrderManagementEngine
 from src.trading_runtime.columnar_program_actor import AssignedProgramStrategy
 
 
+def completed_program_audit_reader_factory(native_factory):
+    """Use the existing bounded batched detail reader, retaining every seal.
+
+    Each invocation still owns a fresh SELECT-only connection. This reduces
+    per-family round trips; it neither caches a prefix nor skips row hashing.
+    """
+    if not callable(native_factory):
+        raise ValueError('Completed audit requires its native connection factory')
+    def owned():
+        client = native_factory()
+        client.v4_batched_detail_readback = True
+        return client
+    return owned
+
+
 @dataclass(frozen=True)
 class _AttributionGroup:
     account_id: str

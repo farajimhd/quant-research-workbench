@@ -15,6 +15,20 @@ from src.trading_runtime.arte_oms_projection import RecoveredOmsGroupState
 AT = datetime(2026, 7, 31, 14, tzinfo=timezone.utc)
 
 
+def test_completed_audit_factory_uses_fresh_native_clients_and_existing_batched_validator():
+    from src.backend.completed_program_execution_evidence import completed_program_audit_reader_factory
+    clients = []
+    def create():
+        client = SimpleNamespace(program_decision_profile=True)
+        clients.append(client)
+        return client
+    factory = completed_program_audit_reader_factory(create)
+    first, second = factory(), factory()
+    assert first is not second
+    assert clients == [first, second]
+    assert all(row.v4_batched_detail_readback and row.program_decision_profile for row in clients)
+
+
 def evidence():
     intent = StrategyIntent('intent', 'TEST', AT, 'enter_long', 10, 5., reason='program_entry')
     request = OrderRequest('SIM-01', 123, 'MKT', 'BUY', quantity=10., cOID='client', ticker='TEST')
