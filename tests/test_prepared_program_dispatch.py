@@ -25,16 +25,22 @@ from tests.test_signal_stream_typed_publication import FakeStorage
 from tests.test_broker_liquidity_resolution import second_bar
 
 
+@pytest.mark.parametrize('resolution', [100, 1000])
+def test_passive_mark_gain_retains_exact_recoverable_program_finances(prepared_source, tmp_path, monkeypatch, resolution):
+    test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(
+        prepared_source, tmp_path, resolution, None, True, True, monkeypatch, passive_gain=True)
+
+
 @pytest.mark.parametrize("resolution", [100, 1000])
 @pytest.mark.parametrize("failure", [None, "submission", "completion_record"])
 @pytest.mark.parametrize("prefetch", [False, True])
 @pytest.mark.parametrize("automatic", [False, True])
-def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(prepared_source, tmp_path, resolution, failure, prefetch, automatic, monkeypatch):
+def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(prepared_source, tmp_path, resolution, failure, prefetch, automatic, monkeypatch, passive_gain=False):
     storage = Store()
     publish(storage, prepared_source)
     certificate = consume(storage, prepared_source)
     pin = certificate.pin()
-    release = release_for(pin)
+    release = release_for(pin, entry_only=passive_gain)
     definition, original = definition_and_actor()
     configuration, scope, candidate = source()
     scope["session_key"] = pin.scope.session_date.isoformat()
@@ -91,6 +97,10 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 at = row["boundary_at"]
                 controller.current_time = at
                 price = round(row["reference_close"] * 10000)
+                if passive_gain and offset == 2:
+                    # A passive broker mark can exceed the pre-fill equity peak
+                    # without another execution refreshing the Portfolio image.
+                    price *= 2
                 liquidity = second_bar(at)
                 liquidity.update(ticker="ABC", ask_int=price, bid_int=price - 1,
                     close_int=price, high_int=price + 1, low_int=price - 1)
@@ -99,6 +109,12 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 await controller._runtime.process_liquidity_boundary((liquidity,), at=at)
                 if not prefetch:
                     await publish_source_row(row)
+                if passive_gain and offset == 2:
+                    account = controller._runtime.config.account_ids[0]
+                    summary = await controller._runtime.broker.account_summary(account)
+                    state = controller._runtime.portfolio.states[account]
+                    assert summary.netliquidation > state.peak_net_liquidation, (summary, state.peak_net_liquidation,
+                        await controller._runtime.broker.positions(account))
                 source_prefix_hashes = runtime.typed_source_commit_hashes()[:offset + 1]
                 assert runtime.typed_source_boundary(at)[0] == offset + 1
                 if prefetch:
@@ -135,7 +151,15 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 from src.backend.program_clock_financial_basis import (
                     capture_program_clock_financial_basis, prepare_program_clock_financial_basis,
                     verify_owned_program_clock_financial_basis)
-                captured = await capture_program_clock_financial_basis(controller, at=at)
+                if passive_gain and offset == 2:
+                    async def unexpected_execution_replay(*args, **kwargs):
+                        raise AssertionError('Passive-mark refresh must retain already ingested fills')
+                    with monkeypatch.context() as incremental_refresh:
+                        incremental_refresh.setattr(controller._runtime.broker, 'canonical_executions',
+                                                    unexpected_execution_replay)
+                        captured = await capture_program_clock_financial_basis(controller, at=at)
+                else:
+                    captured = await capture_program_clock_financial_basis(controller, at=at)
                 assert verify_owned_program_clock_financial_basis(controller, captured).capture is captured
                 with pytest.raises(ValueError, match="controller custody"):
                     verify_owned_program_clock_financial_basis(controller, replace(captured, policy_hash="0" * 64))
@@ -209,6 +233,9 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 try:
                     await financial_candidate.initialize(record_lifecycle=False)
                     compared = compare_captured_program_financial_runtime(financial_candidate, cold, captured)
+                    if passive_gain and offset == 2:
+                        assert controller._runtime.portfolio.states[account].peak_net_liquidation >= summary.netliquidation
+                        return
                     assert compared.run_id == controller.run_id
                     assert all(value == basis_sequence for value in compared.revisions.values())
                     assert financial_candidate is not controller._runtime
@@ -526,7 +553,8 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                         protection_profile=profile, outside_rth=False)
                     assert repeated == {"status": "already_consumed", "results": []}
                 elif offset == 1:
-                    assert actor.position_for("assignment").position_open and result["status"] == "selected"
+                    assert actor.position_for("assignment").position_open
+                    assert result["status"] == ('wait' if passive_gain else 'selected')
                 else:
                     position = actor.position_for("assignment")
                     assert not position.position_open and position.closed_positions == 1 and position.fees > 0

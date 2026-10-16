@@ -111,9 +111,18 @@ def test_complete_volume_population_rejects_missing_listing_and_wrong_build(popu
         population.histories['new'] = population.histories['listing']
 
 
-def test_snapshot_population_and_cache_expand_only_requested_clocks_without_database(population_fixture):
+def test_snapshot_population_and_cache_expand_only_requested_clocks_without_database(population_fixture, monkeypatch):
     feature, population, _ = population_fixture
     retained = sum(p.retained_interval_bytes for p in population.histories.values())
+    # Certification owns the immutable interval-size scan. Neither the first
+    # projection nor a cache hit may repeat that scan on the async event loop.
+    from types import SimpleNamespace
+    from src.backend import qmd_volume_reader
+    def unexpected_size_scan(_):
+        raise AssertionError('Certified interval sizes must not be recounted')
+    monkeypatch.setattr(qmd_volume_reader, 'sys', SimpleNamespace(getsizeof=unexpected_size_scan))
+    from src.backend import qmd_columnar_population
+    monkeypatch.setattr(qmd_columnar_population, 'content_hash', unexpected_size_scan)
     cache = ProgramPopulationCache(maximum_retained_bytes=retained)
     async def run():
         kwargs = dict(as_of=datetime(2026, 8, 4, tzinfo=timezone.utc), concurrency=2)

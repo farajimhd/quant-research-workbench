@@ -123,6 +123,7 @@ class CertifiedVolumePin:
     source: object
     intervals: tuple[v.VolumeRun, ...]
     _starts: tuple[int, ...] = field(init=False, repr=False)
+    _retained_interval_bytes: int = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
         header = v.restore_record(v.COVERAGE, dict(self.header))
@@ -142,14 +143,18 @@ class CertifiedVolumePin:
             raise ValueError('Volume snapshot differs from its cold interval hash')
         object.__setattr__(self, 'header', MappingProxyType(header))
         object.__setattr__(self, '_starts', tuple(r.first_ordinal for r in self.intervals))
+        # The validated tuple, its frozen runs and ordinal index cannot change.
+        # Account for them once in the certification worker, not on each cache hit.
+        object.__setattr__(self, '_retained_interval_bytes',
+            sys.getsizeof(self.intervals) + sys.getsizeof(self._starts) + sum(sys.getsizeof(r)
+                + sys.getsizeof(r.first_ordinal) + sys.getsizeof(r.stop_ordinal)
+                + sys.getsizeof(r.rolling_volume) for r in self.intervals))
 
     @property
     def retained_interval_bytes(self):
         # Conservative object accounting includes scalar objects even when
         # Python happens to share a small integer across adjacent intervals.
-        return sys.getsizeof(self.intervals) + sys.getsizeof(self._starts) + sum(sys.getsizeof(r)
-            + sys.getsizeof(r.first_ordinal) + sys.getsizeof(r.stop_ordinal)
-            + sys.getsizeof(r.rolling_volume) for r in self.intervals)
+        return self._retained_interval_bytes
 
 
 def _read_certified_pin(reader, request):

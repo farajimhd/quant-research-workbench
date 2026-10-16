@@ -18,15 +18,19 @@ from src.backend.backtest_journal_memory import BacktestMemoryJournal
 from src.trading_runtime.columnar_program_actor import AssignedProgramStrategy
 
 
-def release_for(pin, *, minimum_age_seconds=None):
+def release_for(pin, *, minimum_age_seconds=None, entry_only=False):
     spec, _, kwargs = bundle()
     field = pin.fields[0]
     contract = InputField(field.name, field.unit, "q_live.qmd_causal_history_value_v1",
         pin.scope.product_revision, 1000)
     program = RuleProgram((N(O.FEATURE, field=field.name), N(O.LAG, left=0, window=60),
         N(O.CONSTANT, literal=0., unit=field.unit), N(O.GREATER, left=1, right=2)), 3)
+    quiet = (RuleProgram((*program.nodes, N(O.NOT, left=program.output),
+        N(O.AND, left=program.output, right=len(program.nodes))), len(program.nodes) + 1)
+        if entry_only else program)
     ages = spec.minimum_age_seconds if minimum_age_seconds is None else {**spec.minimum_age_seconds, **minimum_age_seconds}
-    return restore_release(project_release(replace(spec, programs={stage: program for stage in spec.programs}, minimum_age_seconds=ages),
+    return restore_release(project_release(replace(spec, programs={stage:
+        quiet if entry_only and stage != 'entry' else program for stage in spec.programs}, minimum_age_seconds=ages),
         {field.name: contract}, **kwargs))
 
 

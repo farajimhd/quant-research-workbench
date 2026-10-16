@@ -159,7 +159,11 @@ def test_real_publication_seals_last_and_cold_snapshot_expands_without_new_queri
         as_of=history.completed_clock(pin.scope, pin.scope.stop_bucket - 1)))
     assert actual.height == 100 and len(store.queries) == before
     assert set(actual.columns) == {'listing_id', 'boundary_at', 'available_at', 'rolling_volume'}
-    assert cold.retained_interval_bytes > 0
+    import sys
+    expected_bytes = sys.getsizeof(cold.intervals) + sys.getsizeof(cold._starts) + sum(
+        sys.getsizeof(run) + sys.getsizeof(run.first_ordinal) + sys.getsizeof(run.stop_ordinal)
+        + sys.getsizeof(run.rolling_volume) for run in cold.intervals)
+    assert cold.retained_interval_bytes == expected_bytes > 0
     with pytest.raises(FrozenInstanceError):
         cold.intervals[0].rolling_volume = 7.
     with pytest.raises(TypeError):

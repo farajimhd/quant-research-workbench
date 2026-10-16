@@ -37,6 +37,18 @@ def population(prepared_source):
     return pin, {"ABC": first, "ZZZ": second}
 
 
+def test_population_revision_is_stable_without_rehashing_and_rebuilt_for_new_rule(population, monkeypatch):
+    from src.backend import qmd_columnar_population as module
+    pin, _ = population
+    expected = module._population_source_revision(pin.opening, pin.histories, pin.rule)
+    changed = replace(pin, rule=replace(pin.rule, top_count=2))
+    assert changed.source_revision != expected
+    def unexpected_rehash(_):
+        raise AssertionError('An immutable population revision must not be rebuilt on a cache hit')
+    monkeypatch.setattr(module, 'content_hash', unexpected_rehash)
+    assert pin.source_revision == pin.source_revision == expected
+
+
 def test_complete_population_transport_is_bounded_concurrent_and_exact(population):
     pin, certificates = population
     active = peak = calls = 0

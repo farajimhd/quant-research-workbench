@@ -129,7 +129,7 @@ def prepare_program_clock_financial_basis(capture):
 
 
 async def capture_program_clock_financial_basis(controller, *, at):
-    """Capture existing broker/Portfolio contracts without database I/O."""
+    """Refresh passive native marks and capture the financial basis in memory."""
     from .replay_run_service import ReplayRunController
     from .signal_stream_runtime_service import SignalStreamRuntime
     from .backtest_market_data import market_day_boundary
@@ -139,6 +139,7 @@ async def capture_program_clock_financial_basis(controller, *, at):
     from src.trading_runtime.columnar_program_actor import AssignedProgramStrategy
     from src.trading_runtime.strategy_one_broker_match_snapshot import project_broker_match_snapshot
     from src.trading_runtime.arte_oms_actor_restore import capture_typed_oms_actor_image
+    from src.trading_runtime.canonical_session import CanonicalBrokerSession
     from .program_policy_recovery import program_policy_fingerprint
     if type(controller) is not ReplayRunController:
         raise TypeError("Financial clock capture requires the native controller")
@@ -160,12 +161,33 @@ async def capture_program_clock_financial_basis(controller, *, at):
     boundary = source.typed_source_boundary(at)
     if sequence < 1 or boundary[0] < 1 or boundary[2] != at:
         raise ValueError("Financial clock capture differs from journal/source basis")
+    manager, portfolio_engine, native_broker = runtime.order_manager, runtime.portfolio, runtime.broker
+    config, canonical = runtime.config, runtime._canonical_session
+    if type(canonical) is not CanonicalBrokerSession:
+        raise ValueError("Financial clock capture lacks its native canonical broker session")
+    async with runtime._portfolio_sync_lock:
+        # Fills already enter the native canonical projector at liquidity time.
+        # Passive price changes still change equity between fills. Refresh the
+        # current broker image without rescanning all historical executions or
+        # adding a journal event before the captured policy sequence. The exact
+        # refreshed Portfolio image is part of the qualified decision receipt.
+        await canonical.reconcile(include_executions=False)
+        if (controller._runtime is not runtime or controller._journal is not journal
+                or controller._program_strategy is not actor or controller._program_signal_runtime is not source
+                or runtime.order_manager is not manager or runtime.portfolio is not portfolio_engine
+                or runtime.broker is not native_broker or runtime.config is not config
+                or runtime._canonical_session is not canonical or runtime.last_event_time != at
+                or journal.latest_sequence(controller.run_id) != sequence
+                or source.typed_source_boundary(at) != boundary):
+            raise ValueError("Financial clock ownership changed during broker refresh")
+        snapshot = canonical.projector.snapshot()
+        if snapshot.as_of > at:
+            raise ValueError("Financial clock capture cannot use a future broker snapshot")
+        portfolio_engine.synchronize_canonical(snapshot, persist=False)
     day = controller.definition.session_date
     elapsed = (at - market_day_boundary(day, 0)).total_seconds() * 1000
     if elapsed != int(elapsed):
         raise ValueError("Financial clock capture has a fractional broker clock")
-    manager, portfolio_engine, native_broker = runtime.order_manager, runtime.portfolio, runtime.broker
-    config = runtime.config
     state = native_broker.broker_match_snapshot_state()
     portfolio = tuple(portfolio_engine.capture_recovery_snapshot(account,
         state_revision=sequence, snapshot_at=at) for account in runtime.config.account_ids)

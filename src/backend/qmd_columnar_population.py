@@ -22,11 +22,21 @@ from src.market_engine.opening_price_reference import content_hash, NEW_YORK
 from src.market_engine.volume_rank_rules import VolumeUniverseRule, select_volume_universe
 
 
+def _population_source_revision(opening, histories, rule):
+    return content_hash(dict(opening=opening.content_hash,
+        histories=sorted((listing, pin.header["content_hash"])
+                         for listing, pin in histories.items()),
+        window_seconds=rule.window_seconds, top_count=rule.top_count,
+        minimum_prior_close=rule.minimum_prior_close,
+        maximum_prior_close=rule.maximum_prior_close))
+
+
 @dataclass(frozen=True)
 class CertifiedPopulationPin:
     opening: CertifiedOpeningReference
     histories: Mapping[str, CertifiedHistoryPin]
     rule: VolumeUniverseRule
+    _source_revision: str = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
         if (type(self.opening) is not CertifiedOpeningReference
@@ -48,15 +58,12 @@ class CertifiedPopulationPin:
                     or pin.parents.volume_window_seconds != self.rule.window_seconds):
                 raise ValueError("Scanner history pin differs from certified population lineage")
         object.__setattr__(self, "histories", MappingProxyType(dict(self.histories)))
+        object.__setattr__(self, "_source_revision",
+            _population_source_revision(self.opening, self.histories, self.rule))
 
     @property
     def source_revision(self):
-        return content_hash(dict(opening=self.opening.content_hash,
-            histories=sorted((listing, pin.header["content_hash"])
-                             for listing, pin in self.histories.items()),
-            window_seconds=self.rule.window_seconds, top_count=self.rule.top_count,
-            minimum_prior_close=self.rule.minimum_prior_close,
-            maximum_prior_close=self.rule.maximum_prior_close))
+        return self._source_revision
 
 
 @dataclass(frozen=True)
@@ -83,6 +90,8 @@ class CertifiedVolumePopulationPin(CertifiedPopulationPin):
                     or pin.parents.volume_window_seconds != self.rule.window_seconds):
                 raise ValueError('Volume pin differs from certified population lineage')
         object.__setattr__(self, 'histories', MappingProxyType(dict(self.histories)))
+        object.__setattr__(self, '_source_revision',
+            _population_source_revision(self.opening, self.histories, self.rule))
 
 
 def is_certified_population_pin(pin):
