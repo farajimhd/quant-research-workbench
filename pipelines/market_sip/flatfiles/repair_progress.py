@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 from threading import RLock, current_thread
-from time import monotonic
+from time import monotonic,sleep
 
 from . import archive_staging
 
@@ -52,7 +52,15 @@ class Progress:
         self.state['updated_at'] = datetime.now(timezone.utc).isoformat()
         temporary = self.root/'status.tmp'
         temporary.write_text(json.dumps(self.state,indent=2,default=str),encoding='utf-8')
-        temporary.replace(self.root/'status.json')
+        # Windows readers can briefly hold status.json without FILE_SHARE_DELETE.
+        # Keep the last complete snapshot visible and retry only sharing/access
+        # races; permanent failures still propagate after this bounded window.
+        for attempt in range(20):
+            try:
+                temporary.replace(self.root/'status.json');break
+            except PermissionError as error:
+                if getattr(error,'winerror',None) not in (5,32) or attempt==19:raise
+                sleep(.05)
         self.last_write = monotonic()
 
 

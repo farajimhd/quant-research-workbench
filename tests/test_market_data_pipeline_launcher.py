@@ -121,6 +121,20 @@ def test_sql_worker_memory_budget():
         arguments(['backfill','--start-date','2026-01-01','--run-dir','x','--sql-workers','4'])
 
 
+def test_snapshot_retries_transient_windows_reader_lock(tmp_path,monkeypatch):
+    original=Path.replace;attempts=[]
+    def replace(path,target):
+        attempts.append(path)
+        if len(attempts)<3:
+            error=PermissionError('temporary monitor read handle');error.winerror=5
+            raise error
+        return original(path,target)
+    monkeypatch.setattr(Path,'replace',replace)
+    progress=Progress(tmp_path);progress.update(status='running',total=5)
+    assert len(attempts)==3
+    assert json.loads((tmp_path/'status.json').read_text())['total']==5
+
+
 def test_terminal_stale_failure_and_bounded_logs(tmp_path):
     from pipelines.market_sip.flatfiles.repair_terminal import recent_events
     from rich.console import Console
