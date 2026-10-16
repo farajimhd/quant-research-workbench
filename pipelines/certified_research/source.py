@@ -195,7 +195,9 @@ def mutations_overlap(query,active,inventory):
     import re
     from datetime import datetime,timezone,timedelta
     if len(active)>128:return True
-    if any(not re.match(r'^UPDATE\s+event_meta\s*=',r.get('command',''),re.I)
+    # ClickHouse serializes ALTER UPDATE commands with an outer parenthesis
+    # on current servers. Keep the same narrowly owned flag-repair check.
+    if any(not re.match(r'^\(?UPDATE\s+event_meta\s*=',r.get('command',''),re.I)
             or not r.get('parts_to_do_names') or not r.get('table') for r in active):return True
     exists=query("SELECT count() n FROM system.tables WHERE database='q_live' AND name='historical_native_reporting_repair_v1'")
     if exists!=[dict(n=1)]:return True

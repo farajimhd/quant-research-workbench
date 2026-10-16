@@ -116,6 +116,12 @@ def test_other_month_owned_flag_mutation_does_not_block_ready_market_month():
     def query(sql):
         return [dict(n=1)] if 'system.tables' in sql else [dict(target='market_sip_compact.events_2026',marker=marker)]
     assert not source.mutations_overlap(query,[mutation],inv)
+    wrapped=dict(mutation,command='('+mutation['command']+')',
+        parts_to_do_names=['202603_22787_39528_6_115951','202604_38157_46129_249_115951'])
+    assert not source.mutations_overlap(query,[wrapped],inv)
+    assert source.mutations_overlap(query,[dict(wrapped,parts_to_do_names=['202601_1_2_0','202603_1_2_0'])],inv)
+    assert source.mutations_overlap(query,[dict(wrapped,command='(UPDATE price_primary_int=0 WHERE 1)')],inv)
+    assert source.mutations_overlap(query,[dict(wrapped,command='(UPDATE event_meta=64 WHERE 1)')],inv)
     assert source.mutations_overlap(query,[dict(mutation,parts_to_do_names=['202601_1_2_0'])],inv)
     assert source.mutations_overlap(query,[dict(mutation,command='UPDATE price_primary_int=0 WHERE 1')],inv)
     assert source.mutations_overlap(query,[dict(mutation,command='UPDATE event_meta=64 WHERE 1')],inv)
