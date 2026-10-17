@@ -12,6 +12,7 @@ from pipelines.market_sip.events.clickhouse_build_daily_session_bars import (
     create_target_table_sql,
     insert_session_bars_sql,
     SessionBuildReporter,
+    parse_args,
 )
 from pipelines.market_sip.events.session_bar_contract import FEATURE_NAMES, session_table_columns
 
@@ -29,8 +30,10 @@ def args(**overrides: object) -> argparse.Namespace:
         "max_memory_usage": "8G",
         "max_bytes_before_external_group_by": "2G",
     }
-    values.update(overrides)
-    return argparse.Namespace(**values)
+    defaults=vars(parse_args(['--start-date','2026-07-01','--end-date','2026-07-08']))
+    defaults.update(values)
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
 
 
 class DailySessionContractTest(unittest.TestCase):

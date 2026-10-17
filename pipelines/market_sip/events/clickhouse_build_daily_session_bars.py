@@ -61,6 +61,10 @@ CORRECTION_OVERLAY_BUILD_VERSION = "bar_gpt_trade_correction_causal_overlay_v1"
 DEFAULT_MAX_QUOTE_SPREAD_BPS = 1_000.0
 
 
+def target_database(args):
+    return getattr(args, 'target_database', None) or args.database
+
+
 def _feature_contract(args: argparse.Namespace) -> tuple[tuple[str, str], ...]:
     if not bool(getattr(args, "bar_gpt_condition_eligibility", False)):
         from pipelines.market_sip.events.session_bar_contract import FEATURE_SPECS
@@ -74,6 +78,8 @@ def _table_contract(args: argparse.Namespace) -> tuple[tuple[str, str], ...]:
 
 
 def _build_version(args: argparse.Namespace) -> str:
+    if bool(getattr(args, 'tradable_timely', False)):
+        return 'tradable_timely_daily_sessions_v1:' + args.population_hash
     return BAR_GPT_BUILD_VERSION if bool(getattr(args, "bar_gpt_condition_eligibility", False)) else BUILD_VERSION
 
 
@@ -95,6 +101,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--start-date", default="2019-01-01")
     parser.add_argument("--end-date", default="auto", help="Exclusive New York date; auto uses event-index coverage.")
     parser.add_argument("--database", default=DEFAULT_DATABASE)
+    parser.add_argument('--target-database', help='Derived destination; canonical event/identity sources are unchanged')
     parser.add_argument("--events-table-base", default=DEFAULT_EVENTS_TABLE_BASE)
     parser.add_argument("--index-table", default="events_ticker_day_index")
     parser.add_argument("--source-day-stats-table", default="events_source_day_stats")
@@ -170,7 +177,7 @@ def query_settings(args: argparse.Namespace, *, mutation: bool = False) -> str:
 def create_target_table_sql(args: argparse.Namespace) -> str:
     columns = ",\n    ".join(f"{quote_ident(name)} {kind}" for name, kind in _table_contract(args))
     return f"""
-CREATE TABLE IF NOT EXISTS {quote_ident(args.database)}.{quote_ident(args.target_table)}
+CREATE TABLE IF NOT EXISTS {quote_ident(target_database(args))}.{quote_ident(args.target_table)}
 (
     {columns}
 )
@@ -183,7 +190,7 @@ ORDER BY (source_ticker, session_date, session_kind)
 
 def create_manifest_table_sql(args: argparse.Namespace) -> str:
     return f"""
-CREATE TABLE IF NOT EXISTS {quote_ident(args.database)}.{quote_ident(args.manifest_table)}
+CREATE TABLE IF NOT EXISTS {quote_ident(target_database(args))}.{quote_ident(args.manifest_table)}
 (
     artifact_name LowCardinality(String),
     unit_id String,
@@ -272,8 +279,8 @@ def _relation_aggregates(prefix: str, value: str, condition: str) -> list[str]:
 
 def insert_session_bars_sql(args: argparse.Namespace, start: dt.date, end: dt.date) -> str:
     source = _event_source(args, start, end)
-    target = f"{quote_ident(args.database)}.{quote_ident(args.target_table)}"
-    use_eligibility = bool(args.bar_gpt_condition_eligibility)
+    target = f"{quote_ident(target_database(args))}.{quote_ident(args.target_table)}"
+    use_eligibility = bool(getattr(args,'bar_gpt_condition_eligibility',False))
     trade_valid = "trade_origin_eligible" if use_eligibility else "event_type = 1 AND trade_price > 0 AND trade_size > 0"
     bid_valid = "event_type = 0 AND bid_price > 0 AND bid_size > 0"
     ask_valid = "event_type = 0 AND ask_price > 0 AND ask_size > 0"
@@ -315,6 +322,9 @@ def insert_session_bars_sql(args: argparse.Namespace, start: dt.date, end: dt.da
     identity_db = quote_ident(args.identity_database)
     requested = tuple(sorted({item.strip().upper() for item in str(getattr(args, "tickers", "")).split(",") if item.strip()}))
     ticker_filter = "" if not requested else " AND upper(ticker) IN (" + ", ".join(sql_string(item) for item in requested) + ")"
+    if bool(getattr(args, 'tradable_timely', False)):
+        if not requested:raise ValueError('Tradable daily sessions require certified population tickers')
+        ticker_filter += ' AND (bitAnd(event_meta,1)=0 OR bitAnd(event_meta,192)=64)'
     if use_eligibility:
         overlay = f"{quote_ident(args.database)}.{quote_ident(args.correction_overlay_table)}"
         event_source = f"""
@@ -351,6 +361,8 @@ def insert_session_bars_sql(args: argparse.Namespace, start: dt.date, end: dt.da
     else:
         event_source = source
     source_contract = "causal_trade_correction_overlay_v1" if use_eligibility else "ordered_sip_events_unadjusted"
+    if bool(getattr(args,'tradable_timely',False)):
+        source_contract='tradable_timely_canonical_v1'
     condition_args = argparse.Namespace(
         database=args.database,
         condition_token_reference_table=args.condition_reference_table,
@@ -573,7 +585,7 @@ def validate_preflight(client: ClickHouseHttpClient, args: argparse.Namespace) -
 
 
 def validate_schema(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
-    actual = dict(_query_rows(client, f"SELECT name,type FROM system.columns WHERE database={sql_string(args.database)} AND table={sql_string(args.target_table)} ORDER BY position"))
+    actual = dict(_query_rows(client, f"SELECT name,type FROM system.columns WHERE database={sql_string(target_database(args))} AND table={sql_string(args.target_table)} ORDER BY position"))
     mismatch = {name: kind for name, kind in _table_contract(args) if actual.get(name) != kind}
     extras = sorted(set(actual) - {name for name, _ in _table_contract(args)})
     if mismatch or extras:
@@ -666,7 +678,7 @@ def write_manifest(
 ) -> None:
     client.execute(
         f"""
-INSERT INTO {quote_ident(args.database)}.{quote_ident(args.manifest_table)} VALUES
+INSERT INTO {quote_ident(target_database(args))}.{quote_ident(args.manifest_table)} VALUES
 ({sql_string(args.target_table)}, {sql_string(unit_id(start,end))}, toDate({sql_string(start.isoformat())}),
  toDate({sql_string(end.isoformat())}), {sql_string(status)}, {sql_string(_build_version(args))},
  {sql_string(args.feature_version)}, toUInt64({rows}), toUInt64({source_events}),
@@ -679,7 +691,7 @@ def completed_units(client: ClickHouseHttpClient, args: argparse.Namespace) -> s
     rows = _query_rows(
         client,
         f"""
-SELECT unit_id FROM {quote_ident(args.database)}.{quote_ident(args.manifest_table)} FINAL
+SELECT unit_id FROM {quote_ident(target_database(args))}.{quote_ident(args.manifest_table)} FINAL
 WHERE artifact_name={sql_string(args.target_table)} AND status='complete'
   AND build_version={sql_string(_build_version(args))} AND feature_version={sql_string(args.feature_version)}
 """,
@@ -694,7 +706,7 @@ def chunk_stats(client: ClickHouseHttpClient, args: argparse.Namespace, start: d
 SELECT count(), uniqExact(tuple(source_ticker,session_date,session_kind)),
        sum(source_event_count), countIf(identity_status='mapped'), countIf(identity_status!='mapped'),
        countIf(available_at_us != bar_end_us), min(schema_version), max(schema_version)
-FROM {quote_ident(args.database)}.{quote_ident(args.target_table)} FINAL
+FROM {quote_ident(target_database(args))}.{quote_ident(args.target_table)} FINAL
 WHERE session_date >= toDate({sql_string(start.isoformat())}) AND session_date < toDate({sql_string(end.isoformat())})
 """,
     )
@@ -712,6 +724,9 @@ def source_event_count(client: ClickHouseHttpClient, args: argparse.Namespace, s
     source = _event_source(args, start, end)
     requested = tuple(sorted({item.strip().upper() for item in str(getattr(args, "tickers", "")).split(",") if item.strip()}))
     ticker_filter = "" if not requested else " AND upper(ticker) IN (" + ", ".join(sql_string(item) for item in requested) + ")"
+    if bool(getattr(args, 'tradable_timely', False)):
+        if not requested:raise ValueError('Tradable daily sessions require certified population tickers')
+        ticker_filter += ' AND (bitAnd(event_meta,1)=0 OR bitAnd(event_meta,192)=64)'
     rows = _query_rows(
         client,
         f"""
@@ -813,7 +828,7 @@ def build_chunk(client: ClickHouseHttpClient, args: argparse.Namespace, start: d
     write_manifest(client, args, start=start, end=end, status="started")
     if args.replace_range:
         client.execute(
-            f"ALTER TABLE {quote_ident(args.database)}.{quote_ident(args.target_table)} DELETE "
+            f"ALTER TABLE {quote_ident(target_database(args))}.{quote_ident(args.target_table)} DELETE "
             f"WHERE session_date >= toDate({sql_string(start.isoformat())}) AND session_date < toDate({sql_string(end.isoformat())})"
             + query_settings(args, mutation=True)
         )
@@ -866,6 +881,8 @@ def run_build(client: ClickHouseHttpClient, args: argparse.Namespace, start: dt.
 def main(argv: list[str] | None = None) -> int:
     load_env_files(discover_clickhouse_env_files(), verbose=True)
     args = parse_args(argv)
+    if args.target_table == DEFAULT_DAILY_SESSION_BARS_TABLE:
+        raise ValueError('Daily authority writes moved to the tradable ARTE launcher: backfill --step daily or forwardfill')
     if str(args.tickers).strip() and (
         args.target_table == DEFAULT_DAILY_SESSION_BARS_TABLE or args.manifest_table == DEFAULT_DAILY_SESSION_MANIFEST_TABLE
     ):
@@ -893,7 +910,7 @@ def main(argv: list[str] | None = None) -> int:
     run_dir = args.runtime_root / dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=False)
     report_path = run_dir / "build.jsonl"
-    client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_ident(args.database)}")
+    client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_ident(target_database(args))}")
     client.execute(create_target_table_sql(args))
     client.execute(create_manifest_table_sql(args))
     validate_schema(client, args)

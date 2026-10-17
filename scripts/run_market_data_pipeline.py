@@ -2,7 +2,7 @@
 
 Backfill --step bars reuses the ticker worker pool, persists 100ms/1s liquidity,
 and rolls trade bars through successive frames. --with-indicators adds the
-existing indicator stage. Forwardfill acquisition remains a separate next step.
+existing indicator stage. Forwardfill ingests before deriving tradable products.
 """
 import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
@@ -36,8 +36,9 @@ GIB=1024**3
 def arguments(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('mode',choices=('backfill','forwardfill','monitor'))
-    p.add_argument('--step',choices=('trade-reporting-repair','bars'),default='trade-reporting-repair')
-    p.add_argument('--bar-workers',type=int,choices=range(1,33),default=8)
+    p.add_argument('--step',choices=('trade-reporting-repair','bars','daily'))
+    p.add_argument('--allow-acquisition',action='store_true',help='Explicitly authorize provider discovery/download for forwardfill')
+    p.add_argument('--bar-workers',type=int,choices=range(1,33))
     p.add_argument('--bar-query-memory-gib',type=float,default=2.)
     p.add_argument('--tickers',default='')
     p.add_argument('--identity-policy',choices=('dated','current_conid_retrospective_v1'),default='dated')
@@ -56,11 +57,11 @@ def arguments(argv=None):
     p.add_argument('--clickhouse-cache-root',default='/mnt/d/market-data/flatfiles/us_stocks_sip')
     p.add_argument('--copy-workers',type=int,choices=range(1,5),default=2)
     p.add_argument('--sql-workers',type=int,choices=range(1,5),default=2)
-    p.add_argument('--global-memory-gib',type=int,default=32)
+    p.add_argument('--global-memory-gib',type=int)
     p.add_argument('--prefetch-gib',type=int,default=32)
     p.add_argument('--reserve-gib',type=int,default=256)
     p.add_argument('--reserve-fraction',type=float,default=.10)
-    p.add_argument('--query-threads',type=int,choices=range(1,9),default=4)
+    p.add_argument('--query-threads',type=int,choices=range(1,9))
     p.add_argument('--query-memory-gib',type=int,default=8)
     p.add_argument('--query-timeout',type=int,default=1800)
     p.add_argument('--plan-only',action='store_true')
@@ -71,14 +72,26 @@ def arguments(argv=None):
     p.add_argument('--once',action='store_true',help='monitor: print one snapshot')
     p.add_argument('--progress',choices=('auto','text'),default='auto')
     a=p.parse_args(argv)
-    if a.mode=='forwardfill':p.error('Forwardfill ingestion is not implemented in this step; no action taken')
+    a.bar_workers=a.bar_workers or (32 if a.mode=='forwardfill' else 8)
+    if a.global_memory_gib is None:a.global_memory_gib=80 if a.mode=='forwardfill' else 32
+    a.query_threads=a.query_threads or (1 if a.mode=='forwardfill' or a.step=='daily' else 4)
+    a.step=a.step or ('bars' if a.mode=='forwardfill' else 'trade-reporting-repair')
+    if a.mode=='forwardfill':
+        if a.step!='bars' or a.identity_policy!='dated' or a.allow_carried_forward_universe:
+            p.error('Forwardfill requires bars and exact dated tradable membership')
+        if (a.start_date is None)!=(a.end_date is None) or (a.start_date and a.end_date<a.start_date):
+            p.error('Forwardfill accepts both inclusive dates or neither for automatic append')
+        if not a.plan_only and not a.allow_acquisition:
+            p.error('Forwardfill acquisition requires explicit --allow-acquisition')
+        if a.with_indicators or a.tickers:
+            p.error('Forwardfill derives bars for the complete dated tradable population only')
     if a.mode=='backfill' and (a.start_date is None or (a.end_date and a.end_date<a.start_date)):
         p.error('Backfill requires --start-date and an ordered inclusive range')
     if not 1<=a.prefetch_gib<=256 or not 0<=a.reserve_gib or not 0<=a.reserve_fraction<1:
         p.error('Invalid SSD staging budget')
     if not 1<=a.query_memory_gib<=32 or not 1<=a.query_timeout<=3600:p.error('Invalid query budget')
-    if a.step=='bars' and a.mode=='backfill' and a.end_date is None:p.error('Bars requires --end-date')
-    if a.step!='bars' and (a.sql_workers+1)*a.query_memory_gib+1>a.global_memory_gib:
+    if a.step in ('bars','daily') and a.mode=='backfill' and a.end_date is None:p.error('Bars/daily requires --end-date')
+    if a.step=='trade-reporting-repair' and (a.sql_workers+1)*a.query_memory_gib+1>a.global_memory_gib:
         p.error('SQL workers, coordinator and telemetry exceed the global query-memory budget')
     return a
 
@@ -169,6 +182,12 @@ def main(argv=None):
         raise ValueError('Run directory must be under the available D:/TradingML/runtimes')
     if not a.plan_only and os.environ.get('COMPUTERNAME','').upper()!='DESKTOP-SAAI85T':
         raise ValueError('Execute this writer on DESKTOP-SAAI85T')
+    if a.mode=='forwardfill':
+        from scripts.market_data_forwardfill import run
+        return run(a,run_bars)
+    if a.step=='daily':
+        from scripts.market_data_forwardfill import migrate_daily
+        return migrate_daily(a)
     if a.step=='bars':return run_bars(a)
     paths=acquisition.IngestionPaths(a.env_file,a.run_dir,a.cache_root,a.archive_root,a.clickhouse_cache_root)
     load_env_files([a.env_file],verbose=False)

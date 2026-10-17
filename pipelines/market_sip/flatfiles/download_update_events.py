@@ -2698,11 +2698,14 @@ def format_auto_update_summary(plan: AutoUpdatePlan) -> str:
     )
 
 
-def confirm_auto_update(plan: AutoUpdatePlan) -> bool:
+def confirm_auto_update(plan: AutoUpdatePlan, *, acquisition_approved=False) -> bool:
     print(format_auto_update_summary(plan), flush=True)
     if not plan.days:
         print("AUTO UPDATE CURRENT No complete remote source days are waiting for insertion.", flush=True)
         return False
+    if acquisition_approved:
+        print("AUTO UPDATE APPROVED Explicit launcher acquisition opt-in.", flush=True)
+        return True
     if not sys.stdin.isatty():
         print("AUTO UPDATE CANCELLED Interactive approval is required, but stdin is not a terminal.", flush=True)
         return False
@@ -4044,185 +4047,17 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
 
 
 def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, days: list[DayFiles], report_path: Path, reporter: UpdateProgressReporter | None = None) -> None:
-    if args.skip_bars:
-        if reporter is not None:
-            reporter.notice("Macro bar creation skipped because --skip-bars was set.", style="yellow")
-        print("BAR SKIP --skip-bars was set", flush=True)
+    if args.skip_bars or not days:return
+    if args.dry_run:
+        print('PLAN certified canonical ingestion -> tradable ARTE bars and daily sessions',flush=True)
         return
-    if not days:
-        if reporter is not None:
-            reporter.notice("Macro bar creation skipped because no successfully updated days were available.", style="yellow")
-        print("BAR SKIP no successfully updated days", flush=True)
+    if args.test_mode:
+        print('BAR SKIP isolated ingestion test cannot write production ARTE products',flush=True)
         return
-    if events_table_uses_year_suffix(str(args.events_table)):
-        groups: dict[str, list[DayFiles]] = defaultdict(list)
-        for day in days:
-            groups[event_args_for_day(args, day).events_table].append(day)
-        if len(groups) > 1:
-            for table, table_days in sorted(groups.items()):
-                scoped = argparse.Namespace(**vars(args))
-                scoped.events_table = table
-                if reporter is not None:
-                    reporter.notice(
-                        f"Building macro bars from yearly event table {args.database}.{table} "
-                        f"for {min(day.source_date for day in table_days)}->{max(day.source_date for day in table_days)}.",
-                        style="cyan",
-                    )
-                build_updated_bars(client, scoped, table_days, report_path, reporter=reporter)
-            return
-        if groups:
-            scoped = argparse.Namespace(**vars(args))
-            scoped.events_table = next(iter(groups))
-            args = scoped
-    parse_timeframes(args.bar_timeframes)
-    min_day = min(day.source_date for day in days)
-    max_day = max(day.source_date for day in days)
-    daily_start = date.fromisoformat(min_day)
-    daily_end = date.fromisoformat(max_day) + timedelta(days=1)
-    daily_args = argparse.Namespace(
-        database=args.database,
-        events_table_base=args.events_table,
-        tickers="",
-        index_table=args.ticker_day_index_table,
-        target_table=args.daily_session_bars_table,
-        manifest_table=args.daily_session_bars_manifest_table,
-        identity_database=args.identity_database,
-        symbol_interval_table=args.symbol_interval_table,
-        ticker_entity_table=args.ticker_entity_table,
-        condition_reference_table=DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE,
-        max_quote_spread_bps=DEFAULT_MAX_QUOTE_SPREAD_BPS,
-        bar_gpt_condition_eligibility=False,
-        schema_version=SESSION_BAR_SCHEMA_VERSION,
-        feature_version=SESSION_BAR_FEATURE_VERSION,
-        storage_policy="live_market_ssd",
-        allow_empty_storage_policy=False,
-        chunk_days=args.daily_session_bars_chunk_days,
-        replace_range=args.bar_replace_range,
-        verify_source_count=True,
-        max_threads=args.max_threads,
-        max_memory_usage=args.max_memory_usage,
-        max_bytes_before_external_group_by=args.external_group_by_bytes,
-    )
-    daily_task = "daily_session_bars:build"
-    if reporter is not None:
-        reporter.task_start(daily_task, "build replacement daily-session bars", day=f"{min_day}->{max_day}", stage="daily sessions")
-    daily_started = time.time()
-    try:
-        if args.dry_run:
-            print(create_daily_session_target_table_sql(daily_args), flush=True)
-            print(create_daily_session_manifest_table_sql(daily_args), flush=True)
-            daily_results = []
-        else:
-            client.execute(create_daily_session_target_table_sql(daily_args))
-            client.execute(create_daily_session_manifest_table_sql(daily_args))
-            validate_daily_session_schema(client, daily_args)
-            daily_results = [
-                build_daily_session_chunk(client, daily_args, left, right)
-                for left, right in daily_session_date_chunks(daily_start, daily_end, daily_args.chunk_days)
-            ]
-    except Exception as exc:
-        if reporter is not None:
-            reporter.task_done(daily_task, "failed", seconds=time.time() - daily_started, detail=repr(exc))
-        raise
-    daily_rows = sum(result.rows for result in daily_results)
-    daily_events = sum(result.source_events for result in daily_results)
-    if reporter is not None:
-        reporter.task_done(
-            daily_task,
-            "ok",
-            seconds=time.time() - daily_started,
-            rows=daily_rows,
-            detail=f"events={daily_events:,} contract={DAILY_SESSION_BUILD_VERSION}",
-        )
-    append_jsonl(
-        report_path,
-        {
-            "type": "daily_session_bar_update",
-            "events_table": args.events_table,
-            "target_table": args.daily_session_bars_table,
-            "manifest_table": args.daily_session_bars_manifest_table,
-            "requested_start_date": min_day,
-            "requested_end_date_exclusive": daily_end.isoformat(),
-            "output_rows": daily_rows,
-            "source_events": daily_events,
-            "build_version": DAILY_SESSION_BUILD_VERSION,
-        },
-    )
-    if args.skip_legacy_macro_bars:
-        if reporter is not None:
-            reporter.notice("Legacy macro-bar compatibility write skipped; replacement daily-session bars are certified.", style="yellow")
-        print("LEGACY MACRO BAR SKIP --skip-legacy-macro-bars was set", flush=True)
-        return
-    bar_args = argparse.Namespace(
-        bar_mode="macro",
-        clickhouse_url=args.clickhouse_url,
-        user=args.user,
-        password=args.password,
-        database=args.database,
-        events_table=args.events_table,
-        macro_bars_table=args.macro_bars_table,
-        bars_table=args.bars_table,
-        bars_by_symbol_time_table=args.bars_by_symbol_time_table,
-        bars_by_time_symbol_table=args.bars_by_time_symbol_table,
-        start_date=min_day,
-        end_date=max_day,
-        timeframes=args.bar_timeframes,
-        storage_policy=args.storage_policy,
-        max_threads=args.max_threads,
-        max_memory_usage=args.max_memory_usage,
-        output_root_win=args.output_root_win,
-        replace_range=args.bar_replace_range,
-        chunk_days=args.bar_chunk_days,
-        staging_table=args.bar_staging_table,
-        keep_staging_table=args.bar_keep_staging_table,
-        copy_at_end=args.bar_copy_at_end,
-        summarize_chunks=args.bar_summarize_chunks,
-        expand_boundaries=True,
-        drop_table=False,
-        purge_unsupported_macro_timeframes=False,
-        dry_run=args.dry_run,
-    )
-    if bar_args.drop_table or getattr(bar_args, "purge_unsupported_macro_timeframes", False):
-        raise RuntimeError("Direct flatfile updates must not drop or purge macro bar tables.")
-    bar_specs = parse_timeframes(args.bar_timeframes)
-    ranges = timeframe_ranges(bar_args, bar_specs)
-    bar_tables = bar_table_specs(bar_args)
-    if reporter is not None:
-        if bar_args.replace_range:
-            reporter.notice(
-                f"Macro bar replace_range is enabled; overlapping rows will be rebuilt for requested days {min_day}->{max_day}.",
-                style="bold yellow",
-            )
-        reporter.task_start("macro_bars:build", "build macro bars", day=f"{min_day}->{max_day}", stage="macro")
-    print("=" * 100, flush=True)
-    print(
-        f"MACRO BAR UPDATE tables={format_bar_tables(bar_tables)} timeframes={bar_args.timeframes} "
-        f"requested_days={min_day}->{max_day} build_ranges={format_timeframe_ranges(ranges)}",
-        flush=True,
-    )
-    print("=" * 100, flush=True)
-    started_at = time.time()
-    try:
-        results = build_macro_bars(client, bar_args, report_path=report_path)
-    except Exception as exc:
-        if reporter is not None:
-            reporter.task_done("macro_bars:build", "failed", seconds=time.time() - started_at, detail=repr(exc))
-        raise
-    if reporter is not None:
-        reporter.task_done("macro_bars:build", "ok", seconds=time.time() - started_at, rows=len(results), detail=f"timeframes={bar_args.timeframes}")
-    append_jsonl(
-        report_path,
-        {
-            "type": "bar_update",
-            "events_table": args.events_table,
-            "bar_tables": [asdict(spec) for spec in bar_tables],
-            "timeframes": bar_args.timeframes,
-            "requested_start_date": min_day,
-            "requested_end_date": max_day,
-            "build_ranges": {timeframe: {"start_date": start, "end_date": end} for timeframe, (start, end) in ranges.items()},
-            "result_count": len(results),
-        },
-    )
+    from scripts.market_data_forwardfill import derive_imported_days
+    derive_imported_days(args,[day.source_date for day in days])
+    append_jsonl(report_path,dict(type='tradable_products',days=[day.source_date for day in days],
+        authority='arte',old_daily_authority='retired_writer'))
 
 
 def load_updater_environment(argv=None):
@@ -4237,9 +4072,17 @@ def load_updater_environment(argv=None):
     return load_env_files(paths,verbose=True)
 
 
-def main() -> None:
-    loaded_env_files = load_updater_environment()
-    args = parse_args()
+def main(argv=None, *, acquisition_approved=False, selected_days=None) -> tuple[str, ...]:
+    loaded_env_files = load_updater_environment(argv)
+    args = parse_args(argv)
+    if not args.skip_bars and not args.dry_run:
+        from scripts.build_market_day import save
+        from scripts.market_data_forwardfill import derive_imported_days
+        handoff=Path(args.output_root_win)/'tradable-pending.json'
+        pending=json.loads(handoff.read_text()) if handoff.exists() else []
+        if pending:
+            derive_imported_days(args,pending)
+            save(handoff,[])
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     manual_start = args.start_date
     manual_end = args.end_date
@@ -4295,7 +4138,7 @@ def main() -> None:
             print(format_auto_update_summary(plan), flush=True)
             print("AUTO UPDATE DRY RUN No changes were made.", flush=True)
             return
-        if not confirm_auto_update(plan):
+        if not confirm_auto_update(plan, acquisition_approved=acquisition_approved):
             return
         days = list(plan.days)
     else:
@@ -4310,6 +4153,17 @@ def main() -> None:
             print("No complete quote/trade day pairs discovered for the requested manual range.", flush=True)
             return
 
+    if selected_days is None and not args.skip_bars and not args.dry_run:
+        from scripts.build_market_day import save
+        Path(args.output_root_win).mkdir(parents=True,exist_ok=True)
+        handoff=Path(args.output_root_win)/'tradable-pending.json'
+        pending=json.loads(handoff.read_text()) if handoff.exists() else []
+        def selected_days(dates):
+            pending[:]=sorted(set(pending).union(dates));save(handoff,pending)
+    if selected_days is not None and not args.dry_run:
+        # Persist the derivation handoff before any source write. A crash after
+        # source certification must not strand a day behind the append frontier.
+        selected_days(tuple(day.source_date for day in days))
     if args.test_mode:
         configure_test_tables(args, run_id)
     report_path = Path(args.output_root_win) / f"flatfile_event_update_{run_id}.jsonl"
@@ -4472,8 +4326,13 @@ def main() -> None:
         if args.test_mode:
             reporter.set_stage("test audit")
             audit_test_events(client, args, bar_days, report_path)
-        reporter.set_stage("build bars")
+        reporter.set_stage("derive tradable ARTE products")
+        if len(bar_days)!=len(days):
+            raise RuntimeError('Ingestion did not certify every selected day; derivation handoff retained')
         build_updated_bars(client, args, bar_days, report_path, reporter=reporter)
+        if not args.skip_bars and not args.dry_run:
+            pending[:]=[day for day in pending if day not in {d.source_date for d in bar_days}]
+            save(handoff,pending)
         if args.test_mode:
             if not args.test_keep_tables:
                 reporter.set_stage("drop test tables")
@@ -4481,6 +4340,9 @@ def main() -> None:
                 drop_test_tables(client, args)
 
     print(f"DONE report={report_path}", flush=True)
+    if len(bar_days) != len(days):
+        raise RuntimeError('Ingestion did not certify every selected day; derived stages must not run')
+    return tuple(day.source_date for day in bar_days)
 
 
 if __name__ == "__main__":
