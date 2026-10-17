@@ -35,7 +35,9 @@ class CapturedGroup:
         stream = torch.cuda.Stream(device=device)
         stream.wait_stream(torch.cuda.current_stream(device))
         with torch.cuda.stream(stream), torch.inference_mode():
-            self.evaluate(); self.evaluate()
+            # One complete warm-up compiles all instruction/scan kernels before
+            # capture. A second evaluation repeats the same transient work.
+            self.evaluate()
             self.graph = torch.cuda.CUDAGraph()
             with torch.cuda.graph(self.graph, stream=stream): self.output = self.evaluate()
         torch.cuda.current_stream(device).wait_stream(stream)
@@ -103,7 +105,10 @@ class RulePlan:
             return (value != 0) & mask
         key = (group_id, tuple(values.shape))
         rows=values.shape[0]*values.shape[1]
-        estimate=rows*(values.shape[2]*5+group['unique_count']*(group['program'].width*20+64))
+        nodes=getattr(group['program'],'live_nodes',group['unique_count']*group['program'].width)
+        # Same conservative per-node allowance; omitted padding now has no
+        # storage and must not trigger headroom-driven cache eviction.
+        estimate=rows*(values.shape[2]*5+nodes*20+group['unique_count']*64)
         if self.workspace_gib is not None and estimate>self.workspace_gib*1024**3:
             raise MemoryError('V7 rule workspace exceeds declared budget')
         if key not in self.captures:
@@ -210,12 +215,19 @@ class RulePlan:
                     start,stop,count=query
                     clock,ticker=query_indices[:,start:stop].unbind(0)
                     values, known = resident.points(clock,ticker,group['columns'])
-                    signal = self.execute(group_id,values,known)[group['expand'],0,:count]
+                    output = self.execute(group_id,values,known)
                     ti,ui=clock[:count],ticker[:count]
-                    if packed is None:gates[candidates[:,None],ti[None],ui[None]] |= signal.to(torch.uint8)*(1<<bit)
+                    if self.device.type=='cuda':
+                        from .gate_scatter import write
+                        writes=group.get('fused_writes',[(candidates,group['expand'],0)])
+                        for target,source,shift in writes:
+                            write(gates,output,target,source,ti,ui,bit=bit,shift=shift,sparse=True)
                     else:
-                        for target,source,shift in group['writes']:
-                            gates[target[:,None],ti[None],ui[None]] |= signal[source].to(torch.int16)*(1<<(bit+shift))
+                        signal=output[group['expand'],0,:count]
+                        if packed is None:gates[candidates[:,None],ti[None],ui[None]] |= signal.to(torch.uint8)*(1<<bit)
+                        else:
+                            for target,source,shift in group['writes']:
+                                gates[target[:,None],ti[None],ui[None]] |= signal[source].to(torch.int16)*(1<<(bit+shift))
                 else:
                     # Keep the reference chunk's prefix, including its
                     # float32 cumulative-sum rounding for moving means.
@@ -230,17 +242,25 @@ class RulePlan:
                         from torch.nn.functional import pad
                         padding=(0,0,0,0,0,listing_batch-len(listings))
                         values=pad(values,padding);known=pad(known,padding,value=False)
-                    signal = self.execute(group_id,values,known)[group['expand'],:len(listings),begin-warm:]
+                    output = self.execute(group_id,values,known)
                     ti = torch.arange(begin,end,device=self.device)
                     ui = gpu_listings
-                    eligible=ti[:,None]>=gpu_first[ui][None]
-                    if bit==0:eligible &= gpu_membership[begin:end,ui] & gpu_following[begin:end,ui]
-                    elif bit!=4:eligible &= gpu_following[begin:end,ui]
-                    signal = signal & eligible.T[None]
-                    if packed is None:gates[candidates[:,None,None],ti[None,None,:],ui[None,:,None]] |= signal.to(torch.uint8)*(1<<bit)
+                    if self.device.type=='cuda':
+                        from .gate_scatter import write
+                        writes=group.get('fused_writes',[(candidates,group['expand'],0)])
+                        for target,source,shift in writes:
+                            write(gates,output,target,source,ti,ui,bit=bit,shift=shift,prefix=begin-warm,
+                                  first=gpu_first,membership=gpu_membership,following=gpu_following)
                     else:
-                        for target,source,shift in group['writes']:
-                            gates[target[:,None,None],ti[None,None,:],ui[None,:,None]] |= signal[source].to(torch.int16)*(1<<(bit+shift))
+                        signal=output[group['expand'],:len(listings),begin-warm:]
+                        eligible=ti[:,None]>=gpu_first[ui][None]
+                        if bit==0:eligible &= gpu_membership[begin:end,ui] & gpu_following[begin:end,ui]
+                        elif bit!=4:eligible &= gpu_following[begin:end,ui]
+                        signal = signal & eligible.T[None]
+                        if packed is None:gates[candidates[:,None,None],ti[None,None,:],ui[None,:,None]] |= signal.to(torch.uint8)*(1<<bit)
+                        else:
+                            for target,source,shift in group['writes']:
+                                gates[target[:,None,None],ti[None,None,:],ui[None,:,None]] |= signal[source].to(torch.int16)*(1<<(bit+shift))
                 completed += 1
                 if progress and (completed % 16 == 0 or completed==total_tiles):
                     progress(dict(stage='rule evaluation',tiles=completed,total_tiles=total_tiles,listing_groups_completed=offset//listing_batch,

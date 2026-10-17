@@ -40,6 +40,7 @@ class RoutingPlan:
                 if pairs:
                     target,source=zip(*pairs)
                     group['writes'].append((torch.tensor(target,device=device),torch.tensor(source,device=device),shift))
+            group['fused_writes']=[(target,group['expand'][source],shift) for target,source,shift in group['writes']]
 
     def __getattr__(self,name):return getattr(self.base,name)
     def evaluate(self,data,members,chunk,listing_batch,maximum_gate_gib,progress=None):

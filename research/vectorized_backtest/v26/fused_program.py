@@ -6,18 +6,18 @@ from .program import TorchPrograms,Op
 
 
 @triton.jit
-def mean_inputs(V,M,INDICES,AI,SAFE,KNOWN,rows,candidates,total,BLOCK:tl.constexpr):
+def mean_inputs(V,M,INDICES,AI,SLOTS,SAFE,KNOWN,rows,candidates,total,BLOCK:tl.constexpr):
     r=tl.program_id(0)*BLOCK+tl.arange(0,BLOCK);live=r<total
     group=r//rows;cell=r%rows
     candidate=tl.load(INDICES+group,live,0);node=tl.load(AI+group,live,0)
-    source=(node*candidates+candidate)*rows+cell
+    source=tl.load(SLOTS+node*candidates+candidate,live,0)*rows+cell
     known=tl.load(M+source,live,0);value=tl.load(V+source,live,0)
     tl.store(SAFE+r,tl.where(known,value,0.),live)
     tl.store(KNOWN+r,known.to(tl.float32),live)
 
 
 @triton.jit
-def mean_outputs(SAFE,SUMS,COUNTS,INDICES,V,M,rows,candles,candidates,index,total,
+def mean_outputs(SAFE,SUMS,COUNTS,INDICES,SLOTS,V,M,rows,candles,candidates,index,total,
                  WINDOW:tl.constexpr,RECIPROCAL:tl.constexpr,BLOCK:tl.constexpr):
     r=tl.program_id(0)*BLOCK+tl.arange(0,BLOCK);live=r<total
     clock=r%candles;prior=live & (clock>=WINDOW)
@@ -32,15 +32,15 @@ def mean_outputs(SAFE,SUMS,COUNTS,INDICES,V,M,rows,candles,candidates,index,tota
         value=difference*RECIPROCAL
     known=known & (tl.abs(value)<float('inf'))
     candidate=tl.load(INDICES+r//rows,live,0)
-    target=(index*candidates+candidate)*rows+r%rows
+    target=tl.load(SLOTS+index*candidates+candidate,live,0)*rows+r%rows
     tl.store(V+target,tl.where(known,value,0.),live);tl.store(M+target,known,live)
 
 
 @triton.jit
-def instruction(X,K,V,M,OPS,A,B,FI,W,C,ACTIVE,rows,candles,features,candidates,index,BLOCK:tl.constexpr,HAS_STD:tl.constexpr):
+def instruction(X,K,V,M,OPS,A,B,FI,W,C,ACTIVE,SLOTS,rows,candles,features,candidates,index,BLOCK:tl.constexpr,HAS_STD:tl.constexpr):
     candidate=tl.load(ACTIVE+tl.program_id(0));r=tl.program_id(1)*BLOCK+tl.arange(0,BLOCK);live=r<rows
     gene=index*candidates+candidate;op=tl.load(OPS+gene)
-    output=(index*candidates+candidate)*rows+r
+    output=tl.load(SLOTS+gene)*rows+r
     value=tl.full((BLOCK,),0,tl.float32);known=tl.full((BLOCK,),False,tl.int1)
     if op==0:
         f=tl.load(FI+gene);value=tl.load(X+r*features+f,live,0);known=tl.load(K+r*features+f,live,0)
@@ -48,7 +48,7 @@ def instruction(X,K,V,M,OPS,A,B,FI,W,C,ACTIVE,rows,candles,features,candidates,i
         value=tl.full((BLOCK,),1,tl.float32)*tl.load(C+gene);known=live
     else:
         ai=tl.load(A+gene);bi=tl.load(B+gene)
-        ap=(ai*candidates+candidate)*rows+r;bp=(bi*candidates+candidate)*rows+r
+        ap=tl.load(SLOTS+ai*candidates+candidate)*rows+r;bp=tl.load(SLOTS+bi*candidates+candidate)*rows+r
         a=tl.load(V+ap,live,0);av=tl.load(M+ap,live,0)
         b=tl.load(V+bp,live,0);bv=tl.load(M+bp,live,0)
         known=av & bv
@@ -122,6 +122,15 @@ class FusedPrograms(TorchPrograms):
         # Padding nodes cannot be outputs or operands of any actual program.
         self.active_rows=[torch.tensor([j for j,p in enumerate(programs) if i<len(p.nodes)],
                                        device=device,dtype=torch.int32) for i in range(self.width)]
+        # Preserve logical instruction/candidate order, but allocate only live
+        # node lanes. This changes addresses, never arithmetic or scan shapes.
+        slots=[[-1]*len(programs) for _ in range(self.width)];cursor=0
+        for i in range(self.width):
+            for j,p in enumerate(programs):
+                if i<len(p.nodes):slots[i][j]=cursor;cursor+=1
+        self.live_nodes=cursor
+        self.slots=torch.tensor(slots,device=device,dtype=torch.int32)
+        self.output_slots=torch.tensor([slots[p.output][j] for j,p in enumerate(programs)],device=device)
         self.boolean_means=set()
         for i,row in enumerate(rows):
             for j,n in enumerate(row):
@@ -151,9 +160,9 @@ class FusedPrograms(TorchPrograms):
         if features.dtype!=torch.float32 or not features.is_contiguous() or not valid.is_contiguous():
             raise ValueError('Fused rules require contiguous float32 features and masks')
         b=len(self.programs);c=features.shape[-2];shape=(b,*features.shape[:-1]);rows=features.numel()//features.shape[-1]
-        values=features.new_empty((self.width,*shape));masks=torch.empty_like(values,dtype=torch.bool)
+        values=features.new_empty((self.live_nodes,*features.shape[:-1]));masks=torch.empty_like(values,dtype=torch.bool)
         for i in range(self.width):
-            instruction[(self.active_rows[i].numel(),triton.cdiv(rows,128))](features,valid,values,masks,*self.genes,self.active_rows[i],
+            instruction[(self.active_rows[i].numel(),triton.cdiv(rows,128))](features,valid,values,masks,*self.genes,self.active_rows[i],self.slots,
                 rows,c,features.shape[-1],b,i,BLOCK=128,HAS_STD=self.has_std[i],enable_fp_fusion=False)
             # Keep precisely the old cumsum and pooling order, including float32
             # rounding and missing-evidence propagation. Never approximate a mean.
@@ -161,11 +170,11 @@ class FusedPrograms(TorchPrograms):
                     mean_shape=(indices.numel(),*features.shape[:-1])
                     safe=features.new_empty(mean_shape);known=torch.empty_like(safe)
                     total=safe.numel()
-                    mean_inputs[(triton.cdiv(total,256),)](values,masks,indices,ai,safe,known,
+                    mean_inputs[(triton.cdiv(total,256),)](values,masks,indices,ai,self.slots,safe,known,
                         rows,b,total,BLOCK=256,enable_fp_fusion=False)
                     # Same CUDA cumsum implementation, dtype, grouping, and
                     # shape as before. Only its gather/scatter wrappers fuse.
                     sums=safe.cumsum(-1);counts=known.cumsum(-1)
-                    mean_outputs[(triton.cdiv(total,256),)](safe,sums,counts,indices,values,masks,
+                    mean_outputs[(triton.cdiv(total,256),)](safe,sums,counts,indices,self.slots,values,masks,
                         rows,c,b,i,total,WINDOW=k,RECIPROCAL=1./k,BLOCK=256,enable_fp_fusion=False)
-        return values[self.outputs,self.batch_axis],masks[self.outputs,self.batch_axis]
+        return values.index_select(0,self.output_slots),masks.index_select(0,self.output_slots)
