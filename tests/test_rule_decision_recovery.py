@@ -146,7 +146,7 @@ def test_committed_semantic_intent_join_uses_exact_records(monkeypatch, change):
 
 
 @pytest.mark.parametrize("exact", [False, True])
-@pytest.mark.parametrize("observations", [False, True])
+@pytest.mark.parametrize("observations", [False, True, "bulk"])
 @pytest.mark.parametrize("change", [None, "missing", "duplicate", "hash", "parent", "inventory",
                                     "inventory_missing", "inventory_conflict"])
 def test_owned_completion_page_follows_sealed_v4_writer_price_family(monkeypatch, exact, observations, change):
@@ -195,7 +195,10 @@ def test_owned_completion_page_follows_sealed_v4_writer_price_family(monkeypatch
     rows = ((parent, children),)
     monkeypatch.setattr(module, "load_verified_v4_prefix", lambda *_: prefix)
     monkeypatch.setattr(module, "load_committed_rule_decision_page", lambda *_, **__: rows)
-    monkeypatch.setattr(module, "load_decision_observation_page", lambda *_, **__: rows)
+    from types import SimpleNamespace
+    observed = tuple((p, c, SimpleNamespace(working_orders=(), unobserved_order_ids=())) for p, c in rows)
+    monkeypatch.setattr(module, "load_decision_observation_page",
+        lambda *_, **__: observed if observations == "bulk" else rows)
     family = "trading_strategy_signal_exact_price_v2" if exact else "trading_strategy_signal_v2"
     if change == "missing":
         client.tables[family].clear()
@@ -217,6 +220,9 @@ def test_owned_completion_page_follows_sealed_v4_writer_price_family(monkeypatch
             row for row in seals if row["family_name"] == family), "family_name": alternative}]
 
     async def run():
+        if observations == "bulk":
+            return await module.read_rule_decision_observations_async(lambda: client, prefix,
+                maximum_decisions=8, maximum_children=8)
         if observations:
             return await module.read_rule_decision_observation_page_async(lambda: client, prefix, maximum_children=8)
         return await module.read_rule_decision_page_async(lambda: client, prefix)
@@ -224,7 +230,7 @@ def test_owned_completion_page_follows_sealed_v4_writer_price_family(monkeypatch
         with pytest.raises(RuntimeError):
             asyncio.run(run())
     else:
-        assert asyncio.run(run()) == rows
+        assert asyncio.run(run()) == (observed if observations == "bulk" else rows)
         event, = module.load_typed_event_page(client, prefix)
         assert float(event.detail["decision_reference_price"]).hex() == price.hex()
         assert event.detail_family == "trading_strategy_signal_v2"
@@ -235,3 +241,109 @@ def test_owned_completion_page_follows_sealed_v4_writer_price_family(monkeypatch
         else:
             with pytest.raises(RuntimeError, match="committed mode"):
                 module.load_typed_event_page(client, prefix, exact_prices=True)
+
+@pytest.mark.parametrize('targeted', [False, True])
+@pytest.mark.parametrize('failure', [None, 'before', 'after', 'completion', 'intent', 'observation', 'deleted', 'route'])
+def test_bulk_owned_fences_exact_pages_and_targeted_siblings(monkeypatch, targeted, failure):
+    from types import SimpleNamespace
+    reader = Reader()
+    prefix = V4CommittedPrefix('run', 9, 'batch', 'source', 'running', ('batch',))
+    rows = tuple((dict(record_id=f'p{i}', decision_sequence=i),
+        (dict(strategy_intent_id=f'i{i}'), dict(strategy_intent_id=f'sibling{i}')))
+        for i in (2, 5))
+    observation = SimpleNamespace(working_orders=(), unobserved_order_ids=())
+    heads, checks, pages = [], [], []
+    def head(*_):
+        heads.append(1)
+        return replace(prefix, last_sequence=10) if failure == 'before' or failure == 'after' and len(heads)==2 else prefix
+    def page(*_, after_sequence, limit):
+        pages.append((after_sequence,limit))
+        return tuple(row for row in rows if row[0]['decision_sequence']>after_sequence)[:limit] if failure!='deleted' else ()
+    def check(name):
+        def verify(*args):
+            checks.append(name)
+            if failure==name:raise ValueError(name)
+            return args[0] if args else None
+        return verify
+    def route(client, sql):
+        if 'SELECT strategy_intent_id' in sql:
+            return [dict(strategy_intent_id='i5',parent_record_id='p2' if failure=='route' else 'p5')]
+        return [dict(record_id='p2' if failure=='route' else 'p5',decision_sequence=2 if failure=='route' else 5)]
+    monkeypatch.setattr(module,'_rows',route)
+    monkeypatch.setattr(module,'load_verified_v4_prefix',head)
+    monkeypatch.setattr(module,'load_committed_rule_decision_page',page)
+    monkeypatch.setattr(module,'load_typed_event_page',lambda *a,**k: ('events',))
+    monkeypatch.setattr(module,'verify_decision_completion_page',check('completion'))
+    monkeypatch.setattr(module,'join_decision_intents',check('intent'))
+    def observations(client,prefix,rows,**kwargs):
+        check('observation')()
+        return tuple((p,c,observation) for p,c in rows)
+    monkeypatch.setattr(module,'load_decision_observation_page',observations)
+    async def run():
+        return await module.read_rule_decision_observations_async(lambda:reader,prefix,page_size=1,
+            maximum_decisions=4,maximum_children=8,strategy_intent_ids=('i5',) if targeted else None)
+    fails=failure in {'before','after','completion','intent','observation'} or targeted and failure in {'deleted','route'}
+    if fails:
+        with pytest.raises(ValueError):asyncio.run(run())
+    else:
+        result=asyncio.run(run())
+        expected=() if failure=='deleted' else (rows[1],) if targeted else rows
+        assert tuple((p,c) for p,c,_ in result)==expected
+        assert len(heads)==2
+        if targeted:assert pages==[(4,1)]
+        elif failure!='deleted':assert pages==[(0,1),(2,1),(5,1)]
+    assert reader.closed.is_set()
+
+
+def test_bulk_cancellation_drains_one_owned_reader(monkeypatch):
+    reader=Reader();entered,release=Event(),Event()
+    prefix=V4CommittedPrefix('run',5,'batch','source','running',('batch',))
+    def head(*_):
+        entered.set();assert release.wait(5);return prefix
+    monkeypatch.setattr(module,'load_verified_v4_prefix',head)
+    monkeypatch.setattr(module,'load_committed_rule_decision_page',lambda *a,**k:())
+    async def run():
+        task=asyncio.create_task(module.read_rule_decision_observations_async(lambda:reader,prefix,
+            maximum_decisions=4,maximum_children=8))
+        assert await asyncio.to_thread(entered.wait,5)
+        task.cancel();await asyncio.sleep(0)
+        assert not reader.closed.is_set()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):await task
+        assert reader.closed.is_set()
+    asyncio.run(run())
+
+@pytest.mark.parametrize('mode', ['shared','empty','duplicate','missing','foreign','child_cap','exact_cap'])
+def test_targeted_bulk_routes_are_bounded_and_reverified(monkeypatch, mode):
+    from types import SimpleNamespace
+    reader=Reader();prefix=V4CommittedPrefix('run',9,'batch','source','running',('batch',))
+    wanted=() if mode=='empty' else ('a','b')
+    parent=dict(record_id='p',decision_sequence=5)
+    children=(dict(strategy_intent_id='a'),dict(strategy_intent_id='b'),dict(strategy_intent_id='sibling'))
+    observation=SimpleNamespace(working_orders=(1,2),unobserved_order_ids=())
+    heads=[];pages=[]
+    monkeypatch.setattr(module,'load_verified_v4_prefix',lambda *_:heads.append(1) or prefix)
+    def route(client,sql):
+        if 'SELECT strategy_intent_id' in sql:
+            result=[dict(strategy_intent_id=i,parent_record_id='p') for i in wanted]
+            if mode=='duplicate':result[1]=dict(result[0])
+            if mode=='missing':result.pop()
+            if mode=='foreign':result[1]['strategy_intent_id']='foreign'
+            return result
+        return [dict(record_id='p',decision_sequence=5)]
+    monkeypatch.setattr(module,'_rows',route)
+    monkeypatch.setattr(module,'load_committed_rule_decision_page',lambda *a,**k:pages.append(k) or ((parent,children),))
+    monkeypatch.setattr(module,'load_typed_event_page',lambda *a,**k:())
+    monkeypatch.setattr(module,'verify_decision_completion_page',lambda *a:None)
+    monkeypatch.setattr(module,'join_decision_intents',lambda *a:None)
+    monkeypatch.setattr(module,'load_decision_observation_page',lambda *a,**k:((parent,children,observation),))
+    async def run():
+        return await module.read_rule_decision_observations_async(lambda:reader,prefix,
+            maximum_decisions=1,maximum_children=1 if mode=='child_cap' else 2,strategy_intent_ids=wanted)
+    if mode in {'duplicate','missing','foreign','child_cap'}:
+        with pytest.raises(ValueError):asyncio.run(run())
+    else:
+        result=asyncio.run(run())
+        assert result==(() if mode=='empty' else ((parent,children,observation),))
+        assert len(pages)==(0 if mode=='empty' else 1) and len(heads)==2
+    assert reader.closed.is_set()

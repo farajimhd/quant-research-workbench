@@ -21,7 +21,7 @@ from .backtest_program_inputs import PreparedProgramBlock
 from .signal_stream_runtime_service import SignalStreamRuntime
 from .program_policy_recovery import RecoveredProgramPolicy, clone_recovered_program_actor, program_policy_fingerprint
 from .typed_backtest_financial_review import load_typed_backtest_financial_evidence
-from .rule_decision_recovery import read_rule_decision_observation_page_async
+from .rule_decision_recovery import read_rule_decision_observations_async
 from .filled_session_measures import project_filled_session_measures
 from .backtest_market_data import market_day_boundary, SESSION_OPEN_OFFSET_MS
 from .signal_stream_typed_readback import _normalize
@@ -187,22 +187,9 @@ async def _read_recorded_program_session(reader_factory, prefix, packet, blocks,
         finally:
             client.close()
     async def observations():
-        result, after, child_count = [], 0, 0
-        while True:
-            page = await read_rule_decision_observation_page_async(owned_factory, prefix,
-                after_sequence=after, limit=decision_page_size, maximum_children=maximum_observation_children)
-            if len(result) + len(page) > maximum_decisions:
-                raise ValueError('Recorded comparison exceeds its explicit decision bound')
-            for parent, _, observation in page:
-                if not after < parent['decision_sequence'] <= prefix.last_sequence:
-                    raise ValueError('Recorded comparison observation cursor is unordered or overlapping')
-                after = parent['decision_sequence']
-                child_count += len(observation.working_orders) + len(observation.unobserved_order_ids)
-                if child_count > maximum_observation_children:
-                    raise ValueError('Recorded comparison exceeds its explicit observation child bound')
-            result.extend(page)
-            if len(page) < decision_page_size:
-                return tuple(result)
+        return await read_rule_decision_observations_async(owned_factory, prefix,
+            page_size=decision_page_size, maximum_decisions=maximum_decisions,
+            maximum_children=maximum_observation_children)
     job = asyncio.ensure_future(asyncio.gather(_owned_worker(financial), observations(), return_exceptions=True))
     try:
         results = await asyncio.shield(job)

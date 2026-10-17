@@ -50,7 +50,7 @@ def test_runnable_native_collector_joins_existing_verified_path(monkeypatch):
     # financial projection; only its read transport seams are fixture-backed.
     calls = dict(financial=0, observations=0)
     financial_read = comparison.load_typed_backtest_financial_evidence
-    observation_read = comparison.read_rule_decision_observation_page_async
+    observation_read = comparison.read_rule_decision_observations_async
     def financial(*args, **kwargs):
         calls['financial'] += 1
         return financial_read(*args, **kwargs)
@@ -58,7 +58,7 @@ def test_runnable_native_collector_joins_existing_verified_path(monkeypatch):
         calls['observations'] += 1
         return await observation_read(*args, **kwargs)
     monkeypatch.setattr(comparison, 'load_typed_backtest_financial_evidence', financial)
-    monkeypatch.setattr(comparison, 'read_rule_decision_observation_page_async', observations)
+    monkeypatch.setattr(comparison, 'read_rule_decision_observations_async', observations)
     shared = []
     read_session = audit._read_recorded_program_session
     async def session(*args, **kwargs):
@@ -79,8 +79,8 @@ def test_runnable_native_collector_joins_existing_verified_path(monkeypatch):
         reference, maximum_audit_rows=100, **run_kwargs()))
     assert result['recorded_metrics'].app['metrics']['net_pnl'] == -19
     assert result['pre_decision_positions'].height == 5
-    assert all(client.closed for client in clients) and len(clients) == 4
-    assert len(shared) == 1 and calls == dict(financial=1, observations=3)
+    assert all(client.closed for client in clients) and len(clients) == 2
+    assert len(shared) == 1 and calls == dict(financial=1, observations=1)
 
 
 

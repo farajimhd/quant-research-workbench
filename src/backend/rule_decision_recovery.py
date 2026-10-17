@@ -173,3 +173,113 @@ async def read_rule_decision_observation_page_async(reader_factory, prefix, *,
         finally:
             client.close()
     return await _owned_worker(read)
+
+
+async def read_rule_decision_observations_async(reader_factory, prefix, *, page_size=200,
+        maximum_decisions, maximum_children, strategy_intent_ids=None):
+    """Verify one bounded decision collection under two full-prefix fences.
+
+    An optional semantic intent selection returns complete parent decisions and
+    all their siblings, never a partial intent or OMS observation projection.
+    The owned worker drains and closes its single reader even on cancellation.
+    """
+    if (not callable(reader_factory) or type(prefix) is not V4CommittedPrefix or not prefix.batch_ids
+            or type(page_size) is not int or not 1 <= page_size <= 500
+            or type(maximum_decisions) is not int or not 1 <= maximum_decisions <= 1000000
+            or type(maximum_children) is not int or not 1 <= maximum_children <= 1000000
+            or strategy_intent_ids is not None and (type(strategy_intent_ids) is not tuple
+                or len(strategy_intent_ids) > 8000
+                or any(type(value) is not str or not value for value in strategy_intent_ids)
+                or len(set(strategy_intent_ids)) != len(strategy_intent_ids))):
+        raise ValueError('Decision collection requires bounded exact V4 authorities')
+
+    def read():
+        client = reader_factory()
+        try:
+            if client.execute("SELECT getSetting('readonly')").strip() != '1':
+                raise ValueError('Decision collection requires a SELECT-only client')
+            if load_verified_v4_prefix(client, prefix.run_id) != prefix:
+                raise ValueError('Decision collection prefix changed before readback')
+            routes = None
+            if strategy_intent_ids is not None:
+                from src.trading_runtime.rule_decision_basis_schema import BASIS, INTENT
+                routed = {}
+                for start in range(0, len(strategy_intent_ids), 500):
+                    chunk = strategy_intent_ids[start:start + 500]
+                    children = _rows(client, f'SELECT strategy_intent_id,parent_record_id FROM arte.{INTENT.name} '
+                        f'WHERE run_id={_literal(prefix.run_id)} {_committed_batch_filter(prefix)} '
+                        f"AND strategy_intent_id IN ({','.join(_literal(value) for value in chunk)}) "
+                        f'LIMIT {len(chunk) + 1} FORMAT JSONEachRow')
+                    if (len(children) != len(chunk)
+                            or {row['strategy_intent_id'] for row in children} != set(chunk)):
+                        raise ValueError('Selected decision intent routing coverage differs')
+                    routed.update((row['strategy_intent_id'], row['parent_record_id']) for row in children)
+                records = sorted(set(routed.values()))
+                routes = {}
+                for start in range(0, len(records), 500):
+                    chunk = records[start:start + 500]
+                    parents = _rows(client, f'SELECT record_id,decision_sequence FROM arte.{BASIS.name} '
+                        f'WHERE run_id={_literal(prefix.run_id)} {_committed_batch_filter(prefix)} '
+                        f"AND record_id IN ({','.join(_literal(value) for value in chunk)}) "
+                        f'AND decision_sequence<={prefix.last_sequence} LIMIT {len(chunk) + 1} FORMAT JSONEachRow')
+                    if (len(parents) != len(chunk) or {row['record_id'] for row in parents} != set(chunk)
+                            or any(type(row['decision_sequence']) is bool for row in parents)):
+                        raise ValueError('Selected decision parent routing coverage differs')
+                    for row in parents:
+                        sequence = int(row['decision_sequence'])
+                        if not 1 <= sequence <= prefix.last_sequence or sequence in routes:
+                            raise ValueError('Selected decision parent routing repeats or exceeds its prefix')
+                        routes[sequence] = row['record_id']
+                if len(routes) > maximum_decisions:
+                    raise ValueError('Decision collection exceeds its explicit decision bound')
+            result, after, child_count, seen_records = [], 0, 0, set()
+            selected = iter(sorted(routes)) if routes is not None else None
+            while True:
+                if selected is not None:
+                    sequence = next(selected, None)
+                    if sequence is None:
+                        break
+                    cursor, limit = sequence - 1, 1
+                else:
+                    cursor, limit = after, page_size
+                rows = load_committed_rule_decision_page(client, prefix, after_sequence=cursor, limit=limit)
+                if len(rows) > limit or (selected is not None and (len(rows) != 1
+                        or rows[0][0]['decision_sequence'] != sequence
+                        or rows[0][0]['record_id'] != routes[sequence])):
+                    raise ValueError('Selected decision parent coverage differs')
+                if rows:
+                    events = load_typed_event_page(client, prefix, after_sequence=cursor, limit=len(rows),
+                        selected_sequences=tuple(parent['decision_sequence'] for parent, _ in rows))
+                    verify_decision_completion_page(rows, events)
+                    join_decision_intents(client, prefix, rows)
+                page = load_decision_observation_page(client, prefix, rows,
+                    maximum_children=max(1, maximum_children - child_count))
+                if len(result) + len(page) > maximum_decisions:
+                    raise ValueError('Decision collection exceeds its explicit decision bound')
+                for parent, _, observation in page:
+                    if (not after < parent['decision_sequence'] <= prefix.last_sequence
+                            or parent['record_id'] in seen_records):
+                        raise ValueError('Decision collection cursor is unordered or overlapping')
+                    after = parent['decision_sequence']
+                    seen_records.add(parent['record_id'])
+                    child_count += len(observation.working_orders) + len(observation.unobserved_order_ids)
+                    if child_count > maximum_children:
+                        raise ValueError('Decision collection exceeds its explicit observation child bound')
+                result.extend(page)
+                if selected is None and len(rows) < page_size:
+                    break
+            if strategy_intent_ids is not None:
+                wanted = set(strategy_intent_ids)
+                covered = [child['strategy_intent_id'] for _, children, _ in result
+                    for child in children if child['strategy_intent_id'] in wanted]
+                if (len(covered) != len(wanted) or set(covered) != wanted
+                        or any(routed[child['strategy_intent_id']] != parent['record_id']
+                            for parent, children, _ in result for child in children
+                            if child['strategy_intent_id'] in wanted)):
+                    raise ValueError('Selected decision semantic intent coverage differs')
+            if load_verified_v4_prefix(client, prefix.run_id) != prefix:
+                raise ValueError('Decision collection prefix changed after readback')
+            return tuple(result)
+        finally:
+            client.close()
+    return await _owned_worker(read)

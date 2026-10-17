@@ -105,13 +105,15 @@ def install_reads(monkeypatch, decisions, evidence, *, delayed=False):
             assert release.wait(5)
         return evidence
     monkeypatch.setattr(flow, 'load_typed_backtest_financial_evidence', financial)
-    async def observations(factory, prefix, *, after_sequence, limit, maximum_children):
+    async def observations(factory, prefix, *, page_size, maximum_decisions, maximum_children):
         client = factory()
         try:
-            assert limit == 2 and maximum_children == 20
-            return tuple(row for row in decisions if row[0]['decision_sequence'] > after_sequence)[:limit]
+            assert page_size == 2 and maximum_children == 20
+            if len(decisions) > maximum_decisions:
+                raise ValueError('decision bound')
+            return decisions
         finally: client.close()
-    monkeypatch.setattr(flow, 'read_rule_decision_observation_page_async', observations)
+    monkeypatch.setattr(flow, 'read_rule_decision_observations_async', observations)
     return Client, clients, prefix_holder, entered, release
 
 
@@ -129,7 +131,7 @@ def test_joined_comparison_uses_frozen_first_clock_exclusion_and_keeps_all30(mon
     assert result.app['metrics']['net_pnl'] == -19 and result.app['metrics']['drawdown'] == 31.
     assert result.app['metrics']['capital_dollar_seconds'] == 380. and result.app['metrics']['stop_risk_dollar_seconds'] == 65.
     assert result.app['metrics']['inactivity_fraction'] == .25 and result.app['excluded_origin_observations'] == 1
-    assert all(client.closed for client in clients) and len(clients) == 4
+    assert all(client.closed for client in clients) and len(clients) == 2
     rows = flow.compare_recorded_program_sessions(reference, {DAY: result})
     assert len(rows) == 30 and rows[2]['status'] == 'compared'
     assert sum(row['status'] == 'not_run' for row in rows) == 29
