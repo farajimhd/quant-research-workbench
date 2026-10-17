@@ -243,7 +243,12 @@ def load_typed_event_page(
     selected_sequences: tuple[int, ...] | None = None,
     exact_prices: bool = False,
 ) -> tuple[TypedJournalEvent, ...]:
-    """Read one typed page with one batched detail query per present family."""
+    """Read a bounded typed page, following V4's verified physical family seals.
+
+    V4 selects its stored price representation per batch; ``exact_prices``
+    additionally requires exact storage. Older prefix formats retain their
+    immutable legacy representation.
+    """
     from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
     if type(exact_prices) is not bool or exact_prices and not isinstance(prefix, V4CommittedPrefix):
         raise ValueError("Exact event prices require the explicit verified V4 mode")
@@ -299,13 +304,39 @@ def load_typed_event_page(
         raise RuntimeError("Selected event page is missing committed rows")
     if selected_sequences is None and len(events) < limit and previous != prefix.last_sequence:
         raise RuntimeError("Typed event page ends before the committed prefix")
-    details: dict[tuple[str, str], dict[str, Any]] = {}
+    from .trading_price_contracts import PRICE_FAMILIES
+    physical_groups: dict[tuple[str, str], set[str]] = {}
     for family, identities in by_family.items():
-        physical_family = family
-        if exact_prices and family in {"trading_execution_v1", "trading_order_command_v1",
-                "trading_oms_group_state_v1", "trading_strategy_signal_v1", "trading_strategy_signal_v2"}:
-            from .trading_price_contracts import PRICE_FAMILIES
-            physical_family = PRICE_FAMILIES[family][0]
+        if isinstance(prefix, V4CommittedPrefix) and family in PRICE_FAMILIES:
+            # The verified prefix already seals this immutable inventory. Do
+            # not infer representation from whichever detail table has rows.
+            exact_family = PRICE_FAMILIES[family][0]
+            batches = {event["batch_id"] for _, event, detail_family in sealed_events
+                       if detail_family == family}
+            batch_ids = ",".join(f"toUUID({_literal(value)})" for value in sorted(batches))
+            inventory = _rows(client,
+                "SELECT batch_id,family_name FROM arte.trading_commit_family_v4 "
+                f"WHERE run_id={_literal(prefix.run_id)} AND batch_id IN ({batch_ids}) "
+                f"AND family_name IN ({_literal(family)},{_literal(exact_family)}) "
+                f"{_committed_batch_filter(prefix)}"
+                f"LIMIT {2 * len(batches) + 1} FORMAT JSONEachRow")
+            declared = {}
+            for row in inventory:
+                batch_id = str(UUID(str(row["batch_id"])))
+                physical = row["family_name"]
+                if (batch_id not in batches or physical not in {family, exact_family}
+                        or batch_id in declared):
+                    raise RuntimeError("Typed event price family inventory is ambiguous")
+                declared[batch_id] = physical
+            if set(declared) != batches or exact_prices and set(declared.values()) != {exact_family}:
+                raise RuntimeError("Typed event price family inventory differs from its committed mode")
+            for record_id, event, detail_family in sealed_events:
+                if detail_family == family:
+                    physical_groups.setdefault((family, declared[event["batch_id"]]), set()).add(record_id)
+        else:
+            physical_groups[family, family] = identities
+    details: dict[tuple[str, str], dict[str, Any]] = {}
+    for (family, physical_family), identities in physical_groups.items():
         contract = (_CONTRACTS["trading_strategy_signal_v1"]
                     if family == "trading_strategy_signal_v2" and physical_family == family else _CONTRACTS[physical_family])
         columns = ",".join(column for column, _ in contract.columns)

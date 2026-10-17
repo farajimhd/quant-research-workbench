@@ -1,6 +1,6 @@
 """Current V4 reconciliation projection, compaction, publication and cold seals."""
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 import asyncio
 
 import pytest
@@ -11,18 +11,20 @@ from src.trading_runtime.arte_journal_compound_v4 import coalesce_v4_units, publ
 from src.trading_runtime.arte_journal_commit_v4 import (
     _load_verified_details_v4, _publish_typed_batch_v4, load_verified_v4_prefix,
 )
-from src.trading_runtime.arte_journal_writer import typed_row, v4_storage_contracts, v4_journal_write_tables
+from src.trading_runtime.arte_journal_writer import (
+    _datetime_wire, typed_row, v4_storage_contracts, v4_journal_write_tables,
+)
 from src.trading_runtime.arte_portfolio_reconciliation_v4 import DIFFERENCE, V4PortfolioReconciliationBatch
 from tests.test_arte_journal_commit_v4 import attached_v4_client
 from tests.test_backtest_reconciliation_v3 import _record, AT, ATTEMPT
 
 
-def project(*, cleared=False):
+def project(*, cleared=False, decision_delay=timedelta(0)):
     journal = BacktestMemoryJournal(run_id="run-1")
     for source in ((_record(), _record([])) if cleared else (_record(),)):
         journal.append_many([dict(run_id=source.run_id, category=source.category,
             entity_type=source.entity_type, entity_id=source.entity_id,
-            account_id=source.account_id, event_time=AT,
+            account_id=source.account_id, event_time=AT + decision_delay,
             payload=dict(source.payload))])
     try:
         return project_pending_backtest_v4_prefix(journal, attempt_id=ATTEMPT,
@@ -60,6 +62,47 @@ def test_compound_rekeys_differences_and_retains_empty_reconciliation_event():
     assert len(client.tables["trading_portfolio_reconciliation_event_v1"]) == 2
     assert len(client.tables[DIFFERENCE.name]) == 2
     assert {r["batch_id"] for r in client.tables[DIFFERENCE.name]} == {compound.base.batch_id}
+
+
+@pytest.mark.parametrize("compound", (False, True))
+def test_snapshot_before_decision_preserves_causal_times_and_recovers(compound):
+    delay = timedelta(seconds=7)
+    units = project(cleared=compound, decision_delay=delay)
+    client = attached_v4_client()
+    if compound:
+        publish_compound_v4(client, coalesce_v4_units(units))
+    else:
+        unit, = units
+        _publish_typed_batch_v4(client, unit.base,
+            portfolio_reconciliation_differences=unit.differences)
+    events = client.tables["trading_event_v1"]
+    parents = client.tables["trading_portfolio_reconciliation_event_v1"]
+    assert all(row["event_time"] == _datetime_wire(AT + delay, 9) for row in events)
+    assert all(row["source_event_time"] == _datetime_wire(AT, 9) for row in parents)
+    assert load_verified_v4_prefix(client, "run-1").last_sequence == len(units)
+
+
+def test_projection_rejects_snapshot_after_decision():
+    with pytest.raises(ValueError, match="future"):
+        project(decision_delay=-timedelta(microseconds=1))
+
+
+@pytest.mark.parametrize("field,value,message", (
+    ("source_event_time", AT + timedelta(seconds=8), "Portfolio reconciliation differs"),
+    ("account_key", "other", "Portfolio reconciliation differs"),
+    ("account_id", "other", "differs from its parent event identity"),
+    ("snapshot_id", "", "Portfolio reconciliation differs"),
+    ("difference_hash", "invalid", "must have exactly 64 UTF-8 bytes"),
+))
+def test_delayed_reconciliation_still_rejects_invalid_parent_before_insert(field, value, message):
+    unit, = project(decision_delay=timedelta(seconds=7))
+    parent, = unit.base.portfolio_reconciliation_events
+    batch = replace(unit.base, portfolio_reconciliation_events=({**parent, field: value},))
+    client = attached_v4_client()
+    with pytest.raises(ValueError, match=message):
+        _publish_typed_batch_v4(client, batch,
+            portfolio_reconciliation_differences=unit.differences)
+    assert client.inserts == []
 
 
 def test_positive_reconciliation_cannot_publish_without_its_children():
@@ -114,7 +157,8 @@ def test_actual_async_publisher_and_writer_fence_reconciliation_without_losing_r
             source = _record([] if i else None)
             journal.append_many([dict(run_id=source.run_id, category=source.category,
                 entity_type=source.entity_type, entity_id=source.entity_id,
-                account_id=source.account_id, event_time=AT, payload=dict(source.payload))])
+                account_id=source.account_id, event_time=AT + timedelta(seconds=7),
+                payload=dict(source.payload))])
         publisher = BacktestTypedJournalPublisher(journal, writer,
             attempt_id=ATTEMPT, run_month=date(2026, 8, 1))
         async def fence():

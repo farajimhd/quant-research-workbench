@@ -457,6 +457,8 @@ def prepare_compound_v4_families(
     ids = lambda name: tuple(row["record_id"] for row in extra[name])
     base_families = _sealed_families(
         compound.base,
+        # Match the normalized snapshot contract used by each V4 micro-batch.
+        v3_reconciliation=True,
         v3_control_ids=ids(PORTFOLIO_CONTROL.name),
         v3_reply_policy_ids=ids(BROKER_POLICY.name),
         v4_broker_ack_ids=ids(ACKNOWLEDGEMENT.name),

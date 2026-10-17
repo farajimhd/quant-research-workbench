@@ -143,3 +143,95 @@ def test_committed_semantic_intent_join_uses_exact_records(monkeypatch, change):
             module.join_decision_intents(object(), prefix, rows)
     else:
         assert module.join_decision_intents(object(), prefix, rows) is rows
+
+
+@pytest.mark.parametrize("exact", [False, True])
+@pytest.mark.parametrize("observations", [False, True])
+@pytest.mark.parametrize("change", [None, "missing", "duplicate", "hash", "parent", "inventory",
+                                    "inventory_missing", "inventory_conflict"])
+def test_owned_completion_page_follows_sealed_v4_writer_price_family(monkeypatch, exact, observations, change):
+    from uuid import uuid4
+    from src.trading_runtime import arte_journal_writer as writer
+    from src.trading_runtime.arte_journal_projection import project_journal_record
+    from src.trading_runtime.arte_journal_commit_v4 import prepare_commit_v4, verify_commit_v4
+    from src.trading_runtime.rule_decision_basis_projection import project_rule_decision_basis
+    from src.trading_runtime.signals import StrategySignal
+    from src.trading_runtime.journal_contract import JournalRecord
+    from tests.test_rule_decision_basis_projection import values
+    from tests.test_arte_journal_writer import MemoryClient
+
+    scope = {**values("wait"), "basis_sequence": 0, "decision_sequence": 1}
+    at = scope["boundary_at"]
+    price = 10.001000000000001 if exact else 10.
+    signal = StrategySignal(scope["decision_id"], "program_boundary_completed", "ABC", at,
+        "wait", "neutral", 0., 1., "program:wait", working_timeframe="1s",
+        metadata=dict(assignment_id=scope["assignment_id"], reference_price=price, status="completed",
+            reason_code="program:wait", reason_detail="wait", correlation_id=scope["decision_id"],
+            causation_id=scope["source_commit_hash"]))
+    record = JournalRecord(scope["record_id"], scope["run_id"], 1, at, at,
+        "strategy_decision", "signal", scope["decision_id"], scope["account_id"],
+        {**signal.payload(), "strategy_id": "program", "strategy_revision": 1,
+         "correlation_id": scope["decision_id"], "causation_id": scope["source_commit_hash"]})
+    base = project_journal_record(record, run_month=scope["event_month"], attempt_id=str(uuid4()),
+        batch_id=scope["batch_id"], prior_batch_id=str(uuid4()), source_cursor="source",
+        exact_signal_prices=exact, expected_mode="backtest")
+    families = tuple((writer._v4_family_table(name), rows) for name, rows in writer._sealed_families(base) if rows)
+    commit, seals = prepare_commit_v4(run_id=base.run_id, run_month=base.run_month,
+        attempt_id=base.attempt_id, batch_id=base.batch_id, prior_batch_id=base.prior_batch_id,
+        first_sequence=1, last_sequence=1, source_cursor="source", status="running",
+        sealed_families=families, committed_at=at)
+    verify_commit_v4(commit, seals, detail_identities={name: tuple(
+        (row["record_id"], row["content_hash"]) for row in rows) for name, rows in families})
+    client = MemoryClient()
+    for name, rows in families:
+        client.tables[name] = [writer._wire_row(name, row) for row in rows]
+    client.tables["trading_commit_v4"] = [commit]
+    client.tables["trading_commit_family_v4"] = list(seals)
+    client.close = lambda: None
+    execute = client.execute
+    client.execute = lambda sql: "1" if sql == "SELECT getSetting('readonly')" else execute(sql)
+    prefix = V4CommittedPrefix(base.run_id, 1, base.batch_id, "source", "running", (base.batch_id,))
+    parent, children = project_rule_decision_basis(scope, [])
+    rows = ((parent, children),)
+    monkeypatch.setattr(module, "load_verified_v4_prefix", lambda *_: prefix)
+    monkeypatch.setattr(module, "load_committed_rule_decision_page", lambda *_, **__: rows)
+    monkeypatch.setattr(module, "load_decision_observation_page", lambda *_, **__: rows)
+    family = "trading_strategy_signal_exact_price_v2" if exact else "trading_strategy_signal_v2"
+    if change == "missing":
+        client.tables[family].clear()
+    elif change == "duplicate":
+        client.tables[family] *= 2
+    elif change == "hash":
+        client.tables[family][0]["reason"] = "tampered"
+    elif change == "parent":
+        raw = {key: value for key, value in dict(families)[family][0].items() if key != "content_hash"}
+        client.tables[family][0] = writer._wire_row(family, writer.typed_row(family, {**raw, "account_id": "other"}))
+    elif change == "inventory":
+        client.tables["trading_commit_family_v4"] += [next(
+            row for row in seals if row["family_name"] == family)]
+    elif change == "inventory_missing":
+        client.tables["trading_commit_family_v4"] = [row for row in seals if row["family_name"] != family]
+    elif change == "inventory_conflict":
+        alternative = "trading_strategy_signal_v2" if exact else "trading_strategy_signal_exact_price_v2"
+        client.tables["trading_commit_family_v4"] += [{**next(
+            row for row in seals if row["family_name"] == family), "family_name": alternative}]
+
+    async def run():
+        if observations:
+            return await module.read_rule_decision_observation_page_async(lambda: client, prefix, maximum_children=8)
+        return await module.read_rule_decision_page_async(lambda: client, prefix)
+    if change:
+        with pytest.raises(RuntimeError):
+            asyncio.run(run())
+    else:
+        assert asyncio.run(run()) == rows
+        event, = module.load_typed_event_page(client, prefix)
+        assert float(event.detail["decision_reference_price"]).hex() == price.hex()
+        assert event.detail_family == "trading_strategy_signal_v2"
+        assert any("FROM arte.trading_commit_family_v4 " in sql and "LIMIT 3 " in sql
+                   for sql in client.selects)
+        if exact:
+            assert module.load_typed_event_page(client, prefix, exact_prices=True) == (event,)
+        else:
+            with pytest.raises(RuntimeError, match="committed mode"):
+                module.load_typed_event_page(client, prefix, exact_prices=True)

@@ -1884,6 +1884,8 @@ def _publish_typed_batch_v4(client, batch, *, followthrough_rows=(), strategy_on
         run_id=batch.run_id, batch_id=batch.batch_id)
     base_families = _sealed_families(
         batch, v4_broker_ack_ids=tuple(row["record_id"] for row in ack_rows),
+        # V4 uses the V3 normalized snapshot contract: observed <= decision.
+        v3_reconciliation=True,
         v3_control_ids=tuple(row['record_id'] for row in control_rows),
         v3_reply_policy_ids=tuple(row['record_id'] for row in policy_rows),
         v5_broker_ack_ids=tuple(row["record_id"] for row in ack_v5_rows),

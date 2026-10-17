@@ -847,6 +847,12 @@ class MemoryClient:
             if "AND record_id IN (" in sql:
                 values = set(re.findall(r"toUUID\('([0-9a-f-]+)'\)", sql))
                 matching = [row for row in matching if row["record_id"] in values]
+            for field in ("batch_id", "family_name"):
+                marker = f"AND {field} IN ("
+                if marker in sql and not sql.split(marker, 1)[1].startswith("SELECT "):
+                    clause = sql.split(marker, 1)[1].split(" AND ", 1)[0]
+                    values = set(re.findall(r"'([^']+)'", clause))
+                    matching = [row for row in matching if row[field] in values]
             if "AND parent_record_id IN (" in sql:
                 values = set(re.findall(r"toUUID\('([0-9a-f-]+)'\)",
                                         sql.split("AND parent_record_id IN (", 1)[1]))
