@@ -8,6 +8,7 @@ only the identical target images; there is no cross-component transaction.
 """
 from dataclasses import dataclass
 from datetime import date
+from math import isfinite
 
 from .qmd_columnar_history_transport import _owned_worker
 from .backtest_market_data import market_day_boundary
@@ -43,6 +44,34 @@ class TerminalCheckpointPublicationReceipt:
     portfolio_state_hashes: tuple
     previous_heads: tuple
     lease_epoch: int
+
+
+def _qualify_terminal_portfolio_capture(capture, prefix, expected_clock):
+    """Require a flat native capture without rewriting reservation history.
+
+    Portfolio keeps a managed exit's admission status and filled counter when
+    the OMS closes it; remaining quantity and all reserved capital become zero.
+    This exact inactive exit shape is distinct from a pending entry reservation.
+    Historical released reservations can retain their original capital amounts.
+    The caller separately proves the recorded closing fills and terminal OMS.
+    """
+    def inactive(reservation):
+        if reservation.remaining_quantity != 0:
+            return False
+        if reservation.status in {'released','filled','cancelled','rejected','policy_blocked'}:
+            return True
+        return (reservation.status == 'reserved' and reservation.action == 'exit'
+            and isfinite(reservation.quantity) and reservation.quantity > 0
+            and reservation.filled_quantity == 0
+            and reservation.reserved_notional == 0
+            and reservation.reserved_planned_risk == 0
+            and reservation.reserved_entry_fees == 0)
+
+    if (capture.run_id != prefix.run_id or capture.state_revision != prefix.last_sequence
+            or capture.snapshot_at != expected_clock or capture.allocations
+            or capture.commands or capture.requests or capture.reconciliation
+            or any(not inactive(row) for row in capture.reservations)):
+        raise ValueError('Terminal Portfolio capture is not an exact flat synchronized projection')
 
 
 def _publish(writer_client, *, read_client_factory, writer_connection_factory,
@@ -100,13 +129,7 @@ def _publish(writer_client, *, read_client_factory, writer_connection_factory,
         raise ValueError('Terminal checkpoint account population differs')
     prepared = []
     for capture in sorted(portfolios, key=lambda p:p.account_id):
-        if (capture.run_id != prefix.run_id or capture.state_revision != prefix.last_sequence
-                or capture.snapshot_at != expected_clock or capture.allocations
-                or capture.commands or capture.requests or capture.reconciliation
-                or any(r.remaining_quantity or r.status not in
-                       {'released','filled','cancelled','rejected','policy_blocked'}
-                       for r in capture.reservations)):
-            raise ValueError('Terminal Portfolio capture is not an exact flat synchronized projection')
+        _qualify_terminal_portfolio_capture(capture, prefix, expected_clock)
         prepared.append(prepare_captured_portfolio_snapshot(capture))
     keeper, generation, client_id = session.client, session._generation, session.client.client_id
     dispatch = writer_client.typed_insert_dispatch

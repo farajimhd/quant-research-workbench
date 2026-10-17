@@ -10,6 +10,7 @@ import pytest
 from src.backend import program_terminal_checkpoint_publication as m
 from src.trading_runtime.arte_oms_observation_snapshot import project_shared_oms_observations
 from src.trading_runtime.arte_portfolio_snapshot import CapturedPortfolioSnapshot
+from src.trading_runtime.portfolio import PortfolioReservation
 from tests.test_live_signal_completion_keeper import FakeKazoo
 from tests.test_program_terminal_financial_rollforward import inputs, project
 
@@ -109,6 +110,37 @@ def test_verifies_normalized_projection_before_any_publication(monkeypatch):
     broken=replace(result.broker_snapshot,snapshot={**result.broker_snapshot.snapshot,'content_hash':'0'*64})
     f.kwargs['broker_result']=replace(result,broker_snapshot=broken)
     with pytest.raises(ValueError):run(f)
+    assert not f.calls and not f.clients
+
+
+def closed_exit(f):
+    return PortfolioReservation('reservation','decision','intent','primary','DU1',
+        'strategy','assignment','XYZ','exit',2.,0.,10.,0.,0.,
+        f.kwargs['broker_result'].scope.start_at)
+
+
+def test_native_closed_managed_exit_preserves_admission_status(monkeypatch):
+    f=fixture(monkeypatch);reservation=closed_exit(f)
+    assert reservation.status=='reserved' and reservation.filled_quantity==0
+    f.kwargs['portfolios']=(replace(f.kwargs['portfolios'][0],reservations=(reservation,)),)
+    run(f)
+    assert f.calls==['storage','broker','oms','portfolio']
+    assert reservation.status=='reserved' and reservation.filled_quantity==0
+
+
+@pytest.mark.parametrize('changes',[
+    {'action':'enter_long'}, {'action':'add_long'}, {'action':'reduce'},
+    {'remaining_quantity':1.}, {'reserved_notional':1.},
+    {'reserved_planned_risk':1.}, {'reserved_entry_fees':1.},
+    {'filled_quantity':1.}, {'quantity':0.}, {'quantity':float('nan')},
+    {'quantity':float('inf')}, {'status':'working'},
+])
+def test_inactive_exit_exception_rejects_pending_or_changed_reservations(monkeypatch,changes):
+    f=fixture(monkeypatch)
+    reservation=replace(closed_exit(f),**changes)
+    f.kwargs['portfolios']=(replace(f.kwargs['portfolios'][0],reservations=(reservation,)),)
+    with pytest.raises(ValueError,match='exact flat synchronized'):
+        run(f)
     assert not f.calls and not f.clients
 
 
