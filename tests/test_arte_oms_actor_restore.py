@@ -214,3 +214,17 @@ def test_typed_oms_image_cross_checks_broker_open_set(monkeypatch):
             image, BrokerMatchSnapshotRows({}, (), (),
                                             ({**order, "filled_f64_bits":
                                               float64_bits(1, "filled")},), (), ()))
+
+
+def test_pending_cancellation_index_restores_from_same_authoritative_groups():
+    lineage, history = _source(malformed={"state": "cancel_pending"})
+    image = reconstruct_typed_oms_actor_image((lineage,), history, run_id=RUN,
+        strategy_id=STRATEGY_ID, strategy_revision=STRATEGY_NUMBER,
+        through_sequence=7, cutoff_at=AT)
+    actor = OrderManagementEngine(broker=MagicMock(),planner=MagicMock(),risk=MagicMock(),
+        journal=MagicMock(),run_id=RUN,strategy_id=STRATEGY_ID,strategy_revision=STRATEGY_NUMBER)
+    assert not actor.has_pending_cancellations
+    install_typed_oms_actor_image(actor,image)
+    assert actor.has_pending_cancellations
+    assert actor._pending_cancel_groups == {"group-1": actor._groups["group-1"]}
+    assert actor._pending_cancel_groups["group-1"] is actor._groups["group-1"]

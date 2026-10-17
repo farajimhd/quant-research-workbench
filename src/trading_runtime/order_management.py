@@ -450,6 +450,10 @@ class OrderManagementEngine:
         # only nonterminal entry roots here; historical groups stay in _groups
         # for audit and recovery but must not be rescanned all session.
         self._entry_deadline_groups: dict[str, _ManagedOrderGroup] = {}
+        # Cancellation confirmation can arrive before another assignment's
+        # global financial capture. Index pending groups without rescanning
+        # every historical order at each programme decision.
+        self._pending_cancel_groups: dict[str, _ManagedOrderGroup] = {}
         self._entry_trade_prices: dict[str, tuple[datetime, float]] = {}
         self._body_entry_group_ids: set[str] = set()
         self._group_by_client_id: dict[str, str] = {}
@@ -461,6 +465,10 @@ class OrderManagementEngine:
     def has_managed_groups(self) -> bool:
         """Whether any OMS group can require a causal market-boundary action."""
         return bool(self._groups)
+
+    @property
+    def has_pending_cancellations(self) -> bool:
+        return bool(self._pending_cancel_groups)
 
     def _command_lane(self, account_id: str) -> asyncio.Lock:
         if self.control_plane is not None:
@@ -1756,6 +1764,8 @@ class OrderManagementEngine:
         self._groups_by_assignment.setdefault(
             (group.account_id, assignment_id), []).append(group)
         self._groups_by_ticker.setdefault(group.intent.ticker.upper(), []).append(group)
+        if group.state == OrderManagementState.CANCEL_PENDING:
+            self._pending_cancel_groups[group.group_id] = group
         if (group.tactic is not None
                 and group.state not in TERMINAL_MANAGEMENT_STATES
                 and group.state != OrderManagementState.CANCEL_PENDING):
@@ -4403,6 +4413,10 @@ class OrderManagementEngine:
     ) -> None:
         group.state = state
         if group.group_id in self._groups:
+            if state == OrderManagementState.CANCEL_PENDING:
+                self._pending_cancel_groups[group.group_id] = group
+            else:
+                self._pending_cancel_groups.pop(group.group_id, None)
             if (group.tactic is not None and state not in TERMINAL_MANAGEMENT_STATES
                     and state != OrderManagementState.CANCEL_PENDING):
                 self._active_adaptive_groups[group.group_id] = group

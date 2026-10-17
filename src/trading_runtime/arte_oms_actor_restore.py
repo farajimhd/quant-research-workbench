@@ -130,6 +130,7 @@ def install_typed_oms_actor_image(
             or actor.strategy_revision != image.strategy_revision):
         raise RuntimeError("Typed OMS actor identity differs from its image")
     if (actor._groups or actor._group_ordinal or actor._active_adaptive_groups
+            or actor._pending_cancel_groups
             or actor._groups_by_assignment or actor._groups_by_ticker
             or actor._group_by_client_id or actor._group_by_broker_id
             or actor._body_entry_group_ids or actor._entry_trade_prices

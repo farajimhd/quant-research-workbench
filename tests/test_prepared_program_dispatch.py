@@ -765,8 +765,10 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                         self.closed = True
                 reader = Reader()
                 monkeypatch.setattr("src.backend.program_policy_recovery.load_verified_v4_prefix", lambda *_: prefix)
-                def page(client, selected_prefix, *, after_sequence, limit, exact_prices=False):
+                def page(client, selected_prefix, *, after_sequence, limit, exact_prices=False,
+                         exact_price_families=None):
                     assert exact_prices is True
+                    assert exact_price_families == ("trading_execution_v1", "trading_strategy_signal_v2")
                     assert client is reader and selected_prefix is prefix
                     return tuple(events[after_sequence:after_sequence + limit])
                 with patch("src.backend.program_policy_recovery.load_typed_event_page", page):
@@ -776,8 +778,10 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                 from src.backend.program_policy_recovery import recover_program_policy_async
                 continuation_reader = Reader()
                 continuation_starts = []
-                def continuation_page(client, selected_prefix, *, after_sequence, limit, exact_prices):
+                def continuation_page(client, selected_prefix, *, after_sequence, limit, exact_prices,
+                                      exact_price_families=None):
                     assert client is continuation_reader and selected_prefix is prefix and exact_prices is True
+                    assert exact_price_families == ("trading_execution_v1", "trading_strategy_signal_v2")
                     assert after_sequence >= basis_packet.journal_sequence
                     continuation_starts.append(after_sequence)
                     return tuple(events[after_sequence:after_sequence + limit])
@@ -912,8 +916,10 @@ def test_prepared_qmd_scanner_source_boundary_reaches_actual_controller_broker(p
                             maximum_events=1000, last_sequence=len(events))
                     entered, release_read = Event(), Event()
                     cancelled_reader = Reader()
-                    def blocked_page(client, selected_prefix, *, after_sequence, limit, exact_prices=False):
+                    def blocked_page(client, selected_prefix, *, after_sequence, limit, exact_prices=False,
+                                     exact_price_families=None):
                         assert exact_prices is True
+                        assert exact_price_families == ("trading_execution_v1", "trading_strategy_signal_v2")
                         assert client is cancelled_reader and selected_prefix is prefix
                         entered.set()
                         assert release_read.wait(5)

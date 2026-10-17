@@ -50,8 +50,7 @@ async def dispatch_qualified_program_boundary(controller, block, population, *, 
     listing = actor._listings[assignment_id]
     row, _ = block.row_for(listing, ordinal)
     at = row["boundary_at"]
-    if controller.program_order_observation(assignment_id=assignment_id, at=at).unobserved_order_ids:
-        await runtime.order_manager.reconcile()
+    await reconcile_program_clock_order_observations(controller, assignment_id=assignment_id, at=at)
     if packet is None:
         from .program_policy_recovery import rebuild_owned_pending_program_policy
         if policy_blocks is None:
@@ -231,3 +230,16 @@ async def dispatch_prepared_program_clock(controller, blocks, population, *, at,
         controller._program_dispatch_failure = error
         raise error
     return tuple(results)
+
+
+async def reconcile_program_clock_order_observations(controller, *, assignment_id, at):
+    """Observe cross-assignment cancellation replies before the global capture.
+
+    A cancel request remains pending until an actual broker observation confirms
+    its terminal state. No matching or event-clock advancement occurs here.
+    """
+    manager = controller._runtime.order_manager
+    if (manager.has_pending_cancellations
+            or controller.program_order_observation(
+                assignment_id=assignment_id, at=at).unobserved_order_ids):
+        await manager.reconcile()
