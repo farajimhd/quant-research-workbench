@@ -20,6 +20,8 @@ class RecoveredProgramController:
     packet: object = field(repr=False)
     anchor: object
     configuration_hash: str
+    account_map: tuple
+    account_ids: tuple
     _proof: object = field(repr=False)
 
 
@@ -29,7 +31,7 @@ def _recovered_owners(controller):
         publisher, publisher.writer, controller._program_signal_runtime, runtime.broker,
         runtime.portfolio, runtime.order_manager, controller._fixed_v4_lease,
         controller._fixed_keeper_session, controller._program_broker_contract,
-        runtime.config, runtime.intent_planner)
+        runtime.config, runtime.intent_planner, controller._account_map)
 
 
 def require_recovered_program_controller(controller):
@@ -40,6 +42,9 @@ def require_recovered_program_controller(controller):
             or proof.controller is not controller):
         raise RuntimeError("Programme continuation lacks its adopted cold controller")
     if (any(before is not after for before, after in zip(proof.owners, _recovered_owners(controller), strict=True))
+            or tuple(sorted(controller._account_map.items())) != proof.account_map
+            or controller._fixed_v4_account_ids != proof.account_ids
+            or controller.account_ids != proof.account_ids or controller._runtime.config.account_ids != proof.account_ids
             or controller._runtime_finished or controller._stop_requested
             or controller._program_dispatch_failure is not None
             or controller.current_time != proof.anchor.completed_at
@@ -123,11 +128,19 @@ async def _adopt_recovered_program_controller(controller, *, assembly, evidence,
     journal, publisher = assembly.journal, assembly.publisher
     at = financial.completed_at
     profiles, groups = historical_strategy_one_portfolio_profiles(definition.configuration_revision["payload"])
+    from .replay_run_service import resolve_controller_account_map
+    account_map, resolved_accounts, _, _ = resolve_controller_account_map(definition, definition.configuration_revision["payload"])
+    original_account_map = dict(controller._account_map)
+    original_fixed_accounts = controller._fixed_v4_account_ids
     configuration_hash = _configuration_hash(definition)
     from .backtest_v4_saved_review import _utc_timestamp
     created_at = _utc_timestamp(evidence.definition.context["started_at"])
     def require_scope():
         if (controller.definition is not definition or controller._program_strategy is not template
+                or controller._account_map != original_account_map or controller._fixed_v4_account_ids != original_fixed_accounts
+                or original_fixed_accounts not in (None, resolved_accounts)
+                or tuple(dict.fromkeys(account_map.values())) != resolved_accounts
+                or runtime.config.account_ids != resolved_accounts
                 or controller._runtime is not None or controller._journal is not None
                 or controller._journal_publisher is not None or controller._journal_writer is not None
                 or controller._fixed_v4_lease is not None or controller._fixed_keeper_session is not None
@@ -213,12 +226,15 @@ async def _adopt_recovered_program_controller(controller, *, assembly, evidence,
     controller._journal_writer, controller._journal_publisher = assembly.writer, publisher
     controller._fixed_v4_lease, controller._fixed_keeper_session = lease, keeper_session
     controller._program_signal_runtime, controller._program_broker_contract = source, broker_contract
+    controller._account_map = account_map
+    controller._fixed_v4_account_ids = resolved_accounts
     controller.current_time = at
     controller._source_cursor = dict(session_date=anchor.session_date, boundary_ms=anchor.boundary_ms,
         sequence=anchor.market_sequence)
     controller._frame_cursor = {}
     controller.created_at = created_at
     owners = _recovered_owners(controller)
-    proof = RecoveredProgramController(controller, owners, packet, anchor, configuration_hash, _ADOPTION_PROOF)
+    proof = RecoveredProgramController(controller, owners, packet, anchor, configuration_hash,
+        tuple(sorted(account_map.items())), resolved_accounts, _ADOPTION_PROOF)
     controller._program_recovered_controller = proof
     return proof

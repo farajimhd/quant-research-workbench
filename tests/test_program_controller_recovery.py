@@ -38,6 +38,7 @@ from tests.test_backtest_v4_keeper_lease import _session, RUN_ID
 def test_adoption_transfers_only_after_common_native_scope_is_qualified(tmp_path, monkeypatch, failure):
     definition, actor = definition_and_actor()
     revision = deepcopy(definition.configuration_revision)
+    revision["payload"]["accounts"]["bindings"][0]["source_account_id"] = "source-account-alias"
     revision["revision_id"] = "strategy-configuration:" + RUN_ID
     revision["content_hash"] = sha256(canonical_json(revision["payload"]).encode()).hexdigest()
     definition = replace(definition, configuration_revision=revision,
@@ -84,7 +85,9 @@ def test_adoption_transfers_only_after_common_native_scope_is_qualified(tmp_path
         runtime.last_event_time = at
         prefix = V4CommittedPrefix(RUN_ID, sequence, "batch", "cursor", "running", ("batch",))
         boundary_ms = int((at - market_day_boundary(definition.session_date, 0)).total_seconds() * 1000)
-        anchor = FixedRunningPrefixAnchor(RUN_ID, "batch", sequence, "cursor", definition.session_date.isoformat(),
+        market_cursor=f"{definition.session_date.isoformat()}:{boundary_ms}"
+        prefix=replace(prefix,source_cursor=market_cursor);publisher._source_cursor=market_cursor
+        anchor = FixedRunningPrefixAnchor(RUN_ID, "batch", sequence, market_cursor, definition.session_date.isoformat(),
             boundary_ms, boundary_ms // 100, at, None)
         broker_contract = BacktestBrokerContract(project_broker_contract(RUN_ID, runtime.broker.config,
             liquidity_plan_hash="a" * 64), definition.initial_cash)
@@ -141,6 +144,33 @@ def test_adoption_transfers_only_after_common_native_scope_is_qualified(tmp_path
                 assert controller._runtime is runtime and controller._journal is journal
                 assert runtime.strategy is controller._program_strategy and runtime.strategy is not packet_actor
                 assert program_policy_fingerprint(runtime.strategy) == packet.state_hash
+                assert controller._account_map == staged._account_map
+                assert controller._account_map["source-account-alias"] in runtime.config.account_ids
+                assert controller.account_ids == runtime.config.account_ids == controller._fixed_v4_account_ids
+                adoption.require_recovered_program_controller(controller)
+                old_alias=controller._account_map["source-account-alias"]
+                controller._account_map["source-account-alias"]="foreign-account"
+                with pytest.raises(RuntimeError,match="adopted cold controller changed"):
+                    adoption.require_recovered_program_controller(controller)
+                controller._account_map["source-account-alias"]=old_alias
+                controller._fixed_v4_account_ids=("foreign-account",)
+                with pytest.raises(RuntimeError,match="adopted cold controller changed"):
+                    adoption.require_recovered_program_controller(controller)
+                controller._fixed_v4_account_ids=runtime.config.account_ids
+                # Exercise the actual first cohort-checkpoint projection after
+                # cold adoption. Only writer I/O is a controlled receipt seam.
+                from concurrent.futures import Future
+                from src.backend import backtest_program_checkpoint as checkpoints
+                def receipt(*args,**kwargs):
+                    result=Future();result.set_result(prefix.last_batch_id);return result
+                writer.submit_shared_broker_match_snapshot=receipt
+                writer.submit_shared_oms_observation_snapshot=receipt
+                writer.submit_running_portfolio_snapshot=receipt
+                monkeypatch.setattr(checkpoints,"program_checkpoint_publication_factory",lambda *args,**kwargs:lambda:None)
+                before_trades=await runtime.broker.trades()
+                captured=await checkpoints.publish_program_broker_checkpoint(controller,connection_factory=lambda:None,concurrency=1)
+                assert captured.snapshot["account_count"]==len(runtime.config.account_ids)
+                assert await runtime.broker.trades()==before_trades
                 from src.backend import backtest_program_session as scheduling
                 from src.backend import backtest_program_launch as launch
                 from src.backend.backtest_program_cohort import run_prepared_program_cohort

@@ -1175,6 +1175,24 @@ def _backtest_launch_blocker(definition: ReplayRunDefinition) -> str:
     return FIXED_EXECUTION_BLOCKER if interval.kind == "fixed" else EVENT_EXECUTION_BLOCKER
 
 
+def resolve_controller_account_map(definition, configuration):
+    """Resolve the same configured account keys and source aliases on any start."""
+    bindings = [dict(row) for row in configuration["accounts"]["bindings"]
+        if bool(row.get("enabled", True)) and definition.mode.value in list(row.get("modes") or [])]
+    if definition.mode == RunMode.BACKTEST:
+        from src.backend.backtest_v4_run_context import historical_simulated_account_ids
+        resolved_accounts = historical_simulated_account_ids(mode=definition.mode, configuration=configuration)
+    else:
+        resolved_accounts = tuple(f"SIM-{index + 1:02d}-{_slug(str(binding['account_key']))}"
+            for index, binding in enumerate(bindings))
+    simulated_by_key = {str(binding["account_key"]): account_id
+        for binding, account_id in zip(bindings, resolved_accounts)}
+    account_map = {str(binding.get("source_account_id") or binding["account_key"]):
+        simulated_by_key[str(binding["account_key"])] for binding in bindings}
+    account_map.update(simulated_by_key)
+    return account_map, resolved_accounts, bindings, simulated_by_key
+
+
 class ReplayRunController:
     """One durable event-time Replay run over the shared trading runtime."""
 
@@ -5324,31 +5342,7 @@ class ReplayRunController:
             self._frame_cursor = dict(clock.frame_cursor)
         strategy_configuration = dict(configuration.get("strategy") or {})
         strategy_enabled = self.definition.execution_mode == "strategy"
-        bindings = [
-            dict(row)
-            for row in configuration["accounts"]["bindings"]
-            if bool(row.get("enabled", True))
-            and self.definition.mode.value in list(row.get("modes") or [])
-        ]
-        if self.definition.mode == RunMode.BACKTEST:
-            from src.backend.backtest_v4_run_context import historical_simulated_account_ids
-            resolved_accounts = historical_simulated_account_ids(
-                mode=self.definition.mode, configuration=configuration)
-        else:
-            resolved_accounts = tuple(
-                f"SIM-{index + 1:02d}-{_slug(str(binding['account_key']))}"
-                for index, binding in enumerate(bindings))
-        simulated_by_key = {
-            str(binding["account_key"]): account_id
-            for binding, account_id in zip(bindings, resolved_accounts)
-        }
-        self._account_map = {
-            str(binding.get("source_account_id") or binding["account_key"]): simulated_by_key[
-                str(binding["account_key"])
-            ]
-            for binding in bindings
-        }
-        self._account_map.update(simulated_by_key)
+        self._account_map, resolved_accounts, bindings, simulated_by_key = resolve_controller_account_map(self.definition, configuration)
         if (self.definition.mode == RunMode.BACKTEST
                 and self._fixed_v4_account_ids is not None
                 and self.account_ids != self._fixed_v4_account_ids):
