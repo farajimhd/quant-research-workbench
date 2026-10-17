@@ -13,10 +13,8 @@ from types import MappingProxyType, SimpleNamespace
 import polars as pl
 
 from .qmd_columnar_history_transport import _owned_worker
-from .recorded_program_comparison import read_recorded_program_session_metrics, _check_financial_ledger
-from .rule_decision_recovery import read_rule_decision_observation_page_async
+from .recorded_program_comparison import _read_recorded_program_session, _check_financial_ledger
 from .program_policy_recovery import program_policy_fingerprint
-from .typed_backtest_financial_review import load_typed_backtest_financial_evidence
 from src.trading_runtime.arte_journal_commit_v4 import load_verified_v4_prefix
 from src.trading_runtime.filled_position_state import FilledPositionState, FilledPosition
 from src.trading_runtime.program_target_state import ProgramTargetState
@@ -194,47 +192,16 @@ async def collect_native_execution_audit(reader_factory, prefix, packet, blocks,
         day, financial_page_size, maximum_financial_rows, decision_page_size,
         maximum_decisions, maximum_observation_children, maximum_measure_rows,
         maximum_audit_rows):
-    """Verify native completed session first, then collect its exact fixed prefix."""
-    recorded = await read_recorded_program_session_metrics(reader_factory, prefix, packet, blocks, source,
+    """Read one verified native session and reuse its facts for audit projection."""
+    recorded, financial, decisions = await _read_recorded_program_session(reader_factory, prefix, packet, blocks, source,
         reference, day=day, financial_page_size=financial_page_size,
         maximum_financial_rows=maximum_financial_rows, decision_page_size=decision_page_size,
         maximum_decisions=maximum_decisions, maximum_observation_children=maximum_observation_children,
         maximum_measure_rows=maximum_measure_rows)
-    def financial_read():
-        client = reader_factory()
-        try:
-            if client.execute("SELECT getSetting('readonly')").strip() != '1':
-                raise ValueError('Native audit requires SELECT-only client')
-            if load_verified_v4_prefix(client, prefix.run_id) != prefix:
-                raise ValueError('Native audit prefix changed before read')
-            result = load_typed_backtest_financial_evidence(client, prefix.run_id,
-                page_size=financial_page_size, maximum_rows=maximum_financial_rows)
-            if load_verified_v4_prefix(client, prefix.run_id) != prefix:
-                raise ValueError('Native audit prefix changed after read')
-            return result
-        finally:
-            client.close()
-    financial = await _owned_worker(financial_read)
-    decisions, after, children = [], 0, 0
-    while True:
-        page = await read_rule_decision_observation_page_async(reader_factory, prefix,
-            after_sequence=after, limit=decision_page_size, maximum_children=maximum_observation_children)
-        if len(decisions) + len(page) > maximum_decisions:
-            raise ValueError('Native audit decision bound exceeded')
-        for parent, _, observation in page:
-            if not after < parent['decision_sequence'] <= prefix.last_sequence:
-                raise ValueError('Native audit page cursor is unordered')
-            after = parent['decision_sequence']
-            children += len(observation.working_orders) + len(observation.unobserved_order_ids)
-            if children > maximum_observation_children:
-                raise ValueError('Native audit observation bound exceeded')
-        decisions.extend(page)
-        if len(page) < decision_page_size:
-            break
-    intent_records = await _owned_worker(_read_intent_records, reader_factory, prefix, tuple(decisions), maximum_audit_rows)
+    intent_records = await _owned_worker(_read_intent_records, reader_factory, prefix, decisions, maximum_audit_rows)
     source_cursor = source.typed_source_cursor()
     result = await _owned_worker(project_native_execution_audit, prefix=prefix, packet=packet,
-        blocks=blocks, source=source, financial=financial, decisions=tuple(decisions),
+        blocks=blocks, source=source, financial=financial, decisions=decisions,
         recorded_metrics=recorded, maximum_rows=maximum_audit_rows, intent_records=intent_records)
     if (source.typed_source_cursor() != source_cursor
             or program_policy_fingerprint(packet.actor) != packet.state_hash):

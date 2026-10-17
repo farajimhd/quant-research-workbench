@@ -115,6 +115,18 @@ def _check_financial_ledger(evidence, actor, prefix):
 async def read_recorded_program_session_metrics(reader_factory, prefix, packet, blocks, source, reference, *,
         day, financial_page_size, maximum_financial_rows, decision_page_size,
         maximum_decisions, maximum_observation_children, maximum_measure_rows):
+    """Return measures from one bounded, verified completed native session."""
+    metrics, _, _ = await _read_recorded_program_session(reader_factory, prefix, packet, blocks, source,
+        reference, day=day, financial_page_size=financial_page_size,
+        maximum_financial_rows=maximum_financial_rows, decision_page_size=decision_page_size,
+        maximum_decisions=maximum_decisions, maximum_observation_children=maximum_observation_children,
+        maximum_measure_rows=maximum_measure_rows)
+    return metrics
+
+
+async def _read_recorded_program_session(reader_factory, prefix, packet, blocks, source, reference, *,
+        day, financial_page_size, maximum_financial_rows, decision_page_size,
+        maximum_decisions, maximum_observation_children, maximum_measure_rows):
     """Join one completed recorded session; never launch or re-execute it.
 
     Financial facts and observation pages read concurrently on distinct owned
@@ -262,7 +274,8 @@ async def read_recorded_program_session_metrics(reader_factory, prefix, packet, 
             raise ValueError('Recorded comparison native inputs changed during calculation')
         return RecordedProgramSessionMetrics(day, MappingProxyType(app),
             _comparison_hash(app), _COMPARISON_PROOF)
-    return await _owned_worker(project)
+    metrics = await _owned_worker(project)
+    return metrics, evidence, decisions
 
 
 def compare_recorded_program_sessions(reference, results):

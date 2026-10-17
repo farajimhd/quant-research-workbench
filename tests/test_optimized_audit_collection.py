@@ -8,6 +8,7 @@ from src.backend import optimized_audit_collection as audit
 from src.trading_runtime.rule_decision_basis_projection import _seal
 from src.trading_runtime.rule_decision_basis_schema import BASIS
 from tests.test_recorded_program_comparison import inputs, install_reads, run_kwargs
+from src.backend import recorded_program_comparison as comparison
 
 
 def fixture(monkeypatch):
@@ -47,16 +48,39 @@ def test_runnable_native_collector_joins_existing_verified_path(monkeypatch):
     holder[0] = prefix
     # Existing recorded comparison performs real typed actor/source/window and
     # financial projection; only its read transport seams are fixture-backed.
-    monkeypatch.setattr(audit, 'load_verified_v4_prefix', lambda *args: prefix)
-    monkeypatch.setattr(audit, 'load_typed_backtest_financial_evidence', lambda *args, **kwargs: evidence)
-    async def observations(factory, prefix, *, after_sequence, limit, maximum_children):
-        return tuple(row for row in decisions if row[0]['decision_sequence'] > after_sequence)[:limit]
-    monkeypatch.setattr(audit, 'read_rule_decision_observation_page_async', observations)
+    calls = dict(financial=0, observations=0)
+    financial_read = comparison.load_typed_backtest_financial_evidence
+    observation_read = comparison.read_rule_decision_observation_page_async
+    def financial(*args, **kwargs):
+        calls['financial'] += 1
+        return financial_read(*args, **kwargs)
+    async def observations(*args, **kwargs):
+        calls['observations'] += 1
+        return await observation_read(*args, **kwargs)
+    monkeypatch.setattr(comparison, 'load_typed_backtest_financial_evidence', financial)
+    monkeypatch.setattr(comparison, 'read_rule_decision_observation_page_async', observations)
+    shared = []
+    read_session = audit._read_recorded_program_session
+    async def session(*args, **kwargs):
+        result = await read_session(*args, **kwargs)
+        shared.append(result)
+        return result
+    project = audit.project_native_execution_audit
+    def projection(**kwargs):
+        metrics, financial, observations = shared[0]
+        assert kwargs['recorded_metrics'] is metrics
+        assert kwargs['financial'] is financial is evidence
+        assert kwargs['decisions'] is observations
+        assert all(actual is expected for actual, expected in zip(observations, decisions, strict=True))
+        return project(**kwargs)
+    monkeypatch.setattr(audit, '_read_recorded_program_session', session)
+    monkeypatch.setattr(audit, 'project_native_execution_audit', projection)
     result = asyncio.run(audit.collect_native_execution_audit(factory, prefix, packet, (block,), source,
         reference, maximum_audit_rows=100, **run_kwargs()))
     assert result['recorded_metrics'].app['metrics']['net_pnl'] == -19
     assert result['pre_decision_positions'].height == 5
-    assert all(client.closed for client in clients)
+    assert all(client.closed for client in clients) and len(clients) == 4
+    assert len(shared) == 1 and calls == dict(financial=1, observations=3)
 
 
 

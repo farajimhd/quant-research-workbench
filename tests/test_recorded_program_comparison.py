@@ -138,7 +138,8 @@ def test_joined_comparison_uses_frozen_first_clock_exclusion_and_keeps_all30(mon
 
 
 @pytest.mark.parametrize('failure', ['fee', 'fill', 'missing_fee', 'window', 'source_gap', 'decision_bound', 'source_parent'])
-def test_joined_comparison_rejects_partial_or_mismatched_recorded_facts(monkeypatch, failure):
+@pytest.mark.parametrize('collector', [False, True])
+def test_joined_comparison_rejects_partial_or_mismatched_recorded_facts(monkeypatch, failure, collector):
     prefix, packet, block, source, reference, decisions, evidence = inputs(monkeypatch)
     if failure == 'fee': evidence['commissions'] = ({**evidence['commissions'][0], 'commission': D(0)}, *evidence['commissions'][1:])
     elif failure == 'fill': evidence['fills'] = ({**evidence['fills'][0], 'price': 10.000000000000002}, *evidence['fills'][1:])
@@ -150,18 +151,29 @@ def test_joined_comparison_rejects_partial_or_mismatched_recorded_facts(monkeypa
     holder[0] = prefix
     kwargs = run_kwargs()
     if failure == 'decision_bound': kwargs['maximum_decisions'] = 4
+    read = flow.read_recorded_program_session_metrics
+    if collector:
+        from src.backend.optimized_audit_collection import collect_native_execution_audit
+        read = collect_native_execution_audit
+        kwargs['maximum_audit_rows'] = 100
     with pytest.raises(ValueError):
-        asyncio.run(flow.read_recorded_program_session_metrics(factory, prefix, packet, (block,), source, reference, **kwargs))
+        asyncio.run(read(factory, prefix, packet, (block,), source, reference, **kwargs))
     assert clients and all(client.closed for client in clients)
 
 
-def test_joined_read_cancellation_drains_concurrent_owned_clients(monkeypatch):
+@pytest.mark.parametrize('collector', [False, True])
+def test_joined_read_cancellation_drains_concurrent_owned_clients(monkeypatch, collector):
     prefix, packet, block, source, reference, decisions, evidence = inputs(monkeypatch)
     factory, clients, holder, entered, release = install_reads(monkeypatch, decisions, evidence, delayed=True)
     holder[0] = prefix
+    read, kwargs = flow.read_recorded_program_session_metrics, run_kwargs()
+    if collector:
+        from src.backend.optimized_audit_collection import collect_native_execution_audit
+        read = collect_native_execution_audit
+        kwargs['maximum_audit_rows'] = 100
     async def run():
-        pending = asyncio.create_task(flow.read_recorded_program_session_metrics(factory, prefix, packet,
-            (block,), source, reference, **run_kwargs()))
+        pending = asyncio.create_task(read(factory, prefix, packet,
+            (block,), source, reference, **kwargs))
         try:
             assert await asyncio.to_thread(entered.wait, 5)
             # The observation lane finishes while the financial worker is
