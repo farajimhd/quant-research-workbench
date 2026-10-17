@@ -124,3 +124,69 @@ def test_terminal_rollforward_rejects_unproved_or_nonterminal_inputs(change):
     if change=='start':values[2]=replace(scope,start_at=scope.start_at-timedelta(seconds=1))
     if change=='partial':values[4]=(replace(fills[0],execution=replace(fills[0].execution,size=1.)),fills[1])
     with pytest.raises((ValueError,KeyError)):project(values)
+
+
+def cold_quote_values():
+    """Exact quote DTO shape returned by reconstruct_broker_match_state."""
+    from src.backend.backtest_v4_broker_state_restore import reconstruct_broker_match_state
+    from src.backend.backtest_v4_broker_quote_restore import CompletedBrokerQuote
+    from src.trading_runtime.arte_broker_match_snapshot import _codec_rows
+    from src.trading_runtime.ibkr_schema import OrderStatus
+    values=list(inputs())
+    old=values[1]
+    requests={row['order_id']:OrderRequest.from_cpapi(row['request']) for row in old['orders']
+              if OrderStatus(row['status']) in m.OPEN_ORDER_STATUSES}
+    quotes={}
+    for row in values[8].tickers:
+        if row['has_quote']:
+            quote=old['quotes_by_ticker'][row['ticker']]
+            quotes[row['ticker']]=CompletedBrokerQuote(row['ticker'],row['last_boundary_ms'],
+                row['quote_timestamp_us'],quote['bid_price'],quote['ask_price'],
+                quote['bid_size'],quote['ask_size'])
+    restored=reconstruct_broker_match_state(_codec_rows(values[8]),
+        requests_by_broker_id=requests,quotes=quotes)
+    restored['executions']=deepcopy(old['executions'])
+    values[1]=restored
+    return values
+
+
+def test_cold_reconstructed_quotes_preserve_native_defaults_and_exact_snapshot(monkeypatch):
+    values=cold_quote_values();before=deepcopy(values[1])
+    assert 'sequence' not in before['quotes_by_ticker']['ZZZ']
+    assert 'tape' not in before['quotes_by_ticker']['ZZZ']
+    native=project(inputs())
+    def forbidden(*a,**kw):raise AssertionError('Matching or order execution invoked')
+    monkeypatch.setattr(SimulatedBrokerAdapter,'on_liquidity_bar',forbidden)
+    monkeypatch.setattr(SimulatedBrokerAdapter,'_apply_fill',forbidden)
+    monkeypatch.setattr(SimulatedBrokerAdapter,'place_orders',forbidden)
+    result=project(values)
+    assert result.broker_snapshot==native.broker_snapshot
+    assert result.state['quotes_by_ticker']['ZZZ']==native.state['quotes_by_ticker']['ZZZ']
+    assert result.state['quotes_by_ticker']['ZZZ']['sequence']==0
+    assert result.state['quotes_by_ticker']['ZZZ']['tape']==0
+    assert values[1]==before
+
+
+@pytest.mark.parametrize('cache',['quote','mark','boundary','extra','signed_zero'])
+def test_native_baseline_still_rejects_actual_out_of_scope_mutations(monkeypatch,cache):
+    values=cold_quote_values()
+    if cache=='signed_zero':values[1]['quotes_by_ticker']['ZZZ']['bid_size']=0.0
+    original=SimulatedBrokerAdapter.observe_liquidity_mark
+    def mutate(broker,row,*,at):
+        original(broker,row,at=at)
+        if cache=='quote':broker._quotes_by_ticker['ZZZ']=replace(broker._quotes_by_ticker['ZZZ'],bid_price=999.)
+        if cache=='mark':broker._bar_marks_by_ticker['ZZZ']=999.
+        if cache=='boundary':broker._bar_boundaries['ZZZ']=at
+        if cache=='extra':broker._bar_marks_by_ticker['FOREIGN']=1.
+        if cache=='signed_zero':broker._quotes_by_ticker['ZZZ']=replace(broker._quotes_by_ticker['ZZZ'],bid_size=-0.0)
+    monkeypatch.setattr(SimulatedBrokerAdapter,'observe_liquidity_mark',mutate)
+    with pytest.raises(ValueError,match='altered an out-of-scope ticker cache'):project(values)
+
+
+def test_native_baseline_must_reproduce_original_verified_snapshot(monkeypatch):
+    values=cold_quote_values()
+    original=SimulatedBrokerAdapter.restore_checkpoint_state
+    def corrupt(broker,payload):
+        original(broker,payload);broker._bar_marks_by_ticker['ZZZ']+=1.
+    monkeypatch.setattr(SimulatedBrokerAdapter,'restore_checkpoint_state',corrupt)
+    with pytest.raises(ValueError,match='Native restored accounting image differs'):project(values)

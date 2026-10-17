@@ -150,6 +150,18 @@ def rollforward_terminal_broker_accounting(initial_state, *, initial_broker, bro
     broker = SimulatedBrokerAdapter(list(original['account_ids']),config,
         fixed_bar_mode=True,mode=TradingMode.BACKTEST)
     broker.restore_checkpoint_state(original)
+    # Normalized cold recovery constructs minimal QuoteEvent payloads. Native
+    # restore/checkpoint adds dataclass defaults (sequence/tape) and normalizes
+    # aware clocks. Preserve the exact native cache image, while independently
+    # proving that this representation still projects to the attested snapshot.
+    baseline = broker.checkpoint_state()
+    restored = project_shared_broker_snapshot(run_id=scope.run_id,
+        session_date=date.fromisoformat(verified.snapshot['session_date']),
+        checkpoint_sequence=scope.first_sequence-1,
+        boundary_ms=verified.snapshot['boundary_ms'],state=baseline,
+        simulation_config=config,broker_contract=broker_contract)
+    if restored != verified:
+        raise ValueError('Native restored accounting image differs from its verified broker snapshot')
     start, stop = _clock(scope.start_at), _clock(scope.stop_at)
     if ({e.execution_id for e in broker._executions} != {f'SIM-{i}' for i in range(1,broker._next_execution_id)}
             or len(broker._executions) != broker._next_execution_id-1):
@@ -282,9 +294,12 @@ def rollforward_terminal_broker_accounting(initial_state, *, initial_broker, bro
     # The shared normalized checkpoint intentionally drops expired liquidity
     # consumption; it is never reused to match a completed boundary.
     state['liquidity_consumed'] = {}
-    untouched = tuple(sorted(set(original['bar_boundaries'])-set(scope.read_tickers)))
+    read_tickers = set(scope.read_tickers)
+    untouched = tuple(sorted(set(baseline['bar_boundaries'])-read_tickers))
     for name in ('bar_boundaries','bar_marks_by_ticker','quotes_by_ticker'):
-        if any(state[name].get(ticker) != original[name].get(ticker) for ticker in untouched):
+        before = {ticker:value for ticker,value in baseline[name].items() if ticker not in read_tickers}
+        after = {ticker:value for ticker,value in state[name].items() if ticker not in read_tickers}
+        if canonical_json(after) != canonical_json(before):
             raise ValueError('Terminal accounting altered an out-of-scope ticker cache')
     boundary_ms = int((_clock(scope.stop_at)-market_day_boundary(verified.snapshot['session_date'],0)).total_seconds()*1000)
     final = project_shared_broker_snapshot(run_id=scope.run_id,session_date=date.fromisoformat(verified.snapshot['session_date']),
