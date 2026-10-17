@@ -211,6 +211,57 @@ def test_programme_cold_definition_preserves_reviewed_evaluation_interval(drift)
         assert prepare_backtest_definition("run-1", recovered, run_month=RUN_MONTH) == saved
 
 
+@pytest.mark.parametrize('source,review,accepted', [
+    ({}, {}, True),
+    ({'token': 'causal-plan', 'build_id': 'build-1', 'catalog_hash': 'b' * 64},
+     {'token': 'causal-plan', 'build_id': 'build-1', 'catalog_hash': 'b' * 64}, True),
+    ({}, {'token': 'foreign'}, False),
+    ({'token': 'causal-plan', 'build_id': 'build-1', 'catalog_hash': 'b' * 64}, {}, False),
+    ({'token': 'causal-plan', 'build_id': 'build-1', 'catalog_hash': 'b' * 64},
+     {'build_id': 'build-1', 'catalog_hash': 'b' * 64}, False),
+    ({'token': 'causal-plan', 'build_id': 'build-1', 'catalog_hash': 'b' * 64},
+     {'token': 'foreign', 'build_id': 'build-1', 'catalog_hash': 'b' * 64}, False),
+])
+def test_programme_definition_roundtrip_keeps_absent_and_required_v7_authority(source, review, accepted):
+    revision = {'revision_id': 'strategy-configuration:00000000-0000-0000-0000-000000000001',
+        'content_hash': 'a' * 64}
+    original = _definition(configuration_revision=revision, causal_v7_plan=source,
+        experimental_structure_book='')
+    saved = prepare_backtest_definition('run-1', original, run_month=RUN_MONTH)
+    assert saved['definition']['causal_v7_plan_token'] == str(source.get('token') or '')
+    context = dict(run_id='run-1', mode='backtest', run_month=RUN_MONTH.isoformat(),
+        session_date=original.session_date.isoformat(), evaluation_interval_ms=100,
+        configuration_hash=revision['content_hash'], market_plan_token=original.market_data_plan['token'])
+    preflight = dict(ready=True, strategy_run_ready=True, execution_interval='100ms',
+        checks=[dict(status='ready', required=True)], window=dict(sessions=[context['session_date']]),
+        market_data_plan=original.market_data_plan, causal_v7_plan=review)
+    if not accepted:
+        with pytest.raises(RuntimeError, match='certified authority'):
+            reconstruct_backtest_definition_from_arte(saved, context, revision, preflight)
+        return
+    recovered = reconstruct_backtest_definition_from_arte(saved, context, revision, preflight)
+    assert recovered.causal_v7_plan == source
+    assert prepare_backtest_definition('run-1', recovered, run_month=RUN_MONTH) == saved
+
+
+def test_programme_definition_rejects_truthy_empty_token_payload():
+    revision = {'revision_id': 'strategy-configuration:00000000-0000-0000-0000-000000000001',
+        'content_hash': 'a' * 64}
+    original = _definition(configuration_revision=revision, causal_v7_plan={}, experimental_structure_book='')
+    with pytest.raises(ValueError, match='pinned configuration or market authority'):
+        prepare_backtest_definition('run-1', _definition(configuration_revision=revision,
+            causal_v7_plan={'token': ''}, experimental_structure_book=''), run_month=RUN_MONTH)
+    saved = prepare_backtest_definition('run-1', original, run_month=RUN_MONTH)
+    context = dict(run_id='run-1', mode='backtest', run_month=RUN_MONTH.isoformat(),
+        session_date=original.session_date.isoformat(), evaluation_interval_ms=100,
+        configuration_hash=revision['content_hash'], market_plan_token=original.market_data_plan['token'])
+    preflight = dict(ready=True, strategy_run_ready=True, execution_interval='100ms',
+        checks=[dict(status='ready', required=True)], window=dict(sessions=[context['session_date']]),
+        market_data_plan=original.market_data_plan, causal_v7_plan={'token': ''})
+    with pytest.raises(ValueError, match='pinned configuration or market authority'):
+        reconstruct_backtest_definition_from_arte(saved, context, revision, preflight)
+
+
 @pytest.mark.parametrize("corruption", [None, "market", "v7", "check", "run_ready", "normalized"])
 def test_saved_review_keeps_native_guards_and_cannot_authorize_execution(monkeypatch, corruption):
     from types import SimpleNamespace

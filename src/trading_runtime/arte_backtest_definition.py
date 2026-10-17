@@ -471,7 +471,7 @@ def _reconstruct_backtest_definition(
             or tuple(dict(preflight.get("window") or {}).get("sessions") or ())
                != (session.isoformat(),)
             or market.get("token") != run_context.get("market_plan_token")
-            or v7.get("token") != parent.get("causal_v7_plan_token")):
+            or str(v7.get("token") or "") != parent.get("causal_v7_plan_token")):
         raise RuntimeError("Backtest cold definition differs from certified authority")
 
     def local_time(milliseconds: int) -> time:
