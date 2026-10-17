@@ -4995,13 +4995,13 @@ class ReplayRunController:
         return recovered
 
     async def adopt_program_cold_runtime(self, *, assembly, evidence, runtime, packet,
-            source, population, oms_image, anchor, lease, keeper_session, broker_contract):
+            source, population, oms_image, anchor, lease, keeper_session, broker_contract, policy_blocks=()):
         """Transfer qualified native cold objects without admission or start."""
         from .program_controller_recovery import adopt_recovered_program_controller
         return await adopt_recovered_program_controller(self, assembly=assembly,
             evidence=evidence, runtime=runtime, packet=packet, source=source,
             population=population, oms_image=oms_image, anchor=anchor, lease=lease,
-            keeper_session=keeper_session, broker_contract=broker_contract)
+            keeper_session=keeper_session, broker_contract=broker_contract, policy_blocks=policy_blocks)
 
     async def stage_program_financial_runtime(self, *, portfolio_recovery, oms_image,
             broker_image, completed_at):
@@ -5106,7 +5106,7 @@ class ReplayRunController:
         return qualified
 
     async def install_program_runtime_candidate(self, candidate, packet, *, cold,
-            prefix, broker, oms_image, population):
+            prefix, broker, oms_image, population, policy_blocks=()):
         """Swap qualified cold actors at one owned source/financial fence.
 
         No publication or run launch occurs here. The old in-memory actors
@@ -5184,7 +5184,7 @@ class ReplayRunController:
             broker_ledgers=dict(zip(accounts, results[len(accounts):-2], strict=True)),
             broker_executions=results[-2], broker_orders=results[-1],
             order_manager=candidate.order_manager, portfolio=candidate.portfolio,
-            portfolio_recovery=comparison, observations=observations, population=population)
+            portfolio_recovery=comparison, observations=observations, population=population, policy_blocks=policy_blocks)
         installed_actor = await _owned_worker(clone_recovered_program_actor, packet)
         await _owned_worker(lease.assert_current)
         require_fence()
@@ -5204,7 +5204,7 @@ class ReplayRunController:
         runtime.broker._initialized = False
         old_journal.close()
 
-    async def install_recovered_program_policy(self, packet, *, portfolio_recovery, population):
+    async def install_recovered_program_policy(self, packet, *, portfolio_recovery, population, policy_blocks=()):
         """Install only at an owned, fully fenced common financial/source clock."""
         from .program_policy_recovery import RecoveredProgramPolicy, verify_recovered_program_positions, clone_recovered_program_actor
         from .backtest_typed_publisher import BacktestTypedJournalPublisher
@@ -5253,7 +5253,7 @@ class ReplayRunController:
             broker_ledgers=dict(zip(accounts, results[len(accounts):-2], strict=True)),
             broker_executions=results[-2], broker_orders=results[-1], order_manager=runtime.order_manager,
             portfolio=runtime.portfolio, portfolio_recovery=portfolio_recovery,
-            observations=observations, population=population)
+            observations=observations, population=population, policy_blocks=policy_blocks)
         installed_actor = await _owned_worker(clone_recovered_program_actor, packet)
         await _owned_worker(lease.assert_current)
         require_fence()

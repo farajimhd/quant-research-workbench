@@ -66,7 +66,7 @@ def require_recovered_program_controller(controller):
 
 async def adopt_recovered_program_controller(controller, *, assembly, evidence,
         runtime, packet, source, population, oms_image, anchor, lease,
-        keeper_session, broker_contract):
+        keeper_session, broker_contract, policy_blocks=()):
     """Reserve the existing startup slot until cold custody settles."""
     from .replay_run_service import ReplayRunController
     if type(controller) is not ReplayRunController or getattr(controller, "_program_startup_active", False):
@@ -76,14 +76,14 @@ async def adopt_recovered_program_controller(controller, *, assembly, evidence,
         return await _adopt_recovered_program_controller(controller, assembly=assembly,
             evidence=evidence, runtime=runtime, packet=packet, source=source,
             population=population, oms_image=oms_image, anchor=anchor, lease=lease,
-            keeper_session=keeper_session, broker_contract=broker_contract)
+            keeper_session=keeper_session, broker_contract=broker_contract, policy_blocks=policy_blocks)
     finally:
         controller._program_startup_active = False
 
 
 async def _adopt_recovered_program_controller(controller, *, assembly, evidence,
         runtime, packet, source, population, oms_image, anchor, lease,
-        keeper_session, broker_contract):
+        keeper_session, broker_contract, policy_blocks=()):
     """Qualify existing actors, then atomically transfer their controller custody.
 
     All bootstrap inputs must already have independent normalized read proofs.
@@ -198,7 +198,7 @@ async def _adopt_recovered_program_controller(controller, *, assembly, evidence,
         broker_positions=dict(zip(accounts, results[:len(accounts)], strict=True)),
         broker_ledgers=dict(zip(accounts, results[len(accounts):-2], strict=True)),
         broker_executions=results[-2], broker_orders=results[-1], order_manager=runtime.order_manager,
-        portfolio=runtime.portfolio, portfolio_recovery=synchronized, observations=observations, population=population)
+        portfolio=runtime.portfolio, portfolio_recovery=synchronized, observations=observations, population=population, policy_blocks=policy_blocks)
     installed_actor = await _owned_worker(clone_recovered_program_actor, packet)
     await _owned_worker(lease.assert_current)
     require_scope()

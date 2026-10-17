@@ -497,7 +497,7 @@ def rebuild_program_policy_events(template, events, *, run_id, source_hashes,
 
 def verify_recovered_program_positions(packet, template, *, run_id, source_hashes,
         at, broker_positions, broker_ledgers, broker_executions, broker_orders, order_manager,
-        portfolio, portfolio_recovery, observations, population):
+        portfolio, portfolio_recovery, observations, population, policy_blocks=()):
     """Verify common filled geometry without executing a strategy or OMS command."""
     from src.trading_runtime.domain import OrderState
     from src.trading_runtime.oms_assignment_observation import AssignmentOrderObservation
@@ -534,6 +534,10 @@ def verify_recovered_program_positions(packet, template, *, run_id, source_hashe
     at = _clock(at)
     expected = {}
     expected_orders = {}
+    from .backtest_program_clock import is_fresh_rejected_program_assignment
+    if (type(policy_blocks) is not tuple
+            or any(type(block) is not PreparedProgramBlock for block in policy_blocks)):
+        raise ValueError("Recovered program admission requires typed prepared blocks")
     required = set()
     for assignment in packet.actor.assignments():
         position = packet.actor.position_for(assignment.assignment_id)
@@ -552,8 +556,22 @@ def verify_recovered_program_positions(packet, template, *, run_id, source_hashe
             expected_orders[order.broker_order_id] = (assignment.account_id, assignment.conid,
                 assignment.ticker, "BUY" if order.role == "entry" else "SELL",
                 Decimal(str(order.remaining_quantity)), Decimal(str(order.limit_price)), Decimal(str(order.stop_price)))
-        if (position.position_open or observation.pending_acquisition or observation.pending_reduction
-                or population.is_ranked(position.listing_id, at)):
+        if packet.completed_source_sequences.get(assignment.assignment_id) == len(source_hashes):
+            continue
+        # A sparse dispatch deliberately creates no completion for a fresh
+        # rejected assignment. Only its exact prepared current boundary can
+        # establish that exception; rank membership alone is insufficient.
+        candidates = [block for block in policy_blocks
+            if position.listing_id in block.history_hashes
+            and block.market["boundary_at"][0] <= at <= block.market["boundary_at"][-1]]
+        if len(candidates) != 1:
+            raise ValueError("Recovered program installation lacks exact prepared admission boundary")
+        block = candidates[0]
+        if block.release_hash != packet.actor.program_release.header["content_hash"]:
+            raise ValueError("Recovered program admission block differs from its release")
+        _, candidate = block.boundary_at(packet.actor.program_release, population,
+            listing_id=position.listing_id, ticker=assignment.ticker, at=at)
+        if not is_fresh_rejected_program_assignment(packet.actor, assignment, candidate, observation):
             required.add(assignment.assignment_id)
     if any(packet.completed_source_sequences.get(identity) != len(source_hashes) for identity in required):
         raise ValueError("Recovered program installation has incomplete current source decisions")

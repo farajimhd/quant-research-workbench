@@ -176,7 +176,8 @@ async def complete_recovered_program_app_preparation(run_service, controller, *,
         await runtime.initialize(record_lifecycle=False)
         await controller.adopt_program_cold_runtime(assembly=assembly, evidence=evidence, runtime=runtime,
             packet=packet, source=source, population=population, oms_image=oms_image, anchor=anchor,
-            lease=lease, keeper_session=keeper_session, broker_contract=journal_scope["broker_contract"])
+            lease=lease, keeper_session=keeper_session, broker_contract=journal_scope["broker_contract"],
+            policy_blocks=tuple({id(block): block for unit in work for block in unit.blocks.values()}.values()))
         await controller.bind_recovered_program_session(work,
             checkpoint_connection_factory=checkpoint_connection_factory, checkpoint_concurrency=checkpoint_concurrency)
         return await selector.stage_controller(run_service, controller)

@@ -32,7 +32,8 @@ def test_recovered_app_preparation_orders_native_steps_and_closes_owned_failure(
     monkeypatch.setattr(flow, "program_configuration_selection_service",
         lambda: SimpleNamespace(_review_controller=review, stage_controller=stage))
     monkeypatch.setattr(accounts, "historical_strategy_one_portfolio_profiles", lambda _: ((), ()))
-    async def inputs(*args, **kwargs): calls.append("inputs"); return ("work",)
+    block=object();expected_work=(SimpleNamespace(blocks={"one":block,"two":block}),)
+    async def inputs(*args, **kwargs): calls.append("inputs"); return expected_work
     monkeypatch.setattr(flow, "prepare_program_session_input_plan", inputs)
     assembly = SimpleNamespace(journal=SimpleNamespace(close=lambda: calls.append("journal-close")),
         writer=SimpleNamespace(close=lambda: calls.append("writer-close")))
@@ -62,10 +63,11 @@ def test_recovered_app_preparation_orders_native_steps_and_closes_owned_failure(
     async def adopt(**kwargs):
         calls.append("adopt")
         assert kwargs["runtime"] is runtime and kwargs["anchor"] is anchor
+        assert kwargs["policy_blocks"] == (block,)
         if failure == "adopt": raise RuntimeError("adopt failed")
         controller._runtime, controller._journal = runtime, assembly.journal
     async def bind(work, **kwargs):
-        assert work == ("work",)
+        assert work == expected_work
         calls.append("bind")
         if failure == "bind": raise RuntimeError("bind failed")
     async def close_controller(): calls.append("controller-close")

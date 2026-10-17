@@ -140,6 +140,24 @@ async def dispatch_qualified_program_boundary(controller, block, population, *, 
         await candidate.finish()
 
 
+def is_fresh_rejected_program_assignment(actor, assignment, candidate, observation):
+    """Match sparse dispatch admission without changing policy or OMS state."""
+    identity = assignment.assignment_id
+    listing = actor._listings[identity]
+    fresh_mask_rejected = (identity not in actor._selection_clocks
+        and (assignment.account_id, actor.strategy_id, identity, listing) not in actor.execution_state.positions
+        and not actor.position_for(identity).position_open
+        and not (candidate.eligible and candidate.rules["entry"] and candidate.validity["entry"]))
+    if not fresh_mask_rejected:
+        return False
+    # Dispatch preserves its lazy OMS read. Recovery already owns an exact
+    # completed observation and passes that immutable value directly.
+    observed = observation() if callable(observation) else observation
+    return not (observed.working_orders or observed.unobserved_order_ids
+        or observed.pending_acquisition or observed.pending_reduction)
+
+
+
 async def dispatch_prepared_program_clock(controller, blocks, population, *, at,
         assignment_order, execution_policy, protection_profiles, outside_rth, terminal=False,
         qualify=False, policy_blocks=None, maximum_events=None, initial_packet=None):
@@ -191,15 +209,8 @@ async def dispatch_prepared_program_clock(controller, blocks, population, *, at,
         # Fresh rejected assignments own no prior programme state to advance.
         # Retain every previously visited assignment conservatively: it may
         # still own deferred capital, OMS or policy lifecycle work.
-        fresh_rejected = (identity not in actor._selection_clocks
-            and (assignment.account_id, actor.strategy_id, identity, actor._listings[identity])
-                not in actor.execution_state.positions
-            and not actor.position_for(identity).position_open
-            and not (candidate.eligible and candidate.rules["entry"] and candidate.validity["entry"]))
-        if fresh_rejected:
-            observation = controller.program_order_observation(assignment_id=identity, at=at)
-            fresh_rejected = not (observation.working_orders or observation.unobserved_order_ids
-                or observation.pending_acquisition or observation.pending_reduction)
+        fresh_rejected = is_fresh_rejected_program_assignment(actor, assignment, candidate,
+            lambda: controller.program_order_observation(assignment_id=identity, at=at))
         prepared.append((identity, block, ordinal, protection_profiles[identity], fresh_rejected))
     results = []
     for identity, block, ordinal, protection, fresh_rejected in prepared:
