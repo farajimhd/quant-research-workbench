@@ -29,7 +29,7 @@ class Worker:
     def __init__(self,config,events,lane):
         self.config=config;self.events=events;self.lane=lane
         from collections import OrderedDict
-        self.host=OrderedDict();self.maximum_host_sessions=config.get('maximum_host_sessions',4)
+        self.host=OrderedDict();self.maximum_host_sessions=config.get('maximum_host_sessions',2)
         if not 2<=self.maximum_host_sessions<=8:raise ValueError('Bounded CPU session residency required')
         self.staging=TransferStaging();self.loader=ThreadPoolExecutor(max_workers=1)
         from collections import OrderedDict
@@ -51,6 +51,14 @@ class Worker:
     def load(self,day):
         c=self.config
         if day not in self.host:
+            # Evict before allocation, rather than temporarily retaining a third
+            # complete session. Plans own any still-live device references.
+            while len(self.host)>=self.maximum_host_sessions:self.host.popitem(last=False)
+            gc.collect()
+            from .host_memory import wait_for_headroom
+            wait_for_headroom(c['output'],lambda **v:self.emit(day,**v),
+                reserve_gib=c.get('host_reserve_gib',128. if torch.device(c['device']).type=='cuda' else 0.),
+                admission_gib=c.get('host_admission_gib',32.))
             self.loads+=1
             self.host[day]=prepare_host(SessionData(Path(c['inputs'])/day,Path(c['history'])/day,
                 device='cpu',maximum_gib=c['maximum_data_gib'],
@@ -74,7 +82,8 @@ class Worker:
         self.batch_progress={}
         c=self.config;started=perf_counter();self.emit(day,stage='Load session',candidate_offset=0)
         item=self.pending.result() if self.pending is not None else self.loader.submit(self.load,day).result()
-        self.pending=self.loader.submit(self.load,next_day) if next_day else None
+        # No speculative host load while another workload may need RAM.
+        self.pending=None
         device=torch.device(c['device']);population=[Individual.restore(v) for v in payload]
         root=require_runtime(Path(c['output'])/f'generation-{generation:04d}'/day)
         cache_path=require_runtime(Path(c['output'])/'result-cache')/(day+'.json')

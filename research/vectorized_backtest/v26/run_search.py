@@ -159,11 +159,12 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
         episode_capacity=episode_capacity,maximum_gate_gib=maximum_gate_gib,maximum_data_gib=maximum_data_gib,
         plan_limit=plan_limit,capture_gib=capture_gib,validation_feedback=False,input_receipts=train['receipts'],session_execution='independent',
         initialization='random-only-v1' if initial_population is None else 'v26-local-expert-pool-v1',
-        initial_population_sha256=None if initial_population is None else initial_population['pool_sha256'],search_space_version=SEARCH_SPACE_VERSION,maximum_host_sessions=4)
+        initial_population_sha256=None if initial_population is None else initial_population['pool_sha256'],search_space_version=SEARCH_SPACE_VERSION,maximum_host_sessions=2,
+        host_reserve_gib=128.,host_admission_gib=32.,host_prefetch=False)
     def lane_config(data,role):
         return dict(inputs=data['inputs'],history=data['history'],feature_cache=data.get('feature_cache'),indicator_root=data['indicator_root'],enriched_root=data['enriched_root'],
             output=str(output/role),device=device,backend=backend,batch_size=batch_size,
-            maximum_data_gib=maximum_data_gib,maximum_gate_gib=maximum_gate_gib,maximum_host_sessions=4,execution=asdict(execution),
+            maximum_data_gib=maximum_data_gib,maximum_gate_gib=maximum_gate_gib,maximum_host_sessions=2,execution=asdict(execution),
             source_sha256=version_hash,split=role,episode_capacity=episode_capacity,plan_limit=plan_limit,capture_gib=capture_gib)
     rng=np.random.default_rng(seed);checkpoint=output/'checkpoint.json';completed=0
     with owned_run(output,version=VERSION),CampaignProgress(output,contract) as panel:
