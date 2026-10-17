@@ -86,3 +86,24 @@ def test_default_updater_routes_to_shared_tradable_pipeline(tmp_path,monkeypatch
     a=flow.ingestion.parse_args([])
     flow.ingestion.build_updated_bars(None,a,[type('Day',(),{'source_date':'2026-10-05'})()],tmp_path/'report.jsonl')
     assert seen==['2026-10-05']
+
+
+def test_daily_batches_preserve_exact_symbols_and_certify_only_after_all_batches(monkeypatch):
+    a=daily.parse_args(['--start-date','2026-01-02','--end-date','2026-01-03',
+        '--storage-policy','live_market_ssd','--tickers',','.join(f'S{x:04d}' for x in range(513))])
+    a.tradable_timely=True;a.population_hash='a'*64;a.verify_source_count=True
+    writes=[];batches=[];manifest=[]
+    class Client:
+        def execute(self,query,**kwargs):writes.append(query)
+    monkeypatch.setattr(daily,'insert_session_bars_sql',lambda args,*unused:batches.append(args.tickers.split(',')) or 'INSERT batch')
+    monkeypatch.setattr(daily,'write_manifest',lambda *args,**kw:manifest.append(kw['status']))
+    monkeypatch.setattr(daily,'chunk_stats',lambda *a:(1539,100,1539,0))
+    monkeypatch.setattr(daily,'source_event_count',lambda *a:100)
+    daily.build_chunk(Client(),a,date(2026,1,2),date(2026,1,3))
+    assert list(map(len,batches))==[256,256,1]
+    assert len(set(x for batch in batches for x in batch))==513
+    assert sum('DELETE' in query for query in writes)==1
+    assert manifest==['started','complete']
+    a.tickers='HPEpC'
+    assert "ticker IN ('HPEpC')" in daily.ticker_predicate(a)
+    assert 'upper(ticker)' not in daily.ticker_predicate(a)

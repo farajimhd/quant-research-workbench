@@ -65,6 +65,17 @@ def target_database(args):
     return getattr(args, 'target_database', None) or args.database
 
 
+def ticker_predicate(args):
+    strict=bool(getattr(args,'tradable_timely',False))
+    requested=tuple(sorted({(item.strip() if strict else item.strip().upper())
+        for item in str(getattr(args,'tickers','')).split(',') if item.strip()}))
+    if strict and not requested:raise ValueError('Tradable daily sessions require certified population tickers')
+    column='ticker' if strict else 'upper(ticker)'
+    result='' if not requested else ' AND '+column+' IN ('+', '.join(sql_string(x) for x in requested)+')'
+    if strict:result+=' AND (bitAnd(event_meta,1)=0 OR bitAnd(event_meta,192)=64)'
+    return result
+
+
 def _feature_contract(args: argparse.Namespace) -> tuple[tuple[str, str], ...]:
     if not bool(getattr(args, "bar_gpt_condition_eligibility", False)):
         from pipelines.market_sip.events.session_bar_contract import FEATURE_SPECS
@@ -320,11 +331,7 @@ def insert_session_bars_sql(args: argparse.Namespace, start: dt.date, end: dt.da
     feature_select = ",\n    ".join(f"a.{quote_ident(name)}" for name, _kind in _feature_contract(args))
     columns = ",\n    ".join(quote_ident(name) for name, _ in _table_contract(args))
     identity_db = quote_ident(args.identity_database)
-    requested = tuple(sorted({item.strip().upper() for item in str(getattr(args, "tickers", "")).split(",") if item.strip()}))
-    ticker_filter = "" if not requested else " AND upper(ticker) IN (" + ", ".join(sql_string(item) for item in requested) + ")"
-    if bool(getattr(args, 'tradable_timely', False)):
-        if not requested:raise ValueError('Tradable daily sessions require certified population tickers')
-        ticker_filter += ' AND (bitAnd(event_meta,1)=0 OR bitAnd(event_meta,192)=64)'
+    ticker_filter=ticker_predicate(args)
     if use_eligibility:
         overlay = f"{quote_ident(args.database)}.{quote_ident(args.correction_overlay_table)}"
         event_source = f"""
@@ -722,11 +729,7 @@ WHERE session_date >= toDate({sql_string(start.isoformat())}) AND session_date <
 
 def source_event_count(client: ClickHouseHttpClient, args: argparse.Namespace, start: dt.date, end: dt.date) -> int:
     source = _event_source(args, start, end)
-    requested = tuple(sorted({item.strip().upper() for item in str(getattr(args, "tickers", "")).split(",") if item.strip()}))
-    ticker_filter = "" if not requested else " AND upper(ticker) IN (" + ", ".join(sql_string(item) for item in requested) + ")"
-    if bool(getattr(args, 'tradable_timely', False)):
-        if not requested:raise ValueError('Tradable daily sessions require certified population tickers')
-        ticker_filter += ' AND (bitAnd(event_meta,1)=0 OR bitAnd(event_meta,192)=64)'
+    ticker_filter=ticker_predicate(args)
     rows = _query_rows(
         client,
         f"""
@@ -834,7 +837,18 @@ def build_chunk(client: ClickHouseHttpClient, args: argparse.Namespace, start: d
         )
     query_id = f"sip_daily_sessions_{start}_{uuid.uuid4().hex}"
     try:
-        client.execute(insert_session_bars_sql(args, start, end), query_id=query_id)
+        if bool(getattr(args,'tradable_timely',False)):
+            # Wide per-session states must not aggregate the entire listing
+            # population at once. Exact ticker predicates prune ordered parts.
+            tickers=sorted({x.strip() for x in args.tickers.split(',') if x.strip()})
+            if not tickers:raise ValueError('Tradable daily sessions require certified population tickers')
+            for offset in range(0,len(tickers),256):
+                scoped=argparse.Namespace(**vars(args))
+                scoped.tickers=','.join(tickers[offset:offset+256])
+                query_id=f'sip_daily_sessions_{start}_{offset}_{uuid.uuid4().hex}'
+                client.execute(insert_session_bars_sql(scoped,start,end),query_id=query_id)
+        else:
+            client.execute(insert_session_bars_sql(args, start, end), query_id=query_id)
     except KeyboardInterrupt:
         try:
             client.execute(f"KILL QUERY WHERE query_id={sql_string(query_id)} ASYNC")
