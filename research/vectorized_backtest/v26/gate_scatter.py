@@ -5,9 +5,8 @@ import triton.language as tl
 
 @triton.jit
 def scatter(SIGNAL,GATES,TARGET,SOURCE,CLOCK,TICKER,FIRST,MEMBER,FOLLOW,
-            cells:tl.constexpr,listing_count:tl.constexpr,time_count:tl.constexpr,
-            clocks:tl.constexpr,listings:tl.constexpr,signal_b:tl.constexpr,
-            signal_l:tl.constexpr,signal_t:tl.constexpr,prefix:tl.constexpr,
+            cells,listing_count,time_count,clocks,listings,signal_b,
+            signal_l,signal_t,prefix,
             BIT:tl.constexpr,SHIFT:tl.constexpr,SPARSE:tl.constexpr,BLOCK:tl.constexpr):
     row=tl.program_id(0)
     x=tl.program_id(1).to(tl.int64)*BLOCK+tl.arange(0,BLOCK).to(tl.int64)
