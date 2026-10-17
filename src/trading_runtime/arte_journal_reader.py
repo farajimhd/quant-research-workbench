@@ -242,16 +242,26 @@ def load_typed_event_page(
     limit: int = 500,
     selected_sequences: tuple[int, ...] | None = None,
     exact_prices: bool = False,
+    exact_price_families: tuple[str, ...] | None = None,
 ) -> tuple[TypedJournalEvent, ...]:
     """Read a bounded typed page, following V4's verified physical family seals.
 
     V4 selects its stored price representation per batch; ``exact_prices``
-    additionally requires exact storage. Older prefix formats retain their
-    immutable legacy representation.
+    additionally requires exact storage for all price families unless an
+    explicit consumed-family tuple narrows that requirement. All other details
+    still follow their sealed storage contracts. Older prefix formats retain
+    their immutable legacy representation.
     """
     from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
+    from .trading_price_contracts import PRICE_FAMILIES
     if type(exact_prices) is not bool or exact_prices and not isinstance(prefix, V4CommittedPrefix):
         raise ValueError("Exact event prices require the explicit verified V4 mode")
+    if exact_price_families is not None and (
+            not exact_prices or type(exact_price_families) is not tuple or not exact_price_families
+            or any(type(name) is not str or name not in PRICE_FAMILIES for name in exact_price_families)
+            or len(set(exact_price_families)) != len(exact_price_families)):
+        raise ValueError("Exact event price families require an explicit unique V4 price contract tuple")
+    required_exact = PRICE_FAMILIES if exact_price_families is None else exact_price_families
 
     if not isinstance(prefix, (CommittedPrefix, V2CommittedPrefix,
                                V4CommittedPrefix)) or not prefix.batch_ids:
@@ -304,7 +314,6 @@ def load_typed_event_page(
         raise RuntimeError("Selected event page is missing committed rows")
     if selected_sequences is None and len(events) < limit and previous != prefix.last_sequence:
         raise RuntimeError("Typed event page ends before the committed prefix")
-    from .trading_price_contracts import PRICE_FAMILIES
     physical_groups: dict[tuple[str, str], set[str]] = {}
     for family, identities in by_family.items():
         if isinstance(prefix, V4CommittedPrefix) and family in PRICE_FAMILIES:
@@ -328,7 +337,8 @@ def load_typed_event_page(
                         or batch_id in declared):
                     raise RuntimeError("Typed event price family inventory is ambiguous")
                 declared[batch_id] = physical
-            if set(declared) != batches or exact_prices and set(declared.values()) != {exact_family}:
+            if (set(declared) != batches
+                    or exact_prices and family in required_exact and set(declared.values()) != {exact_family}):
                 raise RuntimeError("Typed event price family inventory differs from its committed mode")
             for record_id, event, detail_family in sealed_events:
                 if detail_family == family:

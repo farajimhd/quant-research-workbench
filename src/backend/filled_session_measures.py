@@ -9,6 +9,7 @@ one-second clocks after liquidity processing, before the next fills.
 from datetime import datetime, timedelta, timezone
 from math import isfinite
 from decimal import Decimal
+from collections.abc import Mapping
 
 import polars as pl
 
@@ -20,7 +21,8 @@ _AT = 'boundary_at'
 _STEP = timedelta(seconds=1)
 
 
-def project_filled_session_measures(ledger, market, observations, *, start_at, stop_at, maximum_rows):
+def project_filled_session_measures(ledger, market, observations, *, start_at, stop_at, maximum_rows,
+        assignment_tickers=None):
     """Add four measures to the same ledger's eight terminal financial facts.
 
     ``market`` is the complete prepared history projection, including held
@@ -30,6 +32,10 @@ def project_filled_session_measures(ledger, market, observations, *, start_at, s
     observed stop covers only its actual remaining quantity. No requested stop,
     latest quote, assumed fill or
     broker-observed asynchronous drawdown substitutes for that evidence.
+
+    ``assignment_tickers`` optionally supplies the frozen assignment-key to
+    ticker authority, including assignments that requested orders but never
+    filled. Every observation is validated; only actual fills create exposure.
 
     Float64 exposure arithmetic matches search's analytical measure precision;
     the eight ledger metrics retain their native Decimal/count representation.
@@ -46,11 +52,41 @@ def project_filled_session_measures(ledger, market, observations, *, start_at, s
     metrics = dict(ledger.terminal_financial_metrics())
     clock_count = (stop_at - start_at) // _STEP
     positions = ledger.positions
+    owners = {key: position.ticker for key, position in positions.items()}
+    if assignment_tickers is not None:
+        if (not isinstance(assignment_tickers, Mapping)
+                or len(assignment_tickers) > maximum_rows
+                or any(type(key) is not tuple or len(key) != len(_KEY)
+                    or any(type(value) is not str or not value for value in (*key, ticker))
+                    for key, ticker in assignment_tickers.items())
+                or any(assignment_tickers.get(key) != ticker for key, ticker in owners.items())):
+            raise ValueError('Session measures require exact assignment identity authority')
+        owners = dict(assignment_tickers)
     if clock_count * max(1, len(positions)) + len(ledger._fills) + len(observations) > maximum_rows:
         raise ValueError('Session measures exceed their explicit evidence row bound')
+    validated = []
+    seen = set()
+    for key, observation in observations:
+        if (type(key) is not tuple or key not in owners or type(observation) is not AssignmentOrderObservation
+                or (observation.account_id, observation.assignment_id, observation.ticker)
+                   != (key[0], key[2], owners[key])
+                or type(observation.observed_at) is not datetime or observation.observed_at.tzinfo is None
+                or observation.observed_at.utcoffset() is None
+                or not start_at < observation.observed_at <= stop_at
+                or observation.observed_at.microsecond):
+            raise ValueError('Session measure OMS observation differs from its position clock')
+        identity = (key, observation.observed_at)
+        if identity in seen:
+            raise ValueError('Session measures repeat an OMS position clock')
+        seen.add(identity)
+        stops = [order for order in observation.working_orders
+                 if order.role in {'protective_stop', 'trailing_stop'}]
+        if (len({order.broker_order_id for order in stops}) != len(stops)
+                or any(not isfinite(order.stop_price) or order.stop_price <= 0
+                       or not isfinite(order.remaining_quantity) or order.remaining_quantity < 0 for order in stops)):
+            raise ValueError('Session measure protection observation is invalid or duplicate')
+        validated.append((key, observation, stops))
     if not positions:
-        if observations:
-            raise ValueError('Empty execution ledger has foreign OMS observations')
         return dict(metrics, drawdown=0., capital_dollar_seconds=0.,
                     stop_risk_dollar_seconds=0., inactivity_fraction=1.)
     columns = {_AT, 'available_at', 'listing_id', 'reference_close'}
@@ -95,21 +131,9 @@ def project_filled_session_measures(ledger, market, observations, *, start_at, s
             | (pl.col('reference_close') <= 0)))).height:
         raise ValueError('Occupied session clock lacks an exact positive mark or quantity')
     protected, levels = [], []
-    for key, observation in observations:
-        if (type(key) is not tuple or key not in positions or type(observation) is not AssignmentOrderObservation
-                or (observation.account_id, observation.assignment_id, observation.ticker)
-                   != (key[0], key[2], positions[key].ticker)
-                or type(observation.observed_at) is not datetime or observation.observed_at.tzinfo is None
-                or observation.observed_at.utcoffset() is None
-                or not start_at < observation.observed_at <= stop_at
-                or observation.observed_at.microsecond):
-            raise ValueError('Session measure OMS observation differs from its position clock')
-        stops = [order for order in observation.working_orders
-                 if order.role in {'protective_stop', 'trailing_stop'}]
-        if (len({order.broker_order_id for order in stops}) != len(stops)
-                or any(not isfinite(order.stop_price) or order.stop_price <= 0
-                       or not isfinite(order.remaining_quantity) or order.remaining_quantity < 0 for order in stops)):
-            raise ValueError('Session measure protection observation is invalid or duplicate')
+    for key, observation, stops in validated:
+        if key not in positions:
+            continue  # Valid unfilled assignments carry no execution-derived exposure.
         protected.append({**dict(zip(_KEY, key)), _AT: observation.observed_at,
             'coverage': sum(order.remaining_quantity for order in stops),
             'uniform_stop': next(iter({order.stop_price for order in stops}))

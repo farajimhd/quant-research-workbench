@@ -105,6 +105,59 @@ def test_empty_session_still_has_bounded_complete_clock_count_and_no_invented_po
             stop_at=START + timedelta(seconds=4), maximum_rows=3)
 
 
+def unfilled_observation(key=KEY):
+    return (key, AssignmentOrderObservation(key[0], key[2], 'ABC',
+        START + timedelta(seconds=1), True, False, ('unacknowledged',),
+        (ObservedWorkingOrder('entry', 'entry', 10., 9., 0., 'Submitted'),), 0.))
+
+
+def test_zero_fill_session_retains_valid_requested_orders_without_inventing_exposure():
+    ledger = FilledPositionState()
+    observed = (unfilled_observation(),)
+    result = measure(ledger, pl.DataFrame(), observed, assignment_tickers={KEY: 'ABC'})
+    assert result == measure(ledger, pl.DataFrame(), ())
+    assert not ledger.positions and not ledger._fills and observed[0][1].pending_acquisition
+    with pytest.raises(ValueError, match='position clock'):
+        measure(ledger, pl.DataFrame(), observed)
+
+
+@pytest.mark.parametrize('failure', ('foreign_key', 'foreign_account', 'foreign_assignment',
+    'foreign_ticker', 'origin_clock', 'future_clock', 'subsecond_clock', 'duplicate'))
+def test_zero_fill_observations_still_require_assignment_and_unique_session_clock(failure):
+    key, obs = unfilled_observation()
+    if failure == 'foreign_key': key = (*key[:3], 'foreign-listing')
+    elif failure == 'foreign_account': obs = replace(obs, account_id='foreign')
+    elif failure == 'foreign_assignment': obs = replace(obs, assignment_id='foreign')
+    elif failure == 'foreign_ticker': obs = replace(obs, ticker='foreign')
+    elif failure == 'origin_clock': obs = replace(obs, observed_at=START)
+    elif failure == 'future_clock': obs = replace(obs, observed_at=START + timedelta(seconds=5))
+    elif failure == 'subsecond_clock': obs = replace(obs, observed_at=obs.observed_at + timedelta(microseconds=1))
+    observed = ((key, obs),) * (2 if failure == 'duplicate' else 1)
+    with pytest.raises(ValueError):
+        measure(FilledPositionState(), pl.DataFrame(), observed, assignment_tickers={KEY: 'ABC'})
+
+
+def test_mixed_filled_and_unfilled_assignments_keep_only_actual_exposure():
+    ledger, market, observed = inputs()
+    other_key = (*KEY[:2], 'unfilled', 'other-listing')
+    result = measure(ledger, market, (*observed, unfilled_observation(other_key)),
+        assignment_tickers={KEY: 'ABC', other_key: 'ABC'})
+    assert result == measure(ledger, market, observed)
+    assert other_key not in ledger.positions
+
+
+@pytest.mark.parametrize('failure', ('duplicate_stop', 'invalid_stop', 'wrong_authority'))
+def test_unfilled_observations_do_not_bypass_existing_protection_or_authority_checks(failure):
+    key, obs = unfilled_observation()
+    stop = ObservedWorkingOrder('stop', 'protective_stop', 10., 0., 9., 'Submitted')
+    authority = {KEY: 'ABC'}
+    if failure == 'duplicate_stop': obs = replace(obs, working_orders=(stop, stop))
+    elif failure == 'invalid_stop': obs = replace(obs, working_orders=(replace(stop, stop_price=float('nan')),))
+    elif failure == 'wrong_authority': authority = {KEY: ''}
+    with pytest.raises(ValueError):
+        measure(FilledPositionState(), pl.DataFrame(), ((key, obs),), assignment_tickers=authority)
+
+
 def test_held_listing_is_required_even_when_outside_top10():
     ledger, market, observations = inputs()
     unrelated = market.with_columns(pl.lit('ranked-only-listing').alias('listing_id'))

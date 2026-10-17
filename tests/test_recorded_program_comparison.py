@@ -16,7 +16,7 @@ from src.backend.signal_stream_runtime_service import SignalStreamRuntime
 from src.backend.signal_stream_typed_readback import CommittedCursorHead
 from src.trading_runtime.columnar_strategy_release import project_release, restore_release
 from src.trading_runtime.columnar_program_actor import AssignedProgramStrategy
-from src.trading_runtime.filled_position_state import FillFact, FeeFact
+from src.trading_runtime.filled_position_state import FilledPositionState, FillFact, FeeFact
 from src.trading_runtime.oms_assignment_observation import AssignmentOrderObservation, ObservedWorkingOrder
 from src.trading_runtime.arte_journal_commit_v4 import V4CommittedPrefix
 from src.trading_runtime.rule_decision_basis_projection import project_rule_decision_basis
@@ -135,6 +135,27 @@ def test_joined_comparison_uses_frozen_first_clock_exclusion_and_keeps_all30(mon
     assert sum(row['status'] == 'not_run' for row in rows) == 29
     with pytest.raises(ValueError, match='unchanged native'):
         flow.compare_recorded_program_sessions(reference, {DAY: replace(result, app={**result.app, 'run_id': 'foreign'})})
+
+
+def test_completed_zero_fill_run_measures_native_unfilled_order_observations(monkeypatch):
+    prefix, packet, block, source, reference, decisions, evidence = inputs(monkeypatch)
+    packet.actor.execution_state = FilledPositionState()
+    packet = replace(packet, state_hash=program_policy_fingerprint(packet.actor))
+    evidence = {**evidence, 'fills': (), 'commissions': ()}
+    decisions = tuple((parent, children, replace(observation, pending_acquisition=True,
+        working_orders=(ObservedWorkingOrder('entry', 'entry', 10., 9., 0., 'Submitted'),)))
+        for parent, children, observation in decisions)
+    factory, clients, holder, _, _ = install_reads(monkeypatch, decisions, evidence)
+    holder[0] = prefix
+    result, returned_evidence, returned_decisions = asyncio.run(
+        flow._read_recorded_program_session(factory, prefix, packet,
+            (block,), source, reference, **run_kwargs()))
+    metrics = result.app['metrics']
+    assert metrics['net_pnl'] == metrics['closed_positions'] == metrics['filled_batches'] == 0
+    assert metrics['drawdown'] == metrics['capital_dollar_seconds'] == metrics['stop_risk_dollar_seconds'] == 0
+    assert metrics['inactivity_fraction'] == 1 and metrics['terminal_valid']
+    assert returned_evidence['fills'] == () and returned_decisions == decisions
+    assert not packet.actor.execution_state.positions and all(client.closed for client in clients)
 
 
 @pytest.mark.parametrize('failure', ['fee', 'fill', 'missing_fee', 'window', 'source_gap', 'decision_bound', 'source_parent'])

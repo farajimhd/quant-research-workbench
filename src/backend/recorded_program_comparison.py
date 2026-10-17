@@ -259,7 +259,9 @@ async def _read_recorded_program_session(reader_factory, prefix, packet, blocks,
         market = pl.concat([block.market.select('boundary_at', 'available_at', 'listing_id', 'reference_close')
                             for block in unique_blocks.values()], how='vertical')
         metrics = project_filled_session_measures(actor.execution_state, market, tuple(observed),
-            start_at=window.first_clock, stop_at=window.last_clock, maximum_rows=maximum_measure_rows)
+            start_at=window.first_clock, stop_at=window.last_clock, maximum_rows=maximum_measure_rows,
+            assignment_tickers={(row.account_id, actor.strategy_id, row.assignment_id,
+                actor._listings[row.assignment_id]): row.ticker for row in actor._by_assignment.values()})
         app = dict(winner_sha256=reference.winner_sha256, run_id=prefix.run_id,
             strategy_digest=header['content_hash'], full_session=True, market_cursor_verified=True,
             verified_sequence=prefix.last_sequence, source_commit_count=len(source_hashes),

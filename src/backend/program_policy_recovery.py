@@ -627,7 +627,9 @@ async def recover_program_policy_async(reader_factory, prefix, template, *, thro
                 while after < basis_sequence:
                     page = load_typed_event_page(client, prefix, after_sequence=after,
                         limit=min(1000, basis_sequence - after),
-                        **({"exact_prices": True} if exact_prices else {}))
+                        **({"exact_prices": True,
+                            "exact_price_families": ("trading_execution_v1", "trading_strategy_signal_v2")}
+                           if exact_prices else {}))
                     if not page:
                         raise ValueError("Program policy recovery page did not advance")
                     if int(page[-1].event["sequence"]) > basis_sequence:

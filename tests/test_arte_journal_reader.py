@@ -17,6 +17,123 @@ from src.trading_runtime.journal_contract import JournalRecord
 from tests.test_arte_journal_writer import MemoryClient
 
 
+def mixed_v4_price_client(*, legacy_consumed=None):
+    """Real writer projections with exact fills/signals and legacy order/OMS."""
+    from dataclasses import replace
+    from uuid import uuid4
+    from src.trading_runtime import arte_journal_writer as writer
+    from src.trading_runtime.arte_execution_exact_prices import seal_exact_execution_batch
+    from src.trading_runtime.arte_journal_commit_v4 import prepare_commit_v4, verify_commit_v4
+    from src.trading_runtime.arte_journal_projection import order_command_batch, strategy_signal_batch
+    from src.trading_runtime.arte_oms_projection import oms_group_state_batch
+    from src.trading_runtime.signals import StrategySignal
+    from src.trading_runtime.strategy_orders import StrategyOrderPlan
+    from tests.test_arte_execution_exact_prices import projected
+    from tests.test_arte_order_exact_prices import request_and_scope
+    from tests.test_arte_oms_exact_prices import prepared
+    _, _, _, execution = projected()
+    request, scope = request_and_scope()
+    order = order_command_batch(replace(request, auxPrice=10.), **scope)
+    group, kwargs, _ = prepared()
+    group.orders = [replace(group.orders[0], price=10.)]
+    group.plan = StrategyOrderPlan(tuple(group.orders), batches=(tuple(group.orders),))
+    group.current_limit_price = group.high_water_price = group.low_water_price = 10.
+    group.deferred_reprice = (10., 10.)
+    oms = oms_group_state_batch(group, **kwargs)
+    signal = strategy_signal_batch(StrategySignal('signal', 'breakout', 'AAA', AT,
+        'wait', 'neutral', 0., 1., 'wait', invalidation_price=10.000000000000002),
+        run_id='mixed-prices', run_month=AT.date().replace(day=1), account_id='DU1',
+        strategy_id='program', strategy_revision=1, attempt_id=str(uuid4()), batch_id=str(uuid4()),
+        prior_batch_id=str(uuid4()), sequence=1, source_cursor='signal', run_status='running',
+        recorded_at=AT, exact_prices=True)
+    run_id, batch_id, attempt_id = 'mixed-prices', str(uuid4()), str(uuid4())
+    families = {}
+    projections = (seal_exact_execution_batch(execution), writer._sealed_families(signal),
+                   writer._sealed_families(order), writer._sealed_families(oms))
+    for sequence, projection in enumerate(projections, 1):
+        for family, rows in projection:
+            family = writer._v4_family_table(family)
+            for row in rows:
+                raw = {key: value for key, value in row.items() if key != 'content_hash'}
+                raw.update(run_id=run_id, batch_id=batch_id)
+                if family == 'trading_event_v1':
+                    raw.update(sequence=sequence, attempt_id=attempt_id)
+                families.setdefault(family, []).append(writer.typed_row(family, raw))
+    if legacy_consumed is not None:
+        from src.trading_runtime.trading_price_contracts import PRICE_FAMILIES, transform_price_fields
+        exact, prices = PRICE_FAMILIES[legacy_consumed]
+        legacy_rows = []
+        for row in families.pop(exact):
+            raw = transform_price_fields(legacy_consumed,
+                {key: value for key, value in row.items() if key != 'content_hash'}, writer._CONTRACTS, restore=True)
+            raw.update({name: 10. if raw[name] is not None else None for name in prices})
+            legacy_rows.append(writer.typed_row(legacy_consumed, raw))
+        families[legacy_consumed] = legacy_rows
+    commit, seals = prepare_commit_v4(run_id=run_id, run_month=AT.date().replace(day=1),
+        attempt_id=attempt_id, batch_id=batch_id, prior_batch_id=str(uuid4()),
+        first_sequence=1, last_sequence=4, source_cursor='mixed', status='completed',
+        sealed_families=tuple(families.items()), committed_at=AT)
+    verify_commit_v4(commit, seals, detail_identities={family: tuple(
+        (row['record_id'], row['content_hash']) for row in rows) for family, rows in families.items()})
+    client = MemoryClient()
+    client.tables.update({family: [writer._wire_row(family, row) for row in rows]
+                          for family, rows in families.items()})
+    client.tables['trading_commit_v4'] = [commit]
+    client.tables['trading_commit_family_v4'] = list(seals)
+    return client, V4CommittedPrefix(run_id, 4, batch_id, 'mixed', 'completed', (batch_id,))
+
+
+def test_targeted_exact_contract_reads_real_mixed_v4_price_families():
+    client, prefix = mixed_v4_price_client()
+    consumed = ('trading_execution_v1', 'trading_strategy_signal_v2')
+    events = load_typed_event_page(client, prefix, exact_prices=True, exact_price_families=consumed)
+    assert [event.detail_family for event in events] == [*consumed, 'trading_order_command_v1', 'trading_oms_group_state_v1']
+    assert events[0].detail['price'].hex() == 10.250000000000002.hex()
+    assert events[1].detail['invalidation_price'].hex() == 10.000000000000002.hex()
+    assert events[2].detail['aux_price'] == events[3].detail['current_limit_price'] == '10.0000000000'
+    with pytest.raises(RuntimeError, match='committed mode'):
+        load_typed_event_page(client, prefix, exact_prices=True)
+
+
+@pytest.mark.parametrize('families', [(), [], ['trading_execution_v1'], ('unknown',),
+    ('trading_commission_v1',), ('trading_execution_v1', 'trading_execution_v1'), (None,)])
+def test_targeted_exact_contract_rejects_invalid_family_scope(families):
+    client, prefix = mixed_v4_price_client()
+    with pytest.raises(ValueError, match='unique V4 price contract tuple'):
+        load_typed_event_page(client, prefix, exact_prices=True, exact_price_families=families)
+
+
+def test_targeted_exact_contract_requires_explicit_v4_exact_mode():
+    client, prefix = mixed_v4_price_client()
+    with pytest.raises(ValueError, match='unique V4 price contract tuple'):
+        load_typed_event_page(client, prefix, exact_price_families=('trading_execution_v1',))
+
+
+@pytest.mark.parametrize('family', ['trading_execution_v1', 'trading_strategy_signal_v2'])
+def test_targeted_exact_contract_rejects_consumed_legacy_family(family):
+    client, prefix = mixed_v4_price_client(legacy_consumed=family)
+    assert any(event.detail_family == family for event in load_typed_event_page(client, prefix))
+    with pytest.raises(RuntimeError, match='committed mode'):
+        load_typed_event_page(client, prefix, exact_prices=True,
+            exact_price_families=('trading_execution_v1', 'trading_strategy_signal_v2'))
+
+
+@pytest.mark.parametrize('family', ['trading_execution_exact_price_v1', 'trading_strategy_signal_exact_price_v2',
+                                    'trading_order_command_v1', 'trading_oms_group_state_v1'])
+@pytest.mark.parametrize('failure', ['missing', 'duplicate', 'hash'])
+def test_targeted_exact_contract_keeps_all_detail_integrity_checks(family, failure):
+    client, prefix = mixed_v4_price_client()
+    if failure == 'missing':
+        client.tables[family].clear()
+    elif failure == 'duplicate':
+        client.tables[family] *= 2
+    else:
+        client.tables[family][0]['content_hash'] = '0' * 64
+    with pytest.raises(RuntimeError, match='missing or duplicate|differs from its hash'):
+        load_typed_event_page(client, prefix, exact_prices=True,
+            exact_price_families=('trading_execution_v1', 'trading_strategy_signal_v2'))
+
+
 RUN = "live:DU1"
 AT = datetime(2026, 8, 18, 8, 5, tzinfo=timezone.utc)
 
