@@ -17,7 +17,7 @@ class CompletedSignalCursorReadAhead:
     def __init__(self, client, catalogs, *, source_context, prefix,
                  batch_span=64, maximum_family_rows=65536):
         if (type(source_context) is not SignalExecutionContext
-                or type(prefix) is not V4CommittedPrefix or prefix.status != 'completed'
+                or type(prefix) is not V4CommittedPrefix or prefix.status != self._required_status
                 or prefix.run_id != source_context.run_id
                 or source_context.mode != 'backtest'
                 or type(batch_span) is not int or not 1 <= batch_span <= 256
@@ -100,3 +100,54 @@ class CompletedSignalCursorReadAhead:
             family_page_evictions=self._evictions, retained_families=len(self._pages),
             retained_rows=sum(len(rows) for _, _, grouped in self._pages.values() for rows in grouped.values()),
             maximum_retained_rows=4*self._maximum, batch_span=self._span)
+    _required_status = 'completed'
+
+
+
+class RunningResumeSignalCursorReadAhead(CompletedSignalCursorReadAhead):
+    """Same bounded transport, pinned to an owned running resume head."""
+    _required_status = 'running'
+
+    def __init__(self, client, catalogs, *, source_context, prefix,
+                 source_keeper, owner_id, epoch, batch_span=64, maximum_family_rows=65536):
+        from .signal_context_transport import ContextSignalSessionHeadKeeper
+        if (type(source_keeper) is not ContextSignalSessionHeadKeeper
+                or source_keeper.source_context != source_context
+                or type(owner_id) is not str or not owner_id or type(epoch) is not int or epoch < 2):
+            raise ValueError('Running source transport requires its recovered contextual owner')
+        super().__init__(client,catalogs,source_context=source_context,prefix=prefix,
+            batch_span=batch_span,maximum_family_rows=maximum_family_rows)
+        self._prefix=prefix;self._client=client
+        from .backtest_market_data import market_day_boundary
+        day,separator,boundary=prefix.source_cursor.rpartition(':')
+        if not separator or day!=source_context.session_key or not boundary.isdigit():
+            raise ValueError('Running source transport lacks its exact journal clock')
+        self.anchor_cutoff_at=market_day_boundary(day,int(boundary))
+        self._source_keeper,self._owner_id,self._epoch=source_keeper,owner_id,epoch
+        self._head=source_keeper.read_head(source_context.session_key)
+        self._verify_owner_and_prefix()
+
+    def _verify_owner_and_prefix(self):
+        from src.trading_runtime.arte_journal_writer import _rows,_literal
+        prefix=self._prefix
+        rows=_rows(self._client,'SELECT last_sequence,batch_id,status,source_cursor FROM arte.trading_commit_v4 '
+            f'WHERE run_id={_literal(prefix.run_id)} ORDER BY last_sequence DESC LIMIT 2 FORMAT JSONEachRow')
+        if (not rows or rows[0]['last_sequence']!=prefix.last_sequence
+                or str(rows[0]['batch_id'])!=prefix.last_batch_id or rows[0]['status']!='running'
+                or rows[0]['source_cursor']!=prefix.source_cursor
+                or len(rows)>1 and rows[1]['last_sequence']==rows[0]['last_sequence']
+                or not self._source_keeper.is_current(self._context.session_key,owner_id=self._owner_id,epoch=self._epoch)
+                or self._source_keeper.read_head(self._context.session_key)!=self._head):
+            raise ValueError('Running source owner, durable head or journal prefix changed')
+
+    def list_cursor_commits(self, *, session_key):
+        self._verify_owner_and_prefix()
+        rows=super().list_cursor_commits(session_key=session_key)
+        if (len(rows)!=self._head.batch_sequence
+                or (rows[-1]['content_hash'] if rows else '0'*64)!=self._head.cursor_commit_hash):
+            raise ValueError('Running source inventory differs from actual attested head')
+        return rows
+
+    def verify_unchanged(self):
+        super().verify_unchanged()
+        self._verify_owner_and_prefix()

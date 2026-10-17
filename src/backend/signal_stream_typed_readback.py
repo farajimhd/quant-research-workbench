@@ -6,6 +6,7 @@ database. The caller must separately verify provisioned storage placement.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import deepcopy
 from datetime import UTC, date, datetime
 from math import isfinite
 from typing import Any, Mapping, Protocol
@@ -138,23 +139,44 @@ class CommittedCursorHead:
     cutoff_at: str | None = None
     commit_hashes: tuple[str, ...] = ()
     commit_cutoffs: tuple[str, ...] = ()
+    recovery_anchor: CommittedCursorHead | None = None
 
 
 def recover_committed_head(
     storage: SignalColdStorage, *, session_key: str, configuration_revision: str,
     source_revision: str, catalogs: Mapping[str, Any],
+    anchor_cutoff_at: str | None = None, maximum_cutoff_at: str | None = None,
+    maximum_ahead_batches: int = 4096,
 ) -> CommittedCursorHead:
     """Read all committed batches; reject duplicate, gap, or conflicting rows."""
+    from .signal_stream_typed_cursor import _time
+    if type(maximum_ahead_batches) is not int or not 0 <= maximum_ahead_batches <= 4096:
+        raise ValueError('Source recovery ahead bound is invalid')
+    anchor_at = None if anchor_cutoff_at is None else _time(anchor_cutoff_at)
+    horizon = None if maximum_cutoff_at is None else _time(maximum_cutoff_at)
+    if (anchor_at is None) != (horizon is None) or anchor_at is not None and anchor_at > horizon:
+        raise ValueError('Source recovery requires its exact anchor and maximum source clock')
     listed = [canonical_row(COMMIT, row)
               for row in storage.list_cursor_commits(session_key=session_key)]
     listed.sort(key=lambda row: row["batch_sequence"])
     if [row["batch_sequence"] for row in listed] != list(range(1, len(listed) + 1)):
         raise ValueError("typed Signal Stream committed cursor is duplicate or gapped")
+    anchor_sequence = None
+    if anchor_at is not None:
+        cutoffs = [_time(row['cutoff_at']) for row in listed]
+        if any(right <= left for left, right in zip(cutoffs, cutoffs[1:])):
+            raise ValueError('Source recovery full head clocks are not strictly ordered')
+        matches = [row['batch_sequence'] for row in listed if _time(row['cutoff_at']) == anchor_at]
+        if (len(matches) != 1 or len(listed) - matches[0] > maximum_ahead_batches
+                or any(_time(row['cutoff_at']) > horizon for row in listed)):
+            raise ValueError('Source recovery anchor is missing, ambiguous or exceeds ahead bound')
+        anchor_sequence = matches[0]
     authority = ColdOccurrenceAuthority(storage, catalogs)
     states: dict[str, Any] = {}
     admissions: dict[str, Any] = {}
     head = "0" * 64
     seen: set[str] = set()
+    anchor = None
     for sequence, listed_commit in enumerate(listed, start=1):
         rows = {}
         for table, family in ((STATE_DELTA, "state_delta"),
@@ -186,8 +208,13 @@ def recover_committed_head(
         if ids & seen:
             raise ValueError("duplicate typed occurrence across committed batches")
         seen.update(ids)
+        if sequence == anchor_sequence:
+            anchor = CommittedCursorHead(session_key, sequence, head,
+                deepcopy(states), deepcopy(admissions), len(seen), listed_commit['cutoff_at'],
+                tuple(row['content_hash'] for row in listed[:sequence]),
+                tuple(row['cutoff_at'] for row in listed[:sequence]))
     return CommittedCursorHead(session_key, len(listed), head,
                                states, admissions, len(seen),
                                listed[-1]["cutoff_at"] if listed else None,
                                tuple(row["content_hash"] for row in listed),
-                               tuple(row["cutoff_at"] for row in listed))
+                               tuple(row["cutoff_at"] for row in listed), anchor)

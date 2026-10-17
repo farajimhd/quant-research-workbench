@@ -74,7 +74,9 @@ _CURSOR_FAMILIES = ((STATE_DELTA, "state_delta"),
                     (ADMISSION_DELTA, "admission_delta"))
 
 
-def _publish_one(storage: TypedSignalStorage, batch: PublicationBatch) -> str:
+def _publish_one(storage: TypedSignalStorage, batch: PublicationBatch, *, verify_existing=False) -> str:
+    if type(verify_existing) is not bool:
+        raise ValueError('Existing source verification mode must be explicit')
     if type(batch.allow_clock_only) is not bool:
         raise ValueError("typed Signal Stream clock-only selection must be explicit")
     if len(batch.occurrences) > 256:
@@ -97,9 +99,10 @@ def _publish_one(storage: TypedSignalStorage, batch: PublicationBatch) -> str:
         # Child families precede the occurrence parent. Any insert exception
         # is ambiguous and stops publication; never blindly retry children.
         for table, family in _OCCURRENCE_FAMILIES[1:]:
-            if rows[family]:
+            if rows[family] and not verify_existing:
                 storage.insert_rows(table.name, rows[family])
-        storage.insert_rows(PARENT.name, [rows["parent"]])
+        if not verify_existing:
+            storage.insert_rows(PARENT.name, [rows["parent"]])
         readback = {}
         for table, family in _OCCURRENCE_FAMILIES:
             returned = storage.read_occurrence_rows(table.name, event_id=event_id)
@@ -123,9 +126,10 @@ def _publish_one(storage: TypedSignalStorage, batch: PublicationBatch) -> str:
         occurrence_authority=authority,
     )
     for table, family in _CURSOR_FAMILIES:
-        if cursor[family]:
+        if cursor[family] and not verify_existing:
             storage.insert_rows(table.name, cursor[family])
-    storage.insert_rows(COMMIT.name, [cursor["commit"]])
+    if not verify_existing:
+        storage.insert_rows(COMMIT.name, [cursor["commit"]])
     readback_cursor = {}
     for table, family in _CURSOR_FAMILIES:
         raw = storage.read_cursor_rows(table.name, session_key=batch.session_key,
@@ -193,14 +197,31 @@ class TypedSignalPublicationQueue:
         self._lock = threading.Lock()
         self._fatal: BaseException | None = None
         self._closing = False
+        self._consumer_recovery = {}
+        self._recovery_counts = dict(resumed_stored=0, appended=0, failed=0)
         self._thread = threading.Thread(target=self._work, name="typed-signal-publication", daemon=True)
         self._started = False
 
     def bootstrap_session(self, *, session_key: str, configuration_revision: str,
-                          source_revision: str, catalogs: Mapping[str, SourceCatalog]):
+                          source_revision: str, catalogs: Mapping[str, SourceCatalog],
+                          anchor_cutoff_at=None, maximum_cutoff_at=None, maximum_ahead_batches=4096,
+                          recovery_read_ahead=None):
         """Control-plane cold verification; never call on the realtime submit path."""
         if self.source_context is not None and (session_key, configuration_revision, source_revision) != (self.source_context.session_key, self.source_context.configuration_revision, self.source_context.source_revision):
             raise ValueError("Source bootstrap differs from its native context")
+        if recovery_read_ahead is not None:
+            from .completed_signal_cursor_reader import RunningResumeSignalCursorReadAhead
+            from .signal_stream_typed_cursor import _time
+            native = getattr(self._storage, '_read_storage', None)
+            if (anchor_cutoff_at is None or type(recovery_read_ahead) is not RunningResumeSignalCursorReadAhead
+                    or native is None or recovery_read_ahead._base._client is not native._client
+                    or recovery_read_ahead._base._catalogs is not native._catalogs
+                    or recovery_read_ahead._context != self.source_context
+                    or self._attestor is None or recovery_read_ahead._source_keeper is not self._attestor._keeper
+                    or recovery_read_ahead._owner_id != self._attestor._owner_id
+                    or recovery_read_ahead._epoch != self._attestor._epoch
+                    or _time(anchor_cutoff_at) != _time(recovery_read_ahead.anchor_cutoff_at)):
+                raise ValueError('Anchored source read-ahead differs from native storage or owner')
         with self._lock:
             if self._started or self._closing or self._pending or self._fatal is not None:
                 raise RuntimeError("typed Signal Stream bootstrap is unavailable")
@@ -211,9 +232,13 @@ class TypedSignalPublicationQueue:
             acquire_barrier = getattr(self._storage, "acquire_bootstrap_barrier", None)
             fence = acquire_barrier() if acquire_barrier is not None else None
             head = recover_committed_head(
-                self._storage, session_key=session_key,
+                recovery_read_ahead if recovery_read_ahead is not None else self._storage, session_key=session_key,
                 configuration_revision=configuration_revision,
-                source_revision=source_revision, catalogs=catalogs)
+                source_revision=source_revision, catalogs=catalogs,
+                anchor_cutoff_at=anchor_cutoff_at, maximum_cutoff_at=maximum_cutoff_at,
+                maximum_ahead_batches=maximum_ahead_batches)
+            if recovery_read_ahead is not None:
+                recovery_read_ahead.verify_unchanged()
             if self._attestor is not None:
                 self._attestor.bootstrap(
                     head, configuration_revision=configuration_revision,
@@ -226,6 +251,11 @@ class TypedSignalPublicationQueue:
                 self._last_completed[session_key] = (head.sequence, head.content_hash)
                 self._last_cutoff[session_key] = head.cutoff_at
                 self._bootstrapped[session_key] = (configuration_revision, source_revision)
+                if head.recovery_anchor is not None and head.recovery_anchor.sequence < head.sequence:
+                    anchor = head.recovery_anchor
+                    self._consumer_recovery[session_key] = dict(cursor=(anchor.sequence, anchor.content_hash),
+                        cutoff=anchor.cutoff_at, first_sequence=anchor.sequence + 1,
+                        hashes=head.commit_hashes[anchor.sequence:], cutoffs=head.commit_cutoffs[anchor.sequence:])
             return head
         finally:
             with self._lock:
@@ -240,7 +270,7 @@ class TypedSignalPublicationQueue:
             if runtime._hydrated or runtime._generation or runtime._typed_pending is not None:
                 raise RuntimeError("Typed source bootstrap requires a fresh Signal Stream runtime")
         head = self.bootstrap_session(**scope)
-        runtime._install_committed_source(head,
+        runtime._install_committed_source(head.recovery_anchor or head,
             configuration_revision=scope["configuration_revision"], source_revision=scope["source_revision"])
         runtime.source_context = self.source_context
         return head
@@ -279,10 +309,18 @@ class TypedSignalPublicationQueue:
                                                               batch.source_revision):
                 raise ValueError("typed Signal Stream session lacks matching cold bootstrap")
             prior = self._last_completed[batch.session_key]
+            recovery = self._consumer_recovery.get(batch.session_key)
+            if recovery is not None:
+                prior = recovery['cursor']
+                offset = batch.batch_sequence - recovery['first_sequence']
+                from .signal_stream_typed_cursor import _time
+                if (not 0 <= offset < len(recovery['hashes'])
+                        or _time(recovery['cutoffs'][offset]) != _time(batch.cutoff_at)):
+                    raise ValueError('Source consumer replay exceeds retained sealed clocks')
             if batch.allow_clock_only:
                 from .signal_stream_typed_cursor import _time
                 cutoff = _time(batch.cutoff_at)
-                previous_cutoff = self._last_cutoff[batch.session_key]
+                previous_cutoff = recovery['cutoff'] if recovery is not None else self._last_cutoff[batch.session_key]
                 if previous_cutoff is not None and cutoff <= _time(previous_cutoff):
                     raise ValueError("typed Signal Stream clock-only cutoff must advance")
             if (batch.batch_sequence != prior[0] + 1
@@ -297,6 +335,13 @@ class TypedSignalPublicationQueue:
                 self._thread.start()
                 self._started = True
             return receipt
+
+    def recovery_counts(self):
+        """Bounded counts for stored consumer catch-up versus new publication."""
+        with self._lock:
+            return dict(self._recovery_counts, remaining_stored=sum(
+                self._last_completed[key][0] - state['cursor'][0]
+                for key, state in self._consumer_recovery.items()))
 
     def close(self, *, timeout: float = 10.0) -> None:
         with self._lock:
@@ -321,18 +366,31 @@ class TypedSignalPublicationQueue:
                 if failure is not None:
                     raise RuntimeError("typed Signal Stream publication halted") from failure
                 staged = deepcopy(batch)
-                begin = getattr(self._storage, "begin_batch", None)
-                if begin is not None:
-                    begin(staged)
-                head = _publish_one(self._storage, staged)
-                finish = getattr(self._storage, "finish_batch", None)
-                if finish is not None:
-                    finish(staged, head)
-                if self._attestor is not None:
-                    head = self._attestor.attest(batch, head, self._storage)
+                with self._lock:
+                    recovery = self._consumer_recovery.get(batch.session_key)
+                    durable = self._last_completed[batch.session_key]
+                if recovery is not None:
+                    if self._attestor is not None:
+                        self._attestor.verify_current_head(batch.session_key, sequence=durable[0], content_hash=durable[1])
+                    head = _publish_one(self._storage, staged, verify_existing=True)
+                    if head != recovery['hashes'][batch.batch_sequence - recovery['first_sequence']]:
+                        raise ValueError('Source consumer replay differs from retained sealed head')
+                    if self._attestor is not None:
+                        self._attestor.verify_current_head(batch.session_key, sequence=durable[0], content_hash=durable[1])
+                else:
+                    begin = getattr(self._storage, "begin_batch", None)
+                    if begin is not None:
+                        begin(staged)
+                    head = _publish_one(self._storage, staged)
+                    finish = getattr(self._storage, "finish_batch", None)
+                    if finish is not None:
+                        finish(staged, head)
+                    if self._attestor is not None:
+                        head = self._attestor.attest(batch, head, self._storage)
             except BaseException as exc:
                 with self._lock:
                     self._fatal = exc
+                    self._recovery_counts['failed'] += 1
                     del self._pending[(batch.session_key, batch.batch_sequence)]
                 try:
                     receipt.set_exception(exc)
@@ -340,9 +398,17 @@ class TypedSignalPublicationQueue:
                     pass
             else:
                 with self._lock:
-                    self._last_completed[batch.session_key] = (batch.batch_sequence, head)
                     from .signal_stream_typed_cursor import _time
-                    self._last_cutoff[batch.session_key] = _time(batch.cutoff_at)
+                    if recovery is not None:
+                        self._recovery_counts['resumed_stored'] += 1
+                        recovery['cursor'] = (batch.batch_sequence, head)
+                        recovery['cutoff'] = _time(batch.cutoff_at)
+                        if batch.batch_sequence == durable[0]:
+                            del self._consumer_recovery[batch.session_key]
+                    else:
+                        self._recovery_counts['appended'] += 1
+                        self._last_completed[batch.session_key] = (batch.batch_sequence, head)
+                        self._last_cutoff[batch.session_key] = _time(batch.cutoff_at)
                     del self._pending[(batch.session_key, batch.batch_sequence)]
                 try:
                     receipt.set_result(head)

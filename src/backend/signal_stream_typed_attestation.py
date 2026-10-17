@@ -43,6 +43,14 @@ class SignalCursorAttestor:
             raise RuntimeError("typed Signal Stream Keeper head changed during cold bootstrap")
         self._heads[session_key] = head
 
+    def verify_current_head(self, session_key, *, sequence, content_hash):
+        """Verify retained durable authority during read-only consumer catch-up."""
+        prior = self._heads.get(session_key)
+        if (prior is None or prior.batch_sequence != sequence or prior.cursor_commit_hash != content_hash
+                or not self._keeper.is_current(session_key, owner_id=self._owner_id, epoch=self._epoch)
+                or self._keeper.read_head(session_key) != prior):
+            raise RuntimeError('Typed source durable head changed during consumer recovery')
+
     def attest(self, batch: Any, cursor_hash: str, storage: Any) -> str:
         """Require exact fence readback, then CAS the current owner epoch."""
         prior = self._heads.get(batch.session_key)
