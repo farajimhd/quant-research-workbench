@@ -92,10 +92,11 @@ def monitor(a):
         console.print(render(snapshot(a.run_dir),console.width,console.height))
         return 0
     try:
-        with Live(console=console,refresh_per_second=1,vertical_overflow='crop') as live:
+        # Keep a stable screen instead of erasing the previous dashboard each tick.
+        with Live(console=console,screen=True,auto_refresh=False,vertical_overflow='crop') as live:
             state=None
             while True:
-                state=snapshot(a.run_dir,state);live.update(render(state,console.width,console.height))
+                state=snapshot(a.run_dir,state);live.update(render(state,console.width,console.height),refresh=True)
                 if not state.get('monitor_warning') and state['status'] in ('complete','failed','interrupted'):break
                 sleep(1)
     except KeyboardInterrupt:pass
