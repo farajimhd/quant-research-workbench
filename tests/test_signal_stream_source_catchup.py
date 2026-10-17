@@ -215,3 +215,101 @@ def test_concrete_contextual_pending_transitions_promote_stored_clocks_without_r
         assert runtime.typed_source_cursor()[0]==4
         assert queue.recovery_counts()==dict(resumed_stored=3,appended=0,failed=0,remaining_stored=0)
     finally:queue.close()
+
+
+def ordered_tail_fixture():
+    from copy import deepcopy
+    from src.backend.signal_stream_typed_publication import _publish_one
+    from src.backend.signal_stream_runtime_service import _occurrence,StagedSignalTransition,_freeze_transition
+    from tests.test_signal_stream_typed_catalog import _source
+    storage=FakeStorage();first=_batch();head=_publish_one(storage,first)
+    at=datetime.fromisoformat(first.cutoff_at)+timedelta(seconds=1)
+    stream,columns,row=_source();catalog=first.catalogs['stream-1'].catalog
+    events=tuple(_occurrence(stream,{**row,'ticker':ticker},columns,as_of=at,definition_revision='definition-1',typed_catalog=catalog) for ticker in ('NOK','RDW'))
+    states={'stream-1':{**first.after_states['stream-1'],**{ticker:dict(matching=True,definition_revision='definition-1') for ticker in ('NOK','RDW')}}}
+    tail=replace(first,batch_sequence=2,previous_commit_hash=head,cutoff_at=at.isoformat(),before_states=first.after_states,after_states=states,occurrences=events)
+    _publish_one(storage,tail)
+    scope=dict(session_key=first.session_key,configuration_revision=first.configuration_revision,source_revision=first.source_revision,catalogs=first.catalogs)
+    publisher=TypedSignalPublicationQueue(storage);runtime=SignalStreamRuntime()
+    publisher.bootstrap_runtime_session(runtime,**scope,anchor_cutoff_at=first.cutoff_at,maximum_cutoff_at=tail.cutoff_at)
+    stage=StagedSignalTransition(base_generation=0,before_session_key=first.session_key,session_key=first.session_key,cutoff_at=tail.cutoff_at,before_states=_freeze_transition(tail.before_states),after_states=_freeze_transition(tail.after_states),before_admissions=_freeze_transition({}),after_admissions=_freeze_transition({}),occurrences=_freeze_transition(tuple(reversed(events))),diagnostics=_freeze_transition({}))
+    return storage,publisher,runtime,stage,tail,scope
+
+
+def test_recovered_order_alignment_promotes_original_sealed_order_without_writes():
+    from copy import deepcopy
+    from src.backend.signal_stream_typed_publication import _publish_one
+    storage,publisher,runtime,stage,tail,scope=ordered_tail_fixture()
+    rows=deepcopy(storage.rows);writes=list(storage.writes);cursor=runtime.typed_source_cursor()
+    try:
+        with pytest.raises(ValueError,match='typed cursor cold readback'):
+            _publish_one(storage,replace(tail,occurrences=tuple(reversed(tail.occurrences))),verify_existing=True)
+        aligned=publisher.align_recovered_transition(stage,batch_sequence=2)
+        assert [row['ticker'] for row in aligned.occurrences]==['NOK','RDW']
+        assert [row['ticker'] for row in stage.occurrences]==['RDW','NOK']
+        assert all(any(value is original for original in stage.occurrences) for value in aligned.occurrences)
+        assert aligned.before_states is stage.before_states and aligned.after_states is stage.after_states
+        pending=runtime.submit_staged(aligned,publisher,batch_sequence=2,previous_commit_hash=cursor[1],configuration_revision=scope['configuration_revision'],source_revision=scope['source_revision'],catalogs=scope['catalogs'])
+        import asyncio
+        asyncio.run(pending.wait_async());promoted=runtime.promote_staged(pending)
+        assert [row['ticker'] for row in promoted]==['NOK','RDW']
+        assert runtime.typed_source_cursor()[0]==2 and runtime.typed_source_cursor()[1]==storage.rows['signal_stream_cursor_commit_typed_v1'][-1]['content_hash']
+        assert storage.rows==rows and storage.writes==writes
+    finally:publisher.close()
+
+
+@pytest.mark.parametrize('failure',['missing','duplicate','foreign','row_hash','body','commit_hash','commit_count','wrong_sequence','wrong_cutoff'])
+def test_recovered_order_alignment_rejects_unattested_changes_without_promotion(failure):
+    from copy import deepcopy
+    from src.backend.signal_stream_runtime_service import _freeze_transition,_thaw_transition
+    storage,publisher,runtime,stage,tail,scope=ordered_tail_fixture()
+    refs=storage.rows['signal_stream_occurrence_ref_typed_v1']
+    tailrefs=[row for row in refs if row['batch_sequence']==2]
+    if failure=='missing':refs.remove(tailrefs[-1])
+    elif failure=='duplicate':refs.append(deepcopy(tailrefs[0]))
+    elif failure=='foreign':tailrefs[0]['event_id']='f'*64
+    elif failure=='row_hash':tailrefs[0]['content_hash']='f'*64
+    elif failure=='body':
+        events=_thaw_transition(stage.occurrences);events[0]['evidence']['price']=999
+        stage=replace(stage,occurrences=_freeze_transition(events))
+    elif failure=='commit_hash':storage.rows['signal_stream_cursor_commit_typed_v1'][-1]['content_hash']='f'*64
+    elif failure=='commit_count':storage.rows['signal_stream_cursor_commit_typed_v1'][-1]['occurrence_count']=3
+    elif failure=='wrong_cutoff':stage=replace(stage,cutoff_at='2026-09-24T14:00:02+00:00')
+    before=deepcopy(storage.rows);writes=list(storage.writes);cursor=runtime.typed_source_cursor()
+    try:
+        with pytest.raises(ValueError):publisher.align_recovered_transition(stage,batch_sequence=3 if failure=='wrong_sequence' else 2)
+        assert storage.rows==before and storage.writes==writes and runtime.typed_source_cursor()==cursor
+        assert runtime._typed_pending is None and publisher.recovery_counts()['resumed_stored']==0
+    finally:publisher.close()
+
+
+def test_alignment_new_publication_and_single_event_are_identity_without_storage_reads(monkeypatch):
+    storage,publisher,runtime,stage,tail,scope=ordered_tail_fixture()
+    try:
+        publisher._consumer_recovery.clear()
+        monkeypatch.setattr(storage,'read_cursor_rows',lambda *a,**kw:pytest.fail('New publication read stored ordering'))
+        assert publisher.align_recovered_transition(stage,batch_sequence=2) is stage
+        assert publisher.align_recovered_transition(replace(stage,occurrences=stage.occurrences[:1]),batch_sequence=2).occurrences==stage.occurrences[:1]
+    finally:publisher.close()
+
+@pytest.mark.parametrize('change',['closing','consumer_moved'])
+def test_order_alignment_rechecks_consumer_owner_without_promoting(monkeypatch,change):
+    storage,publisher,runtime,stage,tail,scope=ordered_tail_fixture()
+    cursor=runtime.typed_source_cursor();writes=list(storage.writes)
+    if change=='closing':
+        publisher._closing=True
+        monkeypatch.setattr(storage,'read_cursor_rows',lambda *a,**kw:pytest.fail('Closing owner read storage'))
+    else:
+        read=storage.read_cursor_rows
+        def changed(*args,**kwargs):
+            rows=read(*args,**kwargs)
+            if args[0]=='signal_stream_occurrence_ref_typed_v1':
+                publisher._consumer_recovery[stage.session_key]['cursor']=(2,'f'*64)
+            return rows
+        monkeypatch.setattr(storage,'read_cursor_rows',changed)
+    try:
+        with pytest.raises(RuntimeError,match='consumer'):
+            publisher.align_recovered_transition(stage,batch_sequence=2)
+        assert runtime.typed_source_cursor()==cursor and storage.writes==writes
+        assert runtime._typed_pending is None
+    finally:publisher.close()

@@ -206,3 +206,38 @@ def test_zero_event_state_delta_commits_and_cold_recovers() -> None:
         assert len(storage.rows["signal_stream_cursor_commit_typed_v1"]) == 1
     finally:
         publisher.close()
+
+@pytest.mark.parametrize('mismatch', ['state', 'cutoff', 'source_revision'])
+def test_existing_cursor_mismatch_reports_only_scalar_commit_and_family_hashes(mismatch):
+    import json
+    from src.backend.signal_stream_typed_publication import _publish_one
+    from src.backend.signal_stream_typed_cursor import COMMIT, _hash
+    batch=replace(_batch(),before_states={},after_states={},occurrences=(),allow_clock_only=True)
+    storage=FakeStorage();_publish_one(storage,batch);before=deepcopy(storage.rows);writes=list(storage.writes)
+    if mismatch=='state':
+        staged=replace(batch,after_states=_batch().after_states)
+        field='state_delta_count'
+    elif mismatch=='cutoff':
+        staged=replace(batch,cutoff_at='2026-09-24T14:00:01+00:00')
+        field='cutoff_at'
+    else:
+        staged=replace(batch,source_revision='another-reviewed-source')
+        field='source_revision'
+    with pytest.raises(ValueError,match='typed cursor cold readback is incomplete or duplicated: ') as failure:
+        _publish_one(storage,staged,verify_existing=True)
+    diagnostics=json.loads(str(failure.value).split(': ',1)[1])
+    assert set(diagnostics)=={'families','commit_differences','batch_sequence','session_key','cutoff_at'}
+    assert diagnostics['batch_sequence']==staged.batch_sequence and diagnostics['session_key']==staged.session_key
+    assert diagnostics['cutoff_at'].startswith(staged.cutoff_at[:19])
+    assert field in diagnostics['commit_differences']
+    assert set(diagnostics['commit_differences'])<={key for key,_ in COMMIT.columns}
+    assert set(diagnostics['families'])=={'state_delta','occurrence_ref','admission_delta'}
+    for family,values in diagnostics['families'].items():
+        assert set(values)=={'expected_count','actual_count','expected_hash','actual_hash'}
+        assert values['actual_count']==0 and values['actual_hash']==_hash([])
+        assert len(values['expected_hash'])==64
+    if mismatch=='state':
+        assert diagnostics['families']['state_delta']['expected_count']==1
+        assert diagnostics['commit_differences']['state_delta_count']=={'expected':1,'actual':0}
+        assert 'stream-1' not in str(failure.value) and 'ABC' not in str(failure.value)
+    assert storage.rows==before and storage.writes==writes

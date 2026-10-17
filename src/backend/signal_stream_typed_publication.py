@@ -6,17 +6,18 @@ is terminal for this lane: MergeTree has no uniqueness guarantee for retries.
 from __future__ import annotations
 
 import asyncio
+import json
 import queue
 import threading
 from concurrent.futures import Future, InvalidStateError
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping, Protocol
 
 from src.backend.signal_stream_typed_catalog import SignalFieldCatalog
 from src.backend.signal_stream_typed_cursor import (
     ADMISSION_DELTA, COMMIT, OCCURRENCE_REF, STATE_DELTA,
-    project_cursor_batch, recover_cursor_batch,
+    project_cursor_batch, recover_cursor_batch, _hash as cursor_family_hash,
 )
 from src.backend.signal_stream_typed_occurrence import (
     COLUMN, FIELD, PARENT, RULE, project_typed_occurrence,
@@ -148,7 +149,21 @@ def _publish_one(storage: TypedSignalStorage, batch: PublicationBatch, *, verify
         raise ValueError("typed cursor commit fence missing or duplicated")
     readback_cursor["commit"] = canonical_row(COMMIT, commits[0])
     if readback_cursor != cursor:
-        raise ValueError("typed cursor cold readback is incomplete or duplicated")
+        diagnostics = {
+            "batch_sequence": batch.batch_sequence, "session_key": batch.session_key,
+            "cutoff_at": cursor["commit"]["cutoff_at"],
+            "families": {family: {
+                "expected_count": len(cursor[family]), "actual_count": len(readback_cursor[family]),
+                "expected_hash": cursor_family_hash(cursor[family]),
+                "actual_hash": cursor_family_hash(readback_cursor[family]),
+            } for _, family in _CURSOR_FAMILIES},
+            "commit_differences": {key: {"expected": cursor["commit"].get(key),
+                "actual": readback_cursor["commit"].get(key)}
+                for key, _ in COMMIT.columns
+                if cursor["commit"].get(key) != readback_cursor["commit"].get(key)},
+        }
+        raise ValueError("typed cursor cold readback is incomplete or duplicated: "
+            + json.dumps(diagnostics, sort_keys=True, separators=(",", ":")))
     states, admissions, occurrences, head = recover_cursor_batch(
         batch.before_states, readback_cursor, occurrence_authority=authority,
         session_key=batch.session_key, expected_sequence=batch.batch_sequence,
@@ -335,6 +350,79 @@ class TypedSignalPublicationQueue:
                 self._thread.start()
                 self._started = True
             return receipt
+
+    def has_consumer_recovery(self, session_key):
+        """An in-memory gate; normal publication never reads stored ordinals."""
+        with self._lock:
+            return session_key in self._consumer_recovery
+
+    def align_recovered_transition(self, stage, *, batch_sequence):
+        """Retain sealed occurrence order after exact semantic/body attestation.
+
+        This reads only an existing consumer tail. It neither accepts a different
+        occurrence set nor changes the subsequent full cursor equality check.
+        """
+        from .signal_stream_runtime_service import StagedSignalTransition, _thaw_transition
+        from .signal_stream_typed_cursor import VERSION, _time
+        if type(stage) is not StagedSignalTransition or type(batch_sequence) is not int:
+            raise ValueError('Source order alignment requires an exact staged transition')
+        if len(stage.occurrences) <= 1:
+            return stage
+        with self._lock:
+            recovery = self._consumer_recovery.get(stage.session_key)
+            if recovery is None:
+                return stage
+            if self._closing or self._fatal is not None or any(key[0] == stage.session_key for key in self._pending):
+                raise RuntimeError('Source order alignment lost its idle consumer owner')
+            cursor = recovery['cursor']
+            offset = batch_sequence - recovery['first_sequence']
+            if (batch_sequence != cursor[0] + 1 or not 0 <= offset < len(recovery['hashes'])
+                    or _time(stage.cutoff_at) != _time(recovery['cutoffs'][offset])
+                    or not 2 <= len(stage.occurrences) <= 256):
+                raise ValueError('Source order alignment differs from its retained consumer boundary')
+            expected_hash = recovery['hashes'][offset]
+            scope = self._bootstrapped[stage.session_key]
+            durable = self._last_completed[stage.session_key]
+        if self._attestor is not None:
+            self._attestor.verify_current_head(stage.session_key, sequence=durable[0], content_hash=durable[1])
+        commits = self._storage.read_cursor_rows(COMMIT.name, session_key=stage.session_key, batch_sequence=batch_sequence)
+        if len(commits) != 1:
+            raise ValueError('Source order alignment commit is missing or duplicated')
+        commit = canonical_row(COMMIT, commits[0])
+        if (commit['content_hash'] != expected_hash
+                or cursor_family_hash({key:value for key,value in commit.items() if key != 'content_hash'}) != expected_hash
+                or (commit['schema_version'],commit['session_key'],commit['batch_sequence']) != (VERSION,stage.session_key,batch_sequence)
+                or (commit['configuration_revision'],commit['source_revision']) != scope
+                or commit['previous_commit_hash'] != cursor[1] or commit['cutoff_at'] != _time(stage.cutoff_at)
+                or commit['occurrence_count'] != len(stage.occurrences)):
+            raise ValueError('Source order alignment commit differs from its sealed boundary')
+        refs = [canonical_row(OCCURRENCE_REF,row) for row in self._storage.read_cursor_rows(
+            OCCURRENCE_REF.name,session_key=stage.session_key,batch_sequence=batch_sequence)]
+        refs.sort(key=lambda row:row['ordinal'])
+        staged = {_thaw_transition(row)['event_id']:row for row in stage.occurrences}
+        if (len(refs) != len(stage.occurrences) or len(staged) != len(stage.occurrences)
+                or [row['ordinal'] for row in refs] != list(range(len(refs)))
+                or len({row['event_id'] for row in refs}) != len(refs)
+                or {row['event_id'] for row in refs} != set(staged)
+                or cursor_family_hash(refs) != commit['occurrence_hash']):
+            raise ValueError('Source order alignment occurrence identity or ordinal coverage differs')
+        for ref in refs:
+            occurrence = _thaw_transition(staged[ref['event_id']])
+            if (ref['schema_version'] != VERSION or ref['session_key'] != stage.session_key
+                    or ref['batch_sequence'] != batch_sequence
+                    or ref['content_hash'] != cursor_family_hash({key:value for key,value in ref.items() if key!='content_hash'})
+                    or any(ref[key] != occurrence[key] for key in ('signal_stream_id','ticker','definition_revision'))
+                    or ref['event_time'] != _time(occurrence['event_time'])
+                    or ref['source_content_hash'] != cursor_family_hash(occurrence)):
+                raise ValueError('Source order alignment occurrence body differs from its sealed reference')
+        if self._attestor is not None:
+            self._attestor.verify_current_head(stage.session_key, sequence=durable[0], content_hash=durable[1])
+        with self._lock:
+            if (self._consumer_recovery.get(stage.session_key) is not recovery or recovery['cursor'] != cursor
+                    or self._last_completed[stage.session_key] != durable or self._closing or self._fatal is not None
+                    or any(key[0] == stage.session_key for key in self._pending)):
+                raise RuntimeError('Source order alignment consumer changed during readback')
+        return replace(stage,occurrences=tuple(staged[row['event_id']] for row in refs))
 
     def recovery_counts(self):
         """Bounded counts for stored consumer catch-up versus new publication."""

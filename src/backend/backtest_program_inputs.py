@@ -122,6 +122,11 @@ async def publish_prepared_program_source_clock(controller, projection, publishe
     if (controller._program_signal_runtime is not source or controller._program_strategy is not actor
             or controller.definition.configuration_revision is not revision or source.typed_source_cursor() != cursor):
         raise ValueError("Program source ownership changed during configured stream resolution")
+    if len(stage.occurrences) > 1 and publisher.has_consumer_recovery(stage.session_key):
+        stage = await _owned_worker(publisher.align_recovered_transition, stage, batch_sequence=cursor[0] + 1)
+        if (controller._program_signal_runtime is not source or controller._program_strategy is not actor
+                or controller.definition.configuration_revision is not revision or source.typed_source_cursor() != cursor):
+            raise ValueError("Program source ownership changed during stored order alignment")
     pending = source.submit_staged(stage, publisher, batch_sequence=cursor[0] + 1,
         previous_commit_hash=cursor[1], configuration_revision=revision["revision_id"],
         source_revision=projection.source_revision, catalogs=catalogs, allow_clock_only=True)
