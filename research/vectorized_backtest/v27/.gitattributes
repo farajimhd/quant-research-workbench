@@ -1,0 +1,6 @@
+# Certified V21 producer bytes are intentionally mixed CRLF/LF. Never convert.
+indicator_math.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+enriched_math.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+features.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+indicator_identity.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+search_space.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
