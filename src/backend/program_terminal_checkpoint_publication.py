@@ -103,8 +103,9 @@ def _publish(writer_client, *, read_client_factory, writer_connection_factory,
         if (capture.run_id != prefix.run_id or capture.state_revision != prefix.last_sequence
                 or capture.snapshot_at != expected_clock or capture.allocations
                 or capture.commands or capture.requests or capture.reconciliation
-                or any(r.remaining_quantity or r.reserved_notional or r.reserved_planned_risk
-                       or r.reserved_entry_fees for r in capture.reservations)):
+                or any(r.remaining_quantity or r.status not in
+                       {'released','filled','cancelled','rejected','policy_blocked'}
+                       for r in capture.reservations)):
             raise ValueError('Terminal Portfolio capture is not an exact flat synchronized projection')
         prepared.append(prepare_captured_portfolio_snapshot(capture))
     keeper, generation, client_id = session.client, session._generation, session.client.client_id

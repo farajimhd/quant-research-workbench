@@ -164,3 +164,31 @@ def test_cancel_waits_for_existing_publication_worker_before_return(monkeypatch)
         assert finished.is_set() and f.calls[-1]=='portfolio'
     asyncio.run(work())
     assert all(c.closed for c in f.clients)
+
+@pytest.mark.parametrize('status',['released','filled','cancelled','rejected','policy_blocked','reserved','pending'])
+def test_terminal_reservations_preserve_historical_amounts_and_block_active_status(monkeypatch,status):
+    from src.trading_runtime.portfolio import PortfolioReservation
+    f=fixture(monkeypatch);capture=f.kwargs['portfolios'][0]
+    reservation=PortfolioReservation(reservation_id='historic',decision_id='decision',intent_id='intent',
+        account_key=capture.account_key,account_id=capture.account_id,strategy_id='strategy',assignment_id='assignment',ticker='AAA',
+        action='enter_long',quantity=100.,remaining_quantity=0.,reference_price=10.,
+        reserved_notional=996.32,reserved_planned_risk=175.16835196120473,
+        created_at=capture.snapshot_at,status=status)
+    f.kwargs['portfolios']=(replace(capture,reservations=(reservation,)),)
+    if status in {'reserved','pending'}:
+        with pytest.raises(ValueError,match='flat synchronized'):run(f)
+        assert 'broker' not in f.calls
+    else:
+        run(f)
+        assert f.kwargs['portfolios'][0].reservations==(reservation,)
+        assert f.calls==['storage','broker','oms','portfolio']
+
+
+def test_terminal_reservation_with_remaining_quantity_still_blocks_publication(monkeypatch):
+    from src.trading_runtime.portfolio import PortfolioReservation
+    f=fixture(monkeypatch);capture=f.kwargs['portfolios'][0]
+    reservation=PortfolioReservation('historic','decision','intent','replay','DU1','strategy','assignment',
+        'AAA','enter_long',100.,1.,10.,996.32,175.,capture.snapshot_at,status='released')
+    f.kwargs['portfolios']=(replace(capture,reservations=(reservation,)),)
+    with pytest.raises(ValueError,match='flat synchronized'):run(f)
+    assert 'broker' not in f.calls
