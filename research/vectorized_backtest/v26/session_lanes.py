@@ -145,7 +145,7 @@ class Worker:
                             rule_tiles=e['tiles'],total_rule_tiles=e['total_tiles']))
                     from .genome import STAGES
                     from .signal_counts import count as count_signals
-                    counts=count_signals(((gates&31)|((gates>>5)&31)).to(torch.uint8) if any(m.routing is not None for m in members) else gates)
+                    counts=count_signals(gates)
                     signal_counts={f'signal_observations_{stage}':counts[:,bit] for bit,stage in enumerate(STAGES)}
                     # Effective identity ignores add rules when policy forbids
                     # additions; diagnostics must share that same authority.

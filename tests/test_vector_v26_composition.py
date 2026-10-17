@@ -72,3 +72,12 @@ def test_behavior_overlap_matches_nested_intervals_and_has_bounded_pair_cache():
     assert index.similarity(0,2)['score']==0
     assert index.similarity(0,1)==p and index.exact_queries==2
     assert not BehaviorIndex([dict(net_pnl=[1])]).available
+
+
+@pytest.mark.parametrize('device',['cpu','cuda'])
+def test_packed_signal_diagnostics_match_explicit_branch_union(device):
+    if device=='cuda' and not torch.cuda.is_available():pytest.skip('CUDA required')
+    from research.vectorized_backtest.v26.signal_counts import count
+    g=torch.randint(0,4096,(3,9,13),dtype=torch.int16,device=device)
+    plain=((g&31)|((g>>5)&31)).to(torch.uint8)
+    assert torch.equal(count(g),count(plain))

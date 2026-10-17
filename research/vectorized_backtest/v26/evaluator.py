@@ -200,7 +200,9 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
     # Pack the cohort once. The chronological loop has no per-session host
     # dispatch, tensor construction, or policy repacking.
     from torch.nn.functional import pad
-    required=t*s*b*u*gates[0].element_size()+sum(v.numel()*v.element_size() for v,c,h in swing_banks)
+    signal_view=s==1 and gates[0].shape[1:]==(t,u)
+    # Already-resident gates need no second allocation for a single session.
+    required=(0 if signal_view else t*s*b*u*gates[0].element_size())+sum(v.numel()*v.element_size() for v,c,h in swing_banks)
     required+=t*s*u*40+s*b*u*9*8
     if device.type=='cuda':
         free,_=torch.cuda.mem_get_info(device)
@@ -208,7 +210,7 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
     prices=torch.stack([pad(v.tensors['mark'],(0,u-len(v.listing_ids),0,t-v.clocks),value=float('nan')) for v in data],1)[:,:,None]
     observed_all=torch.stack([pad(v.tensors['observed'],(0,u-len(v.listing_ids),0,t-v.clocks),value=False) for v in data],1)[:,:,None]
     membership_all=torch.stack([pad(v.tensors['membership'],(0,u-len(v.listing_ids),0,t-v.clocks),value=False) for v in data],1)[:,:,None]
-    all_signals=gates[0].permute(1,0,2).unsqueeze(1) if s==1 and gates[0].shape[1:]==(t,u) else torch.stack([pad(g,(0,u-len(v.listing_ids),0,t-v.clocks)) for v,g in zip(data,gates)],1).permute(2,1,0,3)
+    all_signals=gates[0].permute(1,0,2).unsqueeze(1) if signal_view else torch.stack([pad(g,(0,u-len(v.listing_ids),0,t-v.clocks)) for v,g in zip(data,gates)],1).permute(2,1,0,3)
     values=torch.cat([bank for bank,columns,history_ids in swing_banks],0);columns=swing_banks[0][1]
     ids=[];offset=0
     for item,(bank,_,history_ids) in zip(data,swing_banks):
