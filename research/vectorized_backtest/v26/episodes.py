@@ -26,6 +26,10 @@ class Episodes:
         self.append_events(closed,after[...,7]-before[...,8],entry_clocks,exit_clock)
 
     def append_events(self,closed,profits,entry_clocks=None,exit_clock=None):
+        if self.profits.device.type=="cuda":
+            if self.trace and (entry_clocks is None or exit_clock is None):raise ValueError("Complete trace clocks required")
+            from .episode_scatter import append
+            append(self,closed,profits,entry_clocks,exit_clock);return
         prefix=closed.to(torch.int64).cumsum(-1)
         offsets = prefix-1+self.counts[...,None]
         listings = torch.arange(closed.shape[-1],device=closed.device).expand_as(offsets)

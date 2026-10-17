@@ -127,8 +127,8 @@ def sample(rng,count):
 
 
 def mutate(rng,parent):
-    from .variation import mutate_fields
-    return mutate_fields(rng,parent,int(rng.integers(1,6)))[0]
+    from .composition import mutation
+    return mutation(rng,parent,int(rng.integers(1,6)),False)[0]
 
 
 def legacy_crossover(rng,left,right):

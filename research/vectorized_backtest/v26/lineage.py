@@ -157,7 +157,7 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
         key=program_key(child)
         if key in keys:duplicates+=1;return False
         keys.add(key);children.append(child);parents.append((-1,-1) if a is None else (int(ids[a]),int(ids[b]) if b is not None else -1))
-        ops.append('fresh' if a is None else 'mutation' if b is None else 'crossover');routes.append(dict(path='global',selection_route=route,composition_operator=operation,behavior_route=behavior_route if a is not None else None,parent_similarity=similarity if a is not None else None));return True
+        ops.append('fresh' if a is None else 'mutation' if b is None else 'crossover');routes.append(dict(path='global',selection_route=route,composition_operator=operation,behavior_route=behavior_route if a is not None and b is not None else None,parent_similarity=similarity if a is not None and b is not None else None));return True
     def fresh(route='fresh'):
         for _ in range(32):
             if append(route=route):return
