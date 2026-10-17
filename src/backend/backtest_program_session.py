@@ -187,7 +187,8 @@ async def _continue_fenced_session_work(controller, work, packet):
     if micros % 1000000:
         raise ValueError("Programme continuation requires a completed whole-second cursor")
     bucket = micros // 1000000 + SESSION_OPEN_OFFSET_MS // 1000
-    if not work[0].first_bucket <= bucket < work[-1].stop_bucket:
+    terminal_complete = bucket == work[-1].stop_bucket and at == controller.definition.session_end
+    if not work[0].first_bucket <= bucket < work[-1].stop_bucket and not terminal_complete:
         raise ValueError("Programme continuation cursor is outside remaining session coverage")
     if (controller._source_cursor.get("session_date") != controller.definition.session_date.isoformat()
             or controller._source_cursor.get("boundary_ms") != micros // 1000):
@@ -208,6 +209,8 @@ async def _continue_fenced_session_work(controller, work, packet):
             or program_policy_fingerprint(actor) != packet.state_hash
             or program_policy_fingerprint(packet.actor) != packet.state_hash):
         raise RuntimeError("Programme continuation changed during owner verification")
+    if terminal_complete:
+        return ()
     remaining = tuple(unit for unit in work if unit.stop_bucket > bucket)
     return (replace(remaining[0], first_bucket=bucket),) + remaining[1:]
 

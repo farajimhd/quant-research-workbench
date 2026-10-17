@@ -1097,12 +1097,51 @@ class SimulatedBrokerAdapter:
         self.validate_liquidity_bar(row, at=at)
         return await self._on_validated_liquidity_bar(row, at=at)
 
-    async def _on_validated_liquidity_bar(
-        self, row: Mapping[str, Any], *, at: datetime,
-    ) -> list[Execution]:
-        """Runtime-only continuation after validation, before any OMS side effect."""
+    def observe_liquidity_mark(self, row: Mapping[str, Any], *, at: datetime) -> None:
+        """Advance certified completed marks/caches without executing an order.
+
+        Accounting-only restoration supplies the same causal mark columns as
+        normal execution. No price-volume, trigger or matching method is called.
+        """
+        if (not isinstance(at, datetime) or at.tzinfo is None or at.utcoffset() is None
+                or type(row.get("resolution_ms")) is not int
+                or row['resolution_ms'] != self.config.liquidity_resolution_ms):
+            raise ValueError('Accounting mark requires its configured aware boundary')
+        local = at.astimezone(NEW_YORK)
+        local_ms = (local.hour * 3600 + local.minute * 60 + local.second) * 1000 + local.microsecond // 1000
+        ticker = row.get('ticker')
+        if (type(ticker) is not str or not ticker or ticker != ticker.strip().upper()
+                or local.microsecond % 1000 or local_ms % row['resolution_ms']
+                or type(row.get('bucket_index')) is not int
+                or row['bucket_index'] != local_ms // row['resolution_ms'] - 1
+                or type(row.get('event_count')) is not int or row['event_count'] <= 0
+                or self._bar_boundaries.get(ticker) is not None and at <= self._bar_boundaries[ticker]):
+            raise ValueError('Accounting mark scope is absent, repeated or unordered')
+        boundary_us = int(at.timestamp() * 1000000)
+        first, last = row.get('first_event_us'), row.get('last_event_us')
+        if (type(first) is not int or type(last) is not int
+                or not boundary_us - row['resolution_ms'] * 1000 <= first <= last < boundary_us):
+            raise ValueError('Accounting mark source bounds differ')
+        for name in ('quote_valid', 'price_valid'):
+            if type(row.get(name)) not in (bool, int) or row[name] not in (0, 1):
+                raise ValueError('Accounting mark validity is untyped')
+        if row['quote_valid']:
+            quote_us = row.get('quote_timestamp_us')
+            if type(quote_us) is not int or not 0 < quote_us <= last:
+                raise ValueError('Accounting quote provenance differs')
+            if boundary_us - quote_us <= 1000000:
+                bid, ask = row.get('bid_int'), row.get('ask_int')
+                if (type(bid) is not int or type(ask) is not int or not 0 < bid <= ask
+                        or any(type(row.get(k)) not in (int, float) or not isfinite(row[k]) or row[k] < 0
+                               for k in ('bid_size','ask_size'))):
+                    raise ValueError('Accounting quote values differ')
+        if row['price_valid'] and (type(row.get('close_int')) is not int or row['close_int'] <= 0):
+            raise ValueError('Accounting closing mark is invalid')
+        self._observe_validated_liquidity_mark(row, at=at)
+
+    def _observe_validated_liquidity_mark(self, row: Mapping[str, Any], *, at: datetime):
+        """One shared cache/FP64 mark transition; callers own source validation."""
         ticker = str(row["ticker"]).strip().upper()
-        bucket_start = at - timedelta(milliseconds=self.config.liquidity_resolution_ms)
         boundary_us = int(at.timestamp() * 1_000_000)
         quote_us = int(row.get("quote_timestamp_us") or 0)
         valid_quote = bool(int(row.get("quote_valid") or 0)) and (
@@ -1123,11 +1162,7 @@ class SimulatedBrokerAdapter:
             )
         self._trades_by_ticker.pop(ticker, None)
         price_valid = bool(int(row.get("price_valid") or 0))
-        extremes_valid = bool(int(row.get("extremes_valid") or 0))
         close = float(row.get("close_int") or 0) / 10_000 if price_valid else 0.0
-        low = float(row.get("low_int") or 0) / 10_000 if extremes_valid else 0.0
-        high = float(row.get("high_int") or 0) / 10_000 if extremes_valid else 0.0
-        execution_volume = float(row.get("execution_volume") or 0)
         self._bar_mode = True
         self._bar_boundaries[ticker] = at
         mark = close or (quote.midpoint if quote is not None else 0.0)
@@ -1156,7 +1191,7 @@ class SimulatedBrokerAdapter:
                 ticker_orders = active
         position_conids = self._position_conids_by_ticker.get(ticker, ())
         if not ticker_orders and not position_conids:
-            return []
+            return ()
         conids = {state.request.conid for state in ticker_orders}
         conids.update(position_conids)
         for conid in conids:
@@ -1168,8 +1203,27 @@ class SimulatedBrokerAdapter:
             if mark > 0:
                 self._marks[conid] = mark
                 self._observe_performance(conid, at)
-        if not conids:
+        return tuple(ticker_orders)
+
+    async def _on_validated_liquidity_bar(
+        self, row: Mapping[str, Any], *, at: datetime,
+    ) -> list[Execution]:
+        """Runtime-only continuation after validation, before any OMS side effect."""
+        ticker_orders = self._observe_validated_liquidity_mark(row, at=at)
+        if not ticker_orders:
             return []
+        ticker = str(row["ticker"]).strip().upper()
+        bucket_start = at - timedelta(milliseconds=self.config.liquidity_resolution_ms)
+        quote = self._quotes_by_ticker.get(ticker)
+        bid = float(row.get("bid_int") or 0) / 10_000
+        ask = float(row.get("ask_int") or 0) / 10_000
+        bid_size = float(row.get("bid_size") or 0)
+        ask_size = float(row.get("ask_size") or 0)
+        close = float(row.get("close_int") or 0) / 10_000 if int(row.get("price_valid") or 0) else 0.0
+        extremes_valid = bool(int(row.get("extremes_valid") or 0))
+        low = float(row.get("low_int") or 0) / 10_000 if extremes_valid else 0.0
+        high = float(row.get("high_int") or 0) / 10_000 if extremes_valid else 0.0
+        execution_volume = float(row.get("execution_volume") or 0)
         identity = f"{at.isoformat()}:{int(row.get('bucket_index') or 0)}"
         executions: list[Execution] = []
         async with self._lock:

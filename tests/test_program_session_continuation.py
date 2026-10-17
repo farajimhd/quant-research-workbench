@@ -19,9 +19,9 @@ from tests.test_backtest_v4_keeper_lease import _session, RUN_ID
 from tests.test_program_controller_runtime import definition_and_actor
 
 
-@pytest.mark.parametrize("seconds", [1, 2, 3])
+@pytest.mark.parametrize("seconds", [1, 2, 3, 4])
 @pytest.mark.parametrize("failure", [None, "packet", "pending", "source", "lease", "cursor", "during"])
-def test_continuation_retains_feature_origin_and_checks_fenced_owner(seconds, failure, monkeypatch):
+def test_continuation_retains_feature_origin_and_checks_fenced_owner(seconds, failure, monkeypatch, tmp_path):
     definition, actor = definition_and_actor()
     definition = replace(definition, start_time=time(9, 30), end_time=time(9, 30, 4))
     at = definition.requested_start + timedelta(seconds=seconds)
@@ -75,6 +75,25 @@ def test_continuation_retains_feature_origin_and_checks_fenced_owner(seconds, fa
                 asyncio.run(_continue_fenced_session_work(controller, work, packet))
         else:
             remaining = asyncio.run(_continue_fenced_session_work(controller, work, packet))
+            if seconds == 4:
+                assert remaining == ()
+                from src.backend.replay_run_service import ReplayRunController
+                import src.backend.backtest_program_session as module
+                owner = ReplayRunController(definition, run_id=RUN_ID, runtime_root=tmp_path,
+                    program_strategy=actor, program_liquidity_resolution_ms=100)
+                for name, value in vars(controller).items():
+                    setattr(owner, name, value)
+                async def forbidden(*args, **kwargs):
+                    raise AssertionError('Terminal continuation repeated a broker cohort')
+                monkeypatch.setattr(ReplayRunController, 'run_fenced_program_cohort', forbidden)
+                monkeypatch.setattr(module, 'validate_prepared_program_session', lambda *_: (work, definition, actor))
+                result = asyncio.run(module.run_prepared_program_session(owner, work, initial_packet=packet))
+                assert result.status == 'evaluated'
+                assert result.completed_cohorts == result.planned_cohorts == 0
+                assert result.liquidity_boundaries == result.source_clocks == result.qualified_decisions == 0
+                assert owner._program_evaluated_terminal == (definition, owner._runtime, actor, at, 10)
+                assert owner._program_session_active is False and owner._program_session_task is None
+                return
             assert remaining[0].first_bucket == 34200 + seconds
             assert remaining[-1].stop_bucket == 34204
             assert all(unit.blocks["assignment"] is block for unit in remaining)
