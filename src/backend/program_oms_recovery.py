@@ -14,7 +14,7 @@ from src.trading_runtime.program_oms_lineage import reconstruct_program_oms_line
 async def recover_program_oms_lineages_async(reader_factory, prefix, *, release,
         account_ids, reselect, execution_policy, protection_for, outside_rth,
         maximum_groups=2000, maximum_transitions=20000, maximum_events=100000,
-        through_sequence=None, exact_prices=False):
+        through_sequence=None, exact_prices=False, exact_oms_prices: bool | None = None):
     """Cold join and close the owned reader before cancellation can return.
 
     `reselect` must replay the exact historical filled/observed state and
@@ -22,10 +22,14 @@ async def recover_program_oms_lineages_async(reader_factory, prefix, *, release,
     facts, not admission permission. No group is returned without reselection.
     Source batches are retained for the existing publisher's cold source indexes;
     the shared intent reader independently verifies their normalized V4 rows.
+    ``exact_oms_prices`` selects only OMS group/order storage. When omitted it
+    inherits ``exact_prices``, which still controls protection-history recovery.
     """
     account_ids = tuple(account_ids)
     accounts = frozenset(account_ids)
-    if (type(exact_prices) is not bool or type(prefix) is not V4CommittedPrefix or prefix.status != "running"
+    if (type(exact_prices) is not bool
+            or exact_oms_prices is not None and type(exact_oms_prices) is not bool
+            or type(prefix) is not V4CommittedPrefix or prefix.status != "running"
             or not isinstance(release, ProgramRelease) or not accounts
             or len(accounts) != len(account_ids) or type(outside_rth) is not bool
             or any(type(account) is not str or not account for account in accounts)
@@ -34,6 +38,7 @@ async def recover_program_oms_lineages_async(reader_factory, prefix, *, release,
             or type(maximum_transitions) is not int or not 500 <= maximum_transitions <= 100000
             or type(maximum_events) is not int or not 1 <= maximum_events <= 1000000):
         raise ValueError("Program OMS cold join requires bounded declared authority")
+    oms_prices = exact_prices if exact_oms_prices is None else exact_oms_prices
     if through_sequence is not None and (type(through_sequence) is not int
             or not 0 <= through_sequence <= prefix.last_sequence):
         raise ValueError("Program OMS historical cutoff differs from its verified prefix")
@@ -47,7 +52,7 @@ async def recover_program_oms_lineages_async(reader_factory, prefix, *, release,
                 allowed_accounts=accounts,
                 strategy_identity=(release.header["strategy_id"], release.header["strategy_number"]),
                 require_tactic=True, max_transitions=maximum_transitions,
-                **({"exact_prices": True} if exact_prices else {}),
+                **({"exact_prices": True} if oms_prices else {}),
                 **({"through_sequence": through_sequence} if through_sequence is not None else {}))
             if len(groups) > maximum_groups:
                 raise ValueError("Program OMS group inventory exceeds its bound")
