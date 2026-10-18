@@ -60,20 +60,28 @@ class NetworkPlan:
         self.memory=torch.zeros_like(self.workspace);self.memory_known=torch.zeros_like(self.known)
         self.feedback=torch.zeros((b,u,len(STATES)-7),device=self.device,dtype=torch.float32)
         self.previous_clock=torch.full((),-1,device=self.device,dtype=torch.int64)
+        self.buffer_phase=torch.zeros((),device=self.device,dtype=torch.int64)
         self.ratios=torch.ones((1,b,u,3),device=self.device,dtype=torch.float64)
         self.workspace_shape=(b,u)
 
     def reset(self):
         if self.workspace_shape is not None:
-            self.memory.zero_();self.memory_known.zero_();self.feedback.zero_();self.previous_clock.fill_(-1);self.ratios.fill_(1.)
+            self.memory.zero_();self.memory_known.zero_();self.feedback.zero_();self.previous_clock.fill_(-1);self.ratios.fill_(1.);self.buffer_phase.zero_()
 
     def export_state(self):
-        return {k:getattr(self,k).detach().cpu().clone() for k in ('memory','memory_known','feedback','previous_clock')}
+        # Expose logical preceding-clock values, independent of physical buffer.
+        odd=self.device.type=='cuda' and bool(self.buffer_phase.item()&1)
+        fields=dict(memory=self.workspace if odd else self.memory,memory_known=self.known if odd else self.memory_known,feedback=self.feedback,previous_clock=self.previous_clock)
+        return {k:v.detach().cpu().clone() for k,v in fields.items()}
 
     def restore_state(self,state):
+        if set(state)!=set(('memory','memory_known','feedback','previous_clock')):raise ValueError('Incomplete replay memory state')
         for k,value in state.items():
             target=getattr(self,k)
             if target.shape!=value.shape or target.dtype!=value.dtype:raise ValueError('Replay memory state changed')
+        self.buffer_phase.zero_()
+        for k,value in state.items():
+            target=getattr(self,k)
             target.copy_(value.to(self.device))
 
     def record_outcomes(self,before,after,price,signals):
@@ -134,4 +142,4 @@ class NetworkPlan:
         return result
 
     def close(self):
-        self.workspace=None;self.known=None;self.memory=None;self.memory_known=None;self.feedback=None;self.workspace_shape=None
+        self.workspace=None;self.known=None;self.memory=None;self.memory_known=None;self.feedback=None;self.buffer_phase=None;self.workspace_shape=None

@@ -65,6 +65,10 @@ Float32 neural inference uses ragged contiguous node storage, not padded maximum
 size per strategy. Two one-clock buffers hold current and delayed values and
 validity; the explicit neural workspace admission is 4 GiB. Financial replay is
 float64 and chronological, with a protected fused transition and CUDA capture.
+The neuron-state buffers alternate using a device-side phase counter, avoiding
+whole-state copies per clock. The action-pack kernel advances that counter, so
+single-clock graph replays also retain correct delayed state. State export and
+restore expose logical values independently of the physical buffer.
 Features are shared across candidates. No full-session hidden-state tape is
 allocated. Cache paths are short and runtime-only. Laptop host admission retains
 12 GiB reserve plus 8 GiB load allowance, one worker and no prefetch.
@@ -97,3 +101,16 @@ window, with recurrent equations and sizing heads shown. Closing that observer
 does not stop the hidden training process. Ctrl+C on the training controller
 requests a sealed-generation stop. Never overwrite a live campaign or remove
 STOP without an intentional exact-checkpoint resume.
+
+`tune.py` is a finite matched diagnostic for explicit immutable engine code,
+saved checkpoint fixtures and batches 512/1024/2048/4096. Fixture repeats measure
+throughput only and never enter training. It saves per-candidate financial hashes
+and optional captured 128-clock action/sizing hashes. Audit transfer slices stay
+below 32 MiB and are excluded from evaluation timing.
+
+`resume.prepare` supports a qualified performance-only continuation into a new
+campaign. It requires released ownership, verified seals, current-source tests,
+full-session financial equality and exact captured action/sizing equality for
+the saved next population. Only source/batch contract fields may change.
+Population, RNG, ancestry, archives and state hash remain exact. Initial
+evaluations are not repeated and old results are retained.

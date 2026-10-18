@@ -392,3 +392,56 @@ def test_all_positive_fractions_allowed_without_order_floor(signal):
     for x,y in zip(expected,actual):torch.testing.assert_close(x,y.cpu(),rtol=1e-12,atol=1e-10)
     column={1:4,4:5,8:6}[signal];assert expected[1][0,0,column]==1 and expected[1][0,1,column]==0
     assert expected[0][0,0,0,7]<0 # ordinary minimum fee still applies
+
+
+def test_performance_resume_preserves_sealed_state_and_rejects_gate_change(tmp_path):
+    import json,hashlib
+    from pathlib import Path
+    import research.vectorized_backtest.v29.resume as resume
+    from research.vectorized_backtest.v29.run_search import digest
+    from research.vectorized_backtest.v6.torch_backtest.runtime import write_json,file_hash
+    root=tmp_path/'resume-root';previous=root/'campaigns/old';local=previous/'local/2026-08-04';g=local/'generation-0001'
+    population=[{'fixture':i} for i in range(10)];owner=dict(pid=123,creation_time=1,campaign=str(previous))
+    for name,value in [('active.json',owner),('exit.json',{'exit_code':130}),('manifest.json',{'source_sha256':'old'})]:write_json(previous/name,value)
+    write_json(root/'active-campaign.json',owner);write_json(local/'initialization.json',{'random_count':60});(local/'STOP').touch()
+    for name in ['2026-08-04/receipt.json','scores.json','births.json']:write_json(g/name,{'test':name})
+    write_json(g/'complete.json',dict(receipt_sha256=file_hash(g/'2026-08-04/receipt.json'),scores_sha256=file_hash(g/'scores.json'),births_sha256=file_hash(g/'births.json')))
+    state=dict(completed=1,population=population,rng={'state':123},seals={'1':file_hash(g/'complete.json')},ids=list(range(10)),pedigree=[],archive=[],archive_pool=[],next_serial=10)
+    checkpoint=dict(contract=dict(source_sha256='old',batch_size=512,generations=30),state=state,state_sha256=digest(state));write_json(local/'checkpoint.json',checkpoint)
+    fixture=tmp_path/'fixture.json';write_json(fixture,dict(population=population,population_sha256=digest(population)))
+    q=dict(baseline_source_sha256='old',candidate_source_sha256='new',batch=1024,fixture=str(fixture),fixture_sha256=file_hash(fixture))
+    for name in ('baseline_full','candidate_full','baseline_audit','candidate_audit'):
+        audit=name.endswith('audit');r=dict(status='complete',source_sha256='old' if name.startswith('baseline') else 'new',fixture_sha256=q['fixture_sha256'],full_session=not audit,audit=audit,clocks=128 if audit else 19799,candidates=10,batch=512 if name.startswith('baseline') else 1024,cases=[dict(financial_hashes=[digest(i) for i in range(10)],gate_ratio_hashes=[{'gates_sha256':digest(i),'ratios_sha256':digest(i+10)} for i in range(10)])])
+        path=tmp_path/(name+'.json');write_json(path,r);q[name]=str(path);q[name+'_sha256']=file_hash(path)
+    output=tmp_path/'unit-test-output.txt';output.write_text('fixture output');tests=tmp_path/'unit-test-result.json';write_json(tests,dict(exit_code=0,source_sha256='new',output=str(output),output_sha256=file_hash(output)));q.update(tests_result=str(tests),tests_result_sha256=file_hash(tests))
+    qualification=tmp_path/'qualification.json';write_json(qualification,q)
+    with patch.object(resume,'ROOT',root),patch.object(resume,'source_hash',return_value='new'),patch.object(resume.psutil,'Process',return_value=SimpleNamespace(create_time=lambda:2)):
+        proof=resume.prepare(previous,root/'campaigns/new',qualification)
+        saved=json.loads((root/'campaigns/new/local/2026-08-04/checkpoint.json').read_bytes())
+        assert saved['state']==state and saved['state_sha256']==checkpoint['state_sha256']
+        assert saved['contract']==dict(checkpoint['contract'],source_sha256='new',batch_size=1024)
+        assert proof['resume_generation']==2 and not proof['initial_evaluations_repeated']
+        assert json.loads((local/'checkpoint.json').read_bytes())==checkpoint
+        candidate=Path(q['candidate_audit']);r=json.loads(candidate.read_bytes());r['cases'][0]['gate_ratio_hashes'][0]['ratios_sha256']=digest('changed');write_json(candidate,r);q['candidate_audit_sha256']=file_hash(candidate);write_json(qualification,q)
+        with pytest.raises(ValueError,match='Exact matched results differ'):resume.prepare(previous,root/'campaigns/rejected',qualification)
+        assert not (root/'campaigns/rejected').exists()
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA required')
+def test_recurrent_pingpong_single_clock_graph_and_odd_state_restore():
+    m=sample(np.random.default_rng(10),1)[0];n=Network((Neuron((0,-1),(.2,.8),.1,91),),-.9)
+    m=replace(m,networks={s:n for s in STAGES});gpu=NetworkPlan([m],'cuda');cpu=NetworkPlan([m],'cpu')
+    d=toy('cuda');dc=toy();position=torch.zeros((1,1,3,9),device='cuda',dtype=torch.float64);opened=torch.zeros((1,1,3),device='cuda');previous=d.tensors['mark'][1][None,None];index=torch.tensor(1,device='cuda')
+    gpu.prepare(1,3);stream=torch.cuda.Stream();stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream),torch.inference_mode():
+        gpu.signals(d,index,position,opened,previous);gpu.reset();graph=torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph,stream=stream):gpu.signals(d,index,position,opened,previous)
+        gpu.reset()
+    torch.cuda.current_stream().wait_stream(stream)
+    for _ in range(3):
+        graph.replay();cpu.signals(dc,torch.tensor(1),position.cpu(),opened.cpu(),previous.cpu())
+        actual=gpu.export_state();torch.testing.assert_close(actual['memory'],cpu.memory,rtol=0,atol=1e-6)
+    saved=gpu.export_state();graph.replay();graph.replay();expected=gpu.export_state()
+    gpu.restore_state(saved);graph.replay();graph.replay();restored=gpu.export_state()
+    for key in expected:assert torch.equal(expected[key],restored[key])
+    gpu.reset();graph.replay();fresh=gpu.export_state();cpu.reset();cpu.signals(dc,torch.tensor(1),position.cpu(),opened.cpu(),previous.cpu())
+    torch.testing.assert_close(fresh['memory'],cpu.memory,rtol=0,atol=1e-6)
