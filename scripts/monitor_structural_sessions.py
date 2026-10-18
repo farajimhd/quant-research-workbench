@@ -17,6 +17,21 @@ from rich.progress_bar import ProgressBar
 
 _CERTIFICATES=None
 _CERTIFICATE_TIME=0.
+_ACTIVITY={}
+_ACTIVITY_TIME=0.
+
+
+def activity_progress():
+    global _ACTIVITY,_ACTIVITY_TIME
+    if time.monotonic()-_ACTIVITY_TIME<5:return _ACTIVITY
+    from contextlib import closing
+    from scripts.build_market_day import Client,parse_args
+    with closing(Client(parse_args(['--date','2026-01-02']),readonly=True)) as client:
+        rows=client.query("SELECT elapsed,read_rows,read_bytes,memory_usage FROM system.processes "
+            "WHERE query_id LIKE 'market-day-%' AND query NOT LIKE '%system.processes%' ORDER BY elapsed DESC LIMIT 1")
+    _ACTIVITY=rows[0] if rows else {}
+    _ACTIVITY_TIME=time.monotonic()
+    return _ACTIVITY
 
 
 def certificate_progress():
@@ -49,7 +64,9 @@ def snapshot(root):
     evidence={};events=[]
     if (recovery/'status.json').exists():
         evidence=json.loads((recovery/'status.json').read_text())
-        try:evidence['certificates']=certificate_progress()
+        try:
+            evidence['certificates']=certificate_progress()
+            evidence['activity']=activity_progress()
         except Exception as error:
             evidence['certificates']=_CERTIFICATES
             evidence['warning']='Certificate refresh unavailable: '+type(error).__name__
@@ -58,7 +75,9 @@ def snapshot(root):
                 stream.seek(max(0,stream.seek(0,2)-8192))
                 events=[line for line in stream.read().decode('utf-8',errors='replace').splitlines()
                         if line.startswith(('Native reporting','Retained reporting','Source ready','Source preparation'))][-4:]
-    return dict(controller=controller,status=status,stop=(root/'STOP').exists(),evidence=evidence,events=events)
+    from datetime import datetime,timezone
+    return dict(controller=controller,status=status,stop=(root/'STOP').exists(),evidence=evidence,events=events,
+        refreshed=datetime.now(timezone.utc).strftime('%H:%M:%S UTC'))
 
 
 def render(value,width=100,height=30,rate=None):
@@ -70,6 +89,7 @@ def render(value,width=100,height=30,rate=None):
         state='Waiting for reporting recovery'
     color='red' if state in ('failed','interrupted') else 'green' if state=='complete' else 'cyan'
     lines=Text(f'Structural levels  |  {state}',style=color)
+    lines.append('\nDisplay refreshed: '+value.get('refreshed','-')+' | query activity every 5s; certificates every 60s')
     bars=[]
     if evidence:
         lines.append('\nReporting evidence recovery: '+evidence.get('status','unknown'),style='cyan')
@@ -77,10 +97,14 @@ def render(value,width=100,height=30,rate=None):
         if proof:
             lines.append(f'\nReporting sessions: {proof["completed"]} / {proof["total"]} certified; {proof["remaining"]} remaining ({proof["utc"]})')
             bars.append(ProgressBar(total=proof['total'],completed=proof['completed']))
+        activity=evidence.get('activity',{})
+        if activity:
+            lines.append(f'\nCurrent verification: {activity["elapsed"]:.0f}s | {int(activity["read_rows"]):,} rows read | {int(activity["read_bytes"])/1024**3:.2f} GiB read')
+        else:lines.append('\nCurrent verification: between queries / preparing next step')
         if evidence.get('warning'):lines.append('\n'+evidence['warning'],style='yellow')
         if evidence.get('status')=='running':
             lines.append('\nLevels wait for strict reporting certification; automatic resume enabled.')
-        for event in value.get('events',[]):lines.append('\n'+event)
+        for event in value.get('events',[])[-2:]:lines.append('\n'+event)
     if phase=='waiting_for_bars':
         lines.append('\nWaiting for certified bars and released bar ownership.')
     done=s.get('completed',0);reuse=s.get('reused',0);total=s.get('total')
