@@ -263,18 +263,25 @@ def _process_ticker(spec,a,ticker):
             values = calculate(prior=prior, ticker=ticker, day=day, bars=bars,
                 actions=actions, regular_close=closes[day], existing_ah=bool(exists),
                 persist_intraday=target, historical_bars=historical_bars)
+            # Expose missing AH first so legacy prior-day readers can never
+            # mistake a newly published regular snapshot for the day's AH.
+            if 'AH' in values:
+                publish_ah(client, values['AH'], plan_hash)
+                ah_by_day[day] = ah_coverage(client, ticker, day)[0]
             for boundary in ('PM', 'REGULAR'):
                 if boundary in values:
                     values[boundary]['source'] = source_ref
                     storage.publish_boundary(client, values[boundary], plan_hash)
-            if 'AH' in values:
-                publish_ah(client, values['AH'], plan_hash)
-                ah_by_day[day] = ah_coverage(client, ticker, day)[0]
             done += int(target)
             builder.save(ticker_file(a.run_dir,ticker,'.json'), dict(owner=spec['owner']['token'],status='running', active=f'{day} {ticker}',
                 completed=done, reused=reused, total=len(selected), failed=0,
                 queued=len(selected)-done-reused))
             print(f'{done+reused}/{len(selected)} | completed {done} | reused {reused} | failed 0 | {day} {ticker}', flush=True)
+
+        if last_target not in ah_by_day:
+            raise ValueError('Final target day has no completed AH checkpoint')
+        load_seed(client.http,ticker=ticker,session=date.fromisoformat(last_target)+timedelta(days=1),
+                  coverage=ah_by_day[last_target])
 
     result=dict(owner=spec['owner']['token'],status='complete',ticker=ticker,
                 completed=done,reused=reused,seconds=perf_counter()-started)
@@ -359,7 +366,9 @@ def run(a):
                                   '--max-threads', '1', '--max-memory-gb', '2'])
     with closing(builder.Client(options, readonly=a.plan_only or a.profile_only)) as client:
         latest = client.query('SELECT max(source_date) day FROM market_sip_compact.events_source_day_stats FINAL')[0]['day']
-        end = a.end_date or date.fromisoformat(latest)
+        frozen=a.run_dir/'structural-request.json'
+        end = (date.fromisoformat(read_json(frozen)['end']) if a.resume and a.end_date is None and frozen.exists()
+               else a.end_date or date.fromisoformat(latest))
         inv = inventory(client.query, a.start_date, end)
         if inv['missing'] or inv['incomplete']:
             raise ValueError('Structural target range has uncertified canonical source days')

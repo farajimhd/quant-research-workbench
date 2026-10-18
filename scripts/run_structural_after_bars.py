@@ -34,7 +34,9 @@ def main(argv=None):
     command=[sys.executable,'-B',str(Path(__file__).with_name('backfill_structural_sessions.py')),
         '--bars-run-dir',str(a.bars_run_dir),'--run-dir',str(a.run_dir),
         '--start-date',a.start_date,'--endpoint',a.endpoint]
-    if a.end_date:command+=['--end-date',a.end_date]
+    frozen=a.run_dir/'structural-request.json'
+    end=a.end_date or (read_json(frozen)['end'] if frozen.exists() else None)
+    if end:command+=['--end-date',end]
     with build_lock(a.run_dir/'deferred-controller.lock'):
         state('waiting_for_bars')
         try:
