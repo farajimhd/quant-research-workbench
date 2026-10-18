@@ -143,7 +143,9 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
     from .episodes import Episodes
     from .swing_projection import entry_swings
     episodes=Episodes(1,b,episode_capacity,device,max_listings=u,trace=trace)
-    required=episodes.profits.numel()*(32 if trace else 16)+b*u*1024+item.clocks*u*32
+    # Include the live one-clock neuron values and provenance, in addition to
+    # the unchanged financial buffers. Capacity is never reduced for admission.
+    required=episodes.profits.numel()*(32 if trace else 16)+b*u*(1024+5*plan.kernel_nodes*5)+item.clocks*u*32
     if device.type=='cuda' and required>torch.cuda.mem_get_info(device)[0]*.8:raise MemoryError('Neural replay exceeds physical GPU headroom')
     position=torch.zeros((1,b,u,9),dtype=torch.float64,device=device)
     aggregate=torch.zeros((1,b,16),dtype=torch.float64,device=device);aggregate[...,8]=float('inf')

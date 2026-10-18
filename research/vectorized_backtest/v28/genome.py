@@ -1,13 +1,14 @@
 """Five independent sparse feed-forward action networks and policy genes."""
 from dataclasses import dataclass,asdict,replace
 import math
-from .config import MAX_NODES,MAX_DEPTH,FAN_IN,STATES
+from .config import MAX_NODES,MAX_DEPTH,FAN_IN,STATES,INITIAL_SIZES
 from .features import CATALOG
 from research.vectorized_backtest.v27.genome import Policy,random_policy_gene
 from research.vectorized_backtest.v27.search_space import feature_index
 from research.vectorized_backtest.v6.torch_backtest.history_bank import SWING_WINDOWS
 STAGES=('entry','exit','add','reduce','trail')
-INPUTS=len(CATALOG)+len(STATES)
+MARKET_INPUTS=3*len(CATALOG)
+INPUTS=MARKET_INPUTS+len(STATES)
 
 @dataclass(frozen=True)
 class Neuron:
@@ -31,7 +32,7 @@ class Network:
             depths.append(1+max((depths[s-INPUTS] for s in n.sources if s>=INPUTS),default=0))
         if max(depths)>MAX_DEPTH:raise ValueError('Network depth exceeded')
         if len(reachable(self,len(self.nodes)-1))!=len(self.nodes):raise ValueError('Unreachable neurons')
-        if not any(s<len(CATALOG) for n in self.nodes for s in n.sources):raise ValueError('Market-dependent action required')
+        if not any(s<2*len(CATALOG) for n in self.nodes for s in n.sources):raise ValueError('Market-value-dependent action required')
         return self
     def payload(self):return dict(nodes=[asdict(n) for n in self.nodes],threshold=self.threshold)
     @classmethod
@@ -52,11 +53,13 @@ def prune(net,root=None):
 
 def random_input(rng,stage):
     # Flat-only entry has no meaningful held-position state.
-    return len(CATALOG)+int(rng.integers(len(STATES))) if stage!='entry' and rng.random()<.15 else int(feature_index(rng))
+    if stage!='entry' and rng.random()<.15:return MARKET_INPUTS+int(rng.integers(len(STATES)))
+    channel=int(rng.choice(3,p=(.45,.45,.10)))
+    return channel*len(CATALOG)+int(feature_index(rng))
 
 def random_network(rng,stage,size=None):
     """Broad exact-size trees with varied branching, depth and sparse inputs."""
-    size=int(rng.integers(1,MAX_NODES+1)) if size is None else int(size)
+    size=int(rng.choice(INITIAL_SIZES)) if size is None else int(size)
     minimum=1
     while sum(FAN_IN**i for i in range(minimum))<size:minimum+=1
     depth=int(rng.integers(minimum,min(MAX_DEPTH,size)+1));nodes=[]
@@ -69,8 +72,8 @@ def random_network(rng,stage,size=None):
                 options=[i for i,x in enumerate(parts) if x<capacity];k=int(rng.choice(options));parts[k]+=1;remaining-=1
             for part in parts:sources.append(build(part,d-1))
         # Every leaf contains a market feature, never a pure-state dead end.
-        if not sources:sources.append(int(feature_index(rng)))
-        width=int(rng.integers(max(2,len(sources)),FAN_IN+1))
+        if not sources:sources.append(int(feature_index(rng))+int(rng.integers(2))*len(CATALOG))
+        width=int(rng.integers(max(1,len(sources)),FAN_IN+1))
         while len(sources)<width:
             source=random_input(rng,stage)
             if source not in sources:sources.append(source)
@@ -89,14 +92,14 @@ class Individual:
         if set(self.networks)!=set(STAGES):raise ValueError('Five independent action networks required')
         for stage,n in self.networks.items():
             n.validate()
-            if stage=='entry' and any(len(CATALOG)<=s<INPUTS for node in n.nodes for s in node.sources):raise ValueError('Entry cannot read held-position state')
+            if stage=='entry' and any(MARKET_INPUTS<=s<INPUTS for node in n.nodes for s in node.sources):raise ValueError('Entry cannot read held-position state')
         self.policy.validate()
         if any(k not in STAGES or type(v) is not int or not 0<=v<=3600 for k,v in self.minimum_age.items()):raise ValueError('Invalid age gate')
         return self
-    def payload(self):return dict(version='v28',networks={s:n.payload() for s,n in self.networks.items()},policy=asdict(self.policy),minimum_age=self.minimum_age)
+    def payload(self):return dict(version='v28-neural-v2',networks={s:n.payload() for s,n in self.networks.items()},policy=asdict(self.policy),minimum_age=self.minimum_age)
     @classmethod
     def restore(cls,p):
-        if p.get('version')!='v28':raise ValueError('Only fresh V28 network genomes accepted')
+        if p.get('version')!='v28-neural-v2':raise ValueError('Only fresh revised V28 network genomes accepted')
         return cls({s:Network.restore(n) for s,n in p['networks'].items()},Policy(**p['policy']),p['minimum_age']).validate()
 
 def sample(rng,count,*,stratified=False):
@@ -110,7 +113,7 @@ def sample(rng,count,*,stratified=False):
 
 def np_sizes(count):
     import numpy as np
-    return np.arange(count)%MAX_NODES+1
+    return np.asarray(INITIAL_SIZES)[np.arange(count)%len(INITIAL_SIZES)]
 
 def mutate(rng,parent):
     from .composition import mutation

@@ -22,10 +22,14 @@ def rule_lines(payload,stage):
     if payload is None:return ['Network unavailable in the retained checkpoint.']
     from .features import CATALOG
     from .config import STATES
-    inputs=len(CATALOG)+len(STATES)
+    revised=payload.get('version')=='v28-neural-v2'
+    market_inputs=(3 if revised else 1)*len(CATALOG)
+    inputs=market_inputs+len(STATES)
     def name(source):
-        if source<len(CATALOG):return CATALOG[source].name
-        if source<inputs:return str(STATES[source-len(CATALOG)])
+        if source<market_inputs:
+            prefix=('absolute','cross_sectional','validity')[source//len(CATALOG)] if revised else 'legacy_scaled'
+            return prefix+':'+CATALOG[source%len(CATALOG)].name
+        if source<inputs:return str(STATES[source-market_inputs])
         return f'n{source-inputs}'
     network=payload['networks'][stage]
     lines=[]

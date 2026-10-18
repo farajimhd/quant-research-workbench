@@ -5,7 +5,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 import torch
-from research.vectorized_backtest.v28.genome import Individual,Network,Neuron,INPUTS,STAGES,sample,prune
+from research.vectorized_backtest.v28.genome import Individual,Network,Neuron,INPUTS,MARKET_INPUTS,STAGES,sample,prune
 from research.vectorized_backtest.v28.features import CATALOG
 from research.vectorized_backtest.v28.composition import cross,compose,mutation
 from research.vectorized_backtest.v28.network import NetworkPlan
@@ -42,11 +42,11 @@ def test_genetics_roundtrip_and_rng_resume():
     assert len({tuple(e['gene']) for e in edits})==5
 
 def test_initial_topology_stratification():
-    members=sample(np.random.default_rng(2020),64,stratified=True)
+    from research.vectorized_backtest.v28.config import INITIAL_SIZES,MAX_NODES
+    members=sample(np.random.default_rng(2020),2*len(INITIAL_SIZES),stratified=True)
     for s in STAGES:
-        counts=np.bincount([len(m.networks[s].nodes) for m in members],minlength=17)
-        assert np.array_equal(counts[1:],np.full(16,4))
-    assert max(len(m.networks['entry'].nodes) for m in members)==16
+        assert sorted(len(m.networks[s].nodes) for m in members)==sorted(INITIAL_SIZES*2)
+    assert max(len(m.networks['entry'].nodes) for m in members)==MAX_NODES
 
 def metrics_fixture(n,sign=1):
     x=np.arange(1,n+1,dtype=float)*sign
@@ -126,7 +126,8 @@ def test_composition_preserves_both_parents():
     assert n.threshold!=a.threshold and n.validate()
 
 def test_size_and_depth_fail_closed():
-    a=Network(tuple(Neuron((0,) if i==0 else (INPUTS+i-1,),(1.,),0.) for i in range(6)),0.).validate()
+    from research.vectorized_backtest.v28.config import MAX_DEPTH
+    a=Network(tuple(Neuron((0,) if i==0 else (INPUTS+i-1,),(1.,),0.) for i in range(MAX_DEPTH)),0.).validate()
     with pytest.raises(ValueError):compose(np.random.default_rng(1),a,a,True)
 
 def test_old_symbolic_genome_rejected():
@@ -148,7 +149,7 @@ def test_terminal_compact_and_redirected_output(tmp_path):
         assert max(map(len,text.splitlines()))<=width
 
 def test_entry_cannot_read_position_state():
-    m=sample(np.random.default_rng(1),1)[0];n=Network((Neuron((0,len(CATALOG)),(1.,1.),0.),),0.)
+    m=sample(np.random.default_rng(1),1)[0];n=Network((Neuron((0,MARKET_INPUTS),(1.,1.),0.),),0.)
     with pytest.raises(ValueError):replace(m,networks=dict(m.networks,entry=n)).validate()
 
 def test_missing_input_masks_output():
@@ -160,13 +161,86 @@ def test_missing_input_masks_output():
 def test_cuda_signals_dynamic_state_and_padding():
     members=sample(np.random.default_rng(3),4);cpu=toy();gpu=toy('cuda')
     # Make state dependence explicit, not dependent on random sampling.
-    n=Network((Neuron((0,len(CATALOG)+1),(.3,.8),.1),),.1)
+    n=Network((Neuron((0,MARKET_INPUTS+1),(.3,.8),.1),),.1)
     members=[replace(m,networks=dict(m.networks,exit=n)) for m in members]
     p=torch.zeros((1,4,5,9),dtype=torch.float64);p[...,0]=2;p[...,1]=10;p[...,2]=9;p[...,5]=1
     prev=torch.full((1,1,5),10.5,dtype=torch.float64);opened=torch.zeros((1,4,5),dtype=torch.float64)
     a=NetworkPlan(members,'cpu').signals(cpu,torch.tensor(10),p,opened,prev)
     b=NetworkPlan(members,'cuda').signals(gpu,torch.tensor(10,device='cuda'),p.cuda(),opened.cuda(),prev.cuda())
     assert torch.equal(a,b.cpu()) and not b[...,3:].any()
+    reference=NetworkPlan(members,'cuda');reference.register_engine=True
+    c=reference.signals(gpu,torch.tensor(10,device='cuda'),p.cuda(),opened.cuda(),prev.cuda())
+    assert torch.equal(b,c)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA required')
+def test_maximum_graph_and_missingness_workspace_register_parity():
+    from research.vectorized_backtest.v28.genome import random_network
+    rng=np.random.default_rng(101);m=sample(rng,1)[0]
+    n=random_network(rng,'entry',64)
+    m=replace(m,networks={s:n for s in STAGES});d=toy('cuda')
+    p=torch.zeros((1,1,3,9),dtype=torch.float64,device='cuda');opened=torch.zeros((1,1,3),device='cuda');price=d.tensors['mark'][1][None,None]
+    a=NetworkPlan([m],'cuda');b=NetworkPlan([m],'cuda');b.register_engine=True
+    for tick in (1,5,12):
+        index=torch.tensor(tick,device='cuda')
+        assert torch.equal(a.signals(d,index,p,opened,price),b.signals(d,index,p,opened,price))
+    assert a.workspace.numel()==5*64*3
+
+
+def test_partial_missing_inputs_do_not_veto_observed_inputs():
+    m=sample(np.random.default_rng(1),1)[0]
+    n=Network((Neuron((0,len(CATALOG)-1,3*len(CATALOG)-1),(.5,.5,.5),1.),),-.5)
+    m=replace(m,networks={s:n for s in STAGES})
+    d=toy();plan=NetworkPlan([m],'cpu')
+    z=plan.signals(d,torch.tensor(1),torch.zeros((1,1,3,9),dtype=torch.float64),torch.zeros((1,1,3)),d.tensors['mark'][1][None,None])
+    assert (z==31).all()
+
+
+def test_scaling_retains_levels_cross_section_and_causality():
+    d=toy();members=sample(np.random.default_rng(2),1)
+    n=Network((Neuron((0,len(CATALOG)),(1.,1.),0.),),0.)
+    members=[replace(members[0],networks={s:n for s in STAGES})]
+    plan=NetworkPlan(members,'cpu');a,mask=plan.project(d,torch.tensor(1))
+    assert a.shape==(3,3) and torch.equal(a[:,2],mask[:,0].float())
+    assert a[:,1].std()>0 and torch.isfinite(a).all()
+    # Changing a future row cannot affect current-clock scaling or values.
+    original=d.resident_features._values
+    def future(rows,ids,clock,columns):
+        v,m=original(rows,ids,clock,columns)
+        return v+torch.where(clock[:,:,None]>1,10000.,0.),m
+    d.resident_features._values=future
+    b,_=plan.project(d,torch.tensor(1));assert torch.equal(a,b)
+
+
+def test_mating_preserves_cooperating_actions_and_local_thresholds():
+    from research.vectorized_backtest.v28.composition import exchange
+    rng=np.random.default_rng(302);a,b=sample(rng,2)
+    for _ in range(30):
+        try:c,_=cross(rng,a,b)
+        except ValueError:continue
+        assert min(sum(c.networks[s]!=p.networks[s] for s in STAGES) for p in (a,b))<=2
+    left=Network((Neuron((0,),(1.,),0.),Neuron((INPUTS,),(1.,),0.)),.37)
+    right=Network((Neuron((1,),(1.,),0.),),-.21)
+    for _ in range(30):
+        n=exchange(rng,left,right)
+        assert n.threshold in (left.threshold,right.threshold)
+    for _ in range(100):
+        c,edits=mutation(rng,a,1)
+        for edit in edits:
+            if edit['field'].startswith('structure'):
+                assert c.networks[edit['stage']].threshold==a.networks[edit['stage']].threshold
+
+
+def test_swing_pair_can_mutate_without_changing_other_policy_genes():
+    rng=np.random.default_rng(88);a=sample(rng,1)[0]
+    for _ in range(3000):
+        c,edits=mutation(rng,a,1)
+        if edits[0]['gene']==['policy','swing']:
+            c.policy.validate()
+            assert (c.policy.swing_left,c.policy.swing_right)!=(a.policy.swing_left,a.policy.swing_right)
+            assert replace(c.policy,swing_left=a.policy.swing_left,swing_right=a.policy.swing_right)==a.policy
+            break
+    else:raise AssertionError('Swing mutation route unreachable')
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA required')
 def test_financial_cpu_cuda_graph_parity():

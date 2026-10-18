@@ -15,7 +15,7 @@ from .run_search import bind_dataset,source_hash,digest
 from research.vectorized_backtest.v6.torch_backtest.runtime import write_json,configure_caches,require_runtime
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--training',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--clocks',type=int,default=256);p.add_argument('--batches',default='128,256,512');args=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--training',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--clocks',type=int,default=256);p.add_argument('--batches',default='128,256,512');p.add_argument('--kernel-comparison',action='store_true');args=p.parse_args()
     torch.set_num_threads(1);out=require_runtime(args.output);configure_caches(out/'cache',recompile_limit=128);train=bind_dataset(args.training,'training');day='2026-08-04'
     started=time.perf_counter();print('Loading certified Aug4 inputs',flush=True)
     data=prepare_host(SessionData(Path(train['inputs'])/day,Path(train['history'])/day,device='cpu',maximum_gib=4.,indicator_root=Path(train['indicator_root'])/day,enriched_root=Path(train['enriched_root'])/day),resident=True)
@@ -49,6 +49,46 @@ def main():
             case=dict(batch=batch,pass_index=passno,clocks=data.clocks-1,seconds=elapsed,financial_hash=financial_hash,peak_allocated=torch.cuda.max_memory_allocated(),peak_reserved=torch.cuda.max_memory_reserved(),available_gib=psutil.virtual_memory().available/2**30)
             report['cases'].append(case);print(case,flush=True);write_json(out/'profile-progress.json',report);del result
         plan.close()
+    if args.kernel_comparison:
+        # Excluded from replay timings. Same real clock, candidate payloads and
+        # position fixtures for all kernels; no candidates enter training.
+        plan=NetworkPlan(members,'cuda');u=len(data.listing_ids);b=len(members)
+        position=torch.zeros((1,b,u,9),device='cuda',dtype=torch.float64)
+        opened=torch.zeros((1,b,u),device='cuda',dtype=torch.float64)
+        index=torch.tensor(min(100,data.clocks-1),device='cuda');previous=data.tensors['mark'][index][None,None]
+        report['kernel_comparison']=[];reference=None
+        for register,block in ((True,32),(False,32),(False,64),(False,128),(False,256)):
+            plan.register_engine=register;plan.cuda_block=block
+            value=plan.signals(data,index,position,opened,previous);torch.cuda.synchronize()
+            gate_hash=digest(value.cpu().tolist())
+            if reference is None:reference=gate_hash
+            elif gate_hash!=reference:raise AssertionError('Neural kernel exact gate parity failed')
+            stream=torch.cuda.Stream();stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(stream),torch.inference_mode():
+                plan.signals(data,index,position,opened,previous)
+                graph=torch.cuda.CUDAGraph()
+                with torch.cuda.graph(graph,stream=stream):plan.signals(data,index,position,opened,previous)
+            torch.cuda.current_stream().wait_stream(stream)
+            for _ in range(10):graph.replay()
+            begin=torch.cuda.Event(enable_timing=True);end=torch.cuda.Event(enable_timing=True)
+            begin.record()
+            for _ in range(200):graph.replay()
+            end.record();end.synchronize()
+            result=dict(engine='register' if register else 'workspace',block=block,milliseconds_per_clock=begin.elapsed_time(end)/200,exact_gate_sha256=gate_hash)
+            report['kernel_comparison'].append(result);print(result,flush=True)
+            del graph;gc.collect();torch.cuda.empty_cache()
+        # Availability diagnostics are measured separately from financial replay.
+        report['input_diagnostics']=[]
+        plan.register_engine=False
+        for tick in (0,min(100,full-1),min(200,full-1)):
+            index.fill_(tick);values,valid=plan.project(data,index);c=len(plan.columns)
+            value=plan.signals(data,index,position,opened,previous)
+            report['input_diagnostics'].append(dict(clock=tick,observed_fraction=float(valid.float().mean()),
+                missing_values_neutral=bool((values[:,:c][~valid]==0).all() and (values[:,c:2*c][~valid]==0).all()),
+                entry_active_fraction=float(((value&1)!=0).float().mean()),
+                absolute_cross_listing_std_median=float(values[:,:c].std(0).median()),
+                relative_cross_listing_std_median=float(values[:,c:2*c].std(0).median())))
+        print('Input diagnostics',report['input_diagnostics'],flush=True);plan.close()
     profiled_clocks=data.clocks;data.clocks=full
     if profiled_clocks==full and len(members)==512:
         from .session_lanes import Worker
