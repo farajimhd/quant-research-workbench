@@ -58,7 +58,7 @@ class Worker:
             from .host_memory import wait_for_headroom
             wait_for_headroom(c['output'],lambda **v:self.emit(day,**v),
                 reserve_gib=c.get('host_reserve_gib',128. if torch.device(c['device']).type=='cuda' else 0.),
-                admission_gib=c.get('host_admission_gib',32.))
+                admission_gib=c.get('host_admission_gib',32.),boundary_stop=c.get('boundary_stop'))
             self.loads+=1
             self.host[day]=prepare_host(SessionData(Path(c['inputs'])/day,Path(c['history'])/day,
                 device='cpu',maximum_gib=c['maximum_data_gib'],
@@ -153,7 +153,7 @@ class Worker:
                     if device.type=='cuda':torch.cuda.synchronize(device)
                     rule_seconds=perf_counter()-batch_start;replay_start=time();replay_clock=perf_counter()
                     self.emit(day,stage='Replay positions',candidate_offset=offset,replay_started=replay_start)
-                    result=replay_cohort([item],members,[gates],execution=execution,backend=c['backend'],listing_width=replay_width,
+                    result=self.replay([item],members,[gates],execution=execution,backend=c['backend'],listing_width=replay_width,
                         episode_capacity=c.get('episode_capacity',65536),trace=c.get('split','training')=='training',
                         progress=lambda done,total:self.emit(day,stage='Replay positions',candidate_offset=offset,
                             completed_seconds=done,total_seconds=total))[0]
@@ -195,6 +195,23 @@ class Worker:
             if not self.config.get('retain_session_residency'):
                 if hasattr(item,'resident_features'):item.resident_features.deactivate()
                 item.deactivate()
+
+    def replay(self,*args,**kwargs):
+        """Retry only a preflight rejection after evicting recomputable graphs."""
+        try:
+            return replay_cohort(*args,**kwargs)
+        except MemoryError as error:
+            if str(error)!='Packed V7 cohort exceeds GPU headroom' or args[0][0].device.type!='cuda':raise
+            device=args[0][0].device
+            before=dict(free=torch.cuda.mem_get_info(device)[0],reserved=torch.cuda.memory_reserved(device))
+        # Release the exception traceback before clearing graph-owned pools.
+        for plan in self.plans.values():plan.close()
+        gc.collect();torch.cuda.empty_cache()
+        from research.vectorized_backtest.v6.torch_backtest.runtime import write_json
+        write_json(Path(self.config['output'])/f'capture-recovery-{os.getpid()}-{__import__("time").time_ns()}.json',
+                   dict(before=before,after=dict(free=torch.cuda.mem_get_info(device)[0],reserved=torch.cuda.memory_reserved(device)),
+                        plans=len(self.plans),identical_replay_retry=True))
+        return replay_cohort(*args,**kwargs)
 
     def close(self):
         self.resident_results=None
