@@ -1,0 +1,121 @@
+"""Five independent sparse feed-forward action networks and policy genes."""
+from dataclasses import dataclass,asdict,replace
+import math
+from .config import MAX_NODES,MAX_DEPTH,FAN_IN,STATES
+from .features import CATALOG
+from research.vectorized_backtest.v27.genome import Policy,random_policy_gene
+from research.vectorized_backtest.v27.search_space import feature_index
+from research.vectorized_backtest.v6.torch_backtest.history_bank import SWING_WINDOWS
+STAGES=('entry','exit','add','reduce','trail')
+INPUTS=len(CATALOG)+len(STATES)
+
+@dataclass(frozen=True)
+class Neuron:
+    sources:tuple
+    weights:tuple
+    bias:float
+
+@dataclass(frozen=True)
+class Network:
+    nodes:tuple
+    threshold:float=0.
+    def validate(self):
+        if not 1<=len(self.nodes)<=MAX_NODES or not math.isfinite(self.threshold) or not -1<self.threshold<1:
+            raise ValueError('Network size/threshold outside contract')
+        depths=[]
+        for i,n in enumerate(self.nodes):
+            if not 1<=len(n.sources)<=FAN_IN or len(n.sources)!=len(n.weights) or len(set(n.sources))!=len(n.sources):
+                raise ValueError('Invalid sparse connectivity')
+            if any(type(s) is not int or not 0<=s<INPUTS+i for s in n.sources):raise ValueError('Forward/cyclic/unknown connection')
+            if any(not math.isfinite(w) or abs(w)>4 for w in (*n.weights,n.bias)) or any(w==0 for w in n.weights):raise ValueError('Invalid weights')
+            depths.append(1+max((depths[s-INPUTS] for s in n.sources if s>=INPUTS),default=0))
+        if max(depths)>MAX_DEPTH:raise ValueError('Network depth exceeded')
+        if len(reachable(self,len(self.nodes)-1))!=len(self.nodes):raise ValueError('Unreachable neurons')
+        if not any(s<len(CATALOG) for n in self.nodes for s in n.sources):raise ValueError('Market-dependent action required')
+        return self
+    def payload(self):return dict(nodes=[asdict(n) for n in self.nodes],threshold=self.threshold)
+    @classmethod
+    def restore(cls,p):return cls(tuple(Neuron(tuple(n['sources']),tuple(n['weights']),n['bias']) for n in p['nodes']),p['threshold']).validate()
+
+def reachable(net,root):
+    live=set()
+    def visit(i):
+        if i in live:return
+        live.add(i)
+        for s in net.nodes[i].sources:
+            if s>=INPUTS:visit(s-INPUTS)
+    visit(root);return live
+
+def prune(net,root=None):
+    root=len(net.nodes)-1 if root is None else root;live=sorted(reachable(net,root));mapping={i:j for j,i in enumerate(live)}
+    return Network(tuple(Neuron(tuple(s if s<INPUTS else INPUTS+mapping[s-INPUTS] for s in net.nodes[i].sources),net.nodes[i].weights,net.nodes[i].bias) for i in live),net.threshold)
+
+def random_input(rng,stage):
+    # Flat-only entry has no meaningful held-position state.
+    return len(CATALOG)+int(rng.integers(len(STATES))) if stage!='entry' and rng.random()<.15 else int(feature_index(rng))
+
+def random_network(rng,stage,size=None):
+    """Broad exact-size trees with varied branching, depth and sparse inputs."""
+    size=int(rng.integers(1,MAX_NODES+1)) if size is None else int(size)
+    minimum=1
+    while sum(FAN_IN**i for i in range(minimum))<size:minimum+=1
+    depth=int(rng.integers(minimum,min(MAX_DEPTH,size)+1));nodes=[]
+    def build(n,d):
+        sources=[]
+        if n>1:
+            capacity=sum(FAN_IN**i for i in range(d-1));low=(n-2)//capacity+1
+            branches=int(rng.integers(low,min(FAN_IN,n-1)+1));parts=[1]*branches;remaining=n-1-branches
+            while remaining:
+                options=[i for i,x in enumerate(parts) if x<capacity];k=int(rng.choice(options));parts[k]+=1;remaining-=1
+            for part in parts:sources.append(build(part,d-1))
+        # Every leaf contains a market feature, never a pure-state dead end.
+        if not sources:sources.append(int(feature_index(rng)))
+        width=int(rng.integers(max(2,len(sources)),FAN_IN+1))
+        while len(sources)<width:
+            source=random_input(rng,stage)
+            if source not in sources:sources.append(source)
+        nodes.append(Neuron(tuple(sources),tuple(float(x) for x in rng.uniform(-1,1,len(sources))),float(rng.uniform(-1,1))))
+        return INPUTS+len(nodes)-1
+    build(size,depth)
+    return Network(tuple(nodes),float(rng.uniform(-.999999,.999999))).validate()
+
+@dataclass(frozen=True)
+class Individual:
+    networks:dict
+    policy:Policy
+    minimum_age:dict
+    routing=None
+    def validate(self):
+        if set(self.networks)!=set(STAGES):raise ValueError('Five independent action networks required')
+        for stage,n in self.networks.items():
+            n.validate()
+            if stage=='entry' and any(len(CATALOG)<=s<INPUTS for node in n.nodes for s in node.sources):raise ValueError('Entry cannot read held-position state')
+        self.policy.validate()
+        if any(k not in STAGES or type(v) is not int or not 0<=v<=3600 for k,v in self.minimum_age.items()):raise ValueError('Invalid age gate')
+        return self
+    def payload(self):return dict(version='v28',networks={s:n.payload() for s,n in self.networks.items()},policy=asdict(self.policy),minimum_age=self.minimum_age)
+    @classmethod
+    def restore(cls,p):
+        if p.get('version')!='v28':raise ValueError('Only fresh V28 network genomes accepted')
+        return cls({s:Network.restore(n) for s,n in p['networks'].items()},Policy(**p['policy']),p['minimum_age']).validate()
+
+def sample(rng,count,*,stratified=False):
+    out=[]
+    sizes={s:rng.permutation(np_sizes(count)) for s in STAGES} if stratified else None
+    for j in range(count):
+        swing=bool(rng.integers(2));policy=Policy(**{n:random_policy_gene(rng,n) for n in Policy.__dataclass_fields__ if not n.startswith('swing_')},
+            swing_left=int(rng.choice(SWING_WINDOWS)) if swing else 0,swing_right=int(rng.choice(SWING_WINDOWS)) if swing else 0)
+        out.append(Individual({s:random_network(rng,s,None if sizes is None else sizes[s][j]) for s in STAGES},policy,{s:int(rng.integers(301)) for s in STAGES if s!='entry'}).validate())
+    return out
+
+def np_sizes(count):
+    import numpy as np
+    return np.arange(count)%MAX_NODES+1
+
+def mutate(rng,parent):
+    from .composition import mutation
+    return mutation(rng,parent,int(rng.integers(1,6)))[0]
+
+def crossover(rng,left,right):
+    from .composition import cross
+    return cross(rng,left,right)[0]
