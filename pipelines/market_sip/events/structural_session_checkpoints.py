@@ -28,6 +28,20 @@ def restore_engine(state):
     return engine
 
 
+def source_rows(client, unit):
+    """Read only the pinned completed 1s attempt; no consumer-CLI imports."""
+    from .market_day_sql import literal
+    rows = client.query('SELECT bucket_index,open_int,high_int,low_int,close_int,volume,price_valid '
+        f'FROM arte.bars_v1 WHERE build_id={literal(unit.build_id)} '
+        f'AND session_date=toDate({literal(unit.session_date)}) AND ticker={literal(unit.ticker)} '
+        f'AND attempt_id=toUUID({literal(unit.attempt_id)}) '
+        'AND resolution_ms=1000 AND price_valid=1 AND bucket_index>=14700 '
+        'AND bucket_index<72000 ORDER BY bucket_index', 'structural_session_input')
+    if len({int(row['bucket_index']) for row in rows}) != len(rows):
+        raise ValueError('Duplicate certified 1s bar coordinates')
+    return rows
+
+
 def calculate(*, prior, ticker, day, bars, actions, regular_close,
               existing_ah=False, persist_intraday=True, resume=None, historical_bars=None):
     """One chronological pass; no future bars configure the streaming engine.

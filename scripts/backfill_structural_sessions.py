@@ -24,7 +24,7 @@ from research.level_book.v7.clickhouse_persistence import (
     LEVELS_TABLE, OBSERVATIONS_TABLE, COVERAGE_TABLE, compact_checkpoints,
     datetime64_ns, epoch_ns,
 )
-from pipelines.market_sip.events.structural_session_checkpoints import VERSION, calculate
+from pipelines.market_sip.events.structural_session_checkpoints import VERSION, calculate, source_rows
 from pipelines.market_sip.events import structural_checkpoint_storage as storage
 from pipelines.market_sip.events.causal_v7_product import input_bar
 from src.backend.structural_v7_seed import load_seed, split_evidence
@@ -37,7 +37,7 @@ def arguments(argv=None):
     p.add_argument('--run-dir', type=Path, required=True)
     p.add_argument('--start-date', type=date.fromisoformat, default=date(2026, 1, 1))
     p.add_argument('--end-date', type=date.fromisoformat)
-    p.add_argument('--env-file', type=Path, default=builder.DEFAULT_ENV)
+    p.add_argument('--env-file', type=Path, default=Path('D:/TradingML/secrets/.env'))
     p.add_argument('--endpoint', default='http://192.168.1.218:18123')
     p.add_argument('--plan-only', action='store_true')
     p.add_argument('--profile-only', action='store_true', help='Read-only real streaming profile for three certified ticker-days')
@@ -53,14 +53,13 @@ def profile(client, a, report, selected, closes):
     """Bounded real source/stream/serialize measurements before the campaign."""
     from time import perf_counter
     from types import SimpleNamespace
-    from scripts.build_causal_v7_market_day import source_rows
     from pipelines.market_sip.events.structural_session_checkpoints import normalized_boundary
     from src.backend.structural_v7_seed import preceding_coverage
     candidates = [name for name in ('AAPL', 'MSFT', 'IBM') if any(t == name for _, t in selected)]
     if not candidates:
         candidates = sorted({ticker for _, ticker in selected})[:3]
     results = []
-    with closing(sqlite3.connect((a.bars_run_dir/'build'/'build-ledger-v2.sqlite3').as_uri()+'?mode=ro',uri=True)) as db:
+    with closing(sqlite3.connect((a.bars_run_dir/'build-ledger-v2.sqlite3').as_uri()+'?mode=ro',uri=True)) as db:
         db.row_factory = sqlite3.Row
         for ticker in candidates:
             day = min(d for d,t in selected if t==ticker)
@@ -127,7 +126,6 @@ def publish_ah(client, book, plan_hash):
 def run(a):
     import pandas_market_calendars as mcal
     from pipelines.certified_research.source import inventory
-    from scripts.build_causal_v7_market_day import source_rows
     from types import SimpleNamespace
     os.environ['QMD_CLICKHOUSE_URL'] = a.endpoint
     runtime = Path('D:/TradingML/runtimes').resolve()
@@ -201,7 +199,7 @@ def run(a):
             schedule = mcal.get_calendar('XNYS').schedule(start_date=history_start, end_date=end)
             closes = {str(i.date()): row.market_close.to_pydatetime() for i, row in schedule.iterrows()}
             tickers = sorted({ticker for _, ticker in selected})
-            ledger_path = a.bars_run_dir / 'build' / 'build-ledger-v2.sqlite3'
+            ledger_path = a.bars_run_dir / 'build-ledger-v2.sqlite3'
             db = sqlite3.connect(ledger_path.as_uri() + '?mode=ro', uri=True)
             db.row_factory = sqlite3.Row
             done = reused = 0
