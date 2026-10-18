@@ -6,6 +6,8 @@ publication thread writes the terminal snapshot. Each instance enforces one spli
 """
 import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
+from .windows_process import quiet_compilers
+quiet_compilers()
 import gc,json
 import numpy as np
 import multiprocessing as mp
