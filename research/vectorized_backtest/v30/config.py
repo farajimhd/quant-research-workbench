@@ -19,7 +19,7 @@ def contract():
                 states=list(STATES),action_rates=ACTION_RATES,composition_whole_probability=.5,
                 parameter_mutation_probability=PARAMETER_RATE,activation='tanh',
                 initial_sizes=list(INITIAL_SIZES),changed_actions_per_mating=[1,5],
-                scaling='absolute signed-log plus current-clock cross-sectional z-score; no future statistics',
+                scaling='absolute signed-log plus stable shifted float32 current-clock cross-sectional z-score; no future statistics',
                 input_channels=['absolute','cross_sectional','validity'],
                 input_validity='observed current or delayed market-value ancestor required',recurrent=True,
                 strategy_node_budget=MAX_STRATEGY_NODES,capacity_buckets=[8,16,32,64,128,256,512],

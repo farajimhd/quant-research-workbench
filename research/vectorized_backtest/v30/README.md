@@ -71,3 +71,9 @@ state tape is added for telemetry. Renderers read the published snapshot.
 
 A single seed and repeatedly viewed validation sessions are research diagnostics,
 not evidence of deployment readiness or a profitability guarantee.
+
+Cross-sectional normalization shifts each current-clock feature by its first
+observed value before computing float32 moments. This avoids CPU/CUDA cancellation
+on constant and nearly constant columns without future data or widened parity
+tolerances. A measured CUDA tile is set by V30_NEURAL_BLOCK (32/64/128/256),
+recorded in the exact resume contract; it changes parallel layout only.

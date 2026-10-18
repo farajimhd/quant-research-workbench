@@ -55,7 +55,7 @@ def main():
     started=time.perf_counter();print('Loading certified '+day+' inputs',flush=True)
     data=prepare_host(SessionData(Path(train['inputs'])/day,Path(train['history'])/day,device='cpu',maximum_gib=4.,indicator_root=Path(train['indicator_root'])/day,enriched_root=Path(train['enriched_root'])/day),resident=True)
     print(f'Loaded {time.perf_counter()-started:.2f}s; resident {data.resident_features.bytes/2**30:.2f} GiB; RAM free {psutil.virtual_memory().available/2**30:.2f} GiB',flush=True)
-    report=dict(source_sha256=source_hash(),load_seconds=time.perf_counter()-started,identity=data.identity,full_clocks=data.clocks,listings=len(data.listing_ids),host_bank_bytes=data.resident_features.bytes)
+    report=dict(source_sha256=source_hash(),neural_cuda_block=int(os.environ.get("V30_NEURAL_BLOCK","128")),load_seconds=time.perf_counter()-started,identity=data.identity,full_clocks=data.clocks,listings=len(data.listing_ids),host_bank_bytes=data.resident_features.bytes)
     full=data.clocks;data.clocks=64;members=sample(np.random.default_rng(2020),4);execution=Execution(fee_per_share=.005,minimum_order_fee=1)
     # Retain the CPU authority before upload mutates device tensor dictionaries.
     cpu_data=copy.copy(data);cpu_data.resident_features=copy.copy(data.resident_features)

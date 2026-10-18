@@ -158,8 +158,8 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
         raise ValueError('Chronologically disjoint validation required')
     output=require_runtime(Path(output));version_hash=source_hash()
     from .composition import settings
-    contract=dict(maximum_rule_nodes=MAX_NODES,feature_semantics="v21-magnitude-ratio-v1",version=VERSION,source_sha256=version_hash,training=train,validation=valid,
-        population=population_size,generations=generations,batch_size=batch_size,session_workers=session_workers,
+    contract=dict(maximum_rule_nodes=MAX_NODES,feature_semantics="v30-stable-magnitude-ratio-v1",version=VERSION,source_sha256=version_hash,training=train,validation=valid,
+        population=population_size,generations=generations,batch_size=batch_size,session_workers=session_workers,neural_cuda_block=int(os.environ.get("V30_NEURAL_BLOCK","128")),
         seed=seed,device=device,backend=backend,execution=asdict(execution),objective=asdict(objective),selection=asdict(selection),recombination=settings(selection),
         episode_capacity=episode_capacity,maximum_gate_gib=maximum_gate_gib,maximum_data_gib=maximum_data_gib,
         plan_limit=plan_limit,capture_gib=capture_gib,validation_feedback=False,input_receipts=train['receipts'],session_execution='independent',

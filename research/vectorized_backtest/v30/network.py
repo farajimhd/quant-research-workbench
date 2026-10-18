@@ -1,4 +1,5 @@
 """Sparse packed networks; one fused CUDA kernel for all five action graphs."""
+import os
 import numpy as np
 import torch
 from .genome import INPUTS,MARKET_INPUTS,STAGES
@@ -31,6 +32,8 @@ class NetworkPlan:
     builds=hits=evictions=capture_seconds=0
     def __init__(self,members,device):
         self.members=members;self.device=torch.device(device)
+        self.cuda_block=int(os.environ.get('V30_NEURAL_BLOCK','128'))
+        if self.cuda_block not in (32,64,128,256):raise ValueError('Unsupported neural CUDA tile')
         self.columns=sorted({s%len(CATALOG) for m in members for net in m.networks.values() for n in net.nodes for s in n.sources if 0<=s<MARKET_INPUTS})
         self.lookup={s:i for i,s in enumerate(self.columns)};c=len(self.columns)
         nets=[m.networks[s] for m in members for s in STAGES]
@@ -96,10 +99,16 @@ class NetworkPlan:
         clean=torch.where(valid,v,0.)
         absolute=torch.where(self.logarithmic,clean.sign()*clean.abs().log1p()/4,clean).tanh()
         count=valid.sum(0).clamp_min(1)
-        center=clean.sum(0)/count
-        variance=torch.where(valid,(clean-center).square(),0.).sum(0)/count
+        # Shift by the first observed value before summation. This preserves the
+        # same causal mean/variance while avoiding cancellation of large levels
+        # and exact-constant columns on different CPU/CUDA reduction orders.
+        first=valid.to(torch.int32).argmax(0,keepdim=True)
+        anchor=clean.gather(0,first).squeeze(0)
+        shifted=torch.where(valid,clean-anchor,0.)
+        deviation=shifted-shifted.sum(0)/count
+        variance=torch.where(valid,deviation.square(),0.).sum(0)/count
         scale=variance.sqrt().clamp_min(1e-6)
-        relative=((clean-center)/(2*scale)).tanh()
+        relative=(deviation/(2*scale)).tanh()
         return torch.cat((torch.where(valid,absolute,0.),torch.where(valid,relative,0.),valid.to(torch.float32)),1),valid
     def signals(self,data,index,position,opened,previous,out=None):
         self.prepare(position.shape[1],position.shape[2]);v,valid=self.project(data,index)

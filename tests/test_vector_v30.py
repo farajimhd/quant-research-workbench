@@ -445,3 +445,16 @@ def test_compiler_policy_hides_only_noninteractive_compilers(tmp_path,monkeypatc
         quiet_compilers();subprocess.run([sys.executable,'-B','-c','pass'],check=True)
     audit=json.loads(next(tmp_path.glob('compiler-*.jsonl')).read_text().splitlines()[0]);assert audit['no_window']
     monkeypatch.setattr(subprocess,'Popen',original)
+
+@pytest.mark.parametrize('device',['cpu','cuda'])
+def test_cross_section_constant_and_near_constant_stability(device):
+    if device=='cuda' and not torch.cuda.is_available():pytest.skip('CUDA unavailable')
+    members=sample(np.random.default_rng(23),1);plan=NetworkPlan(members,device);columns=plan.columns;u=571
+    values=torch.full((u,1,len(columns)),1.0000001192092896,device=device,dtype=torch.float32);valid=torch.ones_like(values,dtype=torch.bool);valid[0,:,0]=False
+    data=SimpleNamespace(resident_features=SimpleNamespace(tensors=dict(source=torch.zeros((1,u),device=device,dtype=torch.int64),ids=torch.zeros((1,u),device=device,dtype=torch.int64),clocks=torch.zeros(1,device=device)),_values=lambda *args:(values,valid)))
+    projected,mask=plan.project(data,torch.tensor(0,device=device));c=len(columns)
+    assert torch.equal(projected[:,c:2*c],torch.zeros((u,c),device=device))
+    values[100,:,1]=1.000001072883606
+    projected,_=plan.project(data,torch.tensor(0,device=device))
+    reference=values[:,0,1].double();reference=(reference-reference.mean())/(2*reference.std(unbiased=False).clamp_min(1e-6));reference=reference.tanh().float()
+    torch.testing.assert_close(projected[:,c+1],reference,rtol=0,atol=2e-7)
