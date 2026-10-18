@@ -55,9 +55,17 @@ The standalone launcher also supports `--profile-only`: it verifies and reads
 three completed bar units, measures fetch/stream/serialization times and payload
 sizes, and writes only a runtime report. It may profile individually certified
 units while the bar campaign continues. Full writes wait for `core_complete`.
-The initial writer uses one bounded query thread and 2 GiB per query; it does
-not use CUDA. Optimize concurrency from real profiles rather than restarting a
-healthy campaign for speculative tuning.
+The writer uses eight process lanes by default (at most sixteen), one ticker
+per lane, one query thread and 2 GiB per query. Its queue holds at most one
+pending ticker per lane. Each ticker's days remain sequential. A parent identity
+and per-worker leases prevent a replacement owner from starting before orphaned
+workers drain. It does not use CUDA. Optimize concurrency from real profiles
+rather than restarting a healthy campaign for speculative tuning.
+
+`scripts/run_structural_after_bars.py` is the persistent scheduled controller.
+It waits for the bar owner to release its lock, then runs full-scope planning,
+the bounded profile, and the resumable backfill. It writes controller state and
+a durable build log under the structural runtime, with no additional popup.
 
 Forwardfill version 2 orders canonical ingestion, certified tradable bars,
 daily session products, then structural checkpoints. A day remains pending

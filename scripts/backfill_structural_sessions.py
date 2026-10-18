@@ -43,6 +43,7 @@ def arguments(argv=None):
     p.add_argument('--profile-only', action='store_true', help='Read-only real streaming profile for three certified ticker-days')
     p.add_argument('--resume', action='store_true')
     p.add_argument('--migrate-schema', action='store_true', help='Apply additive boundary keys before writing')
+    p.add_argument('--workers',type=int,choices=range(1,17),default=8)
     a = p.parse_args(argv)
     if a.end_date and a.end_date < a.start_date:
         p.error('End date precedes start date')
@@ -122,6 +123,215 @@ def publish_ah(client, book, plan_hash):
     storage.insert(client, COVERAGE_TABLE, coverage)
     storage.storage_preflight(client)
 
+
+
+def require_parent(owner):
+    import psutil
+    try:
+        process=psutil.Process(owner['pid'])
+        valid=process.is_running() and process.create_time()==owner['created']
+    except psutil.NoSuchProcess:
+        valid=False
+    if not valid:raise RuntimeError('Structural owner exited; drain before another campaign resumes')
+
+
+def ticker_file(root,ticker,suffix):
+    return root/'workers'/(sha256(ticker.encode()).hexdigest()+suffix)
+
+
+def _ticker_worker(spec_path, ticker):
+    from types import SimpleNamespace
+    import pandas_market_calendars as mcal
+    from pipelines.certified_research.source import inventory
+    import psutil
+    from time import perf_counter
+    global _SPEC_CACHE
+    if _SPEC_CACHE is None:
+        _SPEC_CACHE=json.loads(Path(spec_path).read_text())
+    spec=_SPEC_CACHE
+    require_parent(spec['owner'])
+    a=SimpleNamespace(**spec['arguments'])
+    a.run_dir=Path(a.run_dir);a.bars_run_dir=Path(a.bars_run_dir);a.env_file=Path(a.env_file)
+    os.environ['QMD_CLICKHOUSE_URL']=a.endpoint
+    lease=a.run_dir/'workers'/('lease-'+str(os.getpid())+'.json')
+    save_lease=dict(pid=os.getpid(),created=psutil.Process().create_time(),owner=spec['owner'])
+    builder.save(lease,save_lease)
+    with builder.build_lock(ticker_file(a.run_dir,ticker,'.lock')):
+        try:return _process_ticker(spec,a,ticker)
+        finally:lease.unlink(missing_ok=True)
+
+
+def _process_ticker(spec,a,ticker):
+    from types import SimpleNamespace
+    from pipelines.certified_research.source import inventory
+    from time import perf_counter
+    request=spec['request'];history_inventory=spec['history_inventory']
+    reporting=spec['reporting'];rules=spec['rules'];by_ticker=spec['by_ticker']
+    selected={(day,ticker) for day in by_ticker[ticker]}
+    plan_hash=spec['plan_hash'];producer_hash=spec['producer_hash']
+    history_start=date.fromisoformat(spec['history_start']);end=date.fromisoformat(spec['end'])
+    closes={day:datetime.fromisoformat(value) for day,value in spec['closes'].items()}
+    report=dict(build_id=spec['build_id'])
+    done=reused=0;started=perf_counter()
+    options=builder.parse_args(['--date',str(a.start_date),'--env-file',str(a.env_file),
+                               '--max-threads','1','--max-memory-gb','2'])
+    with closing(builder.Client(options)) as client, closing(sqlite3.connect(
+            (a.bars_run_dir/'build-ledger-v2.sqlite3').as_uri()+'?mode=ro',uri=True)) as db:
+        db.row_factory=sqlite3.Row
+        first_target, last_target = min(by_ticker[ticker]), max(by_ticker[ticker])
+        known_ah = client.query(f"SELECT * FROM {COVERAGE_TABLE} FINAL WHERE ticker={source.literal(ticker)} "
+            f"AND checkpoint_boundary='' AND session_date<={source.literal(last_target)} ORDER BY session_date")
+        ah_by_day = {str(row['session_date']): row for row in known_ah}
+        if len(ah_by_day) != len(known_ah) or any(row['state'] not in ('complete','empty') for row in known_ah):
+            raise ValueError('Existing AH coverage is ambiguous or incomplete')
+        preceding = [day for day in ah_by_day if day < first_target]
+        replay_start = max(preceding) if preceding else str(history_start-timedelta(days=1))
+        metadata = client.query('SELECT * FROM market_sip_compact.events_ordinal_continuity FINAL '
+            f'WHERE ticker={source.literal(ticker)} AND source_date>{source.literal(replay_start)} '
+            f'AND source_date<={source.literal(last_target)} ORDER BY source_date')
+        if client.query(source.reporting_coverage_sql(str(history_start), str(end))) != reporting:
+            raise ValueError('Reporting certificates changed during structural calculation')
+        if digest(client.query(RULE_SQL)) != request['rules_hash']:
+            raise ValueError('Canonical condition rules changed during structural calculation')
+        for meta in metadata:
+            require_parent(spec['owner'])
+            day = str(meta['source_date'])
+            target = (day, ticker) in selected
+            exists = ah_by_day.get(day)
+            if exists and not target:
+                continue
+            source.require_reporting_coverage([day], reporting)
+            certified_day = inventory(client.query, date.fromisoformat(day), date.fromisoformat(day))
+            if certified_day['missing'] or certified_day['incomplete']:
+                raise ValueError('Required historical replay day is not canonical-certified')
+            if certified_day['source_hashes'].get(day) != history_inventory['source_hashes'].get(day):
+                raise ValueError('Canonical replay source changed after the frozen plan')
+            if (a.run_dir / 'STOP').exists():
+                raise KeyboardInterrupt
+            prior_days = [previous for previous in ah_by_day if previous < day]
+            prior_rows = [ah_by_day[max(prior_days)]] if prior_days else []
+            prior = load_seed(client.http, ticker=ticker, session=date.fromisoformat(day),
+                              coverage=prior_rows[0]) if prior_rows else None
+            actions = split_evidence(client.http, ticker=ticker,
+                seed_session=date.fromisoformat(prior['session']) if prior else history_start-timedelta(days=1),
+                session=date.fromisoformat(day))
+            current = client.query(f"SELECT * FROM {COVERAGE_TABLE} FINAL WHERE ticker={source.literal(ticker)} "
+                f"AND session_date=toDate({source.literal(day)}) AND checkpoint_boundary IN ('PM','REGULAR')") if target else []
+            unit = None
+            source_ref = None
+            if target:
+                receipt = db.execute("SELECT * FROM units WHERE build_id=? AND session_date=? AND ticker=? "
+                    "AND stage='bars' AND status='complete'", (report['build_id'], day, ticker)).fetchone()
+                if receipt is None:
+                    raise ValueError(f'Missing certified bar receipt: {day} {ticker}')
+                unit = SimpleNamespace(**dict(receipt))
+                source_ref = dict(build_id=unit.build_id, attempt_id=unit.attempt_id,
+                    source_hash=unit.source_hash, output_hash=unit.output_hash,
+                    canonical_hash=history_inventory['source_hashes'][day],
+                    producer_hash=producer_hash)
+            if exists and {r['checkpoint_boundary'] for r in current} == {'PM', 'REGULAR'}:
+                from pipelines.market_sip.events.structural_session_checkpoints import restore_boundary
+                for row in current:
+                    _, value = restore_boundary(row)
+                    if value.get('source') != source_ref or value['prior_hash'] != prior['checkpoint_hash']:
+                        raise ValueError('Existing boundary source or previous AH differs')
+                    storage.publish_boundary(client, value, row['source_plan_hash'])
+                reused += 1
+                continue
+            bars = []
+            if target:
+                proof = builder.evidence(client, 'arte', 'bars', unit.build_id, day, ticker, unit.attempt_id)
+                if int(proof['n']) != unit.output_rows or str(proof['hash']) != unit.output_hash:
+                    raise ValueError('Persisted bars differ from certified output receipt')
+                bars = [input_bar(date.fromisoformat(day), row) for row in source_rows(client, unit)]
+            else:
+                bars, _ = source.decode(client.query(source.bars_sql(ticker, day, rules, meta)))
+            historical_bars = None
+            if target and not exists:
+                historical_bars, _ = source.decode(client.query(source.bars_sql(ticker, day, rules, meta)))
+            values = calculate(prior=prior, ticker=ticker, day=day, bars=bars,
+                actions=actions, regular_close=closes[day], existing_ah=bool(exists),
+                persist_intraday=target, historical_bars=historical_bars)
+            for boundary in ('PM', 'REGULAR'):
+                if boundary in values:
+                    values[boundary]['source'] = source_ref
+                    storage.publish_boundary(client, values[boundary], plan_hash)
+            if 'AH' in values:
+                publish_ah(client, values['AH'], plan_hash)
+                ah_by_day[day] = ah_coverage(client, ticker, day)[0]
+            done += int(target)
+            builder.save(ticker_file(a.run_dir,ticker,'.json'), dict(owner=spec['owner']['token'],status='running', active=f'{day} {ticker}',
+                completed=done, reused=reused, total=len(selected), failed=0,
+                queued=len(selected)-done-reused))
+            print(f'{done+reused}/{len(selected)} | completed {done} | reused {reused} | failed 0 | {day} {ticker}', flush=True)
+
+    result=dict(owner=spec['owner']['token'],status='complete',ticker=ticker,
+                completed=done,reused=reused,seconds=perf_counter()-started)
+    builder.save(ticker_file(a.run_dir,ticker,'.json'),result)
+    return result
+
+
+_SPEC_CACHE=None
+
+
+def run_pool(a,request,build_id,by_ticker,history_inventory,reporting,rules,
+             closes,history_start,end,plan_hash,producer_hash,total):
+    """Bounded ticker lanes; each lane retains chronological AH ownership."""
+    from concurrent.futures import ProcessPoolExecutor,wait,FIRST_COMPLETED
+    import multiprocessing
+    import psutil
+    from uuid import uuid4
+    workers=a.run_dir/'workers';workers.mkdir(exist_ok=True)
+    if (a.run_dir/'STOP').exists():raise KeyboardInterrupt
+    # A crashed parent releases its OS lock before children finish their current
+    # unit. Refuse a new pool until those exact process identities have drained.
+    for lease in workers.glob('lease-*.json'):
+        old=json.loads(lease.read_text())
+        try:alive=psutil.Process(old['pid']).create_time()==old['created']
+        except psutil.NoSuchProcess:alive=False
+        if alive:raise ValueError('Prior structural worker is still draining; preserve receipts and retry later')
+    owner=dict(pid=os.getpid(),created=psutil.Process().create_time(),token=uuid4().hex)
+    spec=dict(owner=owner,arguments={key:str(value) if isinstance(value,(Path,date)) else value
+            for key,value in vars(a).items()},request=request,build_id=build_id,
+        by_ticker=by_ticker,history_inventory=dict(source_hashes=history_inventory['source_hashes']),
+        reporting=reporting,rules=rules,closes={day:value.isoformat() for day,value in closes.items()},
+        history_start=str(history_start),end=str(end),plan_hash=plan_hash,producer_hash=producer_hash)
+    path=a.run_dir/('worker-spec-'+owner['token']+'.json');builder.save(path,spec)
+    iterator=iter(sorted(by_ticker));pending={};results=[]
+    with ProcessPoolExecutor(max_workers=a.workers,mp_context=multiprocessing.get_context('spawn')) as pool:
+        def admit():
+            while len(pending)<a.workers and not (a.run_dir/'STOP').exists():
+                ticker=next(iterator,None)
+                if ticker is None:break
+                pending[pool.submit(_ticker_worker,str(path),ticker)]=ticker
+        try:
+            admit()
+            while pending:
+                ready,_=wait(pending,timeout=2,return_when=FIRST_COMPLETED)
+                for future in ready:
+                    ticker=pending.pop(future)
+                    try:results.append(future.result())
+                    except BaseException as error:
+                        if (a.run_dir/'STOP').exists():raise KeyboardInterrupt from error
+                        raise RuntimeError(f'Structural ticker {ticker} failed: {error}') from error
+                admit()
+                completed=sum(row['completed'] for row in results)
+                reused=sum(row['reused'] for row in results)
+                active=[]
+                for ticker in pending.values():
+                    progress=ticker_file(a.run_dir,ticker,'.json')
+                    if progress.exists():
+                        row=json.loads(progress.read_text())
+                        if row.get('owner')==owner['token']:
+                            completed+=row['completed'];reused+=row['reused'];active.append(row)
+                builder.save(a.run_dir/'status.json',dict(status='running',completed=completed,reused=reused,
+                    total=total,failed=0,queued=total-completed-reused,workers=active,
+                    worker_limit=a.workers,query_threads=1,query_memory_gib=2))
+        except BaseException:
+            (a.run_dir/'STOP').touch()
+            for future in pending:future.cancel()
+            raise
+    return results
 
 def run(a):
     import pandas_market_calendars as mcal
@@ -204,96 +414,18 @@ def run(a):
             db.row_factory = sqlite3.Row
             done = reused = 0
             try:
-                for ticker in tickers:
-                    first_target, last_target = min(by_ticker[ticker]), max(by_ticker[ticker])
-                    known_ah = client.query(f"SELECT * FROM {COVERAGE_TABLE} FINAL WHERE ticker={source.literal(ticker)} "
-                        f"AND checkpoint_boundary='' AND session_date<={source.literal(last_target)} ORDER BY session_date")
-                    ah_by_day = {str(row['session_date']): row for row in known_ah}
-                    if len(ah_by_day) != len(known_ah) or any(row['state'] not in ('complete','empty') for row in known_ah):
-                        raise ValueError('Existing AH coverage is ambiguous or incomplete')
-                    preceding = [day for day in ah_by_day if day < first_target]
-                    replay_start = max(preceding) if preceding else str(history_start-timedelta(days=1))
-                    metadata = client.query('SELECT * FROM market_sip_compact.events_ordinal_continuity FINAL '
-                        f'WHERE ticker={source.literal(ticker)} AND source_date>{source.literal(replay_start)} '
-                        f'AND source_date<={source.literal(last_target)} ORDER BY source_date')
-                    if client.query(source.reporting_coverage_sql(str(history_start), str(end))) != reporting:
-                        raise ValueError('Reporting certificates changed during structural calculation')
-                    if digest(client.query(RULE_SQL)) != request['rules_hash']:
-                        raise ValueError('Canonical condition rules changed during structural calculation')
-                    for meta in metadata:
-                        day = str(meta['source_date'])
-                        target = (day, ticker) in selected
-                        exists = ah_by_day.get(day)
-                        if exists and not target:
-                            continue
-                        source.require_reporting_coverage([day], reporting)
-                        certified_day = inventory(client.query, date.fromisoformat(day), date.fromisoformat(day))
-                        if certified_day['missing'] or certified_day['incomplete']:
-                            raise ValueError('Required historical replay day is not canonical-certified')
-                        if certified_day['source_hashes'].get(day) != history_inventory['source_hashes'].get(day):
-                            raise ValueError('Canonical replay source changed after the frozen plan')
-                        if (a.run_dir / 'STOP').exists():
-                            raise KeyboardInterrupt
-                        prior_days = [previous for previous in ah_by_day if previous < day]
-                        prior_rows = [ah_by_day[max(prior_days)]] if prior_days else []
-                        prior = load_seed(client.http, ticker=ticker, session=date.fromisoformat(day),
-                                          coverage=prior_rows[0]) if prior_rows else None
-                        actions = split_evidence(client.http, ticker=ticker,
-                            seed_session=date.fromisoformat(prior['session']) if prior else history_start-timedelta(days=1),
-                            session=date.fromisoformat(day))
-                        current = client.query(f"SELECT * FROM {COVERAGE_TABLE} FINAL WHERE ticker={source.literal(ticker)} "
-                            f"AND session_date=toDate({source.literal(day)}) AND checkpoint_boundary IN ('PM','REGULAR')") if target else []
-                        unit = None
-                        source_ref = None
-                        if target:
-                            receipt = db.execute("SELECT * FROM units WHERE build_id=? AND session_date=? AND ticker=? "
-                                "AND stage='bars' AND status='complete'", (report['build_id'], day, ticker)).fetchone()
-                            if receipt is None:
-                                raise ValueError(f'Missing certified bar receipt: {day} {ticker}')
-                            unit = SimpleNamespace(**dict(receipt))
-                            source_ref = dict(build_id=unit.build_id, attempt_id=unit.attempt_id,
-                                source_hash=unit.source_hash, output_hash=unit.output_hash,
-                                canonical_hash=history_inventory['source_hashes'][day],
-                                producer_hash=producer_hash)
-                        if exists and {r['checkpoint_boundary'] for r in current} == {'PM', 'REGULAR'}:
-                            from pipelines.market_sip.events.structural_session_checkpoints import restore_boundary
-                            for row in current:
-                                _, value = restore_boundary(row)
-                                if value.get('source') != source_ref or value['prior_hash'] != prior['checkpoint_hash']:
-                                    raise ValueError('Existing boundary source or previous AH differs')
-                                storage.publish_boundary(client, value, row['source_plan_hash'])
-                            reused += 1
-                            continue
-                        bars = []
-                        if target:
-                            proof = builder.evidence(client, 'arte', 'bars', unit.build_id, day, ticker, unit.attempt_id)
-                            if int(proof['n']) != unit.output_rows or str(proof['hash']) != unit.output_hash:
-                                raise ValueError('Persisted bars differ from certified output receipt')
-                            bars = [input_bar(date.fromisoformat(day), row) for row in source_rows(client, unit)]
-                        else:
-                            bars, _ = source.decode(client.query(source.bars_sql(ticker, day, rules, meta)))
-                        historical_bars = None
-                        if target and not exists:
-                            historical_bars, _ = source.decode(client.query(source.bars_sql(ticker, day, rules, meta)))
-                        values = calculate(prior=prior, ticker=ticker, day=day, bars=bars,
-                            actions=actions, regular_close=closes[day], existing_ah=bool(exists),
-                            persist_intraday=target, historical_bars=historical_bars)
-                        for boundary in ('PM', 'REGULAR'):
-                            if boundary in values:
-                                values[boundary]['source'] = source_ref
-                                storage.publish_boundary(client, values[boundary], plan_hash)
-                        if 'AH' in values:
-                            publish_ah(client, values['AH'], plan_hash)
-                            ah_by_day[day] = ah_coverage(client, ticker, day)[0]
-                        done += int(target)
-                        builder.save(a.run_dir / 'status.json', dict(status='running', active=f'{day} {ticker}',
-                            completed=done, reused=reused, total=len(selected), failed=0,
-                            queued=len(selected)-done-reused))
-                        print(f'{done+reused}/{len(selected)} | completed {done} | reused {reused} | failed 0 | {day} {ticker}', flush=True)
+                results=run_pool(a,request,report['build_id'],by_ticker,history_inventory,
+                    reporting,rules,closes,history_start,end,plan_hash,producer_hash,len(selected))
+                done=sum(row['completed'] for row in results)
+                reused=sum(row['reused'] for row in results)
                 if done + reused != len(selected):
                     raise ValueError('Structural completion count differs from frozen population')
             except BaseException as error:
                 interrupted = isinstance(error, KeyboardInterrupt)
+                status_path=a.run_dir/'status.json'
+                if status_path.exists():
+                    previous=json.loads(status_path.read_text())
+                    done=previous.get('completed',done);reused=previous.get('reused',reused)
                 builder.save(a.run_dir / 'status.json', dict(status='interrupted' if interrupted else 'failed',
                     completed=done, reused=reused, total=len(selected), failed=0 if interrupted else 1,
                     error=client.clean_error(error)))
