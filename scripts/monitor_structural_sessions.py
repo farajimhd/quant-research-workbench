@@ -21,7 +21,16 @@ def snapshot(root):
         return json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
     controller=read('controller-state.json')
     status=read('status.json')
-    return dict(controller=controller,status=status,stop=(root/'STOP').exists())
+    recovery=root.parent/'reporting-evidence-2026-resume'
+    evidence={};events=[]
+    if (recovery/'status.json').exists():
+        evidence=json.loads((recovery/'status.json').read_text())
+        if (recovery/'build.log').exists():
+            with (recovery/'build.log').open('rb') as stream:
+                stream.seek(max(0,stream.seek(0,2)-8192))
+                events=[line for line in stream.read().decode('utf-8',errors='replace').splitlines()
+                        if line.startswith(('Native reporting','Retained reporting','Source ready','Source preparation'))][-4:]
+    return dict(controller=controller,status=status,stop=(root/'STOP').exists(),evidence=evidence,events=events)
 
 
 def render(value,width=100,height=30,rate=None):
@@ -30,6 +39,12 @@ def render(value,width=100,height=30,rate=None):
     state=s.get('status',phase) if phase=='backfill' else phase
     color='red' if state in ('failed','interrupted') else 'green' if state=='complete' else 'cyan'
     lines=Text(f'Structural levels  |  {state}',style=color)
+    evidence=value.get('evidence',{})
+    if evidence:
+        lines.append('\nReporting evidence recovery: '+evidence.get('status','unknown'),style='cyan')
+        if evidence.get('status')=='running':
+            lines.append('\nLevels wait for strict reporting certification; automatic resume enabled.')
+        for event in value.get('events',[]):lines.append('\n'+event)
     if phase=='waiting_for_bars':
         lines.append('\nWaiting for certified bars and released bar ownership.')
     done=s.get('completed',0);reuse=s.get('reused',0);total=s.get('total')
@@ -45,7 +60,7 @@ def render(value,width=100,height=30,rate=None):
     table=Table(expand=True,box=None)
     table.add_column('Active ticker / latest certified day',overflow='ellipsis',no_wrap=True)
     table.add_column('New',justify='right');table.add_column('Reused',justify='right')
-    for worker in workers[:max(0,height-14)]:
+    for worker in workers[:max(0,height-20 if evidence else height-14)]:
         table.add_row(str(worker.get('active',worker.get('ticker','starting'))),
                       str(worker.get('completed',0)),str(worker.get('reused',0)))
     if not workers:table.add_row('Worker details appear after planning.','-','-')
