@@ -46,13 +46,43 @@ def session_layout(data,width,height):
 
 
 def main():
-    import sys
-    canvas.DetailObserver=DetailObserver
+    import argparse,time
+    from rich.console import Console
+    from contextlib import nullcontext
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--active',type=Path,default=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v28/active-campaign.json'))
+    parser.add_argument('--once',action='store_true')
+    args=parser.parse_args()
     canvas.rule_lines=rule_lines
     canvas.session_layout=session_layout
-    if '--active' not in sys.argv:
-        sys.argv.extend(['--active','D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v28/active-campaign.json'])
-    return canvas.main()
+    console=Console();once=args.once or not console.is_terminal
+    observer=DetailObserver(args.active).start()
+    selection=0;mode='profit';view='financial';stage='entry';page=0
+    # Keep window placement, focus, size and console hosting under user control.
+    try:
+        with nullcontext() if once else canvas.FixedTerminal(console) as live:
+            while True:
+                data=observer.read()
+                if not data:time.sleep(.1);continue
+                if once:
+                    console.print(canvas.render(data,console.width,console.height,mode,selection,view,stage,page));break
+                live.update(lambda w,h:canvas.render(data,w,h,mode,selection,view,stage,page))
+                if os.name=='nt':
+                    import msvcrt
+                    while msvcrt.kbhit():
+                        key=msvcrt.getwch().lower()
+                        if key=='q':return 0
+                        if key in '1234':mode={'1':'profit','2':'score','3':'win','4':'risk'}[key];selection=0
+                        elif key in ('j','k','n','b'):
+                            step=1 if key in ('j','k') else canvas.ranking_size(live.dimensions()[1])
+                            selection=max(0,min(max(0,len(data.get('rows',[]))-1),selection+(step if key in ('j','n') else -step)));page=0
+                        elif key in ('f','o','p'):view={'f':'financial','o':'objective','p':'policy'}[key];page=0
+                        elif key in 'exadt':view='rules';stage={'e':'entry','x':'exit','a':'add','d':'reduce','t':'trail'}[key];page=0
+                        elif key in ('u','i'):page=max(0,page+(1 if key=='i' else -1))
+                time.sleep(1)
+    except KeyboardInterrupt:pass
+    finally:observer.close()
+    return 0
 
 
 if __name__=='__main__':raise SystemExit(main())
