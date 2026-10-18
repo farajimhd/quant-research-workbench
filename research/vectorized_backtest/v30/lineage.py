@@ -144,7 +144,7 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
     order=np.lexsort((ids,-values));order=order[valid[order]];best=int(order[0]);mates=MateIndex(pedigree,ids)
     records=[r for r in species.state['records'] if not r['stagnant'] or species.labels[best]==r['id']]
     records=[r for r in records if any(valid[i] for i in species.groups[r['id']])]
-    elite_budget=int(target*.1);fresh_budget=int(np.ceil(target*.2));cross_budget=target-elite_budget-fresh_budget
+    elite_budget=min(int(target*.1),len(order));fresh_budget=int(np.ceil(target*.2));cross_budget=target-elite_budget-fresh_budget
     champions=sorted((min((i for i in species.groups[r['id']] if valid[i]),key=lambda i:(-values[i],ids[i])) for r in records),key=lambda i:(-values[i],ids[i]))
     selected=champions[:min(len(champions),elite_budget//2)];selected=list(dict.fromkeys(selected+[int(i) for i in order]))[:elite_budget]
     keys={program_key(population[i]) for i in selected}

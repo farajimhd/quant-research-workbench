@@ -15,8 +15,10 @@ def describe(member):
                 edges+=1;delayed+=int(source<0)
                 if 0<=source<MARKET_INPUTS:features.add(str(source))
                 if node.uid and counts[node.uid]==1:
-                    if source>=INPUTS:identity='n'+str(net.nodes[source-INPUTS].uid)
-                    elif source<0:identity='r'+str(net.nodes[-source-1].uid)
+                    if source>=INPUTS or source<0:
+                        uid=net.nodes[-source-1 if source<0 else source-INPUTS].uid
+                        if not uid or counts[uid]!=1:continue
+                        identity=('r' if source<0 else 'n')+str(uid)
                     else:identity='x'+str(source)
                     parameters[f'{stage}:{node.uid}:{identity}']=float(w)
             if node.uid and counts[node.uid]==1:parameters[f'{stage}:{node.uid}:bias']=float(node.bias)

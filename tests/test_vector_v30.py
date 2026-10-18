@@ -177,8 +177,8 @@ def test_scaling_retains_levels_cross_section_and_causality():
     n=Network((Neuron((0,len(CATALOG)),(1.,1.),0.),),0.)
     members=[replace(members[0],networks={s:n for s in STAGES})]
     plan=NetworkPlan(members,'cpu');a,mask=plan.project(d,torch.tensor(1))
-    assert a.shape==(3,3) and torch.equal(a[:,2],mask[:,0].float())
-    assert a[:,1].std()>0 and torch.isfinite(a).all()
+    assert a.shape==(3,3*len(CATALOG)) and torch.equal(a[:,2*len(CATALOG):],mask.float())
+    assert a[:,len(CATALOG)].std()>0 and torch.isfinite(a).all()
     # Changing a future row cannot affect current-clock scaling or values.
     original=d.resident_features._values
     def future(rows,ids,clock,columns):
@@ -465,3 +465,64 @@ def test_financially_invalid_candidates_cannot_define_species_champions():
     eligible=np.ones(10,bool);eligible[0]=False;s=Species();s.assign(members,np.arange(10),values,[metrics],1,eligible=eligible)
     assert s.labels[0] is None
     assert all(r['champion_serial']!=0 and r['best_profit']<=9 for r in s.state['records'])
+
+def test_worker_native_tail_never_replays_padding(tmp_path):
+    import queue,json
+    from dataclasses import asdict
+    import research.vectorized_backtest.v30.session_lanes as lanes
+    from research.vectorized_backtest.v30.run_search import digest
+    members=sample(np.random.default_rng(101),3);payload=[m.payload() for m in members]
+    cfg=dict(output=str(tmp_path),backend='eager',device='cpu',batch_size=1024,source_sha256='fixture',execution=asdict(Execution()),maximum_gate_gib=0.,retain_session_residency=True,reuse_results=False)
+    item=SimpleNamespace(device=torch.device('cpu'),clocks=3,listing_ids=np.array([0]),identity={},receipt=dict(listings=[dict(listing_id='fixture')]))
+    class Programs:
+        plan=None
+        def __init__(self,actual,device):assert len(actual)==3
+        def evaluate(self,*args,**kw):return None
+        def close(self):pass
+    w=lanes.Worker(cfg,queue.Queue(maxsize=1),0);w.load=lambda day:item
+    def replay(data,actual,*args,**kw):
+        assert len(actual)==3
+        return [metrics_fixture(3)]
+    w.replay=replay
+    try:
+        with patch.object(lanes,'PopulationPrograms',Programs):w.run('2026-08-04',None,payload,1,digest(payload),1)
+    finally:w.close()
+    timing=json.loads((tmp_path/'generation-0001/2026-08-04/timings.json').read_bytes())[0]
+    assert timing['padded_candidates']==timing['candidates']==3
+    receipt=json.loads((tmp_path/'generation-0001/2026-08-04/receipt.json').read_bytes())
+    assert receipt['evaluated_candidates']==3 and receipt['reused_candidates']==0
+
+
+def test_single_valid_candidate_preserves_population_and_strict_mating():
+    from research.vectorized_backtest.v30.lineage import Pedigree,Selection,next_population
+    rng=np.random.default_rng(884);members=sample(rng,30);pedigree=Pedigree(3);ids=pedigree.birth(members,1,[(-1,-1)]*30,['fresh']*30);metrics=metrics_fixture(30);values=np.arange(30,dtype=float);valid=np.zeros(30,bool);valid[0]=True
+    result,cids,report=next_population(rng,members,ids,pedigree,list(range(30)),2,Selection(),session_values=values[None],session_eligible=valid[None],global_values=values,global_eligible=valid,ordered=[metrics])
+    assert len(result)==len(cids)==30 and report['elites']==1
+    assert set(ids)&set(cids)=={0}
+    assert all(r['parents']==[-1,-1] for r in pedigree.records[30:])
+
+@pytest.mark.parametrize('device',['cpu','cuda'])
+def test_candidate_inference_is_independent_of_cohort_membership(device):
+    if device=='cuda' and not torch.cuda.is_available():pytest.skip('CUDA unavailable')
+    members=sample(np.random.default_rng(991),2);data=toy(device,t=5,u=3);one=NetworkPlan(members[:1],device);two=NetworkPlan(members,device)
+    assert one.columns==two.columns==list(range(len(CATALOG)))
+    for tick in range(3):
+        outputs=[]
+        for plan,b in [(one,1),(two,2)]:
+            p=torch.zeros((1,b,3,9),device=device,dtype=torch.float64);opened=torch.zeros(p.shape[:-1],device=device,dtype=torch.float64)
+            gate=plan.signals(data,torch.tensor(tick,device=device),p,opened,data.tensors['mark'][tick][None,None]);outputs.append((gate.clone(),plan.ratios.clone()))
+        assert torch.equal(outputs[0][0],outputs[1][0][:,:1])
+        assert torch.equal(outputs[0][1],outputs[1][1][:,:1])
+    one.close();two.close()
+
+def test_ambiguous_origin_sources_are_not_homologous_weights():
+    from research.vectorized_backtest.v30.composition import homologous_weights
+    a=Network((Neuron((0,),(1.,),0.,7),Neuron((1,),(1.,),0.,7),Neuron((INPUTS,INPUTS+1),(1.,2.),0.,9)),0.)
+    b=replace(a,nodes=a.nodes[:2]+(replace(a.nodes[2],weights=(7.,8.)),))
+    class All:
+        def random(self):return 0.
+    child=homologous_weights(All(),a,b)
+    assert child.nodes[-1].weights==(1.,2.)
+    from research.vectorized_backtest.v30.species import describe
+    member=sample(np.random.default_rng(8),1)[0];member=replace(member,networks={s:a for s in STAGES});descriptor=describe(member)
+    assert not any(k.endswith(':n7') for k in descriptor['parameters'])

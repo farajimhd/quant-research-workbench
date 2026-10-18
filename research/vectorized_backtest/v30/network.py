@@ -34,7 +34,8 @@ class NetworkPlan:
         self.members=members;self.device=torch.device(device)
         self.cuda_block=int(os.environ.get('V30_NEURAL_BLOCK','128'))
         if self.cuda_block not in (32,64,128,256):raise ValueError('Unsupported neural CUDA tile')
-        self.columns=sorted({s%len(CATALOG) for m in members for net in m.networks.values() for n in net.nodes for s in n.sources if 0<=s<MARKET_INPUTS})
+        # Fixed catalog layout makes normalization independent of cohort membership.
+        self.columns=list(range(len(CATALOG)))
         self.lookup={s:i for i,s in enumerate(self.columns)};c=len(self.columns)
         nets=[m.networks[s] for m in members for s in STAGES]
         counts=np.array([len(n.nodes) for n in nets],np.int32);offsets=np.cumsum(np.r_[0,counts[:-1]]).astype(np.int32)

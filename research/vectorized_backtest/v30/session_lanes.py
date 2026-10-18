@@ -122,12 +122,11 @@ class Worker:
                     self.batch_progress['completed_local_batches']=offset//c['batch_size']
                     selection=missing[offset:offset+c['batch_size']]
                     members=[population[i] for i in selection]
-                    # Stable replay width; repeated padded members share rule evaluation.
+                    # Native candidate tails avoid replaying artificial duplicates.
                     actual=len(members)
-                    members+=members[-1:]*(c['batch_size']-actual)
                     batch_start=perf_counter();rule_start=time()
                     batch_keys=[keys[i] for i in selection]
-                    batch_key=tuple(batch_keys+batch_keys[-1:]*(c['batch_size']-actual))
+                    batch_key=tuple(batch_keys)
                     if self.plan_generation!=generation:
                         for value in self.plans.values():value.close()
                         self.plans.clear();self.plan_generation=generation

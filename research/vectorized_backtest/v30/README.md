@@ -77,3 +77,14 @@ observed value before computing float32 moments. This avoids CPU/CUDA cancellati
 on constant and nearly constant columns without future data or widened parity
 tolerances. A measured CUDA tile is set by V30_NEURAL_BLOCK (32/64/128/256),
 recorded in the exact resume contract; it changes parallel layout only.
+
+Worker replay uses native candidate-tail widths instead of repeating padded
+candidates. This avoids duplicate neural/financial computation for validation
+shortlists and cached-elite generations. The no-padding mode is resume-bound.
+If fewer valid candidates exist than elite slots, only valid elites survive and
+the unused elite slots become explicit offspring/fresh-fallback slots.
+
+Projection uses the fixed complete certified feature catalog, so another
+candidate joining/leaving a batch cannot alter the reduction layout of a
+retained candidate. Individual graphs still connect sparsely to their own
+selected inputs. Normal global profiles already cover the full catalog.

@@ -44,13 +44,15 @@ def homologous_weights(rng,a,b):
         return {n.uid:n for n in net.nodes if n.uid and counts[n.uid]==1}
     other=unique(b);own=unique(a);nodes=[]
     def key(net,source):
-        if source<0:return ('delay',net.nodes[-source-1].uid)
-        if source>=INPUTS:return ('node',net.nodes[source-INPUTS].uid)
+        if source<0 or source>=INPUTS:
+            uid=net.nodes[-source-1 if source<0 else source-INPUTS].uid
+            if not uid or uid not in (own if net is a else other):return None
+            return ('delay' if source<0 else 'node',uid)
         return ('input',source)
     for node in a.nodes:
         donor=other.get(node.uid)
         if donor is None or node.uid not in own:nodes.append(node);continue
-        weights=dict(zip((key(b,s) for s in donor.sources),donor.weights));out=[]
+        weights={k:w for s,w in zip(donor.sources,donor.weights) if (k:=key(b,s)) is not None};out=[]
         for source,w in zip(node.sources,node.weights):
             match=weights.get(key(a,source));out.append((w+match)/2 if match is not None and rng.random()<.5 else w)
         nodes.append(replace(node,weights=tuple(out)))
