@@ -5,7 +5,7 @@ import triton.language as tl
 from .config import FAN_IN,STATES
 
 @tr.jit
-def workspace_kernel(V,VALID,SOURCES,WEIGHTS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,FEEDBACK,MEMORY,MEMORY_KNOWN,RATIOS,P,OPENED,PREVIOUS,CLOCK,WORK,KNOWN,PHASE,OUT,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr):
+def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,FEEDBACK,MEMORY,MEMORY_KNOWN,RATIOS,P,OPENED,PREVIOUS,CLOCK,WORK,KNOWN,PHASE,OUT,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr):
     """One clock of scratch, directly indexed; no N-way register gathers."""
     member=tl.program_id(0);action=tl.program_id(1);u=tl.program_id(2)*BLOCK+tl.arange(0,BLOCK);live=u<U
     net=member*5+action;ncount=tl.load(COUNTS+net);base=tl.load(OFFSETS+net)
@@ -21,7 +21,9 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_
     h=tl.full((BLOCK,),0,tl.float32);ok=tl.full((BLOCK,),False,tl.int1)
     for i in range(ncount):
         z=tl.full((BLOCK,),0,tl.float32)+tl.load(BIAS+base+i);ok=tl.full((BLOCK,),False,tl.int1)
-        for e in tl.static_range(FAN):
+        # Preserve edge order and zero-weight semantics, but never inspect
+        # padded slots. The scalar bound is uniform within this action tile.
+        for e in range(tl.load(EDGE_COUNTS+base+i)):
             s=tl.load(SOURCES+(base+i)*FAN+e);w=tl.load(WEIGHTS+(base+i)*FAN+e)
             if w!=0:
                 if s<0:
@@ -62,7 +64,7 @@ def signals(plan,values,valid,position,opened,previous,index,out=None):
     actions=torch.empty((b,5,u),device=position.device,dtype=torch.bool)
     block=getattr(plan,'cuda_block',128)
     if block not in (32,64,128,256):raise ValueError('Unsupported neural CUDA tile')
-    workspace_kernel[(b,5,tr.cdiv(u,block))](values,valid,plan.sources,plan.weights,plan.bias,plan.counts,plan.offsets,plan.threshold,
+    workspace_kernel[(b,5,tr.cdiv(u,block))](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.bias,plan.counts,plan.offsets,plan.threshold,
         plan.size_source,plan.size_weight,plan.size_bias,plan.feedback,plan.memory,plan.memory_known,plan.ratios,
         position,opened,previous,index,plan.workspace,plan.known,plan.buffer_phase,actions,u,len(plan.columns),len(STATES),FAN_IN,block,enable_fp_fusion=False)
     result=out if out is not None else torch.empty((1,b,u),device=position.device,dtype=torch.int16)

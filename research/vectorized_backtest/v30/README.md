@@ -13,6 +13,12 @@ remain $1000 entry, $200 addition, $300 planned position risk and 20% maximum st
 distance. Certified causal input bytes and float32 neural/float64 financial
 arithmetic are unchanged. Missingness masks and observed-input ancestry remain.
 
+The CUDA evaluator retains the full fan-in envelope but loops over each neuron's
+actual connection count, in its original order. Padded connection slots perform
+no work. Throughput qualification must use the checkpoint's full population and
+complete certified sessions, including a one-versus-two-worker comparison;
+small-population or kernel-only timings do not establish campaign throughput.
+
 Search is broader than V29: initial action sizes span 1 through 96 nodes,
 fan-in increases from 8 to 16, parameter bounds from 4 to 8, and crossover can
 modify any 1 through 5 actions. The measured finite workspace envelope remains

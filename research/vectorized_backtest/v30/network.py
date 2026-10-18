@@ -41,18 +41,20 @@ class NetworkPlan:
         counts=np.array([len(n.nodes) for n in nets],np.int32);offsets=np.cumsum(np.r_[0,counts[:-1]]).astype(np.int32)
         self.total_nodes=int(counts.sum());self.offsets_cpu=offsets;self.kernel_nodes=1<<(int(counts.max())-1).bit_length()
         sources=np.zeros((self.total_nodes,FAN_IN),np.int32);weights=np.zeros_like(sources,dtype=np.float32);bias=np.zeros(self.total_nodes,np.float32)
+        edge_counts=np.zeros(self.total_nodes,np.int32)
         threshold=np.array([n.threshold for n in nets],np.float32)
         size_source=np.array([n.size_source if n.size_source>=0 else len(n.nodes)-1 for n in nets],np.int32)
         size_weight=np.array([n.size_weight for n in nets],np.float32);size_bias=np.array([n.size_bias for n in nets],np.float32)
         for index,net in enumerate(nets):
             net.validate()
             for j,node in enumerate(net.nodes):
-                row=int(offsets[index])+j;bias[row]=node.bias
+                row=int(offsets[index])+j;bias[row]=node.bias;edge_counts[row]=len(node.sources)
                 for e,(source,w) in enumerate(zip(node.sources,node.weights)):
                     sources[row,e]=source if source<0 else (source//len(CATALOG))*c+self.lookup[source%len(CATALOG)] if source<MARKET_INPUTS else 3*c+source-MARKET_INPUTS
                     weights[row,e]=w
         values=(sources,weights,bias,counts,offsets,threshold,size_source,size_weight,size_bias)
         self.sources,self.weights,self.bias,self.counts,self.offsets,self.threshold,self.size_source,self.size_weight,self.size_bias=[torch.as_tensor(x,device=device) for x in values]
+        self.edge_counts=torch.as_tensor(edge_counts,device=device)
         self.logarithmic=torch.tensor([CATALOG[s].unit not in ('ratio','bool') for s in self.columns],device=device)
         self.workspace_shape=None
 

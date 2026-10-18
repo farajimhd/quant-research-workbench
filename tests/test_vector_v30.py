@@ -539,3 +539,14 @@ def test_species_distance_is_exact_across_process_hash_seeds(tmp_path):
     if python.name.lower()=='pythonw.exe':python=python.with_name('python.exe')
     values=[subprocess.check_output([str(python),'-B','-c',code,str(path)],text=True,creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0,env=dict(os.environ,PYTHONDONTWRITEBYTECODE='1',PYTHONHASHSEED=str(seed))) for seed in [1,999]]
     assert values[0].strip() and values[0]==values[1]
+
+
+def test_packed_edge_counts_preserve_connections_and_zero_weights():
+    members=sample(np.random.default_rng(490),20)
+    plan=NetworkPlan(members,'cpu')
+    expected=[n for m in members for stage in STAGES for n in m.networks[stage].nodes]
+    assert plan.edge_counts.tolist()==[len(n.sources) for n in expected]
+    assert max(plan.edge_counts.tolist())==16
+    for i,n in enumerate(expected):
+        assert plan.weights[i,:len(n.weights)].tolist()==np.asarray(n.weights,np.float32).tolist()
+        assert not bool(plan.weights[i,len(n.weights):].any())
