@@ -526,3 +526,14 @@ def test_ambiguous_origin_sources_are_not_homologous_weights():
     from research.vectorized_backtest.v30.species import describe
     member=sample(np.random.default_rng(8),1)[0];member=replace(member,networks={s:a for s in STAGES});descriptor=describe(member)
     assert not any(k.endswith(':n7') for k in descriptor['parameters'])
+
+
+def test_species_distance_is_exact_across_process_hash_seeds(tmp_path):
+    import json,subprocess,sys,os
+    from research.vectorized_backtest.v30.species import describe
+    member=sample(np.random.default_rng(388),1)[0];a=describe(member);b=copy.deepcopy(a)
+    b['parameters']={k:v+(i%7+1)*.031 for i,(k,v) in enumerate(b['parameters'].items())}
+    path=tmp_path/'descriptors.json';path.write_text(json.dumps([a,b]))
+    code='import json,sys;from research.vectorized_backtest.v30.species import distance;a,b=json.load(open(sys.argv[1]));print(distance(a,b).hex())'
+    values=[subprocess.check_output([sys.executable,'-B','-c',code,str(path)],text=True,env=dict(os.environ,PYTHONDONTWRITEBYTECODE='1',PYTHONHASHSEED=str(seed))) for seed in [1,999]]
+    assert values[0]==values[1]

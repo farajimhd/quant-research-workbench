@@ -30,7 +30,7 @@ def describe(member):
 def distance(a,b):
     aa=set(a['features']);bb=set(b['features']);feature=1-len(aa&bb)/max(1,len(aa|bb))
     x=np.asarray(a['shape']);y=np.asarray(b['shape']);struct=.5*feature+.5*float(np.mean(abs(x-y)/np.maximum(1,np.maximum(abs(x),abs(y)))))
-    common=a['parameters'].keys()&b['parameters'].keys()
+    common=sorted(a['parameters'].keys()&b['parameters'].keys())
     parameter=float(np.mean([min(1,abs(a['parameters'][k]-b['parameters'][k])/16) for k in common])) if common else .5
     if a.get('active') and b.get('active'):
         x=np.asarray(a['behavior']);y=np.asarray(b['behavior']);behavior=float(np.mean(abs(x-y)/np.maximum(1,np.maximum(abs(x),abs(y)))))
