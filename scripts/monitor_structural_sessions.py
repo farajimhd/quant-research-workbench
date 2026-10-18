@@ -37,9 +37,11 @@ def render(value,width=100,height=30,rate=None):
     controller=value.get('controller',{});s=value.get('status',{})
     phase=controller.get('phase','waiting for controller')
     state=s.get('status',phase) if phase=='backfill' else phase
+    evidence=value.get('evidence',{})
+    if phase=='failed' and controller.get('failed_phase')=='plan' and evidence.get('status')=='running':
+        state='Waiting for reporting recovery'
     color='red' if state in ('failed','interrupted') else 'green' if state=='complete' else 'cyan'
     lines=Text(f'Structural levels  |  {state}',style=color)
-    evidence=value.get('evidence',{})
     if evidence:
         lines.append('\nReporting evidence recovery: '+evidence.get('status','unknown'),style='cyan')
         if evidence.get('status')=='running':

@@ -22,3 +22,11 @@ def test_read_only_waiting_entry_point(tmp_path,capsys):
     assert main(['--run-dir',str(tmp_path),'--once'])==0
     assert 'waiting for controller' in capsys.readouterr().out
     assert list(tmp_path.iterdir())==before
+
+
+def test_active_recovery_replaces_old_plan_failure_heading():
+    stream=StringIO();console=Console(file=stream,width=100,color_system=None)
+    console.print(render({'controller':{'phase':'failed','failed_phase':'plan'},
+        'evidence':{'status':'running'},'status':{}}))
+    assert 'Waiting for reporting recovery' in stream.getvalue()
+    assert 'Structural levels  |  failed' not in stream.getvalue()
