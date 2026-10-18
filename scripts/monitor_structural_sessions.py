@@ -13,6 +13,30 @@ from rich.console import Console,Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+from rich.progress_bar import ProgressBar
+
+_CERTIFICATES=None
+_CERTIFICATE_TIME=0.
+
+
+def certificate_progress():
+    """Read bounded certificate metadata at most once per minute, never events."""
+    global _CERTIFICATES,_CERTIFICATE_TIME
+    if time.monotonic()-_CERTIFICATE_TIME<60 and _CERTIFICATES is not None:return _CERTIFICATES
+    from contextlib import closing
+    from datetime import date,datetime,timezone
+    code=Path('D:/TradingML/codes/market-data-pipeline-aad28145a')
+    if code.is_dir() and str(code) not in sys.path:sys.path.insert(0,str(code))
+    from scripts.build_market_day import Client,parse_args
+    from pipelines.certified_research.source import inventory,reporting_inventory
+    os.environ['QMD_CLICKHOUSE_URL']='http://192.168.1.218:18123'
+    with closing(Client(parse_args(['--date','2026-01-02']),readonly=True)) as client:
+        source=inventory(client.query,date(2026,1,1),date(2026,10,2))
+        reporting=reporting_inventory(client.query,source)
+    _CERTIFICATES=dict(total=len(source['expected']),completed=len(reporting['verified']),
+        remaining=len(reporting['missing']),utc=datetime.now(timezone.utc).strftime('%H:%M:%S UTC'))
+    _CERTIFICATE_TIME=time.monotonic()
+    return _CERTIFICATES
 
 
 def snapshot(root):
@@ -25,6 +49,10 @@ def snapshot(root):
     evidence={};events=[]
     if (recovery/'status.json').exists():
         evidence=json.loads((recovery/'status.json').read_text())
+        try:evidence['certificates']=certificate_progress()
+        except Exception as error:
+            evidence['certificates']=_CERTIFICATES
+            evidence['warning']='Certificate refresh unavailable: '+type(error).__name__
         if (recovery/'build.log').exists():
             with (recovery/'build.log').open('rb') as stream:
                 stream.seek(max(0,stream.seek(0,2)-8192))
@@ -42,8 +70,14 @@ def render(value,width=100,height=30,rate=None):
         state='Waiting for reporting recovery'
     color='red' if state in ('failed','interrupted') else 'green' if state=='complete' else 'cyan'
     lines=Text(f'Structural levels  |  {state}',style=color)
+    bars=[]
     if evidence:
         lines.append('\nReporting evidence recovery: '+evidence.get('status','unknown'),style='cyan')
+        proof=evidence.get('certificates')
+        if proof:
+            lines.append(f'\nReporting sessions: {proof["completed"]} / {proof["total"]} certified; {proof["remaining"]} remaining ({proof["utc"]})')
+            bars.append(ProgressBar(total=proof['total'],completed=proof['completed']))
+        if evidence.get('warning'):lines.append('\n'+evidence['warning'],style='yellow')
         if evidence.get('status')=='running':
             lines.append('\nLevels wait for strict reporting certification; automatic resume enabled.')
         for event in value.get('events',[]):lines.append('\n'+event)
@@ -53,6 +87,8 @@ def render(value,width=100,height=30,rate=None):
     lines.append(f'\nTicker-days: {done:,} new  |  {reuse:,} reused  |  {s.get("failed",0):,} failed')
     if total is not None:
         lines.append(f'\nCoverage: {done+reuse:,} / {total:,}  |  {max(0,total-done-reuse):,} remaining')
+        bars.append(ProgressBar(total=total,completed=done+reuse))
+    elif evidence:lines.append('\nLevels total: pending certified full-scope plan; not started.')
     if rate is not None:lines.append(f'\nRecent coverage: {rate:,.0f} ticker-days/hour (includes reuse)')
     lines.append(f'\nConcurrency: {s.get("worker_limit",8)} lanes  |  1 query thread / 2 GiB per lane')
     if value.get('stop'):lines.append('\nSTOP present: diagnosis and owner drain required before resume.',style='red')
@@ -67,7 +103,7 @@ def render(value,width=100,height=30,rate=None):
                       str(worker.get('completed',0)),str(worker.get('reused',0)))
     if not workers:table.add_row('Worker details appear after planning.','-','-')
     footer=Text('AH retrospective | PM/REGULAR streaming | Ctrl+C closes monitor only',style='dim')
-    return Panel(Group(lines,Text(''),table,footer),title='ARTE structural backfill',width=width)
+    return Panel(Group(lines,*bars,Text(''),table,footer),title='ARTE structural backfill',width=width)
 
 
 def main(argv=None):
