@@ -10,5 +10,5 @@ def render(status,**kwargs):
     compact=kwargs.get('width',110)<110
     detail=(f"Species {e.get('species_count','—')} stale {e.get('stagnant_species','—')} | neurons {nodes.get('median','—')}/{nodes.get('max','—')} | depth {depth.get('max','—')} | rec {rec.get('max','—')}" if compact else f"Species {e.get('species_count','—')} | stagnant {e.get('stagnant_species','—')} | neurons median/max {nodes.get('median','—')}/{nodes.get('max','—')} | depth max {depth.get('max','—')} | recurrence max {rec.get('max','—')} | CPU species {e.get('species_seconds',0):.3f}s")
     layout['header'].size=3
-    layout['header'].update(Text(f"V31 {status.get('status','starting').upper()} | NET PROFIT ONLY | global fresh search\nValidation: display only; no selection feedback\n{detail}"))
+    layout['header'].update(Text(f"V31 {status.get('status','starting').upper()} | NET PROFIT ONLY | PHASE 2 GLOBAL\nValidation: display only; no selection feedback\n{detail}"))
     return layout

@@ -6,6 +6,7 @@ from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
+from research.vectorized_backtest.v6.torch_backtest.runtime import write_json
 
 def read(path):
     try:return json.loads(Path(path).read_bytes())
@@ -26,6 +27,7 @@ def monitor(output,days,generations,stop):
     console=Console();started=time.monotonic();last=None;last_print=0
     with Live(console=console,auto_refresh=False) as live:
         while not stop.wait(2):
+            publish_snapshot(output,days,generations)
             panel,details=render(output,days,generations,started)
             if console.is_terminal:
                 from rich.console import Group
@@ -36,3 +38,15 @@ def monitor(output,days,generations,stop):
                 if key!=last:
                     for day,s in zip(days,states):print(f"V31 {day} | sealed {s.get('completed_generations',0)}/{generations} | {s.get('stage',s.get('status','preparing'))} | replay {s.get('completed_seconds',0)}/{s.get('total_seconds','?')}",flush=True)
                     last=key;last_print=time.monotonic()
+
+def publish_snapshot(output,days,generations):
+    """Shared Phase-1 observer contract; sealed sessions alone count complete."""
+    states={d:read(Path(output)/'local'/d/'status.json') for d in days}
+    complete=[d for d in days if (Path(output)/'local'/d/'complete.json').exists()]
+    failed=[d for d,s in states.items() if s.get('status')=='failed']
+    active={d:s for d,s in states.items() if s.get('status')=='running' and d not in complete}
+    snapshot=dict(status='failed' if failed else 'running',stage='Phase 1: local training',
+        completed=len(complete),active=len(active),queued=len(days)-len(complete)-len(active)-len(failed),failed=len(failed),
+        workers=active,total_sessions=len(days),local_generations=generations,updated_epoch=time.time())
+    write_json(Path(output)/'status.json',snapshot)
+    return snapshot

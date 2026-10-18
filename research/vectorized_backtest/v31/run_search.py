@@ -139,7 +139,6 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
         maximum_data_gib=4.,plan_limit=2,capture_gib=4.,initial_population=None,predecessor_job=None,predecessor_proof=None,
         host_reserve_gib=128.,host_admission_gib=32.,replay_width_workers=None,host_prefetch=False,initialization_probe=None):
 
-    if initial_population is not None:raise ValueError('V31 requires fresh global initialization')
     if not 10<=population_size<=65536 or not 1<=batch_size<=1024 or not 1<=session_workers<=8 or generations<1:
         raise ValueError('Explicit bounded campaign required')
     replay_width_workers=session_workers if replay_width_workers is None else replay_width_workers
@@ -156,7 +155,7 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
     train=bind_dataset(training,'training');valid=bind_dataset(validation,'validation')
     if initial_population is not None:
         from .phase2 import verify_pool
-        verify_pool(initial_population,train['days'])
+        verify_pool(initial_population,train['days'],dataset=train)
     if set(train['days'])&set(valid['days']) or max(train['days'])>=min(valid['days']):
         raise ValueError('Chronologically disjoint validation required')
     output=require_runtime(Path(output));version_hash=source_hash()
@@ -166,7 +165,7 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
         seed=seed,device=device,backend=backend,execution=asdict(execution),objective=asdict(objective),selection=asdict(selection),recombination=settings(selection),
         episode_capacity=episode_capacity,maximum_gate_gib=maximum_gate_gib,maximum_data_gib=maximum_data_gib,
         plan_limit=plan_limit,capture_gib=capture_gib,validation_feedback=False,input_receipts=train['receipts'],session_execution='independent',
-        initialization='training-activation-calibrated-v1',
+        initialization='training-activation-calibrated-v1' if initial_population is None else 'v31-local-expert-pool-v1',
         initialization_probe_sha256=file_hash(initialization_probe) if initialization_probe is not None else None,
         initial_population_sha256=None if initial_population is None else initial_population['pool_sha256'],search_space_version=SEARCH_SPACE_VERSION,maximum_host_sessions=2,
         host_reserve_gib=host_reserve_gib,host_admission_gib=host_admission_gib,host_prefetch=host_prefetch,candidate_tail_padding=False)
@@ -317,15 +316,16 @@ def main():
     parser.add_argument('--predecessor-job',type=Path,required=True)
     parser.add_argument('--objective',type=Path,help='JSON with explicit Objective fields')
     parser.add_argument('--selection',type=Path,help='JSON with explicit Selection fields')
-    parser.add_argument('--initial-population',type=Path,help='V31 does not accept evolved seeds')
-    parser.add_argument('--initialization-probe',type=Path,required=True)
+    parser.add_argument('--initial-population',type=Path,help='Verified V31 local expert pool')
+    parser.add_argument('--initialization-probe',type=Path)
     parser.add_argument('--maximum-gate-gib',type=float,default=6.665611267089844)
     parser.add_argument('--maximum-data-gib',type=float,default=4.)
     parser.add_argument('--capture-gib',type=float,default=4.,help='Total graph-cache GiB per worker, split across retained plans')
     args=vars(parser.parse_args());args['population_size']=args.pop('population')
     args['objective']=Objective(**json.loads(args['objective'].read_text(encoding='utf-8-sig'))) if args['objective'] else Objective()
     args['selection']=Selection(**json.loads(args['selection'].read_text(encoding='utf-8-sig'))) if args['selection'] else Selection(global_fraction=1.,champion_partners=0)
-    if args['initial_population'] is not None:parser.error('Fresh global initialization required')
+    if args['initial_population'] is not None:args['initial_population']=json.loads(args['initial_population'].read_text(encoding='utf-8-sig'))
+    elif args['initialization_probe'] is None:parser.error('Fresh initialization requires a training probe')
     torch.set_num_threads(1)
     return run(**args)
 

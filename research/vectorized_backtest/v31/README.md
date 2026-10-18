@@ -1,8 +1,33 @@
-# V31: behavior-calibrated initial recurrent networks
+# V31: calibrated local evolution followed by global mixing
 
-V31 changes initialization only. V30 campaigns, source and checkpoints are never
-modified or imported. The replay, execution, objective, genetic operators and
-permitted search bounds are retained from V30. No optimizer is auto-launched.
+V31 uses two phases: independent training-session evolution, then global mixing
+of the sealed local experts. V30 campaigns, source and checkpoints are never
+modified or imported. The replay, execution, objective, genetic operators,
+speciation and permitted search bounds are retained. No optimizer is auto-launched.
+
+Defaults: 24 local sessions, 30 generations each, population 1024 and seed 2020.
+Each local first generation evaluates a 6x initial pool (6144 calibrated fresh
+candidates) in bounded GPU batches; normal species-aware reproduction reduces
+the successor to 1024. Subsequent generations never repeat the 6x sampling.
+An initial completed=0 checkpoint preserves the sampled population and RNG before
+the first replay. Local species, pedigree, RNG, archives and seals survive resumes.
+
+Each local probe uses only its own training session. Phase 2 balances unique
+positive-profit experts across sessions for up to 75% of its initial population;
+at least 25% are fresh calibrated candidates (more if archives are insufficient).
+Global fresh calibration combines one window from each of up to eight evenly
+spaced training sessions. It imports no V30/evolved external candidates. Local
+origins and ancestry are carried into Phase 2 with distinct per-session IDs.
+All local source/dataset/checkpoint/archive certificates are verified first.
+Phase 2 evolves 1024 candidates for 50 generations by default. Fitness in both
+phases is net profit only; later validation is display-only during Phase 2.
+
+Use the existing detailed Phase-1 terminal via `v31.local_details --active
+<active-campaign.json>`. It retains session/ranking/rule navigation and switches
+automatically to the existing `v31.observe` Phase-2 panel when global status is
+published. Windows remain normal and do not maximize or steal focus. The
+controller publishes completed/active/queued/failed local-session counts; only
+sealed session completion advances the completed count.
 
 Initial per-action neuron counts remain stratified over 1, 2, 4, 8, 12, 16, 24,
 32, 48, 64, 80 and 96. Independent size permutations are retained; structural
@@ -27,8 +52,9 @@ Half the initial policy genomes retain independent sampling. Half use overlappin
 short/medium/long priors that correlate stop and target scales and vary management
 cooldowns, profit requirements and age gates. All policies remain evolvable across
 the full original bounds. The probe NPZ is bound to the exact training manifest,
-input receipts and slice hashes. `run_train --initialization-probe <probe.npz>`
-requires this binding and pins its hash in the campaign/resume contract.
+input receipts and slice hashes. The two-phase controller prepares these probes
+under the campaign's `initialization-probes` directory and pins their identities
+in the local checkpoints and global seed pool.
 
 Bounded CPU diagnostic (population 1024, seed 2020, no optimization launch):
 
@@ -49,9 +75,9 @@ rounding; tests use the existing neural 2e-6 tolerance and separately require
 matching validity, fixture decisions and saturation counts. There is no financial
 tolerance change. A NumPy reference remains available as `observe(reference=True)`.
 
-V31 evaluates a fresh population on all 24 certified training sessions in one
-global phase. There is no local search or evolved seed import. Fitness is the
-sum of net profit after the unchanged fees. Drawdown, concentration and exposure
+V31 evaluates local experts plus fresh candidates on all 24 certified training
+sessions in Phase 2. Fitness is the sum of net profit after the unchanged fees.
+Drawdown, concentration and exposure
 remain diagnostics, never fitness deductions. Twelve later validation sessions
 are display-only: the successor, species state and RNG are frozen before their
 evaluation. Validation cannot influence any reproduction or stopping decision.
@@ -122,10 +148,11 @@ not an extra term hidden in the net-profit fitness.
 ## Engineering and launch
 
 Use `python -B -m research.vectorized_backtest.v31.run_train` with
-`PYTHONDONTWRITEBYTECODE=1`, `--authorize-run`, pinned `--training`, `--validation`,
-`--initialization-probe`,
+`PYTHONDONTWRITEBYTECODE=1`, `--mode full`, `--authorize-run`, pinned `--training`, `--validation`,
 `--output` under D:/TradingML/runtimes, and a qualified `--commit`. Defaults are
-population1024, seed2020 and 100 generations. Batch size, worker count and capture
+population1024, seed2020, `--generations 30`, `--global-generations 50`, and
+`--initial-multiplier 6`. `--mode local --day 2026-08-04` runs only that local stage.
+Batch size, worker count and capture
 memory must be measured on the target GPU. Workstation defaults preserve
 128 GiB host reserve plus32 GiB load admission and no prefetch. Source changes
 must be committed/pushed before immutable workstation deployment.
