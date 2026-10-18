@@ -188,6 +188,9 @@ class IbkrStrategyOrderPlanner:
         # the order manager, preserving price protection in volatile names.
         entry_type = "LMT"
         entry_price = _aggressive_limit(intent.reference_price, entry_side, limit_offset_bps)
+        from .entry_cash_budget import cash_bounded_buy_price
+        entry_price = cash_bounded_buy_price(intent, entry_price, quantity=quantity,
+                                            tick_size=0.0001)
         parent = _order(
             account_id, instrument, f"{prefix}-entry", entry_side, entry_type, quantity,
             intent, price=entry_price, grouped=True,

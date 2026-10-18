@@ -2697,6 +2697,9 @@ class OrderManagementEngine:
             requested_price = envelope.bound(side, _round_to_tick(
                 quote.ask if side == "BUY" else quote.bid, quote.tick_size, side,
             ))
+        from .entry_cash_budget import cash_bounded_buy_price
+        requested_price = cash_bounded_buy_price(group.intent, requested_price,
+                                               tick_size=quote.tick_size)
         stop = float(group.intent.invalidation_price or 0)
         if stop > 0 and (
             (group.intent.action in {"enter_long", "add_long"} and requested_price <= stop)
@@ -4618,8 +4621,11 @@ def execution_tactic(
         raise ValueError(f"Execution quote is stale ({age_ms:.0f} ms)")
     urgency = _execution_policy_urgency(intent.resolved_execution_policy().name)
     side = _intent_side(intent)
+    from .entry_cash_budget import cash_bounded_buy_price
     steps = tuple(
-        PriceStep(step.after_ms, intent.resolved_execution_policy().envelope.bound(side, step.price))
+        PriceStep(step.after_ms, cash_bounded_buy_price(intent,
+            intent.resolved_execution_policy().envelope.bound(side, step.price),
+            tick_size=quote.tick_size))
         for step in _price_steps(side, urgency, quote, policy.maximum_reprice_ticks)
     )
     deduplicated: list[PriceStep] = []
