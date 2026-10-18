@@ -79,13 +79,30 @@ def certify(query,database,target,day,source_digest,first_sip_us,last_sip_us,exp
     if type(expected_trades) is not int or expected_trades<0:raise ValueError('Expected source trade count is invalid')
     verify_auxiliary_storage(query,database,(table,))
     counts={k:int(v) for k,v in query(certification_sql(target,database+'.'+table,day,source_digest,first_sip_us,last_sip_us,event_date_pruning=event_date_pruning))[0].items()}
+    return _publish_verified(query,database,table,coverage,day,source_digest,expected_trades,
+        counts,evidence_hash(query,database+'.'+table,day),expected_previous)
+
+
+def _publish_verified(query,database,table,coverage,day,source_digest,expected_trades,counts,verified_hash,expected_previous=None):
+    """Internal publication of this owned attempt's freshly checked proofs.
+
+    Callers must independently audit flags/association and fingerprint original
+    evidence before entering here. Never load these proofs from runtime JSON.
+    """
+    import json,re
+    from datetime import datetime,timezone
+    from pipelines.certified_research.schema import verify_auxiliary_storage
+    from pipelines.certified_research.publication import insert_rows
+    identifier(database);identifier(table);identifier(coverage)
+    if type(expected_trades) is not int or expected_trades<0:raise ValueError('Expected source trade count is invalid')
+    if not re.fullmatch('[0-9a-f]{64}',verified_hash):raise ValueError('Verified evidence fingerprint is invalid')
     if counts['n']!=expected_trades or counts['unique_keys']!=expected_trades or counts['bad']:
         raise ValueError('Native reporting evidence does not match complete canonical source')
     identifier(coverage)
     query(coverage_ddl(database,coverage),read=False);verify_auxiliary_storage(query,database,(coverage,table))
     rows=query(f'SELECT source_digest,status,details FROM {database}.{coverage} FINAL '
         f'WHERE source_date=toDate({literal(day)}) AND revision={literal(REVISION)}')
-    details=json.dumps(dict(counts=counts,evidence_version=VERSION,evidence_hash=evidence_hash(query,database+'.'+table,day)),sort_keys=True)
+    details=json.dumps(dict(counts=counts,evidence_version=VERSION,evidence_hash=verified_hash),sort_keys=True)
     wanted=dict(source_digest=source_digest,status='complete',details=details)
     if rows:
         if rows==[wanted]:return counts

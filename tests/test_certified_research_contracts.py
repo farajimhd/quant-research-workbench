@@ -1789,6 +1789,9 @@ class ClickHouseIntegration(unittest.TestCase):
         self.assertFalse(any('SHA256(toString(tuple(' in sql for sql in polls))
         logs.clear();self.assertEqual(step()['status'],'complete')
         self.assertFalse(any(sql.startswith(('INSERT INTO','ALTER TABLE')) for sql in logs))
+        # One association audit and one independent final flag audit. The
+        # publisher consumes the final in-memory proof, never scans a third time.
+        self.assertEqual(sum(sql.startswith('WITH evaluated AS') for sql in logs),2)
         with self.assertRaisesRegex(ValueError,'frozen acquisition'):
             repair.step(query,source,'f'*64,Claim(),lambda:None,database=self.database,table=clock,target=target,coverage=coverage)
         self.client.query(f'ALTER TABLE {target} UPDATE price=999 WHERE ordinal=1 SETTINGS mutations_sync=2',read=False)

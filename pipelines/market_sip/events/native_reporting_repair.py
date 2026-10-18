@@ -165,8 +165,8 @@ def step(query,source,expected_evidence_hash,claim,source_guard,*,database='q_li
     if _hash(query,evidence_fingerprint_sql(evidence,day))!=expected_evidence_hash:
         raise ValueError('Native input evidence changed before certification')
     guard()
-    ns.certify(query,database,target,day,source_hash,first,last,expected,table=table,coverage=coverage,
-        expected_previous=transition if previous==[transition] else None,event_date_pruning=not fixture)
+    ns._publish_verified(query,database,table,coverage,day,source_hash,expected,final,
+        expected_evidence_hash,transition if previous==[transition] else None)
     guard()
     return dict(status='complete',counts=final,marker=marker)
 
