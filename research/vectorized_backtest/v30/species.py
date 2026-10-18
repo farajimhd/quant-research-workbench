@@ -58,11 +58,13 @@ class Species:
     def __init__(self,state=None):
         self.state=state or dict(next_id=0,threshold=.5,records=[],generation=0)
         self.telemetry={};self.labels=[];self.descriptors=[];self.groups={}
-    def assign(self,population,ids,profits,ordered,generation):
+    def assign(self,population,ids,profits,ordered,generation,eligible=None):
         started=time.perf_counter();descriptors=[describe(m) for m in population];behaviors,active=training_behavior(ordered,len(population))
         for i,d in enumerate(descriptors):d.update(behavior=behaviors[i],active=bool(active[i]))
+        eligible=np.ones(len(population),dtype=bool) if eligible is None else np.asarray(eligible,dtype=bool)
         previous={r['id']:r for r in self.state['records']};representatives={i:r['representative'] for i,r in previous.items()};groups={};labels=[None]*len(population);capped=0
         for i in np.argsort(ids,kind='stable'):
+            if not eligible[int(i)]:continue
             distances=[(distance(descriptors[int(i)],rep),sid) for sid,rep in representatives.items()];best=min(distances,default=(2,None))
             if best[0]<=self.state['threshold'] or len(representatives)>=64:
                 sid=best[1];capped+=int(best[0]>self.state['threshold'])

@@ -247,7 +247,7 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
                 behavior=None # Species descriptors reuse the training episode ledger below; no second BehaviorIndex.
                 successor,new_ids,diversity=next_population(rng,population,ids,pedigree,rank,generation+1,selection,session_values=values,session_eligible=eligible,global_values=global_values,global_eligible=result['global_eligible'],behavior=behavior,species=species,ordered=ordered) if generation<generations else (population,ids,{})
                 if generation==generations:
-                    species.assign(population,ids,global_values,ordered,generation)
+                    species.assign(population,ids,global_values,ordered,generation,eligible=result['global_eligible'])
                     diversity=species.telemetry
                 selection_seconds=perf_counter()-selection_started
                 panel.update(evolution=species.telemetry)

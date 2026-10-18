@@ -458,3 +458,10 @@ def test_cross_section_constant_and_near_constant_stability(device):
     projected,_=plan.project(data,torch.tensor(0,device=device))
     reference=values[:,0,1].double();reference=(reference-reference.mean())/(2*reference.std(unbiased=False).clamp_min(1e-6));reference=reference.tanh().float()
     torch.testing.assert_close(projected[:,c+1],reference,rtol=0,atol=2e-7)
+
+def test_financially_invalid_candidates_cannot_define_species_champions():
+    from research.vectorized_backtest.v30.species import Species
+    members=sample(np.random.default_rng(128),10);metrics=metrics_fixture(10);values=np.arange(10,dtype=float);values[0]=999999
+    eligible=np.ones(10,bool);eligible[0]=False;s=Species();s.assign(members,np.arange(10),values,[metrics],1,eligible=eligible)
+    assert s.labels[0] is None
+    assert all(r['champion_serial']!=0 and r['best_profit']<=9 for r in s.state['records'])

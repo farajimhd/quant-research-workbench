@@ -140,7 +140,7 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
     values=np.asarray(global_values);valid=np.asarray(global_eligible,dtype=bool)
     if values.shape!=(n,) or not np.isfinite(values).all() or not valid.any():raise ValueError('Finite training profits required')
     if ordered is None:raise ValueError('Species require complete training episode descriptors')
-    species=Species() if species is None else species;species.assign(population,ids,values,ordered,generation-1)
+    species=Species() if species is None else species;species.assign(population,ids,values,ordered,generation-1,eligible=valid)
     order=np.lexsort((ids,-values));order=order[valid[order]];best=int(order[0]);mates=MateIndex(pedigree,ids)
     records=[r for r in species.state['records'] if not r['stagnant'] or species.labels[best]==r['id']]
     records=[r for r in records if any(valid[i] for i in species.groups[r['id']])]
@@ -148,7 +148,7 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
     champions=sorted((min((i for i in species.groups[r['id']] if valid[i]),key=lambda i:(-values[i],ids[i])) for r in records),key=lambda i:(-values[i],ids[i]))
     selected=champions[:min(len(champions),elite_budget//2)];selected=list(dict.fromkeys(selected+[int(i) for i in order]))[:elite_budget]
     keys={program_key(population[i]) for i in selected}
-    children=[];parents=[];ops=[];metadata=[];fallbacks=0;duplicates=0;attempts=0
+    children=[];parents=[];ops=[];metadata=[];fallbacks=0;duplicates=0;attempts=0;invalid_crossovers=0;no_mates=0
     def fresh(reason):
         nonlocal duplicates
         for _ in range(64):
@@ -172,10 +172,10 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
             for _ in range(config.mate_attempts):
                 a=int(pool[int(rng.integers(len(pool),size=3).min())]);options=order[mates.unrelated(a)[order]]
                 options=options[np.asarray([species.labels[int(i)]==rec['id'] for i in options])==(route=='within')]
-                if not len(options):continue
+                if not len(options):no_mates+=1;continue
                 b=int(options[int(rng.integers(len(options),size=3).min())]);attempts+=1
                 try:child,operator=cross(rng,population[a],population[b])
-                except (ValueError,RuntimeError):continue
+                except (ValueError,RuntimeError):invalid_crossovers+=1;continue
                 key=program_key(child)
                 if key in keys:duplicates+=1;continue
                 keys.add(key);children.append(child);parents.append((int(ids[a]),int(ids[b])));ops.append('crossover');metadata.append(dict(route=route,species=rec['id'],structural_delta=sum(len(v.nodes) for v in child.networks.values())-sum(len(v.nodes) for v in population[a].networks.values())));realized[route]+=1;accepted=True;break
@@ -190,14 +190,15 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
             key=program_key(child)
             if key!=oldkey and key not in keys:break
         else:raise RuntimeError('Distinct structural/parameter mutation budget exhausted')
-        structural_delta=sum(len(v.nodes) for v in child.networks.values())-sum(len(v.nodes) for v in old.networks.values());structural+=int(bool(structural_delta))
-        keys.add(key);children[j]=child;ops[j]+='_mutation';metadata[j].update(mutation_fields=fields,mutation_node_delta=structural_delta)
+        structural_delta=sum(len(v.nodes) for v in child.networks.values())-sum(len(v.nodes) for v in old.networks.values());structural_flag=any(e['field'].startswith('structure:') for e in fields);structural+=int(structural_flag)
+        keys.add(key);children[j]=child;ops[j]+='_mutation';metadata[j].update(mutation_fields=fields,mutation_node_delta=structural_delta,structural_mutation=structural_flag)
     born=pedigree.birth(children,generation,parents,ops)
     for serial,meta in zip(born,metadata):pedigree.records[int(serial)].update(meta)
     assert len(selected)+len(children)==target
-    telemetry=dict(species.telemetry);telemetry.update(elites=len(selected),fresh_candidates=sum(o.startswith('fresh') for o in ops),crossovers=sum(o.startswith('crossover') for o in ops),mutations=len(chosen),mutation_rate=rate,structural_mutations=structural,unrelated_mate_fallbacks=fallbacks,rejected_duplicates=duplicates,mating_requests=requests,mating_realized=realized,species_offspring={str(r['id']):int(q) for r,q in zip(records,quota)},global_slots=target,local_slots=0,source_population=n,target_population=target)
+    telemetry=dict(species.telemetry);telemetry.update(elites=len(selected),fresh_candidates=sum(o.startswith('fresh') for o in ops),crossovers=sum(o.startswith('crossover') for o in ops),mutations=len(chosen),mutation_rate=rate,structural_mutations=structural,unrelated_mate_fallbacks=fallbacks,rejected_duplicates=duplicates,crossover_attempts=attempts,invalid_crossover_attempts=invalid_crossovers,no_unrelated_options=no_mates,mating_requests=requests,mating_realized=realized,species_offspring={str(r['id']):int(q) for r,q in zip(records,quota)},global_slots=target,local_slots=0,source_population=n,target_population=target)
     # Already-evaluated offspring survival uses birth annotations, no replay work.
-    evaluated=[pedigree.records[int(i)] for i in ids];structural_births=[r for r in evaluated if r.get('mutation_node_delta',0) or r.get('structural_delta',0)]
-    telemetry['structural_survival']=dict(evaluated=len(structural_births),elite_survivors=sum(r['serial'] in set(int(ids[i]) for i in selected) for r in structural_births))
+    evaluated=[pedigree.records[int(i)] for i in ids];structural_births=[r for r in evaluated if r.get('structural_mutation',False) or r.get('structural_delta',0)]
+    elite_ids=set(int(ids[i]) for i in selected)
+    telemetry['structural_survival']=dict(evaluated=len(structural_births),elite_survivors=sum(r['serial'] in elite_ids for r in structural_births))
     species.telemetry=telemetry
     return [population[i] for i in selected]+children,np.concatenate((ids[selected],born)),telemetry
