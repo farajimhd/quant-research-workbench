@@ -28,6 +28,16 @@ from .runtime import configure_caches
 _worker=None
 
 
+def replay_widths(days,widths,group_size):
+    """Keep financial reduction shapes independent of execution concurrency."""
+    if not 1<=group_size<=8:raise ValueError('Invalid listing-width group size')
+    result={}
+    for first in range(0,len(days),group_size):
+        cohort=days[first:first+group_size];width=max(widths[d] for d in cohort)
+        result.update({day:width for day in cohort})
+    return result
+
+
 class Worker:
     def __init__(self,config,events,lane):
         self.config=config;self.events=events;self.lane=lane
@@ -266,12 +276,13 @@ class SessionLanes:
         if not self.widths:
             def width(day):return day,len(json.loads((Path(self.config['history'])/day/'complete.json').read_text(encoding='utf-8-sig'))['listing_ids'])
             with ThreadPoolExecutor(max_workers=self.workers) as reader:self.widths=dict(reader.map(width,days))
+        fixed_widths=replay_widths(days,self.widths,self.config.get('replay_width_workers',self.workers))
         for first in range(0,len(days),self.workers):
             cohort=days[first:first+self.workers];started=perf_counter()
             self.panel.begin_sessions(cohort)
             futures=[self.pools[lane].submit(evaluate,day,
                 days[first+self.workers+lane] if first+self.workers+lane<len(days) else None,
-                payload,generation,token,max(self.widths[d] for d in cohort)) for lane,day in enumerate(cohort)]
+                payload,generation,token,fixed_widths[day]) for lane,day in enumerate(cohort)]
             results=[future.result() for future in futures]
             if self.error is not None:raise RuntimeError('Session progress consumer failed') from self.error
             for result in results:

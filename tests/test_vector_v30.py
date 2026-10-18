@@ -567,3 +567,15 @@ def test_cuda_shared_position_states_cover_held_missing_and_feedback():
     state_kernel[(b,len(STATES),1)](position,opened,previous,index,feedback,actual,u,len(STATES),128,enable_fp_fusion=False)
     expected=state_values(position,previous,opened,index.to(torch.float64),feedback)[0].transpose(1,2)
     torch.testing.assert_close(actual,expected,rtol=0,atol=2e-6)
+
+
+def test_listing_padding_groups_survive_concurrency_changes():
+    from research.vectorized_backtest.v30.session_lanes import replay_widths
+    days=['a','b','c','d','e'];widths=dict(zip(days,[511,571,802,622,580]))
+    expected={'a':571,'b':571,'c':802,'d':802,'e':580}
+    # Match the original two-worker financial layout, including the odd tail.
+    for workers in (1,2):
+        fixed=replay_widths(days,widths,2)
+        scheduled=[(day,fixed[day]) for first in range(0,len(days),workers) for day in days[first:first+workers]]
+        assert dict(scheduled)==expected
+    assert replay_widths(days,widths,1)==widths
