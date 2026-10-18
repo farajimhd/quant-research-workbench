@@ -25,6 +25,16 @@ inside the unchanged 4 GiB admission limit.
 Exact-state resumes pin listing-width groups separately from worker concurrency,
 preserving the predecessor's financial reduction layout when worker count changes.
 
+Optional `--host-prefetch` admits one next-session CPU load on the existing
+single-thread loader, overlapping the current replay. The main thread owns the
+two-session LRU; the background reader never mutates active data, pins buffers
+or activates CUDA. Speculation checks the unchanged 128 GiB reserve plus 32 GiB
+admission allowance before and after loading, defers without waiting when low,
+and releases completed speculative data under pressure. This is the same soft
+process-cooperative admission policy, not an operating-system memory guarantee.
+Demand loading retains its normal memory wait. Certificate failures propagate,
+and shutdown cancels speculation without entering a memory-admission wait.
+
 Search is broader than V29: initial action sizes span 1 through 96 nodes,
 fan-in increases from 8 to 16, parameter bounds from 4 to 8, and crossover can
 modify any 1 through 5 actions. The measured finite workspace envelope remains

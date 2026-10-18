@@ -579,3 +579,92 @@ def test_listing_padding_groups_survive_concurrency_changes():
         scheduled=[(day,fixed[day]) for first in range(0,len(days),workers) for day in days[first:first+workers]]
         assert dict(scheduled)==expected
     assert replay_widths(days,widths,1)==widths
+
+
+def test_cpu_prefetch_is_single_slot_and_overlaps_current_work():
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from research.vectorized_backtest.v30.prefetch import CPUOnlyPrefetch
+    entered=Event();release=Event();closed=[];reports=[]
+    item=SimpleNamespace(device=SimpleNamespace(type='cpu'),close=lambda:closed.append(True))
+    def load(day):entered.set();assert release.wait(2);return item
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        p=CPUOnlyPrefetch(pool,reserve_gib=128,admission_gib=32,snapshot=lambda:SimpleNamespace(available=200*2**30),report=reports.append)
+        p.start('next',load);assert entered.wait(2)
+        with pytest.raises(RuntimeError,match='Only one'):p.start('third',load)
+        assert not p.future.done() # Current work can proceed without joining the load.
+        release.set();assert p.take('next') is item;assert p.last['used'];p.close()
+    assert not closed and reports[0]['outcome']=='ready'
+
+
+@pytest.mark.parametrize('before,after,outcome',[(159,200,'deferred'),(200,159,'released')])
+def test_prefetch_never_waits_or_keeps_data_below_admission(before,after,outcome):
+    from concurrent.futures import ThreadPoolExecutor
+    from research.vectorized_backtest.v30.prefetch import CPUOnlyPrefetch
+    snapshots=iter([before,after]);loaded=[];closed=[];reports=[]
+    def load(day):loaded.append(day);return SimpleNamespace(device=SimpleNamespace(type='cpu'),close=lambda:closed.append(day))
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        p=CPUOnlyPrefetch(pool,reserve_gib=128,admission_gib=32,snapshot=lambda:SimpleNamespace(available=next(snapshots)*2**30),report=reports.append)
+        p.start('next',load);assert p.take('next') is None;p.close()
+    assert reports[0]['outcome']==outcome
+    assert loaded==([] if outcome=='deferred' else ['next'])
+    assert closed==([] if outcome=='deferred' else ['next'])
+
+
+def test_prefetch_releases_ready_data_on_pressure_and_propagates_failure():
+    from concurrent.futures import ThreadPoolExecutor
+    from research.vectorized_backtest.v30.prefetch import CPUOnlyPrefetch
+    free=[200*2**30];closed=[]
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        p=CPUOnlyPrefetch(pool,reserve_gib=128,admission_gib=32,snapshot=lambda:SimpleNamespace(available=free[0]))
+        p.start('next',lambda d:SimpleNamespace(device=SimpleNamespace(type='cpu'),close=lambda:closed.append(d)))
+        p.future.result(timeout=2);free[0]=159*2**30;p.release_under_pressure()
+        assert p.future is None and closed==['next']
+        free[0]=200*2**30
+        def fail(day):raise ValueError('Certificate mismatch')
+        p.start('bad',fail)
+        with pytest.raises(ValueError,match='Certificate'):p.future.result(timeout=2)
+        with pytest.raises(ValueError,match='Certificate'):p.close()
+
+
+def test_prefetch_rejects_device_activation():
+    from concurrent.futures import ThreadPoolExecutor
+    from research.vectorized_backtest.v30.prefetch import CPUOnlyPrefetch
+    closed=[]
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        p=CPUOnlyPrefetch(pool,reserve_gib=0,admission_gib=0)
+        p.start('next',lambda d:SimpleNamespace(device=SimpleNamespace(type='cuda'),close=lambda:closed.append(d)))
+        with pytest.raises(ValueError,match='must not activate CUDA'):p.take('next')
+    assert closed==['next']
+
+
+def test_worker_consumes_exact_prefetched_session_once(tmp_path):
+    import queue,json
+    from dataclasses import asdict
+    from threading import Event
+    import research.vectorized_backtest.v30.session_lanes as lanes
+    from research.vectorized_backtest.v30.run_search import digest
+    members=sample(np.random.default_rng(101),3);payload=[m.payload() for m in members];loaded=[];ready=Event()
+    cfg=dict(output=str(tmp_path),backend='eager',device='cpu',batch_size=1024,source_sha256='fixture',execution=asdict(Execution()),maximum_gate_gib=0.,retain_session_residency=True,reuse_results=False,host_prefetch=True,host_reserve_gib=0,host_admission_gib=0)
+    class Programs:
+        plan=None
+        def __init__(self,*args):pass
+        def evaluate(self,*args,**kw):return None
+        def close(self):pass
+    w=lanes.Worker(cfg,queue.Queue(maxsize=1),0)
+    def read(day):
+        loaded.append(day)
+        item=SimpleNamespace(device=torch.device('cpu'),clocks=3,listing_ids=np.array([0]),identity={},receipt=dict(listings=[dict(listing_id='fixture')]),close=lambda:None)
+        if day=='b':ready.set()
+        return item
+    w.read_host=read
+    def replay(*args,**kw):assert ready.wait(2);return [metrics_fixture(3)]
+    w.replay=replay
+    try:
+        with patch.object(lanes,'PopulationPrograms',Programs):
+            w.run('a','b',payload,1,digest(payload),1);w.run('b',None,payload,1,digest(payload),1)
+            assert len(w.host)<=2
+    finally:w.close()
+    assert loaded==['a','b']
+    timing=json.loads((tmp_path/'generation-0001/b/timings.json').read_bytes())[0]
+    assert timing['host_prefetched'] is True

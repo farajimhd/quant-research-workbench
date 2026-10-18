@@ -16,6 +16,7 @@ def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('training','validation','output'):p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--authorize-run',action='store_true');p.add_argument('--commit',required=True)
+    p.add_argument('--host-prefetch',action='store_true',help='One CPU-only next session, admitted above the existing RAM reserve')
     for name,default in [('population',1024),('generations',100),('seed',2020),('batch-size',512),('session-workers',2)]:p.add_argument('--'+name,type=int,default=default)
     for name,default in [('capture-gib',1.),('host-reserve-gib',128.),('host-admission-gib',32.)]:p.add_argument('--'+name,type=float,default=default)
     a=p.parse_args(argv)
@@ -33,7 +34,7 @@ def main(argv=None):
         try:
             print('V30 global | fresh random | 24 training / 12 display-only | net profit | species | '+str(a.generations)+' generations',flush=True)
             code=run(a.training,a.validation,output/'global',population_size=a.population,generations=a.generations,batch_size=a.batch_size,session_workers=a.session_workers,seed=a.seed,
-                selection=Selection(),capture_gib=a.capture_gib,host_reserve_gib=a.host_reserve_gib,host_admission_gib=a.host_admission_gib)
+                selection=Selection(),capture_gib=a.capture_gib,host_reserve_gib=a.host_reserve_gib,host_admission_gib=a.host_admission_gib,host_prefetch=a.host_prefetch)
             return code
         except BaseException as error:
             write_json(output/'failure.json',dict(error=repr(error),epoch=time.time()));raise

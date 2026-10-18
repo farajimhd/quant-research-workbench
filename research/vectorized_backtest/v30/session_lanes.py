@@ -47,7 +47,9 @@ class Worker:
         self.staging=TransferStaging();self.loader=ThreadPoolExecutor(max_workers=1)
         from collections import OrderedDict
         self.plans=OrderedDict();self.plan_generation=None;self.plan_limit=config.get("plan_limit",2)
-        self.pending=None
+        from .prefetch import CPUOnlyPrefetch
+        self.prefetch=CPUOnlyPrefetch(self.loader,reserve_gib=config.get('host_reserve_gib',128.),
+            admission_gib=config.get('host_admission_gib',32.),report=self.prefetch_report)
         self.loads=0;self.uploads=0
         self.resident_results=None
         self.batch_progress={}
@@ -61,6 +63,25 @@ class Worker:
         try:self.events.put_nowait(event)
         except queue.Full:pass
 
+    def prefetch_report(self,info):
+        from research.vectorized_backtest.v6.torch_backtest.runtime import write_json
+        write_json(Path(self.config['output'])/'prefetch-events'/f'{os.getpid()}-{__import__("time").time_ns()}.json',info)
+
+    def read_host(self,day):
+        """Construct a separate CPU session; only the demand thread owns the LRU."""
+        c=self.config
+        self.loads+=1
+        item=prepare_host(SessionData(Path(c['inputs'])/day,Path(c['history'])/day,
+            device='cpu',maximum_gib=c['maximum_data_gib'],
+            feature_cache=Path(c['feature_cache'])/day if c['feature_cache'] else None,
+            indicator_root=Path(c['indicator_root'])/day if c.get('indicator_root') else None,
+            enriched_root=Path(c['enriched_root'])/day if c.get('enriched_root') else None),
+            resident=torch.device(c['device']).type=='cuda')
+        actual='validation' if item.receipt.get('validation_opened') else 'training'
+        if actual!=c.get('split','training'):
+            item.close();raise ValueError('Session input crossed training/validation boundary')
+        return item
+
     def load(self,day):
         c=self.config
         if day not in self.host:
@@ -72,16 +93,7 @@ class Worker:
             wait_for_headroom(c['output'],lambda **v:self.emit(day,**v),
                 reserve_gib=c.get('host_reserve_gib',128. if torch.device(c['device']).type=='cuda' else 0.),
                 admission_gib=c.get('host_admission_gib',32.),boundary_stop=c.get('boundary_stop'))
-            self.loads+=1
-            self.host[day]=prepare_host(SessionData(Path(c['inputs'])/day,Path(c['history'])/day,
-                device='cpu',maximum_gib=c['maximum_data_gib'],
-                feature_cache=Path(c['feature_cache'])/day if c['feature_cache'] else None,
-                indicator_root=Path(c['indicator_root'])/day if c.get('indicator_root') else None,
-                enriched_root=Path(c['enriched_root'])/day if c.get('enriched_root') else None),
-                resident=torch.device(c['device']).type=='cuda')
-            receipt=self.host[day].receipt
-            actual='validation' if receipt.get('validation_opened') else 'training'
-            if actual!=c.get('split','training'):raise ValueError('Session input crossed training/validation boundary')
+            self.host[day]=self.read_host(day)
         self.host.move_to_end(day)
         item=self.host[day]
         while len(self.host)>self.maximum_host_sessions:self.host.popitem(last=False)
@@ -94,9 +106,11 @@ class Worker:
         from hashlib import sha256
         self.batch_progress={}
         c=self.config;started=perf_counter();self.emit(day,stage='Load session',candidate_offset=0)
-        item=self.pending.result() if self.pending is not None else self.loader.submit(self.load,day).result()
-        # No speculative host load while another workload may need RAM.
-        self.pending=None
+        self.prefetch.release_under_pressure()
+        item=self.prefetch.take(day)
+        prefetched=item is not None
+        if prefetched:self.host[day]=item;self.host.move_to_end(day)
+        else:item=self.loader.submit(self.load,day).result()
         device=torch.device(c['device']);population=[Individual.restore(v) for v in payload]
         root=require_runtime(Path(c['output'])/f'generation-{generation:04d}'/day)
         cache_path=require_runtime(Path(c['output'])/'result-cache')/(day+'.json')
@@ -127,6 +141,14 @@ class Worker:
                     self.staging.activate([(day,item)],device)
                     self.uploads+=1
             load_seconds=perf_counter()-started
+            # One active session plus one pageable CPU session. Upload remains
+            # demand-only; no speculative CUDA allocation or pinning occurs.
+            if c.get('host_prefetch',False) and next_day is not None and next_day not in self.host:
+                for old_day in list(self.host):
+                    if old_day!=day:
+                        old=self.host.pop(old_day);old.close();del old
+                gc.collect()
+                self.prefetch.start(next_day,self.read_host)
             with Publisher() as publisher:
                 for offset in range(0,len(missing),c['batch_size']):
                     self.batch_progress['completed_local_batches']=offset//c['batch_size']
@@ -155,10 +177,12 @@ class Worker:
                     if device.type=='cuda':torch.cuda.synchronize(device)
                     rule_seconds=perf_counter()-batch_start;replay_start=time();replay_clock=perf_counter()
                     self.emit(day,stage='Replay positions',candidate_offset=offset,replay_started=replay_start)
+                    def replay_progress(done,total):
+                        self.prefetch.release_under_pressure()
+                        self.emit(day,stage='Replay positions',candidate_offset=offset,completed_seconds=done,total_seconds=total)
                     result=self.replay([item],members,[gates],execution=execution,backend=c['backend'],listing_width=replay_width,
                         episode_capacity=c.get('episode_capacity',65536),trace=c.get('split','training')=='training',
-                        progress=lambda done,total:self.emit(day,stage='Replay positions',candidate_offset=offset,
-                            completed_seconds=done,total_seconds=total))[0]
+                        progress=replay_progress)[0]
                     metrics={k:v.detach().cpu().tolist() if isinstance(v,torch.Tensor) else v for k,v in result.items()}
 
                     metrics['ticker_pnl']=[]
@@ -168,7 +192,7 @@ class Worker:
                         metrics['ticker_pnl'].append({item.receipt['listings'][int(item.listing_ids[j])]['listing_id']:float(totals[j]) for j in used})
                     for j,i in enumerate(selection):cached[keys[i]]={k:v[j] for k,v in metrics.items()}
                     timing=dict(day=day,offset=offset,candidates=actual,padded_candidates=len(members),
-                        load_seconds=load_seconds if offset==0 else 0.,rule_seconds=rule_seconds,
+                        load_seconds=load_seconds if offset==0 else 0.,host_prefetched=prefetched,rule_seconds=rule_seconds,
                         replay_seconds=perf_counter()-replay_clock,pid=os.getpid(),finished_epoch=time())
                     if plan.plan is not None:
                         timing.update({k:getattr(plan.plan,k)-v for k,v in prior.items()})
@@ -217,11 +241,13 @@ class Worker:
 
     def close(self):
         self.resident_results=None
-        self.loader.shutdown(wait=True,cancel_futures=True);self.staging.close()
-        for plan in self.plans.values():plan.close()
-        self.plans.clear()
-        for item in self.host.values():item.close()
-        self.host.clear()
+        try:self.prefetch.close()
+        finally:
+            self.loader.shutdown(wait=True,cancel_futures=True);self.staging.close()
+            for plan in self.plans.values():plan.close()
+            self.plans.clear()
+            for item in self.host.values():item.close()
+            self.host.clear()
 
 
 def initialize(config,events,lane):
