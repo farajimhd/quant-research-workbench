@@ -535,5 +535,7 @@ def test_species_distance_is_exact_across_process_hash_seeds(tmp_path):
     b['parameters']={k:v+(i%7+1)*.031 for i,(k,v) in enumerate(b['parameters'].items())}
     path=tmp_path/'descriptors.json';path.write_text(json.dumps([a,b]))
     code='import json,sys;from research.vectorized_backtest.v30.species import distance;a,b=json.load(open(sys.argv[1]));print(distance(a,b).hex())'
-    values=[subprocess.check_output([sys.executable,'-B','-c',code,str(path)],text=True,env=dict(os.environ,PYTHONDONTWRITEBYTECODE='1',PYTHONHASHSEED=str(seed))) for seed in [1,999]]
-    assert values[0]==values[1]
+    python=__import__('pathlib').Path(sys.executable)
+    if python.name.lower()=='pythonw.exe':python=python.with_name('python.exe')
+    values=[subprocess.check_output([str(python),'-B','-c',code,str(path)],text=True,creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0,env=dict(os.environ,PYTHONDONTWRITEBYTECODE='1',PYTHONHASHSEED=str(seed))) for seed in [1,999]]
+    assert values[0].strip() and values[0]==values[1]
