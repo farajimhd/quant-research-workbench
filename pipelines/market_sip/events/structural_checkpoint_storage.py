@@ -74,9 +74,17 @@ def load_boundary(client, *, ticker, day, as_of):
 
 def insert(client, table, rows):
     # JSONEachRow explicit names preserve all legacy implicit defaults.
-    for offset in range(0, len(rows), 500):
-        chunk = rows[offset:offset + 500]
-        client.http.execute(f'INSERT INTO {table} FORMAT JSONEachRow\n' + encode_rows(chunk))
+    maximum_bytes=140*1024**2 if table==COVERAGE_TABLE else 4*1024**2
+    lines=[];size=0
+    def flush():
+        client.http.execute(f'INSERT INTO {table} FORMAT JSONEachRow\n'+'\n'.join(lines))
+    for row in rows:
+        line=encode_rows([row]);amount=len(line.encode())+1
+        if amount>maximum_bytes:raise ValueError('Structural row exceeds bounded insert payload')
+        if lines and (len(lines)>=5000 or size+amount>maximum_bytes):
+            flush();lines=[];size=0
+        lines.append(line);size+=amount
+    if lines:flush()
 
 
 def verify_snapshot(client, table, expected, where):

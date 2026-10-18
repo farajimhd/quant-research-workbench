@@ -86,5 +86,16 @@ class SessionCheckpoints(unittest.TestCase):
             if bar['t']>stamp(9,30):engine.update(bar)
         self.assertEqual(engine.checkpoint(),values['REGULAR']['streaming_state'])
 
+    def test_bounded_insert_batches_preserve_every_observation(self):
+        from types import SimpleNamespace
+        from pipelines.market_sip.events.structural_checkpoint_storage import insert,OBSERVATIONS_TABLE
+        calls=[]
+        client=SimpleNamespace(http=SimpleNamespace(execute=calls.append))
+        rows=[dict(observation_id=str(i),price=1.) for i in range(5001)]
+        insert(client,OBSERVATIONS_TABLE,rows)
+        self.assertEqual(len(calls),2)
+        decoded=[json.loads(line) for call in calls for line in call.split('\n')[1:]]
+        self.assertEqual(decoded,rows)
+
 
 if __name__ == '__main__':unittest.main()

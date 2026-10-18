@@ -139,10 +139,20 @@ def ticker_file(root,ticker,suffix):
     return root/'workers'/(sha256(ticker.encode()).hexdigest()+suffix)
 
 
+def read_json(path):
+    """Tolerate brief Windows replacement/sharing races, not persistent IO loss."""
+    import time
+    for attempt in range(6):
+        try:return json.loads(path.read_text())
+        except (OSError,json.JSONDecodeError):
+            if attempt==5:raise
+            time.sleep(.05*2**attempt)
+
+
 def _ticker_worker(spec_path, ticker):
     from types import SimpleNamespace
     import pandas_market_calendars as mcal
-    from pipelines.certified_research.source import inventory
+    from pipelines.certified_research.source import inventory,reporting_inventory,require_ready
     import psutil
     from time import perf_counter
     global _SPEC_CACHE
@@ -163,7 +173,7 @@ def _ticker_worker(spec_path, ticker):
 
 def _process_ticker(spec,a,ticker):
     from types import SimpleNamespace
-    from pipelines.certified_research.source import inventory
+    from pipelines.certified_research.source import inventory,reporting_inventory,require_ready
     from time import perf_counter
     request=spec['request'];history_inventory=spec['history_inventory']
     reporting=spec['reporting'];rules=spec['rules'];by_ticker=spec['by_ticker']
@@ -206,6 +216,7 @@ def _process_ticker(spec,a,ticker):
                 raise ValueError('Required historical replay day is not canonical-certified')
             if certified_day['source_hashes'].get(day) != history_inventory['source_hashes'].get(day):
                 raise ValueError('Canonical replay source changed after the frozen plan')
+            require_ready(client.query,certified_day,reporting_inventory(client.query,certified_day))
             if (a.run_dir / 'STOP').exists():
                 raise KeyboardInterrupt
             prior_days = [previous for previous in ah_by_day if previous < day]
@@ -321,7 +332,7 @@ def run_pool(a,request,build_id,by_ticker,history_inventory,reporting,rules,
                 for ticker in pending.values():
                     progress=ticker_file(a.run_dir,ticker,'.json')
                     if progress.exists():
-                        row=json.loads(progress.read_text())
+                        row=read_json(progress)
                         if row.get('owner')==owner['token']:
                             completed+=row['completed'];reused+=row['reused'];active.append(row)
                 builder.save(a.run_dir/'status.json',dict(status='running',completed=completed,reused=reused,
@@ -335,7 +346,7 @@ def run_pool(a,request,build_id,by_ticker,history_inventory,reporting,rules,
 
 def run(a):
     import pandas_market_calendars as mcal
-    from pipelines.certified_research.source import inventory
+    from pipelines.certified_research.source import inventory,reporting_inventory,require_ready
     from types import SimpleNamespace
     os.environ['QMD_CLICKHOUSE_URL'] = a.endpoint
     runtime = Path('D:/TradingML/runtimes').resolve()
@@ -352,6 +363,7 @@ def run(a):
         inv = inventory(client.query, a.start_date, end)
         if inv['missing'] or inv['incomplete']:
             raise ValueError('Structural target range has uncertified canonical source days')
+        require_ready(client.query,inv,reporting_inventory(client.query,inv))
         report = json.loads((a.bars_run_dir / 'build' / 'latest.json').read_text())
         if report['status'] != 'core_complete' and not a.profile_only:
             raise ValueError('Structural backfill waits for completed bar-funnel certification')

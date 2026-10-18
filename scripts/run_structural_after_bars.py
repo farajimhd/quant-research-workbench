@@ -12,6 +12,7 @@ import subprocess
 import time
 
 from scripts.build_market_day import build_lock,save,RUNTIME
+from scripts.backfill_structural_sessions import read_json
 
 
 def main(argv=None):
@@ -41,7 +42,7 @@ def main(argv=None):
                 if (a.run_dir/'STOP').exists():
                     state('interrupted');return 130
                 path=a.bars_run_dir/'status.json'
-                bars=json.loads(path.read_text()) if path.exists() else {}
+                bars=read_json(path) if path.exists() else {}
                 if bars.get('status')=='complete' and not bars.get('failed'):
                     # The bar owner must also have released its OS ownership.
                     try:
