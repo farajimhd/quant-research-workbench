@@ -42,7 +42,7 @@ Entry/add/reduce have separate trigger and continuous sizing readouts. A hidden
 node feeds (tanh(weight * node + bias) + 1) / 2. Execution converts fractions to
 up to $1000 entry, $200 per addition, or a fraction of the held position for a
 signal-driven reduction. Target-hit reductions retain the policy fraction.
-Orders below $1 are suppressed; invalid sizing fractions fail closed to zero.
+Every positive size is allowed; zero or invalid fractions produce no order.
 Fees use actual size; existing stop, risk, membership and causality gates remain.
 
 Networks read causal certified shard values, same-clock cross-sectional values,

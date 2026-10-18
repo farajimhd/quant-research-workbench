@@ -12,7 +12,7 @@ class Execution:
     risk_protection:bool=True
     maximum_stop_distance:float=.20
     maximum_position_risk:float=300.
-    minimum_order_dollars:float=1.
+    minimum_order_dollars:float=0.
     def validate(self):
         if any(not math.isfinite(v) or v<0 for v in (self.entry_dollars,self.add_dollars,self.cost_bps,self.fee_per_share,self.minimum_order_fee)) or min(self.entry_dollars,self.add_dollars)<=0 or not math.isfinite(self.minimum_order_dollars) or self.minimum_order_dollars<0:
             raise ValueError('Invalid assumed-fill sizing/cost')
@@ -22,7 +22,7 @@ class Execution:
         return self
 
 
-def step(position,aggregate,price,previous,observed,membership,signals,swing,policy,clock:torch.Tensor,terminal,entry_dollars:float,add_dollars:float,cost:float,fee_per_share:float=0.,minimum_order_fee:float=0.,risk_protection:bool=False,maximum_stop_distance:float=.20,maximum_position_risk:float=300.,ratios=None,minimum_order_dollars:float=1.):
+def step(position,aggregate,price,previous,observed,membership,signals,swing,policy,clock:torch.Tensor,terminal,entry_dollars:float,add_dollars:float,cost:float,fee_per_share:float=0.,minimum_order_fee:float=0.,risk_protection:bool=False,maximum_stop_distance:float=.20,maximum_position_risk:float=300.,ratios=None,minimum_order_dollars:float=0.):
     """[session,strategy,ticker] lanes; all signals predate the execution price.
 
     Position fields: quantity, average cost, stop, next target, high water,
@@ -60,11 +60,11 @@ def step(position,aggregate,price,previous,observed,membership,signals,swing,pol
     episode_worst=torch.where(closed,complete_profit,torch.full_like(q,float('inf'))).amin(-1)
     add_now=held&~exit_now&~reduce_now&tradable&managed&((signals&4)!=0)&(profit>=policy[...,4])&(adds<policy[...,6])
     entry_now=~held&~terminal&tradable&membership&((signals&1)!=0)
-    add_now=add_now&(add_dollars>=minimum_order_dollars)
+    add_now=add_now&(add_dollars>0)&(add_dollars>=minimum_order_dollars)
     initial=execution_price*(1-policy[...,0])
     swing_mode=policy[...,8]>0
     initial=torch.where(swing_mode,swing,initial)
-    entry_now=entry_now&(entry_dollars>=minimum_order_dollars)
+    entry_now=entry_now&(entry_dollars>0)&(entry_dollars>=minimum_order_dollars)
     entry_now&=torch.isfinite(initial)&(initial>0)&(initial<execution_price)
     rejected_entry=torch.zeros_like(entry_now);rejected_add=torch.zeros_like(add_now)
     if risk_protection:

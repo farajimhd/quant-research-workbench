@@ -375,3 +375,20 @@ def test_missing_price_does_not_poison_recurrent_state(device):
     p=torch.zeros((1,1,3,9),device=device,dtype=torch.float64);opened=p[...,0].clone();previous=torch.full((1,1,3),float('nan'),device=device)
     for i in range(3):plan.signals(data,torch.tensor(i,device=device),p,opened,previous)
     assert torch.isfinite(plan.memory).all() and torch.isfinite(plan.ratios).all()
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA required')
+@pytest.mark.parametrize('signal',[1,4,8])
+def test_all_positive_fractions_allowed_without_order_floor(signal):
+    from research.vectorized_backtest.v29.evaluator import step
+    from research.vectorized_backtest.v29.protected_transition import transition
+    p=torch.zeros((1,2,1,9),dtype=torch.float64);a=torch.zeros((1,2,16),dtype=torch.float64);a[...,8]=float('inf')
+    if signal!=1:p[...,0]=10;p[...,1]=10;p[...,2]=9.8;p[...,3]=20;p[...,4]=11
+    policy=torch.tensor([.03,.5,.25,.03,0.,0.,20,0,0],dtype=torch.float64).reshape(1,1,1,9).expand(1,2,1,9)
+    price=torch.full((1,1,1),11.,dtype=torch.float64);valid=torch.ones((1,1,1),dtype=torch.bool)
+    signals=torch.full((1,2,1),signal,dtype=torch.int16);ratios=torch.full((1,2,1,3),.0001,dtype=torch.float64);ratios[:,1]=0
+    args=(p,a,price,price,valid,valid,signals,price*.97,policy,torch.tensor(1.,dtype=torch.float64),torch.tensor(False),1000.,200.,0.,.005,1.)
+    expected=step(*args,True,.2,300.,ratios,0.)
+    actual=transition(*(v.cuda() if isinstance(v,torch.Tensor) else v for v in args),.2,300.,ratios.cuda(),0.)
+    for x,y in zip(expected,actual):torch.testing.assert_close(x,y.cpu(),rtol=1e-12,atol=1e-10)
+    column={1:4,4:5,8:6}[signal];assert expected[1][0,0,column]==1 and expected[1][0,1,column]==0
+    assert expected[0][0,0,0,7]<0 # ordinary minimum fee still applies

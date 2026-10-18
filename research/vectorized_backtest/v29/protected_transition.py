@@ -47,10 +47,10 @@ def kernel(P,A,PRICE,PREVIOUS,OBSERVED,MEMBER,SIGNALS,SWING,POLICY,CLOCK,TERMINA
     realized=realized-tl.where(sell>0,tl.maximum(sell*FEE,MINFEE),0.)
     remaining=tl.maximum(q-sell,0.);closed=held&(remaining<=1.e-12);complete_profit=realized-episode
     add_now=held&~exit_now&~reduce_now&tradable&managed&((signals&4)!=0)&(profit>=addmin)&(adds<maxadds)
-    add_now=add_now&(addition>=MINIMUM)
+    add_now=add_now&(addition>0)&(addition>=MINIMUM)
     initial=tl.where(swing_mode,swing,execution_price*(1.-sf))
     entry_now=~held&~terminal&tradable&membership&((signals&1)!=0)&(initial==initial)&(tl.abs(initial)<float('inf'))&(initial>0)&(initial<execution_price)
-    entry_now=entry_now&(entry>=MINIMUM)
+    entry_now=entry_now&(entry>0)&(entry>=MINIMUM)
     safe_price=tl.maximum(execution_price,1.e-12)
     rejected_entry=tl.full((BLOCK,),False,tl.int1);rejected_add=tl.full((BLOCK,),False,tl.int1)
     # A candidate row has no prospective financial risk when no corresponding

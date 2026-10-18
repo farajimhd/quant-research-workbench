@@ -24,6 +24,6 @@ def contract():
                 input_validity='observed current or delayed market-value ancestor required',recurrent=True,
                 strategy_node_budget=MAX_STRATEGY_NODES,capacity_buckets=[8,16,32,64,128,256,512],
                 workspace_budget_gib=4.,memory_reset='zero at independent session start; exact state export for replay checkpoints',
-                sizing_caps={'entry':1000,'add':200,'reduce_fraction':1},minimum_order_dollars=1.,
+                sizing_caps={'entry':1000,'add':200,'reduce_fraction':1},minimum_order_dollars=0.,
                 niche_protection={'elite_fraction':.5,'maximum_protected_niches':16,'structural_signature':'total-size-largest-action-recurrence'},
                 homologous_weight_exchange_probability=.5)
