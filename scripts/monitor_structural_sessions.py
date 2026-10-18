@@ -8,7 +8,6 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import argparse
 import json
 import time
-from datetime import datetime,timezone
 
 from rich.console import Console,Group
 from rich.panel import Panel
@@ -49,8 +48,8 @@ def render(value,width=100,height=30,rate=None):
     for worker in workers[:max(0,height-14)]:
         table.add_row(str(worker.get('active',worker.get('ticker','starting'))),
                       str(worker.get('completed',0)),str(worker.get('reused',0)))
-    if not workers:table.add_row('Worker details appear after planning.','—','—')
-    footer=Text('AH retrospective · PM/REGULAR causal streaming · Ctrl+C closes monitor only',style='dim')
+    if not workers:table.add_row('Worker details appear after planning.','-','-')
+    footer=Text('AH retrospective | PM/REGULAR streaming | Ctrl+C closes monitor only',style='dim')
     return Panel(Group(lines,Text(''),table,footer),title='ARTE structural backfill',width=width)
 
 
