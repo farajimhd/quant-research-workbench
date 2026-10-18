@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import math,torch
 from .genome import STAGES
+from .config import STATES
 @dataclass(frozen=True)
 class Execution:
     entry_dollars:float=1000.
@@ -155,7 +156,7 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
     episodes=Episodes(1,b,episode_capacity,device,max_listings=u,trace=trace)
     # Include the live one-clock neuron values and provenance, in addition to
     # the unchanged financial buffers. Capacity is never reduced for admission.
-    required=episodes.profits.numel()*(32 if trace else 16)+b*u*1024+plan.total_nodes*u*10+item.clocks*u*32
+    required=episodes.profits.numel()*(32 if trace else 16)+b*u*1024+plan.total_nodes*u*10+b*u*len(STATES)*4+item.clocks*u*32
     plan.prepare(b,u);plan.reset()
     if device.type=='cuda' and required>torch.cuda.mem_get_info(device)[0]*.8:raise MemoryError('Neural replay exceeds physical GPU headroom')
     position=torch.zeros((1,b,u,9),dtype=torch.float64,device=device)

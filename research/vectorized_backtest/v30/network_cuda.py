@@ -5,19 +5,34 @@ import triton.language as tl
 from .config import FAN_IN,STATES
 
 @tr.jit
-def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,FEEDBACK,MEMORY,MEMORY_KNOWN,RATIOS,P,OPENED,PREVIOUS,CLOCK,WORK,KNOWN,PHASE,OUT,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr):
-    """One clock of scratch, directly indexed; no N-way register gathers."""
-    member=tl.program_id(0);action=tl.program_id(1);u=tl.program_id(2)*BLOCK+tl.arange(0,BLOCK);live=u<U
-    net=member*5+action;ncount=tl.load(COUNTS+net);base=tl.load(OFFSETS+net)
-    phase=tl.load(PHASE)&1
-    old=tl.where(phase!=0,WORK,MEMORY);current=tl.where(phase!=0,MEMORY,WORK)
-    old_known=tl.where(phase!=0,KNOWN,MEMORY_KNOWN);current_known=tl.where(phase!=0,MEMORY_KNOWN,KNOWN)
+def state_kernel(P,OPENED,PREVIOUS,CLOCK,FEEDBACK,OUT,U:tl.constexpr,STATES:tl.constexpr,BLOCK:tl.constexpr):
+    member=tl.program_id(0);state=tl.program_id(1);u=tl.program_id(2)*BLOCK+tl.arange(0,BLOCK);live=u<U
     clock=tl.load(CLOCK).to(tl.float64)
     q=tl.load(P+(member*U+u)*9,live,0);held=q>1e-12
     avg=tl.load(P+(member*U+u)*9+1,live,1);stop=tl.load(P+(member*U+u)*9+2,live,0)
     adds=tl.load(P+(member*U+u)*9+5,live,0);last=tl.load(P+(member*U+u)*9+6,live,0)
     opened=tl.load(OPENED+member*U+u,live,0);price=tl.load(PREVIOUS+u,live,0)
     known_price=(price==price)&(tl.abs(price)<float('inf'))&(price>0)
+    x64=tl.where(state==0,held.to(tl.float64),0.)
+    x64=tl.where(state==1,tl.where(held&known_price,price/tl.maximum(avg,1e-12)-1.,0.),x64)
+    x64=tl.where(state==2,tl.where(held,(clock-opened)/3600.,0.),x64)
+    x64=tl.where(state==3,tl.where(held&known_price,q*price/1000.,0.),x64)
+    x64=tl.where(state==4,tl.where(held,(avg-stop)/tl.maximum(avg,1e-12),0.),x64)
+    x64=tl.where(state==5,adds/20.,x64)
+    x64=tl.where(state==6,tl.where(held,(clock-last)/300.,0.),x64)
+    if state>=7:x64=tl.load(FEEDBACK+(member*U+u)*(STATES-7)+state-7,live,0).to(tl.float64)
+    x=2./(1.+tl.exp(2.*-x64.to(tl.float32)))-1.
+    tl.store(OUT+(member*STATES+state)*U+u,x,live)
+
+
+@tr.jit
+def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr):
+    """One clock of scratch, directly indexed; no N-way register gathers."""
+    member=tl.program_id(0);action=tl.program_id(1);u=tl.program_id(2)*BLOCK+tl.arange(0,BLOCK);live=u<U
+    net=member*5+action;ncount=tl.load(COUNTS+net);base=tl.load(OFFSETS+net)
+    phase=tl.load(PHASE)&1
+    old=tl.where(phase!=0,WORK,MEMORY);current=tl.where(phase!=0,MEMORY,WORK)
+    old_known=tl.where(phase!=0,KNOWN,MEMORY_KNOWN);current_known=tl.where(phase!=0,MEMORY_KNOWN,KNOWN)
     h=tl.full((BLOCK,),0,tl.float32);ok=tl.full((BLOCK,),False,tl.int1)
     for i in range(ncount):
         z=tl.full((BLOCK,),0,tl.float32)+tl.load(BIAS+base+i);ok=tl.full((BLOCK,),False,tl.int1)
@@ -33,15 +48,7 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,BIAS,COUNTS,OFFSETS,THR
                     x=tl.load(V+s*U+u,live,0);valid=tl.load(VALID+(s%C)*U+u,live,False)&(s<2*C)
                 elif s<3*C+STATES:
                     state=s-3*C
-                    x64=tl.where(state==0,held.to(tl.float64),0.)
-                    x64=tl.where(state==1,tl.where(held&known_price,price/tl.maximum(avg,1e-12)-1.,0.),x64)
-                    x64=tl.where(state==2,tl.where(held,(clock-opened)/3600.,0.),x64)
-                    x64=tl.where(state==3,tl.where(held&known_price,q*price/1000.,0.),x64)
-                    x64=tl.where(state==4,tl.where(held,(avg-stop)/tl.maximum(avg,1e-12),0.),x64)
-                    x64=tl.where(state==5,adds/20.,x64)
-                    x64=tl.where(state==6,tl.where(held,(clock-last)/300.,0.),x64)
-                    if state>=7:x64=tl.load(FEEDBACK+(member*U+u)*(STATES-7)+state-7,live,0).to(tl.float64)
-                    x=2./(1.+tl.exp(2.*-x64.to(tl.float32)))-1.;valid=tl.full((BLOCK,),False,tl.int1)
+                    x=tl.load(POSITION_STATES+(member*STATES+state)*U+u,live,0);valid=tl.full((BLOCK,),False,tl.int1)
                 else:
                     offset=(base+s-3*C-STATES)*U+u
                     x=tl.load(current+offset,live,0);valid=tl.load(current_known+offset,live,False)
@@ -64,9 +71,10 @@ def signals(plan,values,valid,position,opened,previous,index,out=None):
     actions=torch.empty((b,5,u),device=position.device,dtype=torch.bool)
     block=getattr(plan,'cuda_block',128)
     if block not in (32,64,128,256):raise ValueError('Unsupported neural CUDA tile')
+    state_kernel[(b,len(STATES),tr.cdiv(u,256))](position,opened,previous,index,plan.feedback,plan.position_states,u,len(STATES),256,enable_fp_fusion=False)
     workspace_kernel[(b,5,tr.cdiv(u,block))](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.bias,plan.counts,plan.offsets,plan.threshold,
-        plan.size_source,plan.size_weight,plan.size_bias,plan.feedback,plan.memory,plan.memory_known,plan.ratios,
-        position,opened,previous,index,plan.workspace,plan.known,plan.buffer_phase,actions,u,len(plan.columns),len(STATES),FAN_IN,block,enable_fp_fusion=False)
+        plan.size_source,plan.size_weight,plan.size_bias,plan.position_states,plan.memory,plan.memory_known,plan.ratios,
+        plan.workspace,plan.known,plan.buffer_phase,actions,u,len(plan.columns),len(STATES),FAN_IN,block,enable_fp_fusion=False)
     result=out if out is not None else torch.empty((1,b,u),device=position.device,dtype=torch.int16)
     pack[(tr.cdiv(b*u,256),)](actions,result,plan.buffer_phase,b*u,u,256)
     return result

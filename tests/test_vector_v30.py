@@ -550,3 +550,20 @@ def test_packed_edge_counts_preserve_connections_and_zero_weights():
     for i,n in enumerate(expected):
         assert plan.weights[i,:len(n.weights)].tolist()==np.asarray(n.weights,np.float32).tolist()
         assert not bool(plan.weights[i,len(n.weights):].any())
+
+
+def test_cuda_shared_position_states_cover_held_missing_and_feedback():
+    if not torch.cuda.is_available():pytest.skip('CUDA unavailable')
+    from research.vectorized_backtest.v30.network_cuda import state_kernel
+    from research.vectorized_backtest.v30.network import state_values
+    from research.vectorized_backtest.v30.config import STATES
+    b,u=3,17;position=torch.zeros((1,b,u,9),device='cuda',dtype=torch.float64)
+    position[...,0]=5.;position[...,1]=20.;position[...,2]=18.;position[...,5]=3.;position[...,6]=15.
+    position[:,:,::3,0]=0.
+    previous=torch.full((1,1,u),21.,device='cuda',dtype=torch.float64);previous[...,::4]=float('nan')
+    opened=torch.full((1,b,u),10.,device='cuda',dtype=torch.float64);index=torch.tensor(100,device='cuda')
+    feedback=torch.linspace(-1,1,b*u*(len(STATES)-7),device='cuda').reshape(b,u,-1)
+    actual=torch.empty((b,len(STATES),u),device='cuda')
+    state_kernel[(b,len(STATES),1)](position,opened,previous,index,feedback,actual,u,len(STATES),128,enable_fp_fusion=False)
+    expected=state_values(position,previous,opened,index.to(torch.float64),feedback)[0].transpose(1,2)
+    torch.testing.assert_close(actual,expected,rtol=0,atol=2e-6)

@@ -18,6 +18,10 @@ actual connection count, in its original order. Padded connection slots perform
 no work. Throughput qualification must use the checkpoint's full population and
 complete certified sessions, including a one-versus-two-worker comparison;
 small-population or kernel-only timings do not establish campaign throughput.
+Position and request/fill feedback channels are computed once per candidate,
+listing and clock, then shared across all action neurons. The original CUDA
+arithmetic and activation order are retained; the additional workspace remains
+inside the unchanged 4 GiB admission limit.
 
 Search is broader than V29: initial action sizes span 1 through 96 nodes,
 fan-in increases from 8 to 16, parameter bounds from 4 to 8, and crossover can

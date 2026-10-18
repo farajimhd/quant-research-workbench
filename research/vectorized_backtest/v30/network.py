@@ -60,11 +60,12 @@ class NetworkPlan:
 
     def prepare(self,b,u):
         if self.workspace_shape==(b,u):return
-        if self.total_nodes*u*10>4*2**30:raise MemoryError('Neural workspace exceeds explicit 4 GiB admission')
+        if self.total_nodes*u*10+b*u*len(STATES)*4>4*2**30:raise MemoryError('Neural workspace exceeds explicit 4 GiB admission')
         shape=(self.total_nodes,u)
         self.workspace=torch.zeros(shape,device=self.device,dtype=torch.float32);self.known=torch.zeros(shape,device=self.device,dtype=torch.bool)
         self.memory=torch.zeros_like(self.workspace);self.memory_known=torch.zeros_like(self.known)
         self.feedback=torch.zeros((b,u,len(STATES)-7),device=self.device,dtype=torch.float32)
+        self.position_states=torch.empty((b,len(STATES),u),device=self.device,dtype=torch.float32)
         self.previous_clock=torch.full((),-1,device=self.device,dtype=torch.int64)
         self.buffer_phase=torch.zeros((),device=self.device,dtype=torch.int64)
         self.ratios=torch.ones((1,b,u,3),device=self.device,dtype=torch.float64)
@@ -154,4 +155,4 @@ class NetworkPlan:
         return result
 
     def close(self):
-        self.workspace=None;self.known=None;self.memory=None;self.memory_known=None;self.feedback=None;self.buffer_phase=None;self.workspace_shape=None
+        self.workspace=None;self.known=None;self.memory=None;self.memory_known=None;self.feedback=None;self.position_states=None;self.buffer_phase=None;self.workspace_shape=None
