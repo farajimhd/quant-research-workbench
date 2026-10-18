@@ -43,6 +43,17 @@ def _literal(value: str) -> str:
 
 
 def _rows(client: Any, query: str) -> list[dict[str, Any]]:
+    if "checkpoint_boundary=''" in query:
+        supported = getattr(client, '_v7_boundary_schema', None)
+        if supported is None:
+            columns = [json.loads(line) for line in client.execute(
+                "SELECT name FROM system.columns WHERE database='arte' "
+                "AND table='structural_level_coverage_v7' AND name='checkpoint_boundary' "
+                "FORMAT JSONEachRow").splitlines() if line.strip()]
+            supported = any(row.get('name') == 'checkpoint_boundary' for row in columns)
+            client._v7_boundary_schema = supported
+        if not supported:
+            query = query.replace("checkpoint_boundary='' AND ", '')
     return [json.loads(line) for line in client.execute(assert_select_only(query)).splitlines()
             if line.strip()]
 
@@ -68,6 +79,7 @@ def _validate_coverage(row: dict[str, Any], *, ticker: str, session: date) -> No
                      not row["input_policy"] and not row["source_extraction_version"] and
                      row["band_config_hash"] == "0" * 64)
     if (str(row["ticker"]) != ticker
+            or row.get('checkpoint_boundary', '') != ''
             or str(row["session_date"]) >= session.isoformat()
             or row["state"] not in {"complete", "empty"}
             or (not empty_seed and row["input_policy"] not in {POLICY, _PROVISIONAL_INPUT_POLICY})
@@ -111,7 +123,7 @@ def certified_seed_plan(market: Any, client: Any) -> CertifiedSeedPlan:
             batch = tickers[offset:offset + 256]
             names = ",".join(_literal(ticker) for ticker in batch)
             rows = _rows(client,
-                f"SELECT * FROM {_COVERAGE} FINAL WHERE ticker IN ({names}) "
+                f"SELECT * FROM {_COVERAGE} FINAL WHERE checkpoint_boundary='' AND ticker IN ({names}) "
                 f"AND available_at<=toDateTime64({_literal(_cutoff(session))},9,'UTC') "
                 "ORDER BY ticker,available_at DESC LIMIT 1 BY ticker FORMAT JSONEachRow")
             found = {str(row["ticker"]): row for row in rows}
@@ -174,7 +186,7 @@ def certified_seed_plan(market: Any, client: Any) -> CertifiedSeedPlan:
 def preceding_coverage(client: Any, *, ticker: str, session: date) -> dict[str, Any]:
     """Pin the latest completed retrospective state known by 04:00 ET."""
     rows = _rows(client,
-        f"SELECT * FROM {_COVERAGE} FINAL WHERE ticker={_literal(ticker)} "
+        f"SELECT * FROM {_COVERAGE} FINAL WHERE checkpoint_boundary='' AND ticker={_literal(ticker)} "
         f"AND available_at<=toDateTime64({_literal(_cutoff(session))},9,'UTC') "
         "ORDER BY available_at DESC LIMIT 1 FORMAT JSONEachRow")
     if len(rows) != 1:
@@ -264,7 +276,7 @@ def load_seed(client: Any, *, ticker: str, session: date,
             "input_policy")):
         raise ValueError("Prior V7 coverage changed after preflight")
     cutoff = _literal(_cutoff(session))
-    predicate = (f"ticker={_literal(ticker)} AND valid_from<=toDateTime64({cutoff},9,'UTC') "
+    predicate = (f"checkpoint_boundary='' AND ticker={_literal(ticker)} AND valid_from<=toDateTime64({cutoff},9,'UTC') "
                  f"AND (isNull(valid_to) OR valid_to>toDateTime64({cutoff},9,'UTC'))")
     levels = _rows(client, f"SELECT {_LEVEL_COLUMNS} FROM {_LEVELS} FINAL WHERE {predicate} "
                    "ORDER BY level_id FORMAT JSONEachRow")
@@ -347,7 +359,7 @@ def load_seeds_batch(client: Any, *, tickers: tuple[str, ...], session: date,
     names = ",".join(_literal(ticker) for ticker in tickers)
     cutoff = _literal(_cutoff(session))
     current_rows = _rows(client,
-        f"SELECT * FROM {_COVERAGE} FINAL WHERE ticker IN ({names}) "
+        f"SELECT * FROM {_COVERAGE} FINAL WHERE checkpoint_boundary='' AND ticker IN ({names}) "
         f"AND available_at<=toDateTime64({cutoff},9,'UTC') "
         "ORDER BY ticker,available_at DESC LIMIT 1 BY ticker FORMAT JSONEachRow")
     current = {str(row["ticker"]): row for row in current_rows}
@@ -360,7 +372,7 @@ def load_seeds_batch(client: Any, *, tickers: tuple[str, ...], session: date,
                 "source_plan_hash", "level_count", "observation_count",
                 "input_policy")):
             raise ValueError("Prior V7 coverage changed after preflight")
-    predicate = (f"ticker IN ({names}) AND valid_from<=toDateTime64({cutoff},9,'UTC') "
+    predicate = (f"checkpoint_boundary='' AND ticker IN ({names}) AND valid_from<=toDateTime64({cutoff},9,'UTC') "
                  f"AND (isNull(valid_to) OR valid_to>toDateTime64({cutoff},9,'UTC'))")
     grouped: dict[str, dict[str, list[dict[str, Any]]]] = {
         ticker: {"levels": [], "observations": []} for ticker in tickers}

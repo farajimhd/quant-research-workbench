@@ -41,13 +41,14 @@ def test_crash_after_ingestion_retains_handoff_and_resume_does_not_drop_day(tmp_
         assert day in json.loads((tmp_path/'forwardfill-queue.json').read_text())['selected']
     monkeypatch.setattr(flow.ingestion,'main',ingest)
     monkeypatch.setattr(flow,'daily_product',lambda a,d,p:calls.append(('daily',d)))
+    monkeypatch.setattr(flow,'structural_product',lambda a,d,p:calls.append(('structural',d)))
     assert flow.run(options(tmp_path),lambda a:130)==130
     assert json.loads((tmp_path/'forwardfill-queue.json').read_text())['complete']==[]
     def build(a):
         assert a.start_date==a.end_date==date(2026,10,5)
         calls.append(('bars',str(a.start_date)));return 0
     assert flow.run(options(tmp_path,'--resume'),build)==0
-    assert calls==[('bars',day),('daily',day)]
+    assert calls==[('bars',day),('daily',day),('structural',day)]
     assert flow.run(options(tmp_path,'--resume'),lambda a:pytest.fail('repeated completed day'))==0
 
 
@@ -57,6 +58,17 @@ def test_ingestion_failure_never_starts_derived_writer(tmp_path,monkeypatch):
     monkeypatch.setattr(flow.ingestion,'main',fail)
     with pytest.raises(RuntimeError,match='source certification'):
         flow.run(options(tmp_path),lambda a:pytest.fail('derived writer started'))
+
+
+def test_structural_failure_keeps_ingested_day_pending(tmp_path,monkeypatch):
+    monkeypatch.setattr(flow.bars,'build_lock',lambda p:nullcontext())
+    monkeypatch.setattr(flow.ingestion,'main',lambda values,**kw:kw['selected_days'](('2026-10-05',)))
+    monkeypatch.setattr(flow,'daily_product',lambda *args:None)
+    def fail(*args):raise ValueError('structural checkpoint not certified')
+    monkeypatch.setattr(flow,'structural_product',fail)
+    with pytest.raises(ValueError,match='not certified'):
+        flow.run(options(tmp_path),lambda a:0)
+    assert json.loads((tmp_path/'forwardfill-queue.json').read_text())['complete']==[]
 
 
 def test_daily_sql_routes_only_derived_tables_to_arte_and_excludes_unknown_delayed():

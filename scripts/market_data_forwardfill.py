@@ -15,6 +15,18 @@ from pipelines.market_sip.flatfiles import download_update_events as ingestion
 DAILY_VERSION='tradable_timely_daily_sessions_v1'
 
 
+def structural_product(a, day, child):
+    """The ingestion queue is complete only after all three V7 boundaries exist."""
+    from scripts.backfill_structural_sessions import arguments, run
+    root = child/'structural'
+    values = ['--bars-run-dir',str(child),'--run-dir',str(root),
+        '--start-date',day,'--end-date',day,'--endpoint',a.endpoint,
+        '--env-file',str(a.env_file),'--migrate-schema']
+    if (root/'structural-request.json').exists():values.append('--resume')
+    result = run(arguments(values))
+    if result:raise RuntimeError(f'Structural checkpoints incomplete for {day}: exit {result}')
+
+
 def ingestion_arguments(a):
     values=['--env-file',str(a.env_file),'--clickhouse-url',a.endpoint,
         '--flatfiles-root-win',str(a.cache_root),'--flatfiles-root-ch',a.clickhouse_cache_root,
@@ -86,9 +98,9 @@ def _daily_product(a, day, child, *, plan_report=None):
 
 def run(a, run_bars):
     a.run_dir.mkdir(parents=True,exist_ok=True)
-    plan=dict(version='market-forwardfill-v1',identity_policy='dated',start=str(a.start_date) if a.start_date else None,
+    plan=dict(version='market-forwardfill-v2',identity_policy='dated',start=str(a.start_date) if a.start_date else None,
         end=str(a.end_date) if a.end_date else None,endpoint=a.endpoint,
-        stages=['certified canonical ingestion','tradable bar funnel','tradable timely daily sessions'],
+        stages=['certified canonical ingestion','tradable bar funnel','tradable timely daily sessions','structural PM/REGULAR/AH checkpoints'],
         daily_version=DAILY_VERSION,daily_target='arte.daily_session_bars_by_symbol_time_v1',
         daily_migration='Old market_sip_compact daily tables remain stale; rebuild only selected sessions in ARTE',
         ingestion_arguments=ingestion_arguments(a))
@@ -117,6 +129,7 @@ def run(a, run_bars):
             result=run_bars(options)
             if result:return result
             daily_product(a,day,child)
+            structural_product(a,day,child)
             queue['complete'].append(day);bars.save(queue_path,queue)
         bars.save(a.run_dir/'forwardfill-completion.json',dict(days=queue['complete'],version=plan['version']))
     return 0
@@ -136,6 +149,7 @@ def derive_imported_days(args, days):
         result=run_bars(a)
         if result:raise RuntimeError(f'Tradable bars incomplete for {day}: exit {result}')
         daily_product(a,day,child)
+        structural_product(a,day,child)
 
 
 def migrate_daily(a):

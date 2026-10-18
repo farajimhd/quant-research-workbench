@@ -36,7 +36,9 @@ GIB=1024**3
 def arguments(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('mode',choices=('backfill','forwardfill','monitor'))
-    p.add_argument('--step',choices=('trade-reporting-repair','bars','daily'))
+    p.add_argument('--step',choices=('trade-reporting-repair','bars','daily','structural'))
+    p.add_argument('--bars-run-dir',type=Path,default=Path('D:/TradingML/runtimes/market-data-pipeline/bars-2026-funnel-32'))
+    p.add_argument('--migrate-structural-schema',action='store_true')
     p.add_argument('--allow-acquisition',action='store_true',help='Explicitly authorize provider discovery/download for forwardfill')
     p.add_argument('--bar-workers',type=int,choices=range(1,33))
     p.add_argument('--bar-query-memory-gib',type=float,default=2.)
@@ -176,6 +178,15 @@ def run_bars(a):
 
 def main(argv=None):
     a=arguments(argv)
+    if a.mode=='backfill' and a.step=='structural':
+        from scripts.backfill_structural_sessions import arguments as structural_arguments, run
+        values=['--start-date',str(a.start_date),'--run-dir',str(a.run_dir),
+            '--bars-run-dir',str(a.bars_run_dir),'--env-file',str(a.env_file),'--endpoint',a.endpoint]
+        if a.end_date:values+=['--end-date',str(a.end_date)]
+        if a.plan_only:values.append('--plan-only')
+        if a.resume:values.append('--resume')
+        if a.migrate_structural_schema:values.append('--migrate-schema')
+        return run(structural_arguments(values))
     if a.mode=='monitor':return monitor(a)
     runtime=Path('D:/TradingML/runtimes').resolve()
     if not runtime.is_dir() or not a.run_dir.resolve().is_relative_to(runtime):

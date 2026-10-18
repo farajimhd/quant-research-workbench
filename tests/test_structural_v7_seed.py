@@ -15,6 +15,7 @@ from src.market_engine.streaming_level_book import EXTRACTION_VERSION, Streaming
 
 class Client:
     def __init__(self, *, policy=POLICY, observations=3):
+        self._v7_boundary_schema = True
         self.queries = []
         self.coverage = dict(ticker="TEST", session_date="2026-08-17",
             available_at="2026-08-18 00:00:00.000000000", state="complete",
