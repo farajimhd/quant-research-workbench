@@ -46,7 +46,11 @@ def migrate(client):
     require_schema(client)
     # Coverage now contains multi-megabyte states. Legacy 8192-row granules can
     # exceed a worker's memory limit even for a single-key read after merging.
-    client.http.execute(f'ALTER TABLE {COVERAGE_TABLE} MODIFY SETTING index_granularity=1')
+    import re
+    ddl = client.query("SELECT create_table_query FROM system.tables WHERE database='arte' "
+                      "AND name='structural_level_coverage_v7'")[0]['create_table_query']
+    if not re.search(r'index_granularity = 1(?:,|$)', ddl):
+        raise ValueError('Coverage payload granularity repair is required before writing')
 
 
 def require_schema(client):

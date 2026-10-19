@@ -1,8 +1,8 @@
 """Repack structural coverage payloads without changing their logical contents.
 
 Requires the structural campaign to be stopped and drained. Each partition is
-independently fingerprinted, copied to SSD staging, checked, atomically replaced,
-and checked again. Staging and durable receipts permit restart after interruption.
+independently fingerprinted, copied to SSD staging and checked. An atomic table
+exchange preserves the old table for rollback; durable receipts permit restart.
 """
 import os
 os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
@@ -48,10 +48,23 @@ def run(args):
         ddl = client.query("SELECT create_table_query FROM system.tables WHERE database='arte' "
                            "AND name='structural_level_coverage_v7'")[0]['create_table_query']
         parts = client.query("SELECT DISTINCT partition FROM system.parts WHERE active AND database='arte' "
-            "AND table='structural_level_coverage_v7' AND partition>='202601' ORDER BY partition")
+            "AND table='structural_level_coverage_v7' ORDER BY partition")
         if not args.apply:
             print(json.dumps(dict(partitions=parts,query_memory_gib=8,threads=1,staging=STAGING)))
             return
+        receipts = root/'coverage-granularity-repair'
+        receipts.mkdir(exist_ok=True)
+        exchanged = bool(re.search(r'index_granularity = 1(?:,|$)',ddl))
+        if exchanged:
+            for part in parts:
+                saved = json.loads((receipts/(part['partition']+'.json')).read_text())
+                if fingerprint(client,TARGET,part['partition']) != saved['fingerprint']:
+                    raise ValueError('Exchanged table differs from migration receipts')
+            (receipts/'complete.json').write_text(json.dumps(dict(status='verified',partitions=len(parts))))
+            return
+        database = client.query("SELECT engine FROM system.databases WHERE name='arte'")
+        if database != [{'engine':'Atomic'}]:
+            raise ValueError('Atomic database required for table exchange')
         staging_ddl = ddl.replace('CREATE TABLE '+TARGET, 'CREATE TABLE IF NOT EXISTS '+STAGING, 1)
         staging_ddl = re.sub(r'index_granularity = \d+', 'index_granularity = 1', staging_ddl)
         if 'index_granularity = 1' not in staging_ddl:
@@ -61,15 +74,13 @@ def run(args):
                             f"AND name='{STAGING.split('.')[1]}'")[0]
         if info['storage_policy'] != storage.POLICY or not re.search(r'index_granularity = 1(?:,|$)',info['create_table_query']):
             raise ValueError('Unexpected staging storage layout')
-        client.http.execute(f'ALTER TABLE {TARGET} MODIFY SETTING index_granularity=1')
-        receipts = root/'coverage-granularity-repair'
-        receipts.mkdir(exist_ok=True)
         for part in parts:
             partition = part['partition']
             receipt = receipts/(partition+'.json')
             if receipt.exists():
                 saved = json.loads(receipt.read_text())
-                if fingerprint(client,TARGET,partition) != saved['fingerprint']:
+                if (fingerprint(client,TARGET,partition) != saved['fingerprint'] or
+                        fingerprint(client,STAGING,partition) != saved['fingerprint']):
                     raise ValueError('Completed migration partition changed')
                 print(json.dumps(dict(partition=partition,status='reused')),flush=True)
                 continue
@@ -88,13 +99,22 @@ def run(args):
                 raise ValueError('Staging parts are not on live_market_ssd')
             if fingerprint(client,TARGET,partition) != before:
                 raise ValueError('Source changed while copying')
-            client.http.execute(f"ALTER TABLE {TARGET} REPLACE PARTITION '{partition}' FROM {STAGING}")
-            if fingerprint(client,TARGET,partition) != before:
-                raise ValueError('Replacement fingerprint differs')
-            storage.storage_preflight(client)
             receipt.write_text(json.dumps(dict(partition=partition,fingerprint=before,
                 utc=datetime.now(timezone.utc).isoformat()),indent=2))
             print(json.dumps(dict(partition=partition,status='verified',fingerprint=before)),flush=True)
+        staging_parts = client.query("SELECT DISTINCT partition FROM system.parts WHERE active AND database='arte' "
+            f"AND table='{STAGING.split('.')[1]}' ORDER BY partition")
+        if staging_parts != parts:
+            raise ValueError('Staging partition set differs')
+        client.http.execute(f'EXCHANGE TABLES {TARGET} AND {STAGING}')
+        for part in parts:
+            saved = json.loads((receipts/(part['partition']+'.json')).read_text())
+            if fingerprint(client,TARGET,part['partition']) != saved['fingerprint']:
+                raise ValueError('Exchanged table differs from migration receipts')
+        storage.storage_preflight(client)
+        (receipts/'complete.json').write_text(json.dumps(dict(status='verified',partitions=len(parts),
+            rollback_table=STAGING,utc=datetime.now(timezone.utc).isoformat())))
+        print('Atomic exchange verified; old table retained for rollback',flush=True)
 
 
 if __name__ == '__main__':
