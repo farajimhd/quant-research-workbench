@@ -42,6 +42,8 @@ def arguments(argv=None):
     p.add_argument('--plan-only', action='store_true')
     p.add_argument('--profile-only', action='store_true', help='Read-only real streaming profile for three certified ticker-days')
     p.add_argument('--resume', action='store_true')
+    p.add_argument('--writer-compatibility-proof', type=Path,
+                   help='Reviewed exact-float transport deployment proof preserving the frozen calculation request')
     p.add_argument('--migrate-schema', action='store_true', help='Apply additive boundary keys before writing')
     p.add_argument('--workers',type=int,choices=range(1,17),default=8)
     a = p.parse_args(argv)
@@ -147,6 +149,23 @@ def read_json(path):
         except (OSError,json.JSONDecodeError):
             if attempt==5:raise
             time.sleep(.05*2**attempt)
+
+
+def compatible_writer_request(current, frozen, proof):
+    """Pin both executable identities while retaining completed calculation lineage."""
+    allowed = {'pipelines/market_sip/events/structural_checkpoint_storage.py',
+               'scripts/backfill_structural_sessions.py'}
+    old = frozen['source_hashes']; new = current['source_hashes']
+    changed = {key.replace('\\', '/') for key in old.keys() | new.keys()
+               if old.get(key) != new.get(key)}
+    if (proof.get('version') != 'structural-exact-float-transport-v1'
+            or proof.get('previous_request_hash') != digest(frozen)
+            or proof.get('current_request_hash') != digest(current)
+            or not changed or not changed <= allowed
+            or {k:v for k,v in current.items() if k != 'source_hashes'} !=
+               {k:v for k,v in frozen.items() if k != 'source_hashes'}):
+        raise ValueError('Writer compatibility proof does not match the frozen calculation and executable')
+    return frozen
 
 
 def _ticker_worker(spec_path, ticker):
@@ -399,6 +418,11 @@ def run(a):
                                normalized, seeds, source, sys.modules[__name__])})
         # Canonical inventory contains dates; freeze its JSON representation.
         request = json.loads(json.dumps(request, default=str))
+        if a.writer_compatibility_proof:
+            if not a.resume or not frozen.exists():
+                raise ValueError('Writer compatibility requires an existing resumable request')
+            request = compatible_writer_request(request, read_json(frozen),
+                                                read_json(a.writer_compatibility_proof))
         plan_hash = digest(request)
         producer_hash = digest(request['source_hashes'])
         by_ticker = {}

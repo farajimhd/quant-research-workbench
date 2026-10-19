@@ -22,6 +22,24 @@ def sample():
 
 
 class SessionCheckpoints(unittest.TestCase):
+    def test_transport_compatibility_pins_both_requests_and_calculation(self):
+        from copy import deepcopy
+        from scripts.backfill_structural_sessions import compatible_writer_request,digest
+        old=dict(population='reviewed',source_hashes={
+            'pipelines/market_sip/events/structural_checkpoint_storage.py':'old',
+            'algorithm.py':'same'})
+        new=deepcopy(old)
+        new['source_hashes']['pipelines/market_sip/events/structural_checkpoint_storage.py']='new'
+        def proof(value):return dict(version='structural-exact-float-transport-v1',
+            previous_request_hash=digest(old),current_request_hash=digest(value))
+        self.assertEqual(compatible_writer_request(new,old,proof(new)),old)
+        for changed in ('population','algorithm'):
+            bad=deepcopy(new)
+            if changed=='population':bad['population']='different'
+            else:bad['source_hashes']['algorithm.py']='different'
+            with self.assertRaises(ValueError):compatible_writer_request(bad,old,proof(bad))
+        with self.assertRaises(ValueError):compatible_writer_request(new,old,proof(old))
+
     def calc(self, bars=None, **kwargs):
         return calculate(prior=None, ticker='TEST', day='2026-07-02',
             bars=sample() if bars is None else bars, actions=[],
