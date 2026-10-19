@@ -167,12 +167,14 @@ def compatible_writer_request(current, frozen, proof):
     """Pin both executable identities while retaining completed calculation lineage."""
     allowed = {'pipelines/market_sip/events/structural_checkpoint_storage.py',
                'scripts/backfill_structural_sessions.py'}
-    if proof.get('version')=='structural-campaign-seed-v2':
+    if proof.get('version') in ('structural-campaign-seed-v2','structural-projection-perf-v3'):
         allowed.add('src/backend/structural_v7_seed.py')
+    if proof.get('version')=='structural-projection-perf-v3':
+        allowed.add('pipelines/market_sip/events/structural_session_checkpoints.py')
     old = frozen['source_hashes']; new = current['source_hashes']
     changed = {key.replace('\\', '/') for key in old.keys() | new.keys()
                if old.get(key) != new.get(key)}
-    if (proof.get('version') not in ('structural-exact-float-transport-v1','structural-campaign-seed-v2')
+    if (proof.get('version') not in ('structural-exact-float-transport-v1','structural-campaign-seed-v2','structural-projection-perf-v3')
             or proof.get('previous_request_hash') != digest(frozen)
             or proof.get('current_request_hash') != digest(current)
             or not changed or not changed <= allowed

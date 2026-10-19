@@ -91,8 +91,11 @@ class SessionCheckpoints(unittest.TestCase):
         with self.assertRaises(ValueError):restore_boundary(row)
 
     def test_normalized_boundaries_are_not_ah(self):
+        from copy import deepcopy
         value = self.calc(existing_ah=True)['REGULAR']
+        original=deepcopy(value)
         levels, observations, row = normalized_boundary(value, 'b'*64)
+        self.assertEqual(value,original)
         self.assertEqual(row['checkpoint_boundary'], 'REGULAR')
         for level in levels:
             self.assertEqual(level['retrospective'], 0)

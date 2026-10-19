@@ -109,7 +109,10 @@ def normalized_boundary(value, source_plan_hash):
     limited to this trading day; intraday rows cannot become next-day seeds.
     """
     import json
-    engine = restore_engine(value['streaming_state'])
+    # Read-only projection: restore still checks the full state hash/version,
+    # then historical_checkpoint makes the independent copy used below. Never
+    # update this borrowed engine or mutate its nested checkpoint values.
+    engine = StreamingLevelBook.restore(value['streaming_state'],copy_state=False)
     book = engine.historical_checkpoint(value['input_hash'])
     book['available_at'] = value['boundary_at']
     book['checkpoint_hash'] = digest({k: v for k, v in book.items() if k != 'checkpoint_hash'})
