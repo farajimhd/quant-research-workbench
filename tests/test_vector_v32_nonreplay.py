@@ -108,3 +108,18 @@ def test_resident_metadata_does_not_queue_behind_gpu_and_is_bounded(tmp_path):
     assert p.loaded_metadata[0] == 'b'
     p.close()
     assert p.loaded_metadata is None
+
+
+def test_async_result_processing_and_durable_receipt(tmp_path):
+    from research.vectorized_backtest.v32.result_processing import process_metrics,publish_results
+    from hashlib import sha256
+    snapshot={'profit':np.array([-0.,3.]),'episode_profits':[[1.,-1.,2.],[3.]],'episode_listings':[[0,0,1],[1]]}
+    metrics=process_metrics(snapshot,np.array([4,2]),{4:{'listing_id':'A'},2:{'listing_id':'B'}})
+    assert metrics['ticker_pnl']==[{'A':0.,'B':2.},{'B':3.}]
+    cached={key:{k:v[i] for k,v in metrics.items()} for i,key in enumerate(['a','b'])}
+    selected=publish_results(tmp_path/'cache.json',tmp_path,{},cached,['b','a','b'],[1],'day',{},'token','training',{},[4,2],[])
+    receipt=json.loads((tmp_path/'receipt.json').read_bytes())
+    assert receipt['metrics']['profit']==[3.,-0.,3.]
+    assert receipt['metrics']['result_reused']==[True,False,True]
+    cache=json.loads((tmp_path/'cache.json').read_bytes())
+    assert cache['results_sha256']==sha256(json.dumps(selected,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()

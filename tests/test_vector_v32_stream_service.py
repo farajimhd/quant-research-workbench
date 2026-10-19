@@ -73,3 +73,33 @@ def test_session_queued_during_preparation_joins_same_replay(monkeypatch,tmp_pat
             assert fa.result()=='a' and fb.result()=='b'
         assert len(groups)==1 and len(groups[0])==2
     finally:release.set();service.close()
+
+
+def test_pending_cpu_job_does_not_block_other_replay(monkeypatch,tmp_path):
+    from concurrent.futures import Future
+    import threading
+    pending=Future();waiting=threading.Event();replayed=threading.Event()
+    class AsyncWorker(FakeWorker):
+        def steps(self,day,*args):
+            if day=='cpu':
+                waiting.set()
+                value=yield pending
+                return value
+            yield [day]
+            return day
+    monkeypatch.setattr(module,'StreamWorker',AsyncWorker)
+    monkeypatch.setattr(module,'replay_groups',lambda *args:replayed.set())
+    service=module.SharedReplayService()
+    cfg=dict(output=str(tmp_path),device='cuda',backend='compile',batch_size=512,host_reserve_gib=0)
+    a=service.factory(cfg,queue.Queue(),0);b=service.factory(cfg,queue.Queue(),1)
+    try:
+        with ThreadPoolExecutor(2) as pool:
+            fa=pool.submit(a.run,'cpu');assert waiting.wait(3)
+            fb=pool.submit(b.run,'gpu');assert replayed.wait(3)
+            assert not fa.done() and fb.result(timeout=3)=='gpu'
+            pending.set_exception(OSError('publication failed'))
+            with pytest.raises(OSError,match='publication failed'):fa.result(timeout=3)
+        a.close();b.close()
+    finally:
+        if not pending.done():pending.set_result(None)
+        service.close()

@@ -14,7 +14,6 @@ from hashlib import sha256
 from pathlib import Path
 from time import perf_counter, time
 
-import numpy as np
 import psutil
 import torch
 
@@ -22,7 +21,7 @@ from .session_lanes import Worker
 from .evaluator import Execution, PopulationPrograms, replay_cohort
 from .genome import Individual
 from .lineage import program_key
-from .io_pipeline import Publisher
+from .result_processing import process_metrics, publish_results
 from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime
 
 
@@ -62,7 +61,7 @@ class StreamWorker(Worker):
         missing=[i for i,k in enumerate(keys) if k not in cached]
         batch=c['batch_size']; timings=[]; execution=Execution(**c['execution'])
         self.batch_progress=dict(completed_local_batches=0,total_local_batches=(len(missing)+batch-1)//batch)
-        packing={}
+        packing={}; cpu_pending=None
         try:
             if missing:
                 required=item.bytes+item.resident_features.bytes+(2+c['capture_gib'])*1024**3
@@ -82,70 +81,69 @@ class StreamWorker(Worker):
                     if offset not in packing:
                         packing[offset]=submit(_pack,[population[i] for i in missing[offset:offset+batch]])
             prepack(0)
-            with Publisher() as publisher:
-                for first in range(0,len(missing),2*batch):
-                    prepack(first+2*batch)
-                    pending=[]
-                    for offset in range(first,min(first+2*batch,len(missing)),batch):
-                        selection=missing[offset:offset+batch]; members=[population[i] for i in selection]
-                        batch_start=perf_counter()
-                        # Plans are independent per captured cohort. Never evict a
-                        # plan still referenced by another queued CUDA graph.
-                        wait_started=perf_counter()
-                        packed,packing_seconds=packing.pop(offset).result()
-                        packing_wait_seconds=perf_counter()-wait_started
-                        upload_started=perf_counter()
-                        plan=PopulationPrograms(members,device,packed=packed)
-                        upload_seconds=perf_counter()-upload_started
-                        self.emit(day,stage='Capture replay graph',candidate_offset=offset,completed_seconds=0,
-                                  total_seconds=item.clocks-1,replay_started=None)
-                        gates=plan.evaluate(item,maximum_gate_gib=c['maximum_gate_gib'])
-                        torch.cuda.synchronize(device)
-                        if torch.cuda.mem_get_info(device)[0]<8*2**30:raise MemoryError('Shared replay GPU headroom below 8 GiB')
-                        capture_started=perf_counter()
-                        prepared=replay_cohort([item],members,[gates],execution=execution,backend=c['backend'],
-                            listing_width=replay_width,episode_capacity=c.get('episode_capacity',65536),
-                            trace=c.get('split','training')=='training',capture_only=True,replay_block=32)
-                        pending.append((offset,selection,plan,prepared,perf_counter()-batch_start,
-                            dict(cpu_packing_seconds=packing_seconds,packing_wait_seconds=packing_wait_seconds,
-                                 plan_upload_seconds=upload_seconds,capture_seconds=perf_counter()-capture_started)))
-                    self.emit(day,stage='Replay positions',candidate_offset=first,replay_started=time())
-                    # The CUDA owner advances all admitted session groups together.
-                    replay_seconds=yield [p[3].replay for p in pending]
-                    for offset,selection,plan,prepared,rule_seconds,preparation_times in pending:
-                        result=prepared.export()[0]
-                        metrics={k:v.detach().cpu().tolist() if isinstance(v,torch.Tensor) else v for k,v in result.items()}
-                        metrics['ticker_pnl']=[]
-                        for profits,listings in zip(metrics['episode_profits'],metrics['episode_listings']):
-                            totals=np.bincount(np.asarray(listings,dtype=np.int64),weights=profits,minlength=len(item.listing_ids))
-                            used=np.unique(np.asarray(listings,dtype=np.int64))
-                            metrics['ticker_pnl'].append({item.receipt['listings'][int(item.listing_ids[j])]['listing_id']:float(totals[j]) for j in used})
-                        for j,i in enumerate(selection):cached[keys[i]]={k:v[j] for k,v in metrics.items()}
-                        timings.append(dict(day=day,offset=offset,candidates=len(selection),padded_candidates=len(selection),
-                            load_seconds=load_seconds if offset==0 else 0.,host_prefetched=prefetched,rule_seconds=rule_seconds,
-                            replay_seconds=replay_seconds/len(pending),replay_group_seconds=replay_seconds,
-                            scheduler='shared-streams-v1',pid=os.getpid(),finished_epoch=time(),**preparation_times))
-                        plan.close()
-                    # Drop graph-owned state before capturing the next pair.
-                    del result,prepared,plan,metrics,pending,gates
-                    gc.collect()
-                    self.emit(day,stage='Batch complete',completed_local_batches=len(timings),completed_seconds=item.clocks-1)
-                selected={key:cached[key] for key in keys}
-                raw=json.dumps(selected,sort_keys=True,separators=(',',':'),allow_nan=False)
-                publisher.write(cache_path,dict(identity=identity,results=selected,results_sha256=sha256(raw.encode()).hexdigest()))
-                merged={k:[cached[key][k] for key in keys] for k in cached[keys[0]]}
-                missing_set=set(missing); merged['result_reused']=[i not in missing_set for i in range(len(population))]
-                publisher.write(root/'receipt.json',dict(day=day,metrics=merged,identity=item.identity,population_sha256=token,
-                    full_session=True,split=c.get('split','training'),validation_opened=c.get('split')=='validation',
-                    execution=asdict(execution),listing_ids=item.listing_ids.tolist(),reused_candidates=len(population)-len(missing),
-                    evaluated_candidates=len(missing)))
-                publisher.write(root/'timings.json',timings)
+            for first in range(0,len(missing),2*batch):
+                prepack(first+2*batch)
+                pending=[]
+                for offset in range(first,min(first+2*batch,len(missing)),batch):
+                    selection=missing[offset:offset+batch]; members=[population[i] for i in selection]
+                    batch_start=perf_counter()
+                    # Plans are independent per captured cohort. Never evict a
+                    # plan still referenced by another queued CUDA graph.
+                    wait_started=perf_counter()
+                    packed,packing_seconds=packing.pop(offset).result()
+                    packing_wait_seconds=perf_counter()-wait_started
+                    upload_started=perf_counter()
+                    plan=PopulationPrograms(members,device,packed=packed)
+                    upload_seconds=perf_counter()-upload_started
+                    self.emit(day,stage='Capture replay graph',candidate_offset=offset,completed_seconds=0,
+                              total_seconds=item.clocks-1,replay_started=None)
+                    gates=plan.evaluate(item,maximum_gate_gib=c['maximum_gate_gib'])
+                    torch.cuda.synchronize(device)
+                    if torch.cuda.mem_get_info(device)[0]<8*2**30:raise MemoryError('Shared replay GPU headroom below 8 GiB')
+                    capture_started=perf_counter()
+                    prepared=replay_cohort([item],members,[gates],execution=execution,backend=c['backend'],
+                        listing_width=replay_width,episode_capacity=c.get('episode_capacity',65536),
+                        trace=c.get('split','training')=='training',capture_only=True,replay_block=32)
+                    pending.append((offset,selection,plan,prepared,perf_counter()-batch_start,
+                        dict(cpu_packing_seconds=packing_seconds,packing_wait_seconds=packing_wait_seconds,
+                             plan_upload_seconds=upload_seconds,capture_seconds=perf_counter()-capture_started)))
+                self.emit(day,stage='Replay positions',candidate_offset=first,replay_started=time())
+                # The CUDA owner advances all admitted session groups together.
+                replay_seconds=yield [p[3].replay for p in pending]
+                for offset,selection,plan,prepared,rule_seconds,preparation_times in pending:
+                    result=prepared.export()[0]
+                    # Complete D2H on the CUDA owner; only independent CPU arrays
+                    # cross the process boundary. No graph/device lifetime escapes.
+                    snapshot={k:v.detach().cpu().numpy().copy() if isinstance(v,torch.Tensor) else v for k,v in result.items()}
+                    cpu_pending=submit(process_metrics,snapshot,item.listing_ids,item.receipt['listings'])
+                    plan.close()
+                    metrics=yield cpu_pending
+                    cpu_pending=None
+                    for j,i in enumerate(selection):cached[keys[i]]={k:v[j] for k,v in metrics.items()}
+                    timings.append(dict(day=day,offset=offset,candidates=len(selection),padded_candidates=len(selection),
+                        load_seconds=load_seconds if offset==0 else 0.,host_prefetched=prefetched,rule_seconds=rule_seconds,
+                        replay_seconds=replay_seconds/len(pending),replay_group_seconds=replay_seconds,
+                        scheduler='shared-streams-v1',pid=os.getpid(),finished_epoch=time(),**preparation_times))
+                # Drop graph-owned state before capturing the next pair.
+                del result,prepared,plan,metrics,pending,gates
+                gc.collect()
+                self.emit(day,stage='Batch complete',completed_local_batches=len(timings),completed_seconds=item.clocks-1)
+            cpu_pending=submit(publish_results,cache_path,root,identity,cached,keys,missing,
+                day,item.identity,token,c.get('split','training'),asdict(execution),
+                item.listing_ids.tolist(),timings)
+            selected=yield cpu_pending
+            cpu_pending=None
             if resident:self.resident_results=(identity,selected)
             self.emit(day,stage='Session complete',completed_local_batches=len(timings),completed_seconds=item.clocks-1)
             return dict(day=day,timings=timings,wall_seconds=perf_counter()-started,pid=os.getpid(),clocks=item.clocks-1)
         except BaseException as error:
             self.emit(day,stage='Failed',error=str(error)); raise
         finally:
+            if cpu_pending is not None:
+                cpu_pending.cancel()
+                if not cpu_pending.cancelled():
+                    try:cpu_pending.result()
+                    except BaseException:pass
             for future in packing.values():future.cancel()
             if not c.get('retain_session_residency'):
                 item.resident_features.deactivate(); item.deactivate()
@@ -200,7 +198,9 @@ class SharedReplayService:
             nonlocal closing
             key,method,args,future=command
             try:
-                if method=='shutdown':closing=True;future.set_result(None);return
+                if method=='shutdown':
+                    if running:raise ValueError('Cannot shut down active sessions')
+                    closing=True;future.set_result(None);return
                 if method=='create':
                     if len(self.workers)>=2 or key in self.workers:raise ValueError('Two distinct shared sessions maximum')
                     config,events,lane=args
@@ -224,27 +224,38 @@ class SharedReplayService:
                 while not self.commands.empty():commands.append(self.commands.get_nowait())
                 for command in commands:accept(command)
                 if active:
-                    ready=[]; groups=[]
+                    ready=[]; groups=[]; gpu_ready=[]
                     for key,steps,future,elapsed in active:
-                        try:groups.append(steps.send(elapsed));ready.append((key,steps,future,None))
+                        try:
+                            if isinstance(elapsed,Future):
+                                if not elapsed.done():
+                                    ready.append((key,steps,future,elapsed));continue
+                                try:value=elapsed.result()
+                                except BaseException as error:stage=steps.throw(error)
+                                else:stage=steps.send(value)
+                            else:stage=steps.send(elapsed)
+                            if isinstance(stage,Future):ready.append((key,steps,future,stage))
+                            else:
+                                groups.append(stage);gpu_ready.append((key,steps,future,None))
+
                         except StopIteration as done:running.remove(key);future.set_result(done.value)
                         except BaseException as error:running.remove(key);future.set_exception(error)
                         # Loading/compilation can take seconds. Admit requests
                         # that arrived meanwhile before launching the GPU work.
                         # Appended entries are visited by this same bounded loop.
                         while not self.commands.empty():accept(self.commands.get_nowait())
-                    active=ready
+                    active=ready+gpu_ready
                     if groups:
                         reserve=max(self.workers[k].config.get('host_reserve_gib',128) for k,_,_,_ in active)
                         if psutil.virtual_memory().available<reserve*2**30:raise MemoryError('Shared replay host reserve reached')
                         def progress(chunks):
-                            for (key,_,_,_),group in zip(active,groups):
+                            for (key,_,_,_),group in zip(gpu_ready,groups):
                                 worker=self.workers[key]
                                 worker.prefetch.release_under_pressure()
                                 worker.emit(worker.current_day,stage='Replay positions',
                                     completed_seconds=min(chunks*group[0].block,group[0].total),total_seconds=group[0].total)
                         elapsed=replay_groups(groups,progress)
-                        active=[(k,s,f,elapsed) for k,s,f,_ in active]
+                        active=ready+[(k,s,f,elapsed) for k,s,f,_ in gpu_ready]
                         del groups
         except BaseException as error:
             self.error=error

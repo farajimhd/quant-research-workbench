@@ -341,3 +341,5 @@ validation rule. New V32 machine artifacts use compact standard JSON with the
 same atomic replacement and strict finite-number checks; existing sealed files
 are never reformatted. These are compute/publication changes, not changes to
 search, objectives, execution arithmetic or checkpoint state semantics.
+
+Shared replay parks sessions on bounded CPU result-processing/publication futures. Device export remains on the CUDA owner; CPU snapshots are independently owned. Receipt writes must finish successfully before local scoring/evolution advances; failures propagate and shutdown drains pending publication. Other sessions may replay while these CPU jobs run.
