@@ -40,7 +40,6 @@ def main(argv=None):
     ledger=a.bars_run_dir/'build-ledger-v2.sqlite3'
     with closing(builder.Client(options,readonly=True)) as client, closing(sqlite3.connect(
             ledger.as_uri()+'?mode=ro',uri=True)) as db:
-        if a.mode=='optimized':storage.configure_client(client)
         db.row_factory=sqlite3.Row
         from uuid import uuid4
         query_ids=[]

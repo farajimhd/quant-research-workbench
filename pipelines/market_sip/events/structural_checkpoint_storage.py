@@ -11,11 +11,6 @@ SNAPSHOT_KEYS = {LEVELS_TABLE: 'ticker, valid_from, checkpoint_boundary, level_i
                  OBSERVATIONS_TABLE: 'ticker, valid_from, checkpoint_boundary, observation_id'}
 
 
-def configure_client(client):
-    # Keep transport parity until compression shows an end-to-end gain.
-    client.http.compress_responses=False
-
-
 def storage_preflight(client):
     policies = client.query(f"SELECT disks FROM system.storage_policies WHERE policy_name={literal(POLICY)}")
     allowed = {disk for row in policies for disk in row['disks']}

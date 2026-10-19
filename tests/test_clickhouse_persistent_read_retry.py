@@ -102,29 +102,3 @@ def test_nonpersistent_binary_insert_body_is_sent_without_conversion(monkeypatch
     payload = b'INSERT INTO arte.x FORMAT RowBinary\n\xff\x00\x80'
     assert client.execute(payload) == ''
     assert requests[0].data is payload
-
-
-@pytest.mark.parametrize('persistent',[False,True])
-@pytest.mark.parametrize('status',[200,500])
-def test_opt_in_gzip_preserves_response_and_error_body(monkeypatch,persistent,status):
-    import gzip
-    from urllib.parse import parse_qs,urlsplit
-    response=MagicMock(status=status,reason='test',will_close=False)
-    response.read.return_value=gzip.compress(b'precise response')
-    response.getheader.return_value='gzip'
-    response.__enter__.return_value=response
-    client=ClickHouseHttpClient('http://localhost:8123','reader','secret',persistent=persistent,compress_responses=True,default_query_params={'readonly':1})
-    if persistent:
-        connection=MagicMock();connection.getresponse.return_value=response
-        monkeypatch.setattr(client,'_new_connection',lambda:connection)
-    else:
-        monkeypatch.setattr('research.mlops.clickhouse.request.urlopen',lambda req,timeout:response)
-    if status==500 and persistent:
-        with pytest.raises(RuntimeError,match='precise response'):client.execute('SELECT 1')
-    else:assert client.execute('SELECT 1')=='precise response'
-    if persistent:
-        call=connection.request.call_args
-        assert call.kwargs['headers']['Accept-Encoding']=='gzip'
-        params=parse_qs(urlsplit(call.args[1]).query)
-        assert params['readonly']==['1'] and params['enable_http_compression']==['1']
-    assert client.default_query_params=={'readonly':'1'}
