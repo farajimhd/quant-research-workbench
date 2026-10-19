@@ -116,7 +116,7 @@ def insert(client, table, rows):
 
 def verify_snapshot(client, table, expected, where):
     identity = 'level_id' if table == LEVELS_TABLE else 'observation_id'
-    actual = client.query(f'SELECT * FROM {table} FINAL WHERE {where} '
+    actual = client.query(f'SELECT * FROM {table} FINAL PREWHERE {where} '
                           f'ORDER BY {identity} LIMIT {len(expected)+1}')
     ordered = sorted(expected, key=lambda row: row[identity])
     if len(actual) != len(ordered) or any(
@@ -130,7 +130,7 @@ def publish_boundary(client, value, plan_hash):
     levels, observations, certificate = normalized_boundary(value, plan_hash)
     where = (f"ticker={literal(value['ticker'])} AND session_date=toDate({literal(value['day'])}) "
              f"AND checkpoint_boundary={literal(value['boundary'])}")
-    existing = client.query(f'SELECT * FROM {COVERAGE_TABLE} FINAL WHERE {where}')
+    existing = client.query(f'SELECT * FROM {COVERAGE_TABLE} FINAL PREWHERE {where}')
     if existing:
         if len(existing) != 1 or existing[0]['streaming_state_hash'] != certificate['streaming_state_hash']:
             raise ValueError('Existing boundary differs from immutable request')
@@ -148,7 +148,7 @@ def publish_boundary(client, value, plan_hash):
         verify_snapshot(client, table, expected, f"ticker={literal(value['ticker'])} "
             f"AND checkpoint_boundary={literal(value['boundary'])} AND valid_from=toDateTime64({stamp},9,'UTC')")
     insert(client, COVERAGE_TABLE, [certificate])
-    published = client.query(f'SELECT * FROM {COVERAGE_TABLE} FINAL WHERE {where}')
+    published = client.query(f'SELECT * FROM {COVERAGE_TABLE} FINAL PREWHERE {where}')
     if len(published) != 1:
         raise ValueError('Boundary completion read-back failed')
     restore_boundary(published[0])

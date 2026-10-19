@@ -191,8 +191,8 @@ def preceding_coverage(client: Any, *, ticker: str, session: date,
                        campaign_plan_hash: str | None = None) -> dict[str, Any]:
     """Pin the latest completed retrospective state known by 04:00 ET."""
     rows = _rows(client,
-        f"SELECT * FROM {_COVERAGE} FINAL WHERE checkpoint_boundary='' AND ticker={_literal(ticker)} "
-        f"AND available_at<=toDateTime64({_literal(_cutoff(session))},9,'UTC') "
+        f"SELECT * FROM {_COVERAGE} FINAL PREWHERE checkpoint_boundary='' AND ticker={_literal(ticker)} "
+        f"WHERE available_at<=toDateTime64({_literal(_cutoff(session))},9,'UTC') "
         "ORDER BY available_at DESC LIMIT 1 FORMAT JSONEachRow")
     if len(rows) != 1:
         raise ValueError(f"Missing prior V7 coverage for {session} {ticker}")
@@ -282,11 +282,12 @@ def load_seed(client: Any, *, ticker: str, session: date,
             "input_policy")):
         raise ValueError("Prior V7 coverage changed after preflight")
     cutoff = _literal(_cutoff(session))
-    predicate = (f"checkpoint_boundary='' AND ticker={_literal(ticker)} AND valid_from<=toDateTime64({cutoff},9,'UTC') "
+    keys = f"checkpoint_boundary='' AND ticker={_literal(ticker)}"
+    predicate = (f"valid_from<=toDateTime64({cutoff},9,'UTC') "
                  f"AND (isNull(valid_to) OR valid_to>toDateTime64({cutoff},9,'UTC'))")
-    levels = _rows(client, f"SELECT {_LEVEL_COLUMNS} FROM {_LEVELS} FINAL WHERE {predicate} "
+    levels = _rows(client, f"SELECT {_LEVEL_COLUMNS} FROM {_LEVELS} FINAL PREWHERE {keys} WHERE {predicate} "
                    "ORDER BY level_id FORMAT JSONEachRow")
-    observations = _rows(client, f"SELECT {_OBSERVATION_COLUMNS} FROM {_OBSERVATIONS} FINAL WHERE {predicate} "
+    observations = _rows(client, f"SELECT {_OBSERVATION_COLUMNS} FROM {_OBSERVATIONS} FINAL PREWHERE {keys} WHERE {predicate} "
                          "ORDER BY level_id,observation_id FORMAT JSONEachRow")
     return _assemble_seed(ticker, session, pinned, levels, observations)
 

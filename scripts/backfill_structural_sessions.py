@@ -93,7 +93,7 @@ def profile(client, a, report, selected, closes):
 
 
 def ah_coverage(client, ticker, day):
-    rows = client.query(f"SELECT * FROM {COVERAGE_TABLE} FINAL WHERE ticker={source.literal(ticker)} "
+    rows = client.query(f"SELECT * FROM {COVERAGE_TABLE} FINAL PREWHERE ticker={source.literal(ticker)} "
         f"AND session_date=toDate({source.literal(day)}) AND checkpoint_boundary=''")
     if len(rows)>1 or any(r['state'] not in ('complete','empty') for r in rows):
         raise ValueError('Ambiguous or incomplete existing AH checkpoint')
@@ -108,8 +108,8 @@ def publish_ah(client, book, plan_hash):
     """
     ticker = book['ticker']; stamp = datetime64_ns(epoch_ns(book['available_at']))
     for table in (LEVELS_TABLE, OBSERVATIONS_TABLE):
-        opened = client.query(f"SELECT * FROM {table} FINAL WHERE ticker={source.literal(ticker)} "
-            "AND checkpoint_boundary='' AND isNull(valid_to)")
+        opened = client.query(f"SELECT * FROM {table} FINAL PREWHERE ticker={source.literal(ticker)} "
+            "AND checkpoint_boundary='' WHERE isNull(valid_to)")
         for row in opened:
             row.update(valid_to=stamp, row_revision=epoch_ns(book['available_at']))
         storage.insert(client, table, opened)
@@ -117,7 +117,7 @@ def publish_ah(client, book, plan_hash):
     storage.insert(client, LEVELS_TABLE, levels)
     storage.insert(client, OBSERVATIONS_TABLE, observations)
     for table, expected in ((LEVELS_TABLE, len(levels)), (OBSERVATIONS_TABLE, len(observations))):
-        rows = client.query(f"SELECT count() n FROM {table} FINAL WHERE ticker={source.literal(ticker)} "
+        rows = client.query(f"SELECT count() n FROM {table} FINAL PREWHERE ticker={source.literal(ticker)} "
             f"AND checkpoint_boundary='' AND valid_from=toDateTime64({source.literal(stamp)},9,'UTC')")
         if int(rows[0]['n']) != expected:
             raise ValueError('AH normalized snapshot read-back count differs')
@@ -202,6 +202,11 @@ def _ticker_worker(spec_path, ticker):
     builder.save(lease,save_lease)
     with builder.build_lock(ticker_file(a.run_dir,ticker,'.lock')):
         try:return _process_ticker(spec,a,ticker)
+        except Exception as error:
+            # Some HTTP exceptions require multiple constructor arguments and
+            # cannot cross multiprocessing's pickle boundary. Retain the real
+            # server reason instead of destroying the whole pool on unpickle.
+            raise RuntimeError(f'{type(error).__name__}: {error}') from None
         finally:lease.unlink(missing_ok=True)
 
 
@@ -223,7 +228,7 @@ def _process_ticker(spec,a,ticker):
             (a.bars_run_dir/'build-ledger-v2.sqlite3').as_uri()+'?mode=ro',uri=True)) as db:
         db.row_factory=sqlite3.Row
         first_target, last_target = min(by_ticker[ticker]), max(by_ticker[ticker])
-        known_ah = client.query(f"SELECT * FROM {COVERAGE_TABLE} FINAL WHERE ticker={source.literal(ticker)} "
+        known_ah = client.query(f"SELECT * FROM {COVERAGE_TABLE} FINAL PREWHERE ticker={source.literal(ticker)} "
             f"AND checkpoint_boundary='' AND session_date<={source.literal(last_target)} ORDER BY session_date")
         ah_by_day = {str(row['session_date']): row for row in known_ah}
         if len(ah_by_day) != len(known_ah) or any(row['state'] not in ('complete','empty') for row in known_ah):
@@ -260,7 +265,7 @@ def _process_ticker(spec,a,ticker):
             actions = split_evidence(client.http, ticker=ticker,
                 seed_session=date.fromisoformat(prior['session']) if prior else history_start-timedelta(days=1),
                 session=date.fromisoformat(day))
-            current = client.query(f"SELECT * FROM {COVERAGE_TABLE} FINAL WHERE ticker={source.literal(ticker)} "
+            current = client.query(f"SELECT * FROM {COVERAGE_TABLE} FINAL PREWHERE ticker={source.literal(ticker)} "
                 f"AND session_date=toDate({source.literal(day)}) AND checkpoint_boundary IN ('PM','REGULAR')") if target else []
             unit = None
             source_ref = None

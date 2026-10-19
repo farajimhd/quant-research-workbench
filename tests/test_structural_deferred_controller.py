@@ -79,3 +79,23 @@ def test_new_pool_waits_for_previous_worker_identity(tmp_path):
     (workers/'lease-old.json').write_text(json.dumps(dict(pid=os.getpid(),created=psutil.Process().create_time())))
     with pytest.raises(ValueError,match='still draining'):
         run_pool(SimpleNamespace(run_dir=tmp_path),{},'',{}, {}, [], [], {}, None,None,'','',0)
+
+
+def test_worker_preserves_unpickleable_clickhouse_failure(tmp_path,monkeypatch):
+    import pickle
+    from contextlib import nullcontext
+    from scripts import backfill_structural_sessions as runner
+    from research.mlops.clickhouse import ClickHouseHttpStatusError
+    import pytest
+    (tmp_path/'workers').mkdir()
+    spec=dict(owner={'token':'test'},arguments=dict(run_dir=str(tmp_path),
+        bars_run_dir=str(tmp_path),env_file=str(tmp_path/'env'),endpoint='http://localhost'))
+    monkeypatch.setattr(runner,'_SPEC_CACHE',spec)
+    monkeypatch.setattr(runner,'require_parent',lambda owner:None)
+    monkeypatch.setattr(runner.builder,'build_lock',lambda path:nullcontext())
+    def fail(*args):raise ClickHouseHttpStatusError(500,'Server Error','Query memory limit exceeded')
+    monkeypatch.setattr(runner,'_process_ticker',fail)
+    with pytest.raises(RuntimeError,match='Query memory limit exceeded') as caught:
+        runner._ticker_worker('unused','TEST')
+    assert 'ClickHouseHttpStatusError' in str(pickle.loads(pickle.dumps(caught.value)))
+    assert not list((tmp_path/'workers').glob('lease-*.json'))
