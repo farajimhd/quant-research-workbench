@@ -328,3 +328,16 @@ create GPU contexts. Timings distinguish CPU packing, queue wait, upload, captur
 and replay. Four workers improved warm packing of four evolved 512-candidate
 cohorts from 2.20s serial to 1.64s on the laptop; eight gave 1.57s and were not
 selected. Cold process startup and end-to-end generation time are separate costs.
+
+Shared local reproduction now executes as one ordered transaction in the same
+bounded CPU pool. The job receives and returns the exact RNG, pedigree and species
+state; random draws and acceptance order are not parallelized. Descriptor work
+inside that job is serial to avoid nested process pools. The caller adopts the
+successor only after the job completes. Resident local metadata reads no longer
+queue behind GPU replay; only a single day's certified identity/listing metadata
+is retained by each proxy, while tensor ownership remains on the CUDA thread.
+Restoring a candidate validates each network once, retaining every original
+validation rule. New V32 machine artifacts use compact standard JSON with the
+same atomic replacement and strict finite-number checks; existing sealed files
+are never reformatted. These are compute/publication changes, not changes to
+search, objectives, execution arithmetic or checkpoint state semantics.

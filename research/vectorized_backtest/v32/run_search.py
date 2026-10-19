@@ -10,7 +10,8 @@ from pathlib import Path
 from time import perf_counter,time
 import numpy as np
 import torch
-from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime,write_json,file_hash
+from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime,file_hash
+from .publication import write_json
 from research.vectorized_backtest.v6.torch_backtest.materialize import owned_run
 from .genome import Individual,sample
 from .config import MAX_NODES

@@ -266,7 +266,23 @@ class SharedReplayService:
 class Proxy:
     def __init__(self,service,config,events,lane):
         self.service=service;self.key=(str(Path(config['output']).resolve()),lane)
+        self.resident=config.get('retain_session_residency',False)
+        self.loaded_metadata=None
         service.call(self.key,'create',config,events,lane)
-    def load(self,day):return self.service.call(self.key,'load',day)
+    def load(self,day):
+        # Locals repeatedly request the same immutable identity/listing metadata.
+        # Do not put that read behind another session's entire GPU replay. Only
+        # the CUDA owner retains/operates the actual session tensors.
+        if self.resident and self.loaded_metadata is not None and self.loaded_metadata[0]==day:
+            return self.loaded_metadata[1]
+        item=self.service.call(self.key,'load',day)
+        if self.resident:
+            from types import SimpleNamespace
+            metadata=SimpleNamespace(identity=dict(item.identity),listing_ids=item.listing_ids.copy())
+            self.loaded_metadata=(day,metadata)
+            return metadata
+        return item
     def run(self,*args):return self.service.call(self.key,'run',*args)
-    def close(self):return self.service.call(self.key,'close')
+    def close(self):
+        try:return self.service.call(self.key,'close')
+        finally:self.loaded_metadata=None

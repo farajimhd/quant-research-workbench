@@ -12,7 +12,8 @@ from .complexity import count
 from .objectives import Objective,local_panel
 from .archive import update_archive
 from .run_search import digest,source_hash
-from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime,write_json,file_hash
+from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime,file_hash
+from .publication import write_json
 from research.vectorized_backtest.v6.torch_backtest.materialize import owned_run
 
 
@@ -141,7 +142,10 @@ def run_session(config,day,output,generations=50,population_size=1024,seed=2020,
                 archive_seconds=time.perf_counter()-archive_start;reproduction_start=time.perf_counter()
                 rank=np.lexsort((ids,-values)).tolist();source_ids=ids.copy()
                 if generation<generations:
-                    members,ids,report=next_population(rng,members,ids,pedigree,rank,generation+1,selection,session_values=values[None],session_eligible=eligible[None],global_values=values,global_eligible=eligible,target_size=population_size,species=species,ordered=[record['metrics']])
+                    reproduce=next_population
+                    if config.get('shared_replay'):
+                        from .evolution_work import next_population as reproduce
+                    members,ids,report=reproduce(rng,members,ids,pedigree,rank,generation+1,selection,session_values=values[None],session_eligible=eligible[None],global_values=values,global_eligible=eligible,target_size=population_size,species=species,ordered=[record['metrics']])
                 else:
                     species.assign(members,ids,values,[record['metrics']],generation,eligible=eligible)
                     report=species.telemetry

@@ -46,7 +46,12 @@ class Network:
         return self
     def payload(self):return dict(nodes=[dict(sources=n.sources,weights=n.weights,bias=n.bias,uid=n.uid,op=n.op) for n in self.nodes],threshold=self.threshold,size_source=self.size_source,size_weight=self.size_weight,size_bias=self.size_bias)
     @classmethod
-    def restore(cls,p):return cls(tuple(Neuron(tuple(n['sources']),tuple(n['weights']),n['bias'],n.get('uid',0),n.get('op','tanh')) for n in p['nodes']),p['threshold'],p.get('size_source',-1),p.get('size_weight',1.),p.get('size_bias',0.)).validate()
+    def restore(cls,p):return cls._decode(p).validate()
+    @classmethod
+    def _decode(cls,p):
+        # Individual.validate checks every decoded network once, along with the
+        # cross-network budget, entry state restrictions and policy contract.
+        return cls(tuple(Neuron(tuple(n['sources']),tuple(n['weights']),n['bias'],n.get('uid',0),n.get('op','tanh')) for n in p['nodes']),p['threshold'],p.get('size_source',-1),p.get('size_weight',1.),p.get('size_bias',0.))
 
 def reachable(net,root):
     live=set()
@@ -138,7 +143,7 @@ class Individual:
     @classmethod
     def restore(cls,p):
         if p.get('version')!='v32-recurrent-v1':raise ValueError('Only fresh V32 recurrent genomes accepted')
-        return cls({s:Network.restore(n) for s,n in p['networks'].items()},Policy(**p['policy']),p['minimum_age']).validate()
+        return cls({s:Network._decode(n) for s,n in p['networks'].items()},Policy(**p['policy']),p['minimum_age']).validate()
 
 def sample(rng,count,*,stratified=False,structural=False):
     out=[]
