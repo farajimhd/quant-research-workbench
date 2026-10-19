@@ -64,12 +64,13 @@ def snapshot(root):
     evidence={};events=[]
     if (recovery/'status.json').exists():
         evidence=json.loads((recovery/'status.json').read_text())
-        try:
-            evidence['certificates']=certificate_progress()
-            evidence['activity']=activity_progress()
-        except Exception as error:
-            evidence['certificates']=_CERTIFICATES
-            evidence['warning']='Certificate refresh unavailable: '+type(error).__name__
+        if evidence.get('status')=='running':
+            try:
+                evidence['certificates']=certificate_progress()
+                evidence['activity']=activity_progress()
+            except Exception as error:
+                evidence['certificates']=_CERTIFICATES
+                evidence['warning']='Certificate refresh unavailable: '+type(error).__name__
         if (recovery/'build.log').exists():
             with (recovery/'build.log').open('rb') as stream:
                 stream.seek(max(0,stream.seek(0,2)-8192))
@@ -83,15 +84,22 @@ def snapshot(root):
 def render(value,width=100,height=30,rate=None):
     controller=value.get('controller',{});s=value.get('status',{})
     phase=controller.get('phase','waiting for controller')
+    if phase in ('plan','profile') and s.get('status') in ('failed','interrupted'):
+        # The controller has a new owner; status.json still belongs to the
+        # previous attempt until the new pool publishes its first snapshot.
+        s={'total':s.get('total'),'worker_limit':s.get('worker_limit',8)}
     state=s.get('status',phase) if phase=='backfill' else phase
     evidence=value.get('evidence',{})
     if phase=='failed' and controller.get('failed_phase')=='plan' and evidence.get('status')=='running':
         state='Waiting for reporting recovery'
     color='red' if state in ('failed','interrupted') else 'green' if state=='complete' else 'cyan'
     lines=Text(f'Structural levels  |  {state}',style=color)
-    lines.append('\nDisplay refreshed: '+value.get('refreshed','-')+' | query activity every 5s; certificates every 60s')
+    lines.append('\nDisplay refreshed: '+value.get('refreshed','-')+' | refresh every 2s')
     bars=[]
-    if evidence:
+    recovery_active=evidence.get('status')=='running'
+    if evidence.get('status')=='complete':
+        lines.append('\nReporting evidence: complete',style='green')
+    elif evidence:
         lines.append('\nReporting evidence recovery: '+evidence.get('status','unknown'),style='cyan')
         proof=evidence.get('certificates')
         if proof:
@@ -114,6 +122,7 @@ def render(value,width=100,height=30,rate=None):
         bars.append(ProgressBar(total=total,completed=done+reuse))
     elif evidence:lines.append('\nLevels total: pending certified full-scope plan; not started.')
     if rate is not None:lines.append(f'\nRecent coverage: {rate:,.0f} ticker-days/hour (includes reuse)')
+    if phase=='backfill':lines.append(f'\nQueued ticker-days: {s.get("queued",max(0,(total or 0)-done-reuse)):,}')
     lines.append(f'\nConcurrency: {s.get("worker_limit",8)} lanes  |  1 query thread / 2 GiB per lane')
     if value.get('stop'):lines.append('\nSTOP present: diagnosis and owner drain required before resume.',style='red')
     error=controller.get('error') or s.get('error')
@@ -122,7 +131,7 @@ def render(value,width=100,height=30,rate=None):
     table=Table(expand=True,box=None)
     table.add_column('Active ticker / latest certified day',overflow='ellipsis',no_wrap=True)
     table.add_column('New',justify='right');table.add_column('Reused',justify='right')
-    for worker in workers[:max(0,height-20 if evidence else height-14)]:
+    for worker in workers[:max(0,height-20 if recovery_active else height-16)]:
         table.add_row(str(worker.get('active',worker.get('ticker','starting'))),
                       str(worker.get('completed',0)),str(worker.get('reused',0)))
     if not workers:table.add_row('Worker details appear after planning.','-','-')

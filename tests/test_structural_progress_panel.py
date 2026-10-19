@@ -30,3 +30,25 @@ def test_active_recovery_replaces_old_plan_failure_heading():
         'evidence':{'status':'running'},'status':{}}))
     assert 'Waiting for reporting recovery' in stream.getvalue()
     assert 'Structural levels  |  failed' not in stream.getvalue()
+
+
+def test_new_preflight_does_not_report_previous_owner_failure():
+    stream=StringIO();console=Console(file=stream,width=100,color_system=None)
+    console.print(render({'controller':{'phase':'profile'},'status':{
+        'status':'failed','failed':1,'error':'old AACO failure','total':100},
+        'evidence':{'status':'complete'}}))
+    text=stream.getvalue()
+    assert 'old AACO failure' not in text and '1 failed' not in text
+    assert 'Reporting evidence: complete' in text
+    assert 'Current verification' not in text
+
+
+def test_running_panel_shows_all_eight_workers_after_recovery():
+    stream=StringIO();console=Console(file=stream,width=110,height=32,color_system=None)
+    console.print(render({'controller':{'phase':'backfill'},'status':{
+        'status':'running','completed':80,'reused':20,'total':200,'queued':100,
+        'workers':[{'active':f'2026-01-02 T{i}','completed':10,'reused':0} for i in range(8)]},
+        'evidence':{'status':'complete'}},110,32))
+    text=stream.getvalue()
+    assert 'Queued ticker-days: 100' in text and 'T7' in text
+    assert len(text.splitlines())<=32
