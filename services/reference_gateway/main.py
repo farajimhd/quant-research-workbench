@@ -244,6 +244,12 @@ def main() -> None:
         )
         emit("preflight=" + json.dumps(preflight.public_dict(), sort_keys=True))
         if preflight.status != "ok":
+            if config.execute and any(check.name == "ibkr_client_portal" and check.status != "ok" for check in preflight.checks):
+                from services.reference_gateway.ibkr_eligibility import invalidate_account
+                from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
+
+                invalidate_account(ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user,
+                                   default_clickhouse_password()), config.clickhouse_write_database)
             record.final_status = "failed"
             record.wall_seconds = time.perf_counter() - run_started
             logger.event("run_failed", reason="preflight_failed", wall_seconds=record.wall_seconds)
@@ -321,6 +327,21 @@ def main() -> None:
             ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password()),
             config.clickhouse_write_database,
         )
+    if config.execute:
+        from services.reference_gateway.ibkr_eligibility import run_gateway_eligibility
+
+        started = time.perf_counter()
+        add_operation("IBKR account eligibility", "running", "Checking authenticated account and oldest-due contract permissions.")
+        eligibility = run_gateway_eligibility(config, on_progress=lambda result: update_latest_operation(
+            "IBKR account eligibility", "running",
+            f"checked={result['checked']} queued_in_batch={result['queued']} "
+            f"restricted_sides={result['restricted']} unknown_sides={result['unknown']}",
+            rows=result["checked"] * 2, seconds=time.perf_counter() - started))
+        update_latest_operation("IBKR account eligibility", "warning" if eligibility["unknown"] else "completed",
+                      f"contracts={eligibility['checked']} eligible_sides={eligibility['eligible']} "
+                      f"restricted_sides={eligibility['restricted']} unknown_sides={eligibility['unknown']}",
+                      rows=eligibility["checked"] * 2, seconds=time.perf_counter() - started)
+        logger.event("ibkr_account_eligibility_completed", **eligibility)
     audit_started = time.perf_counter()
     report = run_reference_audit(config)
     record.audit = report

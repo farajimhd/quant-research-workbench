@@ -14,6 +14,14 @@ class ReferenceTableGroup:
 
 REFERENCE_TABLE_GROUPS: tuple[ReferenceTableGroup, ...] = (
     ReferenceTableGroup(
+        group_id="ibkr_account_eligibility",
+        owner="reference_gateway",
+        purpose="Dated account-specific buy/sell permissions and fail-closed live population.",
+        tables=("market_ibkr_account_eligibility_v1", "market_ibkr_live_account_v1",
+                "feature_live_tradable_universe_v1"),
+        update_policy="Append observed permissions; live buys require fresh affirmative account evidence. No historical inference.",
+    ),
+    ReferenceTableGroup(
         group_id="reference_dimensions",
         owner="reference_gateway",
         purpose="Small controlled dimensions used by identity and tradability resolution.",

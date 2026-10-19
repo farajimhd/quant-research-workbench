@@ -1662,7 +1662,9 @@ def submit_real_live_order(account_type: str, order: dict[str, Any], *, preview:
         )
     selected_accounts = resolve_real_live_accounts(account_keys, account_type)
     normalized_order = normalize_live_order_intent(order)
-    tradability = require_tradable_symbol(normalized_order["symbol"])
+    tradability = require_tradable_symbol(normalized_order["symbol"], side=normalized_order["side"])
+    if any(account.account_id != tradability.get("eligibility_account_id") for account in selected_accounts):
+        raise RuntimeError("Order account does not match the Reference Gateway eligibility account.")
     conid = int(tradability["ibkr_conid"])
     requested_conid = int(float(normalized_order.get("conid") or 0))
     if requested_conid and requested_conid != conid:
@@ -2558,16 +2560,17 @@ def filter_tradable_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any
         "checked": len(symbols),
         "allowed": len(filtered),
         "blocked": blocked,
-        "source": "q_live.feature_tradable_universe_v1",
+        "source": "q_live.feature_live_tradable_universe_v1",
     }
 
 
-def require_tradable_symbol(symbol: str) -> dict[str, Any]:
+def require_tradable_symbol(symbol: str, *, side: str = "BUY") -> dict[str, Any]:
     normalized = str(symbol or "").strip().upper()
     if not normalized:
         raise ValueError("Order symbol is required.")
     row = tradable_symbol_map([normalized]).get(normalized)
-    if row and row.get("is_tradable"):
+    permission = "is_sell_eligible" if str(side).upper() == "SELL" else "is_tradable"
+    if row and row.get(permission):
         return row
     reason = row.get("exclusion_reason") if row else "missing_from_latest_tradable_universe"
     raise RuntimeError(f"{normalized} is not tradable in the latest q_live tradable universe: {reason}.")
@@ -2618,6 +2621,8 @@ def tradable_symbol_map(symbols: list[str]) -> dict[str, dict[str, Any]]:
             "exchange_code": str(selected.get("exchange_code") or ""),
             "currency_code": str(selected.get("currency_code") or ""),
             "is_tradable": is_tradable,
+            "is_sell_eligible": len(candidates) == 1 and bool(int(selected.get("is_sell_eligible") or 0)),
+            "eligibility_account_id": str(selected.get("eligibility_account_id") or ""),
             "exclusion_reason": exclusion_reason,
             "ibkr_conid": int(selected.get("ibkr_conid") or 0),
             "identity_candidate_count": len(candidates),

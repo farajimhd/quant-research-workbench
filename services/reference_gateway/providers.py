@@ -120,6 +120,22 @@ class IbkrReferenceClient:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
 
+    def trading_accounts(self) -> dict[str, Any]:
+        result = fetch_json(self.base_url + "/iserver/accounts", timeout=self.timeout_seconds,
+                            allow_self_signed=True, user_agent="quant-reference-gateway-ibkr/1.0")
+        if not isinstance(result, dict):
+            raise ValueError("Malformed IBKR accounts response")
+        return result
+
+    def contract_rules(self, conid: int, *, is_buy: bool) -> dict[str, Any]:
+        result = fetch_json(self.base_url + "/iserver/contract/rules", method="POST",
+                            payload={"conid": int(conid), "exchange": "SMART", "isBuy": is_buy},
+                            timeout=self.timeout_seconds, allow_self_signed=True,
+                            user_agent="quant-reference-gateway-ibkr/1.0")
+        if not isinstance(result, dict):
+            raise ValueError("Malformed IBKR contract rules response")
+        return result
+
     def search_stock_contracts(self, ticker: str) -> list[dict[str, Any]]:
         result = fetch_json(
             self.base_url + "/iserver/secdef/search",

@@ -13,7 +13,7 @@ def full_tradable_universe(*, database: str) -> str:
         latest_universe AS
         (
             SELECT max(universe_date) AS universe_date
-            FROM {db}.feature_tradable_universe_v1 FINAL
+            FROM {db}.feature_live_tradable_universe_v1
         ),
         latest_scanner AS
         (
@@ -52,7 +52,7 @@ def full_tradable_universe(*, database: str) -> str:
         scanner.short_pressure_label AS short_setup,
         u.is_tradable AS is_tradable,
         u.exclusion_reason AS exclusion_reason
-    FROM (SELECT * FROM {db}.feature_tradable_universe_v1 FINAL) AS u
+    FROM (SELECT * FROM {db}.feature_live_tradable_universe_v1) AS u
     LEFT JOIN (SELECT * FROM {db}.id_issuer_v1 FINAL) AS issuer
         ON issuer.issuer_id = u.issuer_id
     LEFT JOIN (SELECT * FROM {db}.feature_scanner_static_v1 FINAL) AS scanner
@@ -88,7 +88,7 @@ def tradable_symbol_lookup(*, database: str, symbols: Iterable[str]) -> str:
         WITH latest AS
         (
             SELECT max(universe_date) AS universe_date
-            FROM {db}.feature_tradable_universe_v1 FINAL
+            FROM {db}.feature_live_tradable_universe_v1
         )
         SELECT
             toString(universe_date) AS universe_date_text,
@@ -98,9 +98,11 @@ def tradable_symbol_lookup(*, database: str, symbols: Iterable[str]) -> str:
             exchange_code,
             currency_code,
             toUInt8(is_tradable) AS is_tradable,
+            toUInt8(is_sell_eligible) AS is_sell_eligible,
+            eligibility_account_id,
             ifNull(exclusion_reason, '') AS exclusion_reason,
             toUInt64OrZero(ifNull(ibkr_conid, '')) AS ibkr_conid
-        FROM {db}.feature_tradable_universe_v1 FINAL
+        FROM {db}.feature_live_tradable_universe_v1
         WHERE universe_date = (SELECT universe_date FROM latest)
           AND upper(ticker) IN ({symbol_list})
         """

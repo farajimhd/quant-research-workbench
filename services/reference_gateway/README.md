@@ -1,5 +1,50 @@
 # Reference Gateway
 
+## Account-specific live eligibility
+
+`market_ibkr_account_eligibility_v1` retains append-only UTC observations for each
+account, conid and buy/sell side from Client Portal `POST /iserver/contract/rules`.
+Only an explicit `canTradeAcctIds` list containing the account grants eligibility.
+A valid list excluding it means restricted; missing/malformed data, API errors and
+transport failures mean unknown. Responses and SHA-256 fingerprints are retained.
+Sell eligibility is independent of buy eligibility and does not certify borrow
+availability or permission to open a short position.
+
+Set `REFERENCE_GATEWAY_IBKR_ACCOUNT_ID` to the intended account. A session with
+exactly one account can resolve it automatically; multiple accounts require an
+explicit selection. Account selection/authentication failures invalidate the live
+account policy. No account is silently substituted.
+
+Every executing gateway cycle refreshes at most 100 oldest-due contracts, with
+sequential buy/sell requests spaced at least 300 ms apart. Each response is saved
+immediately, preserving progress across interruption. Configuration:
+
+- `REFERENCE_GATEWAY_IBKR_ELIGIBILITY_BATCH_SIZE`: 100, maximum 500.
+- `REFERENCE_GATEWAY_IBKR_ELIGIBILITY_REFRESH_SECONDS`: 1800; age at which a check is due.
+- `REFERENCE_GATEWAY_IBKR_ELIGIBILITY_MAX_AGE_SECONDS`: 21600; hard evidence expiry.
+
+This uses part of the authenticated username's shared Web API request budget;
+other applications must respect that same budget. Initial coverage fills over
+successive cycles. Unchecked stocks are excluded until checked, and permissions
+are snapshots, so restrictions arising between checks remain subject to broker
+order validation. The sweep is bounded, not an instantaneous whole-market check.
+
+`feature_live_tradable_universe_v1` overlays the existing identity publication.
+The live market-data population and live trading symbol lookup use this view.
+It selects the newest observation **before** checking status and expiry, so a
+new unknown/restricted result cannot resurrect an older approval. Expiry is
+evaluated at read time even if the gateway stops. Buy-restricted stocks are
+excluded from the live list while independent permitted sells remain possible.
+Missing schema causes live queries to fail closed; there is no legacy fallback.
+
+The original `feature_tradable_universe_v1` and historical snapshots remain the
+identity/research population. Today's permissions are never stamped onto past
+sessions. The new tables require `live_market_ssd`, including actual part placement.
+Start the authenticated Client Portal gateway, then the managed Reference Gateway,
+before restarting live consumers with this release. Check a known Desktop NT
+ticker against the returned rules: the Web API does not document an exact NT
+reason-list equivalent or a historical permission endpoint.
+
 The reference gateway owns slow-changing market reference data:
 
 ```text

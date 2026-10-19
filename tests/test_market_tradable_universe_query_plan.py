@@ -15,7 +15,7 @@ from src.backend.real_live_trading_service import tradable_symbol_map
 class MarketTradableUniverseQueryPlanTests(unittest.TestCase):
     def test_full_plan_joins_latest_registered_reference_sources(self) -> None:
         sql = full_tradable_universe(database="q_live")
-        self.assertIn("FROM `q_live`.feature_tradable_universe_v1 FINAL", sql)
+        self.assertIn("FROM `q_live`.feature_live_tradable_universe_v1", sql)
         self.assertIn("FROM `q_live`.feature_scanner_static_v1 FINAL", sql)
         self.assertIn("LEFT JOIN (SELECT * FROM `q_live`.id_issuer_v1 FINAL)", sql)
         self.assertIn("u.is_tradable = 1", sql)
