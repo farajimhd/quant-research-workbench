@@ -7,11 +7,18 @@ _active = ContextVar('v32_network_validation', default=None)
 CAPACITY = 4096
 
 
+def known_immutable(network):
+    cache = _active.get()
+    return cache is not None and cache.get(id(network)) is network
+
+
 @contextmanager
 def validation_scope():
     token = _active.set(OrderedDict())
     try:
-        yield
+        from .identity_cache import identity_scope
+        with identity_scope():
+            yield
     finally:
         _active.reset(token)
 

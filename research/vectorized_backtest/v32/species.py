@@ -67,13 +67,16 @@ class Species:
         for i,d in enumerate(descriptors):d.update(behavior=behaviors[i],active=bool(active[i]))
         eligible=np.ones(len(population),dtype=bool) if eligible is None else np.asarray(eligible,dtype=bool)
         previous={r['id']:r for r in self.state['records']};representatives={i:r['representative'] for i,r in previous.items()};groups={};labels=[None]*len(population);capped=0
+        from .species_distance import DistanceIndex
+        distance_index=DistanceIndex(representatives)
         for i in np.argsort(ids,kind='stable'):
             if not eligible[int(i)]:continue
-            distances=[(distance(descriptors[int(i)],rep),sid) for sid,rep in representatives.items()];best=min(distances,default=(2,None))
+            distances=distance_index.distances(descriptors[int(i)]);best=min(distances,default=(2,None))
             if best[0]<=self.state['threshold'] or len(representatives)>=64:
                 sid=best[1];capped+=int(best[0]>self.state['threshold'])
             else:
                 sid=self.state['next_id'];self.state['next_id']+=1;representatives[sid]=descriptors[int(i)]
+                distance_index.add(sid,descriptors[int(i)])
             labels[int(i)]=sid;groups.setdefault(sid,[]).append(int(i))
         records=[]
         for sid,indexes in sorted(groups.items()):

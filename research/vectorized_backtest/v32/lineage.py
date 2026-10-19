@@ -8,6 +8,9 @@ from .complexity import count
 
 
 def program_key(member):
+    from .identity_cache import program_key as cached_key
+    cached=cached_key(member)
+    if cached is not None:return cached
     from .semantics import identity
     value=identity(member)
     return sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()

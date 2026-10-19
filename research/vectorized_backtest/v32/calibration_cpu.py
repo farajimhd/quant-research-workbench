@@ -11,9 +11,11 @@ def scan(inputs,known,held,src,weights,bias,counts,ops,market_inputs,features,en
     saturated=0;total=0
     for tick in range(ticks):
         for node in range(nodes):
+            terms=np.zeros(counts[node],np.float32)
             for window in range(windows):
                 for listing in range(width):
-                    z=bias[node];ok=False;terms=np.zeros(counts[node],np.float32)
+                    z=bias[node];ok=False
+                    for edge in range(counts[node]):terms[edge]=0
                     for edge in range(counts[node]):
                         w=weights[node,edge]
                         if w==0:continue

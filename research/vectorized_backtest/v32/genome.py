@@ -98,7 +98,7 @@ def random_network(rng,stage,size=None,profile=None):
             capacity=sum(FAN_IN**i for i in range(d-1));low=(n-2)//capacity+1
             branches=1 if profile is not None and shape==2 else int(rng.integers(low,min(FAN_IN,n-1)+1));parts=[1]*branches;remaining=n-1-branches
             while remaining:
-                options=[i for i,x in enumerate(parts) if x<capacity];k=int(rng.choice(options));parts[k]+=1;remaining-=1
+                options=[i for i,x in enumerate(parts) if x<capacity];k=options[int(rng.integers(len(options)))];parts[k]+=1;remaining-=1
             for part in parts:sources.append(build(part,d-1))
         # Every leaf contains a market feature, never a pure-state dead end.
         if not sources:sources.append(int(feature_index(rng))+int(rng.integers(2))*len(CATALOG))
@@ -114,7 +114,8 @@ def random_network(rng,stage,size=None,profile=None):
     build(size,depth)
     # Half of initial action graphs retain the original tanh family.
     if rng.random()<.5:
-        nodes=[replace(n,op=str(rng.choice(tuple(o for o in OPS if o not in ('identity','conv') and (o!='attention' or len(n.sources)>=3 and len(n.sources)%2==1))))) if rng.random()<.35 else n for n in nodes]
+        from .sampling_fast import operator_choice
+        nodes=[replace(n,op=operator_choice(rng,len(n.sources))) if rng.random()<.35 else n for n in nodes]
         if size>=3 and rng.random()<.5:
             # Exact one-step shift registers: convolution is across causal clocks.
             taps=min(size-1,int(rng.integers(2,5)))

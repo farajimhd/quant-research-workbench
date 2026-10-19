@@ -41,12 +41,12 @@ class StreamWorker(Worker):
         if prefetched:self.host[day]=item; self.host.move_to_end(day)
         else:item=self.load(day)
         device=torch.device(c['device'])
-        population=[Individual.restore(v) for v in payload]
+        from .preparation import submit, _restore_population
+        population,keys=yield submit(_restore_population,payload)
         root=require_runtime(Path(c['output'])/f'generation-{generation:04d}'/day)
         cache_path=require_runtime(Path(c['output'])/'result-cache')/(day+'.json')
         identity=dict(source=c['source_sha256'],data=item.identity,execution=c['execution'],
                       split=c.get('split','training'),episode_capacity=c.get('episode_capacity',65536))
-        keys=[v.get('canonical_sha256') or program_key(m) for v,m in zip(payload,population)]
         cached={}; resident=c.get('retain_session_residency',False) and c.get('reuse_results',True)
         if resident and self.resident_results is not None:
             prior,cached=self.resident_results
