@@ -27,6 +27,12 @@ from research.vectorized_backtest.v6.torch_backtest.runtime import require_runti
 
 
 class StreamWorker(Worker):
+    def __init__(self,config,events,lane):
+        # Query/admit on the CUDA owner too: a local evolution thread must not
+        # invoke CUDA APIs while another session is capturing a graph.
+        config=dict(config,lane_memory_bytes=torch.cuda.mem_get_info(config['device'])[0]*.8/2)
+        super().__init__(config,events,lane)
+
     def steps(self, day, next_day, payload, generation, token, replay_width):
         self.current_day=day
         c=self.config; started=perf_counter(); self.batch_progress={}
@@ -86,11 +92,9 @@ class StreamWorker(Worker):
                             listing_width=replay_width,episode_capacity=c.get('episode_capacity',65536),
                             trace=c.get('split','training')=='training',capture_only=True,replay_block=32)
                         pending.append((offset,selection,plan,prepared,perf_counter()-batch_start))
-                    replay_clock=perf_counter()
                     self.emit(day,stage='Replay positions',candidate_offset=first,replay_started=time())
                     # The CUDA owner advances all admitted session groups together.
-                    yield [p[3].replay for p in pending]
-                    replay_seconds=perf_counter()-replay_clock
+                    replay_seconds=yield [p[3].replay for p in pending]
                     for offset,selection,plan,prepared,rule_seconds in pending:
                         result=prepared.export()[0]
                         metrics={k:v.detach().cpu().tolist() if isinstance(v,torch.Tensor) else v for k,v in result.items()}
@@ -136,6 +140,7 @@ def replay_groups(groups,progress=None):
     streams=[torch.cuda.Stream() for _ in graphs]
     for g in graphs:g.reset()
     torch.cuda.synchronize()
+    started=perf_counter()
     main=torch.cuda.current_stream()
     for stream in streams:stream.wait_stream(main)
     counts=[(g.total+g.block-1)//g.block for g in graphs]
@@ -148,6 +153,7 @@ def replay_groups(groups,progress=None):
             main.synchronize(); progress(i+1)
     for stream in streams:main.wait_stream(stream)
     main.synchronize()
+    return perf_counter()-started
 
 
 class SharedReplayService:
@@ -171,50 +177,60 @@ class SharedReplayService:
         return Proxy(self,config,events,lane)
 
     def _serve(self):
-        active=[];closing=False
+        active=[];closing=False;running=set()
+        def accept(command):
+            nonlocal closing
+            key,method,args,future=command
+            try:
+                if method=='shutdown':closing=True;future.set_result(None);return
+                if method=='create':
+                    if len(self.workers)>=2 or key in self.workers:raise ValueError('Two distinct shared sessions maximum')
+                    config,events,lane=args
+                    if config['device']!='cuda' or config['backend']!='compile' or config['batch_size']!=512:
+                        raise ValueError('Qualified shared execution requires CUDA compile and batch 512')
+                    self.workers[key]=StreamWorker(config,events,lane);result=None
+                elif method=='run':
+                    if len(running)>=2 or key in running:raise ValueError('Duplicate or excessive active session')
+                    running.add(key);active.append((key,self.workers[key].steps(*args),future,None));return
+                elif method=='close':
+                    if key in running:raise ValueError('Cannot close an active replay')
+                    result=self.workers.pop(key).close()
+                else:result=getattr(self.workers[key],method)(*args)
+                future.set_result(result)
+            except BaseException as error:future.set_exception(error)
         try:
             while not closing:
                 commands=[]
                 try:commands.append(self.commands.get(timeout=.05 if active else .2))
                 except queue.Empty:pass
                 while not self.commands.empty():commands.append(self.commands.get_nowait())
-                for key,method,args,future in commands:
-                    try:
-                        if method=='shutdown':closing=True; future.set_result(None); continue
-                        if method=='create':
-                            if len(self.workers)>=2:raise ValueError('Two shared sessions maximum')
-                            config,events,lane=args
-                            if config['device']!='cuda' or config['backend']!='compile' or config['batch_size']!=512:
-                                raise ValueError('Qualified shared execution requires CUDA compile and batch 512')
-                            self.workers[key]=StreamWorker(config,events,lane); result=None
-                        elif method=='run':
-                            if len(active)>=2 or any(a[0]==key for a in active):raise ValueError('Duplicate or excessive active session')
-                            active.append((key,self.workers[key].steps(*args),future)); continue
-                        elif method=='close':result=self.workers.pop(key).close()
-                        else:result=getattr(self.workers[key],method)(*args)
-                        future.set_result(result)
-                    except BaseException as error:future.set_exception(error)
+                for command in commands:accept(command)
                 if active:
                     ready=[]; groups=[]
-                    for key,steps,future in active:
-                        try:groups.append(next(steps)); ready.append((key,steps,future))
-                        except StopIteration as done:future.set_result(done.value)
-                        except BaseException as error:future.set_exception(error)
+                    for key,steps,future,elapsed in active:
+                        try:groups.append(steps.send(elapsed));ready.append((key,steps,future,None))
+                        except StopIteration as done:running.remove(key);future.set_result(done.value)
+                        except BaseException as error:running.remove(key);future.set_exception(error)
+                        # Loading/compilation can take seconds. Admit requests
+                        # that arrived meanwhile before launching the GPU work.
+                        # Appended entries are visited by this same bounded loop.
+                        while not self.commands.empty():accept(self.commands.get_nowait())
                     active=ready
                     if groups:
-                        reserve=max(self.workers[k].config.get('host_reserve_gib',128) for k,_,_ in active)
+                        reserve=max(self.workers[k].config.get('host_reserve_gib',128) for k,_,_,_ in active)
                         if psutil.virtual_memory().available<reserve*2**30:raise MemoryError('Shared replay host reserve reached')
                         def progress(chunks):
-                            for (key,_,_),group in zip(active,groups):
+                            for (key,_,_,_),group in zip(active,groups):
                                 worker=self.workers[key]
                                 worker.prefetch.release_under_pressure()
                                 worker.emit(worker.current_day,stage='Replay positions',
                                     completed_seconds=min(chunks*group[0].block,group[0].total),total_seconds=group[0].total)
-                        replay_groups(groups,progress)
+                        elapsed=replay_groups(groups,progress)
+                        active=[(k,s,f,elapsed) for k,s,f,_ in active]
                         del groups
         except BaseException as error:
             self.error=error
-            for _,steps,future in active:
+            for _,steps,future,_ in active:
                 steps.close()
                 if not future.done():future.set_exception(error)
             while not self.commands.empty():
@@ -232,8 +248,6 @@ class SharedReplayService:
 class Proxy:
     def __init__(self,service,config,events,lane):
         self.service=service;self.key=(str(Path(config['output']).resolve()),lane)
-        # Split the device budget, not the search or physical headroom guard.
-        config=dict(config,lane_memory_bytes=config['lane_memory_bytes']/2)
         service.call(self.key,'create',config,events,lane)
     def load(self,day):return self.service.call(self.key,'load',day)
     def run(self,*args):return self.service.call(self.key,'run',*args)

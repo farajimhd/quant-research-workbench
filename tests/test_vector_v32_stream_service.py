@@ -47,3 +47,29 @@ def test_gpu_failure_propagates_and_does_not_leave_waiters(monkeypatch,tmp_path)
     with pytest.raises((MemoryError,RuntimeError)):worker.run('a')
     with pytest.raises(RuntimeError):service.close()
     assert not service.thread.is_alive()
+
+
+def test_session_queued_during_preparation_joins_same_replay(monkeypatch,tmp_path):
+    import threading,time
+    started=threading.Event();release=threading.Event();groups=[]
+    class Preparing(FakeWorker):
+        def steps(self,day,*args):
+            if day=='a':
+                started.set();assert release.wait(3)
+            yield [day+'-0',day+'-1']
+            return day
+    monkeypatch.setattr(module,'StreamWorker',Preparing)
+    monkeypatch.setattr(module,'replay_groups',lambda values,progress:groups.append(values))
+    service=module.SharedReplayService()
+    cfg=dict(output=str(tmp_path),device='cuda',backend='compile',batch_size=512,lane_memory_bytes=100,host_reserve_gib=0)
+    a=service.factory(cfg,queue.Queue(),0);b=service.factory(cfg,queue.Queue(),1)
+    try:
+        with ThreadPoolExecutor(2) as pool:
+            fa=pool.submit(a.run,'a');assert started.wait(3)
+            fb=pool.submit(b.run,'b')
+            deadline=time.monotonic()+3
+            while service.commands.empty() and time.monotonic()<deadline:time.sleep(.01)
+            assert not service.commands.empty();release.set()
+            assert fa.result()=='a' and fb.result()=='b'
+        assert len(groups)==1 and len(groups[0])==2
+    finally:release.set();service.close()

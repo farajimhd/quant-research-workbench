@@ -94,6 +94,7 @@ def run_session(config,day,output,generations=50,population_size=1024,seed=2020,
                 next_serial=pedigree.next_serial,rng=rng.bit_generator.state,seals={},archive_pool=[],archive=[],species=species.state)
             write_json(checkpoint,dict(contract=contract,state=state,state_sha256=digest(state)))
         if worker_factory is None:
+            if config.get('shared_replay'):raise ValueError('Shared local replay requires the CUDA-owner service')
             from .session_lanes import Worker
             worker_factory=Worker
         cfg=dict(config,output=str(output),boundary_stop=str(output),split='training',retain_session_residency=True,reuse_results=True,maximum_host_sessions=2,
@@ -108,7 +109,7 @@ def run_session(config,day,output,generations=50,population_size=1024,seed=2020,
                 except queue.Empty:pass
                 except Exception as error:progress_errors.append(error);return
         import torch
-        cfg['lane_memory_bytes']=torch.cuda.mem_get_info(cfg['device'])[0]*.8 if torch.device(cfg['device']).type=='cuda' else 0
+        cfg['lane_memory_bytes']=torch.cuda.mem_get_info(cfg['device'])[0]*.8 if torch.device(cfg['device']).type=='cuda' and not cfg.get('shared_replay') else 0
         worker=worker_factory(cfg,events,0)
         thread=threading.Thread(target=pump,name='v32-local-progress',daemon=True);thread.start()
         try:
