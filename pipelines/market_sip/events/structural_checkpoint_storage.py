@@ -12,9 +12,8 @@ SNAPSHOT_KEYS = {LEVELS_TABLE: 'ticker, valid_from, checkpoint_boundary, level_i
 
 
 def configure_client(client):
-    # Normalized snapshots repeat many field names and provenance strings.
-    # Compression changes transport only; every decoded field is still checked.
-    client.http.compress_responses=True
+    # Keep transport parity until compression shows an end-to-end gain.
+    client.http.compress_responses=False
 
 
 def storage_preflight(client):
@@ -181,9 +180,13 @@ def verify_snapshot(client, table, expected, where):
     """Compare every field with bounded pages and a look-ahead for extra rows."""
     identity = 'level_id' if table == LEVELS_TABLE else 'observation_id'
     ordered = sorted(expected, key=lambda row: row[identity])
+    # Fixed-schema observation rows fit 20k below the client's 16 MB cap.
+    # Variable-size level rows retain smaller pages; the server byte cap is
+    # unchanged and still rejects any unexpectedly oversized response.
+    page_size=20000 if table==OBSERVATIONS_TABLE else 5000
     offset=0;cursor=None
     while True:
-        wanted=ordered[offset:offset+5000]
+        wanted=ordered[offset:offset+page_size]
         after=f' WHERE {identity}>{literal(cursor)}' if cursor is not None else ''
         actual=client.query(f'SELECT * FROM {table} FINAL PREWHERE {where}{after} '
                             f'ORDER BY {identity} LIMIT {len(wanted)+1}')

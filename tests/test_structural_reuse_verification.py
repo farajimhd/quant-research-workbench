@@ -61,12 +61,12 @@ def test_canonical_payload_bound_is_preserved(boundary):
 @pytest.mark.parametrize('extra',[False,True])
 def test_large_snapshot_verification_is_bounded_and_checks_the_final_extra_row(extra):
     import re
-    expected=[dict(observation_id=f'{i:064x}',price=2.97) for i in range(10001)]
+    expected=[dict(observation_id=f'{i:064x}',price=2.97) for i in range(40001)]
     actual=expected+[dict(observation_id='f'*64,price=2.97)] if extra else expected
     calls=[]
     def query(sql):
         calls.append(sql);limit=int(re.search(r'LIMIT (\d+)',sql)[1])
-        assert limit<=5001
+        assert limit<=20001
         match=re.search(r"WHERE observation_id>'([^']+)'",sql)
         rows=actual if match is None else [r for r in actual if r['observation_id']>match[1]]
         return rows[:limit]
