@@ -187,10 +187,11 @@ def main():
     parser.add_argument('--job',type=Path,required=True)
     args=parser.parse_args()
     job=json.loads(args.job.read_bytes())
+    preexisting=Path(job['output']).exists()
     try:run(job)
     except BaseException as exc:
         output=Path(job['output'])
-        if output.exists():write_json(output/('failure-'+str(time.time_ns())+'.json'),dict(error=repr(exc)))
+        if not preexisting and output.exists():write_json(output/('failure-'+str(time.time_ns())+'.json'),dict(error=repr(exc)))
         raise
 
 
