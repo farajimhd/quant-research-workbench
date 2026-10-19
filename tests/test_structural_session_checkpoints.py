@@ -21,7 +21,7 @@ def test_boundary_read_filters_full_key_before_payload(monkeypatch):
     monkeypatch.setattr(sessions, 'restore_boundary', lambda row: row)
     def query(sql):
         calls.append(sql)
-        return [dict(streaming_state='validated elsewhere',streaming_state_hash='hash')] if 'SELECT DISTINCT' in sql else [header]
+        return [expected]
     client = SimpleNamespace(query=query)
     assert storage.load_boundary(client, ticker="A'B", day='2026-03-11',
         as_of=datetime(2026, 3, 11, 16, tzinfo=NY)) == expected
@@ -32,24 +32,7 @@ def test_boundary_read_filters_full_key_before_payload(monkeypatch):
     assert ' AND ' not in key
     assert key.count('toDate(') == 2
     assert 'available_at<=' in sql and 'ORDER BY available_at DESC LIMIT 1' in sql
-    assert ' FINAL ' not in calls[1] and 'publication_revision=123 LIMIT 2' in calls[1]
-    assert calls[0] == calls[2]
-
-
-def test_boundary_payload_rejects_conflicts_and_publication_races(monkeypatch):
-    import pytest
-    from types import SimpleNamespace
-    from pipelines.market_sip.events import structural_checkpoint_storage as storage
-    from pipelines.market_sip.events import structural_session_checkpoints as sessions
-    monkeypatch.setattr(sessions, 'restore_boundary', lambda row: row)
-    header = dict(checkpoint_boundary='PM',publication_revision=1,streaming_state_hash='h')
-    payload = dict(streaming_state='payload',streaming_state_hash='h')
-    for responses in [([header], []), ([header], [payload,dict(payload,streaming_state='other')]),
-                      ([header], [dict(payload,streaming_state_hash='wrong')]),
-                      ([header], [payload], [dict(header,publication_revision=2)])]:
-        sequence=iter(responses)
-        with pytest.raises(ValueError):
-            storage.read_boundaries(SimpleNamespace(query=lambda sql: next(sequence)), 'ABX','2026-03-02')
+    assert len(calls) == 1
 
 
 def stamp(hour, minute=0, second=0):

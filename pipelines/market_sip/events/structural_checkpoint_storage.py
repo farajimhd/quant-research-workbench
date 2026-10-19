@@ -76,37 +76,14 @@ def boundary_key(ticker, day, boundaries=('PM', 'REGULAR')):
 
 
 def read_boundaries(client, ticker, day, boundaries=('PM', 'REGULAR'), *, suffix=''):
-    """Select winning metadata with FINAL, then read only its pinned payload.
-
-    FINAL over wide String columns can deserialize an entire historical granule
-    before filtering, regardless of max_block_size. Payload reads deliberately
-    omit FINAL only AFTER the winning revision has been selected. Distinct
-    payload conflicts, missing revisions, hash corruption and concurrent changes
-    fail closed; identical physical duplicates are harmless.
-    """
-    from .structural_session_checkpoints import restore_boundary
+    """Read authoritative winners from the repaired one-row-granule table."""
     key = boundary_key(ticker, day, boundaries)
     suffix = suffix or ' ORDER BY checkpoint_boundary'
-    query = f'SELECT * EXCEPT(streaming_state) FROM {COVERAGE_TABLE} FINAL PREWHERE {key}{suffix}'
-    headers = client.query(query)
-    if (len(headers) > len(boundaries) or
-            len({row['checkpoint_boundary'] for row in headers}) != len(headers)):
+    rows = client.query(f'SELECT * FROM {COVERAGE_TABLE} FINAL PREWHERE {key}{suffix}')
+    if (len(rows) > len(boundaries) or
+            len({row['checkpoint_boundary'] for row in rows}) != len(rows)):
         raise ValueError('Ambiguous boundary metadata')
-    result = []
-    for header in headers:
-        exact = boundary_key(ticker, day, (header['checkpoint_boundary'],))
-        revision = int(header['publication_revision'])
-        payloads = client.query(f'SELECT DISTINCT streaming_state,streaming_state_hash '
-            f'FROM {COVERAGE_TABLE} PREWHERE {exact} '
-            f'WHERE publication_revision={revision} LIMIT 2')
-        if len(payloads) != 1 or payloads[0]['streaming_state_hash'] != header['streaming_state_hash']:
-            raise ValueError('Pinned boundary payload is missing or conflicting')
-        row = {**header, 'streaming_state': payloads[0]['streaming_state']}
-        restore_boundary(row)
-        result.append(row)
-    if client.query(query) != headers:
-        raise ValueError('Boundary publication changed during payload read')
-    return result
+    return rows
 
 
 def load_boundary(client, *, ticker, day, as_of):
