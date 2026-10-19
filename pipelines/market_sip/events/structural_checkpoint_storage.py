@@ -44,6 +44,9 @@ def migrate(client):
             client.http.execute(f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS streaming_state String CODEC(ZSTD(3)), '
                                 'ADD COLUMN IF NOT EXISTS streaming_state_hash String')
     require_schema(client)
+    # Coverage now contains multi-megabyte states. Legacy 8192-row granules can
+    # exceed a worker's memory limit even for a single-key read after merging.
+    client.http.execute(f'ALTER TABLE {COVERAGE_TABLE} MODIFY SETTING index_granularity=1')
 
 
 def require_schema(client):
