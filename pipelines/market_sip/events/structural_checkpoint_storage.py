@@ -7,6 +7,8 @@ from pipelines.market_sip.events.market_day_sql import literal
 KEYS = {LEVELS_TABLE: 'ticker, level_id, valid_from',
         OBSERVATIONS_TABLE: 'ticker, observation_id, valid_from',
         COVERAGE_TABLE: 'ticker, session_date'}
+SNAPSHOT_KEYS = {LEVELS_TABLE: 'ticker, valid_from, checkpoint_boundary, level_id',
+                 OBSERVATIONS_TABLE: 'ticker, valid_from, checkpoint_boundary, observation_id'}
 
 
 def storage_preflight(client):
@@ -20,7 +22,7 @@ def storage_preflight(client):
         parts = client.query(f"SELECT DISTINCT disk_name FROM system.parts WHERE active AND database='arte' AND table={literal(name)}")
         if len(info) != 1 or info[0]['storage_policy'] != POLICY or any(p['disk_name'] not in allowed for p in parts):
             raise ValueError(f'Absent or misplaced structural table: {table}')
-        if info[0]['sorting_key'] not in (KEYS[table], KEYS[table] + ', checkpoint_boundary'):
+        if info[0]['sorting_key'] not in (KEYS[table], KEYS[table] + ', checkpoint_boundary',SNAPSHOT_KEYS.get(table)):
             raise ValueError(f'Unexpected structural ordering: {table}')
 
 
@@ -51,14 +53,23 @@ def migrate(client):
                       "AND name='structural_level_coverage_v7'")[0]['create_table_query']
     if not re.search(r'index_granularity = 1(?:,|$)', ddl):
         raise ValueError('Coverage payload granularity repair is required before writing')
+    require_snapshot_layout(client)
 
 
 def require_schema(client):
     storage_preflight(client)
     for table, key in KEYS.items():
         info = client.query(f"SELECT sorting_key FROM system.tables WHERE database='arte' AND name={literal(table.split('.')[1])}")
-        if info[0]['sorting_key'] != key + ', checkpoint_boundary':
+        if info[0]['sorting_key'] not in (key + ', checkpoint_boundary',SNAPSHOT_KEYS.get(table)):
             raise ValueError('Session checkpoint schema migration is required before writing')
+
+
+def require_snapshot_layout(client):
+    for table,key in SNAPSHOT_KEYS.items():
+        info=client.query("SELECT sorting_key,primary_key FROM system.tables WHERE database='arte' "
+                          f"AND name={literal(table.split('.')[1])}")
+        if info!=[dict(sorting_key=key,primary_key='ticker, valid_from, checkpoint_boundary')]:
+            raise ValueError('Normalized snapshot layout repair is required before writing')
 
 
 def boundary_key(ticker, day, boundaries=('PM', 'REGULAR')):

@@ -80,7 +80,11 @@ def snapshot(root):
     status_current=True
     if controller.get('phase')=='backfill' and controller.get('utc') and (root/'status.json').exists():
         status_current=(root/'status.json').stat().st_mtime>=datetime.fromisoformat(controller['utc']).timestamp()
+    optimization={}
+    layout=root/'normalized-snapshot-layout'/'status.json'
+    if layout.exists():optimization=json.loads(layout.read_text())
     return dict(controller=controller,status=status,stop=(root/'STOP').exists(),evidence=evidence,events=events,
+        optimization=optimization,
         status_current=status_current,refreshed=datetime.now(timezone.utc).strftime('%H:%M:%S UTC'))
 
 
@@ -92,6 +96,9 @@ def render(value,width=100,height=30,rate=None):
         # previous attempt until the new pool publishes its first snapshot.
         s={'total':s.get('total'),'worker_limit':s.get('worker_limit',8)}
     state=s.get('status',phase) if phase=='backfill' else phase
+    optimization=value.get('optimization',{})
+    optimizing=optimization.get('status')=='running'
+    if optimizing:state='Optimizing normalized storage'
     if phase=='backfill' and value.get('status_current') is False:state='starting workers'
     evidence=value.get('evidence',{})
     if phase=='failed' and controller.get('failed_phase')=='plan' and evidence.get('status')=='running':
@@ -100,6 +107,10 @@ def render(value,width=100,height=30,rate=None):
     lines=Text(f'Structural levels  |  {state}',style=color)
     lines.append('\nDisplay refreshed: '+value.get('refreshed','-')+' | refresh every 2s')
     bars=[]
+    if optimizing:
+        lines.append('\n'+optimization.get('table','')+' | '+optimization.get('stage','starting'),style='yellow')
+        lines.append(f'\nVerified partitions: {optimization.get("verified_partitions",0)} / '
+                     f'{optimization.get("total_partitions",64)} | writers stopped')
     recovery_active=evidence.get('status')=='running'
     if evidence.get('status')=='complete':
         lines.append('\nReporting evidence: complete',style='green')
@@ -136,7 +147,7 @@ def render(value,width=100,height=30,rate=None):
         label='Eligible remaining ticker-days' if blocked else 'Queued ticker-days'
         lines.append(f'\n{label}: {max(0,queued-blocked):,}')
     lines.append(f'\nConcurrency: {s.get("worker_limit",8)} lanes  |  1 query thread / 2 GiB per lane')
-    if value.get('stop'):lines.append('\nSTOP present: diagnosis and owner drain required before resume.',style='red')
+    if value.get('stop') and not optimizing:lines.append('\nSTOP present: diagnosis and owner drain required before resume.',style='red')
     error=controller.get('error') or s.get('error')
     if error:lines.append('\n'+str(error),style='red')
     workers=s.get('workers',[])
