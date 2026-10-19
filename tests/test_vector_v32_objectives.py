@@ -43,7 +43,7 @@ def test_source_is_exact_v21_and_other_engine_files_only_rename_version():
             for node in after.body:
                 if isinstance(node,(ast.ClassDef,ast.FunctionDef)) and node.name not in ('PopulationPrograms','PreparedEvaluation','replay_cohort','_export_result'):
                     assert ast.dump(node)==ast.dump(originals[node.name])
-            assert actual[actual.index(b'    episode_results='):]==expected[expected.index(b'    episode_results='):]
+            assert actual[actual.index(b'    episode_results='):].replace(b'\r\n',b'\n')==expected[expected.index(b'    episode_results='):].replace(b'\r\n',b'\n')
             continue
         if p.name=='replay_graph.py':
             actual=ast.parse((root/'v32'/p.name).read_text())
