@@ -68,6 +68,12 @@ def main(argv=None):
                     state(phase,child_pid=child.pid)
                     code=child.wait()
                     if code:
+                        status_path=a.run_dir/'status.json'
+                        status=read_json(status_path) if phase=='backfill' and status_path.exists() else {}
+                        if code==2 and status.get('status')=='blocked':
+                            state('blocked',failed_phase=phase,returncode=code,
+                                blocked_units=status['blocked_units'],blocked_tickers=status['blocked_tickers'])
+                            return code
                         state('interrupted' if code==130 else 'failed',failed_phase=phase,returncode=code)
                         return code
             receipt=json.loads((a.run_dir/'structural-completion.json').read_text())

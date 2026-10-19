@@ -35,6 +35,26 @@ def test_failed_plan_never_runs_profile_or_writer(tmp_path,monkeypatch):
     assert json.loads((run/'controller-state.json').read_text())['failed_phase']=='plan'
 
 
+def test_blocked_dependencies_never_publish_a_completion(tmp_path,monkeypatch):
+    bars,run,args=setup(tmp_path,monkeypatch)
+    (bars/'status.json').write_text(json.dumps(dict(status='complete',failed=0)))
+    calls=[]
+    class Child:
+        pid=123
+        def __init__(self,cmd,**kwargs):calls.append(cmd)
+        def wait(self):
+            if len(calls)==3:
+                (run/'status.json').write_text(json.dumps(dict(status='blocked',
+                    completed=90,reused=5,total=100,failed=0,blocked_units=5,blocked_tickers=1)))
+                return 2
+            return 0
+    monkeypatch.setattr(controller.subprocess,'Popen',Child)
+    assert controller.main(args)==2
+    state=json.loads((run/'controller-state.json').read_text())
+    assert state['phase']=='blocked' and state['blocked_units']==5
+    assert not (run/'structural-completion.json').exists()
+
+
 def test_controller_requires_plan_and_profile_before_full_fill(tmp_path,monkeypatch):
     bars,run,args=setup(tmp_path,monkeypatch)
     (bars/'status.json').write_text(json.dumps(dict(status='complete',failed=0)))

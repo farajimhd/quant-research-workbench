@@ -126,7 +126,15 @@ def render(value,width=100,height=30,rate=None):
         bars.append(ProgressBar(total=total,completed=done+reuse))
     elif evidence:lines.append('\nLevels total: pending certified full-scope plan; not started.')
     if rate is not None:lines.append(f'\nRecent coverage: {rate:,.0f} ticker-days/hour (includes reuse)')
-    if phase=='backfill':lines.append(f'\nQueued ticker-days: {s.get("queued",max(0,(total or 0)-done-reuse)):,}')
+    blocked=s.get('blocked_units',controller.get('blocked_units',0))
+    if blocked:
+        lines.append(f'\nBlocked warm-up: {blocked:,} ticker-days / '
+                     f'{s.get("blocked_tickers",controller.get("blocked_tickers",0)):,} tickers',style='yellow')
+        lines.append('\nDependency detail: warmup-dependencies.json; certification required.',style='yellow')
+    if phase=='backfill':
+        queued=s.get('queued',max(0,(total or 0)-done-reuse))
+        label='Eligible remaining ticker-days' if blocked else 'Queued ticker-days'
+        lines.append(f'\n{label}: {max(0,queued-blocked):,}')
     lines.append(f'\nConcurrency: {s.get("worker_limit",8)} lanes  |  1 query thread / 2 GiB per lane')
     if value.get('stop'):lines.append('\nSTOP present: diagnosis and owner drain required before resume.',style='red')
     error=controller.get('error') or s.get('error')

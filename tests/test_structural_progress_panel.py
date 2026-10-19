@@ -32,6 +32,18 @@ def test_active_recovery_replaces_old_plan_failure_heading():
     assert 'Structural levels  |  failed' not in stream.getvalue()
 
 
+def test_dependency_blocks_remain_in_full_population_and_are_not_failures():
+    for width,height in ((100,30),(60,18)):
+        stream=StringIO();console=Console(file=stream,width=width,height=height,color_system=None)
+        console.print(render({'controller':{'phase':'backfill'},'status':{
+            'status':'running','completed':10,'reused':5,'total':100,'queued':85,
+            'blocked_units':20,'blocked_tickers':2}},width,height))
+        text=stream.getvalue()
+        assert '15 / 100' in text and '20 ticker-days / 2 tickers' in text
+        assert '0 failed' in text
+        assert all(len(line)<=width for line in text.splitlines())
+
+
 def test_new_preflight_does_not_report_previous_owner_failure():
     stream=StringIO();console=Console(file=stream,width=100,color_system=None)
     console.print(render({'controller':{'phase':'profile'},'status':{

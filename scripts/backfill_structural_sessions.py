@@ -388,8 +388,47 @@ def _process_ticker(spec,a,ticker):
 _SPEC_CACHE=None
 
 
+def warmup_dependency_plan(query, by_ticker, history_start, certified_days, *, batch_size=256):
+    """Check actual pre-target replay frontiers using metadata only, before admission.
+
+    A later checkpoint cannot seed an earlier target. A new listing with no
+    earlier canonical rows needs no artificial year-long warm-up.
+    """
+    if not 1 <= batch_size <= 256:raise ValueError('Invalid dependency batch size')
+    tickers=sorted(by_ticker);blocked={}
+    certified=','.join(source.literal(str(day)) for day in sorted(certified_days)) or "''"
+    for offset in range(0,len(tickers),batch_size):
+        batch=tickers[offset:offset+batch_size]
+        names='['+','.join(map(source.literal,batch))+']'
+        firsts='['+','.join(source.literal(min(by_ticker[t])) for t in batch)+']'
+        seeds=query(f"SELECT ticker,toString(maxIf(session_date,session_date<"
+            f"toDate(transform(ticker,{names},{firsts},'1970-01-01')))) AS seed "
+            f"FROM {COVERAGE_TABLE} FINAL PREWHERE ticker IN ({','.join(map(source.literal,batch))}) "
+            "AND checkpoint_boundary='' WHERE state IN ('complete','empty') GROUP BY ticker")
+        seed_by_ticker={row['ticker']:row['seed'] for row in seeds}
+        frontiers='['+','.join(source.literal(max(str(history_start-timedelta(days=1)),
+            seed_by_ticker.get(t,'1970-01-01'))) for t in batch)+']'
+        gaps=query("SELECT ticker,count() AS missing_days,toString(min(source_date)) AS first_missing,"
+            "groupArray(8)(toString(source_date)) AS examples "
+            "FROM market_sip_compact.events_ordinal_continuity FINAL "
+            f"PREWHERE ticker IN ({','.join(map(source.literal,batch))}) "
+            f"WHERE source_date>toDate(transform(ticker,{names},{frontiers},'1970-01-01')) "
+            f"AND source_date<toDate(transform(ticker,{names},{firsts},'1970-01-01')) "
+            f"AND source_date NOT IN ({certified}) GROUP BY ticker ORDER BY ticker")
+        for row in gaps:
+            ticker=row['ticker']
+            blocked[ticker]=dict(ticker=ticker,reason='uncertified_canonical_or_reporting_warmup',
+                first_target=min(by_ticker[ticker]),prior_ah=seed_by_ticker.get(ticker),
+                first_missing=row['first_missing'],missing_days=int(row['missing_days']),
+                examples=sorted(row['examples']),target_units=len(by_ticker[ticker]))
+    return dict(version='structural-warmup-dependencies-v1',blocked=blocked,
+        blocked_tickers=len(blocked),blocked_units=sum(row['target_units'] for row in blocked.values()),
+        ready_tickers=len(tickers)-len(blocked),
+        ready_units=sum(len(days) for ticker,days in by_ticker.items() if ticker not in blocked))
+
+
 def run_pool(a,request,build_id,by_ticker,history_inventory,reporting,rules,
-             closes,history_start,end,plan_hash,producer_hash,total):
+             closes,history_start,end,plan_hash,producer_hash,total,dependencies=None):
     """Bounded ticker lanes; each lane retains chronological AH ownership."""
     from concurrent.futures import ProcessPoolExecutor,wait,FIRST_COMPLETED
     import multiprocessing
@@ -449,6 +488,8 @@ def run_pool(a,request,build_id,by_ticker,history_inventory,reporting,rules,
                             completed+=row['completed'];reused+=row['reused'];active.append(row)
                 save_json(a.run_dir/'status.json',dict(status='running',completed=completed,reused=reused,
                     total=total,failed=0,queued=total-completed-reused,workers=active,
+                    blocked_units=(dependencies or {}).get('blocked_units',0),
+                    blocked_tickers=(dependencies or {}).get('blocked_tickers',0),
                     worker_limit=a.workers,query_threads=1,query_memory_gib=2))
         except BaseException:
             (a.run_dir/'STOP').touch()
@@ -514,11 +555,22 @@ def run(a):
         by_ticker = {}
         for day, ticker in selected:
             by_ticker.setdefault(ticker, []).append(day)
+        history_reporting=reporting_inventory(client.query,history_inventory)
+        if history_reporting['mutating']:
+            raise ValueError('Historical warm-up source has overlapping mutations')
+        canonical_ready={str(day) for day in history_inventory['expected']
+            if day not in history_inventory['missing'] and day not in history_inventory['incomplete']}
+        dependencies=warmup_dependency_plan(client.query,by_ticker,history_start,
+            canonical_ready & set(history_reporting['verified']))
         a.run_dir.mkdir(exist_ok=True)
+        save_json(a.run_dir/'warmup-dependencies.json',dict(dependencies,plan_hash=plan_hash))
         save_json(a.run_dir / 'structural-plan.json', request)
         if a.plan_only:
             print(json.dumps(dict(start=str(a.start_date), end=str(end), ticker_days=len(selected),
-                                  status='planned', build_id=report['build_id'])), flush=True)
+                                  status='planned', build_id=report['build_id'],
+                                  ready_tickers=dependencies['ready_tickers'],
+                                  blocked_tickers=dependencies['blocked_tickers'],
+                                  blocked_units=dependencies['blocked_units'])), flush=True)
             return 0
         if a.profile_only:
             schedule=mcal.get_calendar('XNYS').schedule(start_date=a.start_date,end_date=end)
@@ -545,10 +597,20 @@ def run(a):
             db.row_factory = sqlite3.Row
             done = reused = 0
             try:
-                results=run_pool(a,request,report['build_id'],by_ticker,history_inventory,
-                    reporting,rules,closes,history_start,end,plan_hash,producer_hash,len(selected))
+                ready_tickers={ticker:days for ticker,days in by_ticker.items()
+                    if ticker not in dependencies['blocked']}
+                results=run_pool(a,request,report['build_id'],ready_tickers,history_inventory,
+                    reporting,rules,closes,history_start,end,plan_hash,producer_hash,len(selected),dependencies)
                 done=sum(row['completed'] for row in results)
                 reused=sum(row['reused'] for row in results)
+                if dependencies['blocked_units']:
+                    if done+reused!=dependencies['ready_units']:
+                        raise ValueError('Ready structural unit counts do not reconcile')
+                    save_json(a.run_dir/'status.json',dict(status='blocked',completed=done,reused=reused,
+                        total=len(selected),failed=0,queued=dependencies['blocked_units'],
+                        blocked_units=dependencies['blocked_units'],blocked_tickers=dependencies['blocked_tickers'],
+                        error='Historical warm-up certification required; see warmup-dependencies.json'))
+                    return 2
                 if done + reused != len(selected):
                     raise ValueError('Structural completion count differs from frozen population')
             except BaseException as error:
