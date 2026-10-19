@@ -27,6 +27,10 @@ class Client:
     def execute(self, sql):
         self.queries.append(sql)
         if "structural_level_coverage_v7" in sql:
+            # AH lookups must never deserialize intraday payloads, including
+            # on schemas from before streaming_state was added.
+            projection = sql.split(' FROM ')[0]
+            assert '*' not in projection and 'streaming_state' not in projection
             rows = [self.coverage]
         elif "structural_level_observations_v7" in sql:
             rows = [dict(observation_id=str(i).zfill(64), level_id="one",

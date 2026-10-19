@@ -24,6 +24,15 @@ _NY = ZoneInfo("America/New_York")
 _LEVELS = "arte.structural_levels_v7"
 _OBSERVATIONS = "arte.structural_level_observations_v7"
 _COVERAGE = "arte.structural_level_coverage_v7"
+# AH reconstruction uses normalized rows, never the intraday state payload.
+# Keep this projection compatible with coverage tables predating that payload.
+COVERAGE_HEADER_COLUMNS = (
+    "ticker,session_date,available_at,state,level_count,interval_count,"
+    "observation_count,observation_interval_count,input_policy,"
+    "source_extraction_version,band_config_hash,source_input_hash,"
+    "source_checkpoint_hash,parent_checkpoint_hash,source_plan_hash,"
+    "publication_revision,published_at"
+)
 _LEVEL_COLUMNS = (
     "ticker,level_id,origin_session,price,lower,upper,association_radius,"
     "lifecycle,historical,role,parent_level_id,transition_from,"
@@ -127,7 +136,7 @@ def certified_seed_plan(market: Any, client: Any) -> CertifiedSeedPlan:
             batch = tickers[offset:offset + 256]
             names = ",".join(_literal(ticker) for ticker in batch)
             rows = _rows(client,
-                f"SELECT * FROM {_COVERAGE} FINAL WHERE checkpoint_boundary='' AND ticker IN ({names}) "
+                f"SELECT {COVERAGE_HEADER_COLUMNS} FROM {_COVERAGE} FINAL WHERE checkpoint_boundary='' AND ticker IN ({names}) "
                 f"AND available_at<=toDateTime64({_literal(_cutoff(session))},9,'UTC') "
                 "ORDER BY ticker,available_at DESC LIMIT 1 BY ticker FORMAT JSONEachRow")
             found = {str(row["ticker"]): row for row in rows}
@@ -191,7 +200,7 @@ def preceding_coverage(client: Any, *, ticker: str, session: date,
                        campaign_plan_hash: str | None = None) -> dict[str, Any]:
     """Pin the latest completed retrospective state known by 04:00 ET."""
     rows = _rows(client,
-        f"SELECT * FROM {_COVERAGE} FINAL PREWHERE checkpoint_boundary='' AND ticker={_literal(ticker)} "
+        f"SELECT {COVERAGE_HEADER_COLUMNS} FROM {_COVERAGE} FINAL PREWHERE checkpoint_boundary='' AND ticker={_literal(ticker)} "
         f"WHERE available_at<=toDateTime64({_literal(_cutoff(session))},9,'UTC') "
         "ORDER BY available_at DESC LIMIT 1 FORMAT JSONEachRow")
     if len(rows) != 1:
@@ -366,7 +375,7 @@ def load_seeds_batch(client: Any, *, tickers: tuple[str, ...], session: date,
     names = ",".join(_literal(ticker) for ticker in tickers)
     cutoff = _literal(_cutoff(session))
     current_rows = _rows(client,
-        f"SELECT * FROM {_COVERAGE} FINAL WHERE checkpoint_boundary='' AND ticker IN ({names}) "
+        f"SELECT {COVERAGE_HEADER_COLUMNS} FROM {_COVERAGE} FINAL WHERE checkpoint_boundary='' AND ticker IN ({names}) "
         f"AND available_at<=toDateTime64({cutoff},9,'UTC') "
         "ORDER BY ticker,available_at DESC LIMIT 1 BY ticker FORMAT JSONEachRow")
     current = {str(row["ticker"]): row for row in current_rows}

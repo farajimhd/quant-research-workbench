@@ -11,6 +11,25 @@ from src.market_engine.streaming_level_book import StreamingLevelBook
 NY = ZoneInfo('America/New_York')
 
 
+def test_boundary_read_filters_full_key_before_payload(monkeypatch):
+    from types import SimpleNamespace
+    from pipelines.market_sip.events import structural_checkpoint_storage as storage
+    from pipelines.market_sip.events import structural_session_checkpoints as sessions
+    calls = []
+    expected = {'streaming_state': 'validated elsewhere'}
+    monkeypatch.setattr(sessions, 'restore_boundary', lambda row: row)
+    client = SimpleNamespace(query=lambda sql: calls.append(sql) or [expected])
+    assert storage.load_boundary(client, ticker="A'B", day='2026-03-11',
+        as_of=datetime(2026, 3, 11, 16, tzinfo=NY)) is expected
+    sql = calls[0]
+    key = sql.split(' PREWHERE ')[1].split(' WHERE ')[0]
+    assert ' FINAL PREWHERE ' in sql
+    assert key == storage.boundary_key("A'B", '2026-03-11')
+    assert ' AND ' not in key
+    assert key.count('toDate(') == 2
+    assert 'available_at<=' in sql and 'ORDER BY available_at DESC LIMIT 1' in sql
+
+
 def stamp(hour, minute=0, second=0):
     return datetime(2026, 7, 2, hour, minute, second, tzinfo=NY).timestamp()
 

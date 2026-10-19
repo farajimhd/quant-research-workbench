@@ -54,6 +54,20 @@ def require_schema(client):
             raise ValueError('Session checkpoint schema migration is required before writing')
 
 
+def boundary_key(ticker, day, boundaries=('PM', 'REGULAR')):
+    """One PREWHERE step must filter the entire key before reading large states.
+
+    Separate AND predicates can make ClickHouse's multi-step PREWHERE read a
+    whole ticker's payload granule before applying the date/boundary filters.
+    Tuple IN remains one filter while preserving primary-key pruning and FINAL.
+    """
+    if not boundaries or any(value not in ('PM', 'REGULAR') for value in boundaries):
+        raise ValueError('Expected intraday checkpoint boundaries')
+    values = ','.join(f'({literal(ticker)},toDate({literal(day)}),{literal(value)})'
+                      for value in boundaries)
+    return f'(ticker,session_date,checkpoint_boundary) IN [{values}]'
+
+
 def load_boundary(client, *, ticker, day, as_of):
     """Restore the latest completed intraday state available at the requested cut.
 
@@ -63,9 +77,8 @@ def load_boundary(client, *, ticker, day, as_of):
     from .structural_session_checkpoints import restore_boundary
     if as_of.tzinfo is None or as_of.utcoffset() is None:
         raise ValueError('Intraday checkpoint cutoff must be timezone-aware')
-    rows = client.query(f"SELECT * FROM {COVERAGE_TABLE} FINAL WHERE ticker={literal(ticker)} "
-        f"AND session_date=toDate({literal(day)}) AND checkpoint_boundary IN ('PM','REGULAR') "
-        f"AND available_at<=parseDateTime64BestEffort({literal(as_of.isoformat())},9,'UTC') "
+    rows = client.query(f"SELECT * FROM {COVERAGE_TABLE} FINAL PREWHERE {boundary_key(ticker, day)} "
+        f"WHERE available_at<=parseDateTime64BestEffort({literal(as_of.isoformat())},9,'UTC') "
         "ORDER BY available_at DESC LIMIT 1")
     if not rows:
         return None
@@ -128,8 +141,7 @@ def verify_snapshot(client, table, expected, where):
 def publish_boundary(client, value, plan_hash):
     from .structural_session_checkpoints import normalized_boundary, restore_boundary
     levels, observations, certificate = normalized_boundary(value, plan_hash)
-    where = (f"ticker={literal(value['ticker'])} AND session_date=toDate({literal(value['day'])}) "
-             f"AND checkpoint_boundary={literal(value['boundary'])}")
+    where = boundary_key(value['ticker'], value['day'], (value['boundary'],))
     existing = client.query(f'SELECT * FROM {COVERAGE_TABLE} FINAL PREWHERE {where}')
     if existing:
         if len(existing) != 1 or existing[0]['streaming_state_hash'] != certificate['streaming_state_hash']:

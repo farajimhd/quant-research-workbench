@@ -27,7 +27,7 @@ from research.level_book.v7.clickhouse_persistence import (
 from pipelines.market_sip.events.structural_session_checkpoints import VERSION, calculate, source_rows, input_bars
 from pipelines.market_sip.events import structural_checkpoint_storage as storage
 from pipelines.market_sip.events.causal_v7_product import input_bar
-from src.backend.structural_v7_seed import load_seed, split_evidence
+from src.backend.structural_v7_seed import load_seed, split_evidence, COVERAGE_HEADER_COLUMNS
 from src.market_engine.historical_level_checkpoint import digest
 
 
@@ -93,7 +93,7 @@ def profile(client, a, report, selected, closes):
 
 
 def ah_coverage(client, ticker, day):
-    rows = client.query(f"SELECT * FROM {COVERAGE_TABLE} FINAL PREWHERE ticker={source.literal(ticker)} "
+    rows = client.query(f"SELECT {COVERAGE_HEADER_COLUMNS} FROM {COVERAGE_TABLE} FINAL PREWHERE ticker={source.literal(ticker)} "
         f"AND session_date=toDate({source.literal(day)}) AND checkpoint_boundary=''")
     if len(rows)>1 or any(r['state'] not in ('complete','empty') for r in rows):
         raise ValueError('Ambiguous or incomplete existing AH checkpoint')
@@ -247,7 +247,7 @@ def _process_ticker(spec,a,ticker):
             (a.bars_run_dir/'build-ledger-v2.sqlite3').as_uri()+'?mode=ro',uri=True)) as db:
         db.row_factory=sqlite3.Row
         first_target, last_target = min(by_ticker[ticker]), max(by_ticker[ticker])
-        known_ah = client.query(f"SELECT * FROM {COVERAGE_TABLE} FINAL PREWHERE ticker={source.literal(ticker)} "
+        known_ah = client.query(f"SELECT {COVERAGE_HEADER_COLUMNS} FROM {COVERAGE_TABLE} FINAL PREWHERE ticker={source.literal(ticker)} "
             f"AND checkpoint_boundary='' AND session_date<={source.literal(last_target)} ORDER BY session_date")
         ah_by_day = {str(row['session_date']): row for row in known_ah}
         if len(ah_by_day) != len(known_ah) or any(row['state'] not in ('complete','empty') for row in known_ah):
@@ -286,8 +286,8 @@ def _process_ticker(spec,a,ticker):
             actions = split_evidence(client.http, ticker=ticker,
                 seed_session=date.fromisoformat(prior['session']) if prior else history_start-timedelta(days=1),
                 session=date.fromisoformat(day))
-            current = client.query(f"SELECT * FROM {COVERAGE_TABLE} FINAL PREWHERE ticker={source.literal(ticker)} "
-                f"AND session_date=toDate({source.literal(day)}) AND checkpoint_boundary IN ('PM','REGULAR')") if target else []
+            current = client.query(f"SELECT * FROM {COVERAGE_TABLE} FINAL PREWHERE "
+                f"{storage.boundary_key(ticker, day)}") if target else []
             unit = None
             source_ref = None
             if target:
