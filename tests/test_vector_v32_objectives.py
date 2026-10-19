@@ -1,5 +1,6 @@
 """Exact V21 objective parity and isolated V31-derived source contract."""
 from pathlib import Path
+import ast
 import numpy as np
 from research.vectorized_backtest.v21 import objectives as reference
 from research.vectorized_backtest.v32 import objectives as candidate
@@ -11,6 +12,23 @@ def test_source_is_exact_v21_and_other_engine_files_only_rename_version():
     for p in (root/'v31').iterdir():
         if not p.is_file() or p.name in ('objectives.py','README.md','local_runner.py','run_train.py'):continue
         expected=p.read_bytes().replace(b'v31',b'v32').replace(b'V31',b'V32')
+        if p.name=='evaluator.py':
+            actual=(root/'v32'/p.name).read_bytes()
+            # Only scheduling/preparation/export plumbing changed. The financial
+            # functions and exported expressions remain exactly the same source.
+            assert actual.split(b'@dataclass\r\nclass PreparedEvaluation')[0].split(b'@dataclass\nclass PreparedEvaluation')[0]==expected.split(b'def replay_cohort')[0]
+            assert actual[actual.index(b'    episode_results='):]==expected[expected.index(b'    episode_results='):]
+            continue
+        if p.name=='replay_graph.py':
+            actual=ast.parse((root/'v32'/p.name).read_text())
+            original=next(n for n in ast.parse(expected).body if isinstance(n,ast.FunctionDef) and n.name=='replay')
+            changed=next(n for n in actual.body if isinstance(n,ast.FunctionDef) and n.name=='replay')
+            assert changed.args.args[-1].arg=='capture_only'
+            assert isinstance(changed.args.defaults[-1],ast.Constant) and changed.args.defaults[-1].value is False
+            changed.args.args.pop();changed.args.defaults.pop()
+            changed.body=[n for n in changed.body if not (isinstance(n,ast.If) and isinstance(n.test,ast.Name) and n.test.id=='capture_only')]
+            assert ast.dump(changed)==ast.dump(original)
+            continue
         if p.name=='network_cuda.py':
             # State-channel fusion has dedicated exact CUDA regression tests.
             # Every other kernel remains byte-identical, except its launch grid.

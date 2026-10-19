@@ -2,11 +2,26 @@
 import torch
 import time
 from collections import deque
+from dataclasses import dataclass
+
+
+@dataclass
+class CapturedReplay:
+    """Independent replay state retained for finite scheduling experiments."""
+    graph: object
+    reset: object
+    total: int
+    block: int
+    keepalive: object
+
+    def enqueue(self):
+        for _ in range(0, self.total, self.block):
+            self.graph.replay()
 
 
 def replay(position, aggregate, opened, policy, prices, observed, membership,
            signals, values, ids, columns, age_limits, lengths, stateful,
-           execution, transition, select_signals, progress=None, block=32, episodes=None,protected_kernel=True,signal_provider=None,network_plan=None):
+           execution, transition, select_signals, progress=None, block=32, episodes=None,protected_kernel=True,signal_provider=None,network_plan=None,capture_only=False):
     device=position.device
     total=prices.shape[0]-1
     index=torch.ones((),dtype=torch.int64,device=device)
@@ -72,6 +87,9 @@ def replay(position, aggregate, opened, policy, prices, observed, membership,
             for _ in range(block):compiled()
         reset()
     torch.cuda.current_stream(device).wait_stream(stream)
+    if capture_only:
+        torch.cuda.synchronize(device)
+        return CapturedReplay(graph, reset, total, block, compiled)
     pending=deque();reported=0;completed=0;last_report=0.
     def publish_completed(force=False):
         nonlocal reported,completed,last_report

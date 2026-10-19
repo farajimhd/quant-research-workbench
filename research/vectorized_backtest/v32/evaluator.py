@@ -144,11 +144,20 @@ class PopulationPrograms:
     def close(self):self.plan.close()
 
 
-def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',progress=None,listing_width=None,episode_capacity=65536,trace=False,protected_kernel=True):
+@dataclass
+class PreparedEvaluation:
+    replay: object
+    export: object
+
+
+def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',progress=None,listing_width=None,episode_capacity=65536,trace=False,protected_kernel=True,capture_only=False,replay_block=32):
     """Independent sessions are dispatched by SessionLanes; no shared state."""
     if len(data)!=1 or len(gates)!=1:raise ValueError('One independent session per lane required')
     execution.validate();item=data[0];plan=gates[0];device=item.device;b=len(members);s=1;t=item.clocks
     u=len(item.listing_ids) if listing_width is None else listing_width
+    if capture_only and not (backend=='compile' and device.type=='cuda'):
+        raise ValueError('Prepared evaluation requires compiled CUDA replay')
+    if not 1<=replay_block<=256:raise ValueError('Invalid bounded replay block')
     if u<len(item.listing_ids):raise ValueError('Cannot truncate listings')
     from torch.nn.functional import pad
     from .episodes import Episodes
@@ -174,8 +183,10 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
         plan.signals(item,index,p,o,previous,out=signals)
     if backend=='compile' and device.type=='cuda':
         from .replay_graph import replay
-        replay(position,aggregate,opened,policy,prices,observed,membership,signals,values,ids,columns,limits,lengths,False,
-               execution,step,state_signals,progress,episodes=episodes,protected_kernel=protected_kernel,signal_provider=provide,network_plan=plan)
+        prepared=replay(position,aggregate,opened,policy,prices,observed,membership,signals,values,ids,columns,limits,lengths,False,
+               execution,step,state_signals,progress,block=replay_block,episodes=episodes,protected_kernel=protected_kernel,signal_provider=provide,network_plan=plan,capture_only=capture_only)
+        if capture_only:
+            return PreparedEvaluation(prepared,lambda: _export_result(position,aggregate,episodes,t))
     else:
         for clock in range(1,t):
             index=torch.tensor(clock-1,device=device);provide(index,position,opened);held=position[...,0]>1e-12
@@ -190,6 +201,10 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
             opened=torch.where(~held&(position[...,0]>1e-12),float(clock),opened)
             if progress and (clock%256==0 or clock==t-1):progress(clock,t-1)
     if device.type=='cuda':torch.cuda.synchronize(device)
+    return _export_result(position,aggregate,episodes,t)
+
+
+def _export_result(position,aggregate,episodes,t):
     episode_results=episodes.export();q=position[0,...,0];realized=position[0,...,7].sum(-1)
     result=dict(net_pnl=realized,drawdown=aggregate[0,:,1],capital_dollar_seconds=aggregate[0,:,2],stop_risk_dollar_seconds=aggregate[0,:,3],
         filled_batches=aggregate[0,:,4],terminal_valid=(q<=1e-12).all(-1)&torch.isfinite(realized),inactivity_fraction=aggregate[0,:,7]/max(1,t-1),

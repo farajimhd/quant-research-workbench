@@ -276,3 +276,21 @@ process-identity cleanup and host/GPU memory admission. Report preparation and
 compiler startup separately from steady replay, and distinguish replicated-day
 lane experiments from a benchmark over distinct sessions. None of these options
 change the active training launcher or authorize importing benchmark results.
+
+`benchmark_session_batches --job <json>` additionally prepares independent
+session/batch graphs in one CUDA context. It compares sequential enqueue,
+round-robin enqueue, independent streams, and directly captured multi-session
+graphs with and without parallel streams. Every mode must reproduce the same
+complete financial and episode hashes. The normal evaluator remains the default;
+`capture_only=True` exposes retained replay state only to explicit callers.
+
+Jobs require `training`, `checkpoint`, `days` (one to four), `batch`, `output`
+and `cache`. Optional `clocks` bounds the chronological prefix; omission runs the
+full session. `block` defaults to 32 clocks, `repeats` to two passes, and host
+reserve/admission to 128/32 GiB. `additional_checkpoints` concatenates frozen
+diagnostic populations to test larger initial-evaluation batches, never training
+initialization. Preparation, graph scheduling time, GPU events, memory and full
+outputs are recorded separately. Reusing a graph for timing does not establish
+reuse across generations with different candidates. Run a bounded supervising
+process and compare each batch design against the ordinary evaluator before
+considering deployment. No training parameters change through this benchmark.
