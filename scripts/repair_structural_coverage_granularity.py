@@ -42,7 +42,8 @@ def run(args):
         except psutil.NoSuchProcess:
             pass
     os.environ['QMD_CLICKHOUSE_URL'] = args.endpoint
-    options = builder.parse_args(['--date','2026-01-02','--max-threads','1','--max-memory-gb',str(args.memory_gib)])
+    options = builder.parse_args(['--date','2026-01-02','--workers','1',
+                                 '--max-threads','1','--max-memory-gb',str(args.memory_gib)])
     with closing(builder.Client(options, readonly=not args.apply)) as client:
         storage.require_schema(client)
         ddl = client.query("SELECT create_table_query FROM system.tables WHERE database='arte' "
