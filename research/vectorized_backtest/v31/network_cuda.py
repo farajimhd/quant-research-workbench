@@ -45,36 +45,55 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
         peak=tl.full((BLOCK,),-float('inf'),tl.float32);den=tl.full((BLOCK,),0,tl.float32)
         # Preserve edge order and zero-weight semantics, but never inspect
         # padded slots. The scalar bound is uniform within this action tile.
-        for e in range(tl.load(EDGE_COUNTS+base+i)):
-            s=tl.load(SOURCES+(base+i)*FAN+e);w=tl.load(WEIGHTS+(base+i)*FAN+e)
-            if w!=0 or (op>=1 and op<=6):
-                if s<0:
-                    offset=(base-s-1)*U+u
-                    x=tl.load(old+offset,live,0);valid=tl.load(old_known+offset,live,False)
-                elif s<3*C:
-                    x=tl.load(V+s*U+u,live,0);valid=tl.load(VALID+(s%C)*U+u,live,False)&(s<2*C)
-                elif s<3*C+STATES:
-                    state=s-3*C
-                    x=tl.load(POSITION_STATES+(member*STATES+state)*U+u,live,0);valid=tl.full((BLOCK,),False,tl.int1)
-                else:
-                    offset=(base+s-3*C-STATES)*U+u
-                    x=tl.load(current+offset,live,0);valid=tl.load(current_known+offset,live,False)
-                term=x*w;ok=ok|(valid&(w!=0))
-                if op==0 or op==7 or op==8:z=z+term
-                elif op==1:aggregate=tl.maximum(aggregate,term)
-                elif op==2:aggregate=tl.minimum(aggregate,term)
-                elif op==3:aggregate=aggregate+term
-                elif op==4:aggregate=aggregate*term
-                elif op==5:
-                    if e==0:query=term
-                    else:aggregate=aggregate+term
-                elif op==6:
-                    if e==0:query=term
-                    elif e%2==1:key=term
+        # Most nodes use the sum path. Dispatch once per node, not once per
+        # connection, while retaining identical sequential float32 arithmetic.
+        if op==0 or op==7 or op==8:
+            for e in range(tl.load(EDGE_COUNTS+base+i)):
+                s=tl.load(SOURCES+(base+i)*FAN+e);w=tl.load(WEIGHTS+(base+i)*FAN+e)
+                if w!=0:
+                    if s<0:
+                        offset=(base-s-1)*U+u
+                        x=tl.load(old+offset,live,0);valid=tl.load(old_known+offset,live,False)
+                    elif s<3*C:
+                        x=tl.load(V+s*U+u,live,0);valid=tl.load(VALID+(s%C)*U+u,live,False)&(s<2*C)
+                    elif s<3*C+STATES:
+                        state=s-3*C
+                        x=tl.load(POSITION_STATES+(member*STATES+state)*U+u,live,0);valid=tl.full((BLOCK,),False,tl.int1)
                     else:
-                        logit=query*key;next_peak=tl.maximum(peak,logit)
-                        scale=tl.exp(peak-next_peak);weight=tl.exp(logit-next_peak)
-                        aggregate=aggregate*scale+weight*term;den=den*scale+weight;peak=next_peak
+                        offset=(base+s-3*C-STATES)*U+u
+                        x=tl.load(current+offset,live,0);valid=tl.load(current_known+offset,live,False)
+                    z=z+x*w;ok=ok|valid
+        else:
+            for e in range(tl.load(EDGE_COUNTS+base+i)):
+                s=tl.load(SOURCES+(base+i)*FAN+e);w=tl.load(WEIGHTS+(base+i)*FAN+e)
+                if w!=0 or (op>=1 and op<=6):
+                    if s<0:
+                        offset=(base-s-1)*U+u
+                        x=tl.load(old+offset,live,0);valid=tl.load(old_known+offset,live,False)
+                    elif s<3*C:
+                        x=tl.load(V+s*U+u,live,0);valid=tl.load(VALID+(s%C)*U+u,live,False)&(s<2*C)
+                    elif s<3*C+STATES:
+                        state=s-3*C
+                        x=tl.load(POSITION_STATES+(member*STATES+state)*U+u,live,0);valid=tl.full((BLOCK,),False,tl.int1)
+                    else:
+                        offset=(base+s-3*C-STATES)*U+u
+                        x=tl.load(current+offset,live,0);valid=tl.load(current_known+offset,live,False)
+                    term=x*w;ok=ok|(valid&(w!=0))
+                    if op==0 or op==7 or op==8:z=z+term
+                    elif op==1:aggregate=tl.maximum(aggregate,term)
+                    elif op==2:aggregate=tl.minimum(aggregate,term)
+                    elif op==3:aggregate=aggregate+term
+                    elif op==4:aggregate=aggregate*term
+                    elif op==5:
+                        if e==0:query=term
+                        else:aggregate=aggregate+term
+                    elif op==6:
+                        if e==0:query=term
+                        elif e%2==1:key=term
+                        else:
+                            logit=query*key;next_peak=tl.maximum(peak,logit)
+                            scale=tl.exp(peak-next_peak);weight=tl.exp(logit-next_peak)
+                            aggregate=aggregate*scale+weight*term;den=den*scale+weight;peak=next_peak
         if op==1 or op==2 or op==4 or op==5:z=z+aggregate
         elif op==3:z=z+aggregate/tl.load(EDGE_COUNTS+base+i)
         elif op==6:z=z+aggregate/den
