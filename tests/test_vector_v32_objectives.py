@@ -1,0 +1,35 @@
+"""Exact V21 objective parity and isolated V31-derived source contract."""
+from pathlib import Path
+import numpy as np
+from research.vectorized_backtest.v21 import objectives as reference
+from research.vectorized_backtest.v32 import objectives as candidate
+
+
+def test_source_is_exact_v21_and_other_engine_files_only_rename_version():
+    root=Path(__file__).resolve().parents[1]/'research/vectorized_backtest'
+    assert (root/'v32/objectives.py').read_bytes()==(root/'v21/objectives.py').read_bytes()
+    for p in (root/'v31').iterdir():
+        if not p.is_file() or p.name in ('objectives.py','README.md','local_runner.py','run_train.py'):continue
+        expected=p.read_bytes().replace(b'v31',b'v32').replace(b'V31',b'V32')
+        assert (root/'v32'/p.name).read_bytes()==expected,p.name
+
+
+def test_local_and_global_exact_parity_with_fractional_trim_and_losses():
+    rng=np.random.default_rng(2020);ordered=[]
+    for day in range(24):
+        tickers=[{str(k):float(rng.normal(30,100)) for k in range(n)} for n in (0,1,3,10,17)]
+        m=dict(ticker_pnl=tickers,net_pnl=[sum(r.values()) for r in tickers],
+               closed_positions=[len(r) for r in tickers],drawdown=rng.uniform(0,1000,5).tolist(),
+               maximum_position_risk=[100.]*5,maximum_stop_distance=[.1]*5,
+               terminal_valid=[True]*5,stop_risk_dollar_seconds=[0.]*5,capital_dollar_seconds=[0.]*5)
+        ordered.append(m)
+    def exact(a,b):
+        assert a.keys()==b.keys()
+        for k in a:
+            if isinstance(a[k],dict):exact(a[k],b[k])
+            else:np.testing.assert_array_equal(a[k],b[k],err_msg=k)
+    exact(candidate.local_panel(ordered),reference.local_panel(ordered))
+    exact(candidate.score(ordered,[1]*5),reference.score(ordered,[1]*5))
+    totals,removed,_=candidate.ticker_summary([{'a':100.,'b':-50.,'c':20.}])
+    np.testing.assert_array_equal(totals,[70.])
+    np.testing.assert_allclose(removed,[30.],rtol=0,atol=1e-14)
