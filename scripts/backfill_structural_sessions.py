@@ -155,10 +155,12 @@ def compatible_writer_request(current, frozen, proof):
     """Pin both executable identities while retaining completed calculation lineage."""
     allowed = {'pipelines/market_sip/events/structural_checkpoint_storage.py',
                'scripts/backfill_structural_sessions.py'}
+    if proof.get('version')=='structural-campaign-seed-v2':
+        allowed.add('src/backend/structural_v7_seed.py')
     old = frozen['source_hashes']; new = current['source_hashes']
     changed = {key.replace('\\', '/') for key in old.keys() | new.keys()
                if old.get(key) != new.get(key)}
-    if (proof.get('version') != 'structural-exact-float-transport-v1'
+    if (proof.get('version') not in ('structural-exact-float-transport-v1','structural-campaign-seed-v2')
             or proof.get('previous_request_hash') != digest(frozen)
             or proof.get('current_request_hash') != digest(current)
             or not changed or not changed <= allowed
@@ -254,7 +256,7 @@ def _process_ticker(spec,a,ticker):
             prior_days = [previous for previous in ah_by_day if previous < day]
             prior_rows = [ah_by_day[max(prior_days)]] if prior_days else []
             prior = load_seed(client.http, ticker=ticker, session=date.fromisoformat(day),
-                              coverage=prior_rows[0]) if prior_rows else None
+                              coverage=prior_rows[0],campaign_plan_hash=plan_hash) if prior_rows else None
             actions = split_evidence(client.http, ticker=ticker,
                 seed_session=date.fromisoformat(prior['session']) if prior else history_start-timedelta(days=1),
                 session=date.fromisoformat(day))
@@ -342,7 +344,7 @@ def _process_ticker(spec,a,ticker):
             raise ValueError('Final target day has no completed AH checkpoint')
         if final_ah is not None:
             load_seed(client.http,ticker=ticker,session=date.fromisoformat(last_target)+timedelta(days=1),
-                      coverage=ah_by_day[final_ah])
+                      coverage=ah_by_day[final_ah],campaign_plan_hash=plan_hash)
 
     result=dict(owner=spec['owner']['token'],status='complete',ticker=ticker,
                 completed=done,reused=reused,seconds=perf_counter()-started)

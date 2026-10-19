@@ -141,6 +141,19 @@ def test_unknown_seed_policy_fails_before_level_reads():
     assert len(client.queries) == 1
 
 
+def test_mixed_seed_requires_exact_campaign_plan_and_preserves_consumer_gate():
+    client=Client(policy='mixed-legacy-seed')
+    for plan in (None,'wrong'):
+        with pytest.raises(ValueError,match='not compatible'):
+            load_seed(client,ticker='TEST',session=date(2026,8,18),campaign_plan_hash=plan)
+    seed=load_seed(client,ticker='TEST',session=date(2026,8,18),campaign_plan_hash='b'*64)
+    assert seed['input_policy']=='mixed-legacy-seed'
+    assert len(seed['levels'][0]['observations'])==3
+    client.coverage['band_config_hash']='wrong'
+    with pytest.raises(ValueError,match='not compatible'):
+        load_seed(client,ticker='TEST',session=date(2026,8,18),campaign_plan_hash='b'*64)
+
+
 def test_published_initial_empty_day_seeds_an_empty_book():
     client = Client()
     client.coverage.update(state="empty", level_count=0, observation_count=0,

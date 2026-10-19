@@ -73,16 +73,20 @@ def _band_hash() -> str:
                              allow_nan=False).encode()).hexdigest()
 
 
-def _validate_coverage(row: dict[str, Any], *, ticker: str, session: date) -> None:
+def _validate_coverage(row: dict[str, Any], *, ticker: str, session: date,
+                       campaign_plan_hash: str | None = None) -> None:
     empty_seed = (int(row["level_count"]) == 0 and int(row["observation_count"]) == 0)
     initial_empty = (empty_seed and row["state"] == "empty" and
                      not row["input_policy"] and not row["source_extraction_version"] and
                      row["band_config_hash"] == "0" * 64)
+    campaign_mixed = (campaign_plan_hash is not None
+                      and row.get('source_plan_hash') == campaign_plan_hash
+                      and row['input_policy'] == 'mixed-legacy-seed')
     if (str(row["ticker"]) != ticker
             or row.get('checkpoint_boundary', '') != ''
             or str(row["session_date"]) >= session.isoformat()
             or row["state"] not in {"complete", "empty"}
-            or (not empty_seed and row["input_policy"] not in {POLICY, _PROVISIONAL_INPUT_POLICY})
+            or (not empty_seed and not campaign_mixed and row["input_policy"] not in {POLICY, _PROVISIONAL_INPUT_POLICY})
             or (not initial_empty and row["source_extraction_version"] != EXTRACTION_VERSION)
             or (not initial_empty and row["band_config_hash"] != _band_hash())
             or int(row["level_count"]) < 0
@@ -183,7 +187,8 @@ def certified_seed_plan(market: Any, client: Any) -> CertifiedSeedPlan:
                              _PROVISIONAL_INPUT_POLICY in policies)
 
 
-def preceding_coverage(client: Any, *, ticker: str, session: date) -> dict[str, Any]:
+def preceding_coverage(client: Any, *, ticker: str, session: date,
+                       campaign_plan_hash: str | None = None) -> dict[str, Any]:
     """Pin the latest completed retrospective state known by 04:00 ET."""
     rows = _rows(client,
         f"SELECT * FROM {_COVERAGE} FINAL WHERE checkpoint_boundary='' AND ticker={_literal(ticker)} "
@@ -192,7 +197,7 @@ def preceding_coverage(client: Any, *, ticker: str, session: date) -> dict[str, 
     if len(rows) != 1:
         raise ValueError(f"Missing prior V7 coverage for {session} {ticker}")
     row = rows[0]
-    _validate_coverage(row, ticker=ticker, session=session)
+    _validate_coverage(row, ticker=ticker, session=session,campaign_plan_hash=campaign_plan_hash)
     return row
 
 
@@ -266,10 +271,11 @@ def split_evidence_batch(client: Any, *, seed_sessions: dict[str, date],
 
 
 def load_seed(client: Any, *, ticker: str, session: date,
-              coverage: dict[str, Any] | None = None) -> dict[str, Any]:
+              coverage: dict[str, Any] | None = None,
+              campaign_plan_hash: str | None = None) -> dict[str, Any]:
     """Load one complete typed seed; any missing level/observation fails closed."""
-    pinned = coverage or preceding_coverage(client, ticker=ticker, session=session)
-    current = preceding_coverage(client, ticker=ticker, session=session)
+    pinned = coverage or preceding_coverage(client, ticker=ticker, session=session,campaign_plan_hash=campaign_plan_hash)
+    current = preceding_coverage(client, ticker=ticker, session=session,campaign_plan_hash=campaign_plan_hash)
     if any(current.get(key) != pinned.get(key) for key in
            ("session_date", "available_at", "source_checkpoint_hash",
             "source_plan_hash", "level_count", "observation_count",
