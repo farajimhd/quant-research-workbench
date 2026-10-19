@@ -13,7 +13,7 @@ from .objectives import Objective,local_panel
 from .archive import update_archive
 from .run_search import digest,source_hash
 from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime,file_hash
-from .publication import write_json
+from .publication import write_json,write_checkpoint
 from research.vectorized_backtest.v6.torch_backtest.materialize import owned_run
 
 
@@ -96,7 +96,7 @@ def run_session(config,day,output,generations=50,population_size=1024,seed=2020,
             ids=pedigree.birth(members,1,[(-1,-1)]*len(members),['fresh']*len(members))
             state=dict(completed=0,population=[m.payload() for m in members],ids=ids.tolist(),pedigree=list(pedigree.records.values()),
                 next_serial=pedigree.next_serial,rng=rng.bit_generator.state,seals={},archive_pool=[],archive=[],species=species.state)
-            write_json(checkpoint,dict(contract=contract,state=state,state_sha256=digest(state)))
+            write_checkpoint(checkpoint,contract,state)
         if worker_factory is None:
             if config.get('shared_replay'):raise ValueError('Shared local replay requires the CUDA-owner service')
             from .session_lanes import Worker
@@ -160,7 +160,7 @@ def run_session(config,day,output,generations=50,population_size=1024,seed=2020,
                 seals[str(generation)]=file_hash(folder/'complete.json')
                 state=dict(completed=generation,population=[m.payload() for m in members],ids=ids.tolist(),pedigree=list(pedigree.records.values()),next_serial=pedigree.next_serial,
                            rng=rng.bit_generator.state,seals=seals,archive_pool=archive_pool,archive=[{k:v for k,v in r.items() if k!='descriptor'} for r in archive],species=species.state)
-                write_json(checkpoint,dict(contract=contract,state=state,state_sha256=digest(state)))
+                write_checkpoint(checkpoint,contract,state)
                 completed=generation;current['completed_generations']=completed
                 if progress_errors:raise RuntimeError('Local progress publication failed') from progress_errors[0]
                 write_json(folder/'wall.json',dict(full_generation_seconds=time.perf_counter()-began,includes_scoring_archive_reproduction_checkpoint=True,

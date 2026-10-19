@@ -11,7 +11,7 @@ from time import perf_counter,time
 import numpy as np
 import torch
 from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime,file_hash
-from .publication import write_json
+from .publication import write_json,write_checkpoint
 from research.vectorized_backtest.v6.torch_backtest.materialize import owned_run
 from .genome import Individual,sample
 from .config import MAX_NODES
@@ -218,7 +218,7 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
         def save(index,leaders=None,validation_rows=None):
             state=dict(completed=index,population=[m.payload() for m in population],ids=ids.tolist(),
                 pedigree=pedigree.records,rng=rng.bit_generator.state,leaders=leaders or [],validation_ranking=validation_rows or [],species=species.state)
-            write_json(checkpoint,dict(contract=contract,state=state,state_sha256=digest(state)))
+            write_checkpoint(checkpoint,contract,state)
         if not checkpoint.exists():save(0)
         with SessionLanes(lane_config(train,'training'),session_workers,panel) as trainers,SessionLanes(lane_config(valid,'validation'),session_workers,panel) as observers:
             for generation in range(completed+1,generations+1):

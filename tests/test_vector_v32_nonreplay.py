@@ -30,6 +30,16 @@ def test_failed_replace_preserves_old_file(tmp_path, monkeypatch):
     assert not list(tmp_path.glob('*.tmp'))
 
 
+def test_checkpoint_bytes_equal_canonical_reference(tmp_path):
+    from research.vectorized_backtest.v32.run_search import digest
+    state = {'rng': 2**127 + 1, 'weights': [1e-100, -0., 1.23456789012345], 'labels': ['é', '"']}
+    contract = {'source': 'fixture', 'nested': {'a': True}}
+    p = tmp_path / 'checkpoint.json'
+    publication.write_checkpoint(p, contract, state)
+    expected = dict(contract=contract, state=state, state_sha256=digest(state))
+    assert p.read_bytes() == json.dumps(expected, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+
+
 def test_restore_validates_once_and_rejects_corruption(monkeypatch):
     member = sample(np.random.default_rng(2020), 1)[0]
     calls = []
