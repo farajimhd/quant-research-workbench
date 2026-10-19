@@ -87,7 +87,7 @@ def profile(client, a, report, selected, closes):
                     payload_bytes=len(coverage['streaming_state'].encode()))
             results.append(dict(ticker=ticker,day=day,bars=len(bars),fetch_seconds=fetched-started,
                 stream_seconds=calculated-fetched,serialize_seconds=perf_counter()-calculated,boundaries=sizes))
-    builder.save(a.run_dir/'structural-profile.json',dict(status='complete',read_only=True,units=results))
+    save_json(a.run_dir/'structural-profile.json',dict(status='complete',read_only=True,units=results))
     print(json.dumps(results),flush=True)
     return 0
 
@@ -139,6 +139,18 @@ def require_parent(owner):
 
 def ticker_file(root,ticker,suffix):
     return root/'workers'/(sha256(ticker.encode()).hexdigest()+suffix)
+
+
+def save_json(path, value):
+    """Retain atomic/fsynced writes across brief Windows reader sharing races."""
+    import time
+    for attempt in range(7):
+        try:
+            return builder.save(path,value)
+        except PermissionError as error:
+            if getattr(error,'winerror',None) not in (5,32,33) or attempt==6:
+                raise
+            time.sleep(.05*2**attempt)
 
 
 def read_json(path):
@@ -199,7 +211,7 @@ def _ticker_worker(spec_path, ticker):
     os.environ['QMD_CLICKHOUSE_URL']=a.endpoint
     lease=a.run_dir/'workers'/('lease-'+str(os.getpid())+'.json')
     save_lease=dict(pid=os.getpid(),created=psutil.Process().create_time(),owner=spec['owner'])
-    builder.save(lease,save_lease)
+    save_json(lease,save_lease)
     with builder.build_lock(ticker_file(a.run_dir,ticker,'.lock')):
         try:return _process_ticker(spec,a,ticker)
         except Exception as error:
@@ -336,10 +348,10 @@ def _process_ticker(spec,a,ticker):
                     storage.publish_boundary(client, values[boundary], plan_hash)
             if empty_receipt is not None:
                 empty_path.parent.mkdir(parents=True,exist_ok=True)
-                builder.save(empty_path,empty_receipt)
+                save_json(empty_path,empty_receipt)
             done += int(target and not empty_reuse)
             reused += int(target and empty_reuse)
-            builder.save(ticker_file(a.run_dir,ticker,'.json'), dict(owner=spec['owner']['token'],status='running', active=f'{day} {ticker}',
+            save_json(ticker_file(a.run_dir,ticker,'.json'), dict(owner=spec['owner']['token'],status='running', active=f'{day} {ticker}',
                 completed=done, reused=reused, total=len(selected), failed=0,
                 queued=len(selected)-done-reused))
             print(f'{done+reused}/{len(selected)} | completed {done} | reused {reused} | failed 0 | {day} {ticker}', flush=True)
@@ -353,7 +365,7 @@ def _process_ticker(spec,a,ticker):
 
     result=dict(owner=spec['owner']['token'],status='complete',ticker=ticker,
                 completed=done,reused=reused,seconds=perf_counter()-started)
-    builder.save(ticker_file(a.run_dir,ticker,'.json'),result)
+    save_json(ticker_file(a.run_dir,ticker,'.json'),result)
     return result
 
 
@@ -382,7 +394,7 @@ def run_pool(a,request,build_id,by_ticker,history_inventory,reporting,rules,
         by_ticker=by_ticker,history_inventory=dict(source_hashes=history_inventory['source_hashes']),
         reporting=reporting,rules=rules,closes={day:value.isoformat() for day,value in closes.items()},
         history_start=str(history_start),end=str(end),plan_hash=plan_hash,producer_hash=producer_hash)
-    path=a.run_dir/('worker-spec-'+owner['token']+'.json');builder.save(path,spec)
+    path=a.run_dir/('worker-spec-'+owner['token']+'.json');save_json(path,spec)
     iterator=iter(sorted(by_ticker));pending={};results=[]
     with ProcessPoolExecutor(max_workers=a.workers,mp_context=multiprocessing.get_context('spawn')) as pool:
         def admit():
@@ -410,7 +422,7 @@ def run_pool(a,request,build_id,by_ticker,history_inventory,reporting,rules,
                         row=read_json(progress)
                         if row.get('owner')==owner['token']:
                             completed+=row['completed'];reused+=row['reused'];active.append(row)
-                builder.save(a.run_dir/'status.json',dict(status='running',completed=completed,reused=reused,
+                save_json(a.run_dir/'status.json',dict(status='running',completed=completed,reused=reused,
                     total=total,failed=0,queued=total-completed-reused,workers=active,
                     worker_limit=a.workers,query_threads=1,query_memory_gib=2))
         except BaseException:
@@ -478,7 +490,7 @@ def run(a):
         for day, ticker in selected:
             by_ticker.setdefault(ticker, []).append(day)
         a.run_dir.mkdir(exist_ok=True)
-        builder.save(a.run_dir / 'structural-plan.json', request)
+        save_json(a.run_dir / 'structural-plan.json', request)
         if a.plan_only:
             print(json.dumps(dict(start=str(a.start_date), end=str(end), ticker_days=len(selected),
                                   status='planned', build_id=report['build_id'])), flush=True)
@@ -495,7 +507,7 @@ def run(a):
             elif a.resume:
                 raise ValueError('No structural request exists to resume')
             else:
-                builder.save(path, request)
+                save_json(path, request)
             if a.migrate_schema:
                 storage.migrate(client)
             storage.require_schema(client)
@@ -520,15 +532,15 @@ def run(a):
                 if status_path.exists():
                     previous=json.loads(status_path.read_text())
                     done=previous.get('completed',done);reused=previous.get('reused',reused)
-                builder.save(a.run_dir / 'status.json', dict(status='interrupted' if interrupted else 'failed',
+                save_json(a.run_dir / 'status.json', dict(status='interrupted' if interrupted else 'failed',
                     completed=done, reused=reused, total=len(selected), failed=0 if interrupted else 1,
                     error=client.clean_error(error)))
                 raise
             finally:
                 db.close()
-            builder.save(a.run_dir / 'structural-completion.json', dict(request=request,
+            save_json(a.run_dir / 'structural-completion.json', dict(request=request,
                 completed=done, reused=reused, failed=0, utc=datetime.now(timezone.utc).isoformat()))
-            builder.save(a.run_dir / 'status.json', dict(status='complete', completed=done,
+            save_json(a.run_dir / 'status.json', dict(status='complete', completed=done,
                 reused=reused, total=len(selected), failed=0, queued=0))
     return 0
 

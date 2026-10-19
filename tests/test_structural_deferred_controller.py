@@ -99,3 +99,22 @@ def test_worker_preserves_unpickleable_clickhouse_failure(tmp_path,monkeypatch):
         runner._ticker_worker('unused','TEST')
     assert 'ClickHouseHttpStatusError' in str(pickle.loads(pickle.dumps(caught.value)))
     assert not list((tmp_path/'workers').glob('lease-*.json'))
+
+
+def test_atomic_progress_write_retries_sharing_only_and_stays_bounded(tmp_path,monkeypatch):
+    from scripts import backfill_structural_sessions as runner
+    import pytest,time
+    calls=[]
+    def sharing(*args):
+        calls.append(args)
+        if len(calls)<3:
+            error=PermissionError('sharing');error.winerror=32;raise error
+    monkeypatch.setattr(runner.builder,'save',sharing)
+    monkeypatch.setattr(time,'sleep',lambda seconds:None)
+    runner.save_json(tmp_path/'status.json',{'status':'running'})
+    assert len(calls)==3 and all(call==calls[0] for call in calls)
+    def permanent(*args):
+        calls.append(args);error=PermissionError('denied');error.winerror=5;raise error
+    monkeypatch.setattr(runner.builder,'save',permanent);calls.clear()
+    with pytest.raises(PermissionError):runner.save_json(tmp_path/'status.json',{})
+    assert len(calls)==7
