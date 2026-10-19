@@ -48,6 +48,7 @@ class Client:
                 fit_scale_at_floor=0)]
         else:
             raise AssertionError(sql)
+        for row in rows:row.setdefault('valid_from','2026-08-18 00:00:00.000000000')
         return "\n".join(json.dumps(row) for row in rows)
 
 
@@ -283,3 +284,35 @@ def test_split_evidence_is_as_of_and_rejects_conflicting_actions():
     with pytest.raises(ValueError, match="Conflicting"):
         split_evidence(client, ticker="TEST", seed_session=date(2026, 8, 17),
                        session=date(2026, 8, 18))
+
+
+def test_dense_seed_pages_preserve_canonical_order_and_full_counts():
+    import re
+    from copy import deepcopy
+    from src.backend.structural_v7_seed import _assemble_seed
+    count=10003
+    base=Client();template=[json.loads(base.execute('SELECT level_id FROM arte.structural_levels_v7'))]
+    template[0]['fit_count']=count
+    observations=[dict(ticker='TEST',observation_id=f'{i:064x}',level_id='one',
+        price=10.+i*.01,resolution=.01,at='2026-08-17 14:00:00.000000001',
+        resolved_at='2026-08-17 14:00:01.000000001',role='support',session_date='2026-08-17',
+        valid_from=f'2026-08-17 20:00:00.{i%2:09d}') for i in range(count)]
+    class Dense(Client):
+        def __init__(self):super().__init__(observations=count)
+        def execute(self,sql):
+            if 'structural_level_coverage_v7' in sql:return super().execute(sql)
+            self.queries.append(sql)
+            identity='observation_id' if 'structural_level_observations_v7' in sql else 'level_id'
+            values=observations if identity=='observation_id' else template
+            match=re.search(r"toDateTime64\('([^']+)',9,'UTC'\),'([^']+)'\)",sql)
+            after=tuple(match.groups()) if match else None
+            limit=int(re.search(r'LIMIT (\d+)',sql)[1]);assert limit<=5000
+            values=sorted(values,key=lambda r:(r['valid_from'],r[identity]))
+            values=[v for v in values if after is None or (v['valid_from'],v[identity])>after][:limit]
+            return '\n'.join(json.dumps(v) for v in values)
+    client=Dense();session=date(2026,8,18)
+    actual=load_seed(client,ticker='TEST',session=session)
+    expected=_assemble_seed('TEST',session,client.coverage,deepcopy(template),deepcopy(observations))
+    assert actual==expected
+    assert len(actual['levels'][0]['observations'])==count
+    assert sum('structural_level_observations_v7' in q for q in client.queries)==3

@@ -264,6 +264,15 @@ def discover_clickhouse_env_files() -> list[Path]:
             unique.append(path)
     return unique
 
+def _streamed_clickhouse_error(body: bytes) -> str | None:
+    # ClickHouse can start a chunked 200 response, then append its signed
+    # exception trailer instead of a final HTTP chunk. Never return partial
+    # rows or mistake that deterministic server failure for a transient socket.
+    tail=body[-16384:]
+    match=re.search(rb'(?:\r?\n)__exception__\r?\n[^\r\n]*\r?\n(Code: [^\r\n]+)',tail)
+    return match.group(1).decode('utf-8',errors='replace') if match else None
+
+
 class ClickHouseHttpClient:
     def __init__(
         self,
@@ -322,7 +331,7 @@ class ClickHouseHttpClient:
         if self.persistent:
             try:
                 return self._execute_persistent(sql, params)
-            except (http.client.RemoteDisconnected, ConnectionAbortedError,
+            except (http.client.RemoteDisconnected, http.client.IncompleteRead, ConnectionAbortedError,
                     ConnectionResetError, BrokenPipeError, TimeoutError):
                 # The host or server can abort a persistent socket before a
                 # SELECT response, even when it was not idle. A plain SELECT
@@ -509,7 +518,19 @@ class ClickHouseHttpClient:
                     headers=headers,
                 )
                 response = self._connection.getresponse()
-                body = response.read().decode("utf-8", errors="replace")
+                try:
+                    raw=response.read()
+                except http.client.IncompleteRead as exc:
+                    detail=_streamed_clickhouse_error(exc.partial)
+                    if detail:
+                        self._close_connection_unlocked()
+                        raise RuntimeError('ClickHouse streamed query '+str(params.get('query_id','unknown'))+' failed: '+detail) from exc
+                    raise
+                detail=_streamed_clickhouse_error(raw)
+                if detail:
+                    self._close_connection_unlocked()
+                    raise RuntimeError('ClickHouse streamed query '+str(params.get('query_id','unknown'))+' failed: '+detail)
+                body=raw.decode('utf-8',errors='replace')
                 self._last_persistent_response_at = time.monotonic()
                 if response.will_close:
                     self._close_connection_unlocked()

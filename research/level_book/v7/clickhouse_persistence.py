@@ -386,6 +386,35 @@ def compact_snapshot(book: dict[str, Any], source_plan_hash: str):
             [observations[key] for key in sorted(observations)],coverage)
 
 
+def normalized_row_pages(query, *, table, columns='*', prewhere, predicate,
+                         identity, expected=None, page_size=5000):
+    """Bound normalized interval reads without skipping versions or duplicates.
+
+    The complete FINAL key is (ticker, valid_from, boundary, identity); callers
+    pin one ticker and AH boundary. Date/identity cursors prune the snapshot
+    layout and remain stable when a returned open interval is closed in place.
+    """
+    from pipelines.market_sip.events.market_day_sql import literal
+    if identity not in ('level_id','observation_id') or not 1<=page_size<=5000:
+        raise ValueError('Invalid normalized interval page')
+    cursor=None;seen=0
+    while True:
+        limit=page_size if expected is None else min(page_size,max(1,expected+1-seen))
+        after=('' if cursor is None else
+            f" AND (valid_from,{identity})>(toDateTime64({literal(cursor[0])},9,'UTC'),{literal(cursor[1])})")
+        rows=query(f'SELECT {columns} FROM {table} FINAL PREWHERE {prewhere} '
+            f'WHERE ({predicate}){after} ORDER BY valid_from,{identity} LIMIT {limit}')
+        if len(rows)>limit:raise ValueError('Normalized interval page exceeded its limit')
+        for row in rows:
+            key=(str(row['valid_from']),str(row[identity]))
+            if cursor is not None and key<=cursor:
+                raise ValueError('Normalized interval page key did not advance')
+            cursor=key
+        if rows:yield rows
+        seen+=len(rows)
+        if len(rows)<limit or (expected is not None and seen>expected):return
+
+
 def source_plan_digest(path: Path) -> str:
     return sha256(path.read_bytes()).hexdigest()
 

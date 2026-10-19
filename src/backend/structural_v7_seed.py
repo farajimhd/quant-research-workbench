@@ -294,11 +294,24 @@ def load_seed(client: Any, *, ticker: str, session: date,
     keys = f"checkpoint_boundary='' AND ticker={_literal(ticker)}"
     predicate = (f"valid_from<=toDateTime64({cutoff},9,'UTC') "
                  f"AND (isNull(valid_to) OR valid_to>toDateTime64({cutoff},9,'UTC'))")
-    levels = _rows(client, f"SELECT {_LEVEL_COLUMNS} FROM {_LEVELS} FINAL PREWHERE {keys} WHERE {predicate} "
-                   "ORDER BY level_id FORMAT JSONEachRow")
-    observations = _rows(client, f"SELECT {_OBSERVATION_COLUMNS} FROM {_OBSERVATIONS} FINAL PREWHERE {keys} WHERE {predicate} "
-                         "ORDER BY level_id,observation_id FORMAT JSONEachRow")
+    levels=_seed_interval_rows(client,table=_LEVELS,columns=_LEVEL_COLUMNS,keys=keys,
+        predicate=predicate,identity='level_id',expected=int(pinned['level_count']))
+    observations=_seed_interval_rows(client,table=_OBSERVATIONS,columns=_OBSERVATION_COLUMNS,keys=keys,
+        predicate=predicate,identity='observation_id',expected=int(pinned['observation_count']))
     return _assemble_seed(ticker, session, pinned, levels, observations)
+
+
+def _seed_interval_rows(client, *, table, columns, keys, predicate, identity, expected):
+    from research.level_book.v7.clickhouse_persistence import normalized_row_pages
+    rows=[row for page in normalized_row_pages(
+        lambda sql:_rows(client,sql+' FORMAT JSONEachRow'),table=table,
+        columns=columns+',valid_from',prewhere=keys,predicate=predicate,
+        identity=identity,expected=expected) for row in page]
+    # Keep the original canonical reconstruction order independently of the
+    # storage cursor; duplicate/orphan/count checks still run in _assemble_seed.
+    rows.sort(key=(lambda row:(row['level_id'],row['observation_id']))
+              if identity=='observation_id' else (lambda row:row['level_id']))
+    return rows
 
 
 def _assemble_seed(ticker: str, session: date, pinned: dict[str, Any],
@@ -362,7 +375,7 @@ def _assemble_seed(ticker: str, session: date, pinned: dict[str, Any],
 
 def load_seeds_batch(client: Any, *, tickers: tuple[str, ...], session: date,
                      coverage: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Recheck and decode at most eight prior books with three bounded SELECTs.
+    """Recheck and decode at most eight prior books with bounded row pages.
 
     This only changes the read shape. Every ticker still uses the exact
     single-seed decoder and its independent coverage/count/hash checks.
@@ -399,6 +412,16 @@ def load_seeds_batch(client: Any, *, tickers: tuple[str, ...], session: date,
     ):
         expected = sum(int(coverage[ticker]["level_count" if family == "levels"
                             else "observation_count"]) for ticker in tickers)
+        if expected+1>5000:
+            for ticker in tickers:
+                rows=_seed_interval_rows(client,table=table,columns=columns,
+                    keys=f"checkpoint_boundary='' AND ticker={_literal(ticker)}",
+                    predicate=(f"valid_from<=toDateTime64({cutoff},9,'UTC') AND "
+                        f"(isNull(valid_to) OR valid_to>toDateTime64({cutoff},9,'UTC'))"),
+                    identity='level_id' if family=='levels' else 'observation_id',
+                    expected=int(coverage[ticker]['level_count' if family=='levels' else 'observation_count']))
+                grouped[ticker][family].extend(rows)
+            continue
         for row in _rows(client, f"SELECT {columns} FROM {table} FINAL WHERE {predicate} "
                          f"ORDER BY {order} LIMIT {expected + 1} FORMAT JSONEachRow"):
             ticker = str(row.get("ticker") or "")

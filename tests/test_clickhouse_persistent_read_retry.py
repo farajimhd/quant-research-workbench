@@ -11,6 +11,7 @@ from research.mlops.clickhouse import ClickHouseHttpClient
 
 @pytest.mark.parametrize("failure", [
     http.client.RemoteDisconnected("idle socket closed"),
+    http.client.IncompleteRead(b'partial row'),
     ConnectionAbortedError(10053, "host aborted connection"),
     ConnectionResetError(10054, "connection reset"),
     BrokenPipeError(32, "broken pipe"),
@@ -38,6 +39,7 @@ def test_reconnects_one_plain_select_after_transport_close(monkeypatch, failure)
                                        "WITH 1 AS x SELECT x"])
 @pytest.mark.parametrize("failure", [
     http.client.RemoteDisconnected("no response"),
+    http.client.IncompleteRead(b'ambiguous write response'),
     ConnectionAbortedError(10053, "host aborted connection"),
 ])
 def test_never_replays_ambiguous_non_select(monkeypatch, sql, failure):
@@ -102,3 +104,19 @@ def test_nonpersistent_binary_insert_body_is_sent_without_conversion(monkeypatch
     payload = b'INSERT INTO arte.x FORMAT RowBinary\n\xff\x00\x80'
     assert client.execute(payload) == ''
     assert requests[0].data is payload
+
+
+@pytest.mark.parametrize('incomplete',[False,True])
+def test_streamed_server_limit_is_reported_without_retry_or_partial_rows(monkeypatch,incomplete):
+    connection=MagicMock();response=MagicMock(status=200,reason='OK',will_close=False)
+    body=b'{"row":1}\n\r\n__exception__\r\nserver-signature\r\nCode: 396. DB::Exception: Limit for result exceeded.\n__exception__\n'
+    if incomplete:response.read.side_effect=http.client.IncompleteRead(body)
+    else:response.read.return_value=body
+    connection.getresponse.return_value=response
+    client=ClickHouseHttpClient('http://localhost:8123','reader','secret',persistent=True)
+    monkeypatch.setattr(client,'_new_connection',lambda:connection)
+    with pytest.raises(RuntimeError,match='Code: 396.*Limit for result exceeded'):
+        client.execute('SELECT * FROM arte.example')
+    assert connection.request.call_count==1
+    assert client._connection is None
+    connection.close.assert_called_once()

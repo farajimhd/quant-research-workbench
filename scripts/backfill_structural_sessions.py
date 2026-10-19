@@ -108,11 +108,14 @@ def publish_ah(client, book, plan_hash):
     """
     ticker = book['ticker']; stamp = datetime64_ns(epoch_ns(book['available_at']))
     for table in (LEVELS_TABLE, OBSERVATIONS_TABLE):
-        opened = client.query(f"SELECT * FROM {table} FINAL PREWHERE ticker={source.literal(ticker)} "
-            "AND checkpoint_boundary='' WHERE isNull(valid_to)")
-        for row in opened:
-            row.update(valid_to=stamp, row_revision=epoch_ns(book['available_at']))
-        storage.insert(client, table, opened)
+        from research.level_book.v7.clickhouse_persistence import normalized_row_pages
+        identity='level_id' if table==LEVELS_TABLE else 'observation_id'
+        for opened in normalized_row_pages(client.query,table=table,
+                prewhere=f"ticker={source.literal(ticker)} AND checkpoint_boundary=''",
+                predicate='isNull(valid_to)',identity=identity):
+            for row in opened:
+                row.update(valid_to=stamp,row_revision=epoch_ns(book['available_at']))
+            storage.insert(client,table,opened)
     levels, observations, coverage = compact_checkpoints([book], plan_hash)
     storage.insert(client, LEVELS_TABLE, levels)
     storage.insert(client, OBSERVATIONS_TABLE, observations)
@@ -225,7 +228,11 @@ def _ticker_worker(spec_path, ticker):
             # Some HTTP exceptions require multiple constructor arguments and
             # cannot cross multiprocessing's pickle boundary. Retain the real
             # server reason instead of destroying the whole pool on unpickle.
-            raise RuntimeError(f'{type(error).__name__}: {error}') from None
+            progress_path=ticker_file(a.run_dir,ticker,'.json')
+            try:progress=read_json(progress_path) if progress_path.exists() else {}
+            except (OSError,ValueError):progress={}
+            context=f"{progress.get('active',ticker)} [{progress.get('stage','starting')}]"
+            raise RuntimeError(f'{context}: {type(error).__name__}: {error}') from None
         finally:lease.unlink(missing_ok=True)
 
 
@@ -368,8 +375,10 @@ def _process_ticker(spec,a,ticker):
             # Expose missing AH first so legacy prior-day readers can never
             # mistake a newly published regular snapshot for the day's AH.
             if 'AH' in values:
+                progress(day,'publishing AH',len(bars))
                 publish_ah(client, values['AH'], plan_hash)
                 ah_by_day[day] = ah_coverage(client, ticker, day)[0]
+            progress(day,'publishing PM/REGULAR',len(bars))
             for boundary in ('PM', 'REGULAR'):
                 if boundary in values:
                     values[boundary]['source'] = source_ref
