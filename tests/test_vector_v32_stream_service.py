@@ -161,3 +161,41 @@ def test_session_finishes_while_other_replay_is_incomplete(monkeypatch,tmp_path,
             assert first.result(timeout=3)=='slow'
         a.close();b.close()
     finally:release.set();service.close()
+
+
+def test_progress_is_published_while_other_stream_is_inflight(monkeypatch,tmp_path):
+    import threading,time
+    from concurrent.futures import Future
+    release=threading.Event();progress=threading.Event()
+    class Incremental:
+        def __init__(self,graphs):
+            self.slow=graphs==['slow'];self.graphs=[SimpleNamespace(block=32,total=2048)]
+            self.completed=0;self.started=time.perf_counter();self.queued=False
+        @property
+        def done(self):return self.completed==64
+        def poll(self):
+            if self.queued and (not self.slow or release.is_set()):self.completed=64
+            return not self.queued or self.done
+        def enqueue(self):self.queued=True
+        def drain(self):release.set()
+    class Worker(FakeWorker):
+        def steps(self,day,*args):
+            self.current_day=day
+            yield [day]
+            return day
+        def emit(self,day,**values):
+            if day=='fast' and values.get('completed_seconds')==2048:
+                assert not release.is_set()
+                progress.set();release.set()
+    monkeypatch.setattr(module,'StreamWorker',Worker);monkeypatch.setattr(module,'ReplayTask',Incremental)
+    service=module.SharedReplayService()
+    cfg=dict(output=str(tmp_path),device='cuda',backend='compile',batch_size=512,host_reserve_gib=0)
+    a=service.factory(cfg,queue.Queue(),0);b=service.factory(cfg,queue.Queue(),1)
+    # Queue both before the service begins their replay.
+    try:
+        fa=Future();fb=Future()
+        service.commands.put((a.key,'run',('slow',),fa))
+        service.commands.put((b.key,'run',('fast',),fb))
+        assert progress.wait(3)
+        assert fa.result(timeout=3)=='slow' and fb.result(timeout=3)=='fast'
+    finally:release.set();service.close()

@@ -234,7 +234,7 @@ class SharedReplayService:
         return Proxy(self,config,events,lane)
 
     def _serve(self):
-        active=[];closing=False;running=set();last_progress={}
+        active=[];closing=False;running=set()
         def accept(command):
             nonlocal closing
             key,method,args,future=command
@@ -263,6 +263,17 @@ class SharedReplayService:
                 # All potentially CUDA-using continuations and commands wait for
                 # event-confirmed quiescence, never for the entire session.
                 settled=[task.poll() for task in replays]
+                # Host-only telemetry/admission must not wait for simultaneous
+                # stream quiescence. Events already confirm these clock counts.
+                for key,_,_,stage in active:
+                    if isinstance(stage,ReplayTask) and stage.completed-getattr(stage,'reported',-64)>=64:
+                        worker=self.workers[key]
+                        if psutil.virtual_memory().available<worker.config.get('host_reserve_gib',128)*2**30:
+                            raise MemoryError('Shared replay host reserve reached')
+                        worker.emit(worker.current_day,stage='Replay positions',
+                            completed_seconds=min(stage.completed*stage.graphs[0].block,stage.graphs[0].total),
+                            total_seconds=stage.graphs[0].total)
+                        stage.reported=stage.completed
                 quiescent=all(settled)
                 if not quiescent:
                     # Independently refill ready streams; do not impose a clock
@@ -308,12 +319,7 @@ class SharedReplayService:
                     for key,_,_,stage in active:
                         if isinstance(stage,ReplayTask):
                             worker=self.workers[key]
-                            if stage.completed-last_progress.get(key,0)>=64 or stage.completed==0:
-                                worker.prefetch.release_under_pressure()
-                                worker.emit(worker.current_day,stage='Replay positions',
-                                    completed_seconds=min(stage.completed*stage.graphs[0].block,stage.graphs[0].total),
-                                    total_seconds=stage.graphs[0].total)
-                                last_progress[key]=stage.completed
+                            worker.prefetch.release_under_pressure()
                             stage.enqueue()
         except BaseException as error:
             self.error=error
