@@ -351,6 +351,41 @@ def compact_checkpoints(checkpoints: Iterable[dict[str, Any]], source_plan_hash:
     return intervals, observation_intervals, coverage
 
 
+def compact_snapshot(book: dict[str, Any], source_plan_hash: str):
+    """Exact single-book projection without multi-checkpoint interval maps.
+
+    Header validation/encoding and typed row construction use the same shared
+    helpers as compact_checkpoints. Only the one-book traversal is specialized.
+    Observation occurrences retain input order and identical identity semantics.
+    """
+    _,_,coverage=compact_checkpoints([dict(book,levels=[])],source_plan_hash)
+    ticker=str(book['ticker']);stamp=epoch_ns(book['available_at'])
+    session=str(book['session']);checkpoint=str(book['checkpoint_hash'])
+    levels={};observations={};occurrences={};identities={}
+    keys=('price','resolution','at','resolved_at','role','session')
+    for level in book.get('levels') or ():
+        projection=state_projection(level);level_id=projection['level_id']
+        if level_id in levels:raise ValueError(f'Duplicate V7 level identity {level_id}')
+        levels[level_id]=interval_row(ticker,OpenInterval(projection=projection,
+            state_hash=projection_hash(projection),valid_from_ns=stamp,
+            source_session=session,source_input_hash=str(book['input_hash']),
+            source_checkpoint_hash=checkpoint,publication_revision=stamp),None)
+        for observation in level.get('observations') or ():
+            content=tuple(observation[key] for key in keys)
+            occurrence=occurrences.get(content,0);occurrences[content]=occurrence+1
+            identity=(*content,occurrence)
+            observation_id=identities.get(identity)
+            if observation_id is None:
+                observation_id=observation_identity(identity);identities[identity]=observation_id
+            observations[observation_id]=observation_interval_row(ticker,dict(
+                observation_id=observation_id,level_id=level_id,observation=observation,
+                valid_from_ns=stamp,source_session=session,source_checkpoint_hash=checkpoint),None)
+    coverage[0].update(level_count=len(levels),interval_count=len(levels),
+        observation_count=len(observations),observation_interval_count=len(observations))
+    return ([levels[key] for key in sorted(levels)],
+            [observations[key] for key in sorted(observations)],coverage)
+
+
 def source_plan_digest(path: Path) -> str:
     return sha256(path.read_bytes()).hexdigest()
 

@@ -179,7 +179,8 @@ def _normalized_rows(value, source_plan_hash, engine):
     and validated this exact payload; no cached trust token crosses requests.
     """
     book = engine.historical_checkpoint(value['input_hash'],copy_state=False,available_at=value['boundary_at'])
-    levels, observations, coverage = compact_checkpoints([book], source_plan_hash)
+    from research.level_book.v7.clickhouse_persistence import compact_snapshot
+    levels, observations, coverage = compact_snapshot(book, source_plan_hash)
     from research.level_book.v7.clickhouse_persistence import datetime64_ns, epoch_ns
     end = datetime64_ns(epoch_ns(engine.end))
     for row in levels:

@@ -150,3 +150,23 @@ def test_controller_lock_rejects_overlapping_run(tmp_path):
                 raise AssertionError("overlapping controller acquired the lock")
         except ValueError as exc:
             assert "Another V7 arte migration controller is active" in str(exc)
+
+
+@pytest.mark.parametrize('count',[0,1,10])
+def test_single_snapshot_projection_is_canonically_identical(count):
+    from copy import deepcopy
+    from research.level_book.v7.clickhouse_persistence import compact_snapshot,canonical_json
+    levels=[level(str(i),role='support' if i%2 else 'resistance',price=2.97+i*.01) for i in range(count)]
+    if levels:
+        # Repeated observations across levels retain ordinal occurrence IDs;
+        # mixed integer/float and signed zero retain the legacy tuple semantics.
+        levels[-1]['observations']+=deepcopy(levels[0]['observations'])
+        levels[-1]['observations']+=[dict(price=v,resolution=.01,at=10,resolved_at=20,role='support',session='2026-01-01') for v in (1,1.,0.,-0.)]
+        levels[0]['qualified']=False
+    value=book('2026-01-02','1780000000.123456789',levels,'exact')
+    before=deepcopy(value)
+    assert canonical_json(compact_snapshot(value,'a'*64))==canonical_json(compact_checkpoints([value],'a'*64))
+    assert value==before
+    if levels:
+        value['levels'].append(deepcopy(levels[0]))
+        with pytest.raises(ValueError,match='Duplicate'):compact_snapshot(value,'a'*64)
