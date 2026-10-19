@@ -13,6 +13,7 @@ class CapturedReplay:
     total: int
     block: int
     keepalive: object
+    index: object
 
     def enqueue(self):
         for _ in range(0, self.total, self.block):
@@ -89,7 +90,7 @@ def replay(position, aggregate, opened, policy, prices, observed, membership,
     torch.cuda.current_stream(device).wait_stream(stream)
     if capture_only:
         torch.cuda.synchronize(device)
-        return CapturedReplay(graph, reset, total, block, compiled)
+        return CapturedReplay(graph, reset, total, block, compiled, index)
     pending=deque();reported=0;completed=0;last_report=0.
     def publish_completed(force=False):
         nonlocal reported,completed,last_report

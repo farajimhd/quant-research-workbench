@@ -294,3 +294,11 @@ outputs are recorded separately. Reusing a graph for timing does not establish
 reuse across generations with different candidates. Run a bounded supervising
 process and compare each batch design against the ordinary evaluator before
 considering deployment. No training parameters change through this benchmark.
+
+The optional `shared_market` scheduler computes the market-only projection once
+per session/clock, then fans out to that session's candidate batches on separate
+streams. It joins those batches before advancing that session's projection;
+positions, recurrent memory, feedback and ledgers remain independent. Captured
+projections are retained explicitly for safe cross-stream lifetimes. This trades
+additional retained projection buffers and per-clock synchronization against
+removing duplicate market preparation; it must be measured, not assumed faster.

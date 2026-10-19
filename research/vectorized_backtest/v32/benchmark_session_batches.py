@@ -96,6 +96,8 @@ def run(job):
             result=evaluator.replay_cohort([item],selected,[plan],execution=execution,
                 backend='compile',trace=True,episode_capacity=65536,capture_only=True,
                 replay_block=job.get('block',32))
+            result.plan=plan
+            result.data=item
             prepared.append((day,offset,result))
             preparation.append(dict(day=day,offset=offset,count=len(selected),capture_seconds=time.perf_counter()-started))
             write_json(output/'preparation.json',preparation)
@@ -105,10 +107,11 @@ def run(job):
     results=[]
     reference=None
     for mode in job.get('modes',['sequential','round_robin','streams','grouped','grouped_streams']):
-        if mode not in ('sequential','round_robin','streams','grouped','grouped_streams'):
+        if mode not in ('sequential','round_robin','streams','grouped','grouped_streams','shared_market'):
             raise ValueError('Unknown graph scheduler')
         parent=None
-        if mode.startswith('grouped'):
+        retained_projections=[]
+        if mode.startswith('grouped') or mode=='shared_market':
             capture_started=time.perf_counter()
             if len(set(counts))!=1:
                 raise ValueError('Grouped launch requires matching bounded clock counts')
@@ -121,8 +124,30 @@ def run(job):
                 for g in graphs:g.keepalive()
                 for g in graphs:g.reset()
                 parent=torch.cuda.CUDAGraph()
+                groups={}
+                for child,(_,_,p) in zip(streams,prepared):
+                    groups.setdefault(id(p.data),[]).append((child,p))
+                project_streams={key:torch.cuda.Stream() for key in groups}
+                originals={id(p):p.plan.project for _,_,p in prepared}
                 with torch.cuda.graph(parent,stream=stream):
-                    if mode=='grouped_streams':
+                    if mode=='shared_market':
+                        for projection_stream in project_streams.values():projection_stream.wait_stream(stream)
+                        for _ in range(graphs[0].block):
+                            for key,group in groups.items():
+                                projection_stream=project_streams[key]
+                                first=group[0][1]
+                                with torch.cuda.stream(projection_stream):
+                                    projected=originals[id(first)](first.data,first.replay.index.clamp_max(first.replay.total)-1)
+                                # Retain all captured projections, including their
+                                # cross-stream consumers, for the parent lifetime.
+                                retained_projections.append(projected)
+                                for child,p in group:
+                                    child.wait_stream(projection_stream)
+                                    p.plan.project=lambda data,index,value=projected:value
+                                    with torch.cuda.stream(child):p.replay.keepalive()
+                                for child,p in group:projection_stream.wait_stream(child)
+                        for projection_stream in project_streams.values():stream.wait_stream(projection_stream)
+                    elif mode=='grouped_streams':
                         for child in streams:child.wait_stream(stream)
                         for child,g in zip(streams,graphs):
                             with torch.cuda.stream(child):
@@ -131,6 +156,7 @@ def run(job):
                     else:
                         for g in graphs:
                             for _ in range(g.block):g.keepalive()
+                for _,_,p in prepared:p.plan.project=originals[id(p)]
             torch.cuda.synchronize()
             preparation.append(dict(mode=mode,group_capture_seconds=time.perf_counter()-capture_started))
             write_json(output/'preparation.json',preparation)
