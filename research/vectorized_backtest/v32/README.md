@@ -302,3 +302,15 @@ positions, recurrent memory, feedback and ledgers remain independent. Captured
 projections are retained explicitly for safe cross-stream lifetimes. This trades
 additional retained projection buffers and per-clock synchronization against
 removing duplicate market preparation; it must be measured, not assumed faster.
+
+Training can opt into the qualified independent-stream design with
+`--shared-replay --batch-size 512 --session-workers 2`. Phase 1 runs two independent
+local evolutions; Phase 2 evaluates two sessions at a time. One CUDA service owns
+all preparation/capture/replay operations and admits at most two candidate
+cohorts per session (four streams total). Separate local RNG, species, ancestry,
+archives and receipt order are preserved. Training/validation services never
+evaluate concurrently; native listing widths stay independent of concurrency.
+The shared-market experiment is not used. Existing checkpoints require an
+audited compute-only source/contract migration; the launcher still rejects an
+unmatched manifest or checkpoint. Host reserve/admission and GPU guards remain
+enforced. Benchmark speedups apply to replay, not total generation time.

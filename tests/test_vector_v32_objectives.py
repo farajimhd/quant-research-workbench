@@ -12,6 +12,21 @@ def test_source_is_exact_v21_and_other_engine_files_only_rename_version():
     for p in (root/'v31').iterdir():
         if not p.is_file() or p.name in ('objectives.py','README.md','local_runner.py','run_train.py'):continue
         expected=p.read_bytes().replace(b'v31',b'v32').replace(b'V31',b'V32')
+        if p.name in ('session_lanes.py','phase2.py','run_search.py','cpu_work.py'):
+            # Shared scheduling changes orchestration only; retain the legacy
+            # evaluator and all non-orchestration definitions exactly.
+            before=ast.parse(expected);after=ast.parse((root/'v32'/p.name).read_text())
+            excluded={'session_lanes.py':{'SessionLanes'},'phase2.py':{'run_global'},
+                      'run_search.py':{'run'},'cpu_work.py':{'descriptors'}}[p.name]
+            actual={n.name:n for n in after.body if isinstance(n,(ast.FunctionDef,ast.ClassDef))}
+            for n in before.body:
+                if isinstance(n,(ast.FunctionDef,ast.ClassDef)) and n.name not in excluded:
+                    assert ast.dump(actual[n.name])==ast.dump(n),n.name
+            if p.name=='cpu_work.py':
+                original=next(n for n in before.body if isinstance(n,ast.FunctionDef) and n.name=='descriptors')
+                changed=actual['_descriptors'];changed.name='descriptors'
+                assert ast.dump(changed)==ast.dump(original)
+            continue
         if p.name=='evaluator.py':
             actual=(root/'v32'/p.name).read_bytes()
             # Only scheduling/preparation/export plumbing changed. The financial

@@ -20,7 +20,7 @@ def config(dataset,args):
         input_receipts=dataset['receipts'],indicator_receipts=dataset['indicator_receipts'],enriched_receipts=dataset['enriched_receipts'],authorization='v32-training',training_manifest=str(args.training),
         source_sha256=source_hash(),device='cuda',backend='compile',batch_size=args.batch_size,maximum_data_gib=4.,maximum_gate_gib=8.,capture_gib=args.capture_gib,
         plan_limit=1,episode_capacity=65536,execution=asdict(Execution(fee_per_share=.005,minimum_order_fee=1)),selection=asdict(Selection()),
-        host_reserve_gib=args.host_reserve_gib,host_admission_gib=args.host_admission_gib,host_prefetch=False)
+        host_reserve_gib=args.host_reserve_gib,host_admission_gib=args.host_admission_gib,host_prefetch=False,shared_replay=args.shared_replay)
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--training',type=Path,required=True);p.add_argument('--validation',type=Path)
@@ -30,10 +30,12 @@ def main(argv=None):
     p.add_argument('--host-reserve-gib',type=float,default=128.);p.add_argument('--host-admission-gib',type=float,default=32.)
     p.add_argument('--capture-gib',type=float,default=1.);p.add_argument('--host-prefetch',action='store_true',help='Bounded Phase-2 CPU prefetch; locals retain their one session')
     p.add_argument('--reuse-initial-manifest',type=Path,help='Pinned sealed V31 generation-one evaluations; unmatched sessions evaluate normally')
+    p.add_argument('--shared-replay',action='store_true',help='One CUDA owner, two local sessions, two 512-candidate cohorts each')
     args=p.parse_args(argv)
     if not args.authorize_run:p.error('--authorize-run required')
     if not 10<=args.population<=65536 or not 1<=args.generations<=500 or args.global_generations<1:p.error('Invalid population or generation count')
     if args.initial_multiplier<1 or args.initial_multiplier*args.population>65536 or not 1<=args.batch_size<=1024 or not 1<=args.session_workers<=8:p.error('Invalid bounded initialization/batch/workers')
+    if args.shared_replay and (args.batch_size!=512 or args.session_workers!=2):p.error('Shared replay requires batch 512 and two session workers')
     output=require_runtime(args.output)
     if not output.is_relative_to(ROOT.resolve()):p.error('Use the V32 runtime root')
     train=bind_dataset(args.training,'training');cfg=config(train,args)
@@ -58,7 +60,7 @@ def main(argv=None):
         except psutil.NoSuchProcess:pass
     with owned_run(output,version='v32-controller-v1'):
         write_json(f,manifest);owner=dict(pid=os.getpid(),creation_time=psutil.Process().create_time(),campaign=str(output),source_sha256=cfg['source_sha256'],commit=args.commit)
-        write_json(output/f'admission-{time.time_ns()}.json',dict(host_reserve_gib=args.host_reserve_gib,host_admission_gib=args.host_admission_gib,session_workers=args.session_workers,local_workers=1))
+        write_json(output/f'admission-{time.time_ns()}.json',dict(host_reserve_gib=args.host_reserve_gib,host_admission_gib=args.host_admission_gib,session_workers=args.session_workers,local_workers=2 if args.shared_replay else 1))
         write_json(pointer,owner);write_json(output/'active.json',owner)
         stop=threading.Event()
         from .monitor import monitor
@@ -73,16 +75,33 @@ def main(argv=None):
         thread=threading.Thread(target=monitor,args=(output,days,args.generations,stop),daemon=True);thread.start();code=1
         print('V32 independent networks | '+args.mode+' | '+', '.join(days)+f' | population {args.population} | initial {args.initial_multiplier}x | batch {args.batch_size}',flush=True)
         try:
-            for day in days:
-                if (output/'STOP').exists():code=130;return code
+            def local(day,worker_factory=None):
+                if (output/'STOP').exists():return dict(status='interrupted')
                 from .probes import local_probe
                 from .host_memory import wait_for_headroom
                 def probe_progress(**fields):write_json(output/'local'/day/'status.json',dict(status='running',day=day,updated_epoch=time.time(),**fields))
                 probe_progress(stage='Preparing session-only calibration probe')
                 wait_for_headroom(output,probe_progress,reserve_gib=args.host_reserve_gib,admission_gib=args.host_admission_gib)
                 path=local_probe(args.training,day,output/'initialization-probes')
-                result=run_session(dict(cfg,initialization_probe=str(path)),day,output/'local'/day,args.generations,args.population,args.seed,64,1024,initial_multiplier=args.initial_multiplier)
-                if result['status']!='complete':code=130;return code
+                return run_session(dict(cfg,initialization_probe=str(path)),day,output/'local'/day,args.generations,args.population,args.seed,64,1024,initial_multiplier=args.initial_multiplier,worker_factory=worker_factory)
+            if args.shared_replay:
+                from concurrent.futures import ThreadPoolExecutor,as_completed
+                from .stream_sessions import SharedReplayService
+                service=SharedReplayService()
+                try:
+                    with ThreadPoolExecutor(max_workers=2,thread_name_prefix='v32-local-evolution') as locals_pool:
+                        futures=[locals_pool.submit(local,day,service.factory) for day in days]
+                        try:
+                            for future in as_completed(futures):
+                                if future.result()['status']!='complete':interrupt();code=130
+                        except BaseException:
+                            interrupt()
+                            raise
+                    if (output/'STOP').exists():code=130;return code
+                finally:service.close()
+            else:
+                for day in days:
+                    if local(day)['status']!='complete':code=130;return code
             if args.mode=='full':
                 if (output/'STOP').exists():code=130;return code
                 stop.set();thread.join()
@@ -90,7 +109,7 @@ def main(argv=None):
                 from .phase2 import run_global
                 from .probes import global_probe
                 path=global_probe(args.training,days,output/'initialization-probes')
-                code=run_global(args.training,args.validation,output/'local',output/'global',args.population,args.global_generations,args.seed,batch_size=args.batch_size,session_workers=args.session_workers,capture_gib=args.capture_gib,host_reserve_gib=args.host_reserve_gib,host_admission_gib=args.host_admission_gib,initialization_probe=path,host_prefetch=args.host_prefetch)
+                code=run_global(args.training,args.validation,output/'local',output/'global',args.population,args.global_generations,args.seed,batch_size=args.batch_size,session_workers=args.session_workers,capture_gib=args.capture_gib,host_reserve_gib=args.host_reserve_gib,host_admission_gib=args.host_admission_gib,initialization_probe=path,host_prefetch=args.host_prefetch,shared_replay=args.shared_replay)
             else:code=0
             print('V32 complete' if code==0 else 'V32 interrupted',flush=True)
             return code

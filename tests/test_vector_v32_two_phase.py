@@ -72,6 +72,20 @@ def test_sixfold_initial_generation_then_normal_population_and_exact_resume(setu
     assert local(s,day,s.root/'resumed',Interrupted)['status']=='complete'
     assert (s.root/'resumed/checkpoint.json').read_bytes()==before and len(Interrupted.calls)==count
 
+def test_two_parallel_locals_preserve_each_population_rng_species_and_archive(setup):
+    from concurrent.futures import ThreadPoolExecutor
+    s=setup
+    for day in s.days:local(s,day,s.root/'serial'/day)
+    with ThreadPoolExecutor(2) as pool:
+        futures=[pool.submit(local,s,day,s.root/'parallel'/day) for day in s.days]
+        assert all(f.result()['status']=='complete' for f in futures)
+    for day in s.days:
+        a=json.loads((s.root/'serial'/day/'checkpoint.json').read_bytes())['state']
+        b=json.loads((s.root/'parallel'/day/'checkpoint.json').read_bytes())['state']
+        for key in ('population','ids','pedigree','next_serial','rng','species','archive','archive_pool'):
+            assert a[key]==b[key],(day,key)
+
+
 def test_local_probe_cannot_borrow_another_session(setup):
     s=setup;cfg=dict(s.config,initialization_probe=str(s.folder/(s.days[1]+'.npz')))
     with pytest.raises(ValueError,match='only its own session'):run_session(cfg,s.days[0],s.root/'bad',2,10,worker_factory=Worker)

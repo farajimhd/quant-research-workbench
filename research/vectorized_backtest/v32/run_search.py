@@ -137,13 +137,14 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
         session_workers=2,seed=182237,device='cuda',backend='compile',execution=Execution(fee_per_share=.005,minimum_order_fee=1),
         objective=Objective(),selection=Selection(global_fraction=1.,champion_partners=0),episode_capacity=65536,maximum_gate_gib=6.665611267089844,
         maximum_data_gib=4.,plan_limit=2,capture_gib=4.,initial_population=None,predecessor_job=None,predecessor_proof=None,
-        host_reserve_gib=128.,host_admission_gib=32.,replay_width_workers=None,host_prefetch=False,initialization_probe=None):
+        host_reserve_gib=128.,host_admission_gib=32.,replay_width_workers=None,host_prefetch=False,initialization_probe=None,shared_replay=False):
 
     if not 10<=population_size<=65536 or not 1<=batch_size<=1024 or not 1<=session_workers<=8 or generations<1:
         raise ValueError('Explicit bounded campaign required')
     replay_width_workers=session_workers if replay_width_workers is None else replay_width_workers
     if not 1<=replay_width_workers<=8:raise ValueError('Invalid listing-width groups')
     if type(host_prefetch) is not bool:raise ValueError('Host prefetch must be explicit boolean')
+    if shared_replay and (device!='cuda' or backend!='compile' or batch_size!=512 or session_workers!=2):raise ValueError('Shared replay requires CUDA compile, batch 512 and two sessions')
     if not 1<=plan_limit<=4 or maximum_gate_gib<=0 or maximum_data_gib<=0:raise ValueError('Invalid memory/plan bounds')
     if not .25<=capture_gib<=16.:raise ValueError('Capture cache must be between 0.25 and 16 GiB per worker')
     if initial_population is not None:
@@ -168,13 +169,13 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
         initialization='training-activation-calibrated-v1' if initial_population is None else 'v32-local-expert-pool-v1',
         initialization_probe_sha256=file_hash(initialization_probe) if initialization_probe is not None else None,
         initial_population_sha256=None if initial_population is None else initial_population['pool_sha256'],search_space_version=SEARCH_SPACE_VERSION,maximum_host_sessions=2,
-        host_reserve_gib=host_reserve_gib,host_admission_gib=host_admission_gib,host_prefetch=host_prefetch,candidate_tail_padding=False)
+        host_reserve_gib=host_reserve_gib,host_admission_gib=host_admission_gib,host_prefetch=host_prefetch,candidate_tail_padding=False,shared_replay=shared_replay)
     def lane_config(data,role):
         return dict(inputs=data['inputs'],history=data['history'],feature_cache=data.get('feature_cache'),indicator_root=data['indicator_root'],enriched_root=data['enriched_root'],
             output=str(output/role),boundary_stop=str(output),device=device,backend=backend,batch_size=batch_size,replay_width_workers=replay_width_workers,
             maximum_data_gib=maximum_data_gib,maximum_gate_gib=maximum_gate_gib,maximum_host_sessions=2,execution=asdict(execution),
             source_sha256=version_hash,split=role,episode_capacity=episode_capacity,plan_limit=plan_limit,capture_gib=capture_gib,
-            host_reserve_gib=host_reserve_gib,host_admission_gib=host_admission_gib,host_prefetch=host_prefetch)
+            host_reserve_gib=host_reserve_gib,host_admission_gib=host_admission_gib,host_prefetch=host_prefetch,shared_replay=shared_replay)
     from .species import Species
     species=Species()
     rng=np.random.default_rng(seed);checkpoint=output/'checkpoint.json';completed=0

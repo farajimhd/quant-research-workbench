@@ -285,6 +285,17 @@ class SessionLanes:
 
     def __enter__(self):
         c=dict(self.config)
+        if c.get('shared_replay'):
+            if self.workers!=2:raise ValueError('Shared replay requires two session lanes')
+            from .stream_sessions import SharedReplayService
+            self.service=SharedReplayService()
+            c['lane_memory_bytes']=torch.cuda.mem_get_info(c['device'])[0]*.8
+            try:self.proxies=[self.service.factory(c,self.events,lane) for lane in range(2)]
+            except BaseException:
+                self.service.close();self.events.close();self.events.join_thread();raise
+            self.pools=[ThreadPoolExecutor(max_workers=1) for _ in range(2)]
+            self.thread=threading.Thread(target=self.pump,name='v32-shared-progress',daemon=True);self.thread.start()
+            return self
         # Preserve the measured RulePlan budget per execution path. Splitting
         # one plan's cache between workers forces repeated graph recaptures.
         # Admission below still bounds the combined resident allocation.
@@ -306,7 +317,7 @@ class SessionLanes:
         for first in range(0,len(days),self.workers):
             cohort=days[first:first+self.workers];started=perf_counter()
             self.panel.begin_sessions(cohort)
-            futures=[self.pools[lane].submit(evaluate,day,
+            futures=[self.pools[lane].submit(self.proxies[lane].run if self.config.get('shared_replay') else evaluate,day,
                 days[first+self.workers+lane] if first+self.workers+lane<len(days) else None,
                 payload,generation,token,fixed_widths[day]) for lane,day in enumerate(cohort)]
             results=[future.result() for future in futures]
@@ -319,9 +330,17 @@ class SessionLanes:
         return timings
 
     def release_plans(self):
+        if self.config.get('shared_replay'):return  # Captured cohorts are released after export.
         for pool in self.pools:pool.submit(release_plans).result()
 
     def __exit__(self,*args):
+        if self.config.get('shared_replay'):
+            try:
+                for pool in self.pools:pool.shutdown(wait=True,cancel_futures=True)
+                self.service.close()
+            finally:
+                self.stop.set();self.thread.join();self.events.close();self.events.join_thread()
+            return
         errors=[]
         try:
             for pool in self.pools:

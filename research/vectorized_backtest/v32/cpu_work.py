@@ -2,10 +2,12 @@
 import atexit
 import multiprocessing as mp
 import os
+import threading
 from concurrent.futures import ProcessPoolExecutor
 
 _pool=None
 _workers=None
+_lock=threading.Lock()
 
 
 def _describe(member):
@@ -20,6 +22,11 @@ def close():
 
 
 def descriptors(population):
+    # Both local evolutions may request the shared ordered CPU pool together.
+    with _lock:return _descriptors(population)
+
+
+def _descriptors(population):
     global _pool,_workers
     workers=int(os.environ.get('V32_REPRODUCTION_WORKERS','1'))
     if not 1<=workers<=8:raise ValueError('CPU reproduction workers must be between 1 and 8')

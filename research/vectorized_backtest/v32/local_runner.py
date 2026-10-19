@@ -59,6 +59,7 @@ def run_session(config,day,output,generations=50,population_size=1024,seed=2020,
                   dataset={k:config.get(k) for k in ['inputs','history','indicator_root','enriched_root','input_receipts','indicator_receipts','enriched_receipts']},execution=config['execution'],
                   backend=config['backend'],device=config['device'],batch_size=config['batch_size'],capture_gib=config.get('capture_gib',4.),host_reserve_gib=config.get('host_reserve_gib'),host_admission_gib=config.get('host_admission_gib'),local_other_session_penalty='omitted: unavailable in single-session stage',validation_opened=False)
     contract['initialization_probe_sha256']=probe['sha256']
+    contract['shared_replay']=config.get('shared_replay',False)
     reuse_path=config.get('reuse_initial_manifest')
     reuse_manifest=json.loads(Path(reuse_path).read_bytes()) if reuse_path else None
     contract['reuse_initial_manifest_sha256']=file_hash(reuse_path) if reuse_path else None
