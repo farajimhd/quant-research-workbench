@@ -36,7 +36,7 @@ def source_rows(client, unit):
         f'AND session_date=toDate({literal(unit.session_date)}) AND ticker={literal(unit.ticker)} '
         f'AND attempt_id=toUUID({literal(unit.attempt_id)}) '
         'AND resolution_ms=1000 AND price_valid=1 AND bucket_index>=14700 '
-        'AND bucket_index<72000 ORDER BY bucket_index SETTINGS max_block_size=8192 FORMAT ArrowStream')
+        'AND bucket_index<72000 ORDER BY bucket_index FORMAT ArrowStream')
     from contextlib import closing
     from uuid import uuid4
     from time import perf_counter
@@ -46,12 +46,13 @@ def source_rows(client, unit):
         with closing(client.http.iter_arrow_record_batches(query,query_id=query_id)) as batches:
             for batch in batches:
                 # Arrow avoids JSON text and retains bounded transfer blocks.
-                for row in batch.to_pylist():
-                    index=int(row['bucket_index']);count+=1
-                    if index<=last or index>=72000 or count>57300:
-                        raise ValueError('Duplicate or invalid certified 1s bar coordinates')
-                    last=index
-                    yield row
+                for offset in range(0,batch.num_rows,8192):
+                    for row in batch.slice(offset,8192).to_pylist():
+                        index=int(row['bucket_index']);count+=1
+                        if index<=last or index>=72000 or count>57300:
+                            raise ValueError('Duplicate or invalid certified 1s bar coordinates')
+                        last=index
+                        yield row
     except BaseException:
         client.cancel()
         raise

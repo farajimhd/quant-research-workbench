@@ -199,7 +199,7 @@ class CoreOptimizationParity(unittest.TestCase):
         import pyarrow as pa
         calls=[]
         def batches(query,query_id):
-            self.assertIn('max_block_size=8192 FORMAT ArrowStream',query)
+            self.assertIn('FORMAT ArrowStream',query)
             yield pa.RecordBatch.from_pylist([dict(bucket_index=14700)])
             yield pa.RecordBatch.from_pylist([dict(bucket_index=14700)])
         client=SimpleNamespace(http=SimpleNamespace(iter_arrow_record_batches=batches),active=None,
