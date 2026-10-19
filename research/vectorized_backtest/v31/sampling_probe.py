@@ -21,6 +21,17 @@ def resolve(path):
         if other.exists():return other
     raise FileNotFoundError(path)
 
+def feature_rows(series, observed=None, count=None):
+    """Retain null rows as unavailable, matching the resident replay loader."""
+    if not series.dtype.is_integer():raise ValueError('Certified feature-row integer column required')
+    rows=series.cast(pl.Int64).fill_null(-1).to_numpy()
+    if np.any(rows < -1):raise ValueError('Invalid negative feature reference')
+    if count is not None and np.any(rows>=count):raise ValueError('Feature reference outside certified bank')
+    if observed is not None and np.any(np.asarray(observed,dtype=bool)&(rows<0)):
+        raise ValueError('Observed market bar has no certified feature history')
+    return rows
+
+
 def build(training,day,starts=(1500,7500,13500),steps=16):
     """Full causal cross-section normalization, then bounded top-10 union slices.
 
@@ -42,8 +53,9 @@ def build(training,day,starts=(1500,7500,13500),steps=16):
     if ticks.min()<0 or ticks.max()>=len(clocks):raise ValueError('Probe clock outside session')
     sr=load(h,'source_rows')[ticks];ids=load(h,'ids')[ticks];unique=np.unique(sr.clip(0));hist,hix=np.unique(ids,return_inverse=True)
     market=pl.scan_parquet(a/'market.parquet').with_row_index('idx').filter(pl.col('idx').is_in(unique)).select(
-        'idx','feature_row','mark','bid','ask','quote_us','volume','notional','trade_count').collect().sort('idx')
-    fr=market['feature_row'].to_numpy();fu,fix=np.unique(fr.clip(0),return_inverse=True)
+        'idx','feature_row','observed','mark','bid','ask','quote_us','volume','notional','trade_count').collect().sort('idx')
+    fr=feature_rows(market['feature_row'],market['observed'].fill_null(False).to_numpy(),len(load(a,'features')))
+    fu,fix=np.unique(fr.clip(0),return_inverse=True)
     t=lambda x:torch.from_numpy(np.array(x,copy=True))
     bank=ResidentFeatures.__new__(ResidentFeatures);bank.device=torch.device('cpu');bank.column_plans={}
     bank.tensors={'base':t(load(a,'features')[fu]),'base_valid':t(load(a,'feature_valid')[fu]),

@@ -65,3 +65,34 @@ def test_operator_changes_semantic_identity():
     a=replace(a,networks={s:n for s in STAGES});b=replace(a,networks=dict(a.networks,entry=replace(n,nodes=(replace(n.nodes[0],op='max'),))))
     assert program_key(a)!=program_key(b)
     assert Individual.restore(b.payload())==b
+
+
+def test_probe_nullable_feature_rows_preserve_missingness():
+    import polars as pl
+    from research.vectorized_backtest.v31.sampling_probe import feature_rows
+    rows=feature_rows(pl.Series('feature_row',[0,None,12,-1],dtype=pl.Int64))
+    assert rows.dtype==np.int64
+    np.testing.assert_array_equal(rows,[0,-1,12,-1])
+    assert feature_rows(pl.Series('feature_row',[],dtype=pl.Int64)).dtype==np.int64
+    with pytest.raises(ValueError,match='integer'):feature_rows(pl.Series([1.5]))
+    with pytest.raises(ValueError,match='Observed'):feature_rows(pl.Series([None],dtype=pl.Int64),[True],1)
+    with pytest.raises(ValueError,match='outside'):feature_rows(pl.Series([1]),[False],1)
+    with pytest.raises(ValueError,match='negative'):feature_rows(pl.Series([-2]))
+
+
+def test_missing_reference_never_exposes_safe_index_values():
+    import torch
+    from research.vectorized_backtest.v27.resident_features import ResidentFeatures
+    from research.vectorized_backtest.v27.features import ORIGINAL,LEGACY
+    bank=ResidentFeatures.__new__(ResidentFeatures)
+    bank.device=torch.device('cpu');bank.column_plans={}
+    bank.tensors={'feature_row':torch.tensor([-1,0]),'mark':torch.ones(2),
+        'base':torch.tensor([[.75]]),'base_valid':torch.tensor([[True]]),
+        'indicators':torch.tensor([[.5]]),'enriched':torch.tensor([[.25]])}
+    rows=torch.tensor([[0,1,-1]])
+    values,known=bank._values_reference(rows,torch.zeros_like(rows),torch.ones_like(rows),[0,len(ORIGINAL),len(LEGACY)])
+    assert not known[0,0].any() and not known[0,2].any()
+    assert known[0,1].all()
+    assert torch.equal(values[0,0],torch.zeros(3))
+    assert torch.equal(values[0,2],torch.zeros(3))
+    assert torch.equal(values[0,1],torch.tensor([.75,.5,.25]))
