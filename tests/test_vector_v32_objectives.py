@@ -11,6 +11,14 @@ def test_source_is_exact_v21_and_other_engine_files_only_rename_version():
     for p in (root/'v31').iterdir():
         if not p.is_file() or p.name in ('objectives.py','README.md','local_runner.py','run_train.py'):continue
         expected=p.read_bytes().replace(b'v31',b'v32').replace(b'V31',b'V32')
+        if p.name=='network_cuda.py':
+            # State-channel fusion has dedicated exact CUDA regression tests.
+            # Every other kernel remains byte-identical, except its launch grid.
+            expected=expected[expected.index(b'def workspace_kernel'):]
+            expected=expected.replace(b'state_kernel[(b,len(STATES),tr.cdiv(u,256))]',b'state_kernel[(b,tr.cdiv(u,256))]')
+            actual=(root/'v32'/p.name).read_bytes()
+            assert actual[actual.index(b'def workspace_kernel'):]==expected
+            continue
         assert (root/'v32'/p.name).read_bytes()==expected,p.name
 
 
@@ -33,3 +41,4 @@ def test_local_and_global_exact_parity_with_fractional_trim_and_losses():
     totals,removed,_=candidate.ticker_summary([{'a':100.,'b':-50.,'c':20.}])
     np.testing.assert_array_equal(totals,[70.])
     np.testing.assert_allclose(removed,[30.],rtol=0,atol=1e-14)
+
