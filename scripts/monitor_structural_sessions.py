@@ -77,18 +77,22 @@ def snapshot(root):
                 events=[line for line in stream.read().decode('utf-8',errors='replace').splitlines()
                         if line.startswith(('Native reporting','Retained reporting','Source ready','Source preparation'))][-4:]
     from datetime import datetime,timezone
+    status_current=True
+    if controller.get('phase')=='backfill' and controller.get('utc') and (root/'status.json').exists():
+        status_current=(root/'status.json').stat().st_mtime>=datetime.fromisoformat(controller['utc']).timestamp()
     return dict(controller=controller,status=status,stop=(root/'STOP').exists(),evidence=evidence,events=events,
-        refreshed=datetime.now(timezone.utc).strftime('%H:%M:%S UTC'))
+        status_current=status_current,refreshed=datetime.now(timezone.utc).strftime('%H:%M:%S UTC'))
 
 
 def render(value,width=100,height=30,rate=None):
     controller=value.get('controller',{});s=value.get('status',{})
     phase=controller.get('phase','waiting for controller')
-    if phase in ('plan','profile') and s.get('status') in ('failed','interrupted'):
+    if value.get('status_current') is False or (phase in ('plan','profile') and s.get('status') in ('failed','interrupted')):
         # The controller has a new owner; status.json still belongs to the
         # previous attempt until the new pool publishes its first snapshot.
         s={'total':s.get('total'),'worker_limit':s.get('worker_limit',8)}
     state=s.get('status',phase) if phase=='backfill' else phase
+    if phase=='backfill' and value.get('status_current') is False:state='starting workers'
     evidence=value.get('evidence',{})
     if phase=='failed' and controller.get('failed_phase')=='plan' and evidence.get('status')=='running':
         state='Waiting for reporting recovery'
