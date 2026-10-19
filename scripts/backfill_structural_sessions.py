@@ -286,8 +286,7 @@ def _process_ticker(spec,a,ticker):
             actions = split_evidence(client.http, ticker=ticker,
                 seed_session=date.fromisoformat(prior['session']) if prior else history_start-timedelta(days=1),
                 session=date.fromisoformat(day))
-            current = client.query(f"SELECT * FROM {COVERAGE_TABLE} FINAL PREWHERE "
-                f"{storage.boundary_key(ticker, day)}") if target else []
+            current = storage.read_boundaries(client, ticker, day) if target else []
             unit = None
             source_ref = None
             if target:

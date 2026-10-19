@@ -68,6 +68,40 @@ def boundary_key(ticker, day, boundaries=('PM', 'REGULAR')):
     return f'(ticker,session_date,checkpoint_boundary) IN [{values}]'
 
 
+def read_boundaries(client, ticker, day, boundaries=('PM', 'REGULAR'), *, suffix=''):
+    """Select winning metadata with FINAL, then read only its pinned payload.
+
+    FINAL over wide String columns can deserialize an entire historical granule
+    before filtering, regardless of max_block_size. Payload reads deliberately
+    omit FINAL only AFTER the winning revision has been selected. Distinct
+    payload conflicts, missing revisions, hash corruption and concurrent changes
+    fail closed; identical physical duplicates are harmless.
+    """
+    from .structural_session_checkpoints import restore_boundary
+    key = boundary_key(ticker, day, boundaries)
+    suffix = suffix or ' ORDER BY checkpoint_boundary'
+    query = f'SELECT * EXCEPT(streaming_state) FROM {COVERAGE_TABLE} FINAL PREWHERE {key}{suffix}'
+    headers = client.query(query)
+    if (len(headers) > len(boundaries) or
+            len({row['checkpoint_boundary'] for row in headers}) != len(headers)):
+        raise ValueError('Ambiguous boundary metadata')
+    result = []
+    for header in headers:
+        exact = boundary_key(ticker, day, (header['checkpoint_boundary'],))
+        revision = int(header['publication_revision'])
+        payloads = client.query(f'SELECT DISTINCT streaming_state,streaming_state_hash '
+            f'FROM {COVERAGE_TABLE} PREWHERE {exact} '
+            f'WHERE publication_revision={revision} LIMIT 2')
+        if len(payloads) != 1 or payloads[0]['streaming_state_hash'] != header['streaming_state_hash']:
+            raise ValueError('Pinned boundary payload is missing or conflicting')
+        row = {**header, 'streaming_state': payloads[0]['streaming_state']}
+        restore_boundary(row)
+        result.append(row)
+    if client.query(query) != headers:
+        raise ValueError('Boundary publication changed during payload read')
+    return result
+
+
 def load_boundary(client, *, ticker, day, as_of):
     """Restore the latest completed intraday state available at the requested cut.
 
@@ -77,8 +111,8 @@ def load_boundary(client, *, ticker, day, as_of):
     from .structural_session_checkpoints import restore_boundary
     if as_of.tzinfo is None or as_of.utcoffset() is None:
         raise ValueError('Intraday checkpoint cutoff must be timezone-aware')
-    rows = client.query(f"SELECT * FROM {COVERAGE_TABLE} FINAL PREWHERE {boundary_key(ticker, day)} "
-        f"WHERE available_at<=parseDateTime64BestEffort({literal(as_of.isoformat())},9,'UTC') "
+    rows = read_boundaries(client, ticker, day, suffix=
+        f" WHERE available_at<=parseDateTime64BestEffort({literal(as_of.isoformat())},9,'UTC') "
         "ORDER BY available_at DESC LIMIT 1")
     if not rows:
         return None
@@ -141,8 +175,7 @@ def verify_snapshot(client, table, expected, where):
 def publish_boundary(client, value, plan_hash):
     from .structural_session_checkpoints import normalized_boundary, restore_boundary
     levels, observations, certificate = normalized_boundary(value, plan_hash)
-    where = boundary_key(value['ticker'], value['day'], (value['boundary'],))
-    existing = client.query(f'SELECT * FROM {COVERAGE_TABLE} FINAL PREWHERE {where}')
+    existing = read_boundaries(client, value['ticker'], value['day'], (value['boundary'],))
     if existing:
         if len(existing) != 1 or existing[0]['streaming_state_hash'] != certificate['streaming_state_hash']:
             raise ValueError('Existing boundary differs from immutable request')
@@ -160,7 +193,7 @@ def publish_boundary(client, value, plan_hash):
         verify_snapshot(client, table, expected, f"ticker={literal(value['ticker'])} "
             f"AND checkpoint_boundary={literal(value['boundary'])} AND valid_from=toDateTime64({stamp},9,'UTC')")
     insert(client, COVERAGE_TABLE, [certificate])
-    published = client.query(f'SELECT * FROM {COVERAGE_TABLE} FINAL PREWHERE {where}')
+    published = read_boundaries(client, value['ticker'], value['day'], (value['boundary'],))
     if len(published) != 1:
         raise ValueError('Boundary completion read-back failed')
     restore_boundary(published[0])
