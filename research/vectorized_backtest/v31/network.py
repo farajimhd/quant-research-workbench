@@ -2,7 +2,7 @@
 import os
 import numpy as np
 import torch
-from .genome import INPUTS,MARKET_INPUTS,STAGES
+from .genome import INPUTS,MARKET_INPUTS,STAGES,OPS
 from .features import CATALOG
 from .config import MAX_NODES,FAN_IN,STATES
 
@@ -54,6 +54,7 @@ class NetworkPlan:
                     weights[row,e]=w
         values=(sources,weights,bias,counts,offsets,threshold,size_source,size_weight,size_bias)
         self.sources,self.weights,self.bias,self.counts,self.offsets,self.threshold,self.size_source,self.size_weight,self.size_bias=[torch.as_tensor(x,device=device) for x in values]
+        self.operations=torch.tensor([OPS.index(n.op) for net in nets for n in net.nodes],device=device,dtype=torch.int32)
         self.edge_counts=torch.as_tensor(edge_counts,device=device)
         self.logarithmic=torch.tensor([CATALOG[s].unit not in ('ratio','bool') for s in self.columns],device=device)
         self.workspace_shape=None
@@ -132,16 +133,18 @@ class NetworkPlan:
                 net=m.networks[stage];base=int(self.offsets_cpu[b*5+action]);outputs=[];masks=[]
                 for i,n in enumerate(net.nodes):
                     z=torch.full((v.shape[0],),float(np.float32(n.bias)),dtype=torch.float32,device=v.device);ok=torch.zeros_like(z,dtype=torch.bool)
+                    terms=[]
                     for source,w in zip(n.sources,n.weights):
-                        if w==0:continue
+                        if w==0 and n.op in ('tanh','conv','identity'):continue
                         if source<0:x=self.memory[base-source-1];mask=self.memory_known[base-source-1]
                         elif source<MARKET_INPUTS:
                             channel=source//len(CATALOG);column=self.lookup[source%len(CATALOG)]
                             x=v[:,channel*len(self.columns)+column];mask=valid[:,column] if channel<2 else torch.zeros_like(ok)
                         elif source<INPUTS:x=states[b,:,source-MARKET_INPUTS];mask=torch.zeros_like(ok)
                         else:x=outputs[source-INPUTS];mask=masks[source-INPUTS]
-                        z=z+x*float(np.float32(w));ok=ok|mask
-                    outputs.append(z.tanh());masks.append(ok)
+                        term=x*float(np.float32(w));terms.append(term);z=z+term;ok=ok|(mask if w!=0 else False)
+                    from .operators import evaluate
+                    outputs.append(z.tanh() if n.op in ('tanh','conv') else evaluate(n.op,terms,n.bias,z));masks.append(ok)
                     self.workspace[base+i].copy_(outputs[-1]);self.known[base+i].copy_(ok)
                 actions.append(masks[-1]&(outputs[-1]>float(np.float32(net.threshold))))
                 if action in (0,2,3):

@@ -48,14 +48,16 @@ def observe(net,probe,stage='entry',*,reference=False):
         values=[];masks=[]
         for node in net.nodes:
             z=np.full((x.shape[0],x.shape[2]),np.float32(node.bias));ok=np.zeros(z.shape,bool)
+            terms=[]
             for source,w in zip(node.sources,node.weights):
-                if w==0:continue
+                if w==0 and node.op in ('tanh','conv','identity'):continue
                 if source<0:v=memory[-source-1];mask=memory_known[-source-1]
                 elif source<MARKET_INPUTS:v=x[:,tick,:,source];mask=known[:,tick,:,source%f] if source<2*f else False
                 elif source<INPUTS:v=(x[:,tick,:,source] if stage=='entry' else probe['held_states'][:,tick,:,source-MARKET_INPUTS]);mask=False
                 else:v=values[source-INPUTS];mask=masks[source-INPUTS]
-                z=z+v*np.float32(w);ok|=mask
-            v=np.tanh(z);values.append(v);masks.append(ok)
+                term=v*np.float32(w);terms.append(term);z=z+term;ok|=mask if w!=0 else False
+            from .operators import evaluate
+            v=np.tanh(z) if node.op in ('tanh','conv') else evaluate(node.op,terms,node.bias,z);values.append(v);masks.append(ok)
             saturated+=int(((np.abs(v)>.99)&ok).sum());total+=int(ok.sum())
         memory=np.asarray(values);memory_known=np.asarray(masks)
         outputs.append(values[-1]);valid.append(masks[-1])

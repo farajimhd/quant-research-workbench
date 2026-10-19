@@ -36,7 +36,13 @@ def rule_lines(payload,stage):
     lines=[]
     for i,node in enumerate(network['nodes']):
         terms=[f'{weight:.5g} * {name(source)}' for source,weight in zip(node['sources'],node['weights'])]
-        lines.append(f"n{i} = tanh({' + '.join(terms)} + {node['bias']:.5g})")
+        op=node.get('op','tanh');b=f"{node['bias']:.5g}"
+        if op in ('tanh','conv'):expression=f"tanh({b} + {' + '.join(terms)})"
+        elif op=='identity':expression=f"clip({b} + {' + '.join(terms)}, -1, 1)"
+        elif op=='gate':expression=f"sigmoid({terms[0]}) * tanh({b} + {' + '.join(terms[1:]) or '0'})"
+        elif op=='attention':expression=f"tanh({b} + attention(query={terms[0]}; key,value pairs={'; '.join(', '.join(terms[j:j+2]) for j in range(1,len(terms),2))}))"
+        else:expression=f"tanh({b} + {op}({', '.join(terms)}))"
+        lines.append(f"n{i} = {expression}")
     lines.append(f"SIGNAL: n{len(network['nodes'])-1} > {network['threshold']:.5g} | minimum age {payload.get('minimum_age',{}).get(stage,0)} seconds")
     if stage in ('entry','add','reduce'):
         head=network.get('size_source',-1);head=head if head>=0 else len(network['nodes'])-1

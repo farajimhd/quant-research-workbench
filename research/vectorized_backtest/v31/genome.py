@@ -9,6 +9,7 @@ from research.vectorized_backtest.v6.torch_backtest.history_bank import SWING_WI
 STAGES=('entry','exit','add','reduce','trail')
 MARKET_INPUTS=3*len(CATALOG)
 INPUTS=MARKET_INPUTS+len(STATES)
+OPS=('tanh','max','min','mean','product','gate','attention','identity','conv')
 
 @dataclass(frozen=True)
 class Neuron:
@@ -16,6 +17,7 @@ class Neuron:
     weights:tuple
     bias:float
     uid:int=0
+    op:str="tanh"
 
 @dataclass(frozen=True)
 class Network:
@@ -32,6 +34,8 @@ class Network:
             if not 1<=len(n.sources)<=FAN_IN or len(n.sources)!=len(n.weights) or len(set(n.sources))!=len(n.sources):
                 raise ValueError('Invalid sparse connectivity')
             if any(type(s) is not int or not (-len(self.nodes)<=s<INPUTS+i) for s in n.sources):raise ValueError('Forward/unknown connection')
+            if n.op not in OPS:raise ValueError('Unknown neural operator')
+            if n.op=='attention' and (len(n.sources)<3 or len(n.sources)%2!=1):raise ValueError('Attention requires query plus key/value pairs')
             if type(n.uid) is not int or n.uid<0:raise ValueError('Invalid persistent node identity')
             if any(not math.isfinite(w) or abs(w)>WEIGHT_BOUND for w in (*n.weights,n.bias)):raise ValueError('Invalid weights')
             depths.append(1+max((depths[s-INPUTS] for s in n.sources if s>=INPUTS),default=0))
@@ -42,7 +46,7 @@ class Network:
         return self
     def payload(self):return dict(nodes=[asdict(n) for n in self.nodes],threshold=self.threshold,size_source=self.size_source,size_weight=self.size_weight,size_bias=self.size_bias)
     @classmethod
-    def restore(cls,p):return cls(tuple(Neuron(tuple(n['sources']),tuple(n['weights']),n['bias'],n.get('uid',0)) for n in p['nodes']),p['threshold'],p.get('size_source',-1),p.get('size_weight',1.),p.get('size_bias',0.)).validate()
+    def restore(cls,p):return cls(tuple(Neuron(tuple(n['sources']),tuple(n['weights']),n['bias'],n.get('uid',0),n.get('op','tanh')) for n in p['nodes']),p['threshold'],p.get('size_source',-1),p.get('size_weight',1.),p.get('size_bias',0.)).validate()
 
 def reachable(net,root):
     live=set()
@@ -62,7 +66,7 @@ def prune(net,root=None):
     # dependencies after it, so those extra modules cannot be extracted safely.
     if mapping[actual]!=len(live)-1:raise ValueError('Delayed module crosses output boundary')
     def remap(s):return -mapping[-s-1]-1 if s<0 else s if s<INPUTS else INPUTS+mapping[s-INPUTS]
-    return Network(tuple(Neuron(tuple(remap(s) for s in net.nodes[i].sources),net.nodes[i].weights,net.nodes[i].bias,net.nodes[i].uid) for i in live),net.threshold,mapping[size],net.size_weight,net.size_bias)
+    return Network(tuple(Neuron(tuple(remap(s) for s in net.nodes[i].sources),net.nodes[i].weights,net.nodes[i].bias,net.nodes[i].uid,net.nodes[i].op) for i in live),net.threshold,mapping[size],net.size_weight,net.size_bias)
 
 def random_input(rng,stage):
     # Flat-only entry has no meaningful held-position state.
@@ -99,7 +103,20 @@ def random_network(rng,stage,size=None,profile=None):
         nodes.append(Neuron(tuple(sources),tuple(float(x) for x in rng.uniform(-1,1,len(sources))),float(rng.uniform(-1,1)),int(rng.integers(1,2**63))))
         return INPUTS+len(nodes)-1
     build(size,depth)
-    return Network(tuple(nodes),float(rng.uniform(-.999999,.999999)),int(rng.integers(len(nodes))),float(rng.uniform(-1,1)),float(rng.uniform(-1,1))).validate()
+    # Half of initial action graphs retain the original tanh family.
+    if rng.random()<.5:
+        nodes=[replace(n,op=str(rng.choice(tuple(o for o in OPS if o not in ('identity','conv') and (o!='attention' or len(n.sources)>=3 and len(n.sources)%2==1))))) if rng.random()<.35 else n for n in nodes]
+        if size>=3 and rng.random()<.5:
+            # Exact one-step shift registers: convolution is across causal clocks.
+            taps=min(size-1,int(rng.integers(2,5)))
+            source=int(feature_index(rng))
+            for j in range(taps):
+                nodes[j]=Neuron((source if j==0 else -j,), (1.,),0.,nodes[j].uid,'identity')
+            target=nodes[taps]
+            sources=tuple(dict.fromkeys((source,)+tuple(-j-1 for j in range(taps))+target.sources))[:FAN_IN]
+            nodes[taps]=replace(target,sources=sources,weights=tuple(float(x) for x in rng.uniform(-1,1,len(sources))),op=str(rng.choice(('conv','max','min','mean'))))
+            # Existing upstream edges retain reachability; prune replaced branches.
+    return prune(Network(tuple(nodes),float(rng.uniform(-.999999,.999999)),int(rng.integers(len(nodes))),float(rng.uniform(-1,1)),float(rng.uniform(-1,1)))).validate()
 
 @dataclass(frozen=True)
 class Individual:

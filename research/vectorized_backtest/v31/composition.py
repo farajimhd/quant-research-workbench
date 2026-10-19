@@ -9,7 +9,7 @@ def choose_operator(rng):return 'independent-action-graphs'
 
 def import_module(nodes,net,root):
     piece=prune(net,None if root==len(net.nodes)-1 else root);offset=len(nodes)
-    nodes.extend(Neuron(tuple(s-offset if s<0 else s if s<INPUTS else s+offset for s in n.sources),n.weights,n.bias,n.uid) for n in piece.nodes)
+    nodes.extend(Neuron(tuple(s-offset if s<0 else s if s<INPUTS else s+offset for s in n.sources),n.weights,n.bias,n.uid,n.op) for n in piece.nodes)
     return INPUTS+len(nodes)-1
 
 def compose(rng,a,b,whole):
@@ -30,7 +30,7 @@ def exchange(rng,a,b):
     def donor(s):return -(target-s-1)-1 if s<0 else s if s<INPUTS else s+target
     nodes=[]
     for i,node in enumerate(a.nodes):
-        if i==target:nodes.extend(Neuron(tuple(donor(v) for v in n.sources),n.weights,n.bias,n.uid) for n in piece.nodes)
+        if i==target:nodes.extend(Neuron(tuple(donor(v) for v in n.sources),n.weights,n.bias,n.uid,n.op) for n in piece.nodes)
         else:nodes.append(replace(node,sources=tuple(remap(v) for v in node.sources)))
     old_size=a.size_source if a.size_source>=0 else len(a.nodes)-1
     return prune(Network(tuple(nodes),piece.threshold if target==len(a.nodes)-1 else a.threshold,
@@ -51,7 +51,7 @@ def homologous_weights(rng,a,b):
         return ('input',source)
     for node in a.nodes:
         donor=other.get(node.uid)
-        if donor is None or node.uid not in own:nodes.append(node);continue
+        if donor is None or donor.op!=node.op or node.uid not in own:nodes.append(node);continue
         weights={k:w for s,w in zip(donor.sources,donor.weights) if (k:=key(b,s)) is not None};out=[]
         for source,w in zip(node.sources,node.weights):
             match=weights.get(key(a,source));out.append((w+match)/2 if match is not None and rng.random()<.5 else w)
@@ -121,8 +121,11 @@ def mutation(rng,parent,count,crossover_child=False):
                     edge=int(rng.integers(len(node.weights)));key=(stage,field,index,edge);w=list(node.weights);w[edge]=parameter(rng,w[edge]);nodes[index]=replace(node,weights=tuple(w));newnet=replace(net,nodes=tuple(nodes))
             else:
                 if any(e['stage']==stage for e in edits):continue
-                field=str(rng.choice(('input','connect','disconnect','grow','remove','delay')));key=(stage,'structure')
-                if field=='input':
+                field=str(rng.choice(('input','connect','disconnect','grow','remove','delay','operator')));key=(stage,'structure')
+                if field=='operator':
+                    from .genome import OPS
+                    nodes[index]=replace(node,op=str(rng.choice(OPS)))
+                elif field=='input':
                     e=int(rng.integers(len(node.sources)));sources=list(node.sources);sources[e]=random_input(rng,stage);nodes[index]=replace(node,sources=tuple(sources))
                 elif field=='connect':
                     if len(node.sources)>=FAN_IN:continue

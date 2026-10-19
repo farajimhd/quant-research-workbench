@@ -187,3 +187,37 @@ Projection uses the fixed complete certified feature catalog, so another
 candidate joining/leaving a batch cannot alter the reduction layout of a
 retained candidate. Individual graphs still connect sparsely to their own
 selected inputs. Normal global profiles already cover the full catalog.
+
+
+## Typed neural operators
+
+V31 adds evolvable bounded operators to each independent action graph. `tanh`
+and `conv` compute tanh(bias + ordered weighted sum). `max`, `min`, `mean`,
+and `product` apply their named reduction to weighted inputs, then add bias
+and tanh. `gate` computes sigmoid(first weighted input) times tanh(bias plus
+remaining weighted inputs). `attention` consumes a scalar query followed by
+key/value pairs: tanh(bias + softmax(query * keys) weighted values), using a
+stable softmax. Weights, biases, connectivity, thresholds and operator type
+evolve. Attention uses at most seven key/value pairs under the existing fan-in
+budget; it can attend to upstream learned representations or causal memory.
+
+`identity` clips its weighted sum to [-1,1]. With unit weight and zero bias it
+is an exact bounded shift register. Initial temporal modules connect two to
+four preceding replay-clock taps to a convolution or pooling node. They use
+existing delayed edges and zero-reset per-session memory, with no future input
+or shared cross-session state. Evolution can change and extend these modules
+within the existing graph budgets. Taps are replay-clock steps, not adjacent
+feature IDs; this is temporal convolution, not convolution over the feature
+catalog. Mean pooling and convolution retain signed weights. Missing channels
+remain neutral zero, and a nonzero-weight observed market ancestor is required
+before an action can fire. Delay warm-up uses zero history, as does recurrence.
+
+Half of sampled action graphs select the original tanh-only family. In the
+mixed family each node has a 35% chance of a typed operator, uniformly among
+arity-compatible non-delay operators. Graphs with at least three nodes have a
+50% chance of an initial temporal module. These are sampling priors, not search
+restrictions. Mutation can select every operator; malformed attention arity
+is rejected by the normal bounded retry logic. Node identity, payload hashes,
+species descriptors, module crossover and detailed rule displays include the
+operator. All outputs remain within [-1,1], preserving threshold and sizing
+contracts. No backpropagation or financial-objective change is introduced.

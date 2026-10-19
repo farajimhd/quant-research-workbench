@@ -23,7 +23,8 @@ def describe(member):
                     parameters[f'{stage}:{node.uid}:{identity}']=float(w)
             if node.uid and counts[node.uid]==1:parameters[f'{stage}:{node.uid}:bias']=float(node.bias)
         n=len(net.nodes);d=max(depth);sizes.append(n);depths.append(d);recurrences+=delayed
-        shape.extend([n,d,edges/max(1,n),delayed/max(1,edges)])
+        from .genome import OPS
+        shape.extend([n,d,edges/max(1,n),delayed/max(1,edges)]+[sum(x.op==op for x in net.nodes)/n for op in OPS])
     return dict(features=sorted(features),parameters=parameters,shape=shape,sizes=sizes,depths=depths,recurrent_edges=recurrences)
 
 

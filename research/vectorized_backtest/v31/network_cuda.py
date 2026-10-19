@@ -26,7 +26,7 @@ def state_kernel(P,OPENED,PREVIOUS,CLOCK,FEEDBACK,OUT,U:tl.constexpr,STATES:tl.c
 
 
 @tr.jit
-def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr):
+def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr):
     """One clock of scratch, directly indexed; no N-way register gathers."""
     member=tl.program_id(0);action=tl.program_id(1);u=tl.program_id(2)*BLOCK+tl.arange(0,BLOCK);live=u<U
     net=member*5+action;ncount=tl.load(COUNTS+net);base=tl.load(OFFSETS+net)
@@ -36,11 +36,18 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,BIAS,COUNTS,OFFSETS,THR
     h=tl.full((BLOCK,),0,tl.float32);ok=tl.full((BLOCK,),False,tl.int1)
     for i in range(ncount):
         z=tl.full((BLOCK,),0,tl.float32)+tl.load(BIAS+base+i);ok=tl.full((BLOCK,),False,tl.int1)
+        op=tl.load(OPS+base+i)
+        aggregate=tl.full((BLOCK,),0,tl.float32)
+        if op==1:aggregate=tl.full((BLOCK,),-float('inf'),tl.float32)
+        elif op==2:aggregate=tl.full((BLOCK,),float('inf'),tl.float32)
+        elif op==4:aggregate=tl.full((BLOCK,),1,tl.float32)
+        query=tl.full((BLOCK,),0,tl.float32);key=tl.full((BLOCK,),0,tl.float32)
+        peak=tl.full((BLOCK,),-float('inf'),tl.float32);den=tl.full((BLOCK,),0,tl.float32)
         # Preserve edge order and zero-weight semantics, but never inspect
         # padded slots. The scalar bound is uniform within this action tile.
         for e in range(tl.load(EDGE_COUNTS+base+i)):
             s=tl.load(SOURCES+(base+i)*FAN+e);w=tl.load(WEIGHTS+(base+i)*FAN+e)
-            if w!=0:
+            if w!=0 or (op>=1 and op<=6):
                 if s<0:
                     offset=(base-s-1)*U+u
                     x=tl.load(old+offset,live,0);valid=tl.load(old_known+offset,live,False)
@@ -52,8 +59,28 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,BIAS,COUNTS,OFFSETS,THR
                 else:
                     offset=(base+s-3*C-STATES)*U+u
                     x=tl.load(current+offset,live,0);valid=tl.load(current_known+offset,live,False)
-                z=z+x*w;ok=ok|valid
+                term=x*w;ok=ok|(valid&(w!=0))
+                if op==0 or op==7 or op==8:z=z+term
+                elif op==1:aggregate=tl.maximum(aggregate,term)
+                elif op==2:aggregate=tl.minimum(aggregate,term)
+                elif op==3:aggregate=aggregate+term
+                elif op==4:aggregate=aggregate*term
+                elif op==5:
+                    if e==0:query=term
+                    else:aggregate=aggregate+term
+                elif op==6:
+                    if e==0:query=term
+                    elif e%2==1:key=term
+                    else:
+                        logit=query*key;next_peak=tl.maximum(peak,logit)
+                        scale=tl.exp(peak-next_peak);weight=tl.exp(logit-next_peak)
+                        aggregate=aggregate*scale+weight*term;den=den*scale+weight;peak=next_peak
+        if op==1 or op==2 or op==4 or op==5:z=z+aggregate
+        elif op==3:z=z+aggregate/tl.load(EDGE_COUNTS+base+i)
+        elif op==6:z=z+aggregate/den
         h=2./(1.+tl.exp(2.*-z))-1.
+        if op==5:h=h/(1.+tl.exp(-query))
+        elif op==7:h=tl.minimum(1.,tl.maximum(-1.,z))
         offset=(base+i)*U+u
         tl.store(current+offset,h,live);tl.store(current_known+offset,ok,live)
     tl.store(OUT+(member*5+action)*U+u,ok&(h>tl.load(THRESHOLD+net)),live)
@@ -72,7 +99,7 @@ def signals(plan,values,valid,position,opened,previous,index,out=None):
     block=getattr(plan,'cuda_block',128)
     if block not in (32,64,128,256):raise ValueError('Unsupported neural CUDA tile')
     state_kernel[(b,len(STATES),tr.cdiv(u,256))](position,opened,previous,index,plan.feedback,plan.position_states,u,len(STATES),256,enable_fp_fusion=False)
-    workspace_kernel[(b,5,tr.cdiv(u,block))](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.bias,plan.counts,plan.offsets,plan.threshold,
+    workspace_kernel[(b,5,tr.cdiv(u,block))](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.operations,plan.bias,plan.counts,plan.offsets,plan.threshold,
         plan.size_source,plan.size_weight,plan.size_bias,plan.position_states,plan.memory,plan.memory_known,plan.ratios,
         plan.workspace,plan.known,plan.buffer_phase,actions,u,len(plan.columns),len(STATES),FAN_IN,block,enable_fp_fusion=False)
     result=out if out is not None else torch.empty((1,b,u),device=position.device,dtype=torch.int16)
