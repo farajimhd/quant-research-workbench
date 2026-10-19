@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import http.client
+import gzip
 import json
 import os
 import re
@@ -275,6 +276,7 @@ class ClickHouseHttpClient:
         persistent: bool = False,
         default_query_params: Mapping[str, str | int | float] | None = None,
         max_persistent_idle_seconds: float | None = None,
+        compress_responses: bool = False,
     ) -> None:
         if timeout_seconds is not None and float(timeout_seconds) <= 0:
             raise ValueError("timeout_seconds must be positive when provided")
@@ -286,6 +288,9 @@ class ClickHouseHttpClient:
         self.password = password
         self.timeout_seconds = None if timeout_seconds is None else float(timeout_seconds)
         self.persistent = bool(persistent)
+        # Opt-in only for materialized execute responses; streaming APIs retain
+        # their independent uncompressed response path.
+        self.compress_responses = bool(compress_responses)
         self.max_persistent_idle_seconds = (
             None if max_persistent_idle_seconds is None
             else float(max_persistent_idle_seconds))
@@ -317,6 +322,7 @@ class ClickHouseHttpClient:
         if not isinstance(sql, (str, bytes)):
             raise TypeError("ClickHouse request must be SQL text or exact bytes")
         params = dict(self.default_query_params)
+        if self.compress_responses:params['enable_http_compression']='1'
         if query_id:
             params["query_id"] = query_id
         if self.persistent:
@@ -338,12 +344,19 @@ class ClickHouseHttpClient:
             req.add_header("X-ClickHouse-User", self.user)
         if self.password:
             req.add_header("X-ClickHouse-Key", self.password)
+        if self.compress_responses:req.add_header('Accept-Encoding','gzip')
         try:
             with request.urlopen(req, timeout=self.timeout_seconds) as response:
-                return response.read().decode("utf-8", errors="replace")
+                return self._decode_response(response)
         except error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
+            body = self._decode_response(exc)
             raise RuntimeError(f"ClickHouse HTTP {exc.code} {exc.reason}: {body}") from exc
+
+    def _decode_response(self,response):
+        body=response.read()
+        if self.compress_responses and response.getheader('Content-Encoding')=='gzip':
+            body=gzip.decompress(body)
+        return body.decode('utf-8',errors='replace')
 
     def iter_json_each_row(
         self,
@@ -490,6 +503,7 @@ class ClickHouseHttpClient:
             headers["X-ClickHouse-User"] = self.user
         if self.password:
             headers["X-ClickHouse-Key"] = self.password
+        if self.compress_responses:headers['Accept-Encoding']='gzip'
         with self._connection_lock:
             if (self._connection is not None
                     and self.max_persistent_idle_seconds is not None
@@ -509,7 +523,7 @@ class ClickHouseHttpClient:
                     headers=headers,
                 )
                 response = self._connection.getresponse()
-                body = response.read().decode("utf-8", errors="replace")
+                body = self._decode_response(response)
                 self._last_persistent_response_at = time.monotonic()
                 if response.will_close:
                     self._close_connection_unlocked()

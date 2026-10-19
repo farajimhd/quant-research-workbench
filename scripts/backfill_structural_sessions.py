@@ -245,6 +245,7 @@ def _process_ticker(spec,a,ticker):
                                '--max-threads','1','--max-memory-gb','2'])
     with closing(builder.Client(options)) as client, closing(sqlite3.connect(
             (a.bars_run_dir/'build-ledger-v2.sqlite3').as_uri()+'?mode=ro',uri=True)) as db:
+        storage.configure_client(client)
         db.row_factory=sqlite3.Row
         first_target, last_target = min(by_ticker[ticker]), max(by_ticker[ticker])
         known_ah = client.query(f"SELECT {COVERAGE_HEADER_COLUMNS} FROM {COVERAGE_TABLE} FINAL PREWHERE ticker={source.literal(ticker)} "
@@ -527,6 +528,7 @@ def run(a):
     options = builder.parse_args(['--date', str(a.start_date), '--env-file', str(a.env_file),
                                   '--max-threads', '1', '--max-memory-gb', '2'])
     with closing(builder.Client(options, readonly=a.plan_only or a.profile_only)) as client:
+        storage.configure_client(client)
         latest = client.query('SELECT max(source_date) day FROM market_sip_compact.events_source_day_stats FINAL')[0]['day']
         frozen=a.run_dir/'structural-request.json'
         end = (date.fromisoformat(read_json(frozen)['end']) if a.resume and a.end_date is None and frozen.exists()

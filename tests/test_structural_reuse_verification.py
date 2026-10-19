@@ -91,7 +91,7 @@ def test_reuse_progress_is_saved_only_after_both_boundaries_verify(tmp_path,monk
         [('build',d,'TEST','bars','complete','attempt','source','output') for d in days]);db.commit();db.close()
     reporting=[dict(source_date=d,status='complete') for d in days]
     class Client:
-        http=object();profile_totals={}
+        http=SimpleNamespace();profile_totals={}
         def __init__(self,*args,**kwargs):pass
         def close(self):pass
         def query(self,sql):

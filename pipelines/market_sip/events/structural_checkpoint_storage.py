@@ -11,6 +11,12 @@ SNAPSHOT_KEYS = {LEVELS_TABLE: 'ticker, valid_from, checkpoint_boundary, level_i
                  OBSERVATIONS_TABLE: 'ticker, valid_from, checkpoint_boundary, observation_id'}
 
 
+def configure_client(client):
+    # Normalized snapshots repeat many field names and provenance strings.
+    # Compression changes transport only; every decoded field is still checked.
+    client.http.compress_responses=True
+
+
 def storage_preflight(client):
     policies = client.query(f"SELECT disks FROM system.storage_policies WHERE policy_name={literal(POLICY)}")
     allowed = {disk for row in policies for disk in row['disks']}
