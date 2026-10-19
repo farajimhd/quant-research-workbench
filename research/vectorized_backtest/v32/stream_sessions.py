@@ -12,7 +12,7 @@ from concurrent.futures import Future, TimeoutError
 from dataclasses import asdict
 from hashlib import sha256
 from pathlib import Path
-from time import perf_counter, time
+from time import perf_counter, time, sleep
 
 import psutil
 import torch
@@ -90,7 +90,7 @@ class StreamWorker(Worker):
                     # Plans are independent per captured cohort. Never evict a
                     # plan still referenced by another queued CUDA graph.
                     wait_started=perf_counter()
-                    packed,packing_seconds=packing.pop(offset).result()
+                    packed,packing_seconds=yield packing.pop(offset)
                     packing_wait_seconds=perf_counter()-wait_started
                     upload_started=perf_counter()
                     plan=PopulationPrograms(members,device,packed=packed)
@@ -123,7 +123,7 @@ class StreamWorker(Worker):
                     timings.append(dict(day=day,offset=offset,candidates=len(selection),padded_candidates=len(selection),
                         load_seconds=load_seconds if offset==0 else 0.,host_prefetched=prefetched,rule_seconds=rule_seconds,
                         replay_seconds=replay_seconds/len(pending),replay_group_seconds=replay_seconds,
-                        scheduler='shared-streams-v1',pid=os.getpid(),finished_epoch=time(),**preparation_times))
+                        scheduler='shared-streams-v2-independent',pid=os.getpid(),finished_epoch=time(),**preparation_times))
                 # Drop graph-owned state before capturing the next pair.
                 del result,prepared,plan,metrics,pending,gates
                 gc.collect()
@@ -172,6 +172,47 @@ def replay_groups(groups,progress=None):
     return perf_counter()-started
 
 
+class ReplayTask:
+    """One session's graphs, advanced only at event-confirmed safe boundaries.
+
+    No arithmetic or chronological ordering changes. The service may prepare,
+    export or resume CPU continuations only after *all* queued quanta finish.
+    """
+    def __init__(self, graphs):
+        if not 1<=len(graphs)<=2:raise ValueError('At most two graphs per session')
+        self.graphs=graphs
+        self.streams=[torch.cuda.Stream() for _ in graphs]
+        self.events=[torch.cuda.Event() for _ in graphs]
+        self.counts=[(g.total+g.block-1)//g.block for g in graphs]
+        self.completed=0;self.queued=0;self.inflight=False;self.started=perf_counter()
+        for g in graphs:g.reset()
+        main=torch.cuda.current_stream()
+        for stream in self.streams:stream.wait_stream(main)
+
+    @property
+    def done(self):return self.completed>=max(self.counts)
+
+    def poll(self):
+        if self.inflight and all(event.query() for event in self.events):
+            self.completed=self.queued;self.inflight=False
+        return not self.inflight
+
+    def enqueue(self, quantum=16):
+        if self.inflight or self.done:raise RuntimeError('Replay task is not ready')
+        end=min(self.completed+quantum,max(self.counts))
+        for i in range(self.completed,end):
+            for stream,g,n in zip(self.streams,self.graphs,self.counts):
+                if i<n:
+                    with torch.cuda.stream(stream):g.graph.replay()
+        for stream,event in zip(self.streams,self.events):event.record(stream)
+        self.queued=end;self.inflight=True
+
+    def drain(self):
+        if self.inflight:
+            for event in self.events:event.synchronize()
+            self.completed=self.queued;self.inflight=False
+
+
 class SharedReplayService:
     """Bounded command queue; all CUDA ownership stays on one service thread."""
     def __init__(self):
@@ -193,7 +234,7 @@ class SharedReplayService:
         return Proxy(self,config,events,lane)
 
     def _serve(self):
-        active=[];closing=False;running=set()
+        active=[];closing=False;running=set();last_progress={}
         def accept(command):
             nonlocal closing
             key,method,args,future=command
@@ -218,47 +259,66 @@ class SharedReplayService:
             except BaseException as error:future.set_exception(error)
         try:
             while not closing:
+                replays=[stage for _,_,_,stage in active if isinstance(stage,ReplayTask)]
+                # All potentially CUDA-using continuations and commands wait for
+                # event-confirmed quiescence, never for the entire session.
+                settled=[task.poll() for task in replays]
+                quiescent=all(settled)
+                if not quiescent:
+                    # Independently refill ready streams; do not impose a clock
+                    # barrier between sessions. Drain only when host-side work
+                    # needs a safe capture/export boundary.
+                    host_ready=(not self.commands.empty() or any(task.done for task in replays)
+                        or any(isinstance(stage,Future) and stage.done() for _,_,_,stage in active))
+                    if not host_ready:
+                        for task,ready in zip(replays,settled):
+                            if ready:task.enqueue()
+                    sleep(.001)
+                    continue
                 commands=[]
-                try:commands.append(self.commands.get(timeout=.05 if active else .2))
+                try:commands.append(self.commands.get(timeout=.001 if active else .2))
                 except queue.Empty:pass
                 while not self.commands.empty():commands.append(self.commands.get_nowait())
                 for command in commands:accept(command)
-                if active:
-                    ready=[]; groups=[]; gpu_ready=[]
-                    for key,steps,future,elapsed in active:
-                        try:
-                            if isinstance(elapsed,Future):
-                                if not elapsed.done():
-                                    ready.append((key,steps,future,elapsed));continue
-                                try:value=elapsed.result()
-                                except BaseException as error:stage=steps.throw(error)
-                                else:stage=steps.send(value)
-                            else:stage=steps.send(elapsed)
-                            if isinstance(stage,Future):ready.append((key,steps,future,stage))
-                            else:
-                                groups.append(stage);gpu_ready.append((key,steps,future,None))
-
-                        except StopIteration as done:running.remove(key);future.set_result(done.value)
-                        except BaseException as error:running.remove(key);future.set_exception(error)
-                        # Loading/compilation can take seconds. Admit requests
-                        # that arrived meanwhile before launching the GPU work.
-                        # Appended entries are visited by this same bounded loop.
-                        while not self.commands.empty():accept(self.commands.get_nowait())
-                    active=ready+gpu_ready
-                    if groups:
-                        reserve=max(self.workers[k].config.get('host_reserve_gib',128) for k,_,_,_ in active)
-                        if psutil.virtual_memory().available<reserve*2**30:raise MemoryError('Shared replay host reserve reached')
-                        def progress(chunks):
-                            for (key,_,_,_),group in zip(gpu_ready,groups):
-                                worker=self.workers[key]
+                ready=[]
+                for key,steps,future,stage in active:
+                    try:
+                        if isinstance(stage,ReplayTask):
+                            if not stage.done:
+                                ready.append((key,steps,future,stage));continue
+                            stage=perf_counter()-stage.started
+                        if isinstance(stage,Future):
+                            if not stage.done():
+                                ready.append((key,steps,future,stage));continue
+                            try:value=stage.result()
+                            except BaseException as error:stage=steps.throw(error)
+                            else:stage=steps.send(value)
+                        else:stage=steps.send(stage)
+                        if not isinstance(stage,Future):stage=ReplayTask(stage)
+                        ready.append((key,steps,future,stage))
+                    except StopIteration as done:running.remove(key);future.set_result(done.value)
+                    except BaseException as error:running.remove(key);future.set_exception(error)
+                    while not self.commands.empty():accept(self.commands.get_nowait())
+                active=ready
+                replays=[stage for _,_,_,stage in active if isinstance(stage,ReplayTask)]
+                if replays:
+                    if sum(len(task.graphs) for task in replays)>4:raise ValueError('At most four independent replay graphs')
+                    reserve=max(self.workers[k].config.get('host_reserve_gib',128) for k,_,_,_ in active)
+                    if psutil.virtual_memory().available<reserve*2**30:raise MemoryError('Shared replay host reserve reached')
+                    for key,_,_,stage in active:
+                        if isinstance(stage,ReplayTask):
+                            worker=self.workers[key]
+                            if stage.completed-last_progress.get(key,0)>=64 or stage.completed==0:
                                 worker.prefetch.release_under_pressure()
                                 worker.emit(worker.current_day,stage='Replay positions',
-                                    completed_seconds=min(chunks*group[0].block,group[0].total),total_seconds=group[0].total)
-                        elapsed=replay_groups(groups,progress)
-                        active=ready+[(k,s,f,elapsed) for k,s,f,_ in gpu_ready]
-                        del groups
+                                    completed_seconds=min(stage.completed*stage.graphs[0].block,stage.graphs[0].total),
+                                    total_seconds=stage.graphs[0].total)
+                                last_progress[key]=stage.completed
+                            stage.enqueue()
         except BaseException as error:
             self.error=error
+            for _,_,_,stage in active:
+                if isinstance(stage,ReplayTask):stage.drain()
             for _,steps,future,_ in active:
                 steps.close()
                 if not future.done():future.set_exception(error)

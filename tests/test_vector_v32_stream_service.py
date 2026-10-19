@@ -1,12 +1,16 @@
 from concurrent.futures import ThreadPoolExecutor
 import queue
+from types import SimpleNamespace
 import pytest
 from research.vectorized_backtest.v32 import stream_sessions as module
 
 
 class FakeWorker:
-    def __init__(self,config,events,lane):self.config=config;self.closed=False
+    def __init__(self,config,events,lane):self.config=config;self.closed=False;self.current_day="fixture"
     def load(self,day):return day
+    def emit(self,*args,**kwargs):pass
+    @property
+    def prefetch(self):return SimpleNamespace(release_under_pressure=lambda:None)
     def steps(self,day,*args):
         self.current_day=day
         if day=='fail':raise ValueError('fixture failure')
@@ -14,6 +18,23 @@ class FakeWorker:
         yield [day+'-tail']
         return dict(day=day)
     def close(self):self.closed=True
+
+
+@pytest.fixture(autouse=True)
+def fake_replay_tasks(monkeypatch):
+    class Task:
+        def __init__(self,graphs):
+            import time
+            self.original=graphs
+            self.graphs=[SimpleNamespace(block=32,total=32) for _ in graphs]
+            self.completed=0;self.started=time.perf_counter()
+        @property
+        def done(self):return self.completed==1
+        def poll(self):return True
+        def enqueue(self):
+            module.replay_groups([self.original],None);self.completed=1
+        def drain(self):pass
+    monkeypatch.setattr(module,'ReplayTask',Task)
 
 
 def test_service_independent_requests_cleanup_and_error(monkeypatch,tmp_path):
@@ -71,7 +92,7 @@ def test_session_queued_during_preparation_joins_same_replay(monkeypatch,tmp_pat
             while service.commands.empty() and time.monotonic()<deadline:time.sleep(.01)
             assert not service.commands.empty();release.set()
             assert fa.result()=='a' and fb.result()=='b'
-        assert len(groups)==1 and len(groups[0])==2
+        assert sorted(g for row in groups for group in row for g in group)==['a-0','a-1','b-0','b-1']
     finally:release.set();service.close()
 
 
@@ -103,3 +124,40 @@ def test_pending_cpu_job_does_not_block_other_replay(monkeypatch,tmp_path):
     finally:
         if not pending.done():pending.set_result(None)
         service.close()
+
+
+@pytest.mark.parametrize('late',['cpu','gpu'])
+def test_session_finishes_while_other_replay_is_incomplete(monkeypatch,tmp_path,late):
+    import threading,time
+    from concurrent.futures import Future
+    started=threading.Event();release=threading.Event()
+    class Incremental:
+        def __init__(self,graphs):
+            self.slow=graphs==['slow'];self.graphs=[SimpleNamespace(block=32,total=32000)]
+            self.completed=0;self.started=time.perf_counter()
+        @property
+        def done(self):return release.is_set() if self.slow else self.completed>0
+        def poll(self):time.sleep(.001);return True
+        def enqueue(self):self.completed+=1;started.set()
+        def drain(self):pass
+    class Worker(FakeWorker):
+        def steps(self,day,*args):
+            if day=='cpu':
+                f=Future();f.set_result('cpu result');assert (yield f)=='cpu result'
+            else:yield [day]
+            return day
+    monkeypatch.setattr(module,'StreamWorker',Worker);monkeypatch.setattr(module,'ReplayTask',Incremental)
+    service=module.SharedReplayService()
+    cfg=dict(output=str(tmp_path),device='cuda',backend='compile',batch_size=512,host_reserve_gib=0)
+    a=service.factory(cfg,queue.Queue(),0);b=service.factory(cfg,queue.Queue(),1)
+    try:
+        with ThreadPoolExecutor(2) as pool:
+            first=pool.submit(a.run,'slow');assert started.wait(3)
+            second=pool.submit(b.run,late)
+            try:
+                assert second.result(timeout=3)==late
+                assert not first.done()
+            finally:release.set()
+            assert first.result(timeout=3)=='slow'
+        a.close();b.close()
+    finally:release.set();service.close()

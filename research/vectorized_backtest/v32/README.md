@@ -343,3 +343,5 @@ are never reformatted. These are compute/publication changes, not changes to
 search, objectives, execution arithmetic or checkpoint state semantics.
 
 Shared replay parks sessions on bounded CPU result-processing/publication futures. Device export remains on the CUDA owner; CPU snapshots are independently owned. Receipt writes must finish successfully before local scoring/evolution advances; failures propagate and shutdown drains pending publication. Other sessions may replay while these CPU jobs run.
+
+Independent session scheduling uses completion events and bounded 16-block replay quanta (512 causal clocks). Ready session streams advance independently; capture/export and new device preparation require all currently queued quanta to finish. Packing futures yield to the scheduler. CPU completion and subsequent evolution no longer wait for another session's entire replay. Candidate counts, per-candidate clock order, arithmetic, RNG and memory guards remain unchanged.
