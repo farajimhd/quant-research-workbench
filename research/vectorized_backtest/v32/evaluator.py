@@ -137,9 +137,9 @@ def state_signals(signals,held,age,limits,stateful:bool):
 
 
 class PopulationPrograms:
-    def __init__(self,members,device='cpu'):
+    def __init__(self,members,device='cpu',*,packed=None):
         from .network import NetworkPlan
-        self.plan=NetworkPlan(members,device)
+        self.plan=NetworkPlan(members,device,packed=packed)
     def evaluate(self,data,**kwargs):return self.plan
     def close(self):self.plan.close()
 

@@ -30,32 +30,19 @@ def outcome_values(before,after,price,signals,ratios,feedback):
 
 class NetworkPlan:
     builds=hits=evictions=capture_seconds=0
-    def __init__(self,members,device):
+    def __init__(self,members,device,*,packed=None):
         self.members=members;self.device=torch.device(device)
         self.cuda_block=int(os.environ.get('V32_NEURAL_BLOCK','128'))
         if self.cuda_block not in (32,64,128,256):raise ValueError('Unsupported neural CUDA tile')
         # Fixed catalog layout makes normalization independent of cohort membership.
         self.columns=list(range(len(CATALOG)))
         self.lookup={s:i for i,s in enumerate(self.columns)};c=len(self.columns)
-        nets=[m.networks[s] for m in members for s in STAGES]
-        counts=np.array([len(n.nodes) for n in nets],np.int32);offsets=np.cumsum(np.r_[0,counts[:-1]]).astype(np.int32)
-        self.total_nodes=int(counts.sum());self.offsets_cpu=offsets;self.kernel_nodes=1<<(int(counts.max())-1).bit_length()
-        sources=np.zeros((self.total_nodes,FAN_IN),np.int32);weights=np.zeros_like(sources,dtype=np.float32);bias=np.zeros(self.total_nodes,np.float32)
-        edge_counts=np.zeros(self.total_nodes,np.int32)
-        threshold=np.array([n.threshold for n in nets],np.float32)
-        size_source=np.array([n.size_source if n.size_source>=0 else len(n.nodes)-1 for n in nets],np.int32)
-        size_weight=np.array([n.size_weight for n in nets],np.float32);size_bias=np.array([n.size_bias for n in nets],np.float32)
-        for index,net in enumerate(nets):
-            net.validate()
-            for j,node in enumerate(net.nodes):
-                row=int(offsets[index])+j;bias[row]=node.bias;edge_counts[row]=len(node.sources)
-                for e,(source,w) in enumerate(zip(node.sources,node.weights)):
-                    sources[row,e]=source if source<0 else (source//len(CATALOG))*c+self.lookup[source%len(CATALOG)] if source<MARKET_INPUTS else 3*c+source-MARKET_INPUTS
-                    weights[row,e]=w
-        values=(sources,weights,bias,counts,offsets,threshold,size_source,size_weight,size_bias)
-        self.sources,self.weights,self.bias,self.counts,self.offsets,self.threshold,self.size_source,self.size_weight,self.size_bias=[torch.as_tensor(x,device=device) for x in values]
-        self.operations=torch.tensor([OPS.index(n.op) for net in nets for n in net.nodes],device=device,dtype=torch.int32)
-        self.edge_counts=torch.as_tensor(edge_counts,device=device)
+        from .network_pack import pack_networks
+        packed=pack_networks(members) if packed is None else packed
+        self.total_nodes=packed['total_nodes'];self.offsets_cpu=packed['offsets_cpu'];self.kernel_nodes=packed['kernel_nodes']
+        self.sources,self.weights,self.bias,self.counts,self.offsets,self.threshold,self.size_source,self.size_weight,self.size_bias=[torch.as_tensor(x,device=device) for x in packed['values']]
+        self.operations=torch.as_tensor(packed['operations'],device=device)
+        self.edge_counts=torch.as_tensor(packed['edge_counts'],device=device)
         self.logarithmic=torch.tensor([CATALOG[s].unit not in ('ratio','bool') for s in self.columns],device=device)
         self.workspace_shape=None
 

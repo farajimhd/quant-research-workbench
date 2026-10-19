@@ -86,7 +86,10 @@ def run_session(config,day,output,generations=50,population_size=1024,seed=2020,
         else:
             write_json(output/'status.json',dict(status='running',day=day,generation=1,completed_generations=0,total_generations=generations,
                 stage=f'Initialize {population_size*initial_multiplier:,} calibrated candidates',updated_epoch=time.time()))
-            members,initial_report=initialize(rng,population_size*initial_multiplier,probe=probe)
+            if config.get('shared_replay') and config['device']=='cuda':
+                from .preparation import initialize as initialize_cpu
+                members,initial_report=initialize_cpu(rng,population_size*initial_multiplier,config)
+            else:members,initial_report=initialize(rng,population_size*initial_multiplier,probe=probe)
             write_json(output/'initialization.json',dict(**initial_report,seed=seed,day=day,initial_multiplier=initial_multiplier,
                 population_sha256=digest([m.payload() for m in members])))
             ids=pedigree.birth(members,1,[(-1,-1)]*len(members),['fresh']*len(members))

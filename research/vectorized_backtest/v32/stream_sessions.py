@@ -62,6 +62,7 @@ class StreamWorker(Worker):
         missing=[i for i,k in enumerate(keys) if k not in cached]
         batch=c['batch_size']; timings=[]; execution=Execution(**c['execution'])
         self.batch_progress=dict(completed_local_batches=0,total_local_batches=(len(missing)+batch-1)//batch)
+        packing={}
         try:
             if missing:
                 required=item.bytes+item.resident_features.bytes+(2+c['capture_gib'])*1024**3
@@ -74,28 +75,44 @@ class StreamWorker(Worker):
                 for old_day in list(self.host):
                     if old_day!=day:self.host.pop(old_day).close()
                 gc.collect(); self.prefetch.start(next_day,self.read_host)
+            from .preparation import submit, _pack
+            def prepack(first):
+                # Current pair plus one pair ahead per session, never a population-wide queue.
+                for offset in range(first,min(first+2*batch,len(missing)),batch):
+                    if offset not in packing:
+                        packing[offset]=submit(_pack,[population[i] for i in missing[offset:offset+batch]])
+            prepack(0)
             with Publisher() as publisher:
                 for first in range(0,len(missing),2*batch):
+                    prepack(first+2*batch)
                     pending=[]
                     for offset in range(first,min(first+2*batch,len(missing)),batch):
                         selection=missing[offset:offset+batch]; members=[population[i] for i in selection]
                         batch_start=perf_counter()
                         # Plans are independent per captured cohort. Never evict a
                         # plan still referenced by another queued CUDA graph.
-                        plan=PopulationPrograms(members,device)
-                        self.emit(day,stage='Evaluate rules',candidate_offset=offset,completed_seconds=0,
+                        wait_started=perf_counter()
+                        packed,packing_seconds=packing.pop(offset).result()
+                        packing_wait_seconds=perf_counter()-wait_started
+                        upload_started=perf_counter()
+                        plan=PopulationPrograms(members,device,packed=packed)
+                        upload_seconds=perf_counter()-upload_started
+                        self.emit(day,stage='Capture replay graph',candidate_offset=offset,completed_seconds=0,
                                   total_seconds=item.clocks-1,replay_started=None)
                         gates=plan.evaluate(item,maximum_gate_gib=c['maximum_gate_gib'])
                         torch.cuda.synchronize(device)
                         if torch.cuda.mem_get_info(device)[0]<8*2**30:raise MemoryError('Shared replay GPU headroom below 8 GiB')
+                        capture_started=perf_counter()
                         prepared=replay_cohort([item],members,[gates],execution=execution,backend=c['backend'],
                             listing_width=replay_width,episode_capacity=c.get('episode_capacity',65536),
                             trace=c.get('split','training')=='training',capture_only=True,replay_block=32)
-                        pending.append((offset,selection,plan,prepared,perf_counter()-batch_start))
+                        pending.append((offset,selection,plan,prepared,perf_counter()-batch_start,
+                            dict(cpu_packing_seconds=packing_seconds,packing_wait_seconds=packing_wait_seconds,
+                                 plan_upload_seconds=upload_seconds,capture_seconds=perf_counter()-capture_started)))
                     self.emit(day,stage='Replay positions',candidate_offset=first,replay_started=time())
                     # The CUDA owner advances all admitted session groups together.
                     replay_seconds=yield [p[3].replay for p in pending]
-                    for offset,selection,plan,prepared,rule_seconds in pending:
+                    for offset,selection,plan,prepared,rule_seconds,preparation_times in pending:
                         result=prepared.export()[0]
                         metrics={k:v.detach().cpu().tolist() if isinstance(v,torch.Tensor) else v for k,v in result.items()}
                         metrics['ticker_pnl']=[]
@@ -107,7 +124,7 @@ class StreamWorker(Worker):
                         timings.append(dict(day=day,offset=offset,candidates=len(selection),padded_candidates=len(selection),
                             load_seconds=load_seconds if offset==0 else 0.,host_prefetched=prefetched,rule_seconds=rule_seconds,
                             replay_seconds=replay_seconds/len(pending),replay_group_seconds=replay_seconds,
-                            scheduler='shared-streams-v1',pid=os.getpid(),finished_epoch=time()))
+                            scheduler='shared-streams-v1',pid=os.getpid(),finished_epoch=time(),**preparation_times))
                         plan.close()
                     # Drop graph-owned state before capturing the next pair.
                     del result,prepared,plan,metrics,pending,gates
@@ -129,6 +146,7 @@ class StreamWorker(Worker):
         except BaseException as error:
             self.emit(day,stage='Failed',error=str(error)); raise
         finally:
+            for future in packing.values():future.cancel()
             if not c.get('retain_session_residency'):
                 item.resident_features.deactivate(); item.deactivate()
 

@@ -116,6 +116,8 @@ def main(argv=None):
         except BaseException as error:
             write_json(output/'failure.json',dict(error=repr(error),epoch=time.time()));raise
         finally:
+            from .preparation import close as close_preparation
+            close_preparation()
             stop.set();thread.join();signal.signal(signal.SIGINT,previous_handler)
             write_json(output/'status.json',dict(status='complete' if code==0 else 'interrupted' if code==130 else 'failed',
                 stage='Campaign complete' if code==0 else 'Campaign stopped',completed=sum((output/'local'/d/'complete.json').exists() for d in days),

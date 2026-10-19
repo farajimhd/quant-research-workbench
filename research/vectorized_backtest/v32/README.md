@@ -314,3 +314,17 @@ The shared-market experiment is not used. Existing checkpoints require an
 audited compute-only source/contract migration; the launcher still rejects an
 unmatched manifest or checkpoint. Host reserve/admission and GPU guards remain
 enforced. Benchmark speedups apply to replay, not total generation time.
+
+Shared replay also uses a bounded spawned CPU preparation pool (default four,
+`V32_PREPARATION_WORKERS=1..8`). It packs the current two cohorts plus at most
+one pair ahead per session while GPU replay proceeds. Workers validate the same
+networks and return the same packed arrays; no RNG or financial arithmetic runs
+in packing jobs. Each new local initialization is a whole CPU-process job that
+returns the exact final RNG state, avoiding contention with the CUDA owner's
+Python thread. Candidate sampling and calibration order remain unchanged.
+Host reserve plus admission is checked before every submission. CUDA allocation,
+compilation and graph capture remain on the single GPU owner; CPU workers never
+create GPU contexts. Timings distinguish CPU packing, queue wait, upload, capture
+and replay. Four workers improved warm packing of four evolved 512-candidate
+cohorts from 2.20s serial to 1.64s on the laptop; eight gave 1.57s and were not
+selected. Cold process startup and end-to-end generation time are separate costs.
