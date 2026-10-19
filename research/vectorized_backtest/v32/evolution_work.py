@@ -14,8 +14,10 @@ def _reproduce(state, population, ids, pedigree, rank, generation, config, kwarg
     rng = np.random.default_rng()
     rng.bit_generator.state = state
     try:
-        members, new_ids, report = next_population(
-            rng, population, ids, pedigree, rank, generation, config, **kwargs)
+        from .validation_cache import validation_scope
+        with validation_scope():
+            members, new_ids, report = next_population(
+                rng, population, ids, pedigree, rank, generation, config, **kwargs)
         return members, new_ids, report, pedigree, kwargs.get('species'), rng.bit_generator.state, REJECTIONS - before
     finally:
         if previous is None:

@@ -27,6 +27,9 @@ class Network:
     size_weight:float=1.
     size_bias:float=0.
     def validate(self):
+        from .validation_cache import validate
+        return validate(self,self._validate_uncached)
+    def _validate_uncached(self):
         if not 1<=len(self.nodes)<=MAX_NODES or not math.isfinite(self.threshold) or not -1<self.threshold<1:
             raise ValueError('Network size/threshold outside contract')
         depths=[]

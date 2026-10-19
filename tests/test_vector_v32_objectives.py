@@ -16,6 +16,12 @@ def test_source_is_exact_v21_and_other_engine_files_only_rename_version():
             # Decode once then validate once. Every validation rule and every
             # genetic operation must remain the original definition.
             before=ast.parse(expected);after=ast.parse((root/'v32'/p.name).read_text())
+            network=next(n for n in after.body if isinstance(n,ast.ClassDef) and n.name=='Network')
+            wrapper=next(n for n in network.body if isinstance(n,ast.FunctionDef) and n.name=='validate')
+            expected_wrapper=ast.parse('def validate(self):\n from .validation_cache import validate\n return validate(self,self._validate_uncached)').body[0]
+            assert ast.dump(wrapper)==ast.dump(expected_wrapper)
+            network.body.remove(wrapper)
+            next(n for n in network.body if isinstance(n,ast.FunctionDef) and n.name=='_validate_uncached').name='validate'
             for tree in (before,after):
                 for cls in tree.body:
                     if isinstance(cls,ast.ClassDef) and cls.name in ('Network','Individual'):
