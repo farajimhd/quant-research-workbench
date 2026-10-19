@@ -61,7 +61,7 @@ class StreamWorker(Worker):
         missing=[i for i,k in enumerate(keys) if k not in cached]
         batch=c['batch_size']; timings=[]; execution=Execution(**c['execution'])
         self.batch_progress=dict(completed_local_batches=0,total_local_batches=(len(missing)+batch-1)//batch)
-        packing={}; cpu_pending=None
+        packing={}; cpu_pending=None;staging_released_bytes=0
         try:
             if missing:
                 required=item.bytes+item.resident_features.bytes+(2+c['capture_gib'])*1024**3
@@ -69,6 +69,9 @@ class StreamWorker(Worker):
                 if required>c['lane_memory_bytes']:raise MemoryError('Independent session exceeds admitted GPU memory budget')
                 if not c.get('retain_session_residency') or item.device!=device:
                     self.staging.activate([(day,item)],device); self.uploads+=1
+                    if c.get('retain_session_residency'):
+                        staging_released_bytes=self.staging.release_completed()
+                        self.emit(day,stage='Upload complete',released_staging_bytes=staging_released_bytes)
             load_seconds=perf_counter()-started
             if c.get('host_prefetch',False) and next_day is not None and next_day not in self.host:
                 for old_day in list(self.host):
@@ -122,6 +125,7 @@ class StreamWorker(Worker):
                     for j,i in enumerate(selection):cached[keys[i]]={k:v[j] for k,v in metrics.items()}
                     timings.append(dict(day=day,offset=offset,candidates=len(selection),padded_candidates=len(selection),
                         load_seconds=load_seconds if offset==0 else 0.,host_prefetched=prefetched,rule_seconds=rule_seconds,
+                        staging_released_bytes=staging_released_bytes if offset==0 else 0,
                         replay_seconds=replay_seconds/len(pending),replay_group_seconds=replay_seconds,
                         scheduler='shared-streams-v2-independent',pid=os.getpid(),finished_epoch=time(),**preparation_times))
                 # Drop graph-owned state before capturing the next pair.
