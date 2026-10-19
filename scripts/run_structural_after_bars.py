@@ -22,6 +22,7 @@ def main(argv=None):
     p.add_argument('--endpoint',default='http://192.168.1.218:18123')
     p.add_argument('--start-date',default='2026-01-01')
     p.add_argument('--end-date')
+    p.add_argument('--workers',type=int,choices=range(1,65),default=8)
     p.add_argument('--writer-compatibility-proof',type=Path)
     a=p.parse_args(argv)
     if os.environ.get('COMPUTERNAME','').upper()!='DESKTOP-SAAI85T':
@@ -34,7 +35,7 @@ def main(argv=None):
             utc=datetime.now(timezone.utc).isoformat(),**kw))
     command=[sys.executable,'-B',str(Path(__file__).with_name('backfill_structural_sessions.py')),
         '--bars-run-dir',str(a.bars_run_dir),'--run-dir',str(a.run_dir),
-        '--start-date',a.start_date,'--endpoint',a.endpoint]
+        '--start-date',a.start_date,'--endpoint',a.endpoint,'--workers',str(a.workers)]
     frozen=a.run_dir/'structural-request.json'
     end=a.end_date or (read_json(frozen)['end'] if frozen.exists() else None)
     if end:command+=['--end-date',end]
@@ -61,7 +62,9 @@ def main(argv=None):
                     ('backfill',['--migrate-schema']+(['--resume'] if (a.run_dir/'structural-request.json').exists() else []))):
                     state(phase)
                     child=subprocess.Popen(command+extra,stdout=log,stderr=subprocess.STDOUT,
-                        env={**os.environ,'PYTHONDONTWRITEBYTECODE':'1'})
+                        env={**os.environ,'PYTHONDONTWRITEBYTECODE':'1',
+                             'OMP_NUM_THREADS':'1','OPENBLAS_NUM_THREADS':'1',
+                             'MKL_NUM_THREADS':'1','NUMEXPR_NUM_THREADS':'1'})
                     state(phase,child_pid=child.pid)
                     code=child.wait()
                     if code:

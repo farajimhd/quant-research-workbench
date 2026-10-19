@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import argparse
-from contextlib import closing
+from contextlib import closing, ExitStack
 from datetime import date, datetime, timedelta, timezone
 import json
 import sqlite3
@@ -24,7 +24,7 @@ from research.level_book.v7.clickhouse_persistence import (
     LEVELS_TABLE, OBSERVATIONS_TABLE, COVERAGE_TABLE, compact_checkpoints,
     datetime64_ns, epoch_ns,
 )
-from pipelines.market_sip.events.structural_session_checkpoints import VERSION, calculate, source_rows
+from pipelines.market_sip.events.structural_session_checkpoints import VERSION, calculate, source_rows, input_bars
 from pipelines.market_sip.events import structural_checkpoint_storage as storage
 from pipelines.market_sip.events.causal_v7_product import input_bar
 from src.backend.structural_v7_seed import load_seed, split_evidence
@@ -45,7 +45,7 @@ def arguments(argv=None):
     p.add_argument('--writer-compatibility-proof', type=Path,
                    help='Reviewed exact-float transport deployment proof preserving the frozen calculation request')
     p.add_argument('--migrate-schema', action='store_true', help='Apply additive boundary keys before writing')
-    p.add_argument('--workers',type=int,choices=range(1,17),default=8)
+    p.add_argument('--workers',type=int,choices=range(1,65),default=8)
     a = p.parse_args(argv)
     if a.end_date and a.end_date < a.start_date:
         p.error('End date precedes start date')
@@ -76,7 +76,7 @@ def profile(client, a, report, selected, closes):
             seed=preceding_coverage(client.http,ticker=ticker,session=date.fromisoformat(day))
             prior=load_seed(client.http,ticker=ticker,session=date.fromisoformat(day),coverage=seed)
             actions=split_evidence(client.http,ticker=ticker,seed_session=date.fromisoformat(prior['session']),session=date.fromisoformat(day))
-            bars=[input_bar(date.fromisoformat(day), row) for row in source_rows(client,unit)]
+            bars=input_bars(date.fromisoformat(day), source_rows(client,unit))
             fetched=perf_counter()
             values=calculate(prior=prior,ticker=ticker,day=day,bars=bars,actions=actions,
                 regular_close=closes[day],existing_ah=True)
@@ -171,10 +171,15 @@ def compatible_writer_request(current, frozen, proof):
         allowed.add('src/backend/structural_v7_seed.py')
     if proof.get('version')=='structural-projection-perf-v3':
         allowed.add('pipelines/market_sip/events/structural_session_checkpoints.py')
+    if proof.get('version')=='structural-core-perf-v4':
+        allowed.update({'src/backend/structural_v7_seed.py',
+            'pipelines/market_sip/events/structural_session_checkpoints.py',
+            'src/market_engine/streaming_level_book.py',
+            'research/level_book/v7/clickhouse_persistence.py'})
     old = frozen['source_hashes']; new = current['source_hashes']
     changed = {key.replace('\\', '/') for key in old.keys() | new.keys()
                if old.get(key) != new.get(key)}
-    if (proof.get('version') not in ('structural-exact-float-transport-v1','structural-campaign-seed-v2','structural-projection-perf-v3')
+    if (proof.get('version') not in ('structural-exact-float-transport-v1','structural-campaign-seed-v2','structural-projection-perf-v3','structural-core-perf-v4')
             or proof.get('previous_request_hash') != digest(frozen)
             or proof.get('current_request_hash') != digest(current)
             or not changed or not changed <= allowed
@@ -256,7 +261,9 @@ def _process_ticker(spec,a,ticker):
             raise ValueError('Reporting certificates changed during structural calculation')
         if digest(client.query(RULE_SQL)) != request['rules_hash']:
             raise ValueError('Canonical condition rules changed during structural calculation')
+        profile_totals=dict(context=0.,fetch=0.,calculate=0.,publish=0.,total=0.)
         for meta in metadata:
+            unit_started=perf_counter()
             require_parent(spec['owner'])
             day = str(meta['source_date'])
             target = (day, ticker) in selected
@@ -302,12 +309,13 @@ def _process_ticker(spec,a,ticker):
                     storage.publish_boundary(client, value, row['source_plan_hash'])
                 reused += 1
                 continue
+            context_done=perf_counter()
             bars = []
             if target:
                 proof = builder.evidence(client, 'arte', 'bars', unit.build_id, day, ticker, unit.attempt_id)
                 if int(proof['n']) != unit.output_rows or str(proof['hash']) != unit.output_hash:
                     raise ValueError('Persisted bars differ from certified output receipt')
-                bars = [input_bar(date.fromisoformat(day), row) for row in source_rows(client, unit)]
+                bars = input_bars(date.fromisoformat(day), source_rows(client, unit))
             else:
                 bars, _ = source.decode(client.query(source.bars_sql(ticker, day, rules, meta)))
             historical_bars = None
@@ -336,9 +344,11 @@ def _process_ticker(spec,a,ticker):
                 empty_reuse=empty_path.exists()
                 if empty_reuse and read_json(empty_path)!=empty_receipt:
                     raise ValueError('Empty AH source/parent differs from frozen receipt')
+            fetched=perf_counter()
             values = calculate(prior=prior, ticker=ticker, day=day, bars=bars,
                 actions=actions, regular_close=closes[day], existing_ah=bool(exists) or empty_history,
                 persist_intraday=target, historical_bars=historical_bars)
+            calculated=perf_counter()
             # Expose missing AH first so legacy prior-day readers can never
             # mistake a newly published regular snapshot for the day's AH.
             if 'AH' in values:
@@ -351,11 +361,16 @@ def _process_ticker(spec,a,ticker):
             if empty_receipt is not None:
                 empty_path.parent.mkdir(parents=True,exist_ok=True)
                 save_json(empty_path,empty_receipt)
+            published=perf_counter()
+            timings=dict(context=context_done-unit_started,fetch=fetched-context_done,
+                calculate=calculated-fetched,publish=published-calculated,total=published-unit_started)
+            for key,value in timings.items():profile_totals[key]+=value
             done += int(target and not empty_reuse)
             reused += int(target and empty_reuse)
             save_json(ticker_file(a.run_dir,ticker,'.json'), dict(owner=spec['owner']['token'],status='running', active=f'{day} {ticker}',
                 completed=done, reused=reused, total=len(selected), failed=0,
-                queued=len(selected)-done-reused))
+                queued=len(selected)-done-reused,profile_last=timings,profile_totals=profile_totals,
+                source_bars=len(bars),query_profiles=client.profile_totals))
             print(f'{done+reused}/{len(selected)} | completed {done} | reused {reused} | failed 0 | {day} {ticker}', flush=True)
 
         final_ah = max((day for day in ah_by_day if day<=last_target),default=None)
@@ -398,18 +413,27 @@ def run_pool(a,request,build_id,by_ticker,history_inventory,reporting,rules,
         history_start=str(history_start),end=str(end),plan_hash=plan_hash,producer_hash=producer_hash)
     path=a.run_dir/('worker-spec-'+owner['token']+'.json');save_json(path,spec)
     iterator=iter(sorted(by_ticker));pending={};results=[]
-    with ProcessPoolExecutor(max_workers=a.workers,mp_context=multiprocessing.get_context('spawn')) as pool:
+    # Windows limits one ProcessPoolExecutor to 61 handles. Two bounded pools
+    # provide the requested 64 lanes without exceeding that OS wait-set limit.
+    sizes=[min(32,a.workers-i) for i in range(0,a.workers,32)]
+    with ExitStack() as stack:
+        pools=[stack.enter_context(ProcessPoolExecutor(max_workers=size,
+               mp_context=multiprocessing.get_context('spawn'))) for size in sizes]
+        loads=[0]*len(pools);assigned={}
         def admit():
             while len(pending)<a.workers and not (a.run_dir/'STOP').exists():
                 ticker=next(iterator,None)
                 if ticker is None:break
-                pending[pool.submit(_ticker_worker,str(path),ticker)]=ticker
+                index=min((i for i in range(len(pools)) if loads[i]<sizes[i]),
+                          key=lambda i:loads[i]/sizes[i])
+                future=pools[index].submit(_ticker_worker,str(path),ticker)
+                pending[future]=ticker;assigned[future]=index;loads[index]+=1
         try:
             admit()
             while pending:
                 ready,_=wait(pending,timeout=2,return_when=FIRST_COMPLETED)
                 for future in ready:
-                    ticker=pending.pop(future)
+                    ticker=pending.pop(future);loads[assigned.pop(future)]-=1
                     try:results.append(future.result())
                     except BaseException as error:
                         if (a.run_dir/'STOP').exists():raise KeyboardInterrupt from error

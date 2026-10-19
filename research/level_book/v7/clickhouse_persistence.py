@@ -1,6 +1,7 @@
 """Compact ClickHouse persistence for completed retrospective V7 books."""
 from __future__ import annotations
 
+from functools import lru_cache
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -139,6 +140,7 @@ def epoch_ns(value: int | float | str | Decimal) -> int:
     return result
 
 
+@lru_cache(maxsize=65536)
 def datetime64_ns(value: int) -> str:
     seconds, nanos = divmod(value, 1_000_000_000)
     base = datetime.fromtimestamp(seconds, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -232,6 +234,22 @@ def observation_interval_row(ticker: str, item: dict[str, Any], valid_to_ns: int
     }
 
 
+@lru_cache(maxsize=131072)
+def _observation_identity(key):
+    identity=tuple(float.fromhex(v) if kind is float else v for kind,v in key)
+    return sha256(canonical_json(identity).encode()).hexdigest()
+
+
+def observation_identity(identity):
+    # Include scalar types and exact float bits: 1, 1.0 and signed zero have
+    # different canonical JSON despite comparing equal as Python tuple keys.
+    key=tuple((type(v),v.hex() if type(v) is float else v) for v in identity)
+    return _observation_identity(key)
+
+
+observation_identity.cache_clear = _observation_identity.cache_clear
+
+
 def compact_checkpoints(checkpoints: Iterable[dict[str, Any]], source_plan_hash: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """Convert ordered books to qualified/candidate and observation intervals."""
     opened: dict[str, OpenInterval] = {}
@@ -270,7 +288,7 @@ def compact_checkpoints(checkpoints: Iterable[dict[str, Any]], source_plan_hash:
                 identity = (*content, occurrence)
                 observation_id = observation_ids.get(identity)
                 if observation_id is None:
-                    observation_id = sha256(canonical_json(identity).encode()).hexdigest()
+                    observation_id = observation_identity(identity)
                     observation_ids[identity] = observation_id
                 current_observations[observation_id] = (level_id, value)
         for observation_id in sorted(set(opened_observations) - set(current_observations)):

@@ -16,6 +16,17 @@ VERSION='causal-level-book-v7-mle-1'
 EXTRACTION_VERSION='historical-session-reaction-mle-1'
 
 
+def _copy_with_observations(value, rows):
+    """Preserve deepcopy ownership/aliases without visiting scalar evidence twice."""
+    memo={}
+    scalar=(str,int,float,bool,type(None))
+    for row in rows:
+        for observation in row.get('observations',()):
+            if type(observation) is dict and all(type(v) in scalar for v in observation.values()):
+                memo[id(observation)]=observation.copy()
+    return deepcopy(value,memo)
+
+
 class StreamingLevelBook:
     def __init__(self,prior,*,ticker,session,start,end,split_factor=1.,split_evidence=(),settings=Settings(),discovery_prominence=None,coverage=.8,consume_prior=False):
         if prior.get('checkpoint_hash')!=digest({k:v for k,v in prior.items() if k!='checkpoint_hash'}):raise ValueError('Prior book integrity mismatch')
@@ -40,7 +51,7 @@ class StreamingLevelBook:
             # A freshly decoded, private Backtest seed may transfer its large
             # observation arrays to the streaming book. Other callers retain
             # the historical copy-on-input contract by default.
-            row['observations']=(old['observations'] if consume_prior else deepcopy(old['observations']))
+            row['observations']=(old['observations'] if consume_prior else _copy_with_observations(old['observations'],[old]))
             row['fit']=(old['fit'] if consume_prior else deepcopy(old['fit']))
             row['transition_from'] = old.get('transition_from') or next((s['role'] for s in reversed(old['role_segments']) if s['role'] in ('support','resistance')),None)
             row['association_radius']=old['association_radius']*split_factor
@@ -129,13 +140,47 @@ class StreamingLevelBook:
         self.rows.append(row);self._index()
         self._resolve(len(self.rows)-1,dict(at=pivot,role=role,extreme=price,prominence=prominence,source='confirmed_directional_reversal'),'rejection',bar['t'])
 
+    def update_many(self, bars):
+        """Validate bounded numeric blocks, then retain chronological transitions.
+
+        Geometry and MLE decisions use the same scalar transition function.
+        No future bar enters an earlier transition or its running noise state.
+        """
+        from datetime import datetime, time
+        from zoneinfo import ZoneInfo
+        keys=('t','open','high','low','close','volume')
+        for offset in range(0,len(bars),4096):
+            block=bars[offset:offset+4096]
+            a=np.asarray([[b[k] for k in keys] for b in block],dtype=np.float64)
+            ts,o,h,l,c,v=a.T
+            if (not np.isfinite(a).all() or np.any(ts!=np.floor(ts))
+                    or ts[0]<=self.as_of or np.any(np.diff(ts)<=0)
+                    or np.any(ts>self.end) or np.any(l<=0) or np.any(v<0)
+                    or np.any(h<np.maximum(o,c)) or np.any(l>np.minimum(o,c))):
+                raise ValueError('Invalid, future or unordered completed 1s bar')
+            # The session is a single ET trading day (04:00 through 20:00).
+            # Fall back to the public scalar contract for other caller ranges.
+            ny=ZoneInfo('America/New_York')
+            day=datetime.fromtimestamp(float(ts[0]),ny).date()
+            if datetime.fromtimestamp(float(ts[-1]),ny).date()!=day:
+                for bar in block:self.update(bar)
+                continue
+            cutoff=datetime.combine(day,time(4,5,1),ny).timestamp()
+            eligible=ts>=cutoff
+            for values,accepted in zip(a.tolist(),eligible):
+                self._update_validated(dict(zip(keys,values)),bool(accepted))
+
     def update(self,bar,*,observed_at=None):
         """A bar's t is its close time; future, duplicate and invalid bars fail."""
         b={k:float(bar[k]) for k in ('t','open','high','low','close','volume')}
         t=b['t'];o=b['open'];h=b['high'];l=b['low'];c=b['close']
         if (not all(isfinite(x) for x in b.values()) or t!=int(t) or not self.as_of<t<=self.end or l<=0 or b['volume']<0
                 or h<max(o,c) or l>min(o,c) or (observed_at is not None and (not isfinite(observed_at) or t>observed_at))):raise ValueError('Invalid, future or unordered completed 1s bar')
-        if not eligible_completed_second(t):
+        self._update_validated(b,eligible_completed_second(t))
+
+    def _update_validated(self,b,eligible):
+        t=b['t'];o=b['open'];h=b['high'];l=b['low'];c=b['close']
+        if not eligible:
             self.excluded_early_seconds+=1;self.as_of=t
             return
         gap=self.previous is not None and t-self.previous['t']>self.settings['maximum_gap_seconds']
@@ -207,13 +252,15 @@ class StreamingLevelBook:
             excluded_early_seconds=self.excluded_early_seconds,
             qmd_structure_session_high=self.hod)
 
-    def historical_checkpoint(self,input_hash):
-        rows=deepcopy(self.rows)
+    def historical_checkpoint(self,input_hash, *, copy_state=True, available_at=None):
+        # A synchronous read-only projection can borrow immutable nested data.
+        # Each outer row is private because segments is renamed below.
+        rows=_copy_with_observations(self.rows,self.rows) if copy_state else [dict(row) for row in self.rows]
         for row in rows:
             row['role_segments']=row.pop('segments')
             if not row['role_segments']:row['role_segments']=[dict(start=self.end,role=row['role'])]
         result=dict(version='historical-level-mle-book-1',source_extraction_version=EXTRACTION_VERSION,band_config={**BAND_CONFIG,'coverage':self.coverage},
-            ticker=self.ticker,session=self.session,available_at=self.end,prior_checkpoint_hash=self.prior_hash,input_hash=input_hash,
+            ticker=self.ticker,session=self.session,available_at=self.end if available_at is None else available_at,prior_checkpoint_hash=self.prior_hash,input_hash=input_hash,
             levels=rows,split_factor=self.split_factor,split_evidence=self.split_evidence,retrospective=True)
         result['input_policy']=self.input_policy if self.seed_input_policy == POLICY else 'mixed-legacy-seed'
         result['checkpoint_hash']=digest(result);return result
@@ -223,7 +270,7 @@ class StreamingLevelBook:
         # exclusive ownership. It may borrow nested values until encoding ends;
         # ordinary checkpoint callers still receive an independent deep copy.
         state={k:v for k,v in self.__dict__.items() if k not in ('lower','upper','armed','sides','prices','association_radii','_projection_revision','_projection_cache')}
-        if copy_state:state=deepcopy(state)
+        if copy_state:state=_copy_with_observations(state,self.rows)
         state['rows']=[dict(r,armed=bool(self.armed[i]),
             side='resistance' if self.sides[i]==1 else 'support' if self.sides[i]==-1 else None)
             for i,r in enumerate(state['rows'])]

@@ -149,3 +149,61 @@ class SessionCheckpoints(unittest.TestCase):
 
 
 if __name__ == '__main__':unittest.main()
+
+
+class CoreOptimizationParity(unittest.TestCase):
+    def test_vector_replay_matches_scalar_across_chunks_gaps_and_resume(self):
+        from copy import deepcopy
+        prior=SessionCheckpoints().calc(existing_ah=False)['AH']
+        begin=datetime(2026,7,6,4,tzinfo=NY).timestamp()
+        end=datetime(2026,7,6,20,tzinfo=NY).timestamp()
+        def engine():return StreamingLevelBook(prior,ticker='TEST',session='2026-07-06',start=begin,end=end)
+        bars=[dict(t=begin+i+1,open=10.,high=10.01,low=9.99,close=10.,volume=100.) for i in range(5200)]
+        del bars[600:650]
+        scalar=engine();batched=engine()
+        for b in bars:scalar.update(b)
+        batched.update_many(bars)
+        self.assertEqual(scalar.checkpoint(),batched.checkpoint())
+        saved=batched.checkpoint();before=deepcopy(saved)
+        batched.update(dict(t=begin+6000,open=10.,high=10.1,low=9.9,close=10.,volume=20.))
+        self.assertEqual(saved,before)
+        restored=StreamingLevelBook.restore(saved)
+        for key in ('high','low'):
+            if getattr(restored,key) is not None:setattr(restored,key,tuple(getattr(restored,key)))
+        restored.update_many([dict(t=begin+6000,open=10.,high=10.1,low=9.9,close=10.,volume=20.)])
+        self.assertEqual(restored.checkpoint(),batched.checkpoint())
+        with self.assertRaises(ValueError):engine().update_many([bars[1],bars[0]])
+
+    def test_vector_input_matches_scalar_including_dst_and_large_integers(self):
+        from pipelines.market_sip.events.structural_session_checkpoints import input_bars
+        from pipelines.market_sip.events.causal_v7_product import input_bar
+        rows=[dict(bucket_index=14700+i,open_int=p,high_int=p+2,low_int=p-2,close_int=p,volume=123,price_valid=1)
+              for i,p in enumerate([1_000_000,9007199254740993]*4200)]
+        for day in (date(2026,3,8),date(2026,11,1),date(2026,7,2)):
+            self.assertEqual(input_bars(day,iter(rows)),[input_bar(day,r) for r in rows])
+
+    def test_pure_context_cache_retains_duplicate_observation_identity(self):
+        from research.level_book.v7.clickhouse_persistence import observation_identity
+        from hashlib import sha256
+        from research.level_book.v7.clickhouse_persistence import canonical_json
+        for occurrence in (0,1,0):
+            value=(2.97,.01,100.,110.,'support','2026-01-02',occurrence)
+            self.assertEqual(observation_identity(value),sha256(canonical_json(value).encode()).hexdigest())
+        self.assertNotEqual(observation_identity((1,0)),observation_identity((1,1)))
+        self.assertNotEqual(observation_identity((1,)),observation_identity((1.,)))
+        self.assertNotEqual(observation_identity((0.,)),observation_identity((-0.,)))
+
+    def test_streamed_source_detects_cross_batch_duplicates_and_cancels(self):
+        from pipelines.market_sip.events.structural_session_checkpoints import source_rows
+        from types import SimpleNamespace
+        import pyarrow as pa
+        calls=[]
+        def batches(query,query_id):
+            self.assertIn('max_block_size=8192 FORMAT ArrowStream',query)
+            yield pa.RecordBatch.from_pylist([dict(bucket_index=14700)])
+            yield pa.RecordBatch.from_pylist([dict(bucket_index=14700)])
+        client=SimpleNamespace(http=SimpleNamespace(iter_arrow_record_batches=batches),active=None,
+                               profile_totals={},cancel=lambda:calls.append('cancel'))
+        unit=SimpleNamespace(build_id='b',session_date='2026-01-02',ticker='A',attempt_id='x')
+        with self.assertRaisesRegex(ValueError,'Duplicate'):list(source_rows(client,unit))
+        self.assertEqual(calls,['cancel']);self.assertIsNone(client.active)

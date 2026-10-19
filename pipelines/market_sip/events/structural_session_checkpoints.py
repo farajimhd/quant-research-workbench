@@ -31,15 +31,62 @@ def restore_engine(state):
 def source_rows(client, unit):
     """Read only the pinned completed 1s attempt; no consumer-CLI imports."""
     from .market_day_sql import literal
-    rows = client.query('SELECT bucket_index,open_int,high_int,low_int,close_int,volume,price_valid '
+    query = ('SELECT bucket_index,open_int,high_int,low_int,close_int,volume,price_valid '
         f'FROM arte.bars_v1 WHERE build_id={literal(unit.build_id)} '
         f'AND session_date=toDate({literal(unit.session_date)}) AND ticker={literal(unit.ticker)} '
         f'AND attempt_id=toUUID({literal(unit.attempt_id)}) '
         'AND resolution_ms=1000 AND price_valid=1 AND bucket_index>=14700 '
-        'AND bucket_index<72000 ORDER BY bucket_index', 'structural_session_input')
-    if len({int(row['bucket_index']) for row in rows}) != len(rows):
-        raise ValueError('Duplicate certified 1s bar coordinates')
-    return rows
+        'AND bucket_index<72000 ORDER BY bucket_index SETTINGS max_block_size=8192 FORMAT ArrowStream')
+    from contextlib import closing
+    from uuid import uuid4
+    from time import perf_counter
+    query_id='market-day-'+uuid4().hex
+    client.active=query_id;started=perf_counter();last=14699;count=0
+    try:
+        with closing(client.http.iter_arrow_record_batches(query,query_id=query_id)) as batches:
+            for batch in batches:
+                # Arrow avoids JSON text and retains bounded transfer blocks.
+                for row in batch.to_pylist():
+                    index=int(row['bucket_index']);count+=1
+                    if index<=last or index>=72000 or count>57300:
+                        raise ValueError('Duplicate or invalid certified 1s bar coordinates')
+                    last=index
+                    yield row
+    except BaseException:
+        client.cancel()
+        raise
+    finally:
+        client.active=None
+        elapsed=perf_counter()-started
+        total=client.profile_totals.setdefault('structural_session_input',dict(count=0,seconds=0.,max_seconds=0.))
+        total['count']+=1;total['seconds']+=elapsed;total['max_seconds']=max(total['max_seconds'],elapsed)
+
+
+def input_bars(day, rows):
+    """Convert streamed certified rows in bounded vectorized blocks."""
+    from itertools import islice
+    import numpy as np
+    from .causal_v7_product import bar_cutoff
+    # After 04:05 ET the UTC offset is fixed even on DST transition dates.
+    base=bar_cutoff(day,14700)-14701
+    result=[];rows=iter(rows)
+    while block:=list(islice(rows,8192)):
+        indices=np.asarray([int(r['bucket_index']) for r in block],dtype=np.int64)
+        integers=np.asarray([[int(r[k]) for k in ('open_int','high_int','low_int','close_int')]
+                             for r in block],dtype=np.int64)
+        prices=integers.astype(np.float64)/10000
+        if np.any(integers>2**53) or np.any(integers<-(2**53)):
+            prices=np.asarray([[int(r[k])/10000 for k in ('open_int','high_int','low_int','close_int')] for r in block])
+        volume=np.asarray([float(r['volume']) for r in block],dtype=np.float64)
+        valid=np.asarray([int(r.get('price_valid') or 0) for r in block])
+        o,h,l,c=prices.T
+        if (np.any(valid!=1) or np.any(indices<14700) or np.any(indices>=72000)
+                or np.any(l<=0) or np.any(l>np.minimum(o,c))
+                or np.any(h<np.maximum(o,c)) or np.any(volume<0)):
+            raise ValueError('V7 input has invalid certified bar coordinates/geometry')
+        for t,price,v in zip((indices+base+1).tolist(),prices.tolist(),volume.tolist()):
+            result.append(dict(t=float(t),open=price[0],high=price[1],low=price[2],close=price[3],volume=v))
+    return result
 
 
 def calculate(*, prior, ticker, day, bars, actions, regular_close,
@@ -80,11 +127,10 @@ def calculate(*, prior, ticker, day, bars, actions, regular_close,
         cut = cuts[boundary].timestamp()
         if resume and cut <= resume['boundary_at']:
             continue
-        while offset < len(bars) and bars[offset]['t'] <= cut:
-            bar = bars[offset]; offset += 1
-            if bar['t'] > engine.as_of:
-                engine.update(bar)
-        prefix = [bar for bar in bars if bar['t'] <= cut]
+        first=offset
+        while offset < len(bars) and bars[offset]['t'] <= cut:offset+=1
+        engine.update_many([bar for bar in bars[first:offset] if bar['t']>engine.as_of])
+        prefix = bars[:offset]
         state = engine.checkpoint()
         results[boundary] = dict(version=VERSION, ticker=ticker, day=day,
             boundary=boundary, boundary_at=cut, prior_hash=prior['checkpoint_hash'],
@@ -109,13 +155,12 @@ def normalized_boundary(value, source_plan_hash):
     limited to this trading day; intraday rows cannot become next-day seeds.
     """
     import json
+    from hashlib import sha256
     # Read-only projection: restore still checks the full state hash/version,
     # then historical_checkpoint makes the independent copy used below. Never
     # update this borrowed engine or mutate its nested checkpoint values.
     engine = StreamingLevelBook.restore(value['streaming_state'],copy_state=False)
-    book = engine.historical_checkpoint(value['input_hash'])
-    book['available_at'] = value['boundary_at']
-    book['checkpoint_hash'] = digest({k: v for k, v in book.items() if k != 'checkpoint_hash'})
+    book = engine.historical_checkpoint(value['input_hash'],copy_state=False,available_at=value['boundary_at'])
     levels, observations, coverage = compact_checkpoints([book], source_plan_hash)
     boundary = value['boundary']
     from research.level_book.v7.clickhouse_persistence import datetime64_ns, epoch_ns
@@ -129,7 +174,7 @@ def normalized_boundary(value, source_plan_hash):
     if len(payload.encode()) > 64 * 1024**2:
         raise ValueError('Boundary full-state payload exceeds 64 MiB')
     certificate.update(checkpoint_boundary=boundary, streaming_state=payload,
-        streaming_state_hash=digest(value),
+        streaming_state_hash=sha256(payload.encode()).hexdigest(),
         published_at=datetime64_ns(epoch_ns(datetime.now(timezone.utc).timestamp())))
     return levels, observations, certificate
 
