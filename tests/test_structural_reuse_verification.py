@@ -58,6 +58,26 @@ def test_canonical_payload_bound_is_preserved(boundary):
         sessions.restore_boundary(boundary[-1],copy_state=False,max_payload_bytes=1)
 
 
+@pytest.mark.parametrize('extra',[False,True])
+def test_large_snapshot_verification_is_bounded_and_checks_the_final_extra_row(extra):
+    import re
+    expected=[dict(observation_id=f'{i:064x}',price=2.97) for i in range(10001)]
+    actual=expected+[dict(observation_id='f'*64,price=2.97)] if extra else expected
+    calls=[]
+    def query(sql):
+        calls.append(sql);limit=int(re.search(r'LIMIT (\d+)',sql)[1])
+        assert limit<=5001
+        match=re.search(r"WHERE observation_id>'([^']+)'",sql)
+        rows=actual if match is None else [r for r in actual if r['observation_id']>match[1]]
+        return rows[:limit]
+    client=SimpleNamespace(query=query)
+    if extra:
+        with pytest.raises(ValueError,match='snapshot differs'):
+            storage.verify_snapshot(client,storage.OBSERVATIONS_TABLE,expected,'snapshot_key')
+    else:storage.verify_snapshot(client,storage.OBSERVATIONS_TABLE,expected,'snapshot_key')
+    assert len(calls)==3
+
+
 def test_reuse_progress_is_saved_only_after_both_boundaries_verify(tmp_path,monkeypatch):
     import json,sqlite3
     from datetime import date

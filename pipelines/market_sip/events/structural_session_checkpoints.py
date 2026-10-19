@@ -157,9 +157,9 @@ def normalized_boundary(value, source_plan_hash):
     """
     import json
     from hashlib import sha256
-    # Read-only projection: restore still checks the full state hash/version,
-    # then historical_checkpoint makes the independent copy used below. Never
-    # update this borrowed engine or mutate its nested checkpoint values.
+    # Read-only projection: restore checks the full state hash/version; outer
+    # projected rows are fresh and nested evidence is borrowed synchronously.
+    # Never update this engine or mutate its nested checkpoint values.
     engine = StreamingLevelBook.restore(value['streaming_state'],copy_state=False)
     levels, observations, certificate = _normalized_rows(value, source_plan_hash, engine)
     payload = json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)

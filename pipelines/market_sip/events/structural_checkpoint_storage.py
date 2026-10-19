@@ -90,7 +90,10 @@ def read_boundaries(client, ticker, day, boundaries=('PM', 'REGULAR'), *, suffix
     """Read authoritative winners from the repaired one-row-granule table."""
     key = boundary_key(ticker, day, boundaries)
     suffix = suffix or ' ORDER BY checkpoint_boundary'
-    rows = client.query(f'SELECT * FROM {COVERAGE_TABLE} FINAL PREWHERE {key}{suffix}')
+    # Two states are each capped at 64 MiB. Scope this response allowance to
+    # coverage only; normal row reads retain their smaller client limits.
+    rows = client.query(f'SELECT * FROM {COVERAGE_TABLE} FINAL PREWHERE {key}{suffix} '
+                        'SETTINGS max_result_bytes=146800640,max_result_rows=3')
     if (len(rows) > len(boundaries) or
             len({row['checkpoint_boundary'] for row in rows}) != len(rows)):
         raise ValueError('Ambiguous boundary metadata')
@@ -157,14 +160,23 @@ def insert(client, table, rows):
 
 
 def verify_snapshot(client, table, expected, where):
+    """Compare every field with bounded pages and a look-ahead for extra rows."""
     identity = 'level_id' if table == LEVELS_TABLE else 'observation_id'
-    actual = client.query(f'SELECT * FROM {table} FINAL PREWHERE {where} '
-                          f'ORDER BY {identity} LIMIT {len(expected)+1}')
     ordered = sorted(expected, key=lambda row: row[identity])
-    if len(actual) != len(ordered) or any(
-            any(row.get(key) != value for key, value in wanted.items())
-            for row, wanted in zip(actual, ordered)):
-        raise ValueError('Normalized checkpoint snapshot differs from calculated state')
+    offset=0;cursor=None
+    while True:
+        wanted=ordered[offset:offset+5000]
+        after=f' WHERE {identity}>{literal(cursor)}' if cursor is not None else ''
+        actual=client.query(f'SELECT * FROM {table} FINAL PREWHERE {where}{after} '
+                            f'ORDER BY {identity} LIMIT {len(wanted)+1}')
+        last=offset+len(wanted)==len(ordered)
+        if (len(actual)<len(wanted) or (last and len(actual)!=len(wanted)) or
+                (not last and len(actual)<=len(wanted)) or any(
+                    any(row.get(key)!=value for key,value in expected_row.items())
+                    for row,expected_row in zip(actual,wanted))):
+            raise ValueError('Normalized checkpoint snapshot differs from calculated state')
+        if last:return
+        offset+=len(wanted);cursor=wanted[-1][identity]
 
 
 def snapshot_key(ticker, available_at, boundary):
