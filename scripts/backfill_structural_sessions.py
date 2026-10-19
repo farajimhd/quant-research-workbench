@@ -168,6 +168,15 @@ def compatible_writer_request(current, frozen, proof):
     return frozen
 
 
+def expected_prior_hash(prior, ticker, day, regular_close):
+    if prior is not None:
+        return prior['checkpoint_hash']
+    # Reuse the calculator's existing deterministic genesis contract. A first
+    # listing day has no preceding AH; its completed boundaries still reuse.
+    return calculate(prior=None, ticker=ticker, day=day, bars=[], actions=[],
+                     regular_close=regular_close, existing_ah=True)['PM']['prior_hash']
+
+
 def _ticker_worker(spec_path, ticker):
     from types import SimpleNamespace
     import pandas_market_calendars as mcal
@@ -263,7 +272,7 @@ def _process_ticker(spec,a,ticker):
                 from pipelines.market_sip.events.structural_session_checkpoints import restore_boundary
                 for row in current:
                     _, value = restore_boundary(row)
-                    if value.get('source') != source_ref or value['prior_hash'] != prior['checkpoint_hash']:
+                    if value.get('source') != source_ref or value['prior_hash'] != expected_prior_hash(prior,ticker,day,closes[day]):
                         raise ValueError('Existing boundary source or previous AH differs')
                     storage.publish_boundary(client, value, row['source_plan_hash'])
                 reused += 1

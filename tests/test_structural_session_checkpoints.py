@@ -22,6 +22,15 @@ def sample():
 
 
 class SessionCheckpoints(unittest.TestCase):
+    def test_genesis_reuse_matches_calculated_boundary_without_previous_ah(self):
+        from scripts.backfill_structural_sessions import expected_prior_hash
+        close=datetime(2026,7,2,13,tzinfo=NY)
+        value=calculate(prior=None,ticker='NEW',day='2026-07-02',bars=sample(),
+                        actions=[],regular_close=close,existing_ah=True)
+        self.assertEqual(expected_prior_hash(None,'NEW','2026-07-02',close),value['PM']['prior_hash'])
+        self.assertEqual(expected_prior_hash(None,'NEW','2026-07-02',close),value['REGULAR']['prior_hash'])
+        self.assertEqual(expected_prior_hash({'checkpoint_hash':'existing'},'NEW','2026-07-02',close),'existing')
+
     def test_transport_compatibility_pins_both_requests_and_calculation(self):
         from copy import deepcopy
         from scripts.backfill_structural_sessions import compatible_writer_request,digest
