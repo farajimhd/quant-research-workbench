@@ -177,6 +177,10 @@ def expected_prior_hash(prior, ticker, day, regular_close):
                      regular_close=regular_close, existing_ah=True)['PM']['prior_hash']
 
 
+def empty_ah_path(root,ticker,day):
+    return root/'empty-ah'/sha256(ticker.encode()).hexdigest()/(day+'.json')
+
+
 def _ticker_worker(spec_path, ticker):
     from types import SimpleNamespace
     import pandas_market_calendars as mcal
@@ -286,10 +290,33 @@ def _process_ticker(spec,a,ticker):
             else:
                 bars, _ = source.decode(client.query(source.bars_sql(ticker, day, rules, meta)))
             historical_bars = None
+            empty_history = False
+            empty_receipt = None
             if target and not exists:
-                historical_bars, _ = source.decode(client.query(source.bars_sql(ticker, day, rules, meta)))
+                historical_bars, audit = source.decode(client.query(source.bars_sql(ticker, day, rules, meta)))
+                empty_history = not historical_bars
+                if empty_history:
+                    # Match the historical campaign's empty-day contract: keep
+                    # the last real AH seed; never fit/synthesize one without
+                    # eligible prices. Canonical/reporting guards above still
+                    # apply, and PM/REGULAR retain the normal causal engine.
+                    empty_receipt = dict(ticker=ticker,day=day,state='empty',
+                        reason='no eligible price seconds',source=source_ref,
+                        metadata=meta,audit=audit,plan_hash=plan_hash,
+                        prior_hash=expected_prior_hash(prior,ticker,day,closes[day]))
+            elif not target and not exists and not bars:
+                empty_history=True
+                empty_receipt=dict(ticker=ticker,day=day,state='empty',
+                    reason='no eligible price seconds',source=None,metadata=meta,
+                    plan_hash=plan_hash,prior_hash=expected_prior_hash(prior,ticker,day,closes[day]))
+            empty_reuse=False
+            if empty_receipt is not None:
+                empty_path=empty_ah_path(a.run_dir,ticker,day)
+                empty_reuse=empty_path.exists()
+                if empty_reuse and read_json(empty_path)!=empty_receipt:
+                    raise ValueError('Empty AH source/parent differs from frozen receipt')
             values = calculate(prior=prior, ticker=ticker, day=day, bars=bars,
-                actions=actions, regular_close=closes[day], existing_ah=bool(exists),
+                actions=actions, regular_close=closes[day], existing_ah=bool(exists) or empty_history,
                 persist_intraday=target, historical_bars=historical_bars)
             # Expose missing AH first so legacy prior-day readers can never
             # mistake a newly published regular snapshot for the day's AH.
@@ -300,16 +327,22 @@ def _process_ticker(spec,a,ticker):
                 if boundary in values:
                     values[boundary]['source'] = source_ref
                     storage.publish_boundary(client, values[boundary], plan_hash)
-            done += int(target)
+            if empty_receipt is not None:
+                empty_path.parent.mkdir(parents=True,exist_ok=True)
+                builder.save(empty_path,empty_receipt)
+            done += int(target and not empty_reuse)
+            reused += int(target and empty_reuse)
             builder.save(ticker_file(a.run_dir,ticker,'.json'), dict(owner=spec['owner']['token'],status='running', active=f'{day} {ticker}',
                 completed=done, reused=reused, total=len(selected), failed=0,
                 queued=len(selected)-done-reused))
             print(f'{done+reused}/{len(selected)} | completed {done} | reused {reused} | failed 0 | {day} {ticker}', flush=True)
 
-        if last_target not in ah_by_day:
+        final_ah = max((day for day in ah_by_day if day<=last_target),default=None)
+        if last_target not in ah_by_day and not empty_ah_path(a.run_dir,ticker,last_target).exists():
             raise ValueError('Final target day has no completed AH checkpoint')
-        load_seed(client.http,ticker=ticker,session=date.fromisoformat(last_target)+timedelta(days=1),
-                  coverage=ah_by_day[last_target])
+        if final_ah is not None:
+            load_seed(client.http,ticker=ticker,session=date.fromisoformat(last_target)+timedelta(days=1),
+                      coverage=ah_by_day[final_ah])
 
     result=dict(owner=spec['owner']['token'],status='complete',ticker=ticker,
                 completed=done,reused=reused,seconds=perf_counter()-started)

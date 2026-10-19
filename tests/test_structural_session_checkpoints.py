@@ -22,6 +22,22 @@ def sample():
 
 
 class SessionCheckpoints(unittest.TestCase):
+    def test_certified_empty_day_keeps_prior_ah_and_causal_boundaries(self):
+        from copy import deepcopy
+        prior=self.calc(existing_ah=False)['AH']
+        original=deepcopy(prior)
+        value=calculate(prior=prior,ticker='TEST',day='2026-07-06',bars=[],actions=[],
+            regular_close=datetime(2026,7,6,16,tzinfo=NY),existing_ah=True)
+        self.assertEqual(set(value),{'PM','REGULAR'})
+        self.assertEqual(prior,original)
+        self.assertEqual(value['PM']['prior_hash'],prior['checkpoint_hash'])
+        self.assertEqual(value['PM']['streaming_state'],value['REGULAR']['streaming_state'])
+        # The generic calculator still fails closed if asked to fit a missing
+        # AH without price data. Only the certified runner handles empty days.
+        with self.assertRaisesRegex(ValueError,'Missing canonical price bars'):
+            calculate(prior=prior,ticker='TEST',day='2026-07-06',bars=[],actions=[],
+                regular_close=datetime(2026,7,6,16,tzinfo=NY),existing_ah=False)
+
     def test_genesis_reuse_matches_calculated_boundary_without_previous_ah(self):
         from scripts.backfill_structural_sessions import expected_prior_hash
         close=datetime(2026,7,2,13,tzinfo=NY)
