@@ -162,3 +162,19 @@ def test_boundary_and_lineage_corruption_is_still_rejected(boundary,damage):
     client,_=client_for(levels,observations)
     with pytest.raises((ValueError,KeyError)):
         storage.verify_reused_boundary(client,row,expected_source=expected_source,expected_prior_hash=expected_prior)
+
+
+@pytest.mark.parametrize('failure',[False,True])
+def test_coverage_request_limits_are_scoped_and_readonly_is_preserved(failure):
+    params={'readonly':'1','max_result_bytes':'16000000','max_result_rows':'100000'}
+    original=dict(params)
+    def query(sql):
+        assert 'SETTINGS' not in sql
+        assert params==dict(readonly='1',max_result_bytes='146800640',max_result_rows='3')
+        if failure:raise RuntimeError('response failure')
+        return []
+    client=SimpleNamespace(http=SimpleNamespace(default_query_params=params),query=query)
+    if failure:
+        with pytest.raises(RuntimeError,match='response failure'):storage.read_boundaries(client,'AAPL','2026-01-02')
+    else:assert storage.read_boundaries(client,'AAPL','2026-01-02')==[]
+    assert params==original

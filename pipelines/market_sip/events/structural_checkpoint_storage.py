@@ -92,8 +92,20 @@ def read_boundaries(client, ticker, day, boundaries=('PM', 'REGULAR'), *, suffix
     suffix = suffix or ' ORDER BY checkpoint_boundary'
     # Two states are each capped at 64 MiB. Scope this response allowance to
     # coverage only; normal row reads retain their smaller client limits.
-    rows = client.query(f'SELECT * FROM {COVERAGE_TABLE} FINAL PREWHERE {key}{suffix} '
-                        'SETTINGS max_result_bytes=146800640,max_result_rows=3')
+    # HTTP request parameters are applied before readonly=1. SQL SETTINGS
+    # overrides are rejected by strict read-only clients. Each worker owns its
+    # client; restore the defaults synchronously before any subsequent query.
+    params=getattr(getattr(client,'http',None),'default_query_params',None)
+    limits={'max_result_bytes':'146800640','max_result_rows':'3'}
+    saved={key:params.get(key) for key in limits} if params is not None else {}
+    try:
+        if params is not None:params.update(limits)
+        rows=client.query(f'SELECT * FROM {COVERAGE_TABLE} FINAL PREWHERE {key}{suffix}')
+    finally:
+        if params is not None:
+            for name,value in saved.items():
+                if value is None:params.pop(name,None)
+                else:params[name]=value
     if (len(rows) > len(boundaries) or
             len({row['checkpoint_boundary'] for row in rows}) != len(rows)):
         raise ValueError('Ambiguous boundary metadata')
