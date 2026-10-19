@@ -90,12 +90,16 @@ class SessionCheckpoints(unittest.TestCase):
         from types import SimpleNamespace
         from pipelines.market_sip.events.structural_checkpoint_storage import insert,OBSERVATIONS_TABLE
         calls=[]
-        client=SimpleNamespace(http=SimpleNamespace(execute=calls.append))
-        rows=[dict(observation_id=str(i),price=1.) for i in range(5001)]
+        client=SimpleNamespace(http=SimpleNamespace(execute=calls.append),
+            query=lambda sql: [dict(name='observation_id',type='String'),dict(name='price',type='Float64')])
+        rows=[dict(observation_id=str(i),price=2.97) for i in range(5001)]
         insert(client,OBSERVATIONS_TABLE,rows)
         self.assertEqual(len(calls),2)
         decoded=[json.loads(line) for call in calls for line in call.split('\n')[1:]]
+        import struct
+        for row in decoded:row['price']=struct.unpack('<d',struct.pack('<Q',row['price']))[0]
         self.assertEqual(decoded,rows)
+        self.assertTrue(all('reinterpretAsFloat64' in call for call in calls))
 
 
 if __name__ == '__main__':unittest.main()

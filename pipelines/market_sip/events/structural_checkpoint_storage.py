@@ -74,11 +74,38 @@ def load_boundary(client, *, ticker, day, as_of):
 
 def insert(client, table, rows):
     # JSONEachRow explicit names preserve all legacy implicit defaults.
+    import struct
+    rows = iter(rows)
+    first = next(rows, None)
+    if first is None:
+        return
+    from itertools import chain
+    rows = chain([first], rows)
+    prefix = f'INSERT INTO {table} FORMAT JSONEachRow\n'
+    floats = set()
+    if table in (LEVELS_TABLE, OBSERVATIONS_TABLE):
+        columns = {r['name']: r['type'] for r in client.query(
+            "SELECT name,type FROM system.columns WHERE database='arte' "
+            f"AND table={literal(table.split('.')[1])}")}
+        names = list(first)
+        floats = {k for k in names if columns[k] in ('Float64', 'Nullable(Float64)')}
+        schema = ','.join(f'`{k}` {columns[k].replace("Float64", "UInt64") if k in floats else columns[k]}'
+                          for k in names)
+        projections = ','.join(f'reinterpretAsFloat64(`{k}`)' if k in floats else f'`{k}`'
+                               for k in names)
+        fields = ','.join(f'`{k}`' for k in names)
+        # Decimal JSON parsing can change a Float64 by one ULP. Integer bits
+        # avoid that conversion while retaining exact snapshot verification.
+        prefix = (f'INSERT INTO {table} ({fields}) SELECT {projections} '
+                  f'FROM input({literal(schema)}) FORMAT JSONEachRow\n')
     maximum_bytes=140*1024**2 if table==COVERAGE_TABLE else 4*1024**2
     lines=[];size=0
     def flush():
-        client.http.execute(f'INSERT INTO {table} FORMAT JSONEachRow\n'+'\n'.join(lines))
+        client.http.execute(prefix+'\n'.join(lines))
     for row in rows:
+        if floats:
+            row = {k: struct.unpack('<Q', struct.pack('<d', v))[0]
+                   if k in floats and v is not None else v for k, v in row.items()}
         line=encode_rows([row]);amount=len(line.encode())+1
         if amount>maximum_bytes:raise ValueError('Structural row exceeds bounded insert payload')
         if lines and (len(lines)>=5000 or size+amount>maximum_bytes):
