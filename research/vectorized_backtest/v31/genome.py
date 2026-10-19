@@ -44,7 +44,7 @@ class Network:
         if len(reachable(self,len(self.nodes)-1)|reachable(self,self.size_source if self.size_source>=0 else len(self.nodes)-1))!=len(self.nodes):raise ValueError('Unreachable neurons')
         if not any(0<=s<2*len(CATALOG) for n in self.nodes for s in n.sources):raise ValueError('Market-value-dependent action required')
         return self
-    def payload(self):return dict(nodes=[asdict(n) for n in self.nodes],threshold=self.threshold,size_source=self.size_source,size_weight=self.size_weight,size_bias=self.size_bias)
+    def payload(self):return dict(nodes=[dict(sources=n.sources,weights=n.weights,bias=n.bias,uid=n.uid,op=n.op) for n in self.nodes],threshold=self.threshold,size_source=self.size_source,size_weight=self.size_weight,size_bias=self.size_bias)
     @classmethod
     def restore(cls,p):return cls(tuple(Neuron(tuple(n['sources']),tuple(n['weights']),n['bias'],n.get('uid',0),n.get('op','tanh')) for n in p['nodes']),p['threshold'],p.get('size_source',-1),p.get('size_weight',1.),p.get('size_bias',0.)).validate()
 
@@ -71,7 +71,8 @@ def prune(net,root=None):
 def random_input(rng,stage):
     # Flat-only entry has no meaningful held-position state.
     if rng.random()<.15:return MARKET_INPUTS+int(rng.integers(7 if stage=='entry' else 0,len(STATES)))
-    channel=int(rng.choice(3,p=(.45,.45,.10)))
+    # Equivalent to choice's normalized cumulative probabilities and side='right'.
+    draw=rng.random();channel=0 if draw<.45 else 1 if draw<.9 else 2
     return channel*len(CATALOG)+int(feature_index(rng))
 
 def random_network(rng,stage,size=None,profile=None):

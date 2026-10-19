@@ -62,7 +62,8 @@ class Species:
         self.state=state or dict(next_id=0,threshold=.5,records=[],generation=0)
         self.telemetry={};self.labels=[];self.descriptors=[];self.groups={}
     def assign(self,population,ids,profits,ordered,generation,eligible=None):
-        started=time.perf_counter();descriptors=[describe(m) for m in population];behaviors,active=training_behavior(ordered,len(population))
+        from .cpu_work import descriptors as describe_population
+        started=time.perf_counter();descriptors=describe_population(population);behaviors,active=training_behavior(ordered,len(population))
         for i,d in enumerate(descriptors):d.update(behavior=behaviors[i],active=bool(active[i]))
         eligible=np.ones(len(population),dtype=bool) if eligible is None else np.asarray(eligible,dtype=bool)
         previous={r['id']:r for r in self.state['records']};representatives={i:r['representative'] for i,r in previous.items()};groups={};labels=[None]*len(population);capped=0
