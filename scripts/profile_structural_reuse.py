@@ -41,17 +41,24 @@ def main(argv=None):
     with closing(builder.Client(options,readonly=True)) as client, closing(sqlite3.connect(
             ledger.as_uri()+'?mode=ro',uri=True)) as db:
         db.row_factory=sqlite3.Row
+        from uuid import uuid4
+        query_ids=[]
+        execute=client.http.execute
+        def traced_execute(sql, *, query_id=None):
+            query_id=query_id or 'structural-reuse-profile-'+uuid4().hex
+            query_ids.append(query_id)
+            return execute(sql,query_id=query_id)
+        client.http.execute=traced_execute
         for unit in a.unit:
             ticker,day=unit.split(',');session=date.fromisoformat(day)
-            offset=len(client.profiles);started=perf_counter()
+            offset=len(query_ids);started=perf_counter()
             inv=inventory(client.query,session,session)
             require_ready(client.query,inv,reporting_inventory(client.query,inv))
             if inv['source_hashes'][day]!=frozen['canonical']['source_hashes'][day]:
                 raise ValueError('Source differs from the frozen campaign')
             seed=preceding_coverage(client.http,ticker=ticker,session=session,campaign_plan_hash=digest(frozen))
             prior=load_seed(client.http,ticker=ticker,session=session,coverage=seed,campaign_plan_hash=digest(frozen))
-            if a.mode=='legacy':
-                split_evidence(client.http,ticker=ticker,seed_session=date.fromisoformat(prior['session']),session=session)
+            split_evidence(client.http,ticker=ticker,seed_session=date.fromisoformat(prior['session']),session=session)
             receipt=db.execute("SELECT * FROM units WHERE build_id=? AND session_date=? AND ticker=? "
                 "AND stage='bars' AND status='complete'",(frozen['build_id'],day,ticker)).fetchone()
             if receipt is None:raise ValueError('Benchmark requires a completed certified bar receipt')
@@ -73,7 +80,7 @@ def main(argv=None):
             results.append(dict(ticker=ticker,day=day,context_seconds=context-started,
                 verify_seconds=perf_counter()-context,total_seconds=perf_counter()-started,
                 payload_bytes=sum(len(r['streaming_state'].encode()) for r in current),
-                query_ids=[r['query_id'] for r in client.profiles[offset:]],status='verified'))
+                query_ids=query_ids[offset:],status='verified'))
     value=dict(mode=a.mode,code_root=str(a.code_root),read_only=True,units=results,
                total_seconds=sum(r['total_seconds'] for r in results))
     a.output.parent.mkdir(parents=True,exist_ok=True)

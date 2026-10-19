@@ -18,8 +18,8 @@ VERSION = 'structural-session-checkpoints-v1'
 AH = ''  # Existing rows retain their implicit String default and original keys.
 
 
-def restore_engine(state):
-    engine = StreamingLevelBook.restore(state)
+def restore_engine(state, *, copy_state=True):
+    engine = StreamingLevelBook.restore(state,copy_state=copy_state)
     # JSON arrays decode as lists; the kernel's turning extremes are tuples.
     for name in ('high', 'low'):
         point = getattr(engine, name)
@@ -161,31 +161,44 @@ def normalized_boundary(value, source_plan_hash):
     # then historical_checkpoint makes the independent copy used below. Never
     # update this borrowed engine or mutate its nested checkpoint values.
     engine = StreamingLevelBook.restore(value['streaming_state'],copy_state=False)
-    book = engine.historical_checkpoint(value['input_hash'],copy_state=False,available_at=value['boundary_at'])
-    levels, observations, coverage = compact_checkpoints([book], source_plan_hash)
-    boundary = value['boundary']
-    from research.level_book.v7.clickhouse_persistence import datetime64_ns, epoch_ns
-    end = datetime64_ns(epoch_ns(engine.end))
-    for row in levels:
-        row.update(checkpoint_boundary=boundary, retrospective=0, valid_to=end)
-    for row in observations:
-        row.update(checkpoint_boundary=boundary, valid_to=end)
-    certificate = coverage[0]
+    levels, observations, certificate = _normalized_rows(value, source_plan_hash, engine)
     payload = json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
     if len(payload.encode()) > 64 * 1024**2:
         raise ValueError('Boundary full-state payload exceeds 64 MiB')
-    certificate.update(checkpoint_boundary=boundary, streaming_state=payload,
+    from research.level_book.v7.clickhouse_persistence import datetime64_ns, epoch_ns
+    certificate.update(checkpoint_boundary=value['boundary'], streaming_state=payload,
         streaming_state_hash=sha256(payload.encode()).hexdigest(),
         published_at=datetime64_ns(epoch_ns(datetime.now(timezone.utc).timestamp())))
     return levels, observations, certificate
 
 
-def restore_boundary(row):
+def _normalized_rows(value, source_plan_hash, engine):
+    """Project a freshly validated engine without rehashing/restoring its state.
+
+    Private to publication/reuse validation. The caller must have just restored
+    and validated this exact payload; no cached trust token crosses requests.
+    """
+    book = engine.historical_checkpoint(value['input_hash'],copy_state=False,available_at=value['boundary_at'])
+    levels, observations, coverage = compact_checkpoints([book], source_plan_hash)
+    from research.level_book.v7.clickhouse_persistence import datetime64_ns, epoch_ns
+    end = datetime64_ns(epoch_ns(engine.end))
+    for row in levels:
+        row.update(checkpoint_boundary=value['boundary'], retrospective=0, valid_to=end)
+    for row in observations:
+        row.update(checkpoint_boundary=value['boundary'], valid_to=end)
+    return levels, observations, coverage[0]
+
+
+def restore_boundary(row, *, copy_state=True, max_payload_bytes=None):
     import json
+    from hashlib import sha256
     value = json.loads(row['streaming_state'])
-    if digest(value) != row['streaming_state_hash'] or value['version'] != VERSION:
+    canonical=json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+    if max_payload_bytes is not None and len(canonical)>max_payload_bytes:
+        raise ValueError('Boundary full-state payload exceeds 64 MiB')
+    if sha256(canonical).hexdigest() != row['streaming_state_hash'] or value['version'] != VERSION:
         raise ValueError('Streaming boundary payload integrity/version mismatch')
-    engine = restore_engine(value['streaming_state'])
+    engine = restore_engine(value['streaming_state'],copy_state=copy_state)
     if (value['ticker'] != row['ticker'] or value['day'] != str(row['session_date'])
             or value['boundary'] != row['checkpoint_boundary']
             or engine.as_of > value['boundary_at']):

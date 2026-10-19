@@ -64,3 +64,13 @@ def test_running_panel_shows_all_eight_workers_after_recovery():
     text=stream.getvalue()
     assert 'Queued ticker-days: 100' in text and 'T7' in text
     assert len(text.splitlines())<=32
+
+
+def test_reuse_stage_and_per_day_progress_are_visible():
+    stream=StringIO();console=Console(file=stream,width=110,height=32,color_system=None)
+    console.print(render({'controller':{'phase':'backfill'},'status':{
+        'status':'running','completed':0,'reused':31,'total':200,'queued':169,
+        'workers':[{'active':'2026-03-11 AAPL','stage':'verifying reuse','completed':0,'reused':31}]}},110,32))
+    text=stream.getvalue()
+    assert 'verifying reuse' in text and '31 reused' in text
+    assert all(len(line)<=110 for line in text.splitlines())

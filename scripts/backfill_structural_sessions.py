@@ -261,7 +261,14 @@ def _process_ticker(spec,a,ticker):
             raise ValueError('Reporting certificates changed during structural calculation')
         if digest(client.query(RULE_SQL)) != request['rules_hash']:
             raise ValueError('Canonical condition rules changed during structural calculation')
-        profile_totals=dict(context=0.,fetch=0.,calculate=0.,publish=0.,total=0.)
+        profile_totals=dict(context=0.,fetch=0.,calculate=0.,publish=0.,reuse_verify=0.,total=0.)
+        last_profile={}
+        def progress(day, stage, source_bars=0):
+            save_json(ticker_file(a.run_dir,ticker,'.json'),dict(owner=spec['owner']['token'],
+                status='running',active=f'{day} {ticker}',stage=stage,completed=done,reused=reused,
+                total=len(selected),failed=0,queued=len(selected)-done-reused,
+                profile_last=last_profile,profile_totals=profile_totals,
+                source_bars=source_bars,query_profiles=client.profile_totals))
         for meta in metadata:
             unit_started=perf_counter()
             require_parent(spec['owner'])
@@ -270,6 +277,7 @@ def _process_ticker(spec,a,ticker):
             exists = ah_by_day.get(day)
             if exists and not target:
                 continue
+            progress(day,'checking source')
             source.require_reporting_coverage([day], reporting)
             certified_day = inventory(client.query, date.fromisoformat(day), date.fromisoformat(day))
             if certified_day['missing'] or certified_day['incomplete']:
@@ -283,6 +291,8 @@ def _process_ticker(spec,a,ticker):
             prior_rows = [ah_by_day[max(prior_days)]] if prior_days else []
             prior = load_seed(client.http, ticker=ticker, session=date.fromisoformat(day),
                               coverage=prior_rows[0],campaign_plan_hash=plan_hash) if prior_rows else None
+            # This also validates causal split evidence. Retain it on reuse;
+            # it is a prerequisite check even when no calculation is required.
             actions = split_evidence(client.http, ticker=ticker,
                 seed_session=date.fromisoformat(prior['session']) if prior else history_start-timedelta(days=1),
                 session=date.fromisoformat(day))
@@ -300,14 +310,20 @@ def _process_ticker(spec,a,ticker):
                     canonical_hash=history_inventory['source_hashes'][day],
                     producer_hash=producer_hash)
             if exists and {r['checkpoint_boundary'] for r in current} == {'PM', 'REGULAR'}:
-                from pipelines.market_sip.events.structural_session_checkpoints import restore_boundary
+                context_done=perf_counter()
+                progress(day,'verifying reuse')
+                prior_hash=expected_prior_hash(prior,ticker,day,closes[day])
                 for row in current:
-                    _, value = restore_boundary(row)
-                    if value.get('source') != source_ref or value['prior_hash'] != expected_prior_hash(prior,ticker,day,closes[day]):
-                        raise ValueError('Existing boundary source or previous AH differs')
-                    storage.publish_boundary(client, value, row['source_plan_hash'])
+                    storage.verify_reused_boundary(client,row,expected_source=source_ref,
+                                                   expected_prior_hash=prior_hash)
+                verified=perf_counter()
+                last_profile=dict(context=context_done-unit_started,reuse_verify=verified-context_done,
+                                  total=verified-unit_started)
+                for key,value in last_profile.items():profile_totals[key]+=value
                 reused += 1
+                progress(day,'reuse verified')
                 continue
+            progress(day,'calculating')
             context_done=perf_counter()
             bars = []
             if target:
@@ -348,6 +364,7 @@ def _process_ticker(spec,a,ticker):
                 actions=actions, regular_close=closes[day], existing_ah=bool(exists) or empty_history,
                 persist_intraday=target, historical_bars=historical_bars)
             calculated=perf_counter()
+            progress(day,'publishing',len(bars))
             # Expose missing AH first so legacy prior-day readers can never
             # mistake a newly published regular snapshot for the day's AH.
             if 'AH' in values:
@@ -366,10 +383,8 @@ def _process_ticker(spec,a,ticker):
             for key,value in timings.items():profile_totals[key]+=value
             done += int(target and not empty_reuse)
             reused += int(target and empty_reuse)
-            save_json(ticker_file(a.run_dir,ticker,'.json'), dict(owner=spec['owner']['token'],status='running', active=f'{day} {ticker}',
-                completed=done, reused=reused, total=len(selected), failed=0,
-                queued=len(selected)-done-reused,profile_last=timings,profile_totals=profile_totals,
-                source_bars=len(bars),query_profiles=client.profile_totals))
+            last_profile=timings
+            progress(day,'verified',len(bars))
             print(f'{done+reused}/{len(selected)} | completed {done} | reused {reused} | failed 0 | {day} {ticker}', flush=True)
 
         final_ah = max((day for day in ah_by_day if day<=last_target),default=None)
@@ -380,7 +395,8 @@ def _process_ticker(spec,a,ticker):
                       coverage=ah_by_day[final_ah],campaign_plan_hash=plan_hash)
 
     result=dict(owner=spec['owner']['token'],status='complete',ticker=ticker,
-                completed=done,reused=reused,seconds=perf_counter()-started)
+                completed=done,reused=reused,seconds=perf_counter()-started,
+                profile_totals=profile_totals,query_profiles=client.profile_totals)
     save_json(ticker_file(a.run_dir,ticker,'.json'),result)
     return result
 

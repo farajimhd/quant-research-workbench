@@ -142,11 +142,13 @@ def render(value,width=100,height=30,rate=None):
     workers=s.get('workers',[])
     table=Table(expand=True,box=None)
     table.add_column('Active ticker / latest certified day',overflow='ellipsis',no_wrap=True)
+    table.add_column('Stage',overflow='ellipsis',no_wrap=True)
     table.add_column('New',justify='right');table.add_column('Reused',justify='right')
     for worker in workers[:max(0,height-20 if recovery_active else height-16)]:
         table.add_row(str(worker.get('active',worker.get('ticker','starting'))),
+                      str(worker.get('stage','working')),
                       str(worker.get('completed',0)),str(worker.get('reused',0)))
-    if not workers:table.add_row('Worker details appear after planning.','-','-')
+    if not workers:table.add_row('Worker details appear after planning.','-','-','-')
     footer=Text('AH retrospective | PM/REGULAR streaming | Ctrl+C closes monitor only',style='dim')
     return Panel(Group(lines,*bars,Text(''),table,footer),title='ARTE structural backfill',width=width)
 

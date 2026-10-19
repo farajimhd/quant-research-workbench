@@ -156,6 +156,30 @@ def verify_snapshot(client, table, expected, where):
         raise ValueError('Normalized checkpoint snapshot differs from calculated state')
 
 
+def snapshot_key(ticker, available_at, boundary):
+    """Apply the complete snapshot filter before loading normalized payloads."""
+    return (f"(ticker,valid_from,checkpoint_boundary) IN [({literal(ticker)},"
+            f"toDateTime64({literal(available_at)},9,'UTC'),{literal(boundary)})]")
+
+
+def verify_reused_boundary(client, row, *, expected_source, expected_prior_hash):
+    """Verify one already-read immutable boundary, including every normalized field.
+
+    The campaign holds its global and ticker locks. Coverage is freshly read
+    once; its envelope and engine hashes are still checked on every reuse.
+    No normalized table, certificate or completed receipt is changed.
+    """
+    from .structural_session_checkpoints import restore_boundary, _normalized_rows
+    engine, value = restore_boundary(row,copy_state=False,max_payload_bytes=64*1024**2)
+    if value.get('source') != expected_source or value['prior_hash'] != expected_prior_hash:
+        raise ValueError('Existing boundary source or previous AH differs')
+    levels, observations, certificate = _normalized_rows(value, row['source_plan_hash'], engine)
+    where = snapshot_key(value['ticker'], certificate['available_at'], value['boundary'])
+    for table, expected in ((LEVELS_TABLE, levels), (OBSERVATIONS_TABLE, observations)):
+        verify_snapshot(client, table, expected, where)
+    return value
+
+
 def publish_boundary(client, value, plan_hash):
     from .structural_session_checkpoints import normalized_boundary, restore_boundary
     levels, observations, certificate = normalized_boundary(value, plan_hash)
@@ -166,16 +190,14 @@ def publish_boundary(client, value, plan_hash):
         restore_boundary(existing[0])
         for table, expected in ((LEVELS_TABLE, levels), (OBSERVATIONS_TABLE, observations)):
             verify_snapshot(client, table, expected,
-                f"ticker={literal(value['ticker'])} AND checkpoint_boundary={literal(value['boundary'])} "
-                f"AND valid_from=toDateTime64({literal(certificate['available_at'])},9,'UTC')")
+                snapshot_key(value['ticker'],certificate['available_at'],value['boundary']))
         return 'reused'
     insert(client, LEVELS_TABLE, levels)
     insert(client, OBSERVATIONS_TABLE, observations)
     # Verify full normalized snapshots before exposing their completion row.
-    stamp = literal(certificate['available_at'])
     for table, expected in ((LEVELS_TABLE, levels), (OBSERVATIONS_TABLE, observations)):
-        verify_snapshot(client, table, expected, f"ticker={literal(value['ticker'])} "
-            f"AND checkpoint_boundary={literal(value['boundary'])} AND valid_from=toDateTime64({stamp},9,'UTC')")
+        verify_snapshot(client, table, expected,
+                        snapshot_key(value['ticker'],certificate['available_at'],value['boundary']))
     insert(client, COVERAGE_TABLE, [certificate])
     published = read_boundaries(client, value['ticker'], value['day'], (value['boundary'],))
     if len(published) != 1:
