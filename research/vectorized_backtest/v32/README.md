@@ -249,3 +249,30 @@ corrupt evidence fails closed. Prepare a new manifest for a new campaign if more
 V31 initial sessions become available; do not mutate a running campaign manifest.
 The retained species telemetry field `best_profit` stores selection fitness,
 which in V32 is the penalized objective rather than raw net profit.
+
+### Isolated architecture benchmarks
+
+`python -B -m research.vectorized_backtest.v32.benchmark_architectures --job <json>`
+runs finite frozen-candidate replays, never evolution or campaign resume. The job
+requires `training`, `checkpoint`, `day`, `offset`, `population`, `clocks`, `mode`
+(`gpu` or experimental `hybrid`), a new runtime `output`, and runtime `cache`.
+Optional `repeats` defaults to two warm passes; `cpu_threads` defaults to one.
+Use a source snapshot with the exact certified producer bytes, just as for the
+normal deployment. Do not normalize producer bytes or bypass certificate checks.
+
+GPU mode uses the normal captured chronological replay. Hybrid mode keeps neural
+weights and recurrent memory on GPU and uses Inductor-compiled CPU financial
+execution; position/action/feedback transfers occur every clock. It requires a
+configured Windows C++ build environment. Short runtime compiler-cache paths
+avoid Windows compiler path-length failures. This hybrid is experimental:
+cross-device reductions can differ by floating-point rounding, so a timing win
+alone is never sufficient for promotion.
+
+Each job publishes cold and warm timings and complete financial outputs. Compare
+the financial outputs, episode identities and ordered candidate hashes across
+designs. For concurrent lanes, supply the same `start_file`, wait for each lane's
+`ready.json`, then create that file. Use a bounded external controller with exact
+process-identity cleanup and host/GPU memory admission. Report preparation and
+compiler startup separately from steady replay, and distinguish replicated-day
+lane experiments from a benchmark over distinct sessions. None of these options
+change the active training launcher or authorize importing benchmark results.
