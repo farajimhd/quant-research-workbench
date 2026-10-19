@@ -42,7 +42,7 @@ def run(args):
         except psutil.NoSuchProcess:
             pass
     os.environ['QMD_CLICKHOUSE_URL'] = args.endpoint
-    options = builder.parse_args(['--date','2026-01-02','--max-threads','1','--max-memory-gb','8'])
+    options = builder.parse_args(['--date','2026-01-02','--max-threads','1','--max-memory-gb',str(args.memory_gib)])
     with closing(builder.Client(options, readonly=not args.apply)) as client:
         storage.require_schema(client)
         ddl = client.query("SELECT create_table_query FROM system.tables WHERE database='arte' "
@@ -50,7 +50,7 @@ def run(args):
         parts = client.query("SELECT DISTINCT partition FROM system.parts WHERE active AND database='arte' "
             "AND table='structural_level_coverage_v7' ORDER BY partition")
         if not args.apply:
-            print(json.dumps(dict(partitions=parts,query_memory_gib=8,threads=1,staging=STAGING)))
+            print(json.dumps(dict(partitions=parts,query_memory_gib=args.memory_gib,threads=1,staging=STAGING)))
             return
         receipts = root/'coverage-granularity-repair'
         receipts.mkdir(exist_ok=True)
@@ -122,4 +122,6 @@ if __name__ == '__main__':
     parser.add_argument('--run-dir',type=Path,required=True)
     parser.add_argument('--endpoint',required=True)
     parser.add_argument('--apply',action='store_true')
+    parser.add_argument('--memory-gib',type=int,choices=(8,16),default=8,
+                        help='Single migration query cap; never changes backfill worker limits')
     run(parser.parse_args())
