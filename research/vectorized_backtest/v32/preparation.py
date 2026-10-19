@@ -24,10 +24,8 @@ def _pack(members):
 def _restore_population(payload):
     from .genome import Individual
     from .lineage import program_key
-    from .validation_cache import validation_scope
-    with validation_scope():
-        population=[Individual.restore(v) for v in payload]
-        keys=[v.get('canonical_sha256') or program_key(m) for v,m in zip(payload,population)]
+    population=[Individual.restore(v) for v in payload]
+    keys=[v.get('canonical_sha256') or program_key(m) for v,m in zip(payload,population)]
     return population,keys
 
 
@@ -36,9 +34,7 @@ def _initialize(state,size,probe_path,training):
     from .calibration import load_probe
     from .initial_population import initialize
     rng=np.random.default_rng();rng.bit_generator.state=state
-    from .validation_cache import validation_scope
-    with validation_scope():
-        members,report=initialize(rng,size,probe=load_probe(probe_path,training))
+    members,report=initialize(rng,size,probe=load_probe(probe_path,training))
     return members,report,rng.bit_generator.state
 
 
