@@ -22,6 +22,7 @@ def main(argv=None):
     p.add_argument('--endpoint',default='http://192.168.1.218:18123')
     p.add_argument('--start-date',default='2026-01-01')
     p.add_argument('--end-date')
+    p.add_argument('--writer-compatibility-proof',type=Path)
     a=p.parse_args(argv)
     if os.environ.get('COMPUTERNAME','').upper()!='DESKTOP-SAAI85T':
         raise ValueError('Run the persistent controller on DESKTOP-SAAI85T')
@@ -37,6 +38,8 @@ def main(argv=None):
     frozen=a.run_dir/'structural-request.json'
     end=a.end_date or (read_json(frozen)['end'] if frozen.exists() else None)
     if end:command+=['--end-date',end]
+    if a.writer_compatibility_proof:
+        command+=['--resume','--writer-compatibility-proof',str(a.writer_compatibility_proof)]
     with build_lock(a.run_dir/'deferred-controller.lock'):
         state('waiting_for_bars')
         try:
