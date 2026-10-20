@@ -367,7 +367,9 @@ class SessionLanes:
         return timings
 
     def release_plans(self):
-        if self.config.get('shared_replay'):return  # Captured cohorts are released after export.
+        if self.config.get('shared_replay'):
+            for proxy in self.proxies:self.service.call(proxy.key,'release_phase')
+            return
         for pool in self.pools:pool.submit(release_plans).result()
 
     def __exit__(self,*args):

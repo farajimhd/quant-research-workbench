@@ -30,6 +30,22 @@ class StreamWorker(Worker):
         self.market_block=None
         super().close()
 
+    def release_phase(self):
+        """Completed global sessions cannot be reused before LRU eviction."""
+        if self.config.get('retain_session_residency'):
+            raise ValueError('Persistent local session residency must remain owned')
+        before=psutil.virtual_memory().available;count=len(self.host)
+        self.prefetch.close();self.market_block=None
+        for item in self.host.values():item.close()
+        self.host.clear();pinned=self.staging.release_completed()
+        gc.collect();torch.cuda.empty_cache()
+        from .publication import write_json
+        report=dict(source_sha256=self.config['source_sha256'],lane=self.lane,
+            host_sessions_released=count,pinned_staging_bytes_released=pinned,
+            available_before_gib=before/2**30,available_after_gib=psutil.virtual_memory().available/2**30)
+        write_json(Path(self.config['output'])/'phase-releases'/f'{__import__("time").time_ns()}-lane-{self.lane}.json',report)
+        return report
+
     def __init__(self,config,events,lane):
         # Query/admit on the CUDA owner too: a local evolution thread must not
         # invoke CUDA APIs while another session is capturing a graph.
@@ -330,6 +346,9 @@ class SharedReplayService:
                 elif method=='close':
                     if key in running:raise ValueError('Cannot close an active replay')
                     result=self.workers.pop(key).close()
+                elif method=='release_phase':
+                    if key in running:raise ValueError('Cannot release phase buffers during an active replay')
+                    result=self.workers[key].release_phase()
                 else:result=getattr(self.workers[key],method)(*args)
                 future.set_result(result)
             except BaseException as error:future.set_exception(error)
@@ -404,6 +423,9 @@ class SharedReplayService:
                 elif active:
                     # CPU/admission futures alone must not spin a whole core.
                     sleep(.001)
+                # Do not keep the preceding completed replay alive through
+                # function-local aliases while the service is idle at a barrier.
+                task=None;graph=None;stage=None;value=None
         except BaseException as error:
             self.error=error
             for _,_,_,stage in active:

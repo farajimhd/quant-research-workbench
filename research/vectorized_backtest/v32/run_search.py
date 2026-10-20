@@ -258,16 +258,20 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
                 from .behavior import BehaviorIndex
                 behavior=None # Species descriptors reuse the training episode ledger below; no second BehaviorIndex.
                 pipeline['training_evidence_shortlist_seconds']=perf_counter()-selection_started
+                # All receipts are durable. Drop obsolete session/staging data
+                # before admitting reproduction or the validation role.
+                phase_release_started=perf_counter();trainers.release_plans()
+                pipeline['training_phase_release_seconds']=perf_counter()-phase_release_started
                 reproduction_started=perf_counter()
                 successor,new_ids,diversity=next_population(rng,population,ids,pedigree,rank,generation+1,selection,session_values=values,session_eligible=eligible,global_values=global_values,global_eligible=result['global_eligible'],behavior=behavior,species=species,ordered=ordered) if generation<generations else (population,ids,{})
                 if generation==generations:
                     species.assign(population,ids,global_values,ordered,generation,eligible=result['global_eligible'])
                     diversity=species.telemetry
                 pipeline['reproduction_species_seconds']=perf_counter()-reproduction_started
+                del ordered
                 selection_seconds=perf_counter()-selection_started
                 panel.update(evolution=species.telemetry)
                 rng_before_validation=digest(rng.bit_generator.state)
-                trainers.release_plans()
                 panel.begin_evaluation('validation',len(valid['days']),len(members))
                 panel.update(evaluation_split='validation',validation_opened=True,validation_status='Evaluating display-only shortlist',
                              stage='Validation — no selection feedback')
@@ -297,8 +301,9 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
                     publish_session_panel(validation_root,valid['days'],heldout,validation_values,validation_result)
                     write_json(validation_seal,dict(population_sha256=validation_token,session_receipts=validation_hashes,
                         validation_feedback=False,display_only=True,session_panel_sha256=file_hash(validation_root/'session-panel.npz'),wall_seconds=perf_counter()-validation_start))
-                observers.release_plans()
-                pipeline['validation_scoring_publication_seconds']=perf_counter()-stage_started;stage_started=perf_counter()
+                pipeline['validation_scoring_publication_seconds']=perf_counter()-stage_started
+                stage_started=perf_counter();observers.release_plans();del heldout
+                pipeline['validation_phase_release_seconds']=perf_counter()-stage_started;stage_started=perf_counter()
                 population,ids=successor,new_ids
                 write_json(root/'diversity.json',diversity)
                 save(generation,leaders,validation_rows)

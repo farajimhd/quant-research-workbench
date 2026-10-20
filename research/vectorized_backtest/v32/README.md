@@ -389,3 +389,6 @@ All training sessions must finish before the single reproduction. The successor
 remains frozen before display-only validation. `generation-profile.json` records
 evaluation, panel reads, ranking, evidence, reproduction/species, validation and
 checkpoint publication as host wall stages without additional CUDA barriers.
+At each completed global role, unused session data and pinned staging arenas
+are released before reproduction or the next role. Persistent local residency
+is unaffected; host reserve and allocation admission remain authoritative.

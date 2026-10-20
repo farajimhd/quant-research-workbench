@@ -121,6 +121,8 @@ def test_pending_cpu_job_does_not_block_other_replay(monkeypatch,tmp_path,memory
     try:
         with ThreadPoolExecutor(2) as pool:
             fa=pool.submit(a.run,'cpu');assert waiting.wait(3)
+            with pytest.raises(ValueError,match='active replay'):
+                service.call(a.key,'release_phase')
             fb=pool.submit(b.run,'gpu');assert replayed.wait(3)
             assert not fa.done() and fb.result(timeout=3)=='gpu'
             pending.set_exception(OSError('publication failed'))

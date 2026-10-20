@@ -56,3 +56,21 @@ def test_global_lane_refills_before_other_lane_finishes_and_barrier_is_complete(
     assert lanes.panel.state['completed_batches']==4
     assert lanes.panel.state['active_sessions']==lanes.panel.state['queued_sessions']==0
     assert rng.bit_generator.state==state
+
+
+def test_completed_phase_releases_only_obsolete_buffers(monkeypatch,tmp_path):
+    import pytest
+    from research.vectorized_backtest.v32 import stream_sessions as module
+    events=[];worker=module.StreamWorker.__new__(module.StreamWorker)
+    worker.config=dict(output=str(tmp_path),source_sha256='fixture');worker.lane=0
+    worker.host={'a':SimpleNamespace(close=lambda:events.append('a')),'b':SimpleNamespace(close=lambda:events.append('b'))}
+    worker.prefetch=SimpleNamespace(close=lambda:events.append('prefetch'))
+    worker.staging=SimpleNamespace(release_completed=lambda:123)
+    worker.market_block=object()
+    monkeypatch.setattr(module.torch.cuda,'empty_cache',lambda:events.append('cuda-cache'))
+    report=worker.release_phase()
+    assert report['host_sessions_released']==2 and report['pinned_staging_bytes_released']==123
+    assert not worker.host and worker.market_block is None
+    assert events==['prefetch','a','b','cuda-cache']
+    worker.config['retain_session_residency']=True
+    with pytest.raises(ValueError,match='local session residency'):worker.release_phase()
