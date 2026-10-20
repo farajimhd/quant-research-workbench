@@ -50,11 +50,19 @@ def main(argv=None):
             query_ids.append(query_id)
             return execute(sql,query_id=query_id)
         client.http.execute=traced_execute
+        stream=client.http.iter_json_each_row
+        def traced_stream(sql, **kwargs):
+            kwargs.setdefault('query_id','structural-reuse-profile-'+uuid4().hex)
+            query_ids.append(kwargs['query_id'])
+            return stream(sql,**kwargs)
+        client.http.iter_json_each_row=traced_stream
         for unit in a.unit:
             ticker,day=unit.split(',');session=date.fromisoformat(day)
             offset=len(query_ids);started=perf_counter()
-            inv=inventory(client.query,session,session)
-            require_ready(client.query,inv,reporting_inventory(client.query,inv))
+            from pipelines.certified_research.source_guard_batch import RoundQuery
+            source_query=RoundQuery(client.query,(session,))
+            inv=inventory(source_query,session,session,sessions=(session,))
+            require_ready(source_query,inv,reporting_inventory(source_query,inv))
             if inv['source_hashes'][day]!=frozen['canonical']['source_hashes'][day]:
                 raise ValueError('Source differs from the frozen campaign')
             seed=preceding_coverage(client.http,ticker=ticker,session=session,campaign_plan_hash=digest(frozen))

@@ -29,13 +29,12 @@ def statements(days):
 
 
 def fetch(query,queries):
-    """Tagged named tuples preserve column names and JSONEachRow scalar types."""
+    """Preserve JSONEachRow names/types without changing read-only settings."""
     branches=[]
     for tag,sql in enumerate(queries):
         branches.append(f"SELECT toUInt8({tag}) guard_tag,'' guard_payload")
-        branches.append(f'SELECT toUInt8({tag}) guard_tag,toJSONString(tuple(*)) guard_payload FROM ({sql})')
+        branches.append(f"SELECT toUInt8({tag}) guard_tag,formatRowNoNewline('JSONEachRow', *) guard_payload FROM ({sql})")
     sql=' UNION ALL '.join('('+branch+')' for branch in branches)
-    sql+=' SETTINGS enable_named_columns_in_function_tuple=1,output_format_json_named_tuples_as_objects=1'
     rows=query(sql)
     result={q:[] for q in queries};sentinels=[0]*len(queries)
     for row in rows:

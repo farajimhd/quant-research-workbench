@@ -287,12 +287,15 @@ def _process_ticker(spec,a,ticker):
                 continue
             progress(day,'checking source')
             source.require_reporting_coverage([day], reporting)
-            certified_day = inventory(client.query, date.fromisoformat(day), date.fromisoformat(day))
+            from pipelines.certified_research.source_guard_batch import RoundQuery
+            source_query = RoundQuery(client.query, (date.fromisoformat(day),))
+            certified_day = inventory(source_query, date.fromisoformat(day), date.fromisoformat(day),
+                                      sessions=(date.fromisoformat(day),))
             if certified_day['missing'] or certified_day['incomplete']:
                 raise ValueError('Required historical replay day is not canonical-certified')
             if certified_day['source_hashes'].get(day) != history_inventory['source_hashes'].get(day):
                 raise ValueError('Canonical replay source changed after the frozen plan')
-            require_ready(client.query,certified_day,reporting_inventory(client.query,certified_day))
+            require_ready(source_query,certified_day,reporting_inventory(source_query,certified_day))
             if (a.run_dir / 'STOP').exists():
                 raise KeyboardInterrupt
             prior_days = [previous for previous in ah_by_day if previous < day]

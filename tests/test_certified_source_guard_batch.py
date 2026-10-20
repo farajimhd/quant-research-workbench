@@ -80,3 +80,14 @@ def test_transport_requires_named_objects_and_all_sentinels():
     with pytest.raises(ValueError,match='incomplete'):batch.fetch(lambda _:[],statements)
     with pytest.raises(ValueError,match='column names'):
         batch.fetch(lambda _:[dict(guard_tag=0,guard_payload='[1]')],statements)
+
+
+def test_metadata_batch_does_not_override_readonly_settings():
+    queries=[]
+    def query(sql):
+        queries.append(sql)
+        return [dict(guard_tag=i,guard_payload='') for i in range(2)]
+    assert batch.fetch(query,('SELECT 1 AS a','SELECT 2 AS b')) == {
+        'SELECT 1 AS a': [], 'SELECT 2 AS b': []}
+    assert ' SETTINGS ' not in queries[0]
+    assert "formatRowNoNewline('JSONEachRow', *)" in queries[0]

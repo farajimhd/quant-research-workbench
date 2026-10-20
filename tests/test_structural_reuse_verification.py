@@ -112,7 +112,9 @@ def test_reuse_progress_is_saved_only_after_both_boundaries_verify(tmp_path,monk
     monkeypatch.setattr(runner,'load_seed',lambda *args,**kwargs:dict(checkpoint_hash='prior',session='2025-12-31'))
     split_checks=[]
     monkeypatch.setattr(runner,'split_evidence',lambda *a,**k:split_checks.append(k['session']) or [])
-    monkeypatch.setattr(prerequisites,'inventory',lambda q,start,end:dict(missing=[],incomplete=[],source_hashes={str(start):str(start)}))
+    from pipelines.certified_research import source_guard_batch
+    monkeypatch.setattr(source_guard_batch,'RoundQuery',lambda q,days:q)
+    monkeypatch.setattr(prerequisites,'inventory',lambda q,start,end,**kwargs:dict(missing=[],incomplete=[],source_hashes={str(start):str(start)}))
     monkeypatch.setattr(prerequisites,'reporting_inventory',lambda *a:{})
     monkeypatch.setattr(prerequisites,'require_ready',lambda *a:None)
     monkeypatch.setattr(storage,'read_boundaries',lambda c,t,d:[dict(checkpoint_boundary=b) for b in ('PM','REGULAR')])
