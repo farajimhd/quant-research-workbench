@@ -121,16 +121,16 @@ class StreamWorker(Worker):
                     # Upload the already copied arena without staging it again.
                     stream=torch.cuda.Stream(device=device)
                     with torch.cuda.stream(stream):
-                        thin,resident=staged
+                        thin,resident_tensors=staged
                         item.tensors={k:v.to(device,non_blocking=True) for k,v in thin.items()}
                         bank=item.resident_features
-                        bank.tensors={k:v.to(device,non_blocking=True) for k,v in resident.items()}
+                        bank.tensors={k:v.to(device,non_blocking=True) for k,v in resident_tensors.items()}
                         bank.device=device;bank.column_plans.clear();item.device=device
                         event=torch.cuda.Event();event.record(stream);self.staging.slots[0]['event']=event
                     torch.cuda.current_stream(device).wait_event(event)
                     for tensor in (*item.tensors.values(),*bank.tensors.values()):
                         tensor.record_stream(torch.cuda.current_stream(device))
-                    del staged,thin,resident
+                    del staged,thin,resident_tensors
                     self.uploads+=1
                     if c.get('retain_session_residency'):
                         staging_released_bytes=self.staging.release_completed()
