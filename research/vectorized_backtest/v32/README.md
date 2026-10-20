@@ -394,5 +394,5 @@ are released before reproduction or the next role. Persistent local residency
 is unaffected; host reserve and allocation admission remain authoritative.
 Global reproduction also activates the same bounded immutable validation and
 canonical-identity caches as local reproduction. Training behavior sketches
-aggregate whole-population integer ledgers with bounded scatter operations,
+retain the per-candidate integer reduction and vectorize sketch assembly,
 preserving the original per-candidate values and subsequent species decisions.
