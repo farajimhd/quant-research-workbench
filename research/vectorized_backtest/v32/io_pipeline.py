@@ -39,7 +39,7 @@ class TransferStaging(_TransferStaging):
         return self.pool.submit(copy)
 
     def release_completed(self):
-        """Resident locals need no upload arena between generations."""
+        """Completed uploads need no pinned arena during chronological replay."""
         import torch
         released=0
         for slot in self.slots:

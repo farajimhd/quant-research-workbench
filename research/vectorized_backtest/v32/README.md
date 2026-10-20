@@ -431,3 +431,9 @@ host loads share the reservation ledger. Post-load retention
 still requires reserve plus admission. `V32_TRANSITION_DYNAMIC=1` is a diagnostic
 compiler option; the default remains static compilation until exact matched
 financial parity and performance qualify an alternative.
+
+Pinned upload arenas are released after their copy event completes. Completed
+global sessions are removed from the CPU LRU after durable results, rather than
+retained by an idle lane. Local persistent residency is unchanged. Compiler
+dynamic-shape trials matched financial results but were slower than the static
+reference, so the qualified launch retains static compilation.

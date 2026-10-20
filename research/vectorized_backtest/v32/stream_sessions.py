@@ -150,9 +150,8 @@ class StreamWorker(Worker):
                         tensor.record_stream(torch.cuda.current_stream(device))
                     del staged,thin,resident_tensors
                     self.uploads+=1
-                    if c.get('retain_session_residency'):
-                        staging_released_bytes=self.staging.release_completed()
-                        self.emit(day,stage='Upload complete',released_staging_bytes=staging_released_bytes)
+                    staging_released_bytes=self.staging.release_completed()
+                    self.emit(day,stage='Upload complete',released_staging_bytes=staging_released_bytes)
             load_seconds=perf_counter()-started
             if c.get('host_prefetch',False) and next_day is not None and next_day not in self.host:
                 for old_day in list(self.host):
@@ -274,6 +273,10 @@ class StreamWorker(Worker):
             if not c.get('retain_session_residency'):
                 self.market_block=None
                 item.resident_features.deactivate(); item.deactivate()
+                # A global session is consumed once per role; the bounded LRU
+                # cannot reach it again before eviction. Release its CPU owner
+                # now so an idle lane cannot prevent the next load's admission.
+                self.host.pop(day,None);item.close()
 
 
 def replay_groups(groups,progress=None):
