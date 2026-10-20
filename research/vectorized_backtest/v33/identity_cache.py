@@ -42,5 +42,5 @@ def program_key(member):
         fragments.append(dumps(stage)+':'+fragment)
     # Mutable policy/age mappings are serialized afresh on every call. Match
     # the exact legacy sorted-key JSON, including its floating-point spelling.
-    value='{"minimum_age":'+dumps(member.minimum_age)+',"networks":{'+','.join(fragments)+'},"policy":'+dumps(asdict(member.policy))+',"version":"v33-recurrent-v1"}'
+    value='{"minimum_age":'+dumps(member.minimum_age)+',"networks":{'+','.join(fragments)+'},"policy":'+dumps(asdict(member.policy))+',"version":"v32-recurrent-v1"}'
     return sha256(value.encode()).hexdigest()

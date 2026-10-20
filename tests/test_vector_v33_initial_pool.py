@@ -43,3 +43,12 @@ def test_genotype_and_sampling_rng_match_v32_exactly():
     a=np.random.default_rng(2020);b=np.random.default_rng(2020)
     assert [p.payload() for p in old(a,12)]==[p.payload() for p in new(b,12)]
     assert a.bit_generator.state==b.bit_generator.state
+
+
+def test_scoped_identity_keeps_original_v32_keys():
+    from research.vectorized_backtest.v33.genome import sample
+    from research.vectorized_backtest.v33.lineage import program_key
+    from research.vectorized_backtest.v33.validation_cache import validation_scope
+    members=sample(np.random.default_rng(20),12)
+    expected=[program_key(m) for m in members]
+    with validation_scope():assert [program_key(m) for m in members]==expected
