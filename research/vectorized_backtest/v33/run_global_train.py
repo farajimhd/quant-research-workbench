@@ -23,6 +23,9 @@ def main(argv=None):
     if not output.is_relative_to(root):p.error('V33 runtime root required')
     train=bind_dataset(args.training,'training');valid=bind_dataset(args.validation,'validation')
     if len(train['days'])!=24 or len(valid['days'])!=12:raise ValueError('Pinned 24/12 split required')
+    pool=json.loads(args.initial_pool.read_bytes())
+    from .initial_pool import verify,seed_results
+    verify(pool,train['days'],dataset=train)
     pointer=root/'active-campaign.json'
     if pointer.exists():
         old=json.loads(pointer.read_bytes())
@@ -36,6 +39,9 @@ def main(argv=None):
         write_json(output/'status.json',dict(status='running',stage='Phase 2: global evolution from original initial pools',global_output=str(output/'global'),completed=0,failed=0,workers={},updated_epoch=time.time()))
         code=1
         try:
+            if not (output/'global'/'checkpoint.json').exists():
+                count=seed_results(pool,args.initial_pool.parent,output/'global')
+                write_json(output/'initial-result-reuse.json',dict(reused=count,validation_opened=False))
             code=run_global(args.training,args.validation,args.initial_pool,output/'global',population_size=1024,generations=args.generations,seed=args.seed,
                 batch_size=512,session_workers=2,capture_gib=1.,host_reserve_gib=128.,host_admission_gib=32.,host_prefetch=True,shared_replay=True)
             return code

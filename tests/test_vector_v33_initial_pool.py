@@ -23,3 +23,23 @@ def test_quotas_total_exactly_1024():
     quotas=np.asarray([[n//24+int(i<n%24) for n in (512,256,256)] for i in range(24)])
     assert quotas.sum(0).tolist()==[512,256,256]
     assert quotas.sum()==1024
+
+
+def test_global_engine_is_exact_v32_apart_from_version_names():
+    import ast
+    from pathlib import Path
+    root=Path(__file__).resolve().parents[1]/'research/vectorized_backtest'
+    for name in ('evaluator.py','stream_sessions.py','session_lanes.py','global_pipeline.py','lineage.py','species.py','species_distance.py',
+                 'objectives.py','network.py','network_cuda.py','network_pack.py','replay_graph.py','host_store.py','preparation.py',
+                 'prefetch.py','io_pipeline.py','cpu_work.py','result_processing.py','publication.py','protected_transition.py'):
+        old=(root/'v32'/name).read_text()
+        new=(root/'v33'/name).read_text().replace('v33','v32').replace('V33','V32')
+        assert ast.dump(ast.parse(old))==ast.dump(ast.parse(new)),name
+
+
+def test_genotype_and_sampling_rng_match_v32_exactly():
+    from research.vectorized_backtest.v32.genome import sample as old
+    from research.vectorized_backtest.v33.genome import sample as new
+    a=np.random.default_rng(2020);b=np.random.default_rng(2020)
+    assert [p.payload() for p in old(a,12)]==[p.payload() for p in new(b,12)]
+    assert a.bit_generator.state==b.bit_generator.state

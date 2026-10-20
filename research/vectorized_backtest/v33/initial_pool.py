@@ -58,6 +58,11 @@ def recover_day(campaign,training,day,quotas,seed,output):
     probe_path=campaign/'initialization-probes'/(day+'.npz')
     probe=load_probe(probe_path,training)
     contract=json.loads((folder/'checkpoint.json').read_bytes())['contract']
+    from .run_search import bind_dataset
+    dataset=bind_dataset(training,'training')
+    pinned={k:dataset.get(k) for k in ('inputs','history','indicator_root','enriched_root')}
+    pinned.update(input_receipts=dataset['receipts'],indicator_receipts=dataset['indicator_receipts'],enriched_receipts=dataset['enriched_receipts'])
+    if contract['dataset']!=pinned:raise ValueError('Initial evaluation training dataset changed')
     if contract['seed']!=seed or contract['population']!=1024 or contract['initial_multiplier']!=6 or contract['initialization_probe_sha256']!=probe['sha256']:
         raise ValueError('Original initialization contract changed')
     rng=np.random.default_rng(np.random.SeedSequence([seed,int(day.replace('-',''))]))
@@ -78,7 +83,7 @@ def recover_day(campaign,training,day,quotas,seed,output):
     record=dict(day=day,rows=rows,selected_count=len(indices),quotas=list(quotas),population_sha256=token,
                 receipt=str(receipt_path),receipt_sha256=seal['receipt_sha256'],seal=str(seal_path),seal_sha256=file_hash(seal_path),
                 execution=receipt['execution'],identity=receipt['identity'],probe_sha256=probe['sha256'],
-                recovery_seconds=perf_counter()-started,validation_opened=False)
+                dataset=dataset,recovery_seconds=perf_counter()-started,validation_opened=False)
     write_json(Path(output)/(day+'.json'),record)
     return dict(day=day,recovery_seconds=record['recovery_seconds'],path=str(Path(output)/(day+'.json')))
 
@@ -98,7 +103,8 @@ def assemble(records,seed=2020):
         if added!=record['selected_count']:raise ValueError('Unique initial reserve exhausted')
     if len(payload)!=1024:raise ValueError('Exactly 1024 initial candidates required')
     from .run_search import source_hash
-    pool=dict(version='v33-local-expert-pool-v1',source_sha256=source_hash(),population=payload,population_sha256=digest(payload),
+    if any(r['dataset']!=records[0]['dataset'] for r in records):raise ValueError('Initial datasets differ')
+    pool=dict(version='v33-local-expert-pool-v1',source_sha256=source_hash(),population=payload,population_sha256=digest(payload),dataset=records[0]['dataset'],
               sources=[None]*len(payload),origins=origins,expert_count=0,fresh_count=len(payload),seed=seed,
               archive_certificates=certificates,categories=categories,validation_opened=False,initial_only=True)
     pool['pool_sha256']=digest(pool)
@@ -115,8 +121,31 @@ def verify(pool,days,dataset=None):
         raise ValueError('Initial pool integrity changed')
     if set(pool['archive_certificates'])!=set(days) or len(pool['population'])!=1024 or len(pool['origins'])!=1024 or pool['sources']!=[None]*1024:
         raise ValueError('Initial training coverage changed')
+    if dataset is not None and pool['dataset']!=dataset:raise ValueError('Global training differs from initial evidence')
     keys=[program_key(Individual.restore(p)) for p in pool['population']]
     if len(set(keys))!=1024 or keys!=[r['canonical_sha256'] for r in pool['origins']]:raise ValueError('Initial identity changed')
     for entry in pool['archive_certificates'].values():
         if file_hash(entry['path'])!=entry['sha256'] or file_hash(entry['receipt'])!=entry['receipt_sha256']:
             raise ValueError('Initial evidence changed')
+
+
+def seed_results(pool,record_root,output):
+    """Reuse only selected candidates' exact original-session financial rows."""
+    from .run_search import source_hash
+    from .genome import Individual
+    from .lineage import program_key
+    keys={program_key(Individual.restore(p)) for p in pool['population']}
+    total=0
+    for day,certificate in pool['archive_certificates'].items():
+        record=json.loads((Path(record_root)/(day+'.json')).read_bytes())
+        if record['receipt_sha256']!=certificate['receipt_sha256'] or record['seal_sha256']!=certificate['sha256']:
+            raise ValueError('Recovered record provenance changed')
+        results={r['key']:r['metrics'] for r in record['rows'] if r['key'] in keys}
+        # Recovery records themselves are pinned in the pool before this call.
+        if file_hash(Path(record_root)/(day+'.json'))!=pool['recovery_certificates'][day]:raise ValueError('Recovered financial rows changed')
+        identity=dict(source=source_hash(),data=record['identity'],execution=record['execution'],split='training',episode_capacity=65536)
+        path=Path(output)/'training'/'result-cache'/(day+'.json')
+        if path.exists():raise ValueError('Refusing to replace existing global results')
+        write_json(path,dict(identity=identity,results=results,results_sha256=digest(results)))
+        total+=len(results)
+    return total
