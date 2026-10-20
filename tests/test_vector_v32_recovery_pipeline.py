@@ -43,6 +43,16 @@ def test_large_completion_reservation_grows_without_truncating_results():
     assert preparation.completion_budget({'episodes':[[],[1.,2.]]})==8*2**30
 
 
+def test_host_load_and_completion_share_unallocated_budget(monkeypatch,tmp_path):
+    monkeypatch.setenv('V32_CPU_RESERVE_GIB','128')
+    monkeypatch.setattr(preparation,'_headroom',lambda:(160*2**30,160*2**30))
+    budget,required=preparation.reserve_host_load(160*2**30,128,32)
+    assert budget==32*2**30
+    f=preparation.submit_completion(timed_call,process_metrics,{},[],[],output=tmp_path,emit=lambda **v:None)
+    assert not f.done();f.cancel();preparation.release_host_load(budget)
+    assert preparation._host_reserved==0
+
+
 def test_prefetch_requires_budget_before_loading_and_retains_cpu_only():
     available=[180*2**30];calls=[];events=[]
     with ThreadPoolExecutor(max_workers=1) as pool:

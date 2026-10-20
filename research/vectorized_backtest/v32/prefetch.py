@@ -13,15 +13,20 @@ class CPUOnlyPrefetch:
         self.snapshot=snapshot;self.report=report;self.future=None;self.day=None;self.cancel=None
         self.last=None
         self.speculative_required=self.required+admission_gib*2**30
+        self.reserve_gib=reserve_gib;self.admission_gib=admission_gib
 
     def start(self,day,load):
         if self.future is not None:raise RuntimeError('Only one prefetched session is allowed')
         self.day=day;self.cancel=Event();cancel=self.cancel
         def read_locked():
-            started=perf_counter();before=self.snapshot().available;item=None
+            from .preparation import reserve_host_load,release_host_load
+            started=perf_counter();before=self.snapshot().available;item=None;budget=None
             info=dict(day=day,required_available_bytes=self.required,available_before_bytes=before,cpu_only=True)
             try:
-                if cancel.is_set() or before<self.speculative_required:
+                if not cancel.is_set():
+                    budget,required=reserve_host_load(before,self.reserve_gib,self.admission_gib,speculative=True)
+                    info['required_before_bytes']=required
+                if cancel.is_set() or budget is None:
                     info['outcome']='deferred';return None
                 item=load(day)
                 if item.device.type!='cpu':raise ValueError('Prefetch must not activate CUDA')
@@ -33,6 +38,7 @@ class CPUOnlyPrefetch:
                 if item is not None:item.close()
                 info.update(outcome='failed',error=repr(error));raise
             finally:
+                if budget is not None:release_host_load(budget)
                 info['load_seconds']=perf_counter()-started;self.report(info)
         def read():
             with self.load_lock:return read_locked()

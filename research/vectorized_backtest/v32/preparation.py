@@ -17,6 +17,7 @@ _slots=threading.BoundedSemaphore(12)
 _waiting=threading.BoundedSemaphore(12)
 _completion_lock=threading.Lock()
 _completion_reserved=0
+_host_reserved=0
 
 
 def _pack(members):
@@ -84,6 +85,7 @@ class AdmissionFuture(Future):
         self.boundary_stop=Path(boundary_stop) if boundary_stop else None
         self.next_poll=0.;self.admission_lock=threading.Lock()
         self.completion_bytes=completion_bytes
+        self.allocation_bytes=completion_bytes or float(os.environ.get('V32_CPU_ADMISSION_GIB','32'))*2**30
         self.add_done_callback(lambda _: _waiting.release())
 
     def _poll(self):
@@ -98,8 +100,9 @@ class AdmissionFuture(Future):
                 global _completion_reserved
                 with _completion_lock:
                     available,required=_headroom()
+                    required+=_completion_reserved+_host_reserved
                     if self.completion_bytes:
-                        required=float(os.environ.get('V32_CPU_RESERVE_GIB','128'))*2**30+_completion_reserved+self.completion_bytes
+                        required=float(os.environ.get('V32_CPU_RESERVE_GIB','128'))*2**30+_completion_reserved+_host_reserved+self.completion_bytes
                     if available<required:
                         self.emit(stage='Waiting for CPU RAM headroom',
                             available_gib=available/2**30,required_available_gib=required/2**30)
@@ -107,12 +110,12 @@ class AdmissionFuture(Future):
                     fn,args=self.request
                     try:inner=_submit(fn,args,blocking=False)
                     except BlockingIOError:return
-                    _completion_reserved+=self.completion_bytes
+                    _completion_reserved+=self.allocation_bytes
                 # Cancellation and admission both run through this lock.
                 self.set_running_or_notify_cancel();self.request=None
                 def finished(value):
                     global _completion_reserved
-                    with _completion_lock:_completion_reserved-=self.completion_bytes
+                    with _completion_lock:_completion_reserved-=self.allocation_bytes
                     try:result=value.result()
                     except BaseException as error:self.set_exception(error)
                     else:self.set_result(result)
@@ -172,6 +175,24 @@ def completion_budget(payload):
             return sum(count(v) for v in value)
         return 1
     return max(8*2**30,128*2**20+count(payload)*512)
+
+
+def reserve_host_load(available,reserve_gib,admission_gib,*,speculative=False):
+    """Reserve unallocated load bytes against concurrent completion tasks."""
+    global _host_reserved
+    budget=admission_gib*2**30
+    with _completion_lock:
+        required=(reserve_gib+admission_gib*(2 if speculative else 1))*2**30+_completion_reserved+_host_reserved
+        if available<required:return None,required
+        _host_reserved+=budget
+        return budget,required
+
+
+def release_host_load(budget):
+    global _host_reserved
+    with _completion_lock:
+        _host_reserved-=budget
+        if _host_reserved<0:raise RuntimeError('Host load reservation released twice')
 
 
 def initialize(rng,size,config):

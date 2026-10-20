@@ -421,11 +421,13 @@ time from graph-construction host time without adding synchronization.
 
 V32's actual progress publisher uses the compact atomic writer with bounded
 Windows sharing-violation retries. Result processing/publication reserve 8 GiB
-per outstanding completion task above the unchanged bars reserve; only those
+minimum per outstanding completion task above the unchanged bars reserve; larger
+payloads reserve more for Python/IPC/JSON expansion. Only those
 two CPU-only task types qualify. Packing, initialization and demand loading
 retain the 32 GiB admission margin. CPU loads share an in-process admission
 lock; speculative loads require an additional 32 GiB before starting, avoiding
-two lanes concurrently spending the same memory headroom. Post-load retention
+two lanes concurrently spending the same memory headroom. Pending CPU tasks and
+host loads share the reservation ledger. Post-load retention
 still requires reserve plus admission. `V32_TRANSITION_DYNAMIC=1` is a diagnostic
 compiler option; the default remains static compilation until exact matched
 financial parity and performance qualify an alternative.

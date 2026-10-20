@@ -33,7 +33,21 @@ class StreamWorker(Worker):
         if prefetched:self.host[day]=item;self.host.move_to_end(day)
         else:
             from .prefetch import CPUOnlyPrefetch
-            with CPUOnlyPrefetch.load_lock:item=self.load(day)
+            from .preparation import reserve_host_load,release_host_load
+            c=self.config
+            with CPUOnlyPrefetch.load_lock:
+                while True:
+                    boundary=Path(c['boundary_stop']) if c.get('boundary_stop') else None
+                    output=Path(c['output'])
+                    if any((p/'STOP').exists() and p!=boundary for p in (output,*output.parents)):
+                        raise InterruptedError('Stopped while waiting for host load admission')
+                    budget,required=reserve_host_load(psutil.virtual_memory().available,
+                        c.get('host_reserve_gib',128),c.get('host_admission_gib',32))
+                    if budget is not None:break
+                    self.emit(day,stage='Waiting for CPU RAM headroom',required_available_gib=required/2**30)
+                    sleep(2)
+                try:item=self.load(day)
+                finally:release_host_load(budget)
         return item,prefetched
 
     def close(self):
