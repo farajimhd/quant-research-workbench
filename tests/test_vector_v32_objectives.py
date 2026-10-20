@@ -65,6 +65,15 @@ def test_source_is_exact_v21_and_other_engine_files_only_rename_version():
             actual={n.name:n for n in after.body if isinstance(n,(ast.FunctionDef,ast.ClassDef))}
             for n in before.body:
                 if isinstance(n,(ast.FunctionDef,ast.ClassDef)) and n.name not in excluded:
+                    if p.name=='phase2.py' and n.name=='seed_pool':
+                        import copy
+                        changed=copy.deepcopy(actual[n.name])
+                        normalization=ast.parse('pool=json.loads(json.dumps(pool,allow_nan=False))').body[0]
+                        indices=[i for i,node in enumerate(changed.body) if ast.dump(node)==ast.dump(normalization)]
+                        assert len(indices)==1
+                        changed.body.pop(indices[0])
+                        assert ast.dump(changed)==ast.dump(n)
+                        continue
                     assert ast.dump(actual[n.name])==ast.dump(n),n.name
             if p.name=='cpu_work.py':
                 original=next(n for n in before.body if isinstance(n,ast.FunctionDef) and n.name=='descriptors')

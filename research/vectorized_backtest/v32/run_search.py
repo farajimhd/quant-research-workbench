@@ -223,6 +223,7 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
         with SessionLanes(lane_config(train,'training'),session_workers,panel) as trainers,SessionLanes(lane_config(valid,'validation'),session_workers,panel) as observers:
             for generation in range(completed+1,generations+1):
                 started=perf_counter();panel.begin_generation(generation)
+                pipeline={};stage_started=perf_counter()
                 root=require_runtime(output/'training'/f'generation-{generation:04d}')
                 token=digest([m.payload() for m in population])
                 panel.begin_evaluation('training',len(train['days']),len(population))
@@ -235,8 +236,11 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
                         if file_hash(root/day/'receipt.json')!=h:raise ValueError('Interrupted generation receipt changed')
                     train_timings=[]
                 else:train_timings=trainers.generation(train['days'],population,generation,token)
+                pipeline['training_evaluation_seconds']=perf_counter()-stage_started;stage_started=perf_counter()
                 ordered,hashes=read_panel(root,train['days'],token)
+                pipeline['training_panel_read_seconds']=perf_counter()-stage_started;stage_started=perf_counter()
                 rank,leaders,result=ranking(ordered,population,ids,pedigree,objective,return_objective=True)
+                pipeline['training_ranking_seconds']=perf_counter()-stage_started
                 selection_started=perf_counter()
                 values,eligible=session_scores(ordered,objective,prepared=result)
                 if not training_seal.exists():
@@ -253,10 +257,13 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
                 members=[population[i] for i in shortlist];short_ids=ids[shortlist]
                 from .behavior import BehaviorIndex
                 behavior=None # Species descriptors reuse the training episode ledger below; no second BehaviorIndex.
+                pipeline['training_evidence_shortlist_seconds']=perf_counter()-selection_started
+                reproduction_started=perf_counter()
                 successor,new_ids,diversity=next_population(rng,population,ids,pedigree,rank,generation+1,selection,session_values=values,session_eligible=eligible,global_values=global_values,global_eligible=result['global_eligible'],behavior=behavior,species=species,ordered=ordered) if generation<generations else (population,ids,{})
                 if generation==generations:
                     species.assign(population,ids,global_values,ordered,generation,eligible=result['global_eligible'])
                     diversity=species.telemetry
+                pipeline['reproduction_species_seconds']=perf_counter()-reproduction_started
                 selection_seconds=perf_counter()-selection_started
                 panel.update(evolution=species.telemetry)
                 rng_before_validation=digest(rng.bit_generator.state)
@@ -273,6 +280,7 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
                     for day,h in sealed['session_receipts'].items():
                         if file_hash(validation_root/day/'receipt.json')!=h:raise ValueError('Validation receipt changed')
                 else:observers.generation(valid['days'],members,generation,validation_token)
+                pipeline['validation_evaluation_seconds']=perf_counter()-validation_start;stage_started=perf_counter()
                 heldout,validation_hashes=read_panel(validation_root,valid['days'],validation_token)
                 _,validation_rows,validation_result=ranking(heldout,members,short_ids,pedigree,objective,selection_required=False,return_objective=True)
                 training_ranks={int(ids[i]):place for place,i in enumerate(rank,1)}
@@ -290,6 +298,7 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
                     write_json(validation_seal,dict(population_sha256=validation_token,session_receipts=validation_hashes,
                         validation_feedback=False,display_only=True,session_panel_sha256=file_hash(validation_root/'session-panel.npz'),wall_seconds=perf_counter()-validation_start))
                 observers.release_plans()
+                pipeline['validation_scoring_publication_seconds']=perf_counter()-stage_started;stage_started=perf_counter()
                 population,ids=successor,new_ids
                 write_json(root/'diversity.json',diversity)
                 save(generation,leaders,validation_rows)
@@ -297,7 +306,13 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
                 panel.update(rule_quality_rejections=snapshot())
                 write_json(root/'rule-quality.json',snapshot())
                 panel.publish()
+                pipeline['checkpoint_publication_seconds']=perf_counter()-stage_started
                 wall=perf_counter()-started
+                write_json(root/'generation-profile.json',dict(source_sha256=version_hash,generation=generation,
+                    training_sessions=len(train['days']),validation_sessions=len(valid['days']),population=population_size,
+                    full_generation_seconds=wall,stages=pipeline,
+                    ordering='All training sessions complete before the single reproduction; successor frozen before display-only validation',
+                    timing_semantics='Host wall stages; concurrent evaluation internals overlap and must not be summed across sessions; no additional CUDA synchronization'))
                 write_json(root/'wall.json',dict(full_generation_seconds=wall,validation_seconds=perf_counter()-validation_start,
                     includes_selection_validation_publication=True,selection_seconds=selection_seconds,training_timings=train_timings))
                 panel.generation_samples.append(wall)

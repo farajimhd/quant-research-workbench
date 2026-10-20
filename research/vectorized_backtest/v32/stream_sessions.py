@@ -53,9 +53,13 @@ class StreamWorker(Worker):
         submit=partial(submit_when_ready,output=c['output'],
             emit=admission_report,boundary_stop=c.get('boundary_stop'))
         from .session_owner import PackedPopulation
+        from .global_pipeline import GenerationPopulation
         restore_started=perf_counter()
         prepared_population=payload if isinstance(payload,PackedPopulation) else None
-        if prepared_population is None:
+        generation_population=payload if isinstance(payload,GenerationPopulation) else None
+        if generation_population is not None:
+            population,keys=payload.members,payload.keys;restore_seconds=0.
+        elif prepared_population is None:
             (population,keys),restore_seconds=yield submit(timed_call,_restore_population,payload)
         else:
             population,keys=payload.members,payload.keys;restore_seconds=0.
@@ -80,7 +84,7 @@ class StreamWorker(Worker):
             raise ValueError('Persistent owner and replay cache selection disagree')
         batch=c['batch_size']; timings=[]; execution=Execution(**c['execution'])
         self.batch_progress=dict(completed_local_batches=0,total_local_batches=(len(missing)+batch-1)//batch)
-        packing={}; cpu_pending=None;staging_released_bytes=0
+        packing={};packing_reused={};cpu_pending=None;staging_released_bytes=0
         try:
             if missing:
                 required=item.bytes+item.resident_features.bytes+(2+c['capture_gib'])*1024**3
@@ -101,7 +105,12 @@ class StreamWorker(Worker):
                 # Current pair plus one pair ahead per session, never a population-wide queue.
                 for offset in range(first,min(first+2*batch,len(missing)),batch):
                     if offset not in packing:
-                        if prepared_population is None:
+                        if generation_population is not None:
+                            selection=missing[offset:offset+batch]
+                            hits=generation_population.hits
+                            packing[offset]=generation_population.pack(selection,submit)
+                            packing_reused[offset]=generation_population.hits>hits
+                        elif prepared_population is None:
                             packing[offset]=submit(_pack,[population[i] for i in missing[offset:offset+batch]])
                         else:
                             future=Future();future.set_result(prepared_population.batches.pop(offset))
@@ -118,6 +127,8 @@ class StreamWorker(Worker):
                     wait_started=perf_counter()
                     packed,packing_seconds=yield packing.pop(offset)
                     packing_wait_seconds=perf_counter()-wait_started
+                    reused_pack=packing_reused.pop(offset,False)
+                    if reused_pack:packing_seconds=0.
                     upload_started=perf_counter()
                     plan=PopulationPrograms(members,device,packed=packed)
                     upload_seconds=perf_counter()-upload_started
@@ -138,6 +149,7 @@ class StreamWorker(Worker):
                     prepared.replay.market_block=market
                     pending.append((offset,selection,plan,prepared,perf_counter()-batch_start,
                         dict(cpu_packing_seconds=packing_seconds,packing_wait_seconds=packing_wait_seconds,
+                             generation_packing_reused=reused_pack,
                              plan_upload_seconds=upload_seconds,capture_seconds=perf_counter()-capture_started)))
                 self.emit(day,stage='Replay positions',candidate_offset=first,replay_started=time())
                 # The CUDA owner advances all admitted session groups together.
@@ -174,6 +186,9 @@ class StreamWorker(Worker):
                 population_restore_service_seconds=restore_seconds,
                 population_restore_wait_seconds=restore_wait_seconds,
                 owner_preparation_seconds=prepared_population.seconds if prepared_population is not None else 0.,
+                generation_preparation_seconds=generation_population.seconds if generation_population is not None else 0.,
+                generation_pack_hits=generation_population.hits if generation_population is not None else 0,
+                generation_pack_misses=generation_population.misses if generation_population is not None else 0,
                 shared_market_bytes=getattr(getattr(self,'market_block',None),'bytes',0),
                 shared_market_capture_seconds=getattr(getattr(self,'market_block',None),'capture_seconds',0.),
                 prepublication_wall_seconds=perf_counter()-started,

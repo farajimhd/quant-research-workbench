@@ -280,7 +280,9 @@ class SessionLanes:
             while not self.stop.is_set():
                 try:event=self.events.get(timeout=.1)
                 except queue.Empty:continue
-                self.panel.session_progress(event)
+                progress=getattr(self,'independent_progress',None)
+                if progress is None:self.panel.session_progress(event)
+                else:progress.event(event)
         except BaseException as error:self.error=error
 
     def __enter__(self):
@@ -309,11 +311,46 @@ class SessionLanes:
 
     def generation(self,days,population,generation,token):
         from .lineage import program_key
-        payload=[dict(v.payload(),canonical_sha256=program_key(v)) for v in population];timings=[]
+        if self.config.get('shared_replay'):
+            from .global_pipeline import GenerationPopulation
+            payload=GenerationPopulation(population)
+        else:payload=[dict(v.payload(),canonical_sha256=program_key(v)) for v in population]
+        timings=[]
         if not self.widths:
             def width(day):return day,len(json.loads((Path(self.config['history'])/day/'complete.json').read_text(encoding='utf-8-sig'))['listing_ids'])
             with ThreadPoolExecutor(max_workers=self.workers) as reader:self.widths=dict(reader.map(width,days))
         fixed_widths=replay_widths(days,self.widths,self.config.get('replay_width_workers',self.workers))
+        if self.config.get('shared_replay'):
+            from .global_pipeline import IndependentProgress
+            self.independent_progress=IndependentProgress(self.panel,days,len(population),self.config['batch_size'])
+            abort=threading.Event()
+            def lane_run(lane):
+                results=[]
+                lane_days=days[lane::self.workers]
+                try:
+                    for i,day in enumerate(lane_days):
+                        if abort.is_set():break
+                        self.independent_progress.begin(day)
+                        next_day=lane_days[i+1] if i+1<len(lane_days) else None
+                        result=self.proxies[lane].run(day,next_day,payload,generation,token,fixed_widths[day])
+                        self.independent_progress.finish(day,result);results.append(result)
+                except BaseException:
+                    abort.set();raise
+                return results
+            futures=[self.pools[lane].submit(lane_run,lane) for lane in range(self.workers)]
+            try:
+                results=[result for future in futures for result in future.result()]
+                if self.error is not None:raise RuntimeError('Session progress consumer failed')
+                by_day={result['day']:result for result in results}
+                for day in days:timings.extend(by_day[day]['timings'])
+                return timings
+            finally:
+                # No CPU evolution or population mutation may start while any
+                # session still holds the generation-scoped immutable request.
+                for future in futures:
+                    try:future.result()
+                    except BaseException:pass
+                self.independent_progress=None
         for first in range(0,len(days),self.workers):
             cohort=days[first:first+self.workers];started=perf_counter()
             self.panel.begin_sessions(cohort)

@@ -380,3 +380,12 @@ profiler: concurrent stages overlap and must not be summed. Full-generation
 `wall.json` remains the performance authority, including evolution/publication.
 Qualification requires matched full financial receipts and exact successor
 population, RNG, pedigree, species and archive state before checkpoint migration.
+
+Phase 2 shares the immutable generation population and a bounded four-batch CPU
+packing memo across sessions. Each session still selects its own exact cache
+misses in their original order. The two lanes advance through their pinned
+session queues independently; returned receipts/timings retain manifest order.
+All training sessions must finish before the single reproduction. The successor
+remains frozen before display-only validation. `generation-profile.json` records
+evaluation, panel reads, ranking, evidence, reproduction/species, validation and
+checkpoint publication as host wall stages without additional CUDA barriers.
