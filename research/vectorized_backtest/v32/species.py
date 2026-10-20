@@ -56,7 +56,12 @@ def training_behavior(ordered,n):
         # Process one clock bin at a time, avoiding an episodes-by-48 arena.
         for j,start in enumerate(lower):
             duration=np.maximum(0,np.minimum(exits,start+1800)-np.maximum(entry,start))
-            np.add.at(holding[:,j],owners,duration)
+            # Bincount's floating accumulator is exact for nonnegative integer
+            # sums below 2**53. Retain integer scatter for larger ledgers.
+            if int(duration.max(initial=0))*int(lengths.max(initial=0))<2**53:
+                holding[:,j]=np.bincount(owners,weights=duration,minlength=n).astype(np.int64)
+            else:
+                np.add.at(holding[:,j],owners,duration)
         values=np.column_stack((time_bins,holding/1800,listing_bins,
             metrics['closed_positions'],np.asarray(metrics['capital_dollar_seconds'])/3600000,
             np.asarray(metrics['turnover'])/1000))
