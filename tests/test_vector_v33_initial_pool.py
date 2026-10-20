@@ -52,3 +52,27 @@ def test_scoped_identity_keeps_original_v32_keys():
     members=sample(np.random.default_rng(20),12)
     expected=[program_key(m) for m in members]
     with validation_scope():assert [program_key(m) for m in members]==expected
+
+
+def test_imported_receipt_merges_with_fresh_rows_in_real_publisher(tmp_path):
+    import json
+    from research.vectorized_backtest.v33.initial_pool import seed_results
+    from research.vectorized_backtest.v33.genome import sample
+    from research.vectorized_backtest.v33.lineage import program_key
+    from research.vectorized_backtest.v33.run_search import digest
+    from research.vectorized_backtest.v33.result_processing import publish_results
+    from research.vectorized_backtest.v6.torch_backtest.runtime import file_hash
+    member=sample(np.random.default_rng(4),1)[0];key=program_key(member);day='2026-08-04'
+    row=dict(net_pnl=10.,drawdown=2.,result_reused=False)
+    record=dict(receipt_sha256='receipt',seal_sha256='seal',rows=[dict(key=key,metrics=row)],identity={},execution={})
+    path=tmp_path/(day+'.json');path.write_text(json.dumps(record))
+    pool=dict(population=[member.payload()],archive_certificates={day:dict(receipt_sha256='receipt',sha256='seal')},recovery_certificates={day:file_hash(path)})
+    output=tmp_path/'global';assert seed_results(pool,tmp_path,output)==1
+    cache_path=output/'training/result-cache'/(day+'.json');cache=json.loads(cache_path.read_bytes());cached=cache['results']
+    assert cached[key]==dict(net_pnl=10.,drawdown=2.)
+    cached['fresh']=dict(net_pnl=-3.,drawdown=4.)
+    receipt_root=output/'training/generation-0001'/day
+    publish_results(cache_path,receipt_root,cache['identity'],cached,[key,'fresh'],[1],day,{},'token','training',{},[],[])
+    receipt=json.loads((receipt_root/'receipt.json').read_bytes())
+    assert receipt['metrics']==dict(net_pnl=[10.,-3.],drawdown=[2.,4.],result_reused=[True,False])
+    final=json.loads(cache_path.read_bytes());assert final['results_sha256']==digest(final['results'])

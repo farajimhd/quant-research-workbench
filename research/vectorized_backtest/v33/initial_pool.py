@@ -140,7 +140,10 @@ def seed_results(pool,record_root,output):
         record=json.loads((Path(record_root)/(day+'.json')).read_bytes())
         if record['receipt_sha256']!=certificate['receipt_sha256'] or record['seal_sha256']!=certificate['sha256']:
             raise ValueError('Recovered record provenance changed')
-        results={r['key']:r['metrics'] for r in record['rows'] if r['key'] in keys}
+        # This flag describes the receipt's publication, not a financial result.
+        # The unchanged publisher derives it for this evaluation after merging.
+        results={r['key']:{k:v for k,v in r['metrics'].items() if k!='result_reused'}
+                 for r in record['rows'] if r['key'] in keys}
         # Recovery records themselves are pinned in the pool before this call.
         if file_hash(Path(record_root)/(day+'.json'))!=pool['recovery_certificates'][day]:raise ValueError('Recovered financial rows changed')
         identity=dict(source=source_hash(),data=record['identity'],execution=record['execution'],split='training',episode_capacity=65536)
