@@ -1,6 +1,7 @@
 """Capture chronological GPU transitions without a host launch per second."""
 import torch
 import time
+import os
 from collections import deque
 from dataclasses import dataclass
 
@@ -63,7 +64,8 @@ def replay(position, aggregate, opened, policy, prices, observed, membership,
     # Inductor functionalizes ledger scatter mutations and copies the full bounded
     # buffers every tick. Capture direct in-place ledger kernels instead: measured
     # 32x faster ledger appends at 512x622, still no host launch per clock.
-    compiled_transition=torch.compile(transition_tick,fullgraph=True,dynamic=False)
+    dynamic=os.environ.get('V32_TRANSITION_DYNAMIC','0')=='1'
+    compiled_transition=torch.compile(transition_tick,fullgraph=True,dynamic=dynamic)
     append_ledger=episodes.append_events if episodes is not None else None
     def compiled():
         if signal_provider is not None:signal_provider(index.clamp_max(total)-1,position,opened)
@@ -96,7 +98,7 @@ def replay(position, aggregate, opened, policy, prices, observed, membership,
     if capture_only:
         torch.cuda.synchronize(device)
         return CapturedReplay(graph, reset, total, block, compiled, index,
-                              dict(compiler_warmup_host_seconds=warm_seconds,
+                              dict(compiler_dynamic=dynamic,compiler_warmup_host_seconds=warm_seconds,
                                    graph_capture_host_seconds=capture_seconds))
     pending=deque();reported=0;completed=0;last_report=0.
     def publish_completed(force=False):

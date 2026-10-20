@@ -31,7 +31,9 @@ class StreamWorker(Worker):
         self.prefetch.release_under_pressure()
         item=self.prefetch.take(day);prefetched=item is not None
         if prefetched:self.host[day]=item;self.host.move_to_end(day)
-        else:item=self.load(day)
+        else:
+            from .prefetch import CPUOnlyPrefetch
+            with CPUOnlyPrefetch.load_lock:item=self.load(day)
         return item,prefetched
 
     def close(self):
@@ -65,12 +67,14 @@ class StreamWorker(Worker):
         c=self.config; started=perf_counter(); self.batch_progress={}
         self.emit(day,stage='Load session',candidate_offset=0)
         device=torch.device(c['device'])
-        from .preparation import submit_when_ready, _restore_population
+        from .preparation import submit_when_ready, submit_completion, _restore_population
         from functools import partial
         def admission_report(**values):
             self.prefetch.release_under_pressure()
             self.emit(day,**values)
         submit=partial(submit_when_ready,output=c['output'],
+            emit=admission_report,boundary_stop=c.get('boundary_stop'))
+        complete=partial(submit_completion,output=c['output'],
             emit=admission_report,boundary_stop=c.get('boundary_stop'))
         if hasattr(payload,'start'):payload.start(submit)
         load_started=perf_counter()
@@ -204,7 +208,7 @@ class StreamWorker(Worker):
                     export_seconds=perf_counter()-export_started
                     processing_started=perf_counter()
                     self.prefetch.release_under_pressure()
-                    cpu_pending=submit(timed_call,process_metrics,snapshot,item.listing_ids,item.receipt['listings'])
+                    cpu_pending=complete(timed_call,process_metrics,snapshot,item.listing_ids,item.receipt['listings'])
                     plan.close()
                     metrics,processing_seconds=yield cpu_pending
                     processing_wait_seconds=perf_counter()-processing_started
@@ -236,7 +240,7 @@ class StreamWorker(Worker):
                 shared_market_capture_seconds=getattr(getattr(self,'market_block',None),'capture_seconds',0.),
                 prepublication_wall_seconds=perf_counter()-started,
                 timing_semantics='Wall seconds; waits include queue and scheduler delay; replay includes host pauses. Overlapping stages must not be summed. Publication excludes profile write. No added CUDA synchronization.')
-            cpu_pending=submit(publish_results,cache_path,root,identity,cached,keys,missing,
+            cpu_pending=complete(publish_results,cache_path,root,identity,cached,keys,missing,
                 day,item.identity,token,c.get('split','training'),asdict(execution),
                 item.listing_ids.tolist(),timings,profile)
             selected=yield cpu_pending

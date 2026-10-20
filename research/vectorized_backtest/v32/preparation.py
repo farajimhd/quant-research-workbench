@@ -15,6 +15,8 @@ _pool=None
 _lock=threading.Lock()
 _slots=threading.BoundedSemaphore(12)
 _waiting=threading.BoundedSemaphore(12)
+_completion_lock=threading.Lock()
+_completion_reserved=0
 
 
 def _pack(members):
@@ -75,12 +77,13 @@ class AdmissionFuture(Future):
     Retain the original callable/arguments until RAM and a process-pool slot are
     available. No allocation-heavy work or RNG is performed while waiting.
     """
-    def __init__(self,fn,args,output,emit,boundary_stop):
+    def __init__(self,fn,args,output,emit,boundary_stop,completion_bytes=0):
         super().__init__()
         if not _waiting.acquire(blocking=False):raise RuntimeError('CPU admission queue full')
         self.request=(fn,args);self.output=Path(output);self.emit=emit
         self.boundary_stop=Path(boundary_stop) if boundary_stop else None
         self.next_poll=0.;self.admission_lock=threading.Lock()
+        self.completion_bytes=completion_bytes
         self.add_done_callback(lambda _: _waiting.release())
 
     def _poll(self):
@@ -92,17 +95,24 @@ class AdmissionFuture(Future):
                 if any((p/'STOP').exists() and p!=self.boundary_stop
                        for p in (self.output,*self.output.parents)):
                     raise InterruptedError('Stopped while waiting for CPU RAM headroom')
-                available,required=_headroom()
-                if available<required:
-                    self.emit(stage='Waiting for CPU RAM headroom',
-                        available_gib=available/2**30,required_available_gib=required/2**30)
-                    return
-                fn,args=self.request
-                try:inner=_submit(fn,args,blocking=False)
-                except BlockingIOError:return
+                global _completion_reserved
+                with _completion_lock:
+                    available,required=_headroom()
+                    if self.completion_bytes:
+                        required=float(os.environ.get('V32_CPU_RESERVE_GIB','128'))*2**30+_completion_reserved+self.completion_bytes
+                    if available<required:
+                        self.emit(stage='Waiting for CPU RAM headroom',
+                            available_gib=available/2**30,required_available_gib=required/2**30)
+                        return
+                    fn,args=self.request
+                    try:inner=_submit(fn,args,blocking=False)
+                    except BlockingIOError:return
+                    _completion_reserved+=self.completion_bytes
                 # Cancellation and admission both run through this lock.
                 self.set_running_or_notify_cancel();self.request=None
                 def finished(value):
+                    global _completion_reserved
+                    with _completion_lock:_completion_reserved-=self.completion_bytes
                     try:result=value.result()
                     except BaseException as error:self.set_exception(error)
                     else:self.set_result(result)
@@ -131,6 +141,20 @@ class AdmissionFuture(Future):
 def submit_when_ready(fn,*args,output,emit,boundary_stop=None):
     future=AdmissionFuture(fn,args,output,emit,boundary_stop)
     # A speculative request must actually begin before its consumer yields it.
+    future.done()
+    return future
+
+
+def submit_completion(fn,*args,output,emit,boundary_stop=None):
+    """Small existing-result tasks reserve 8 GiB each above the bars reserve.
+
+    At most two sessions submit completion work; genotypes and session loads
+    retain their unchanged 32 GiB admission. No financial or RNG work moves.
+    """
+    from .result_processing import timed_call,process_metrics,publish_results
+    if not (fn is publish_results or (fn is timed_call and args and args[0] is process_metrics)):
+        raise ValueError('Completion admission is restricted to result processing/publication')
+    future=AdmissionFuture(fn,args,output,emit,boundary_stop,completion_bytes=8*2**30)
     future.done()
     return future
 
