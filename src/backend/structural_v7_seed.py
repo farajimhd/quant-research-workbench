@@ -303,10 +303,16 @@ def load_seed(client: Any, *, ticker: str, session: date,
 
 def _seed_interval_rows(client, *, table, columns, keys, predicate, identity, expected):
     from research.level_book.v7.clickhouse_persistence import normalized_row_pages
-    rows=[row for page in normalized_row_pages(
-        lambda sql:_rows(client,sql+' FORMAT JSONEachRow'),table=table,
-        columns=columns+',valid_from',prewhere=keys,predicate=predicate,
-        identity=identity,expected=expected) for row in page]
+    if getattr(client, 'structural_stream_reads', False):
+        from research.level_book.v7.normalized_stream import normalized_stream
+        rows=list(normalized_stream(client,
+            f'SELECT {columns},valid_from FROM {table} FINAL PREWHERE {keys} '
+            f'WHERE {predicate} ORDER BY valid_from,{identity}', expected=expected))
+    else:
+        rows=[row for page in normalized_row_pages(
+            lambda sql:_rows(client,sql+' FORMAT JSONEachRow'),table=table,
+            columns=columns+',valid_from',prewhere=keys,predicate=predicate,
+            identity=identity,expected=expected) for row in page]
     # Keep the original canonical reconstruction order independently of the
     # storage cursor; duplicate/orphan/count checks still run in _assemble_seed.
     rows.sort(key=(lambda row:(row['level_id'],row['observation_id']))

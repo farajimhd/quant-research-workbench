@@ -253,6 +253,7 @@ def _process_ticker(spec,a,ticker):
     with closing(builder.Client(options)) as client, closing(sqlite3.connect(
             (a.bars_run_dir/'build-ledger-v2.sqlite3').as_uri()+'?mode=ro',uri=True)) as db:
         db.row_factory=sqlite3.Row
+        client.http.structural_stream_reads = True
         first_target, last_target = min(by_ticker[ticker]), max(by_ticker[ticker])
         known_ah = client.query(f"SELECT {COVERAGE_HEADER_COLUMNS} FROM {COVERAGE_TABLE} FINAL PREWHERE ticker={source.literal(ticker)} "
             f"AND checkpoint_boundary='' AND session_date<={source.literal(last_target)} ORDER BY session_date")

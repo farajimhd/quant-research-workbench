@@ -360,6 +360,7 @@ class ClickHouseHttpClient:
         sql: str,
         *,
         query_id: str | None = None,
+        query_params: Mapping[str, str | int] | None = None,
     ) -> Iterator[dict[str, Any]]:
         """Stream a JSONEachRow query without materializing its response.
 
@@ -375,6 +376,8 @@ class ClickHouseHttpClient:
         ):
             raise ValueError("iter_json_each_row requires FORMAT JSONEachRow")
         params = dict(self.default_query_params)
+        if query_params:
+            params.update({key: str(value) for key, value in query_params.items()})
         if query_id:
             params["query_id"] = query_id
         req = request.Request(
@@ -387,7 +390,23 @@ class ClickHouseHttpClient:
         if self.password:
             req.add_header("X-ClickHouse-Key", self.password)
         try:
-            with request.urlopen(req, timeout=self.timeout_seconds) as response:
+            # Retry only connection opening, before exposing any row. Never
+            # restart a partially consumed stream or replay a write.
+            for attempt in range(2):
+                try:
+                    response = request.urlopen(req, timeout=self.timeout_seconds)
+                    break
+                except (error.URLError, OSError, http.client.RemoteDisconnected) as exc:
+                    reason = exc.reason if isinstance(exc, error.URLError) else exc
+                    transient = (isinstance(reason, (TimeoutError, ConnectionError,
+                                                    http.client.RemoteDisconnected))
+                        or (isinstance(reason, OSError) and
+                            (getattr(reason, 'winerror', None) in (10053,10054,10060,10061)
+                             or reason.errno in (10053,10054,10060,10061,110,111,104,103))))
+                    if (attempt or isinstance(exc, error.HTTPError) or not transient
+                            or not re.match(r'^\s*SELECT\b', sql, re.IGNORECASE)):
+                        raise
+            with response:
                 for line_number, raw_line in enumerate(response, start=1):
                     if not raw_line.strip():
                         continue

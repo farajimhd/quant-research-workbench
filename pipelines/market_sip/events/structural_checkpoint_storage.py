@@ -175,6 +175,16 @@ def verify_snapshot(client, table, expected, where):
     """Compare every field with bounded pages and a look-ahead for extra rows."""
     identity = 'level_id' if table == LEVELS_TABLE else 'observation_id'
     ordered = sorted(expected, key=lambda row: row[identity])
+    if getattr(getattr(client, 'http', None), 'structural_stream_reads', False):
+        from contextlib import closing
+        from research.level_book.v7.normalized_stream import normalized_stream
+        with closing(normalized_stream(client.http,
+                f'SELECT * FROM {table} FINAL PREWHERE {where} ORDER BY {identity}',
+                expected=len(ordered))) as rows:
+            for index, row in enumerate(rows):
+                if any(row.get(key) != value for key, value in ordered[index].items()):
+                    raise ValueError('Normalized checkpoint snapshot differs from calculated state')
+        return
     # Fixed-schema observation rows fit 20k below the client's 16 MB cap.
     # Variable-size level rows retain smaller pages; the server byte cap is
     # unchanged and still rejects any unexpectedly oversized response.

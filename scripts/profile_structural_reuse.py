@@ -41,6 +41,7 @@ def main(argv=None):
     with closing(builder.Client(options,readonly=True)) as client, closing(sqlite3.connect(
             ledger.as_uri()+'?mode=ro',uri=True)) as db:
         db.row_factory=sqlite3.Row
+        client.http.structural_stream_reads = True
         from uuid import uuid4
         query_ids=[]
         execute=client.http.execute
