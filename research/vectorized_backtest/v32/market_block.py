@@ -1,11 +1,16 @@
 """One exact causal projection per clock, shared by a session's replay cohorts."""
 import torch
 from time import perf_counter
+from types import SimpleNamespace
 
 
 class MarketBlock:
     def __init__(self,plan,data,block=32):
         self.block=block;self.data=data;self.device=data.device
+        # The graph outlives the first cohort's NetworkPlan. Retain every
+        # external tensor address it captures, independently of that cohort.
+        self.projector=SimpleNamespace(columns=list(plan.columns),logarithmic=plan.logarithmic)
+        from .network import NetworkPlan
         u=len(data.listing_ids);c=len(plan.columns)
         self.bytes=block*u*c*13
         if self.bytes>2**30 or torch.cuda.mem_get_info(self.device)[0]-self.bytes<8*2**30:
@@ -16,7 +21,7 @@ class MarketBlock:
         self.ready=torch.cuda.Event();started=perf_counter()
         def fill():
             for slot in range(block):
-                values,valid=plan._project(data,self.index.clamp_max(data.clocks-2))
+                values,valid=NetworkPlan._project(self.projector,data,self.index.clamp_max(data.clocks-2))
                 self.values[slot].copy_(values);self.valid[slot].copy_(valid)
                 self.index.add_(1)
         torch.cuda.synchronize(self.device)

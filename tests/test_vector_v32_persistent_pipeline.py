@@ -46,14 +46,20 @@ def test_shared_market_blocks_exact_projection_and_tail():
     plan.logarithmic=torch.tensor([True,False,True],device='cuda')
     data=SimpleNamespace(device=torch.device('cuda'),listing_ids=np.arange(7),clocks=19,resident_features=Bank())
     cache=MarketBlock(plan,data,block=8);streams=[torch.cuda.Stream(),torch.cuda.Stream()]
+    # Replace the cohort's reference and pressure the allocator. The retained
+    # graph must still own the original logarithmic-channel flags.
+    original_flags=plan.logarithmic
+    plan.logarithmic=torch.zeros_like(original_flags)
+    assert cache.projector.logarithmic is original_flags
+    reference=SimpleNamespace(columns=plan.columns,logarithmic=original_flags)
     for start in (0,8,16):
         cache.enqueue(streams)
         for stream in streams:stream.synchronize()
         for i in range(start,start+8):
             clock=torch.tensor(min(i,17),device='cuda')
-            expected=plan._project(data,clock);actual=cache.read(clock)
+            expected=NetworkPlan._project(reference,data,clock);actual=cache.read(clock)
             for a,b in zip(actual,expected):torch.testing.assert_close(a,b,rtol=0,atol=0)
     cache.reset();cache.enqueue(streams)
     for stream in streams:stream.synchronize()
-    for a,b in zip(cache.read(torch.tensor(0,device='cuda')),plan._project(data,torch.tensor(0,device='cuda'))):
+    for a,b in zip(cache.read(torch.tensor(0,device='cuda')),NetworkPlan._project(reference,data,torch.tensor(0,device='cuda'))):
         torch.testing.assert_close(a,b,rtol=0,atol=0)
