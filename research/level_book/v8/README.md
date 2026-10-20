@@ -1,8 +1,13 @@
 # V8 next-trade reaction walkthrough
 
-Open `next_trade_reaction.ipynb` with the existing `ml4t` Python environment and
+Open `01_price_arrival_frequency.ipynb` with the existing `ml4t` Python environment and
 run cells in order. This is an educational experiment, not a V8 production
 level engine. It does not change V7 or write database tables.
+
+Notebooks use the naming convention `NN_method_name.ipynb`. Notebook 01 is
+the smoothed conditional-frequency baseline using exact price and arrival
+direction. Introduce subsequent methods in separate notebooks numbered 02,
+03, and so on, preserving earlier methods for comparison.
 
 The notebook loads exactly 2,000 eligible AAPL trades for 2026-08-20 from
 certified canonical SIP, beginning at 09:30 ET. `reaction_demo_source.py`
