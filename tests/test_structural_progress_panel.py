@@ -74,3 +74,14 @@ def test_reuse_stage_and_per_day_progress_are_visible():
     text=stream.getvalue()
     assert 'verifying reuse' in text and '31 reused' in text
     assert all(len(line)<=110 for line in text.splitlines())
+
+
+def test_resume_does_not_present_attempt_zero_as_empty_storage():
+    stream=StringIO();console=Console(file=stream,width=110,height=32,color_system=None)
+    console.print(render({'controller':{'phase':'backfill'},'status':{
+        'completed':0,'reused':0,'total':100,'workers':[]},
+        'admission':{'persisted_pair_hints':80}},110,32))
+    text=stream.getvalue()
+    assert 'This attempt verified: 0 / 100' in text
+    assert '80 stored pairs (audit pending)' in text
+    assert 'unfinished tickers first' in text

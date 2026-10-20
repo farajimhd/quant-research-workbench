@@ -324,9 +324,7 @@ def _process_ticker(spec,a,ticker):
                 context_done=perf_counter()
                 progress(day,'verifying reuse')
                 prior_hash=expected_prior_hash(prior,ticker,day,closes[day])
-                for row in current:
-                    storage.verify_reused_boundary(client,row,expected_source=source_ref,
-                                                   expected_prior_hash=prior_hash)
+                verify_reuse(client,current,source_ref,prior_hash)
                 verified=perf_counter()
                 last_profile=dict(context=context_done-unit_started,reuse_verify=verified-context_done,
                                   total=verified-unit_started)
@@ -456,8 +454,66 @@ def warmup_dependency_plan(query, by_ticker, history_start, certified_days, *, b
         ready_units=sum(len(days) for ticker,days in by_ticker.items() if ticker not in blocked))
 
 
+def verify_reuse(client, rows, source_ref, prior_hash):
+    """Restart the entire read-only audit once after a broken transport.
+
+    Nothing is published or counted until both boundaries pass. Never continue
+    a partially consumed iterator, retry writes, or catch integrity errors.
+    """
+    from http.client import IncompleteRead
+    from urllib.error import URLError, HTTPError
+    for attempt in range(2):
+        try:
+            for row in rows:
+                storage.verify_reused_boundary(client,row,expected_source=source_ref,
+                                               expected_prior_hash=prior_hash)
+            return
+        except (ConnectionError, TimeoutError, IncompleteRead, URLError) as error:
+            if isinstance(error, HTTPError) or attempt:
+                raise
+
+
+def admission_plan(query, by_ticker, *, batch_size=32):
+    """Prioritize missing output; coverage headers are hints, never reuse proof.
+
+    All tickers still execute the full source, AH, payload and normalized-row
+    checks. Restrict hints to exact requested dates, and fetch no state payload.
+    """
+    if not 1 <= batch_size <= 32:
+        raise ValueError('Invalid admission metadata batch size')
+    tickers=sorted(by_ticker)
+    paired={ticker:set() for ticker in tickers}
+    for offset in range(0,len(tickers),batch_size):
+        batch=tickers[offset:offset+batch_size]
+        first=min(min(by_ticker[t]) for t in batch)
+        last=max(max(by_ticker[t]) for t in batch)
+        rows=query(f"SELECT ticker,toString(session_date) AS day,"
+            "groupUniqArray(checkpoint_boundary) AS boundaries "
+            f"FROM {COVERAGE_TABLE} FINAL PREWHERE ticker IN "
+            f"({','.join(map(source.literal,batch))}) "
+            f"AND session_date BETWEEN {source.literal(first)} AND {source.literal(last)} "
+            "AND checkpoint_boundary IN ('PM','REGULAR') "
+            "GROUP BY ticker,session_date")
+        for row in rows:
+            ticker=row['ticker'];day=row['day']
+            if ticker not in batch:
+                raise ValueError('Admission metadata returned an unrelated ticker')
+            if day in by_ticker[ticker] and set(row['boundaries'])=={'PM','REGULAR'}:
+                paired[ticker].add(day)
+    # Completely unbuilt tickers first, partial lanes next, audit-only last.
+    # Chronological replay within each ticker is unchanged.
+    order=sorted(tickers,key=lambda t:(
+        bool(paired[t]), len(paired[t])/len(by_ticker[t]), t))
+    return dict(version='structural-admission-v1',order=order,
+        persisted_pair_hints=sum(map(len,paired.values())),
+        audit_only_tickers=sum(len(paired[t])==len(by_ticker[t]) for t in tickers),
+        missing_pair_hints=sum(len(by_ticker[t])-len(paired[t]) for t in tickers),
+        integrity_verified=False)
+
+
 def run_pool(a,request,build_id,by_ticker,history_inventory,reporting,rules,
-             closes,history_start,end,plan_hash,producer_hash,total,dependencies=None):
+             closes,history_start,end,plan_hash,producer_hash,total,dependencies=None,
+             admission=None):
     """Bounded ticker lanes; each lane retains chronological AH ownership."""
     from concurrent.futures import ProcessPoolExecutor,wait,FIRST_COMPLETED
     import multiprocessing
@@ -479,7 +535,10 @@ def run_pool(a,request,build_id,by_ticker,history_inventory,reporting,rules,
         reporting=reporting,rules=rules,closes={day:value.isoformat() for day,value in closes.items()},
         history_start=str(history_start),end=str(end),plan_hash=plan_hash,producer_hash=producer_hash)
     path=a.run_dir/('worker-spec-'+owner['token']+'.json');save_json(path,spec)
-    iterator=iter(sorted(by_ticker));pending={};results=[]
+    order=admission['order'] if admission is not None else sorted(by_ticker)
+    if len(order)!=len(by_ticker) or set(order)!=set(by_ticker):
+        raise ValueError('Admission must contain every requested ticker exactly once')
+    iterator=iter(order);pending={};results=[]
     # Windows limits one ProcessPoolExecutor to 61 handles. Two bounded pools
     # provide the requested 64 lanes without exceeding that OS wait-set limit.
     sizes=[min(32,a.workers-i) for i in range(0,a.workers,32)]
@@ -628,8 +687,11 @@ def run(a):
             try:
                 ready_tickers={ticker:days for ticker,days in by_ticker.items()
                     if ticker not in dependencies['blocked']}
+                admission=admission_plan(client.query,ready_tickers)
+                save_json(a.run_dir/'admission-plan.json',dict(admission,plan_hash=plan_hash))
                 results=run_pool(a,request,report['build_id'],ready_tickers,history_inventory,
-                    reporting,rules,closes,history_start,end,plan_hash,producer_hash,len(selected),dependencies)
+                    reporting,rules,closes,history_start,end,plan_hash,producer_hash,len(selected),
+                    dependencies,admission)
                 done=sum(row['completed'] for row in results)
                 reused=sum(row['reused'] for row in results)
                 if dependencies['blocked_units']:

@@ -84,7 +84,7 @@ def snapshot(root):
     layout=root/'normalized-snapshot-layout'/'status.json'
     if layout.exists():optimization=json.loads(layout.read_text())
     return dict(controller=controller,status=status,stop=(root/'STOP').exists(),evidence=evidence,events=events,
-        optimization=optimization,
+        optimization=optimization,admission=read('admission-plan.json'),
         status_current=status_current,refreshed=datetime.now(timezone.utc).strftime('%H:%M:%S UTC'))
 
 
@@ -133,10 +133,14 @@ def render(value,width=100,height=30,rate=None):
     done=s.get('completed',0);reuse=s.get('reused',0);total=s.get('total')
     lines.append(f'\nTicker-days: {done:,} new  |  {reuse:,} reused  |  {s.get("failed",0):,} failed')
     if total is not None:
-        lines.append(f'\nCoverage: {done+reuse:,} / {total:,}  |  {max(0,total-done-reuse):,} remaining')
+        lines.append(f'\nThis attempt verified: {done+reuse:,} / {total:,}  |  {max(0,total-done-reuse):,} remaining')
         bars.append(ProgressBar(total=total,completed=done+reuse))
     elif evidence:lines.append('\nLevels total: pending certified full-scope plan; not started.')
-    if rate is not None:lines.append(f'\nRecent coverage: {rate:,.0f} ticker-days/hour (includes reuse)')
+    admission=value.get('admission',{})
+    if admission:
+        lines.append(f'\nAt admission: {admission["persisted_pair_hints"]:,} stored pairs '
+                     '(audit pending); unfinished tickers first.')
+    if rate is not None:lines.append(f'\nRecent verification: {rate:,.0f} ticker-days/hour (includes reuse)')
     blocked=s.get('blocked_units',controller.get('blocked_units',0))
     if blocked:
         lines.append(f'\nBlocked warm-up: {blocked:,} ticker-days / '

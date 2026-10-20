@@ -28,7 +28,7 @@ def main(argv=None):
     sys.path.insert(0,str(a.code_root))
     os.environ['QMD_CLICKHOUSE_URL']=a.endpoint
     from scripts import build_market_day as builder
-    from scripts.backfill_structural_sessions import expected_prior_hash,digest
+    from scripts.backfill_structural_sessions import expected_prior_hash,digest,verify_reuse
     from pipelines.market_sip.events import structural_checkpoint_storage as storage
     from pipelines.market_sip.events.structural_session_checkpoints import restore_boundary
     from src.backend.structural_v7_seed import preceding_coverage,load_seed,split_evidence
@@ -78,14 +78,14 @@ def main(argv=None):
             if {r['checkpoint_boundary'] for r in current}!={'PM','REGULAR'}:
                 raise ValueError('Benchmark requires both completed boundaries')
             context=perf_counter();prior_hash=expected_prior_hash(prior,ticker,day,None)
-            for row in current:
-                if a.mode=='legacy':
+            if a.mode=='legacy':
+                for row in current:
                     _,value=restore_boundary(row)
                     if value.get('source')!=expected or value['prior_hash']!=prior_hash:
                         raise ValueError('Reuse provenance differs')
                     storage.publish_boundary(client,value,row['source_plan_hash'])
-                else:
-                    storage.verify_reused_boundary(client,row,expected_source=expected,expected_prior_hash=prior_hash)
+            else:
+                verify_reuse(client,current,expected,prior_hash)
             results.append(dict(ticker=ticker,day=day,context_seconds=context-started,
                 verify_seconds=perf_counter()-context,total_seconds=perf_counter()-started,
                 payload_bytes=sum(len(r['streaming_state'].encode()) for r in current),
