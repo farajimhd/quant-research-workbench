@@ -26,16 +26,25 @@ def _reproduce(state, population, ids, pedigree, rank, generation, config, kwarg
             os.environ['V32_REPRODUCTION_WORKERS'] = previous
 
 
-def next_population(rng, population, ids, pedigree, rank, generation, config, **kwargs):
+def submit_population(rng, population, ids, pedigree, rank, generation, config, *, submit_job=None, **kwargs):
+    """Submit training-only inputs; the caller must not mutate them before join."""
     from .preparation import submit
+    return (submit_job or submit)(_reproduce, rng.bit_generator.state, population, ids, pedigree,
+                                 rank, generation, config, kwargs)
+
+
+def commit_population(result,rng,pedigree,species_target=None):
     from .semantics import REJECTIONS
-    result = submit(_reproduce, rng.bit_generator.state, population, ids, pedigree,
-                    rank, generation, config, kwargs).result()
     members, new_ids, report, updated, species, state, rejections = result
     # Publish state only after successful completion; failure cannot advance RNG.
     pedigree.__dict__.update(updated.__dict__)
-    if kwargs.get('species') is not None:
-        kwargs['species'].__dict__.update(species.__dict__)
+    if species_target is not None:
+        species_target.__dict__.update(species.__dict__)
     rng.bit_generator.state = state
     REJECTIONS.update(rejections)
     return members, new_ids, report
+
+
+def next_population(rng, population, ids, pedigree, rank, generation, config, **kwargs):
+    future=submit_population(rng,population,ids,pedigree,rank,generation,config,**kwargs)
+    return commit_population(future.result(),rng,pedigree,kwargs.get('species'))

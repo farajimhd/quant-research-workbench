@@ -385,8 +385,11 @@ Phase 2 shares the immutable generation population and a bounded four-batch CPU
 packing memo across sessions. Each session still selects its own exact cache
 misses in their original order. The two lanes advance through their pinned
 session queues independently; returned receipts/timings retain manifest order.
-All training sessions must finish before the single reproduction. The successor
-remains frozen before display-only validation. `generation-profile.json` records
+All training sessions must finish before the single reproduction. In shared
+replay, an isolated CPU transaction consumes frozen training inputs while
+display-only validation runs. Parent RNG, pedigree and species remain unchanged
+until validation finishes and a successful join installs the successor.
+`generation-profile.json` records
 evaluation, panel reads, ranking, evidence, reproduction/species, validation and
 checkpoint publication as host wall stages without additional CUDA barriers.
 At each completed global role, unused session data and pinned staging arenas
@@ -396,3 +399,14 @@ Global reproduction also activates the same bounded immutable validation and
 canonical-identity caches as local reproduction. Training behavior sketches
 retain the per-candidate integer reduction and vectorize sketch assembly,
 preserving the original per-candidate values and subsequent species decisions.
+
+Candidate graph validation/packing is performed once per global generation.
+Exact ordered training batches and the validation shortlist gather vectorized
+rows from the same CPU arrays; no session metrics or neural state are shared.
+The bounded batch memo remains in place. Demand session loading uses the
+existing CPU loader and yields a future to the CUDA owner, permitting the other
+session to replay during disk/CPU waits. Speculative CPU packing requests attempt
+admission immediately, retaining the same memory guard if deferred. GPU capture
+and mutable recurrent buffers still belong exclusively to their session.
+Dispatch/join waits are reported separately from synchronous reproduction;
+overlapping wall stages must not be added to estimate total wall time.

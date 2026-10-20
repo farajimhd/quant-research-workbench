@@ -309,11 +309,11 @@ class SessionLanes:
         self.thread=threading.Thread(target=self.pump,name='v18-session-progress',daemon=True);self.thread.start()
         return self
 
-    def generation(self,days,population,generation,token):
+    def generation(self,days,population,generation,token,*,prepared_population=None):
         from .lineage import program_key
         if self.config.get('shared_replay'):
             from .global_pipeline import GenerationPopulation
-            payload=GenerationPopulation(population)
+            payload=prepared_population if prepared_population is not None else GenerationPopulation(population)
         else:payload=[dict(v.payload(),canonical_sha256=program_key(v)) for v in population]
         timings=[]
         if not self.widths:

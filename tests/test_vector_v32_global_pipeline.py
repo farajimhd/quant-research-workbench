@@ -24,7 +24,37 @@ def test_generation_packs_exact_selections_once_without_rng_or_mutation():
         else:assert packed[key]==reference[key]
     shared.pack([1,3],submit);shared.pack([4,7],submit)
     assert len(shared.batches)==2
+    assert len(calls)==1
+    view=shared.subset([8,0,7,2])
+    selected,_=view.pack([2,0,1],submit).result()
+    expected=pack_networks([members[i] for i in [7,8,0]])
+    assert all(np.array_equal(a,b) for a,b in zip(selected['values'],expected['values']))
+    assert np.array_equal(selected['operations'],expected['operations'])
+    assert selected['kernel_nodes']==expected['kernel_nodes']
+    assert len(calls)==1
     assert [m.payload() for m in members]==before and rng.bit_generator.state==state
+
+
+def test_generation_preparation_failure_reaches_all_consumers():
+    import pytest
+    members=sample(np.random.default_rng(2020),3)
+    source=Future();shared=GenerationPopulation(members)
+    pending=shared.pack([1,0],lambda *args:source)
+    source.set_exception(ValueError('invalid graph'))
+    with pytest.raises(ValueError,match='invalid graph'):pending.result()
+
+
+def test_loading_yields_before_blocking_cuda_owner(monkeypatch):
+    from research.vectorized_backtest.v32.stream_sessions import StreamWorker
+    worker=StreamWorker.__new__(StreamWorker)
+    worker.config=dict(device='cpu',output='unused')
+    worker.emit=lambda *a,**k:None
+    future=Future()
+    worker.loader=SimpleNamespace(submit=lambda fn,day:future)
+    steps=worker.steps('day',None,[],1,'token',1)
+    assert next(steps) is future
+    assert not future.done()
+    steps.close()
 
 
 def test_global_lane_refills_before_other_lane_finishes_and_barrier_is_complete():

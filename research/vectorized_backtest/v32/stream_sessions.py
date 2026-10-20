@@ -26,6 +26,14 @@ from research.vectorized_backtest.v6.torch_backtest.runtime import require_runti
 
 
 class StreamWorker(Worker):
+    def demand_session(self,day):
+        """CPU loader owns demand loading too; CUDA service never waits on disk."""
+        self.prefetch.release_under_pressure()
+        item=self.prefetch.take(day);prefetched=item is not None
+        if prefetched:self.host[day]=item;self.host.move_to_end(day)
+        else:item=self.load(day)
+        return item,prefetched
+
     def close(self):
         self.market_block=None
         super().close()
@@ -56,10 +64,6 @@ class StreamWorker(Worker):
         self.current_day=day
         c=self.config; started=perf_counter(); self.batch_progress={}
         self.emit(day,stage='Load session',candidate_offset=0)
-        self.prefetch.release_under_pressure()
-        item=self.prefetch.take(day); prefetched=item is not None
-        if prefetched:self.host[day]=item; self.host.move_to_end(day)
-        else:item=self.load(day)
         device=torch.device(c['device'])
         from .preparation import submit_when_ready, _restore_population
         from functools import partial
@@ -68,11 +72,15 @@ class StreamWorker(Worker):
             self.emit(day,**values)
         submit=partial(submit_when_ready,output=c['output'],
             emit=admission_report,boundary_stop=c.get('boundary_stop'))
+        if hasattr(payload,'start'):payload.start(submit)
+        load_started=perf_counter()
+        item,prefetched=yield self.loader.submit(self.demand_session,day)
+        host_load_wait_seconds=perf_counter()-load_started
         from .session_owner import PackedPopulation
         from .global_pipeline import GenerationPopulation
         restore_started=perf_counter()
         prepared_population=payload if isinstance(payload,PackedPopulation) else None
-        generation_population=payload if isinstance(payload,GenerationPopulation) else None
+        generation_population=payload if hasattr(payload,'pack') and hasattr(payload,'keys') else None
         if generation_population is not None:
             population,keys=payload.members,payload.keys;restore_seconds=0.
         elif prepared_population is None:
@@ -202,6 +210,7 @@ class StreamWorker(Worker):
                 population_restore_service_seconds=restore_seconds,
                 population_restore_wait_seconds=restore_wait_seconds,
                 owner_preparation_seconds=prepared_population.seconds if prepared_population is not None else 0.,
+                host_load_wait_seconds=host_load_wait_seconds,
                 generation_preparation_seconds=generation_population.seconds if generation_population is not None else 0.,
                 generation_pack_hits=generation_population.hits if generation_population is not None else 0,
                 generation_pack_misses=generation_population.misses if generation_population is not None else 0,

@@ -139,11 +139,13 @@ def test_phase1_progress_counts_only_sealed_sessions(setup):
     assert (snap['completed'],snap['active'],snap['queued'],snap['failed'])==(1,0,0,1)
 
 
-def test_real_phase2_loop_accepts_local_pool_and_keeps_validation_out_of_rng(setup):
+@pytest.mark.parametrize('shared',[False,True])
+def test_real_phase2_loop_accepts_local_pool_and_keeps_validation_out_of_rng(setup,monkeypatch,shared):
     from research.vectorized_backtest.v32 import run_search as search
     from research.vectorized_backtest.v32.phase2 import run_global
     from research.vectorized_backtest.v32.probes import global_probe
     s=setup;Worker.stop_after_first=False
+    monkeypatch.setenv('V32_CPU_RESERVE_GIB','0');monkeypatch.setenv('V32_CPU_ADMISSION_GIB','0')
     for day in s.days:local(s,day,s.root/'local'/day)
     probe=global_probe(s.training,s.days,s.folder)
     validation=dict(s.data,days=['2026-09-02']);sign=[1]
@@ -158,7 +160,8 @@ def test_real_phase2_loop_accepts_local_pool_and_keeps_validation_out_of_rng(set
         def __enter__(self):return self
         def __exit__(self,*a):pass
         def release_plans(self):pass
-        def generation(self,days,population,generation,token):
+        def generation(self,days,population,generation,token,**kwargs):
+            if shared:assert tuple(population)==kwargs['prepared_population'].members
             for day in days:
                 write_json(Path(self.c['output'])/f'generation-{generation:04d}'/day/'receipt.json',dict(population_sha256=token,full_session=True,metrics=metrics(len(population),sign[0] if self.c['split']=='validation' else 1)))
             return []
@@ -166,7 +169,10 @@ def test_real_phase2_loop_accepts_local_pool_and_keeps_validation_out_of_rng(set
     with patch.object(search,'bind_dataset',dataset),patch.object(search,'SessionLanes',Lanes),patch.object(search,'CampaignProgress',Panel):
         for i in range(2):
             sign[0]=1 if i==0 else -1
-            assert run_global(s.training,'validation',s.root/'local',s.root/f'global-{i}',10,2,2020,initialization_probe=probe)==0
+            assert run_global(s.training,'validation',s.root/'local',s.root/f'global-{i}',10,2,2020,
+                initialization_probe=probe,shared_replay=shared,session_workers=2 if shared else 1)==0
+    from research.vectorized_backtest.v32.preparation import close
+    close()
     a=json.loads((s.root/'global-0/checkpoint.json').read_bytes());b=json.loads((s.root/'global-1/checkpoint.json').read_bytes())
     for key in ('population','ids','pedigree','rng','species'):assert a['state'][key]==b['state'][key]
     assert sum('local_origin' in r for r in a['state']['pedigree'])==7

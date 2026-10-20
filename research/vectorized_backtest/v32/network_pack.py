@@ -24,3 +24,19 @@ def pack_networks(members):
     values=(sources,weights,bias,counts,offsets,threshold,size_source,size_weight,size_bias)
     return dict(values=values,operations=np.array([OPS.index(n.op) for net in nets for n in net.nodes],np.int32),
         edge_counts=edge_counts,total_nodes=total_nodes,kernel_nodes=kernel_nodes,offsets_cpu=offsets_cpu)
+
+
+def select_packed(packed, selection):
+    """Gather an exact ordered cohort without walking/validating its graphs again."""
+    selection=np.asarray(selection,dtype=np.int64)
+    stages=len(STAGES)
+    nets=(selection[:,None]*stages+np.arange(stages)).reshape(-1)
+    values=packed['values'];counts=values[3][nets]
+    offsets=np.cumsum(np.r_[0,counts[:-1]]).astype(np.int32)
+    total=int(counts.sum())
+    # Each source index is network-local. Only packed row offsets change.
+    rows=np.repeat(values[4][nets].astype(np.int64)-offsets,counts)+np.arange(total)
+    return dict(values=(values[0][rows],values[1][rows],values[2][rows],counts,offsets,
+                       *(v[nets] for v in values[5:])),
+        operations=packed['operations'][rows],edge_counts=packed['edge_counts'][rows],
+        total_nodes=total,kernel_nodes=1<<(int(counts.max())-1).bit_length(),offsets_cpu=offsets)

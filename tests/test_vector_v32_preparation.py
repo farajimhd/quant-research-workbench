@@ -79,3 +79,15 @@ def test_deferred_queue_slot_pressure_and_cancellation(monkeypatch,tmp_path):
     pending=preparation.submit_when_ready(list,[],output=tmp_path,emit=lambda **v:None)
     assert not pending.done()
     assert pending.cancel() and pending.cancelled() and pending.request is None
+
+
+def test_prefetch_admits_without_consumer_poll(monkeypatch,tmp_path):
+    from concurrent.futures import Future
+    calls=[];inner=Future()
+    monkeypatch.setattr(preparation,'_headroom',lambda:(161*2**30,160*2**30))
+    def start(fn,args,**kwargs):calls.append((fn,args));return inner
+    monkeypatch.setattr(preparation,'_submit',start)
+    pending=preparation.submit_when_ready(list,[1],output=tmp_path,emit=lambda **v:None)
+    assert len(calls)==1
+    inner.set_result([1])
+    assert pending.result()==[1]

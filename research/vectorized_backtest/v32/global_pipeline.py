@@ -1,8 +1,9 @@
 """Generation-scoped immutable preparation and independent session telemetry."""
 from collections import OrderedDict
+from concurrent.futures import Future, TimeoutError
 from math import ceil
 from threading import RLock
-from time import perf_counter
+from time import perf_counter, sleep
 
 
 class GenerationPopulation:
@@ -17,15 +18,59 @@ class GenerationPopulation:
         self.members=tuple(members);self.keys=tuple(program_key(m) for m in members)
         self.maximum_batches=maximum_batches;self.batches=OrderedDict()
         self.hits=0;self.misses=0;self.seconds=perf_counter()-started
+        self.prepared=None
+
+    def start(self,submit):
+        from .preparation import _pack
+        if self.prepared is None:self.prepared=submit(_pack,self.members)
+        return self.prepared
+
+    def subset(self,selection):
+        """Validation shares training-only preparation, never training results."""
+        parent=self
+        indexes=tuple(int(i) for i in selection)
+        class View:
+            members=tuple(parent.members[i] for i in indexes)
+            keys=tuple(parent.keys[i] for i in indexes)
+            seconds=parent.seconds
+            @property
+            def hits(self):return parent.hits
+            @property
+            def misses(self):return parent.misses
+            def start(self,submit):return parent.start(submit)
+            def pack(self,selection,submit):return parent.pack(tuple(indexes[i] for i in selection),submit)
+        return View()
 
     def pack(self,selection,submit):
-        from .preparation import _pack
+        from .network_pack import select_packed
         key=tuple(selection)
         if key in self.batches:
             self.hits+=1;self.batches.move_to_end(key)
             return self.batches[key]
         self.misses+=1
-        future=submit(_pack,[self.members[i] for i in key])
+        source=self.start(submit)
+        # Poll deferred memory admission while this derived future is consumed.
+        class GatherFuture(Future):
+            def done(self):
+                source.done()
+                return super().done()
+            def result(self,timeout=None):
+                began=perf_counter()
+                while not self.done():
+                    if timeout is not None and perf_counter()-began>=timeout:raise TimeoutError()
+                    sleep(.01)
+                return super().result()
+        future=GatherFuture()
+        def gathered(value):
+            if not future.set_running_or_notify_cancel():return
+            try:
+                packed,_=value.result();began=perf_counter()
+                result=select_packed(packed,key),perf_counter()-began
+            except BaseException as error:
+                future.set_exception(error)
+            else:
+                future.set_result(result)
+        source.add_done_callback(gathered)
         self.batches[key]=future
         # Drop only this memo's reference, never cancel a consumer's future.
         # Queue admission independently bounds pending computations.

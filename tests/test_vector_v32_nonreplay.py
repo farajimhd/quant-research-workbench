@@ -63,7 +63,7 @@ def test_spawned_evolution_exact_population_rng_pedigree_species(monkeypatch):
     from research.vectorized_backtest.v32.lineage import Selection, next_population
     from research.vectorized_backtest.v32.local_runner import CompactPedigree
     from research.vectorized_backtest.v32.species import Species
-    from research.vectorized_backtest.v32.evolution_work import next_population as spawned
+    from research.vectorized_backtest.v32.evolution_work import submit_population,commit_population
     from research.vectorized_backtest.v32.preparation import close
     from test_vector_v32 import metrics_fixture
     monkeypatch.setenv('V32_CPU_RESERVE_GIB', '0')
@@ -79,7 +79,11 @@ def test_spawned_evolution_exact_population_rng_pedigree_species(monkeypatch):
                   global_eligible=eligible, target_size=20, ordered=[metrics_fixture(20)])
     x, ix, rx = next_population(ra, members, ids, ped, list(range(19, -1, -1)), 2, Selection(), species=a, **kwargs)
     try:
-        y, iy, ry = spawned(rb, members, ids, p2, list(range(19, -1, -1)), 2, Selection(), species=b, **kwargs)
+        before=copy.deepcopy((rb.bit_generator.state,p2.__dict__,b.state))
+        pending=submit_population(rb,members,ids,p2,list(range(19,-1,-1)),2,Selection(),species=b,**kwargs)
+        result=pending.result()
+        assert (rb.bit_generator.state,p2.__dict__,b.state)==before
+        y,iy,ry=commit_population(result,rb,p2,b)
     finally:
         close()
     assert x == y and np.array_equal(ix, iy)

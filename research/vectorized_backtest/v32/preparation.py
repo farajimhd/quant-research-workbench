@@ -129,7 +129,10 @@ class AdmissionFuture(Future):
 
 
 def submit_when_ready(fn,*args,output,emit,boundary_stop=None):
-    return AdmissionFuture(fn,args,output,emit,boundary_stop)
+    future=AdmissionFuture(fn,args,output,emit,boundary_stop)
+    # A speculative request must actually begin before its consumer yields it.
+    future.done()
+    return future
 
 
 def initialize(rng,size,config):
