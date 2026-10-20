@@ -117,3 +117,24 @@ def test_json_transport_does_not_retry_consumed_rows(monkeypatch):
     with pytest.raises(TimeoutError):
         next(rows)
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize('bad_policy,bad_part', [(False,False),(True,False),(False,True)])
+def test_batched_storage_checks_preserve_policy_and_actual_placement(monkeypatch,bad_policy,bad_part):
+    from pipelines.certified_research import source_guard_batch
+    calls=[]
+    def fetch(query,statements):
+        calls.append(statements)
+        answers={statements[0]:[dict(disks=['live_market_ssd'])]}
+        for index,table in enumerate(storage.KEYS):
+            answers[statements[index*2+1]]=[dict(
+                storage_policy='default' if bad_policy else storage.POLICY,
+                sorting_key=storage.KEYS[table])]
+            answers[statements[index*2+2]]=[dict(disk_name='default' if bad_part else 'live_market_ssd')]
+        return answers
+    monkeypatch.setattr(source_guard_batch,'fetch',fetch)
+    client=SimpleNamespace(http=SimpleNamespace(structural_stream_reads=True),query=lambda q:None)
+    if bad_policy or bad_part:
+        with pytest.raises(ValueError,match='misplaced'):storage.storage_preflight(client)
+    else:storage.storage_preflight(client)
+    assert len(calls)==1 and len(calls[0])==7

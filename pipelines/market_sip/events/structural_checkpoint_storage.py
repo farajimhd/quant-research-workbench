@@ -12,14 +12,27 @@ SNAPSHOT_KEYS = {LEVELS_TABLE: 'ticker, valid_from, checkpoint_boundary, level_i
 
 
 def storage_preflight(client):
-    policies = client.query(f"SELECT disks FROM system.storage_policies WHERE policy_name={literal(POLICY)}")
+    policy_sql=f"SELECT disks FROM system.storage_policies WHERE policy_name={literal(POLICY)}"
+    statements=[policy_sql]
+    for table in KEYS:
+        name=literal(table.split('.')[1])
+        statements.extend((
+            f"SELECT storage_policy,sorting_key FROM system.tables WHERE database='arte' AND name={name}",
+            f"SELECT DISTINCT disk_name FROM system.parts WHERE active AND database='arte' AND table={name}"))
+    if getattr(getattr(client, 'http', None), 'structural_stream_reads', False):
+        from pipelines.certified_research.source_guard_batch import fetch
+        answers=fetch(client.query,statements)
+        query=answers.__getitem__
+    else:
+        query=client.query
+    policies = query(policy_sql)
     allowed = {disk for row in policies for disk in row['disks']}
     if not allowed or allowed.intersection({'default', 'hdd'}):
         raise ValueError('Structural checkpoints require an SSD-only explicit policy')
     for table in KEYS:
         name = table.split('.')[1]
-        info = client.query(f"SELECT storage_policy,sorting_key FROM system.tables WHERE database='arte' AND name={literal(name)}")
-        parts = client.query(f"SELECT DISTINCT disk_name FROM system.parts WHERE active AND database='arte' AND table={literal(name)}")
+        info = query(f"SELECT storage_policy,sorting_key FROM system.tables WHERE database='arte' AND name={literal(name)}")
+        parts = query(f"SELECT DISTINCT disk_name FROM system.parts WHERE active AND database='arte' AND table={literal(name)}")
         if len(info) != 1 or info[0]['storage_policy'] != POLICY or any(p['disk_name'] not in allowed for p in parts):
             raise ValueError(f'Absent or misplaced structural table: {table}')
         if info[0]['sorting_key'] not in (KEYS[table], KEYS[table] + ', checkpoint_boundary',SNAPSHOT_KEYS.get(table)):
