@@ -410,3 +410,11 @@ admission immediately, retaining the same memory guard if deferred. GPU capture
 and mutable recurrent buffers still belong exclusively to their session.
 Dispatch/join waits are reported separately from synchronous reproduction;
 overlapping wall stages must not be added to estimate total wall time.
+
+Compiler artifacts now default to a short source/platform-bound runtime directory
+shared by lanes and roles; explicit `compile_cache_root` overrides remain supported.
+This shares compiler binaries only, never candidate fitness or recurrent state.
+Session staging allocates its bounded pinned arena on the quiescent CUDA owner,
+then yields the CPU copy to its existing single-worker pool. The other session
+can replay during that copy. Capture telemetry separates compiler warmup host
+time from graph-construction host time without adding synchronization.

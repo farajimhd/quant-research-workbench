@@ -55,7 +55,10 @@ class Worker:
         self.batch_progress={}
         torch.set_num_threads(1)
         if config['backend']=='compile':
-            configure_caches(require_runtime(Path(config.get('compile_cache_root',config['output']))/'cache'/f'lane-{lane}'),recompile_limit=128)
+            from .runtime import shared_compiler_cache
+            cache=(require_runtime(Path(config['compile_cache_root'])/'cache'/f'lane-{lane}')
+                   if config.get('compile_cache_root') else shared_compiler_cache(config['source_sha256']))
+            configure_caches(cache,recompile_limit=128)
 
     def emit(self,day,**values):
         event=dict(day=day,lane=self.lane,pid=os.getpid(),updated_epoch=time(),**(self.batch_progress|values))

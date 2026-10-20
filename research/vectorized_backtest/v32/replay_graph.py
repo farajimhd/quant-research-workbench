@@ -14,6 +14,7 @@ class CapturedReplay:
     block: int
     keepalive: object
     index: object
+    preparation_profile: object = None
 
     def enqueue(self):
         for _ in range(0, self.total, self.block):
@@ -81,16 +82,22 @@ def replay(position, aggregate, opened, policy, prices, observed, membership,
     stream=torch.cuda.Stream(device=device)
     stream.wait_stream(torch.cuda.current_stream(device))
     with torch.cuda.stream(stream),torch.inference_mode():
+        warm_started=time.perf_counter()
         compiled();compiled()
+        warm_seconds=time.perf_counter()-warm_started
         reset()
         graph=torch.cuda.CUDAGraph()
+        capture_started=time.perf_counter()
         with torch.cuda.graph(graph,stream=stream):
             for _ in range(block):compiled()
+        capture_seconds=time.perf_counter()-capture_started
         reset()
     torch.cuda.current_stream(device).wait_stream(stream)
     if capture_only:
         torch.cuda.synchronize(device)
-        return CapturedReplay(graph, reset, total, block, compiled, index)
+        return CapturedReplay(graph, reset, total, block, compiled, index,
+                              dict(compiler_warmup_host_seconds=warm_seconds,
+                                   graph_capture_host_seconds=capture_seconds))
     pending=deque();reported=0;completed=0;last_report=0.
     def publish_completed(force=False):
         nonlocal reported,completed,last_report

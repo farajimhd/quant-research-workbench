@@ -115,7 +115,23 @@ class StreamWorker(Worker):
                 required+=2*batch*(c.get('episode_capacity',65536)+replay_width)*32
                 if required>c['lane_memory_bytes']:raise MemoryError('Independent session exceeds admitted GPU memory budget')
                 if not c.get('retain_session_residency') or item.device!=device:
-                    self.staging.activate([(day,item)],device); self.uploads+=1
+                    staging_started=perf_counter()
+                    staged=yield self.staging.begin(item)
+                    staging_wait_seconds=perf_counter()-staging_started
+                    # Upload the already copied arena without staging it again.
+                    stream=torch.cuda.Stream(device=device)
+                    with torch.cuda.stream(stream):
+                        thin,resident=staged
+                        item.tensors={k:v.to(device,non_blocking=True) for k,v in thin.items()}
+                        bank=item.resident_features
+                        bank.tensors={k:v.to(device,non_blocking=True) for k,v in resident.items()}
+                        bank.device=device;bank.column_plans.clear();item.device=device
+                        event=torch.cuda.Event();event.record(stream);self.staging.slots[0]['event']=event
+                    torch.cuda.current_stream(device).wait_event(event)
+                    for tensor in (*item.tensors.values(),*bank.tensors.values()):
+                        tensor.record_stream(torch.cuda.current_stream(device))
+                    del staged,thin,resident
+                    self.uploads+=1
                     if c.get('retain_session_residency'):
                         staging_released_bytes=self.staging.release_completed()
                         self.emit(day,stage='Upload complete',released_staging_bytes=staging_released_bytes)
@@ -174,7 +190,8 @@ class StreamWorker(Worker):
                     pending.append((offset,selection,plan,prepared,perf_counter()-batch_start,
                         dict(cpu_packing_seconds=packing_seconds,packing_wait_seconds=packing_wait_seconds,
                              generation_packing_reused=reused_pack,
-                             plan_upload_seconds=upload_seconds,capture_seconds=perf_counter()-capture_started)))
+                             plan_upload_seconds=upload_seconds,capture_seconds=perf_counter()-capture_started,
+                             **(prepared.replay.preparation_profile or {}))))
                 self.emit(day,stage='Replay positions',candidate_offset=first,replay_started=time())
                 # The CUDA owner advances all admitted session groups together.
                 replay_seconds=yield [p[3].replay for p in pending]
@@ -211,6 +228,7 @@ class StreamWorker(Worker):
                 population_restore_wait_seconds=restore_wait_seconds,
                 owner_preparation_seconds=prepared_population.seconds if prepared_population is not None else 0.,
                 host_load_wait_seconds=host_load_wait_seconds,
+                staging_wait_seconds=locals().get('staging_wait_seconds',0.),
                 generation_preparation_seconds=generation_population.seconds if generation_population is not None else 0.,
                 generation_pack_hits=generation_population.hits if generation_population is not None else 0,
                 generation_pack_misses=generation_population.misses if generation_population is not None else 0,

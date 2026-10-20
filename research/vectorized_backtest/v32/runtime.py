@@ -1,7 +1,28 @@
 """Runtime-only compiler cache configuration and verified driver-binary reuse."""
-import os,json,hashlib,shutil,sys
+import os,json,hashlib,shutil,sys,platform,uuid
 from pathlib import Path
 from research.vectorized_backtest.v6.torch_backtest.runtime import configure_caches as base_configure
+
+def shared_compiler_cache(source_sha256):
+    """Short, source/platform-bound compiler artifacts, never evaluation results."""
+    import torch
+    from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime
+    if len(source_sha256)!=64 or any(c not in '0123456789abcdef' for c in source_sha256):
+        raise ValueError('Compiler cache requires a source SHA256')
+    identity=dict(source_sha256=source_sha256,python=sys.version,torch=str(torch.__version__),
+                  cuda=torch.version.cuda,system=platform.system(),machine=platform.machine())
+    raw=json.dumps(identity,sort_keys=True,separators=(',',':')).encode()
+    root=require_runtime(Path('D:/TradingML/runtimes/v32-cc')/hashlib.sha256(raw).hexdigest()[:20])
+    root.mkdir(parents=True,exist_ok=True)
+    seal=root/'identity.json'
+    temporary=root/(uuid.uuid4().hex+'.tmp')
+    temporary.write_bytes(raw)
+    try:
+        try:os.link(temporary,seal)
+        except FileExistsError:pass
+    finally:temporary.unlink()
+    if seal.read_bytes()!=raw:raise ValueError('Compiler cache identity mismatch')
+    return root
 
 def configure_caches(runtime,**kwargs):
     base_configure(runtime,**kwargs)

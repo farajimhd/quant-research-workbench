@@ -16,6 +16,28 @@ from research.vectorized_backtest.v27.io_pipeline import TransferStaging as _Tra
 
 
 class TransferStaging(_TransferStaging):
+    def begin(self,data):
+        """Allocate at the quiescent CUDA owner; copy bytes on the CPU pool."""
+        import torch
+        slot=self.slots[0]
+        if slot['event'] is not None:slot['event'].synchronize()
+        groups=[data.host_tensors,data.resident_features.host]
+        required=sum((v.numel()*v.element_size()+255)//256*256 for g in groups for v in g.values())
+        if slot['buffer'] is None or slot['buffer'].numel()<required:
+            slot['buffer']=torch.empty(1 << max(0,required-1).bit_length(),dtype=torch.uint8,pin_memory=True)
+        def copy():
+            offset=0;staged=[]
+            for group in groups:
+                tensors={}
+                for key,value in group.items():
+                    size=value.numel()*value.element_size()
+                    target=slot['buffer'][offset:offset+size].view(value.dtype).view(value.shape)
+                    target.copy_(value);tensors[key]=target
+                    offset+=(size+255)//256*256
+                staged.append(tensors)
+            return staged
+        return self.pool.submit(copy)
+
     def release_completed(self):
         """Resident locals need no upload arena between generations."""
         import torch
