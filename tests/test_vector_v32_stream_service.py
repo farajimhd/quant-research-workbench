@@ -96,10 +96,15 @@ def test_session_queued_during_preparation_joins_same_replay(monkeypatch,tmp_pat
     finally:release.set();service.close()
 
 
-def test_pending_cpu_job_does_not_block_other_replay(monkeypatch,tmp_path):
+@pytest.mark.parametrize('memory_wait',[False,True])
+def test_pending_cpu_job_does_not_block_other_replay(monkeypatch,tmp_path,memory_wait):
     from concurrent.futures import Future
     import threading
     pending=Future();waiting=threading.Event();replayed=threading.Event()
+    if memory_wait:
+        from research.vectorized_backtest.v32 import preparation
+        monkeypatch.setattr(preparation,'_headroom',lambda:(159*2**30,160*2**30))
+        pending=preparation.submit_when_ready(list,[],output=tmp_path,emit=lambda **v:None)
     class AsyncWorker(FakeWorker):
         def steps(self,day,*args):
             if day=='cpu':

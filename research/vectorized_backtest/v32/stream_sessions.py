@@ -45,7 +45,13 @@ class StreamWorker(Worker):
         if prefetched:self.host[day]=item; self.host.move_to_end(day)
         else:item=self.load(day)
         device=torch.device(c['device'])
-        from .preparation import submit, _restore_population
+        from .preparation import submit_when_ready, _restore_population
+        from functools import partial
+        def admission_report(**values):
+            self.prefetch.release_under_pressure()
+            self.emit(day,**values)
+        submit=partial(submit_when_ready,output=c['output'],
+            emit=admission_report,boundary_stop=c.get('boundary_stop'))
         from .session_owner import PackedPopulation
         restore_started=perf_counter()
         prepared_population=payload if isinstance(payload,PackedPopulation) else None
@@ -90,7 +96,7 @@ class StreamWorker(Worker):
                 for old_day in list(self.host):
                     if old_day!=day:self.host.pop(old_day).close()
                 gc.collect(); self.prefetch.start(next_day,self.read_host)
-            from .preparation import submit, _pack
+            from .preparation import _pack
             def prepack(first):
                 # Current pair plus one pair ahead per session, never a population-wide queue.
                 for offset in range(first,min(first+2*batch,len(missing)),batch):
@@ -144,6 +150,7 @@ class StreamWorker(Worker):
                     snapshot={k:v.detach().cpu().numpy().copy() if isinstance(v,torch.Tensor) else v for k,v in result.items()}
                     export_seconds=perf_counter()-export_started
                     processing_started=perf_counter()
+                    self.prefetch.release_under_pressure()
                     cpu_pending=submit(timed_call,process_metrics,snapshot,item.listing_ids,item.receipt['listings'])
                     plan.close()
                     metrics,processing_seconds=yield cpu_pending
@@ -379,6 +386,9 @@ class SharedReplayService:
                             worker=self.workers[key]
                             worker.prefetch.release_under_pressure()
                             stage.enqueue()
+                elif active:
+                    # CPU/admission futures alone must not spin a whole core.
+                    sleep(.001)
         except BaseException as error:
             self.error=error
             for _,_,_,stage in active:

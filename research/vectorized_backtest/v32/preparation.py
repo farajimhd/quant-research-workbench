@@ -7,12 +7,14 @@ import atexit
 import multiprocessing as mp
 import os
 import threading
-from concurrent.futures import ProcessPoolExecutor
-from time import perf_counter
+from concurrent.futures import Future, ProcessPoolExecutor, TimeoutError
+from pathlib import Path
+from time import perf_counter, monotonic, sleep
 
 _pool=None
 _lock=threading.Lock()
 _slots=threading.BoundedSemaphore(12)
+_waiting=threading.BoundedSemaphore(12)
 
 
 def _pack(members):
@@ -38,14 +40,9 @@ def _initialize(state,size,probe_path,training):
     return members,report,rng.bit_generator.state
 
 
-def submit(fn,*args):
+def _submit(fn,args,*,blocking=True):
     global _pool
-    import psutil
-    reserve=float(os.environ.get('V32_CPU_RESERVE_GIB','128'))
-    admission=float(os.environ.get('V32_CPU_ADMISSION_GIB','32'))
-    if psutil.virtual_memory().available<(reserve+admission)*2**30:
-        raise MemoryError('CPU preparation exceeds host memory admission')
-    _slots.acquire()
+    if not _slots.acquire(blocking=blocking):raise BlockingIOError('CPU preparation queue full')
     try:
         with _lock:
             if _pool is None:
@@ -57,6 +54,82 @@ def submit(fn,*args):
         return future
     except BaseException:
         _slots.release();raise
+
+
+def _headroom():
+    import psutil
+    required=(float(os.environ.get('V32_CPU_RESERVE_GIB','128'))+
+              float(os.environ.get('V32_CPU_ADMISSION_GIB','32')))*2**30
+    return psutil.virtual_memory().available,required
+
+
+def submit(fn,*args):
+    available,required=_headroom()
+    if available<required:raise MemoryError('CPU preparation exceeds host memory admission')
+    return _submit(fn,args)
+
+
+class AdmissionFuture(Future):
+    """A bounded CPU request polled by the owner without blocking CUDA service.
+
+    Retain the original callable/arguments until RAM and a process-pool slot are
+    available. No allocation-heavy work or RNG is performed while waiting.
+    """
+    def __init__(self,fn,args,output,emit,boundary_stop):
+        super().__init__()
+        if not _waiting.acquire(blocking=False):raise RuntimeError('CPU admission queue full')
+        self.request=(fn,args);self.output=Path(output);self.emit=emit
+        self.boundary_stop=Path(boundary_stop) if boundary_stop else None
+        self.next_poll=0.;self.admission_lock=threading.Lock()
+        self.add_done_callback(lambda _: _waiting.release())
+
+    def _poll(self):
+        if super().done() or self.running() or monotonic()<self.next_poll:return
+        with self.admission_lock:
+            if super().done() or self.running():return
+            self.next_poll=monotonic()+2.
+            try:
+                if any((p/'STOP').exists() and p!=self.boundary_stop
+                       for p in (self.output,*self.output.parents)):
+                    raise InterruptedError('Stopped while waiting for CPU RAM headroom')
+                available,required=_headroom()
+                if available<required:
+                    self.emit(stage='Waiting for CPU RAM headroom',
+                        available_gib=available/2**30,required_available_gib=required/2**30)
+                    return
+                fn,args=self.request
+                try:inner=_submit(fn,args,blocking=False)
+                except BlockingIOError:return
+                # Cancellation and admission both run through this lock.
+                self.set_running_or_notify_cancel();self.request=None
+                def finished(value):
+                    try:result=value.result()
+                    except BaseException as error:self.set_exception(error)
+                    else:self.set_result(result)
+                inner.add_done_callback(finished)
+            except BaseException as error:
+                self.request=None;self.set_exception(error)
+
+    def cancel(self):
+        with self.admission_lock:
+            cancelled=super().cancel()
+            if cancelled:self.request=None
+            return cancelled
+
+    def done(self):
+        self._poll()
+        return super().done()
+
+    def result(self,timeout=None):
+        deadline=None if timeout is None else monotonic()+timeout
+        while not self.done():
+            if deadline is not None and monotonic()>=deadline:raise TimeoutError()
+            sleep(.01)
+        return super().result()
+
+
+def submit_when_ready(fn,*args,output,emit,boundary_stop=None):
+    return AdmissionFuture(fn,args,output,emit,boundary_stop)
 
 
 def initialize(rng,size,config):

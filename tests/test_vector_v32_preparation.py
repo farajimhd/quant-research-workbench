@@ -41,3 +41,41 @@ def test_preparation_memory_guard_precedes_submission(monkeypatch):
     monkeypatch.setattr(psutil,'virtual_memory',lambda:SimpleNamespace(available=0))
     with pytest.raises(MemoryError,match='memory admission'):
         preparation.submit(preparation._pack,[])
+
+
+def test_deferred_admission_preserves_request_and_memory_limit(monkeypatch,tmp_path):
+    from concurrent.futures import Future
+    available=[159*2**30];calls=[];events=[]
+    monkeypatch.setattr(preparation,'_headroom',lambda:(available[0],160*2**30))
+    def start(fn,args,*,blocking):
+        assert not blocking
+        calls.append((fn,args));f=Future();f.set_result(fn(*args));return f
+    monkeypatch.setattr(preparation,'_submit',start)
+    payload={'rng':copy.deepcopy(np.random.default_rng(2020).bit_generator.state),'population':[1,2,3]}
+    original=copy.deepcopy(payload)
+    pending=preparation.submit_when_ready(copy.deepcopy,payload,output=tmp_path,emit=lambda **v:events.append(v))
+    assert not pending.done() and not calls
+    assert events[0]['required_available_gib']==160
+    available[0]=160*2**30;pending.next_poll=0
+    assert pending.result(timeout=1)==original
+    assert payload==original and len(calls)==1
+
+
+def test_deferred_admission_root_stop_and_boundary_stop(monkeypatch,tmp_path):
+    import pytest
+    monkeypatch.setattr(preparation,'_headroom',lambda:(159*2**30,160*2**30))
+    boundary=tmp_path/'global';output=boundary/'training';output.mkdir(parents=True)
+    (boundary/'STOP').touch()
+    pending=preparation.submit_when_ready(list,[],output=output,emit=lambda **v:None,boundary_stop=boundary)
+    assert not pending.done()
+    (tmp_path/'STOP').touch();pending.next_poll=0
+    with pytest.raises(InterruptedError,match='CPU RAM headroom'):pending.result(timeout=1)
+
+
+def test_deferred_queue_slot_pressure_and_cancellation(monkeypatch,tmp_path):
+    monkeypatch.setattr(preparation,'_headroom',lambda:(160*2**30,160*2**30))
+    def full(*args,**kwargs):raise BlockingIOError()
+    monkeypatch.setattr(preparation,'_submit',full)
+    pending=preparation.submit_when_ready(list,[],output=tmp_path,emit=lambda **v:None)
+    assert not pending.done()
+    assert pending.cancel() and pending.cancelled() and pending.request is None
