@@ -109,6 +109,13 @@ def test_global_pool_mixes_verified_local_origins_and_calibrated_fresh(setup):
     assert probe['metadata']['days']==s.days
     pool=seed_pool(s.root/'local',s.days,10,dataset=s.data,probe=probe)
     verify_pool(pool,s.days,dataset=s.data)
+    saved_pool=s.root/'seed-pool.json';write_json(saved_pool,pool)
+    reloaded=json.loads(saved_pool.read_bytes())
+    verify_pool(reloaded,s.days,dataset=s.data)
+    assert reloaded==pool
+    assert digest(reloaded['population'])==pool['population_sha256']
+    tampered=copy.deepcopy(reloaded);tampered['fresh_count']+=1
+    with pytest.raises(ValueError,match='provenance changed'):verify_pool(tampered,s.days,dataset=s.data)
     assert pool['expert_count']==7 and pool['fresh_count']==3
     assert {x['day'] for x in pool['sources'] if x}==set(s.days)
     members=[Individual.restore(p) for p in pool['population']];pedigree=Pedigree(3)

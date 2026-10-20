@@ -63,6 +63,9 @@ def seed_pool(phase1,days,population_size=1024,fresh_fraction=.25,seed=2020,data
     pool=dict(version='v32-local-expert-pool-v1',source_sha256=source_hash(),population=payload,population_sha256=digest(payload),sources=sources,phase1_root=str(Path(phase1)),
               expert_count=len(experts),fresh_count=population_size-len(experts),archive_certificates=certificates,validation_opened=False,
               fresh_initialization_reports=fresh_reports,calibration_probe_sha256=probe['sha256'])
+    # JSON object keys are strings after reload. Hash the persisted shape so
+    # integer-keyed sampling histograms cannot invalidate an exact resume.
+    pool=json.loads(json.dumps(pool,allow_nan=False))
     pool['pool_sha256']=digest(pool);return pool
 
 
