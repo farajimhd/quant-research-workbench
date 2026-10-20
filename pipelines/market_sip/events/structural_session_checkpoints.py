@@ -42,6 +42,7 @@ def source_rows(client, unit):
     from time import perf_counter
     query_id='market-day-'+uuid4().hex
     client.active=query_id;started=perf_counter();last=14699;count=0
+    retries_before=getattr(client.http,'arrow_connect_retries',0)
     try:
         with closing(client.http.iter_arrow_record_batches(query,query_id=query_id)) as batches:
             for batch in batches:
@@ -53,14 +54,18 @@ def source_rows(client, unit):
                             raise ValueError('Duplicate or invalid certified 1s bar coordinates')
                         last=index
                         yield row
-    except BaseException:
-        client.cancel()
+    except BaseException as error:
+        try:client.cancel()
+        except Exception:
+            error.add_note('Owned read cancellation could not be confirmed; reconcile query '+query_id+' before resume.')
         raise
     finally:
         client.active=None
         elapsed=perf_counter()-started
         total=client.profile_totals.setdefault('structural_session_input',dict(count=0,seconds=0.,max_seconds=0.))
         total['count']+=1;total['seconds']+=elapsed;total['max_seconds']=max(total['max_seconds'],elapsed)
+        retries=getattr(client.http,'arrow_connect_retries',0)-retries_before
+        if retries:total['connect_retries']=total.get('connect_retries',0)+retries
 
 
 def input_bars(day, rows):

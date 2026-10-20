@@ -295,6 +295,7 @@ class ClickHouseHttpClient:
         self.password = password
         self.timeout_seconds = None if timeout_seconds is None else float(timeout_seconds)
         self.persistent = bool(persistent)
+        self.arrow_connect_retries = 0
         self.max_persistent_idle_seconds = (
             None if max_persistent_idle_seconds is None
             else float(max_persistent_idle_seconds))
@@ -428,6 +429,7 @@ class ClickHouseHttpClient:
     ) -> Iterator[Any]:
         """Stream typed Arrow batches without buffering the whole response.
 
+        A transient connection-opening failure gets one retry for plain SELECT.
         A partial network/Arrow failure propagates; callers must abort that
         logical read rather than retrying from the beginning after consuming
         batches. Fixed Backtest pins an immutable plan and can resume only at
@@ -452,7 +454,23 @@ class ClickHouseHttpClient:
         if self.password:
             req.add_header("X-ClickHouse-Key", self.password)
         try:
-            with request.urlopen(req, timeout=self.timeout_seconds) as response:
+            # Retry only opening a plain read, before any Arrow data is exposed.
+            # Keep the same query ID: an accidentally live first request cannot
+            # become a second overlapping query. Never replay a consumed stream.
+            for attempt in range(2):
+                try:
+                    response=request.urlopen(req,timeout=self.timeout_seconds)
+                    break
+                except (error.URLError,OSError,http.client.RemoteDisconnected) as exc:
+                    reason=exc.reason if isinstance(exc,error.URLError) else exc
+                    transient=(isinstance(reason,(TimeoutError,ConnectionError,http.client.RemoteDisconnected))
+                        or (isinstance(reason,OSError) and
+                            (getattr(reason,'winerror',None) in (10053,10054,10060,10061)
+                             or reason.errno in (10053,10054,10060,10061,110,111,104,103))))
+                    if (attempt or isinstance(exc,error.HTTPError) or not transient
+                            or re.match(r'\s*SELECT\b',sql,re.IGNORECASE) is None):raise
+                    self.arrow_connect_retries+=1
+            with response:
                 reader = pa.ipc.open_stream(response)
                 try:
                     yield from reader
