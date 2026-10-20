@@ -347,3 +347,36 @@ Shared replay parks sessions on bounded CPU result-processing/publication future
 Independent session scheduling uses completion events and bounded 16-block replay quanta (512 causal clocks). Ready session streams advance independently; capture/export and new device preparation require all currently queued quanta to finish. Packing futures yield to the scheduler. CPU completion and subsequent evolution no longer wait for another session's entire replay. Candidate counts, per-candidate clock order, arithmetic, RNG and memory guards remain unchanged.
 
 Reproduction uses a bounded per-job cache of successful validation for immutable Network/Neuron tuples. New or changed networks retain the same full validation; mutable containers are never cached. The cache is discarded at the end of reproduction and does not consume RNG.
+
+### Persistent local owners and shared market blocks
+
+The shared Phase 1 launcher now dispatches each admitted local session to a
+dedicated CPU process for its entire lifetime. That process owns initialization,
+population, ordered reproduction, RNG, pedigree, species, archives and checkpoint
+publication. It sends canonical keys, policy/age metadata and packed network
+arrays to the existing single CUDA owner, rather than returning full populations
+through a generic reproduction pool and restoring them again for evaluation.
+The original `run_session` path remains available for matched diagnostics.
+Two local sessions remain admitted; search parameters and checkpoint state
+semantics are unchanged. Packed transfer storage is bounded to 4 GiB and retains
+the 160 GiB host-admission check. A resource rejection fails explicitly; it never
+reduces candidates, nodes or features.
+
+The shared GPU path computes the unchanged causal market projection once per
+32-clock block and shares it between a session's cohorts. The rolling buffer is
+bounded to 1 GiB per session with the existing 8 GiB physical GPU headroom check.
+It does not cache position feedback, recurrent state, signals or financial
+results. Consumer completion events protect buffer reuse, and each market graph
+retains all external tensors it captures across cohort lifetimes. Cohorts retain
+their original arithmetic, shapes and chronological order. Shared-block replay
+uses one block per scheduling quantum; independent sessions still advance on
+their own completion events. Ready replay boundaries no longer incur a fixed
+command-queue timeout. Capture/export retain their required safe boundaries.
+
+`pipeline-profile.json` records owner preparation time, removed restoration work,
+market-buffer bytes and its capture cost. Cohort `timings.json` also records host
+enqueue time and replay quanta. These are elapsed intervals, not a CUDA kernel
+profiler: concurrent stages overlap and must not be summed. Full-generation
+`wall.json` remains the performance authority, including evolution/publication.
+Qualification requires matched full financial receipts and exact successor
+population, RNG, pedigree, species and archive state before checkpoint migration.
