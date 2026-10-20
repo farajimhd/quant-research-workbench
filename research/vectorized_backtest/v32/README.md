@@ -425,8 +425,8 @@ minimum per outstanding completion task above the unchanged bars reserve; larger
 payloads reserve more for Python/IPC/JSON expansion. Only those
 two CPU-only task types qualify. Packing, initialization and demand loading
 retain the 32 GiB admission margin. CPU loads share an in-process admission
-lock; speculative loads require an additional 32 GiB before starting, avoiding
-two lanes concurrently spending the same memory headroom. Pending CPU tasks and
+lock; speculative and demand loads reserve the same 32 GiB allocation budget,
+avoiding two lanes concurrently spending the same memory headroom. Pending CPU tasks and
 host loads share the reservation ledger. Post-load retention
 still requires reserve plus admission. `V32_TRANSITION_DYNAMIC=1` is a diagnostic
 compiler option; the default remains static compilation until exact matched
@@ -437,3 +437,16 @@ global sessions are removed from the CPU LRU after durable results, rather than
 retained by an idle lane. Local persistent residency is unchanged. Compiler
 dynamic-shape trials matched financial results but were slower than the static
 reference, so the qualified launch retains static compilation.
+
+Global CPU preparation is now cached in process-owned runtime `.npy` stores,
+bounded to 128 GiB of derived disk arrays per lane (not reserved physical RAM).
+The first use still performs the full input certificate/hash/causality checks.
+Subsequent uses check source and derived file size/mtime/ctime and open private
+memory mappings; no persisted pickle or cross-process verification is trusted.
+The existing two lookahead loads (one per lane) fault tensor pages on CPU before
+GPU staging, subject to the unchanged 160 GiB admission floor and 128 GiB reserve.
+Disk admission retains 32 GiB free; an oversized/full store falls back to the
+normal fully verified loader. Local persistent ownership is unchanged.
+Fully cached global evaluations use verified metadata without loading arrays.
+Pinned arenas allocate exactly the aligned byte requirement instead of rounding
+up to a power of two. Profiles record prepared-host reuse and metadata-only hits.

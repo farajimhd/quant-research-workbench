@@ -54,7 +54,7 @@ def test_host_load_and_completion_share_unallocated_budget(monkeypatch,tmp_path)
 
 
 def test_prefetch_requires_budget_before_loading_and_retains_cpu_only():
-    available=[180*2**30];calls=[];events=[]
+    available=[159*2**30];calls=[];events=[]
     with ThreadPoolExecutor(max_workers=1) as pool:
         p=CPUOnlyPrefetch(pool,reserve_gib=128,admission_gib=32,
             snapshot=lambda:SimpleNamespace(available=available[0]),report=events.append)

@@ -12,7 +12,7 @@ class CPUOnlyPrefetch:
         self.pool=pool;self.required=(reserve_gib+admission_gib)*2**30
         self.snapshot=snapshot;self.report=report;self.future=None;self.day=None;self.cancel=None
         self.last=None
-        self.speculative_required=self.required+admission_gib*2**30
+        self.speculative_required=self.required
         self.reserve_gib=reserve_gib;self.admission_gib=admission_gib
 
     def start(self,day,load):

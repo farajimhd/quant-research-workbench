@@ -24,7 +24,9 @@ class TransferStaging(_TransferStaging):
         groups=[data.host_tensors,data.resident_features.host]
         required=sum((v.numel()*v.element_size()+255)//256*256 for g in groups for v in g.values())
         if slot['buffer'] is None or slot['buffer'].numel()<required:
-            slot['buffer']=torch.empty(1 << max(0,required-1).bit_length(),dtype=torch.uint8,pin_memory=True)
+            # Each tensor offset is already aligned. Power-of-two rounding can
+            # retain almost twice the necessary pinned RAM for every lane.
+            slot['buffer']=torch.empty(required,dtype=torch.uint8,pin_memory=True)
         def copy():
             offset=0;staged=[]
             for group in groups:

@@ -26,6 +26,16 @@ from research.vectorized_backtest.v6.torch_backtest.runtime import require_runti
 
 
 class StreamWorker(Worker):
+    def read_host(self,day):
+        if self.config.get('retain_session_residency'):return super().read_host(day)
+        item=self.host_store.get(day)
+        if item is not None:
+            item.prepared_host_reused=True
+            return item
+        item=super().read_host(day)
+        self.host_store.put(day,item);item.prepared_host_reused=False
+        return item
+
     def demand_session(self,day):
         """CPU loader owns demand loading too; CUDA service never waits on disk."""
         self.prefetch.release_under_pressure()
@@ -53,6 +63,7 @@ class StreamWorker(Worker):
     def close(self):
         self.market_block=None
         super().close()
+        self.host_store.close()
 
     def release_phase(self):
         """Completed global sessions cannot be reused before LRU eviction."""
@@ -75,6 +86,8 @@ class StreamWorker(Worker):
         # invoke CUDA APIs while another session is capturing a graph.
         config=dict(config,lane_memory_bytes=torch.cuda.mem_get_info(config['device'])[0]*.8/2)
         super().__init__(config,events,lane)
+        from .host_store import HostStore
+        self.host_store=HostStore(Path(config['output'])/'prepared-host'/str(os.getpid())/str(lane))
 
     def steps(self, day, next_day, payload, generation, token, replay_width):
         self.current_day=day
@@ -91,6 +104,31 @@ class StreamWorker(Worker):
         complete=partial(submit_completion,output=c['output'],
             emit=admission_report,boundary_stop=c.get('boundary_stop'))
         if hasattr(payload,'start'):payload.start(submit)
+        # After the first fully verified read, unchanged candidate results need
+        # only the immutable session metadata, never tensor materialization.
+        metadata=self.host_store.metadata(day) if hasattr(payload,'keys') else None
+        if metadata is not None and c.get('reuse_results',True):
+            cache_path=Path(c['output'])/'result-cache'/(day+'.json')
+            if cache_path.exists():
+                identity=dict(source=c['source_sha256'],data=metadata.identity,execution=c['execution'],
+                    split=c.get('split','training'),episode_capacity=c.get('episode_capacity',65536))
+                record=json.loads(cache_path.read_text(encoding='utf-8-sig'))
+                if record['identity']!=identity:raise ValueError('Result cache contract changed')
+                cached=record['results']
+                raw=json.dumps(cached,sort_keys=True,separators=(',',':'),allow_nan=False)
+                if sha256(raw.encode()).hexdigest()!=record['results_sha256']:raise ValueError('Result cache integrity mismatch')
+                if all(key in cached for key in payload.keys):
+                    root=require_runtime(Path(c['output'])/f'generation-{generation:04d}'/day)
+                    profile=dict(schema_version=1,source_sha256=c['source_sha256'],pid=os.getpid(),day=day,
+                        generation=generation,population_sha256=token,metadata_only=True,prepared_host_reused=True,
+                        host_load_wait_seconds=0.,staging_wait_seconds=0.,prepublication_wall_seconds=perf_counter()-started,
+                        generation_preparation_seconds=payload.seconds,
+                        timing_semantics='Verified metadata and exact result reuse; no session arrays loaded or uploaded.')
+                    yield complete(publish_results,cache_path,root,identity,cached,payload.keys,[],day,
+                        metadata.identity,token,c.get('split','training'),asdict(Execution(**c['execution'])),
+                        metadata.listing_ids.tolist(),[],profile)
+                    self.emit(day,stage='Session complete',completed_local_batches=0,completed_seconds=metadata.clocks-1)
+                    return dict(day=day,timings=[],wall_seconds=perf_counter()-started,pid=os.getpid(),clocks=metadata.clocks-1)
         load_started=perf_counter()
         item,prefetched=yield self.loader.submit(self.demand_session,day)
         host_load_wait_seconds=perf_counter()-load_started
@@ -245,6 +283,9 @@ class StreamWorker(Worker):
                 population_restore_wait_seconds=restore_wait_seconds,
                 owner_preparation_seconds=prepared_population.seconds if prepared_population is not None else 0.,
                 host_load_wait_seconds=host_load_wait_seconds,
+                prepared_host_reused=getattr(item,'prepared_host_reused',False),
+                prepared_host_cache_hits=self.host_store.hits,
+                prepared_host_cache_bytes=self.host_store.bytes,
                 staging_wait_seconds=locals().get('staging_wait_seconds',0.),
                 generation_preparation_seconds=generation_population.seconds if generation_population is not None else 0.,
                 generation_pack_hits=generation_population.hits if generation_population is not None else 0,

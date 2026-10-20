@@ -182,7 +182,9 @@ def reserve_host_load(available,reserve_gib,admission_gib,*,speculative=False):
     global _host_reserved
     budget=admission_gib*2**30
     with _completion_lock:
-        required=(reserve_gib+admission_gib*(2 if speculative else 1))*2**30+_completion_reserved+_host_reserved
+        # Prefetch owns the same explicit allocation reservation as demand.
+        # Charging a second unallocated 32 GiB prevented otherwise safe loads.
+        required=(reserve_gib+admission_gib)*2**30+_completion_reserved+_host_reserved
         if available<required:return None,required
         _host_reserved+=budget
         return budget,required
