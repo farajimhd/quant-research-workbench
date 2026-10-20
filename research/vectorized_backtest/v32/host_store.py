@@ -51,6 +51,14 @@ class HostStore:
                     for k,(path,tensor) in group.items()}
         item=copy(template);item.host_tensors=reopen(template._prepared_paths['thin']);item.tensors=item.host_tensors
         item.market=dict(template.market);item.market.update(reopen(template._prepared_paths['market']))
+        # Reopen authoritative maps for this borrow only. Retaining mmap objects
+        # in metadata would keep visited source pages in the process working set.
+        for group in ('arrays','bank'):
+            if group in template._source_paths:
+                setattr(item,group,{k:np.load(path,mmap_mode='r',allow_pickle=False)
+                                    for k,path in template._source_paths[group].items()})
+        for name,path in template._source_paths.get('optional',{}).items():
+            setattr(item,name,np.load(path,mmap_mode='r',allow_pickle=False))
         bank=copy(template.resident_features);bank.host=reopen(template._prepared_paths['resident'])
         bank.tensors=bank.host;bank.column_plans={};item.resident_features=bank
         if item.feature_cache is not None:
@@ -92,6 +100,20 @@ class HostStore:
             bank.host={k:mapped(v,'resident',k) for k,v in bank.host.items()};bank.tensors=bank.host;bank.column_plans={}
             template.resident_features=bank
             paths.setdefault('market',{});template._prepared_paths=paths
+            template._source_paths={'optional':{}}
+            for group in ('arrays','bank'):
+                if not hasattr(item,group):continue
+                values=getattr(item,group)
+                if any(not isinstance(v,np.memmap) for v in values.values()):
+                    raise ValueError('Authoritative session arrays must remain mapped')
+                template._source_paths[group]={k:str(v.filename) for k,v in values.items()}
+                setattr(template,group,{})
+            for name in ('indicator_values','enriched_values'):
+                value=getattr(item,name,None)
+                if value is not None:
+                    if not isinstance(value,np.memmap):raise ValueError('Authoritative indicator arrays must remain mapped')
+                    template._source_paths['optional'][name]=str(value.filename)
+                    setattr(template,name,None)
             # Catch source replacement during the preparation/copy itself.
             for name,expected in item.file_stats.items():
                 if stamp(name)[:2]!=expected:raise ValueError('Certified input changed during host preparation')

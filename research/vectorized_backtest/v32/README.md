@@ -443,6 +443,8 @@ bounded to 128 GiB of derived disk arrays per lane (not reserved physical RAM).
 The first use still performs the full input certificate/hash/causality checks.
 Subsequent uses check source and derived file size/mtime/ctime and open private
 memory mappings; no persisted pickle or cross-process verification is trusted.
+Metadata retains filenames only, not original source mappings; each borrow
+reopens its maps and releases them when that session finishes.
 The existing two lookahead loads (one per lane) fault tensor pages on CPU before
 GPU staging, subject to the unchanged 160 GiB admission floor and 128 GiB reserve.
 Disk admission retains 32 GiB free; an oversized/full store falls back to the
