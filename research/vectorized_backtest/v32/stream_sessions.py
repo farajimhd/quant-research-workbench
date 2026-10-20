@@ -26,6 +26,10 @@ from research.vectorized_backtest.v6.torch_backtest.runtime import require_runti
 
 
 class StreamWorker(Worker):
+    def close(self):
+        self.market_block=None
+        super().close()
+
     def __init__(self,config,events,lane):
         # Query/admit on the CUDA owner too: a local evolution thread must not
         # invoke CUDA APIs while another session is capturing a graph.
@@ -42,8 +46,13 @@ class StreamWorker(Worker):
         else:item=self.load(day)
         device=torch.device(c['device'])
         from .preparation import submit, _restore_population
+        from .session_owner import PackedPopulation
         restore_started=perf_counter()
-        (population,keys),restore_seconds=yield submit(timed_call,_restore_population,payload)
+        prepared_population=payload if isinstance(payload,PackedPopulation) else None
+        if prepared_population is None:
+            (population,keys),restore_seconds=yield submit(timed_call,_restore_population,payload)
+        else:
+            population,keys=payload.members,payload.keys;restore_seconds=0.
         restore_wait_seconds=perf_counter()-restore_started
         root=require_runtime(Path(c['output'])/f'generation-{generation:04d}'/day)
         cache_path=require_runtime(Path(c['output'])/'result-cache')/(day+'.json')
@@ -61,6 +70,8 @@ class StreamWorker(Worker):
             if sha256(raw.encode()).hexdigest()!=record['results_sha256']:raise ValueError('Result cache integrity mismatch')
             cached=record['results']
         missing=[i for i,k in enumerate(keys) if k not in cached]
+        if prepared_population is not None and missing!=prepared_population.missing:
+            raise ValueError('Persistent owner and replay cache selection disagree')
         batch=c['batch_size']; timings=[]; execution=Execution(**c['execution'])
         self.batch_progress=dict(completed_local_batches=0,total_local_batches=(len(missing)+batch-1)//batch)
         packing={}; cpu_pending=None;staging_released_bytes=0
@@ -84,7 +95,11 @@ class StreamWorker(Worker):
                 # Current pair plus one pair ahead per session, never a population-wide queue.
                 for offset in range(first,min(first+2*batch,len(missing)),batch):
                     if offset not in packing:
-                        packing[offset]=submit(_pack,[population[i] for i in missing[offset:offset+batch]])
+                        if prepared_population is None:
+                            packing[offset]=submit(_pack,[population[i] for i in missing[offset:offset+batch]])
+                        else:
+                            future=Future();future.set_result(prepared_population.batches.pop(offset))
+                            packing[offset]=future
             prepack(0)
             for first in range(0,len(missing),2*batch):
                 prepack(first+2*batch)
@@ -103,12 +118,18 @@ class StreamWorker(Worker):
                     self.emit(day,stage='Capture replay graph',candidate_offset=offset,completed_seconds=0,
                               total_seconds=item.clocks-1,replay_started=None)
                     gates=plan.evaluate(item,maximum_gate_gib=c['maximum_gate_gib'])
+                    from .market_block import MarketBlock
+                    market=getattr(self,'market_block',None)
+                    if market is None or market.data is not item:
+                        self.market_block=market=MarketBlock(gates,item)
+                    gates.market_block=market
                     torch.cuda.synchronize(device)
                     if torch.cuda.mem_get_info(device)[0]<8*2**30:raise MemoryError('Shared replay GPU headroom below 8 GiB')
                     capture_started=perf_counter()
                     prepared=replay_cohort([item],members,[gates],execution=execution,backend=c['backend'],
                         listing_width=replay_width,episode_capacity=c.get('episode_capacity',65536),
                         trace=c.get('split','training')=='training',capture_only=True,replay_block=32)
+                    prepared.replay.market_block=market
                     pending.append((offset,selection,plan,prepared,perf_counter()-batch_start,
                         dict(cpu_packing_seconds=packing_seconds,packing_wait_seconds=packing_wait_seconds,
                              plan_upload_seconds=upload_seconds,capture_seconds=perf_counter()-capture_started)))
@@ -135,6 +156,7 @@ class StreamWorker(Worker):
                         export_seconds=export_seconds,result_processing_seconds=processing_seconds,
                         result_processing_wait_seconds=processing_wait_seconds,
                         replay_seconds=replay_seconds/len(pending),replay_group_seconds=replay_seconds,
+                        scheduler_profile=getattr(prepared.replay,'scheduler_profile',{}),
                         scheduler='shared-streams-v2-independent',pid=os.getpid(),finished_epoch=time(),**preparation_times))
                 # Drop graph-owned state before capturing the next pair.
                 del result,prepared,plan,metrics,pending,gates
@@ -144,6 +166,9 @@ class StreamWorker(Worker):
                 day=day,generation=generation,population_sha256=token,
                 population_restore_service_seconds=restore_seconds,
                 population_restore_wait_seconds=restore_wait_seconds,
+                owner_preparation_seconds=prepared_population.seconds if prepared_population is not None else 0.,
+                shared_market_bytes=getattr(getattr(self,'market_block',None),'bytes',0),
+                shared_market_capture_seconds=getattr(getattr(self,'market_block',None),'capture_seconds',0.),
                 prepublication_wall_seconds=perf_counter()-started,
                 timing_semantics='Wall seconds; waits include queue and scheduler delay; replay includes host pauses. Overlapping stages must not be summed. Publication excludes profile write. No added CUDA synchronization.')
             cpu_pending=submit(publish_results,cache_path,root,identity,cached,keys,missing,
@@ -164,6 +189,7 @@ class StreamWorker(Worker):
                     except BaseException:pass
             for future in packing.values():future.cancel()
             if not c.get('retain_session_residency'):
+                self.market_block=None
                 item.resident_features.deactivate(); item.deactivate()
 
 
@@ -203,6 +229,12 @@ class ReplayTask:
         self.events=[torch.cuda.Event() for _ in graphs]
         self.counts=[(g.total+g.block-1)//g.block for g in graphs]
         self.completed=0;self.queued=0;self.inflight=False;self.started=perf_counter()
+        self.enqueue_seconds=0.;self.quanta=0
+        self.market=getattr(graphs[0],'market_block',None)
+        if self.market is not None:
+            if any(getattr(g,'market_block',None) is not self.market or g.block!=self.market.block for g in graphs):
+                raise ValueError('Replay cohorts must share the same market block')
+            self.market.reset()
         for g in graphs:g.reset()
         main=torch.cuda.current_stream()
         for stream in self.streams:stream.wait_stream(main)
@@ -217,6 +249,9 @@ class ReplayTask:
 
     def enqueue(self, quantum=16):
         if self.inflight or self.done:raise RuntimeError('Replay task is not ready')
+        began=perf_counter()
+        if self.market is not None:
+            quantum=1;self.market.enqueue(self.streams)
         end=min(self.completed+quantum,max(self.counts))
         for i in range(self.completed,end):
             for stream,g,n in zip(self.streams,self.graphs,self.counts):
@@ -224,6 +259,7 @@ class ReplayTask:
                     with torch.cuda.stream(stream):g.graph.replay()
         for stream,event in zip(self.streams,self.events):event.record(stream)
         self.queued=end;self.inflight=True
+        self.enqueue_seconds+=perf_counter()-began;self.quanta+=1
 
     def drain(self):
         if self.inflight:
@@ -305,7 +341,9 @@ class SharedReplayService:
                     sleep(.001)
                     continue
                 commands=[]
-                try:commands.append(self.commands.get(timeout=.001 if active else .2))
+                # A ready replay must not pay an artificial queue timeout at
+                # every block boundary. Blocking is only useful when idle.
+                try:commands.append(self.commands.get_nowait() if active else self.commands.get(timeout=.2))
                 except queue.Empty:pass
                 while not self.commands.empty():commands.append(self.commands.get_nowait())
                 for command in commands:accept(command)
@@ -315,6 +353,8 @@ class SharedReplayService:
                         if isinstance(stage,ReplayTask):
                             if not stage.done:
                                 ready.append((key,steps,future,stage));continue
+                            for graph in stage.graphs:
+                                graph.scheduler_profile=dict(host_enqueue_seconds=stage.enqueue_seconds,quanta=stage.quanta)
                             stage=perf_counter()-stage.started
                         if isinstance(stage,Future):
                             if not stage.done():

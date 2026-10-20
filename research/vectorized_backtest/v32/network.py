@@ -82,6 +82,10 @@ class NetworkPlan:
     def record_outcomes(self,before,after,price,signals):
         self.feedback.copy_(outcome_values(before,after,price,signals,self.ratios,self.feedback))
     def project(self,data,index):
+        cache=getattr(self,'market_block',None)
+        return cache.read(index) if cache is not None else self._project(data,index)
+
+    def _project(self,data,index):
         bank=data.resident_features;a=bank.tensors
         rows=a['source'].index_select(0,index.reshape(1)).T;ids=a['ids'].index_select(0,index.reshape(1)).T.to(torch.int64);clock=a['clocks'].index_select(0,index.reshape(1))[None]
         v,m=bank._values(rows,ids,clock,self.columns)

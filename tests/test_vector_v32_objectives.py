@@ -73,6 +73,9 @@ def test_source_is_exact_v21_and_other_engine_files_only_rename_version():
             continue
         if p.name=='network.py':
             before=ast.parse(expected);after=ast.parse((root/'v32'/p.name).read_text())
+            changed=next(n for n in after.body if isinstance(n,ast.ClassDef) and n.name=='NetworkPlan')
+            changed.body=[n for n in changed.body if not (isinstance(n,ast.FunctionDef) and n.name=='project')]
+            next(n for n in changed.body if isinstance(n,ast.FunctionDef) and n.name=='_project').name='project'
             for tree in (before,after):
                 plan=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='NetworkPlan')
                 plan.body=[n for n in plan.body if not (isinstance(n,ast.FunctionDef) and n.name=='__init__')]

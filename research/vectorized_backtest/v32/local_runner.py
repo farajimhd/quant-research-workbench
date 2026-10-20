@@ -87,7 +87,7 @@ def run_session(config,day,output,generations=50,population_size=1024,seed=2020,
         else:
             write_json(output/'status.json',dict(status='running',day=day,generation=1,completed_generations=0,total_generations=generations,
                 stage=f'Initialize {population_size*initial_multiplier:,} calibrated candidates',updated_epoch=time.time()))
-            if config.get('shared_replay') and config['device']=='cuda':
+            if config.get('shared_replay') and config['device']=='cuda' and not config.get('persistent_session_owner'):
                 from .preparation import initialize as initialize_cpu
                 members,initial_report=initialize_cpu(rng,population_size*initial_multiplier,config)
             else:members,initial_report=initialize(rng,population_size*initial_multiplier,probe=probe)
@@ -133,7 +133,8 @@ def run_session(config,day,output,generations=50,population_size=1024,seed=2020,
                     from .initial_reuse import import_receipt
                     reused=import_receipt(reuse_manifest,day,contract,token,len(payload),output,item.identity,source_token=digest([dict(p,version='v31-recurrent-v1') for p in payload]))
                     write_json(output/'initial-reuse.json',dict(reused=reused,day=day,manifest_sha256=contract['reuse_initial_manifest_sha256'],reason='matched sealed initial evaluation' if reused else 'missing or incompatible initial pool; evaluated normally'))
-                evaluation={'wall_seconds':0.} if reused else worker.run(day,None,payload,generation,token,len(item.listing_ids))
+                evaluate=worker.run_members if config.get('persistent_session_owner') else worker.run
+                evaluation={'wall_seconds':0.} if reused else evaluate(day,None,members if config.get('persistent_session_owner') else payload,generation,token,len(item.listing_ids))
                 folder=output/f'generation-{generation:04d}';receipt=folder/day/'receipt.json';record=json.loads(receipt.read_bytes())
                 if record['population_sha256']!=token or record['validation_opened'] is not False or record['execution']!=config['execution'] or not record['full_session']:raise ValueError('Local session receipt changed')
                 status('Score and archive');score_start=time.perf_counter();prepared=local_panel([record['metrics']],objective);values=prepared['values'][0];eligible=prepared['eligible'][0];score_seconds=time.perf_counter()-score_start
@@ -143,9 +144,11 @@ def run_session(config,day,output,generations=50,population_size=1024,seed=2020,
                 rank=np.lexsort((ids,-values)).tolist();source_ids=ids.copy()
                 if generation<generations:
                     reproduce=next_population
-                    if config.get('shared_replay'):
+                    if config.get('shared_replay') and not config.get('persistent_session_owner'):
                         from .evolution_work import next_population as reproduce
-                    members,ids,report=reproduce(rng,members,ids,pedigree,rank,generation+1,selection,session_values=values[None],session_eligible=eligible[None],global_values=values,global_eligible=eligible,target_size=population_size,species=species,ordered=[record['metrics']])
+                    from .validation_cache import validation_scope
+                    with validation_scope():
+                        members,ids,report=reproduce(rng,members,ids,pedigree,rank,generation+1,selection,session_values=values[None],session_eligible=eligible[None],global_values=values,global_eligible=eligible,target_size=population_size,species=species,ordered=[record['metrics']])
                 else:
                     species.assign(members,ids,values,[record['metrics']],generation,eligible=eligible)
                     report=species.telemetry

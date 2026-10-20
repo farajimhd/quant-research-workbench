@@ -83,6 +83,9 @@ def main(argv=None):
                 probe_progress(stage='Preparing session-only calibration probe')
                 wait_for_headroom(output,probe_progress,reserve_gib=args.host_reserve_gib,admission_gib=args.host_admission_gib)
                 path=local_probe(args.training,day,output/'initialization-probes')
+                if args.shared_replay:
+                    from .session_owner import run_owned_session
+                    return run_owned_session(service,dict(cfg,initialization_probe=str(path)),day,output/'local'/day,args.generations,args.population,args.seed,64,1024,initial_multiplier=args.initial_multiplier)
                 return run_session(dict(cfg,initialization_probe=str(path)),day,output/'local'/day,args.generations,args.population,args.seed,64,1024,initial_multiplier=args.initial_multiplier,worker_factory=worker_factory)
             if args.shared_replay:
                 from concurrent.futures import ThreadPoolExecutor,as_completed
