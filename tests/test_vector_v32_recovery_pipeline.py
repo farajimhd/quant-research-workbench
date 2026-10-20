@@ -36,6 +36,13 @@ def test_completion_cannot_bypass_bars_reserve(monkeypatch,tmp_path):
         preparation.submit_completion(list,[],output=tmp_path,emit=lambda **v:None)
 
 
+def test_large_completion_reservation_grows_without_truncating_results():
+    import numpy as np
+    value=np.broadcast_to(np.asarray(0.),(20_000_000,))
+    assert preparation.completion_budget({'episodes':value})>8*2**30
+    assert preparation.completion_budget({'episodes':[[],[1.,2.]]})==8*2**30
+
+
 def test_prefetch_requires_budget_before_loading_and_retains_cpu_only():
     available=[180*2**30];calls=[];events=[]
     with ThreadPoolExecutor(max_workers=1) as pool:

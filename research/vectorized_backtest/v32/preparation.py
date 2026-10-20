@@ -154,9 +154,24 @@ def submit_completion(fn,*args,output,emit,boundary_stop=None):
     from .result_processing import timed_call,process_metrics,publish_results
     if not (fn is publish_results or (fn is timed_call and args and args[0] is process_metrics)):
         raise ValueError('Completion admission is restricted to result processing/publication')
-    future=AdmissionFuture(fn,args,output,emit,boundary_stop,completion_bytes=8*2**30)
+    payload=args[1] if fn is timed_call else args[3]
+    future=AdmissionFuture(fn,args,output,emit,boundary_stop,completion_bytes=completion_budget(payload))
     future.done()
     return future
+
+
+def completion_budget(payload):
+    """Conservative expansion/IPC/JSON allowance; no cap on candidate results."""
+    import numpy as np
+    def count(value):
+        if isinstance(value,np.ndarray):return value.size
+        if isinstance(value,dict):return len(value)+sum(count(v) for v in value.values())
+        if isinstance(value,(list,tuple)):
+            if not value:return 0
+            if isinstance(value[0],(int,float,bool,str,np.generic)):return len(value)
+            return sum(count(v) for v in value)
+        return 1
+    return max(8*2**30,128*2**20+count(payload)*512)
 
 
 def initialize(rng,size,config):
