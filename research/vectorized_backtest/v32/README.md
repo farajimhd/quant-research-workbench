@@ -450,3 +450,12 @@ normal fully verified loader. Local persistent ownership is unchanged.
 Fully cached global evaluations use verified metadata without loading arrays.
 Pinned arenas allocate exactly the aligned byte requirement instead of rounding
 up to a power of two. Profiles record prepared-host reuse and metadata-only hits.
+
+Compiler cache schema 2 binds every evaluator dependency and platform while
+excluding six explicitly host-only V32 scheduling/I/O modules. Each full source
+still has a separate provenance binding. This avoids invalidating identical
+kernels after host-only fixes. Operational legacy seeding verifies the old full
+source, identical kernel dependencies, platform identity and every copied file;
+it copies compiler artifacts only, after all optimizer/profile owners exit.
+Torch retains its own graph/specialization validation. Fresh kernel shapes still
+need compilation and every new replay buffer still needs graph capture.
