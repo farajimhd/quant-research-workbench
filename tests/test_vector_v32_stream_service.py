@@ -27,7 +27,7 @@ def fake_replay_tasks(monkeypatch):
             import time
             self.original=graphs
             self.graphs=[SimpleNamespace(block=32,total=32) for _ in graphs]
-            self.completed=0;self.started=time.perf_counter()
+            self.completed=0;self.started=time.perf_counter();self.enqueue_seconds=0.;self.quanta=0
         @property
         def done(self):return self.completed==1
         def poll(self):return True
@@ -134,7 +134,7 @@ def test_session_finishes_while_other_replay_is_incomplete(monkeypatch,tmp_path,
     class Incremental:
         def __init__(self,graphs):
             self.slow=graphs==['slow'];self.graphs=[SimpleNamespace(block=32,total=32000)]
-            self.completed=0;self.started=time.perf_counter()
+            self.completed=0;self.started=time.perf_counter();self.enqueue_seconds=0.;self.quanta=0
         @property
         def done(self):return release.is_set() if self.slow else self.completed>0
         def poll(self):time.sleep(.001);return True
@@ -170,7 +170,7 @@ def test_progress_is_published_while_other_stream_is_inflight(monkeypatch,tmp_pa
     class Incremental:
         def __init__(self,graphs):
             self.slow=graphs==['slow'];self.graphs=[SimpleNamespace(block=32,total=2048)]
-            self.completed=0;self.started=time.perf_counter();self.queued=False
+            self.completed=0;self.started=time.perf_counter();self.enqueue_seconds=0.;self.quanta=0;self.queued=False
         @property
         def done(self):return self.completed==64
         def poll(self):
