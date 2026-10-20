@@ -21,7 +21,7 @@ from .session_lanes import Worker
 from .evaluator import Execution, PopulationPrograms, replay_cohort
 from .genome import Individual
 from .lineage import program_key
-from .result_processing import process_metrics, publish_results
+from .result_processing import process_metrics, publish_results, timed_call
 from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime
 
 
@@ -42,7 +42,9 @@ class StreamWorker(Worker):
         else:item=self.load(day)
         device=torch.device(c['device'])
         from .preparation import submit, _restore_population
-        population,keys=yield submit(_restore_population,payload)
+        restore_started=perf_counter()
+        (population,keys),restore_seconds=yield submit(timed_call,_restore_population,payload)
+        restore_wait_seconds=perf_counter()-restore_started
         root=require_runtime(Path(c['output'])/f'generation-{generation:04d}'/day)
         cache_path=require_runtime(Path(c['output'])/'result-cache')/(day+'.json')
         identity=dict(source=c['source_sha256'],data=item.identity,execution=c['execution'],
@@ -114,27 +116,39 @@ class StreamWorker(Worker):
                 # The CUDA owner advances all admitted session groups together.
                 replay_seconds=yield [p[3].replay for p in pending]
                 for offset,selection,plan,prepared,rule_seconds,preparation_times in pending:
+                    export_started=perf_counter()
                     result=prepared.export()[0]
                     # Complete D2H on the CUDA owner; only independent CPU arrays
                     # cross the process boundary. No graph/device lifetime escapes.
                     snapshot={k:v.detach().cpu().numpy().copy() if isinstance(v,torch.Tensor) else v for k,v in result.items()}
-                    cpu_pending=submit(process_metrics,snapshot,item.listing_ids,item.receipt['listings'])
+                    export_seconds=perf_counter()-export_started
+                    processing_started=perf_counter()
+                    cpu_pending=submit(timed_call,process_metrics,snapshot,item.listing_ids,item.receipt['listings'])
                     plan.close()
-                    metrics=yield cpu_pending
+                    metrics,processing_seconds=yield cpu_pending
+                    processing_wait_seconds=perf_counter()-processing_started
                     cpu_pending=None
                     for j,i in enumerate(selection):cached[keys[i]]={k:v[j] for k,v in metrics.items()}
                     timings.append(dict(day=day,offset=offset,candidates=len(selection),padded_candidates=len(selection),
                         load_seconds=load_seconds if offset==0 else 0.,host_prefetched=prefetched,rule_seconds=rule_seconds,
                         staging_released_bytes=staging_released_bytes if offset==0 else 0,
+                        export_seconds=export_seconds,result_processing_seconds=processing_seconds,
+                        result_processing_wait_seconds=processing_wait_seconds,
                         replay_seconds=replay_seconds/len(pending),replay_group_seconds=replay_seconds,
                         scheduler='shared-streams-v2-independent',pid=os.getpid(),finished_epoch=time(),**preparation_times))
                 # Drop graph-owned state before capturing the next pair.
                 del result,prepared,plan,metrics,pending,gates
                 gc.collect()
                 self.emit(day,stage='Batch complete',completed_local_batches=len(timings),completed_seconds=item.clocks-1)
+            profile=dict(schema_version=1,source_sha256=c['source_sha256'],pid=os.getpid(),
+                day=day,generation=generation,population_sha256=token,
+                population_restore_service_seconds=restore_seconds,
+                population_restore_wait_seconds=restore_wait_seconds,
+                prepublication_wall_seconds=perf_counter()-started,
+                timing_semantics='Wall seconds; waits include queue and scheduler delay; replay includes host pauses. Overlapping stages must not be summed. Publication excludes profile write. No added CUDA synchronization.')
             cpu_pending=submit(publish_results,cache_path,root,identity,cached,keys,missing,
                 day,item.identity,token,c.get('split','training'),asdict(execution),
-                item.listing_ids.tolist(),timings)
+                item.listing_ids.tolist(),timings,profile)
             selected=yield cpu_pending
             cpu_pending=None
             if resident:self.resident_results=(identity,selected)
