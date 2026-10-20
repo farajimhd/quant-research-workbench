@@ -392,3 +392,7 @@ checkpoint publication as host wall stages without additional CUDA barriers.
 At each completed global role, unused session data and pinned staging arenas
 are released before reproduction or the next role. Persistent local residency
 is unaffected; host reserve and allocation admission remain authoritative.
+Global reproduction also activates the same bounded immutable validation and
+canonical-identity caches as local reproduction. Training behavior sketches
+aggregate whole-population integer ledgers with bounded scatter operations,
+preserving the original per-candidate values and subsequent species decisions.

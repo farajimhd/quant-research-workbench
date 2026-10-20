@@ -263,7 +263,9 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
                 phase_release_started=perf_counter();trainers.release_plans()
                 pipeline['training_phase_release_seconds']=perf_counter()-phase_release_started
                 reproduction_started=perf_counter()
-                successor,new_ids,diversity=next_population(rng,population,ids,pedigree,rank,generation+1,selection,session_values=values,session_eligible=eligible,global_values=global_values,global_eligible=result['global_eligible'],behavior=behavior,species=species,ordered=ordered) if generation<generations else (population,ids,{})
+                from .validation_cache import validation_scope
+                with validation_scope():
+                    successor,new_ids,diversity=next_population(rng,population,ids,pedigree,rank,generation+1,selection,session_values=values,session_eligible=eligible,global_values=global_values,global_eligible=result['global_eligible'],behavior=behavior,species=species,ordered=ordered) if generation<generations else (population,ids,{})
                 if generation==generations:
                     species.assign(population,ids,global_values,ordered,generation,eligible=result['global_eligible'])
                     diversity=species.telemetry

@@ -42,18 +42,25 @@ def distance(a,b):
 
 def training_behavior(ordered,n):
     rows=[[] for _ in range(n)];active=np.zeros(n,dtype=bool)
+    lower=np.arange(48)*1800
     for metrics in ordered:
-        for i in range(n):
-            entries=np.asarray(metrics['episode_entry_clocks'][i],dtype=np.int64)
-            listings=np.asarray(metrics['episode_listings'][i],dtype=np.int64)
-            active[i]|=len(entries)>0
-            # Bounded clock/listing sketches plus size-sensitive realized exposure.
-            time_bins=np.bincount(np.minimum(entries//1800,47),minlength=48)
-            listing_bins=np.bincount(listings%32,minlength=32)
-            exits=np.asarray(metrics['episode_exit_clocks'][i],dtype=np.int64)
-            lower=np.arange(48)*1800;upper=lower+1800
-            holding=np.maximum(0,np.minimum(exits[:,None],upper)-np.maximum(entries[:,None],lower)).sum(0)/1800
-            rows[i].extend(np.log1p(np.r_[time_bins,holding,listing_bins,metrics['closed_positions'][i],metrics['capital_dollar_seconds'][i]/3600000,metrics['turnover'][i]/1000]).tolist())
+        entries=[np.asarray(x,dtype=np.int64) for x in metrics['episode_entry_clocks']]
+        lengths=np.asarray([len(x) for x in entries]);active|=lengths>0
+        owners=np.repeat(np.arange(n),lengths)
+        entry=np.concatenate(entries);exits=np.concatenate([np.asarray(x,dtype=np.int64) for x in metrics['episode_exit_clocks']])
+        listings=np.concatenate([np.asarray(x,dtype=np.int64) for x in metrics['episode_listings']])
+        time_bins=np.bincount(owners*48+np.minimum(entry//1800,47),minlength=n*48).reshape(n,48)
+        listing_bins=np.bincount(owners*32+listings%32,minlength=n*32).reshape(n,32)
+        holding=np.zeros((n,48),dtype=np.int64)
+        # Integer scatter sums preserve the original ledger arithmetic exactly.
+        # Process one clock bin at a time, avoiding an episodes-by-48 arena.
+        for j,start in enumerate(lower):
+            duration=np.maximum(0,np.minimum(exits,start+1800)-np.maximum(entry,start))
+            np.add.at(holding[:,j],owners,duration)
+        values=np.column_stack((time_bins,holding/1800,listing_bins,
+            metrics['closed_positions'],np.asarray(metrics['capital_dollar_seconds'])/3600000,
+            np.asarray(metrics['turnover'])/1000))
+        for row,value in zip(rows,np.log1p(values).tolist()):row.extend(value)
     return rows,active
 
 
