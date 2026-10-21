@@ -103,7 +103,7 @@ def check_job(job):
     from dataclasses import asdict
     from .evaluator import Execution
     from .lineage import Selection
-    from .composition import settings
+    from .composition import settings,comparison_base
     from .objectives import Objective
     baseline=read(Path(job['baseline'])/'checkpoint.json')['contract']
     execution=asdict(Execution(fee_per_share=.005,minimum_order_fee=1))
@@ -111,9 +111,7 @@ def check_job(job):
     expected=dict(baseline['execution'])
     expected.update(maximum_position_risk=job['execution']['maximum_position_risk'],maximum_stop_distance=job['execution']['maximum_stop_distance'])
     if execution!=expected:raise ValueError('Unrelated execution setting changed')
-    recombination=settings(Selection());new=dict(recombination.pop('crossover_v39'));new.pop('entry_residual');old=baseline['recombination']['crossover_v36']
-    if new!=old:raise ValueError('Unrelated crossover setting changed')
-    recombination['crossover_v36']=old;recombination['version']=baseline['recombination']['version']
+    recombination=comparison_base(settings(Selection()),baseline['recombination'])
     for key,value in dict(selection=asdict(Selection()),objective=asdict(Objective()),recombination=recombination,
         population=1024,seed=2020,generations=50,initial_multiplier=6,day='2026-08-04').items():
         if baseline[key]!=value:raise ValueError('V36 comparison contract changed: '+key)
@@ -142,6 +140,7 @@ def run(job):
     checked('gpu-profile.log',['-m','research.vectorized_backtest.v39.bounded_profile','--training',job['training'],'--pool',job['initial_pool'],'--output',job['profile_root']])
     profile=read(Path(job['profile_root'])/'complete.json')
     if profile['source_sha256']!=job['source_sha256'] or not all(profile.get(k) for k in ('eager_captured_reference_passed','exact_batch_parity','exact_cold_warm_parity')):raise ValueError('GPU qualification failed')
+    if len(profile.get('newborn_fixture_cases',[]))!=8 or not profile.get('newborn_fixture_sha256'):raise ValueError('Changed newborn paths were not qualified')
     check_job(job)
     # Repeat old-owner release audit immediately before full launch.
     if inspect_predecessor(job) is None:raise RuntimeError('Predecessor ownership not released')

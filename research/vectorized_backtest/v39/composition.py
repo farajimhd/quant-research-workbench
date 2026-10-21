@@ -1,11 +1,21 @@
 """Generic graph inheritance, exchange and nonlinear composition only."""
 from dataclasses import replace,fields
 from .genome import Individual,Network,Neuron,Policy,STAGES,INPUTS,MARKET_INPUTS,random_input,prune,random_policy_gene,SWING_WINDOWS
-from .config import contract,FAN_IN,WEIGHT_BOUND,CROSSOVER
+from .config import contract,FAN_IN,WEIGHT_BOUND,CROSSOVER,MUTATION
 from .sampling_report import COUNTS
 
 def settings(selection):return dict(**contract(),partner_requests={k:1/3 for k in ('similar','dissimilar','random')},validation_feedback=False)
 def choose_operator(rng):return 'independent-action-graphs'
+
+def comparison_base(value,baseline):
+    """Normalize only the explicitly authorized V39 search differences."""
+    result=dict(value);new=dict(result.pop('crossover_v39'))
+    for key in ('entry_residual','changed_action_probabilities'):
+        if new.pop(key)!=CROSSOVER[key]:raise ValueError('V39 crossover settings changed: '+key)
+    if result.pop('mutation_v39')!=MUTATION:raise ValueError('V39 mutation settings changed')
+    if new!=baseline['crossover_v36']:raise ValueError('Unrelated crossover setting changed')
+    result.update(crossover_v36=baseline['crossover_v36'],version=baseline['version'])
+    return result
 
 def import_module(nodes,net,root):
     piece=prune(net,None if root==len(net.nodes)-1 else root);offset=len(nodes)
@@ -27,7 +37,10 @@ def entry_residual(rng,a,b,whole,join,roots=None):
         return INPUTS+len(nodes)-1
     x=append((x,),(1.,),-a.threshold if whole else 0.)
     y=append((y,),(1.,),-b.threshold if whole else 0.)
-    interaction=append((x,y),(1.,1.),op=join)
+    if join=='attention':
+        kx=append((x,),(1.,),op='identity');ky=append((y,),(1.,),op='identity')
+        interaction=append((random_input(rng,'entry'),kx,x,ky,y),(1.,1.,1.,1.,1.),op=join)
+    else:interaction=append((x,y),(1.,1.),op=join)
     epsilon=float(rng.uniform(*CROSSOVER['entry_residual']['initial_weight_range']))
     append((INPUTS+len(a.nodes)-1,interaction),(1.,epsilon),-a.threshold)
     size_head=a.size_source if a.size_source>=0 else len(a.nodes)-1
@@ -35,7 +48,7 @@ def entry_residual(rng,a,b,whole,join,roots=None):
 
 
 def compose(rng,a,b,whole,join=None,stage='entry'):
-    if stage=='entry' and join in ('product','gate'):
+    if stage=='entry' and join in CROSSOVER['entry_residual']['operators']:
         return entry_residual(rng,a,b,whole,join)
     root_a=len(a.nodes)-1 if whole else int(rng.integers(len(a.nodes)))
     nodes=[];x=import_module(nodes,a,root_a)
@@ -43,7 +56,7 @@ def compose(rng,a,b,whole,join=None,stage='entry'):
     y=import_module(nodes,b,root_b)
     size_head=a.size_source if whole and a.size_source>=0 else x-INPUTS
     join=join or str(rng.choice(tuple(CROSSOVER['composition_operators']),p=tuple(CROSSOVER['composition_operators'].values())))
-    if stage=='entry' and join in ('product','gate'):
+    if stage=='entry' and join in CROSSOVER['entry_residual']['operators']:
         return entry_residual(rng,a,b,whole,join,(root_a,root_b))
     # Compose margins about the parents' thresholds. A weak secondary term
     # perturbs a useful primary decision instead of resetting its trigger.
@@ -121,7 +134,7 @@ def cross(rng,a,b,operator=None,*,primary=None,context=None,details=False):
     groups=dict(entry=('stop_fraction','target_fraction','swing_left','swing_right'),
         exit=('target_fraction','reduce_fraction'),add=('maximum_adds','add_minimum_profit','cooldown'),
         reduce=('reduce_fraction','reduce_minimum_profit','cooldown'),trail=('trail_fraction',))
-    changed=rng.choice(STAGES,size=int(rng.integers(1,6)),replace=False)
+    changed=rng.choice(STAGES,size=int(rng.choice((1,2,3,4,5),p=CROSSOVER['changed_action_probabilities'])),replace=False)
     for stage in changed:
         mode=str(rng.choice(('inherit','exchange','compose'),p=(.4,.3,.3)));COUNTS['requested_'+mode]+=1
         left,right=(donor,base) if mode=='inherit' else (base,donor)
@@ -141,7 +154,7 @@ def cross(rng,a,b,operator=None,*,primary=None,context=None,details=False):
         if rng.random()<.5:n=homologous_weights(rng,n,right.networks[stage])
         COUNTS['accepted_'+mode]+=1;networks[stage]=n
         events.append(dict(stage=stage,mode=mode,**(event if mode=='exchange' else dict(join=join) if mode=='compose' else {})))
-        if mode=='compose' and stage=='entry' and join in ('product','gate'):
+        if mode=='compose' and stage=='entry' and join in CROSSOVER['entry_residual']['operators']:
             events[-1].update(entry_residual=True,residual_initial_weight=n.nodes[-1].weights[1])
         if mode=='inherit' and rng.random()<CROSSOVER['linked_policy_probability']:
             for field in groups[stage]:genes[field]=getattr(left.policy,field);linked.add(field)
@@ -157,9 +170,29 @@ def cross(rng,a,b,operator=None,*,primary=None,context=None,details=False):
     return Individual(networks,Policy(**genes),ages).validate(),(dict(actions=events,linked_policy=sorted(linked)) if details else 'independent-action-graphs')
 
 def reflected(x,bound):return float(bound-abs((x+bound)%(4*bound)-2*bound))
-def parameter(rng,x,threshold=False):
+def parameter(rng,x,threshold=False,stage=None):
     bound=.999999 if threshold else WEIGHT_BOUND
+    if threshold and stage=='entry':
+        return float(rng.uniform(-bound,bound)) if rng.random()<MUTATION['entry_threshold_reset_probability'] else reflected(x+float(rng.normal(0,MUTATION['entry_threshold_sigma'])),bound)
     return reflected(x+float(rng.normal(0,.1 if threshold else .2)),bound) if rng.random()<.8 else float(rng.uniform(-bound if threshold else -1,bound if threshold else 1))
+
+
+def blended_rewire(rng,net,index,edge,source):
+    """Retain the original edge and introduce its replacement weakly.
+
+    Insert before the consumer, remapping every delayed/forward index and the
+    independent size head. The identity node avoids an extra tanh on the old
+    path. New weights remain fully evolvable under the existing genome bounds.
+    """
+    def shift(s):return s-1 if s<0 and -s-1>=index else s+1 if s>=INPUTS+index else s
+    nodes=[replace(n,sources=tuple(shift(s) for s in n.sources)) for n in net.nodes]
+    old=nodes[index].sources[edge]
+    epsilon=float(rng.uniform(*MUTATION['entry_rewire_initial_weight_range']))
+    blend=Neuron((old,shift(source)),(1.,epsilon),0.,int(rng.integers(1,2**63)),'identity')
+    target=nodes[index];sources=list(target.sources);sources[edge]=INPUTS+index
+    nodes[index]=replace(target,sources=tuple(sources));nodes.insert(index,blend)
+    size=net.size_source+1 if net.size_source>=index else net.size_source
+    return replace(net,nodes=tuple(nodes),size_source=size).validate(),epsilon
 
 def mutation(rng,parent,count,crossover_child=False):
     if not 1<=count<=5:raise ValueError('1..5 distinct edits required')
@@ -171,7 +204,7 @@ def mutation(rng,parent,count,crossover_child=False):
         try:
             if mode=='parameter':
                 field=str(rng.choice(('weight','bias','threshold','policy','age','size'),p=(.3,.15,.15,.15,.05,.2)))
-                if field=='threshold':key=(stage,field);newnet=replace(net,threshold=parameter(rng,net.threshold,True))
+                if field=='threshold':key=(stage,field);newnet=replace(net,threshold=parameter(rng,net.threshold,True,stage))
                 elif field=='policy':
                     name=str(rng.choice([f.name for f in fields(Policy) if not f.name.startswith('swing_')]+['swing']));key=('policy',name)
                     if name=='swing':
@@ -196,7 +229,11 @@ def mutation(rng,parent,count,crossover_child=False):
                     from .genome import OPS
                     nodes[index]=replace(node,op=str(rng.choice(OPS)))
                 elif field=='input':
-                    e=int(rng.integers(len(node.sources)));sources=list(node.sources);sources[e]=random_input(rng,stage);nodes[index]=replace(node,sources=tuple(sources))
+                    e=int(rng.integers(len(node.sources)));source=random_input(rng,stage)
+                    if stage=='entry':
+                        newnet,_=blended_rewire(rng,net,index,e,source);nodes=list(newnet.nodes)
+                    else:
+                        sources=list(node.sources);sources[e]=source;nodes[index]=replace(node,sources=tuple(sources))
                 elif field=='connect':
                     if len(node.sources)>=FAN_IN:continue
                     s=int(rng.integers(INPUTS+index))
@@ -206,7 +243,11 @@ def mutation(rng,parent,count,crossover_child=False):
                     if len(node.sources)==1:continue
                     e=int(rng.integers(len(node.sources)));nodes[index]=replace(node,sources=node.sources[:e]+node.sources[e+1:],weights=node.weights[:e]+node.weights[e+1:])
                 elif field=='delay':
-                    e=int(rng.integers(len(node.sources)));sources=list(node.sources);sources[e]=-int(rng.integers(len(nodes)))-1;nodes[index]=replace(node,sources=tuple(sources))
+                    e=int(rng.integers(len(node.sources)));source=-int(rng.integers(len(nodes)))-1
+                    if stage=='entry':
+                        newnet,_=blended_rewire(rng,net,index,e,source);nodes=list(newnet.nodes)
+                    else:
+                        sources=list(node.sources);sources[e]=source;nodes[index]=replace(node,sources=tuple(sources))
                 elif field=='grow':
                     if len(node.sources)>=FAN_IN:continue
                     old_source=int(rng.choice([s for s in node.sources if s>=0] or [random_input(rng,stage)]))

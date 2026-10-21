@@ -22,6 +22,7 @@ def contract():
                 attention='scalar query plus key/value pairs; stable softmax; weighted terms',
                 operator_initialization=dict(tanh_only_graph_probability=.5,mixed_node_probability=.35,temporal_module_probability=.5),
                 initial_sizes=list(INITIAL_SIZES),changed_actions_per_mating=[1,5],crossover_v39=CROSSOVER,
+                mutation_v39=MUTATION,
                 scaling='absolute signed-log plus stable shifted float32 current-clock cross-sectional z-score; no future statistics',
                 input_channels=['absolute','cross_sectional','validity'],projection_layout='full certified catalog; independent of candidate cohort',
                 input_validity='observed current or delayed market-value ancestor required',recurrent=True,
@@ -42,6 +43,11 @@ CROSSOVER=dict(children_per_pair={'1':.75,'2':.20,'3':.05},reciprocal_siblings=T
     linked_policy_probability=.5,probe_maximum_shape=[1,8,8],descriptor_cache_capacity=256,
     composition_operators={'tanh':.4,'min':.1,'max':.1,'product':.1,'gate':.2,'attention':.1},
     fixed_population_and_species_budgets=True,training_probe_only=True,validation_feedback=False,
-    entry_residual=dict(operators=['product','gate'],initial_weight_range=[-.1,.1],
+    changed_action_probabilities=[.55,.30,.10,.04,.01],
+    entry_residual=dict(operators=['tanh','min','max','product','gate','attention'],initial_weight_range=[-.1,.1],
         preserve_full_primary=True,preserve_primary_size_head=True,threshold='zero after primary-margin centering',
         subsequent_parameters_fully_evolvable=True))
+
+MUTATION=dict(edit_count_probabilities=[.55,.25,.12,.06,.02],
+    entry_threshold_sigma=.02,entry_threshold_reset_probability=.05,
+    entry_rewire_initial_weight_range=[-.05,.05],all_operators_retained=True)

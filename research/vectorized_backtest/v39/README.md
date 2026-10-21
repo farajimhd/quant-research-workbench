@@ -1,32 +1,35 @@
-# V39: Entry product/gate residual initialization ablation of V36
+# V39: behavior-preserving crossover and mutation priors from V36
 
-V39 changes only crossover composition initialization for Entry product and gate.
-The complete primary Entry network and its sizing head remain. Its original
-output margin is combined with a bounded interaction of selected parental
-modules: child = tanh(primary_output - primary_threshold + epsilon * interaction).
-Epsilon starts uniformly in [-0.1,0.1]; the final threshold starts at zero.
-Consequently interaction can alter the value-based decision only within 0.1 of
-the primary boundary before the usual homologous-weight exchange and mutation.
-This is an initialization prior: subsequent mutation and
-crossover can change every weight, bias and threshold under V36's normal bounds.
-Known-feature provenance remains the existing union rule; this does not guarantee
-identical decisions when parental feature availability differs.
+All six Entry composition operators (tanh, min, max, product, gate, attention)
+retain the full primary network and independent size head. The child output is
+`tanh(primary_output - primary_threshold + epsilon * bounded_interaction)`,
+with epsilon uniform in [-0.1,0.1] and threshold initially zero. The value-based
+boundary can initially move by at most 0.1 before ordinary homologous exchange
+and mutation. Other action composition paths retain V36 arithmetic and RNG.
+Feature availability still uses union provenance, so this is not a promise of
+identical financial behavior where parent feature availability differs.
 
-Whole-action/module selection remains 50/50. Module composition uses the selected
-primary internal node for the interaction while retaining the full primary
-trigger and size head. The production path adds four wrapper neurons plus the
-donor module, with no activation-probe replay or fitness fitting for this fix.
-The original 512-neuron strategy budget and bounded retry rules remain.
+Changed action counts 1..5 have probabilities 55%,30%,10%,4%,1% (previously
+uniform). Mutation edit counts 1..5 have probabilities 55%,25%,12%,6%,2%.
+The existing 20..85% mutation mask and 1..5 support remain. Entry threshold
+mutation uses reflected normal sigma 0.02 with 95% probability and a full-range
+uniform reset with 5% probability. Other parameter perturbations remain V36.
+Entry input/delay rewiring inserts a bounded identity blend preserving the
+original edge plus a new contribution weighted uniformly in [-0.05,0.05].
+Every recurrent reference and size-head index is remapped on insertion.
+These weights can subsequently evolve across the existing full parameter bounds.
+No operators, growth, recurrence or legal action counts are removed.
 
-All other action/operator composition paths and their RNG draws match V36.
-Operator probabilities, siblings, matched exchange, interfaces, linked policies,
-mutation, speciation, objective, $300 risk cap, 20% stop limit, fees and sizing
-remain unchanged. Source-certified feature bytes are preserved exactly.
+Multiple-child probabilities remain 1/2/3 = 75%/20%/5%. Matched exchange,
+interfaces, linked policies, speciation, objectives, $300 risk cap, 20% stop,
+fees, sizing and certified raw producers remain unchanged. These are birth
+priors informed by observational single-day logs, not proven causal improvements.
 
-Matched Aug 4 local trial: population 1024, seed 2020, 6144 identical unevolved
-initial candidates (3072 templates/3072 random), 50 generations, batch 1024.
-No financial results or evolved candidates are imported. The detailed Phase 1
-panel and profiling remain active. V39 queues after the existing V37/V38 jobs;
-GPU qualification is finite (64 replay clocks), not a long optimization test.
-Comparison against V36 includes generations 1,20,50 and checks other contracts.
-This single-session trial is not held-out generalization evidence.
+Matched Aug 4 local trial: population 1024, seed 2020, the same 6144 unevolved
+initial genotypes/RNG as V36 (3072 templates/3072 random), 50 generations,
+batch 1024. No financial evaluations or evolved candidates are imported.
+The Phase 1 detailed panel and profiling remain active. V39 waits for V38.
+Short qualification uses eight new composition/rewiring graphs with eager vs
+captured financial checks plus 512/1024 initial fixtures over only 64 clocks.
+Comparison against V36 at generations 1,20,50 explicitly records all intentional
+crossover/mutation differences. This is not held-out generalization evidence.

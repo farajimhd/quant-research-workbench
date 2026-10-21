@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 from research.vectorized_backtest.v27.local_details import metric_columns
 from research.vectorized_backtest.v6.torch_backtest.runtime import file_hash,write_json,require_runtime
+from .composition import comparison_base
 
 
 def summary(root,generation):
@@ -29,13 +30,10 @@ def main():
     for field in ('day','generations','population','seed','initial_multiplier','objective','selection','recombination','execution'):
         before=contracts[0][field];after=contracts[1][field]
         if field=='recombination':
-            new=after['crossover_v39'];new={k:v for k,v in new.items() if k!='entry_residual'}
-            if new!=before['crossover_v36']:raise ValueError('Unrelated crossover setting changed')
-            after={k:v for k,v in after.items() if k!='crossover_v39'}
-            after=dict(after,crossover_v36=before['crossover_v36'],version=before['version'])
+            after=comparison_base(after,before)
         if before!=after:raise ValueError('Unmatched comparison contract: '+field)
     result=dict(v36={str(g):summary(baseline,g) for g in (1,20,50)},v39={str(g):summary(local,g) for g in (1,20,50)},
-        scope='Single-session in-sample crossover comparison; no generalization conclusion',matched_fields=['population','seed','objective','selection','generations','initial_multiplier','execution'],intentional_crossover_changes=contracts[1]['recombination']['crossover_v39']['entry_residual'])
+        scope='Single-session in-sample crossover/mutation comparison; no generalization conclusion',matched_fields=['population','seed','objective','selection','generations','initial_multiplier','execution'],intentional_crossover_changes={k:contracts[1]['recombination']['crossover_v39'][k] for k in ('entry_residual','changed_action_probabilities')},intentional_mutation_changes=contracts[1]['recombination']['mutation_v39'])
     for name,root in (('v36',baseline),('v39',local)):
         walls=[json.loads((root/f'generation-{g:04d}/wall.json').read_bytes())['full_generation_seconds'] for g in range(1,51)]
         result[name]['measured_generation_wall_total_seconds']=sum(walls)

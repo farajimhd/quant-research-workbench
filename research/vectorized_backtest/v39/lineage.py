@@ -5,6 +5,7 @@ import json
 import numpy as np
 from .genome import sample, mutate, crossover
 from .complexity import count
+from .config import MUTATION
 
 
 def program_key(member):
@@ -208,7 +209,7 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
     rate=float(rng.uniform(config.mutation_min,config.mutation_max));chosen=rng.choice(len(children),int(round(rate*len(children))),replace=False)
     structural=0
     for j in chosen:
-        j=int(j);old=children[j];oldkey=program_key(old);keys.remove(oldkey);edits=int(rng.integers(1,6))
+        j=int(j);old=children[j];oldkey=program_key(old);keys.remove(oldkey);edits=int(rng.choice((1,2,3,4,5),p=MUTATION['edit_count_probabilities']))
         for _ in range(config.mate_attempts):
             try:child,fields=mutation(rng,old,edits,ops[j]=='crossover')
             except (ValueError,RuntimeError):continue

@@ -13,7 +13,7 @@ def net(uid=1):
     return Network((Neuron((0,-1),(.8,.1),0.,uid),Neuron((INPUTS,1),(.9,.2),.1,uid+1)),.17,0,.7,.1).validate()
 
 
-@pytest.mark.parametrize('op',['product','gate'])
+@pytest.mark.parametrize('op',['tanh','min','max','product','gate','attention'])
 @pytest.mark.parametrize('whole',[False,True])
 def test_entry_residual_preserves_primary_graph_sizing_and_margin_bound(op,whole):
     a,b=net(),net(10);child=compose(np.random.default_rng(6),a,b,whole,op,'entry')
@@ -45,7 +45,7 @@ def test_whole_negative_product_or_gate_cannot_reverse_both_no_margins(op):
 @pytest.mark.parametrize('stage',STAGES)
 @pytest.mark.parametrize('op',['tanh','min','max','product','gate','attention'])
 def test_other_operator_paths_and_rng_are_exact_v36(stage,op):
-    if stage=='entry' and op in ('product','gate'):return
+    if stage=='entry':return
     from research.vectorized_backtest.v36.genome import Network as OldNetwork
     from research.vectorized_backtest.v36.composition import compose as old_compose
     a,b=net(),net(10);old_a,old_b=OldNetwork.restore(a.payload()),OldNetwork.restore(b.payload())
@@ -58,11 +58,10 @@ def test_other_operator_paths_and_rng_are_exact_v36(stage,op):
 def test_only_intended_initializer_settings_differ_from_v36():
     from research.vectorized_backtest.v39.config import contract
     from research.vectorized_backtest.v36.config import contract as baseline
-    new=contract();old=baseline();new['version']=old['version'];settings=dict(new.pop('crossover_v39'));settings.pop('entry_residual')
-    new['crossover_v36']=settings
-    assert new==old
+    from research.vectorized_backtest.v39.composition import comparison_base
+    new=contract();old=baseline();assert comparison_base(new,old)==old
     root=Path(__file__).resolve().parents[1]/'research/vectorized_backtest'
-    for name in ('evaluator.py','protected_transition.py','objectives.py','lineage.py','initial_population.py','species.py'):
+    for name in ('evaluator.py','protected_transition.py','objectives.py','initial_population.py','species.py'):
         assert (root/'v39'/name).read_text()==(root/'v36'/name).read_text().replace('v36','v39').replace('V36','V39')
 
 
@@ -83,3 +82,39 @@ def test_launch_contract_check_does_not_mutate_live_crossover_settings(tmp_path,
     monkeypatch.setattr(gate,'read',lambda p:dict(contract=baseline) if str(p).endswith('checkpoint.json') else dict(exit_code=0,source_sha256='source',output='log',output_sha256='hash'))
     monkeypatch.setattr(gate.psutil,'virtual_memory',lambda:SimpleNamespace(available=1024*2**30))
     before=copy.deepcopy(CROSSOVER);gate.check_job(job);assert CROSSOVER==before and 'entry_residual' in CROSSOVER
+
+
+@pytest.mark.parametrize('index,edge,source',[(0,0,1),(0,1,-2),(1,0,-1),(1,1,0)])
+def test_blended_rewire_zero_weight_preserves_recurrent_output_and_size(index,edge,source):
+    from research.vectorized_backtest.v39.composition import blended_rewire
+    class Zero:
+        def uniform(self,*args):return 0.
+        def integers(self,*args):return 99
+    a=net();child,epsilon=blended_rewire(Zero(),a,index,edge,source)
+    assert epsilon==0 and child.size_source==(a.size_source+1 if a.size_source>=index else a.size_source)
+    rng=np.random.default_rng(11);x=rng.uniform(-1,1,(1,12,8,INPUTS)).astype(np.float32)
+    probe=dict(inputs=x,known=np.ones(x.shape[:-1]+(len(CATALOG),),bool),held_states=np.zeros(x.shape[:-1]+(INPUTS-MARKET_INPUTS,),np.float32))
+    # Independent chronological reference verifies remapped recurrence, not
+    # merely a payload shape or node-count assertion.
+    np.testing.assert_array_equal(observe(a,probe,reference=True)[0],observe(child,probe,reference=True)[0])
+    child.validate()
+
+
+def test_entry_threshold_mutation_is_local_but_retains_full_range_resets():
+    from research.vectorized_backtest.v39.composition import parameter
+    rng=np.random.default_rng(22);values=np.asarray([parameter(rng,.1,True,'entry') for _ in range(10000)])
+    assert np.all(np.abs(values)<1)
+    assert .025<np.mean(np.abs(values-.1)>.15)<.065
+    assert np.any(values<-.8) and np.any(values>.8)
+    assert np.quantile(np.abs(values-.1),.9)<.05
+
+
+def test_comparison_rejects_unrelated_setting_or_authorized_prior_drift():
+    import copy
+    from research.vectorized_backtest.v39.config import contract
+    from research.vectorized_backtest.v36.config import contract as baseline
+    from research.vectorized_backtest.v39.composition import comparison_base
+    for modify in (lambda v:v['crossover_v39']['children_per_pair'].update({'1':.5}),
+                   lambda v:v['mutation_v39'].update(entry_threshold_sigma=.5)):
+        new=copy.deepcopy(contract());modify(new)
+        with pytest.raises(ValueError):comparison_base(new,baseline())

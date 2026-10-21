@@ -2,6 +2,7 @@
 import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
 import argparse,json,time,gc
+from dataclasses import replace
 from pathlib import Path
 import numpy as np
 import torch,psutil
@@ -35,7 +36,23 @@ def main():
     fixture=np.column_stack((np.linspace(0,3071,512,dtype=int),np.linspace(3072,6143,512,dtype=int))).ravel()
     members=[Individual.restore(saved['population'][int(i)]) for i in fixture]
     try:
-        small=members[:8];plan=NetworkPlan(small,'cuda')
+        # Exercise the changed newborn paths, not merely untouched initial
+        # candidates. This independent diagnostic RNG never enters evolution.
+        from .composition import compose,blended_rewire
+        from .config import CROSSOVER
+        rng=np.random.default_rng(90439)
+        compact=[m for m in members if sum(len(n.nodes) for n in m.networks.values())<64]
+        if len(compact)<2:raise ValueError('Short newborn fixture requires two compact initial candidates')
+        base,donor=compact[:2];small=[]
+        for operator in CROSSOVER['entry_residual']['operators']:
+            net=compose(rng,base.networks['entry'],donor.networks['entry'],True,operator,'entry')
+            small.append(replace(base,networks=dict(base.networks,entry=net)).validate())
+        for source in (0,-1):
+            net,_=blended_rewire(rng,base.networks['entry'],0,0,source)
+            small.append(replace(base,networks=dict(base.networks,entry=net)).validate())
+        report['newborn_fixture_sha256']=digest([m.payload() for m in small])
+        report['newborn_fixture_cases']=list(CROSSOVER['entry_residual']['operators'])+['input_blend','delay_blend']
+        plan=NetworkPlan(small,'cuda')
         eager_raw=replay_cohort([data],small,[plan],execution=execution,trace=True,episode_capacity=65536)[0];eager=export(eager_raw);plan.close()
         plan=NetworkPlan(small,'cuda')
         compiled_raw=replay_cohort([data],small,[plan],execution=execution,backend='compile',trace=True,episode_capacity=65536)[0];compiled=export(compiled_raw);plan.close()
