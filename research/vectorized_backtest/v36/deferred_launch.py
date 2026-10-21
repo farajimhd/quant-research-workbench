@@ -55,6 +55,15 @@ def inspect_predecessor(job):
     return dict(checkpoint_sha256=file_hash(local/'checkpoint.json'),state_sha256=checkpoint['state_sha256'],completed=50,all_generation_hashes_verified=True,ownership_released=True,epoch=time.time())
 
 
+
+def verify_initial_parity(payload,before,after,previous,version):
+    # Genome payloads contain tuples; JSON checkpoints restore lists. Compare
+    # the canonical serialized value, not Python container implementation.
+    normalized=[dict(p,version=version+'-recurrent-v1') for p in previous['population']]
+    if digest(normalized)!=digest(payload) or before!=previous['rng_before'] or after!=previous['rng_after']:
+        raise ValueError('Fresh initial sampling changed unexpectedly')
+
+
 def prepare_pool(job):
     # Called only after inspect_predecessor returns verified completion.
     import numpy as np
@@ -71,8 +80,7 @@ def prepare_pool(job):
     # pool. This is candidate/RNG parity, never reuse of financial evaluations.
     if file_hash(job['baseline_initial_pool'])!=job['baseline_initial_pool_sha256']:raise ValueError('V34 initial pool changed')
     previous=read(job['baseline_initial_pool'])
-    normalized=[dict(p,version='v36-recurrent-v1') for p in previous['population']]
-    if normalized!=payload or before!=previous['rng_before'] or saved['rng_after']!=previous['rng_after']:raise ValueError('Fresh initial sampling changed unexpectedly')
+    verify_initial_parity(payload,before,rng.bit_generator.state,previous,'v36')
     write(Path(job['root'])/'diagnostics/initial-parity-v34.json',dict(exact_payload_parity=True,exact_rng_parity=True,financial_results_reused=False,population_sha256=digest(payload)))
 
 
