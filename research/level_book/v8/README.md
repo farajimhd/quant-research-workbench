@@ -60,3 +60,26 @@ profitability evaluation is run in notebook 02.
 Run with the same `ml4t` environment. Its `SOURCE_RUN` points to the original
 20261020T204419563339Z reaction-demo runtime; results and executed copies belong
 under `D:/TradingML/runtimes/level-book-v8/level-discovery/<UTC-run>/`.
+
+## 03 — Normalized count, volume and time scores
+
+`03_count_volume_time_scores.ipynb` keeps the same 200-event prefix, six
+differences and nine-cell aggregation, then scores every observed price
+directly. It uses no local-peak tests or minimum-count selection gates.
+
+Support/resistance use down-to-up/up-to-down cells and reward quick next-trade
+responses with `tau / (tau + mean_delay)`. Continuation cells reward longer
+delays with `mean_delay / (tau + mean_delay)`. Count and volume are independently
+normalized by their maxima across prices for each role. The three components
+have equal default weights, `tau=1` second and threshold `0.60`. Empty cells
+score zero. Overall occupancy remains a separate measurement.
+
+These illustrative scores are relative to the selected sample, not calibrated
+probabilities. The notebook explains sparse evidence, unchanged cells,
+timestamp ties, normalization and the short sample's sensitivity to tau.
+It displays component contributions, source rows, sorted scores and charts,
+with hand-example, monotonicity, empty-cell and accounting checks.
+
+Use the same `ml4t` environment and original saved source run as notebook 02.
+Results belong under
+`D:/TradingML/runtimes/level-book-v8/normalized-level-scores/<UTC-run>/`.
