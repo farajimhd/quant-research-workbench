@@ -105,10 +105,11 @@ precision. This width cap prevents adjacent prices chaining into a wide band.
 Original nine-cell evidence is summed before recomputing normalized scores
 across bands. The four scores retain notebook 03's formulas.
 
-Interactive charts provide event-count, half-life, gap-multiplier, time-reference
-and four independent score-threshold sliders. Support/resistance start at 0.50.
-Each role has its own panel with shaded observed bounds, volume-weighted center
-and score labels. Bands start at their first member-price appearance; their
+One large interactive chart provides event-count, half-life, gap-multiplier,
+time-reference and independent support/resistance threshold sliders, starting
+at 0.50. It overlays green support and red resistance with shaded observed
+bounds, volume-weighted centers and role/score labels. Continuation bands and
+their sliders are omitted. Bands start at their first member-price appearance; their
 membership and scores use the selected complete prefix, so these overlays
 are retrospective. The scale checkpoint is resumable, while band membership
 is rebuilt per selected view and band IDs are not persistent identities.
