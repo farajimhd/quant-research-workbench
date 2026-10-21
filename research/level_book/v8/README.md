@@ -9,7 +9,7 @@ the smoothed conditional-frequency baseline using exact price and arrival
 direction. Introduce subsequent methods in separate notebooks numbered 02,
 03, and so on, preserving earlier methods for comparison.
 
-The notebook loads exactly 2,000 eligible AAPL trades for 2026-08-20 from
+Notebook 01 loads exactly 2,000 eligible AAPL trades for 2026-08-20 from
 certified canonical SIP, beginning at 09:30 ET. `reaction_demo_source.py`
 handles the bounded source read, reporting/condition filters and provenance.
 Configured repository ClickHouse credentials are required. Missing source or
@@ -37,3 +37,26 @@ IPython and the repository's existing source-loader dependencies.
 One short ordered trade sample is not evidence of generalization or trading
 profitability. Equal SIP timestamps use canonical ordinal as the tie-breaker;
 the target is the next eligible trade in that order.
+
+## 02 — Price concentration and reaction levels
+
+`02_price_concentration_reaction_levels.ipynb` finds descriptive candidate
+levels using the first **200** events from notebook 01's original saved sample.
+It verifies that snapshot against its original hash and fails if unavailable;
+it does not fetch a replacement or change notebook 01.
+
+Detailed Markdown and code comments explain the six vectorized differences,
+the nine direction groups, local peaks across observed prices, and conditional
+support/resistance evidence. Every price and selection decision is retained.
+Three-trade candidate minimum, three-departure evidence minimum and 60%
+reversal share are visible illustrative settings, not validated parameters.
+Unchanged reactions and unknown boundary rows are accounted for explicitly.
+
+The notebook displays raw contributing trades, intermediate tables, final
+candidates and charts. End-of-prefix levels drawn over earlier trades are
+retrospective overlays, not causal historical signals. No prediction model or
+profitability evaluation is run in notebook 02.
+
+Run with the same `ml4t` environment. Its `SOURCE_RUN` points to the original
+20261020T204419563339Z reaction-demo runtime; results and executed copies belong
+under `D:/TradingML/runtimes/level-book-v8/level-discovery/<UTC-run>/`.
