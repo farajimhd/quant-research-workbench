@@ -118,3 +118,26 @@ Run with `ml4t` and an active `ipywidgets` kernel. Checks cover state resume,
 flat prices, bounded spans, evidence conservation and prefix isolation.
 Latest chart, settings and tables are saved under
 `D:/TradingML/runtimes/level-book-v8/adaptive-gap-bands/<UTC-run>/`.
+
+## 05 — Score-valley reaction bands
+
+`05_score_valley_reaction_bands.ipynb` preserves notebook 04 and replaces its
+gap grouping with peaks and surrounding valleys in each role's exact-price
+score profile. It uses the same 2,000 saved trades, without a movement half-life,
+gap multiplier or smoothing. Equal-score plateaus use their lower middle
+observed price. Neighboring bands share a valley boundary; boundary evidence
+belongs only to the right band. Range-edge boundaries are explicitly open.
+A flat profile produces no distinguishable bands.
+
+The notebook displays the hand example, plateau neighbor comparisons, boundary
+reasons, exact-price membership, summed evidence and recomputed band scores,
+including a worked real band. Support and resistance share one large price
+chart with independent 0.50-default threshold sliders. Two smaller score-profile
+plots expose peaks and valley boundaries. Thresholds filter band strengths;
+they do not alter the partition. Unsmooth profiles can produce many small bands.
+
+Run with the same `ml4t` kernel. Hand examples, plateau/edge behavior, unique
+membership, evidence conservation and score bounds are checked. Runtime tables,
+chart and provenance are saved under
+`D:/TradingML/runtimes/level-book-v8/score-valley-bands/<UTC-run>/`.
+As with notebook 04, overlays use final-prefix evidence and are retrospective.
