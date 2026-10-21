@@ -56,12 +56,15 @@ def kernel(P,A,PRICE,PREVIOUS,OBSERVED,MEMBER,SIGNALS,SWING,POLICY,CLOCK,TERMINA
     # A candidate row has no prospective financial risk when no corresponding
     # action is requested. Skip entire blocks of expensive double arithmetic.
     if tl.sum(entry_now.to(tl.int32),0)>0:
-        safe_entry=((execution_price-initial)<=(DISTANCE+1.e-12)*safe_price)
+        entry_q=entry/safe_price
+        entry_risk=entry_q*tl.maximum(execution_price-initial,0.)+2.*tl.maximum(entry_q*FEE,MINFEE)+entry*COST+entry_q*tl.maximum(initial,0.)*COST
+        safe_entry=((execution_price-initial)<=(DISTANCE+1.e-12)*safe_price)&(entry_risk<=BUDGET)
         rejected_entry=entry_now&~safe_entry;entry_now=entry_now&safe_entry
     if tl.sum(add_now.to(tl.int32),0)>0:
         add_q=addition/safe_price;prospective_q=remaining+add_q
+        add_risk=tl.maximum(remaining*(avg-stop)+add_q*(execution_price-stop),0.)+tl.maximum(episode-realized,0.)+tl.maximum(add_q*FEE,MINFEE)+addition*COST+tl.maximum(prospective_q*FEE,MINFEE)+prospective_q*tl.maximum(stop,0.)*COST
         basis=remaining*avg+add_q*execution_price
-        safe_add=(prospective_q*stop>=(1.-DISTANCE-1.e-12)*basis)
+        safe_add=(add_risk<=BUDGET)&(prospective_q*stop>=(1.-DISTANCE-1.e-12)*basis)
         rejected_add=add_now&~safe_add;add_now=add_now&safe_add
     dollars=entry_now.to(tl.float64)*entry+add_now.to(tl.float64)*addition
     bought=tl.full((BLOCK,),0.,tl.float64)

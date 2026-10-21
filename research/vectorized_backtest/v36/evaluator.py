@@ -11,19 +11,19 @@ class Execution:
     fee_per_share:float=0.
     minimum_order_fee:float=0.
     risk_protection:bool=True
-    maximum_stop_distance:float=.30
-    maximum_position_risk:float=0.
+    maximum_stop_distance:float=.20
+    maximum_position_risk:float=300.
     minimum_order_dollars:float=0.
     def validate(self):
         if any(not math.isfinite(v) or v<0 for v in (self.entry_dollars,self.add_dollars,self.cost_bps,self.fee_per_share,self.minimum_order_fee)) or min(self.entry_dollars,self.add_dollars)<=0 or not math.isfinite(self.minimum_order_dollars) or self.minimum_order_dollars<0:
             raise ValueError('Invalid assumed-fill sizing/cost')
         if self.entry_dollars>1000 or self.add_dollars>200:raise ValueError('Entry/add caps are $1000/$200')
-        if type(self.risk_protection) is not bool or not 0<self.maximum_stop_distance<=.30 or self.maximum_position_risk!=0.:
-            raise ValueError('V36: stop <=30%, dollar risk ceiling disabled (0)')
+        if type(self.risk_protection) is not bool or not 0<self.maximum_stop_distance<=.20 or not math.isfinite(self.maximum_position_risk) or not 0<self.maximum_position_risk<=300:
+            raise ValueError('V18 risk envelope: stop <=20%, position risk <=$300')
         return self
 
 
-def step(position,aggregate,price,previous,observed,membership,signals,swing,policy,clock:torch.Tensor,terminal,entry_dollars:float,add_dollars:float,cost:float,fee_per_share:float=0.,minimum_order_fee:float=0.,risk_protection:bool=False,maximum_stop_distance:float=.30,maximum_position_risk:float=0.,ratios=None,minimum_order_dollars:float=0.):
+def step(position,aggregate,price,previous,observed,membership,signals,swing,policy,clock:torch.Tensor,terminal,entry_dollars:float,add_dollars:float,cost:float,fee_per_share:float=0.,minimum_order_fee:float=0.,risk_protection:bool=False,maximum_stop_distance:float=.20,maximum_position_risk:float=300.,ratios=None,minimum_order_dollars:float=0.):
     """[session,strategy,ticker] lanes; all signals predate the execution price.
 
     Position fields: quantity, average cost, stop, next target, high water,
@@ -70,13 +70,18 @@ def step(position,aggregate,price,previous,observed,membership,signals,swing,pol
     rejected_entry=torch.zeros_like(entry_now);rejected_add=torch.zeros_like(add_now)
     if risk_protection:
         safe_price=execution_price.clamp_min(1e-12)
-        safe_entry=((execution_price-initial)<=(maximum_stop_distance+1e-12)*safe_price)
+        entry_q=entry_dollars/safe_price
+        entry_risk=entry_q*(execution_price-initial).clamp_min(0)+2*(entry_q*fee_per_share).clamp_min(minimum_order_fee)+entry_dollars*cost+entry_q*initial.clamp_min(0)*cost
+        safe_entry=((execution_price-initial)<=(maximum_stop_distance+1e-12)*safe_price)&(entry_risk<=maximum_position_risk)
         rejected_entry=entry_now&~safe_entry;entry_now&=safe_entry
         add_q=add_dollars/safe_price;prospective_q=remaining+add_q
+        # Existing paid costs/net realized losses plus prospective buy and exit
+        # costs. Realized gains do not subsidize a larger stop-risk budget.
+        add_risk=(remaining*(avg-stop)+add_q*(execution_price-stop)).clamp_min(0)+(episode-realized).clamp_min(0)+(add_q*fee_per_share).clamp_min(minimum_order_fee)+add_dollars*cost+(prospective_q*fee_per_share).clamp_min(minimum_order_fee)+prospective_q*stop.clamp_min(0)*cost
         prospective_basis=remaining*avg+add_q*execution_price
         # Positive basis/quantity permit the same distance test without two
         # candidate x listing float64 divisions on every replay clock.
-        safe_add=(prospective_q*stop>=(1-maximum_stop_distance-1e-12)*prospective_basis)
+        safe_add=(add_risk<=maximum_position_risk)&(prospective_q*stop>=(1-maximum_stop_distance-1e-12)*prospective_basis)
         rejected_add=add_now&~safe_add;add_now&=safe_add
     # Scalar-only where() defaults to float32, including dollar fee arithmetic.
     dollars=entry_now.to(q.dtype)*entry_dollars+add_now.to(q.dtype)*add_dollars

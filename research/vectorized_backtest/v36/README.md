@@ -1,6 +1,6 @@
 # V36: generic multi-child neural crossover
 
-V36 copies V35's engine, initial sampling, V21 objective, speciation, ancestry,
+V36 uses V34's execution limits, initial sampling, V21 objective, speciation, ancestry,
 mutation, archives, fees and execution. The first laptop experiment remains
 Aug 4, population 1024, seed 2020, initial 6144 (3072 templates and 3072 calibrated
 random), 50 local generations. Both local/global engineering paths are retained;
@@ -45,7 +45,7 @@ behavior distance and elite survival from already evaluated training results.
 
 ## Execution and launch
 
-V35's uncapped dollar planned-risk setting, 30% stop-distance ceiling, $1000 entry
+V34's $300 planned-risk cap, 20% stop-distance ceiling, $1000 entry
 and $200 addition caps, terminal validity, compact T/R ancestry percentages and
 M/X counters remain. Press `h` in the detailed observer for family aggregation.
 
@@ -54,5 +54,5 @@ all 50 generations, exits successfully and releases exact process/lock ownership
 It then performs short GPU boundary/parity checks before one fresh campaign.
 Identity changes, failures or existing V36 campaigns stop launch. The laptop keeps
 12 GiB host reserve plus 8 GiB load admission. A finite 64-clock diagnostic is not
-a full-session timing qualification. Compare saved generation 1/50 with V35 after
+a full-session timing qualification. Compare saved generation 1/50 with V34 after
 completion; this single-session experiment cannot establish generalization.

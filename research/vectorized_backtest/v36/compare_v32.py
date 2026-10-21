@@ -33,13 +33,13 @@ def main():
             after={k:v for k,v in after.items() if k!='crossover_v36'}
             after=dict(after,version=before['version'])
         if before!=after:raise ValueError('Unmatched comparison contract: '+field)
-    result=dict(v35={str(g):summary(baseline,g) for g in (1,50)},v36={str(g):summary(local,g) for g in (1,50)},
+    result=dict(v34={str(g):summary(baseline,g) for g in (1,50)},v36={str(g):summary(local,g) for g in (1,50)},
         scope='Single-session in-sample crossover comparison; no generalization conclusion',matched_fields=['population','seed','objective','selection','generations','initial_multiplier','execution'],intentional_crossover_changes=contracts[1]['recombination']['crossover_v36'])
-    for name,root in (('v35',baseline),('v36',local)):
+    for name,root in (('v34',baseline),('v36',local)):
         walls=[json.loads((root/f'generation-{g:04d}/wall.json').read_bytes())['full_generation_seconds'] for g in range(1,51)]
         result[name]['measured_generation_wall_total_seconds']=sum(walls)
-    write_json(output/'comparison-v35.json',result)
-    print('Matched V35/V36 Aug-4 comparison saved:',output/'comparison-v35.json',flush=True)
+    write_json(output/'comparison-v34.json',result)
+    print('Matched V34/V36 Aug-4 comparison saved:',output/'comparison-v34.json',flush=True)
 
 
 if __name__=='__main__':main()

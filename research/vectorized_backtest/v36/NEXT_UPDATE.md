@@ -1,6 +1,8 @@
-# Execution settings inherited from V35
+# V36 execution comparison baseline
 
-The changes recorded in V34/NEXT_UPDATE.md were implemented in V35 and retained in V36:
-planned-risk ceiling removed; stop-distance ceiling raised to 30%.
-Compact ancestry shares and mutation/crossover display are also implemented.
-V34's code and results remain preserved.
+V36 restores V34's $300 per-stock planned-risk ceiling and 20% stop-distance
+ceiling in CPU replay, CUDA replay, configuration validation and fitness eligibility.
+Both phases use these limits. Initial sampling, sizing, fees and objectives match
+V34; the intended search change is V36 crossover. V35 remains preserved and must
+finish before V36 launches on the laptop. Compact T/R percentages and M/X display
+are retained; they do not affect trading or selection.

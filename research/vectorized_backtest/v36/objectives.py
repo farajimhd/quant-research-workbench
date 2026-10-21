@@ -52,7 +52,7 @@ def local_panel(ordered,config=Objective()):
     removed=removed.reshape(pnl.shape);counts=counts.reshape(pnl.shape)
     if not np.allclose(totals.reshape(pnl.shape),pnl,rtol=1e-10,atol=1e-7):raise ValueError('Ticker P&L does not reconcile')
     dd=panel('drawdown');peak=panel('maximum_position_risk');distance=panel('maximum_stop_distance')
-    safe=(distance<=.30+1e-12)&(peak>=0)&(distance>=0)
+    safe=(peak<=300.+1e-7)&(distance<=.20+1e-12)&(peak>=0)&(distance>=0)
     valid=np.asarray([m['terminal_valid'] for m in ordered],dtype=bool)
     if any(a.shape!=pnl.shape or not np.isfinite(a).all() for a in (closed,dd,peak,distance)) or (closed<0).any() or (dd<0).any():raise ValueError('Malformed financial summaries')
     if valid.shape!=pnl.shape:raise ValueError('Terminal validity alignment changed')

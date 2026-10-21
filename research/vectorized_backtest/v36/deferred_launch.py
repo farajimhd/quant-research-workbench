@@ -67,13 +67,13 @@ def prepare_pool(job):
     saved=dict(source_sha256=job['source_sha256'],probe_sha256=probe['sha256'],rng_before=before,rng_after=rng.bit_generator.state,
         population=payload,population_sha256=digest(payload),report=report)
     write(job['initial_pool'],saved)
-    # Verify fresh deterministic initialization against the sealed V35 initial
+    # Verify fresh deterministic initialization against the sealed V34 initial
     # pool. This is candidate/RNG parity, never reuse of financial evaluations.
-    if file_hash(job['predecessor']['initial_pool'])!=job['predecessor']['initial_pool_sha256']:raise ValueError('V35 initial pool changed')
-    previous=read(job['predecessor']['initial_pool'])
+    if file_hash(job['baseline_initial_pool'])!=job['baseline_initial_pool_sha256']:raise ValueError('V34 initial pool changed')
+    previous=read(job['baseline_initial_pool'])
     normalized=[dict(p,version='v36-recurrent-v1') for p in previous['population']]
     if normalized!=payload or before!=previous['rng_before'] or saved['rng_after']!=previous['rng_after']:raise ValueError('Fresh initial sampling changed unexpectedly')
-    write(Path(job['root'])/'diagnostics/initial-parity-v35.json',dict(exact_payload_parity=True,exact_rng_parity=True,financial_results_reused=False,population_sha256=digest(payload)))
+    write(Path(job['root'])/'diagnostics/initial-parity-v34.json',dict(exact_payload_parity=True,exact_rng_parity=True,financial_results_reused=False,population_sha256=digest(payload)))
 
 
 def check_job(job):
@@ -84,6 +84,17 @@ def check_job(job):
     tests=read(job['tests_result'])
     if tests['exit_code']!=0 or tests['source_sha256']!=job['source_sha256']:raise ValueError('CPU tests not source-bound')
     if file_hash(tests['output'])!=tests['output_sha256']:raise ValueError('CPU test output changed')
+    from dataclasses import asdict
+    from .evaluator import Execution
+    from .lineage import Selection
+    from .composition import settings
+    from .objectives import Objective
+    baseline=read(Path(job['baseline'])/'checkpoint.json')['contract']
+    execution=asdict(Execution(fee_per_share=.005,minimum_order_fee=1))
+    recombination=settings(Selection());recombination.pop('crossover_v36');recombination['version']=baseline['recombination']['version']
+    for key,value in dict(execution=execution,selection=asdict(Selection()),objective=asdict(Objective()),recombination=recombination,
+        population=1024,seed=2020,generations=50,initial_multiplier=6,day='2026-08-04').items():
+        if baseline[key]!=value:raise ValueError('V34 comparison contract changed: '+key)
     if Path(job['campaign']).exists():raise ValueError('V36 campaign exists; no duplicate fresh launch')
     if psutil.virtual_memory().available<20*2**30:raise MemoryError('12 GiB reserve plus 8 GiB load admission required')
 
