@@ -83,3 +83,10 @@ with hand-example, monotonicity, empty-cell and accounting checks.
 Use the same `ml4t` environment and original saved source run as notebook 02.
 Results belong under
 `D:/TradingML/runtimes/level-book-v8/normalized-level-scores/<UTC-run>/`.
+
+The price overlay after section 7 uses `ipywidgets` (available in `ml4t`) for
+four independent role thresholds. Run the cell with an active notebook kernel;
+drag a slider and release to redraw. Each line starts at the first selected
+event at that exact price, while its score still uses the complete sample.
+Slider changes affect this chart only, not the scoring formula or earlier
+tables. The latest PNG and `chart_thresholds.json` are saved in the run folder.
