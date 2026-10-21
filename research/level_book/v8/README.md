@@ -90,3 +90,30 @@ drag a slider and release to redraw. Each line starts at the first selected
 event at that exact price, while its score still uses the complete sample.
 Slider changes affect this chart only, not the scoring formula or earlier
 tables. The latest PNG and `chart_thresholds.json` are saved in the run folder.
+
+## 04 — Adaptive-gap reaction bands
+
+`04_adaptive_gap_reaction_bands.ipynb` uses the same saved 2,000-trade sample.
+An event-count slider also exposes the earlier 200-trade prefix. An exponential
+average of nonzero absolute log-price changes estimates the gap without a
+clock-time window. Defaults are a 1,000-change half-life and gap multiplier 2;
+these are illustrative settings, not fitted parameters.
+
+Prices are sorted and grouped from the lowest unassigned price. Each band's
+entire span must fit its anchor's adaptive gap, rounded up to source price
+precision. This width cap prevents adjacent prices chaining into a wide band.
+Original nine-cell evidence is summed before recomputing normalized scores
+across bands. The four scores retain notebook 03's formulas.
+
+Interactive charts provide event-count, half-life, gap-multiplier, time-reference
+and four independent score-threshold sliders. Support/resistance start at 0.50.
+Each role has its own panel with shaded observed bounds, volume-weighted center
+and score labels. Bands start at their first member-price appearance; their
+membership and scores use the selected complete prefix, so these overlays
+are retrospective. The scale checkpoint is resumable, while band membership
+is rebuilt per selected view and band IDs are not persistent identities.
+
+Run with `ml4t` and an active `ipywidgets` kernel. Checks cover state resume,
+flat prices, bounded spans, evidence conservation and prefix isolation.
+Latest chart, settings and tables are saved under
+`D:/TradingML/runtimes/level-book-v8/adaptive-gap-bands/<UTC-run>/`.
