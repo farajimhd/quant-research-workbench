@@ -2,7 +2,6 @@
 import json
 from pathlib import Path
 import numpy as np
-from research.vectorized_backtest.v27.local_details import metric_columns
 from research.vectorized_backtest.v6.torch_backtest.runtime import file_hash,write_json
 
 
@@ -16,7 +15,12 @@ def compare(job):
         if not (folder/'complete.json').exists():continue
         seal=json.loads((folder/'complete.json').read_bytes());receipt=folder/'2026-08-04/receipt.json';scores=folder/'scores.json'
         if file_hash(receipt)!=seal['receipt_sha256'] or file_hash(scores)!=seal['scores_sha256']:raise ValueError('Comparison seal changed')
-        m=metric_columns(receipt,seal['population_sha256']);s=json.loads(scores.read_bytes());pnl=np.asarray(m['net_pnl']);eligible=np.asarray(s['eligible']);values=np.asarray(s['scores'])
+        # The terminal reader projects display columns and deliberately omits
+        # risk-rejection counters. Reports require the sealed receipt itself.
+        financial=json.loads(receipt.read_bytes())
+        if financial['population_sha256']!=seal['population_sha256']:raise ValueError('Comparison population identity changed')
+        m=financial['metrics'];s=json.loads(scores.read_bytes());pnl=np.asarray(m['net_pnl']);eligible=np.asarray(s['eligible']);values=np.asarray(s['scores'])
+        if any(len(m[k])!=len(pnl) for k in ('risk_rejected_entries','risk_rejected_adds')) or len(eligible)!=len(pnl) or len(values)!=len(pnl):raise ValueError('Comparison candidate alignment changed')
         contract=json.loads((local/'checkpoint.json').read_bytes())['contract']
         for key in ('population','seed','initial_multiplier','objective','selection'):
             if contract[key]!=job['comparison_contract'][key]:raise ValueError('Unmatched comparison: '+key)
