@@ -1,0 +1,2 @@
+# Additional CPU-only initialization dependency; existing V30 engine remains.
+numba==0.68.0
