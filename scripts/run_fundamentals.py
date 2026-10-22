@@ -14,11 +14,11 @@ import threading
 import time
 import platform
 import shutil
-import textwrap
 from uuid import uuid4
 from pipelines.certified_research.contracts import digest
 from pipelines.fundamentals import schema
 from pipelines.fundamentals.producer import plan, publish
+from pipelines.fundamentals.progress import render
 from research.mlops.clickhouse import (ClickHouseHttpClient, default_clickhouse_user,
     default_clickhouse_password, discover_clickhouse_env_files)
 from research.mlops.env import load_env_files
@@ -74,21 +74,6 @@ def save(path, value):
     tmp.replace(path)
 
 
-def render(status, width=80):
-    counts=status['counts']
-    lines=[f"Fundamentals | {status['state']} | {status['mode']}",
-        f"Batches: {counts['published']} published, {counts['unchanged']} unchanged, {counts['audited']} audited",
-        f"Failed {counts['failed']} | retries 0",
-        f"Active {len(status['active'])} | queued {status['queued']} | "
-        f"elapsed {status['elapsed']:.0f}s",
-        'Retained observations; public-time qualification remains separate.']
-    for worker in status['active'].values():
-        lines.append(f"  {worker['family']}: {worker['stage']}")
-    if status.get('error'):
-        lines.append('Error: '+status['error'])
-    return '\n'.join(part for line in lines for part in textwrap.wrap(line,width=max(20,width)))
-
-
 def run(args):
     runtime=Path('D:/TradingML/runtimes').resolve()
     root=Path(args.run_dir).resolve()
@@ -112,8 +97,21 @@ def run(args):
                 raise ValueError('STOP is present; preserve it until an explicit resume')
             batches=plan(owner.query,manifest['families'],args.start,args.end,args.cohort_size,
                 cache_dir=root,progress=lambda f:print(f'Planning {f}: checking occupied source partitions',flush=True))
+            profile_count=getattr(args,'profile_batches_per_family',0)
+            if profile_count:
+                if args.database=='arte' or not 1<=profile_count<=3:
+                    raise ValueError('Bounded profiling requires an isolated validation database and 1..3 batches per family')
+                selected=[]
+                for family in manifest['families']:
+                    family_batches=[b for b in batches if b.family==family]
+                    if family_batches:
+                        indexes=({0} if profile_count==1 else
+                            {round(i*(len(family_batches)-1)/(profile_count-1)) for i in range(profile_count)})
+                        selected.extend(family_batches[i] for i in sorted(indexes))
+                batches=selected
             request={'population':manifest,'start':str(args.start),'end':str(args.end),
                 'database':args.database,'endpoint':args.endpoint,'cohort_size':args.cohort_size}
+            if profile_count:request['profile_batches_per_family']=profile_count
             previous=root/'request.json'
             if previous.exists() and json.loads(previous.read_text())!=request:
                 raise ValueError('Existing request differs; use a separate run directory, retaining shared receipts')
@@ -127,7 +125,23 @@ def run(args):
             save(previous,request)
             schema.install(owner.query,args.database)
             state={'state':'running','mode':args.mode,'counts':dict(published=0,unchanged=0,audited=0,failed=0),
-                'active':{},'queued':len(batches),'elapsed':0,'error':None}
+                'active':{},'queued':len(batches),'elapsed':0,'error':None,
+                'total':len(batches),'workers':args.workers,'new_rows':0,'reused_rows':0,'samples':{},
+                'exclusions':len(manifest['provenance'].get('exclusions',[])),
+                'remaining_by_family':{f:sum(b.family==f for b in batches) for f in manifest['families']}}
+            timing_profile=getattr(args,'timing_profile',None)
+            if timing_profile:
+                profile_root=Path(timing_profile).resolve()
+                if not profile_root.is_relative_to(runtime):raise ValueError('Timing profile must be in runtime root')
+                profile_request=json.loads((profile_root/'request.json').read_text())
+                for key in ('population','start','end','cohort_size','endpoint'):
+                    if profile_request.get(key)!=request[key]:raise ValueError('Timing profile scope differs')
+                profile_path=profile_root/'batches.jsonl'
+                if profile_path.stat().st_size>4*1024**2:raise ValueError('Timing profile exceeds bounded pilot size')
+                for line in profile_path.read_text().splitlines():
+                    result=json.loads(line)
+                    if result['state']=='published':
+                        state['samples'].setdefault(result['family'],{}).setdefault('published',[]).append(result['seconds'])
             started=time.monotonic(); mutex=threading.Lock();last_snapshot=[0.0]
             def snapshot(force=False):
                 if not force and time.monotonic()-last_snapshot[0]<10:return
@@ -139,13 +153,19 @@ def run(args):
                     last_snapshot[0]=time.monotonic()
             def worker(batch):
                 client=Client(args.endpoint)
+                unit_started=time.monotonic()
                 def progress(stage):
                     with mutex:
-                        state['active'][batch.key]={'family':batch.family,'stage':stage}
+                        state['active'][batch.key]={'family':batch.family,'stage':stage,'started':unit_started-started}
                 try:
                     result=publish(client.query,batch,args.database,audit=args.audit,progress=progress)
                     with mutex:
                         state['counts'][result['state']]+=1
+                        state['remaining_by_family'][batch.family]-=1
+                        state['reused_rows' if result['state']=='unchanged' else 'new_rows']+=result['rows'] if result['state']!='audited' else 0
+                        samples=state['samples'].setdefault(batch.family,{}).setdefault(result['state'],[])
+                        samples.append(time.monotonic()-unit_started)
+                        del samples[:-32]
                         with (root/'batches.jsonl').open('a',encoding='utf-8') as f:
                             f.write(json.dumps({'batch':batch.key,'family':batch.family,**result})+'\n')
                 except Exception as exc:
@@ -166,7 +186,7 @@ def run(args):
                     while not draining and len(pending)<args.workers:
                         batch=next(iterator,None)
                         if batch is None:break
-                        state['queued']-=1
+                        with mutex:state['queued']-=1
                         pending[pool.submit(worker,batch)]=batch
                     if not pending:break
                     try:
@@ -200,6 +220,9 @@ def main(argv=None):
     p.add_argument('--cohort-size',type=int,default=128)
     p.add_argument('--execute',action='store_true',help='Publish retained sources; default is read-only planning')
     p.add_argument('--audit',action='store_true',help='Explicit exact source/output audit, including completed batches')
+    p.add_argument('--profile-batches-per-family',type=int,default=0,
+        help='Isolated validation only: sample 1..3 source partitions per family before a full run')
+    p.add_argument('--timing-profile',help='Matching isolated pilot runtime; seeds approximate per-family ETA only')
     args=p.parse_args(argv)
     try:return run(args)
     except KeyboardInterrupt:

@@ -59,6 +59,7 @@ def test_inspection_is_bounded_read_only_and_rechecks_stability():
     result=lineage.inspect(query,'320193',text['accession_number'],'filing.htm',owner,lambda:None)
     assert result['candidate_only'] is True and len(queries)==6
     assert all(sql.startswith('SELECT ') and sql.endswith('LIMIT 2') for sql in queries)
+    assert all(sql.startswith('SELECT DISTINCT ') for sql in queries)
     payload_queries=[sql for sql in queries if '.sec_filing_text_v3 ' in sql]
     assert len(payload_queries)==2
     assert all(' PREWHERE ' in sql and ' FINAL ' not in sql for sql in payload_queries)

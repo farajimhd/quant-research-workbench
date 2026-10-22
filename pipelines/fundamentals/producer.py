@@ -10,6 +10,7 @@ import json
 import time
 from . import schema
 from .adapters import ADAPTERS, projection, recipe_hash
+from .eligibility import require_eligible
 from pipelines.certified_research.contracts import digest, literal, identifier
 
 
@@ -58,6 +59,7 @@ def plan(query, population, start, end, cohort_size=128, *, cache_dir=None, prog
     pop_hash = digest(population)
     batches=[]
     for family, entities in sorted(population.items()):
+        require_eligible(ADAPTERS[family].kind,entities)
         if not entities or len(entities)>100000 or any(not isinstance(x,str) or not x for x in entities):
             raise ValueError(f'{family}: nonempty reviewed entity IDs required')
         progress(family)
@@ -104,6 +106,7 @@ def _different(query, expected, actual):
 
 def publish(query, batch, database='arte', *, audit=False, progress=lambda stage:None):
     identifier(database)
+    require_eligible(ADAPTERS[batch.family].kind,batch.entities)
     recipe=recipe_hash(batch.family)
     prefix=f'{database}.reference_'
     entity_filter=(f'entity_kind={literal(ADAPTERS[batch.family].kind)} AND '

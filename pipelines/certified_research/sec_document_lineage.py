@@ -45,7 +45,7 @@ def bridge(text,document,archive):
 
 
 def inspect(query,cik,accession,document_name,claim,source_guard):
-    """At most two rows per source; no payload transfer, publication or repair."""
+    """At most two distinct versions per source; no publication or repair."""
     if (not isinstance(cik,str) or not re.fullmatch('0*[1-9][0-9]{0,9}',cik)
             or not isinstance(accession,str) or not re.fullmatch('[0-9]{10}-[0-9]{2}-[0-9]{6}',accession)
             or not isinstance(document_name,str) or not 1<=len(document_name)<=256):
@@ -56,11 +56,11 @@ def inspect(query,cik,accession,document_name,claim,source_guard):
     columns='document_id,accession_number,cik,sequence_number,document_name,document_type,source_archive_date,source_archive_member,source_archive_path,content_sha256,source_revision_kind,source_version_key,source_revision_rank,source_revision_at'
     def load():
         # Filter the exact document before reading large text payload columns.
-        # Do not add FINAL: multiple physical versions must remain visible to
-        # the ambiguity check below, rather than being silently reconciled.
-        text=query(f'SELECT {columns},lower(hex(SHA256(source_text))) actual_text_hash FROM q_live.sec_filing_text_v3 PREWHERE {where} LIMIT 2')
-        document=query(f'SELECT {columns} FROM q_live.sec_filing_document_v3 WHERE {where} LIMIT 2')
-        archive=query('SELECT accession_number,primary_cik,source_archive_date,source_archive_member,source_archive_path,'
+        # DISTINCT collapses identical ingestion copies only. Do not add FINAL:
+        # differing versions must remain visible to the ambiguity check below.
+        text=query(f'SELECT DISTINCT {columns},lower(hex(SHA256(source_text))) actual_text_hash FROM q_live.sec_filing_text_v3 PREWHERE {where} LIMIT 2')
+        document=query(f'SELECT DISTINCT {columns} FROM q_live.sec_filing_document_v3 WHERE {where} LIMIT 2')
+        archive=query('SELECT DISTINCT accession_number,primary_cik,source_archive_date,source_archive_member,source_archive_path,'
             'source_content_sha256,source_version_key,source_revision_rank,source_revision_at,source_revision_kind,pac_event_id '
             f'FROM q_live.sec_filing_archive_accession_v3 WHERE accession_number={literal(accession)} LIMIT 2')
         if any(len(rows)!=1 for rows in (text,document,archive)):

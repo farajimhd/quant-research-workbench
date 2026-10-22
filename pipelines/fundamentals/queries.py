@@ -1,6 +1,7 @@
 """Bounded as-of and change-history access; never fabricate public clocks."""
 from datetime import datetime
 from pipelines.certified_research.contracts import identifier, literal
+from .eligibility import require_eligible
 
 
 def _timestamp(value):
@@ -19,6 +20,7 @@ def observations_sql(database, entity_kind, entities, metrics, cutoff, *, clock=
     pipelines.certified_research.facts.lookup_sql and its existing receipt gates.
     """
     identifier(database)
+    require_eligible(entity_kind,entities)
     if not 1<=len(entities)<=256 or not 1<=len(metrics)<=256:
         raise ValueError('Bound entities and metrics to 256 each')
     if entity_kind not in ('security','issuer','issuer_cik','account_security') or clock not in ('recorded','public'):

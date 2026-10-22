@@ -207,7 +207,9 @@ instead of changing the method during optimization. Saved compact NPZ results
 are analysis caches, not streaming-resume checkpoints.
 
 The interactive chart keeps event/threshold controls and opacity history, with
-active-only or all-history views and optional waiting bands. Exact tables and
+active-only or all-history views and optional waiting bands. Role thresholds hide
+periods below their current score (active) or last intact score (broken). Waiting
+overlays are controlled separately by the checkbox. Exact tables and
 scores are retained. Long-view opacity uses a disclosed bounded display stride;
 at most 20 strongest qualifying active bands receive margin labels. Rendering
 limits do not change discovery or numerical results.
