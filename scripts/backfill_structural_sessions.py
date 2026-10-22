@@ -42,7 +42,7 @@ class StructuralClient(builder.Client):
             try:
                 return super().query(query, label=label, read=read)
             except (ConnectionError, TimeoutError, IncompleteRead, URLError) as error:
-                if (not read or not query.lstrip().upper().startswith('SELECT ')
+                if (not read or not query.lstrip(' \t\r\n(').upper().startswith('SELECT ')
                         or isinstance(error, HTTPError) or attempt == 2):
                     raise
                 # The parent cancels its owned query and discards the response.

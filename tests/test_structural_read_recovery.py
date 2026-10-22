@@ -22,9 +22,11 @@ def client(monkeypatch, outcomes):
     return obj, calls
 
 
-def test_source_read_retries_whole_buffer_and_counts_recovery(monkeypatch):
+@pytest.mark.parametrize('sql', ['SELECT source_hash FROM certificates',
+    '(SELECT 0 guard_tag) UNION ALL (SELECT 1 guard_tag)'])
+def test_source_read_retries_whole_buffer_and_counts_recovery(monkeypatch, sql):
     obj, calls = client(monkeypatch, [ConnectionResetError(), [{'certified': 1}]])
-    assert obj.query('SELECT source_hash FROM certificates') == [{'certified': 1}]
+    assert obj.query(sql) == [{'certified': 1}]
     assert len(calls) == 2
     assert obj.profile_totals['transport_retries']['count'] == 1
 
