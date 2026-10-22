@@ -34,6 +34,52 @@ from src.market_engine.historical_level_checkpoint import digest
 class StructuralClient(builder.Client):
     """Retry complete, buffered SELECTs only; writes retain fail-closed semantics."""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Normalized verification consumes each stream synchronously. Reuse the
+        # worker's socket instead of allocating six urllib sockets per day.
+        self.http.iter_json_each_row = self.iter_persistent_json
+
+    def iter_persistent_json(self, sql, *, query_id=None, query_params=None):
+        import re
+        import time
+        from research.mlops.clickhouse import ClickHouseHttpStatusError
+        if not sql.lstrip().upper().startswith('SELECT ') or not re.search(r'FORMAT\s+JSONEachRow\s*$', sql, re.I):
+            raise ValueError('Persistent structural streams require SELECT JSONEachRow')
+        http = self.http
+        params = dict(http.default_query_params)
+        params.update({k:str(v) for k,v in (query_params or {}).items()})
+        if query_id:params['query_id'] = query_id
+        headers = {'Content-Type':'text/plain; charset=utf-8'}
+        if http.user:headers['X-ClickHouse-User'] = http.user
+        if http.password:headers['X-ClickHouse-Key'] = http.password
+        # Never retry a partly consumed stream. The caller restarts its whole
+        # read-only verification on transport failure; no rows are published.
+        with http._connection_lock:
+            finished = False
+            try:
+                if (http._connection is not None and http._last_persistent_response_at is not None
+                        and http.max_persistent_idle_seconds is not None
+                        and time.monotonic()-http._last_persistent_response_at >= http.max_persistent_idle_seconds):
+                    http._close_connection_unlocked()
+                if http._connection is None:http._connection = http._new_connection()
+                http._connection.request('POST',http._request_path(params),body=sql.encode(),headers=headers)
+                response = http._connection.getresponse()
+                if response.status >= 400:
+                    raise ClickHouseHttpStatusError(response.status,response.reason,response.read().decode(errors='replace'))
+                for raw in response:
+                    if not raw.strip():continue
+                    if raw.strip()==b'__exception__':
+                        raise RuntimeError('ClickHouse structural stream failed: '+response.read().decode(errors='replace'))
+                    row=json.loads(raw)
+                    if not isinstance(row,dict):raise ValueError('Invalid normalized row envelope')
+                    yield row
+                finished=True
+                http._last_persistent_response_at=time.monotonic()
+                if response.will_close:http._close_connection_unlocked()
+            finally:
+                if not finished:http._close_connection_unlocked()
+
     def query(self, query, label='query', read=True):
         from http.client import IncompleteRead
         from urllib.error import URLError, HTTPError

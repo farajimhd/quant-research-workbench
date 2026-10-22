@@ -52,3 +52,27 @@ def test_never_retry_writes(monkeypatch, sql, read):
     with pytest.raises(ConnectionResetError):
         obj.query(sql, read=read)
     assert len(calls) == 1
+
+
+def test_stream_reuses_socket_and_closes_abandoned_response():
+    import io
+    from threading import Lock
+    opened=[]
+    class Response(io.BytesIO):
+        status=200
+        will_close=False
+    class Connection:
+        def request(self,*args,**kwargs):pass
+        def getresponse(self):return Response(b'{"n":1}\n{"n":2}\n')
+    http=SimpleNamespace(default_query_params={},user='',password='',_connection_lock=Lock(),
+        _connection=None,_last_persistent_response_at=None,max_persistent_idle_seconds=None,
+        _request_path=lambda p:'/',_new_connection=lambda:opened.append(1) or Connection())
+    http._close_connection_unlocked=lambda:setattr(http,'_connection',None)
+    obj=object.__new__(runner.StructuralClient);obj.http=http
+    for _ in range(20):
+        assert list(obj.iter_persistent_json('SELECT n FORMAT JSONEachRow'))==[{'n':1},{'n':2}]
+    assert len(opened)==1
+    partial=obj.iter_persistent_json('SELECT n FORMAT JSONEachRow')
+    assert next(partial)=={'n':1}
+    partial.close()
+    assert http._connection is None

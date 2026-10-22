@@ -131,15 +131,22 @@ def render(value,width=100,height=30,rate=None):
     if phase=='waiting_for_bars':
         lines.append('\nWaiting for certified bars and released bar ownership.')
     done=s.get('completed',0);reuse=s.get('reused',0);total=s.get('total')
+    admission=value.get('admission',{})
+    stored=admission.get('persisted_pair_hints')
+    if stored is not None and total is not None:
+        lines.append(f'\nStored output at resume: {stored:,} / {total:,} ticker-days '
+                     f'({100*stored/max(1,total):.1f}%)',style='green')
+        lines.append(f'\nMissing eligible output at resume: {admission.get("missing_pair_hints",0):,}; '
+                     'stored output is preserved.')
+        bars.append(ProgressBar(total=total,completed=stored))
     lines.append(f'\nTicker-days: {done:,} new  |  {reuse:,} reused  |  {s.get("failed",0):,} failed')
     if total is not None:
         lines.append(f'\nThis attempt verified: {done+reuse:,} / {total:,}  |  {max(0,total-done-reuse):,} remaining')
-        bars.append(ProgressBar(total=total,completed=done+reuse))
+        if stored is None:bars.append(ProgressBar(total=total,completed=done+reuse))
     elif evidence:lines.append('\nLevels total: pending certified full-scope plan; not started.')
-    admission=value.get('admission',{})
     if admission:
         lines.append(f'\nAt admission: {admission["persisted_pair_hints"]:,} stored pairs '
-                     '(audit pending); unfinished tickers first.')
+                     '(integrity audit pending; this is not rebuilding).')
     if rate is not None:lines.append(f'\nRecent verification: {rate:,.0f} ticker-days/hour (includes reuse)')
     blocked=s.get('blocked_units',controller.get('blocked_units',0))
     if blocked:
