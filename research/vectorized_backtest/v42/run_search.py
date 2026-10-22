@@ -138,8 +138,9 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
         session_workers=2,seed=182237,device='cuda',backend='compile',execution=Execution(fee_per_share=.005,minimum_order_fee=1),
         objective=Objective(),selection=Selection(global_fraction=1.,champion_partners=0),episode_capacity=65536,maximum_gate_gib=6.665611267089844,
         maximum_data_gib=4.,plan_limit=2,capture_gib=4.,initial_population=None,predecessor_job=None,predecessor_proof=None,
-        host_reserve_gib=128.,host_admission_gib=32.,replay_width_workers=None,host_prefetch=False,initialization_probe=None,shared_replay=False):
+        host_reserve_gib=128.,host_admission_gib=32.,replay_width_workers=None,host_prefetch=False,initialization_probe=None,shared_replay=False,distributed_job=None):
 
+    if distributed_job is not None and shared_replay:raise ValueError('Choose distributed or shared replay')
     if not 10<=population_size<=65536 or not 1<=batch_size<=1024 or not 1<=session_workers<=8 or generations<1:
         raise ValueError('Explicit bounded campaign required')
     replay_width_workers=session_workers if replay_width_workers is None else replay_width_workers
@@ -162,7 +163,7 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
         raise ValueError('Chronologically disjoint validation required')
     output=require_runtime(Path(output));version_hash=source_hash()
     from .composition import settings
-    contract=dict(maximum_rule_nodes=MAX_NODES,feature_semantics="v42-canonical-stable-magnitude-ratio-v1",version=VERSION,source_sha256=version_hash,training=train,validation=valid,
+    contract=dict(distributed_job_sha256=file_hash(distributed_job) if distributed_job else None,maximum_rule_nodes=MAX_NODES,feature_semantics="v42-canonical-stable-magnitude-ratio-v1",version=VERSION,source_sha256=version_hash,training=train,validation=valid,
         population=population_size,generations=generations,batch_size=batch_size,session_workers=session_workers,replay_width_workers=replay_width_workers,neural_cuda_block=int(os.environ.get("V42_NEURAL_BLOCK","128")),
         seed=seed,device=device,backend=backend,execution=asdict(execution),objective=asdict(objective),selection=asdict(selection),recombination=settings(selection),
         episode_capacity=episode_capacity,maximum_gate_gib=maximum_gate_gib,maximum_data_gib=maximum_data_gib,
@@ -173,7 +174,7 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
         host_reserve_gib=host_reserve_gib,host_admission_gib=host_admission_gib,host_prefetch=host_prefetch,candidate_tail_padding=False,shared_replay=shared_replay)
     def lane_config(data,role):
         return dict(inputs=data['inputs'],history=data['history'],feature_cache=data.get('feature_cache'),indicator_root=data['indicator_root'],enriched_root=data['enriched_root'],
-            output=str(output/role),boundary_stop=str(output),device=device,backend=backend,batch_size=batch_size,replay_width_workers=replay_width_workers,
+            output=str(output/role),distributed_job=str(distributed_job) if distributed_job else None,boundary_stop=str(output),device=device,backend=backend,batch_size=batch_size,replay_width_workers=replay_width_workers,
             maximum_data_gib=maximum_data_gib,maximum_gate_gib=maximum_gate_gib,maximum_host_sessions=2,execution=asdict(execution),
             source_sha256=version_hash,split=role,episode_capacity=episode_capacity,plan_limit=plan_limit,capture_gib=capture_gib,
             host_reserve_gib=host_reserve_gib,host_admission_gib=host_admission_gib,host_prefetch=host_prefetch,shared_replay=shared_replay)
@@ -220,7 +221,11 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
                 pedigree=pedigree.records,rng=rng.bit_generator.state,leaders=leaders or [],validation_ranking=validation_rows or [],species=species.state)
             write_checkpoint(checkpoint,contract,state)
         if not checkpoint.exists():save(0)
-        with SessionLanes(lane_config(train,'training'),session_workers,panel) as trainers,SessionLanes(lane_config(valid,'validation'),session_workers,panel) as observers:
+        lane_type=SessionLanes
+        if distributed_job is not None:
+            from .distributed_lanes import DistributedLanes
+            lane_type=DistributedLanes
+        with lane_type(lane_config(train,'training'),session_workers,panel) as trainers,lane_type(lane_config(valid,'validation'),session_workers,panel) as observers:
             for generation in range(completed+1,generations+1):
                 started=perf_counter();panel.begin_generation(generation)
                 pipeline={};stage_started=perf_counter()
@@ -268,7 +273,7 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
                 reproduction_started=perf_counter()
                 reproduction_future=None
                 from .validation_cache import validation_scope
-                if shared_replay and generation<generations:
+                if (shared_replay or distributed_job is not None) and generation<generations:
                     from .evolution_work import submit_population,commit_population
                     from .preparation import submit_when_ready
                     from functools import partial

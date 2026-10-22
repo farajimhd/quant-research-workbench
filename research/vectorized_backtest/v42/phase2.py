@@ -97,7 +97,7 @@ def verify_pool(pool,days,dataset=None):
     if experts!=pool['expert_count'] or len(seen)-experts!=pool['fresh_count']:raise ValueError('Seed expert/fresh counts changed')
 
 
-def run_global(training,validation,phase1,output,population_size=1024,generations=50,seed=2020,predecessor_job=None,predecessor_proof=None,batch_size=512,session_workers=1,capture_gib=1.,selection=None,host_reserve_gib=128.,host_admission_gib=32.,*,initialization_probe=None,host_prefetch=False,shared_replay=False):
+def run_global(training,validation,phase1,output,population_size=1024,generations=50,seed=2020,predecessor_job=None,predecessor_proof=None,batch_size=512,session_workers=1,capture_gib=1.,selection=None,host_reserve_gib=128.,host_admission_gib=32.,*,initialization_probe=None,host_prefetch=False,shared_replay=False,distributed_job=None):
 
     from .run_search import bind_dataset
     from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime
@@ -113,4 +113,4 @@ def run_global(training,validation,phase1,output,population_size=1024,generation
     return run(training,validation,output,population_size=population_size,generations=generations,batch_size=batch_size,session_workers=session_workers,seed=seed,
                selection=Selection() if selection is None else selection,initial_population=pool,maximum_gate_gib=8.,capture_gib=capture_gib,
                predecessor_job=predecessor_job,predecessor_proof=predecessor_proof,host_reserve_gib=host_reserve_gib,host_admission_gib=host_admission_gib,host_prefetch=host_prefetch,
-               shared_replay=shared_replay,replay_width_workers=1 if shared_replay else None)
+               shared_replay=shared_replay,distributed_job=distributed_job,replay_width_workers=1 if shared_replay or distributed_job else None)

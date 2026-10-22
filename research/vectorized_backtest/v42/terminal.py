@@ -25,6 +25,9 @@ def render(status,**kwargs):
     nodes=e.get('neurons',{});depth=e.get('depth',{});rec=e.get('recurrent_edges',{})
     compact=kwargs.get('width',110)<110
     detail=(f"Species {e.get('species_count','—')} stale {e.get('stagnant_species','—')} | neurons {nodes.get('median','—')}/{nodes.get('max','—')} | depth {depth.get('max','—')} | rec {rec.get('max','—')}" if compact else f"Species {e.get('species_count','—')} | stagnant {e.get('stagnant_species','—')} | neurons median/max {nodes.get('median','—')}/{nodes.get('max','—')} | depth max {depth.get('max','—')} | recurrence max {rec.get('max','—')} | CPU species {e.get('species_seconds',0):.3f}s")
+    nodes_status=status.get('distributed_workers',{})
+    if nodes_status:
+        detail+=' | '+ ' / '.join(f"{name}: {'busy' if info.get('current') else 'idle'}" for name,info in nodes_status.items())
     layout['header'].size=3
     layout['header'].update(Text(f"V42 {status.get('status','starting').upper()} | V21 OBJECTIVE | PHASE 2 GLOBAL\nValidation: display only; no selection feedback\n{detail}"))
     return layout

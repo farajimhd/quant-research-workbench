@@ -42,7 +42,7 @@ def initialize(rng,size,*,probe=None):
         return members,dict(saved['report'],prepared_initialization_reused=True)
     from time import perf_counter
     from .templates import sample_templates
-    if size!=6144:raise ValueError('V42 experiment requires population 1024 and 6x initialization')
+    if size!=6144:return initialize_random(rng,size,probe=probe)
     started=perf_counter()
     randoms,report=initialize_random(rng,3072,probe=probe)
     random_seconds=perf_counter()-started;started=perf_counter()

@@ -39,7 +39,7 @@ def replay_widths(days,widths,group_size):
 
 
 class Worker:
-    def __init__(self,config,events,lane):
+    def __init__(self,config,events,lane,*,preparation=None):
         self.config=config;self.events=events;self.lane=lane
         from collections import OrderedDict
         self.host=OrderedDict();self.maximum_host_sessions=config.get('maximum_host_sessions',2)
@@ -52,6 +52,9 @@ class Worker:
             admission_gib=config.get('host_admission_gib',32.),report=self.prefetch_report)
         self.loads=0;self.uploads=0
         self.resident_results=None
+        from .distributed_preparation import PopulationPreparation
+        self.owns_population_preparer=preparation is None
+        self.population_preparer=preparation or (PopulationPreparation() if config.get('immutable_population_cache') else None)
         self.batch_progress={}
         torch.set_num_threads(1)
         if config['backend']=='compile':
@@ -109,17 +112,20 @@ class Worker:
         from hashlib import sha256
         self.batch_progress={}
         c=self.config;started=perf_counter();self.emit(day,stage='Load session',candidate_offset=0)
+        prepared=self.population_preparer.submit(payload,token) if self.population_preparer else None
         self.prefetch.release_under_pressure()
         item=self.prefetch.take(day)
         prefetched=item is not None
         if prefetched:self.host[day]=item;self.host.move_to_end(day)
         else:item=self.loader.submit(self.load,day).result()
-        device=torch.device(c['device']);population=[Individual.restore(v) for v in payload]
+        device=torch.device(c['device'])
+        if prepared is None:population=[Individual.restore(v) for v in payload];packed_population=None;prepared_keys=None
+        else:population,prepared_keys,packed_population,_=prepared.result()
         root=require_runtime(Path(c['output'])/f'generation-{generation:04d}'/day)
         cache_path=require_runtime(Path(c['output'])/'result-cache')/(day+'.json')
         identity=dict(source=c['source_sha256'],data=item.identity,execution=c['execution'],
                       split=c.get('split','training'),episode_capacity=c.get('episode_capacity',65536))
-        keys=[v.get('canonical_sha256') or program_key(m) for v,m in zip(payload,population)];cached={}
+        keys=prepared_keys if prepared_keys is not None else [v.get('canonical_sha256') or program_key(m) for v,m in zip(payload,population)];cached={}
         resident=c.get('retain_session_residency',False) and c.get('reuse_results',True)
         if resident and self.resident_results is not None:
             prior_identity,cached=self.resident_results
@@ -168,7 +174,10 @@ class Worker:
                     if batch_key not in self.plans:
                         if len(self.plans)>=self.plan_limit:
                             _,old=self.plans.popitem(last=False);old.close()
-                        plan=PopulationPrograms(members,device)
+                        if packed_population is None:plan=PopulationPrograms(members,device)
+                        else:
+                            from .network_pack import select_packed
+                            plan=PopulationPrograms(members,device,packed=select_packed(packed_population,selection))
                         self.plans[batch_key]=plan
                     plan=self.plans[batch_key];self.plans.move_to_end(batch_key)
                     prior={k:getattr(plan.plan,k,0) for k in ('builds','hits','evictions','capture_seconds')}
@@ -243,6 +252,7 @@ class Worker:
         return replay_cohort(*args,**kwargs)
 
     def close(self):
+        if self.population_preparer and self.owns_population_preparer:self.population_preparer.close()
         self.resident_results=None
         try:self.prefetch.close()
         finally:

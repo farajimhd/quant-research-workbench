@@ -57,6 +57,12 @@ class Network:
 
     size_bias:float=0.
 
+    def __post_init__(self):
+        # Fresh scaffolds align by original node order. Growth inside an existing
+        # scaffold gets a distinct persistent slot, unaffected by array shifts.
+        if self.nodes and any(n.slot==0 for n in self.nodes):
+            fresh=all(n.slot==0 for n in self.nodes)
+            object.__setattr__(self,'nodes',tuple(replace(n,slot=(i+1 if fresh else 2**64+n.uid)) if n.slot==0 else n for i,n in enumerate(self.nodes)))
     def validate(self):
 
         from .validation_cache import validate

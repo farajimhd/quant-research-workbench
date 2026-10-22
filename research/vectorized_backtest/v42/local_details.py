@@ -99,7 +99,7 @@ def render(data,width,height,mode,selection,view,stage,page):
             values=[row['family'],fmt(row['candidate_equivalents']),fmt(row['total_profit']),fmt(row['mean_profit']),fmt(row['profitable_percent']),fmt(row['active_percent']),fmt(row['best_profit'])]
             table.add_row(*values[:len(columns)])
         title='INITIAL 6,144 REPLAY' if initial else f"CURRENT GENERATION {data.get('generation',0)} | ancestry-share attribution"
-        return Group(Panel(f"V42 PHASE 1 | {data.get('day')} | completed {data.get('generation',0)}/50"),Panel(table,title=title),
+        return Group(Panel(f"V42 PHASE 1 | {data.get('day')} | completed {data.get('generation',0)}/{data.get('target',100)}"),Panel(table,title=title),
             f"Total P&L: ${report.get('total_profit',0):,.2f} | Aggregation: {report.get('aggregation_seconds',0)*1000:.2f} ms",
             'h: initial families / current families / candidate rankings | q: close observer')
     layout=canvas.render(data,width,height,mode,selection,view,stage,page)
@@ -110,7 +110,9 @@ def render(data,width,height,mode,selection,view,stage,page):
         label=candidate_label(row)
         m=row['metrics'];table.add_row(str(row['rank']),label,f"{m['net_pnl']:,.2f}",'-' if m['win_rate'] is None else f"{100*m['win_rate']:.1f}",str(int(m['closed_positions'])),style='bold cyan' if i==selection else None)
     layout['leaders'].update(Panel(table,title=f"Sealed generation {data.get('generation',0)} | {len(rows)} candidates | {mode}"))
-    layout['keys'].update('h: initial/current family tables | 1-4: rank | j/k: select | f/o/p: details | e/x/a/d/t: networks | q: close')
+    machines=data.get('workers',{})
+    machine_text=' | '.join(f"{day}: {state.get('machine','local')}" for day,state in machines.items())
+    layout['keys'].update(machine_text+' | h: initial/current family tables | 1-4: rank | j/k: select | f/o/p: details | e/x/a/d/t: networks | q: close')
     return layout
 def session_layout(data,width,height):
     layout=_session_layout(data,width,height)
