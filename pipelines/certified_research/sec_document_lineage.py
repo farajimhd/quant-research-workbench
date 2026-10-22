@@ -55,7 +55,10 @@ def inspect(query,cik,accession,document_name,claim,source_guard):
     where=f'accession_number={literal(accession)} AND document_name={literal(document_name)} AND cik IN ({ciks})'
     columns='document_id,accession_number,cik,sequence_number,document_name,document_type,source_archive_date,source_archive_member,source_archive_path,content_sha256,source_revision_kind,source_version_key,source_revision_rank,source_revision_at'
     def load():
-        text=query(f'SELECT {columns},lower(hex(SHA256(source_text))) actual_text_hash FROM q_live.sec_filing_text_v3 WHERE {where} LIMIT 2')
+        # Filter the exact document before reading large text payload columns.
+        # Do not add FINAL: multiple physical versions must remain visible to
+        # the ambiguity check below, rather than being silently reconciled.
+        text=query(f'SELECT {columns},lower(hex(SHA256(source_text))) actual_text_hash FROM q_live.sec_filing_text_v3 PREWHERE {where} LIMIT 2')
         document=query(f'SELECT {columns} FROM q_live.sec_filing_document_v3 WHERE {where} LIMIT 2')
         archive=query('SELECT accession_number,primary_cik,source_archive_date,source_archive_member,source_archive_path,'
             'source_content_sha256,source_version_key,source_revision_rank,source_revision_at,source_revision_kind,pac_event_id '
