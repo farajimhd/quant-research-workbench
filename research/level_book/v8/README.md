@@ -141,3 +141,31 @@ membership, evidence conservation and score bounds are checked. Runtime tables,
 chart and provenance are saved under
 `D:/TradingML/runtimes/level-book-v8/score-valley-bands/<UTC-run>/`.
 As with notebook 04, overlays use final-prefix evidence and are retrospective.
+
+## 06 — Unbroken-age strength replay
+
+`06_unbroken_age_strength.ipynb` discovers bands from the first 200 saved events,
+freezes their boundaries and base scores, and replays events 200–2,000 causally.
+This isolates time scoring on one cohort; it does not continuously discover or
+revive bands. Bands already beyond their break boundary at discovery remain
+explicitly ineligible. Strict later boundary crossings break eligible bands.
+
+Step one adds vectorized session elapsed time and cumulative price extremes
+since discovery. Binary searches on those monotone extremes locate first
+breaks in O(N + B log N), avoiding an event-by-band comparison matrix.
+Active strength is `B + (1-B) * intact_age / session_elapsed`; broken strength
+is zero. The session origin is explicitly 09:30 America/New_York. The heuristic
+favors early bands and rewards untested survival; it is not calibrated.
+
+Intermediate tables show the hand calculation, eligibility, elapsed time,
+intact age, time fraction, bonus, first break and final strength. One combined
+support/resistance chart has independent threshold sliders and an event slider.
+The initial view is event 210; all 17 eligible bands in this cohort break by
+event 343, so later views correctly have no active overlay. Broken and ineligible
+rows remain in the audit table. Previous notebooks are unchanged.
+
+Run with `ml4t` and an active widget kernel. Runtime tables, chart, provenance,
+and executed copies belong under
+`D:/TradingML/runtimes/level-book-v8/unbroken-age-bands/<UTC-run>/`.
+Checks cover independent break scans, strict equality, timestamp ties,
+prefix isolation, bounded strength, and time growth before a break.
