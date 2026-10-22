@@ -1,0 +1,1 @@
+V40 retains V34 risk limits ($300 planned position risk and 20% maximum stop distance). Earlier risk-ablation requests were tested in separate versions and are not part of this reproduction experiment.
