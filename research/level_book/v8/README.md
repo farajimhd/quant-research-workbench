@@ -142,34 +142,31 @@ chart and provenance are saved under
 `D:/TradingML/runtimes/level-book-v8/score-valley-bands/<UTC-run>/`.
 As with notebook 04, overlays use final-prefix evidence and are retrospective.
 
-## 06 — Unbroken-age strength replay
+## 06 — Evolving bands, retests and time strength
 
-`06_unbroken_age_strength.ipynb` discovers bands from the first 200 saved events,
-freezes their boundaries and base scores, and replays events 200–2,000 causally.
-This isolates time scoring on one cohort; it does not continuously discover or
-revive bands. Bands already beyond their break boundary at discovery remain
-explicitly ineligible. Strict later boundary crossings break eligible bands.
+`06_unbroken_age_strength.ipynb` now updates discovery after every event from
+200 onward. Earlier sections retain the original 200-event partition as an
+explained comparison. The replay trims each peak to its connected score region
+above the higher neighboring valley; valleys are left outside bands. No gap or
+smoothing parameter is added. One region has one active/pending lifecycle;
+overlapping new candidates are deferred and counted.
 
-Step one adds vectorized session elapsed time and cumulative price extremes
-since discovery. Binary searches on those monotone extremes locate first
-breaks in O(N + B log N), avoiding an event-by-band comparison matrix.
-Active strength is `B + (1-B) * intact_age / session_elapsed`; broken strength
-is zero. The session origin is explicitly 09:30 America/New_York. The heuristic
-favors early bands and rewards untested survival; it is not calibrated.
+Strict boundary crossings end a role period and leave an opposite-role candidate
+pending. Entry into the band from the opposite side confirms a retest, activates
+the new role, recomputes its base score from that role's completed evidence and
+resets age. A gap across the whole band does not confirm a retest. Historical
+bounds and scores are frozen within each role period.
 
-Intermediate tables show the hand calculation, eligibility, elapsed time,
-intact age, time fraction, bonus, first break and final strength. One combined
-support/resistance chart has independent threshold sliders and an event slider.
-The initial view is event 210; all 17 eligible bands in this cohort break by
-event 343. The chart retains historical bands from first member-price occurrence
-to their break (X), or to the selected as-of event while active. Dotted segments
-before discovery are retrospective. Ineligible candidates end at discovery.
-Thresholds use current strength for active bands, last intact strength for broken
-bands and base score for ineligible candidates; actual broken strength stays zero
-in the audit table. Previous notebooks are unchanged.
+The combined chart has no legend. Its event slider shows new discoveries,
+breaks and retests known by that cutoff. Broken segments remain visible; only
+active bands receive margin labels. Dotted pre-discovery origins are retrospective.
+Thresholds use current or last intact scores. Intermediate tables show discovery
+cores, transitions, age and score contributions. An as-of view never shows future
+prices or levels. The session-normalized age bonus remains an uncalibrated heuristic.
 
-Run with `ml4t` and an active widget kernel. Runtime tables, chart, provenance,
-and executed copies belong under
+Run with `ml4t`. Output belongs under
 `D:/TradingML/runtimes/level-book-v8/unbroken-age-bands/<UTC-run>/`.
-Checks cover independent break scans, strict equality, timestamp ties,
-prefix isolation, bounded strength, and time growth before a break.
+Evidence aggregation is incremental; candidate profiles are scanned each event
+for this bounded research sample. This is not a production checkpoint engine.
+Checks cover prefix invariance, new discoveries, retest direction, frozen bounds,
+zero age on role change, strict breaks and score bounds.
