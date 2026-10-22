@@ -42,3 +42,14 @@ using the source-bound runtime job. The launcher verifies initial identities,
 qualification and no live optimizer, preserves a unique campaign, and opens the
 existing detailed panel without taking focus. Diagnostics and outputs stay under
 `D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v42`.
+
+V41 management update: 1/2/3 sibling requests use 75/20/5% pair-group quotas,
+clipped only at the existing species/population allocation boundary. Siblings
+share a parent pair, alternate primary orientation, and have independent addressed
+proposal streams. Existing ancestry constraints, species budgets, fresh/elite
+budgets, and mask operators remain. Operator/mutation outcome tables, best-parent
+comparisons, sibling survival and behavioral distance are derived from already
+computed training results; they never influence reproduction or consume RNG.
+Tags can overlap and are observational, not causal operator-effect estimates.
+The original completed V42 run and its Aug5 replay remain on their immutable
+pre-update source. This source update does not restart or extend that campaign.

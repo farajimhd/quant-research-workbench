@@ -171,29 +171,47 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
     count=len(records);quota=np.ones(count,dtype=int);weights=np.arange(count,0,-1,dtype=float)
     extra=(cross_budget-count)*weights/weights.sum();quota+=np.floor(extra).astype(int)
     for k in np.argsort(-(extra-np.floor(extra)),kind='stable')[:cross_budget-int(quota.sum())]:quota[k]+=1
+    from .config import CROSSOVER
     requests={'within':0,'between':0};realized={'within':0,'between':0}
     route_plan=balanced(cross_budget,SETTINGS['mating_weights'],generation)
+    sibling_plan=1+balanced(cross_budget,list(CROSSOVER['children_per_pair'].values()),generation)
     action_counts=1+balanced(cross_budget,SETTINGS['action_weights'],generation)
     starts=np.cumsum(action_counts)-action_counts
     modes=balanced(int(action_counts.sum()),SETTINGS['action_mode_weights'],generation)
-    cross_slot=0
+    sibling_requests={1:0,2:0,3:0};sibling_realized={1:0,2:0,3:0};pairs=set();group=0;cross_slot=0
     for rec,slots in zip(records,quota):
         pool=np.asarray([i for i in species.groups[rec['id']] if valid[i]],dtype=int);pool=pool[np.lexsort((ids[pool],-values[pool]))]
-        for _ in range(int(slots)):
-            slot=cross_slot;cross_slot+=1
-            route='within' if route_plan[slot]==0 else 'between';requests[route]+=1;accepted=False
+        left=int(slots)
+        while left:
+            first_slot=cross_slot;route='within' if route_plan[first_slot]==0 else 'between'
+            wanted=int(sibling_plan[group]);count=min(wanted,left);left-=count;group+=1;sibling_requests[wanted]+=1;requests[route]+=count
+            pair=None
             for attempt in range(config.mate_attempts):
-                a=int(pool[(rank_index(len(pool),slot,generation)+attempt)%len(pool)]);options=order[mates.unrelated(a)[order]]
+                a=int(pool[(rank_index(len(pool),first_slot,generation)+attempt)%len(pool)]);options=order[mates.unrelated(a)[order]]
                 options=options[np.asarray([species.labels[int(i)]==rec['id'] for i in options])==(route=='within')]
                 if not len(options):no_mates+=1;continue
-                b=int(options[(rank_index(len(options),slot,generation,base=3)+attempt)%len(options)]);attempts+=1
-                plan=dict(orientation=(slot+generation)%2,count=int(action_counts[slot]),action_start=int(starts[slot]),modes=[SETTINGS['action_modes'][int(i)] for i in modes[starts[slot]:starts[slot]+action_counts[slot]]])
-                try:child,operator=cross(Proposal(root_key,(generation,len(children),'cross',attempt),plan),population[a],population[b])
-                except (ValueError,RuntimeError):invalid_crossovers+=1;continue
-                key=program_key(child)
-                if key in keys:duplicates+=1;continue
-                keys.add(key);children.append(child);parents.append((int(ids[a]),int(ids[b])));ops.append('crossover');metadata.append(dict(route=route,species=rec['id'],crossover=operator,stream_slot=len(children)-1,structural_delta=sum(len(v.nodes) for v in child.networks.values())-sum(len(v.nodes) for v in population[a].networks.values())));realized[route]+=1;accepted=True;break
-            if not accepted:fallbacks+=1;fresh(route+'-unrelated-fresh-fallback')
+                b=int(options[(rank_index(len(options),first_slot,generation,base=3)+attempt)%len(options)]);pair=(a,b);break
+            accepted_group=[]
+            if pair is not None:pairs.add(tuple(sorted((int(ids[a]),int(ids[b])))))
+            for sibling in range(count):
+                slot=cross_slot;cross_slot+=1
+                if pair is None:fallbacks+=1;fresh(route+'-unrelated-fresh-fallback');continue
+                first,second=(a,b) if (sibling+first_slot+generation)%2==0 else (b,a);accepted=False
+                offset=int(starts[slot]);width=int(action_counts[slot]);selection=slice(offset,offset+width)
+                plan=dict(orientation=0,count=width,action_start=offset,modes=[SETTINGS['action_modes'][int(i)] for i in modes[selection]])
+                for attempt in range(config.mate_attempts):
+                    attempts+=1
+                    try:child,operator=cross(Proposal(root_key,(generation,len(children),'cross',attempt),plan),population[first],population[second])
+                    except (ValueError,RuntimeError):invalid_crossovers+=1;continue
+                    key=program_key(child)
+                    if key in keys:duplicates+=1;continue
+                    keys.add(key);children.append(child);parents.append((int(ids[first]),int(ids[second])));ops.append('crossover')
+                    metadata.append(dict(route=route,species=rec['id'],crossover=operator,stream_slot=len(children)-1,pair_group=group,sibling_index=sibling,parent_objectives=[float(values[first]),float(values[second])],structural_delta=sum(len(v.nodes) for v in child.networks.values())-sum(len(v.nodes) for v in population[first].networks.values())))
+                    accepted_group.append(len(metadata)-1);realized[route]+=1;accepted=True;break
+                if not accepted:fallbacks+=1;fresh(route+'-unrelated-fresh-fallback')
+            if accepted_group:
+                sibling_realized[len(accepted_group)]+=1
+                for index in accepted_group:metadata[index]['sibling_count']=len(accepted_group)
     rate=SETTINGS['mutation_fraction']
     if not config.mutation_min<=rate<=config.mutation_max:raise ValueError('Mutation schedule outside approved envelope')
     chosen=np.flatnonzero(balanced(len(children),[rate,1-rate],generation)==0)
@@ -228,5 +246,32 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
     evaluated=[pedigree.records[int(i)] for i in ids];structural_births=[r for r in evaluated if r.get('structural_mutation',False) or r.get('structural_delta',0)]
     elite_ids=set(int(ids[i]) for i in selected)
     telemetry['structural_survival']=dict(evaluated=len(structural_births),elite_survivors=sum(r['serial'] in elite_ids for r in structural_births))
+    telemetry.update(sibling_requests=sibling_requests,sibling_realized=sibling_realized,distinct_parent_pairs=len(pairs))
+    accepted=[m['crossover'] for m in metadata if 'crossover' in m]
+    telemetry['accepted_mask_modes']={mode:sum(a.get('mode')=='mask:'+mode for m in accepted for a in m['actions']) for mode in SETTINGS['action_modes']}
+    telemetry.update(outcome_telemetry(evaluated,values,ordered,elite_ids,species.descriptors,generation))
     species.telemetry=telemetry
     return [population[i] for i in selected]+children,np.concatenate((ids[selected],born)),telemetry
+
+
+def outcome_telemetry(evaluated,values,ordered,elite_ids,descriptors,generation):
+    """Pure observer: existing training metrics only; no RNG or selection writes."""
+    telemetry={}
+    outcomes={};sibling_groups={};total_profits=np.asarray([m['net_pnl'] for m in ordered],dtype=float).sum(axis=0)
+    for i,r in enumerate(evaluated):
+        if r.get('generation')!=generation-1:continue
+        tags=set(a.get('join',a['mode']) for a in r.get('crossover',{}).get('actions',[]))
+        tags.update(e['field'] for e in r.get('mutation_fields',[]))
+        for tag in tags:
+            stat=outcomes.setdefault(tag,dict(evaluated=0,profitable=0,elite_survivors=0,beat_best_parent=0,parent_comparisons=0))
+            stat['evaluated']+=1;stat['profitable']+=int(total_profits[i]>0);stat['elite_survivors']+=int(r['serial'] in elite_ids)
+            if r.get('parent_objectives'):stat['parent_comparisons']+=1;stat['beat_best_parent']+=int(values[i]>max(r['parent_objectives']))
+        if r.get('sibling_count',0)>1:sibling_groups.setdefault(r['pair_group'],[]).append(i)
+    telemetry['operator_outcomes']=outcomes
+    differences=[]
+    for indexes in sibling_groups.values():
+        first=np.asarray(descriptors[indexes[0]]['behavior'])
+        for i in indexes[1:]:
+            other=np.asarray(descriptors[i]['behavior']);differences.append(float(np.mean(abs(other-first)/np.maximum(1,np.maximum(abs(other),abs(first))))))
+    telemetry['sibling_survival']=dict(evaluated=sum(map(len,sibling_groups.values())),elite_survivors=sum(evaluated[i]['serial'] in elite_ids for indexes in sibling_groups.values() for i in indexes),behavior_comparisons=len(differences),mean_behavior_distance=float(np.mean(differences)) if differences else None)
+    return telemetry

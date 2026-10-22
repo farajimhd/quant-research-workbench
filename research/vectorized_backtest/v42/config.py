@@ -30,7 +30,7 @@ PARAMETER_RATE=.7
 
 def contract():
 
-    return dict(mask_crossover=dict(modes=ACTION_RATES,numerical_inherit=.5,numerical_blend=.5,alignment='persistent action-local node slots; input identity',replay='unchanged sparse engine'),version=VERSION,max_nodes_per_action=MAX_NODES,max_depth=MAX_DEPTH,fan_in=FAN_IN,
+    return dict(mask_crossover=dict(modes=ACTION_RATES,numerical_inherit=.5,numerical_blend=.5,alignment='persistent action-local node slots; input identity',replay='unchanged sparse engine'),crossover_management=CROSSOVER,version=VERSION,max_nodes_per_action=MAX_NODES,max_depth=MAX_DEPTH,fan_in=FAN_IN,
 
                 max_strategy_connections=MAX_STRATEGY_NODES*FAN_IN,weight_bound=WEIGHT_BOUND,
 
@@ -74,3 +74,7 @@ INITIALIZATION=dict(calibrated_fraction=.8,activation_routes=[.30,.30,.20,.20],
 
     search_bounds_unchanged=True)
 
+
+CROSSOVER=dict(children_per_pair={'1':.75,'2':.20,'3':.05},reciprocal_siblings=True,
+    fixed_population_and_species_budgets=True,validation_feedback=False,
+    telemetry='training-only parent objective comparisons, mask/mutation outcomes and sibling survival; observational multi-tag')
