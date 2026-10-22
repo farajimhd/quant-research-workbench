@@ -161,8 +161,12 @@ Intermediate tables show the hand calculation, eligibility, elapsed time,
 intact age, time fraction, bonus, first break and final strength. One combined
 support/resistance chart has independent threshold sliders and an event slider.
 The initial view is event 210; all 17 eligible bands in this cohort break by
-event 343, so later views correctly have no active overlay. Broken and ineligible
-rows remain in the audit table. Previous notebooks are unchanged.
+event 343. The chart retains historical bands from first member-price occurrence
+to their break (X), or to the selected as-of event while active. Dotted segments
+before discovery are retrospective. Ineligible candidates end at discovery.
+Thresholds use current strength for active bands, last intact strength for broken
+bands and base score for ineligible candidates; actual broken strength stays zero
+in the audit table. Previous notebooks are unchanged.
 
 Run with `ml4t` and an active widget kernel. Runtime tables, chart, provenance,
 and executed copies belong under
