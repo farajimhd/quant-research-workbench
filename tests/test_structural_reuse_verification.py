@@ -107,7 +107,7 @@ def test_reuse_progress_is_saved_only_after_both_boundaries_verify(tmp_path,monk
         reporting=reporting,rules=[],by_ticker=by_ticker,plan_hash='plan',producer_hash='producer',
         history_start='2025-01-01',end=days[-1],closes={d:d+'T21:00:00+00:00' for d in days},
         build_id='build',owner=dict(token='test-owner'))
-    monkeypatch.setattr(runner.builder,'Client',Client)
+    monkeypatch.setattr(runner,'StructuralClient',Client)
     monkeypatch.setattr(runner,'require_parent',lambda owner:None)
     monkeypatch.setattr(runner,'load_seed',lambda *args,**kwargs:dict(checkpoint_hash='prior',session='2025-12-31'))
     split_checks=[]

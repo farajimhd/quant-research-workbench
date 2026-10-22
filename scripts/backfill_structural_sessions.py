@@ -31,6 +31,31 @@ from src.backend.structural_v7_seed import load_seed, split_evidence, COVERAGE_H
 from src.market_engine.historical_level_checkpoint import digest
 
 
+class StructuralClient(builder.Client):
+    """Retry complete, buffered SELECTs only; writes retain fail-closed semantics."""
+
+    def query(self, query, label='query', read=True):
+        from http.client import IncompleteRead
+        from urllib.error import URLError, HTTPError
+        import time
+        for attempt in range(3):
+            try:
+                return super().query(query, label=label, read=read)
+            except (ConnectionError, TimeoutError, IncompleteRead, URLError) as error:
+                if (not read or not query.lstrip().upper().startswith('SELECT ')
+                        or isinstance(error, HTTPError) or attempt == 2):
+                    raise
+                # The parent cancels its owned query and discards the response.
+                # Do not reuse a possibly broken keep-alive connection.
+                self.http.close()
+                retries = self.profile_totals.setdefault('transport_retries',
+                    dict(count=0, seconds=0., max_seconds=0.))
+                retries['count'] += 1
+                print(f'Retrying structural metadata read {attempt + 1}/2 '
+                      f'after {type(error).__name__}', flush=True)
+                time.sleep(.25 * 2 ** attempt)
+
+
 def arguments(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--bars-run-dir', type=Path, required=True)
@@ -250,7 +275,7 @@ def _process_ticker(spec,a,ticker):
     done=reused=0;started=perf_counter()
     options=builder.parse_args(['--date',str(a.start_date),'--env-file',str(a.env_file),
                                '--max-threads','1','--max-memory-gb','2'])
-    with closing(builder.Client(options)) as client, closing(sqlite3.connect(
+    with closing(StructuralClient(options)) as client, closing(sqlite3.connect(
             (a.bars_run_dir/'build-ledger-v2.sqlite3').as_uri()+'?mode=ro',uri=True)) as db:
         db.row_factory=sqlite3.Row
         client.http.structural_stream_reads = True
@@ -598,7 +623,7 @@ def run(a):
         raise ValueError('Execute structural writers on DESKTOP-SAAI85T')
     options = builder.parse_args(['--date', str(a.start_date), '--env-file', str(a.env_file),
                                   '--max-threads', '1', '--max-memory-gb', '2'])
-    with closing(builder.Client(options, readonly=a.plan_only or a.profile_only)) as client:
+    with closing(StructuralClient(options, readonly=a.plan_only or a.profile_only)) as client:
         latest = client.query('SELECT max(source_date) day FROM market_sip_compact.events_source_day_stats FINAL')[0]['day']
         frozen=a.run_dir/'structural-request.json'
         end = (date.fromisoformat(read_json(frozen)['end']) if a.resume and a.end_date is None and frozen.exists()
