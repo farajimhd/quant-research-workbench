@@ -10,13 +10,18 @@ def read(path):return json.loads(Path(path).read_bytes())
 class Bus:
     def __init__(self,job,node='laptop'):
         self.job=job;self.node=node
+        canonical=str(job['transport']).replace('\\','/')
+        if not canonical.startswith('D:/TradingML/runtimes/'):raise ValueError('Transport must be an owned runtime')
         self.root=Path(job['transport']) if node=='workstation' else remote(job['transport'],job['workstation_share'])
         for name in ('requests','history','claims','done','failed','heartbeats','progress','payloads','attempts'):(self.root/name).mkdir(parents=True,exist_ok=True)
+    def write(self,path,value):
+        from .distributed_storage import publish
+        publish(self.root,path,value)
     def submit(self,request):
         key=digest(request);path=self.root/'requests'/(key+'.json')
         if path.exists():
             if read(path)!=request:raise ValueError('Immutable work request changed')
-        else:write_json(path,request)
+        else:self.write(path,request)
         return key
     def claim(self,owner):
         for path in sorted((self.root/'requests').glob('*.json'),key=lambda p:p.stat().st_mtime_ns):
@@ -32,7 +37,7 @@ class Bus:
             claim=self.root/'claims'/(key+'.json')
             try:claim.mkdir()
             except FileExistsError:continue
-            write_json(claim/'owner.json',dict(owner,node=self.node,request_sha256=key,epoch=time.time()))
+            self.write(claim/'owner.json',dict(owner,node=self.node,request_sha256=key,epoch=time.time()))
             if digest(request)!=key:raise ValueError('Work request hash mismatch')
             return key,request
         return None
@@ -48,7 +53,7 @@ class Bus:
             request_node=request.get('node')
             if request_node is None:
                 # Store host affinity separately; immutable request stays intact.
-                write_json(self.root/'attempts'/(path.stem+'-affinity.json'),dict(node=self.node))
+                self.write(self.root/'attempts'/(path.stem+'-affinity.json'),dict(node=self.node))
             path.replace(self.root/'attempts'/(path.stem+'-'+uuid.uuid4().hex+'.json'))
     def retire(self,key):
         path=self.root/'requests'/(key+'.json')
@@ -63,7 +68,7 @@ class Bus:
         return value
     def payload(self,payload):
         key=digest(payload);path=self.root/'payloads'/(key+'.json')
-        if not path.exists():write_json(path,payload)
+        if not path.exists():self.write(path,payload)
         return key
     def mirror(self,node,path,expected):
         if node=='laptop':

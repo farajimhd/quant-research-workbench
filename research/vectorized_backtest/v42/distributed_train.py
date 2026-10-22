@@ -31,6 +31,7 @@ class Coordinator:
         if not claim.exists():return
         node=read(claim)['node'];root=Path(self.job['campaign'])/'local'/day
         self.snapshot(node,root/'status.json',root/'status.json')
+        if not (root/'status.json').exists():write_json(root/'status.json',dict(status='running',day=day,generation=0,completed_generations=0,total_generations=self.job['local_generations'],stage='Staging certified session data',machine=node,updated_epoch=time.time()))
         self.snapshot(node,root/'checkpoint.json',root/'checkpoint.json')
         if not (root/'checkpoint.json').exists():return
         stamp=(root/'checkpoint.json').stat().st_mtime_ns

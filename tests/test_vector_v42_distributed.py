@@ -54,3 +54,7 @@ def test_validation_subset_reuses_training_pack_without_rng():
         population,keys,packed,_=p.submit(subset,subtoken).result()
         assert len(population)==1 and p.subset_hits==1 and p.misses==1
     finally:p.close()
+
+def test_transport_publication_cannot_escape_owned_root(tmp_path):
+    from research.vectorized_backtest.v42.distributed_storage import publish
+    with pytest.raises(ValueError,match='escaped'):publish(tmp_path/'owned',tmp_path/'other.json',{})

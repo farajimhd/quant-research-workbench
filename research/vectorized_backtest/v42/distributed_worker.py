@@ -31,8 +31,8 @@ class Agent:
                 request=read(self.bus.root/'requests'/(self.current+'.json'))
                 output=Path(self.job['campaign'])/'local'/request['day'] if request['kind']=='local' else Path(request.get('config',{}).get('output',self.job['campaign']))
                 output.mkdir(parents=True,exist_ok=True);(output/'STOP').touch()
-            if event and self.current:write_json(self.bus.root/'progress'/(self.current+'.json'),dict(event,machine=self.node))
-            write_json(self.bus.root/'heartbeats'/(self.node+'.json'),dict(self.owner,node=self.node,current=self.current,epoch=time.time(),available_gib=psutil.virtual_memory().available/2**30,rss_gib=psutil.Process().memory_info().rss/2**30))
+            if event and self.current:self.bus.write(self.bus.root/'progress'/(self.current+'.json'),dict(event,machine=self.node))
+            self.bus.write(self.bus.root/'heartbeats'/(self.node+'.json'),dict(self.owner,node=self.node,current=self.current,epoch=time.time(),available_gib=psutil.virtual_memory().available/2**30,rss_gib=psutil.Process().memory_info().rss/2**30))
     def close_worker(self):
         if self.worker:self.worker.close();self.worker=None;self.worker_key=None
         self.payload=None;self.payload_key=None
@@ -45,6 +45,13 @@ class Agent:
         import torch
         c['lane_memory_bytes']=int(torch.cuda.mem_get_info()[0]*.8)
         return c
+    def warm_cache(self):
+        # Disk-only staging: no feature evaluation, CUDA, fitness or RNG. A
+        # single bounded copier overlaps the long independent local campaign.
+        for role,days in self.job['machines'][self.node].get('days',{}).items():
+            for day in days:
+                if (self.bus.root/'STOP').exists():return
+                ensure_day(self.job,self.node,role,day)
     def hint(self,request):
         for path in sorted((self.bus.root/'requests').glob('*.json'),key=lambda p:p.stat().st_mtime_ns):
             other=read(path)
@@ -65,6 +72,7 @@ class Agent:
         if kind=='release':self.close_worker();return dict(files=[],seconds=time.perf_counter()-began)
         role=request.get('role','training');day=request['day'];stage_seconds=ensure_day(self.job,self.node,role,day)
         if kind=='local':
+            if self.node=='laptop' and self.disk_pending is None:self.disk_pending=self.disk_loader.submit(self.warm_cache)
             self.close_worker()
             from .probes import local_probe
             from .local_runner import run_session
@@ -122,9 +130,9 @@ class Agent:
                 key,request=claimed;self.current=key
                 try:result=self.execute(key,request)
                 except BaseException:
-                    write_json(self.bus.root/'failed'/(key+'.json'),dict(self.owner,node=self.node,request_sha256=key,traceback=traceback.format_exc(),epoch=time.time()));raise
-                write_json(self.bus.root/'done'/(key+'.json'),dict(result,node=self.node,request_sha256=key,source_sha256=self.job['source_sha256'],owner=self.owner,epoch=time.time()));self.current=None
-        finally:self.close_worker();self.disk_loader.shutdown(wait=True,cancel_futures=True);self.preparer.close();self.stop.set();thread.join();write_json(old,dict(self.owner,node=self.node,status='exited',epoch=time.time()))
+                    self.bus.write(self.bus.root/'failed'/(key+'.json'),dict(self.owner,node=self.node,request_sha256=key,traceback=traceback.format_exc(),epoch=time.time()));raise
+                self.bus.write(self.bus.root/'done'/(key+'.json'),dict(result,node=self.node,request_sha256=key,source_sha256=self.job['source_sha256'],owner=self.owner,epoch=time.time()));self.current=None
+        finally:self.close_worker();self.disk_loader.shutdown(wait=True,cancel_futures=True);self.preparer.close();self.stop.set();thread.join();self.bus.write(old,dict(self.owner,node=self.node,status='exited',epoch=time.time()))
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--job',type=Path,required=True);p.add_argument('--node',choices=('laptop','workstation'),required=True);a=p.parse_args();job=read(a.job)

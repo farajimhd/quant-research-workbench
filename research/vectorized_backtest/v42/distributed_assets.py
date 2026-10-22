@@ -40,7 +40,11 @@ def _ensure_day(job,node,role,day):
         if saved['asset_sha256']!=job['asset_sha256']:raise ValueError('Asset inventory changed')
         if all(Path(x['path']).exists() and Path(x['path']).stat().st_size==x['size'] and Path(x['path']).stat().st_mtime_ns==x['mtime_ns'] for x in saved['files']):return 0.
     records=[]
+    missing=sum(x['size'] for x in items if not Path(x['path']).exists())
+    if shutil.disk_usage(Path(job['campaign']).anchor).free<missing+64*2**30:raise MemoryError('64 GiB campaign disk reserve required before staging')
     for item in items:
+        bus=Path(job['transport']) if node=='workstation' else remote(job['transport'],job['workstation_share'])
+        if (bus/'STOP').exists():raise InterruptedError('Stopped during disk staging')
         target=Path(item['path'])
         if node=='workstation':
             if sha(target)!=item['sha256']:raise ValueError('Certified workstation artifact changed')
