@@ -93,8 +93,10 @@ class Worker:
         before=__import__('psutil').virtual_memory().available
         self.prefetch.close()
         for plan in self.plans.values():plan.close()
+        plan=None
         self.plans.clear();self.staging.close();self.staging=TransferStaging()
         for item in self.host.values():item.close()
+        item=None
         self.host.clear();self.resident_results=None
         gc.collect()
         if torch.device(self.config['device']).type=='cuda':torch.cuda.empty_cache()
