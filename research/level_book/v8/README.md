@@ -154,19 +154,27 @@ overlapping new candidates are deferred and counted.
 Strict boundary crossings end a role period and leave an opposite-role candidate
 pending. Entry into the band from the opposite side confirms a retest, activates
 the new role, recomputes its base score from that role's completed evidence and
-resets age. A gap across the whole band does not confirm a retest. Historical
-bounds and scores are frozen within each role period.
+resets age. A gap across the whole band does not confirm a retest. Band IDs and bounds stay fixed across role changes; period IDs identify
+individual roles. Completed reaction count, volume and delay update each event. Relative
+normalization can also change the score. Evidence accumulates per role over the
+observed session; the age clock resets on retest. Timestamped score history
+preserves earlier values.
 
 The combined chart has no legend. Its event slider shows new discoveries,
 breaks and retests known by that cutoff. Broken segments remain visible; only
 active bands receive margin labels. Dotted pre-discovery origins are retrospective.
-Thresholds use current or last intact scores. Intermediate tables show discovery
-cores, transitions, age and score contributions. An as-of view never shows future
-prices or levels. The session-normalized age bonus remains an uncalibrated heuristic.
+Opacity along each band uses its score at that event, never the latest score
+backfilled over history. Below-threshold intervals are dotted and remain visible;
+thresholds control status and margin labels. Gray intervals mean waiting for a
+retest. Separate tables distinguish historical broken periods, current waiting
+bands and active bands above/below threshold. Intermediate tables show discovery
+cores, transitions, age, reaction totals and score contributions. An as-of view
+never shows future prices or levels. The session-normalized age bonus remains an uncalibrated heuristic.
 
 Run with `ml4t`. Output belongs under
 `D:/TradingML/runtimes/level-book-v8/unbroken-age-bands/<UTC-run>/`.
 Evidence aggregation is incremental; candidate profiles are scanned each event
 for this bounded research sample. This is not a production checkpoint engine.
 Checks cover prefix invariance, new discoveries, retest direction, frozen bounds,
-zero age on role change, strict breaks and score bounds.
+zero age on role change, strict breaks, stable identities, independent reaction
+aggregation, live score updates and score bounds.
