@@ -1,4 +1,5 @@
 """Capture chronological GPU transitions without a host launch per second."""
+from research.vectorized_backtest.v6.torch_backtest.compile_lifecycle import scoped_compile
 import torch
 import time
 from collections import deque
@@ -29,7 +30,7 @@ def replay(position, aggregate, opened, policy, prices, observed, membership,
         aggregate.copy_(torch.where(active[:,None,None],a,aggregate))
         index.add_(1)
 
-    compiled=torch.compile(tick,fullgraph=True,dynamic=False)
+    compiled=scoped_compile(tick,fullgraph=True,dynamic=False)
     def reset():
         position.zero_();aggregate.zero_();aggregate[...,8]=float('inf')
         opened.zero_();index.fill_(1)

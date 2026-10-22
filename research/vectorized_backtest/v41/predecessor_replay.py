@@ -23,6 +23,10 @@ def run(job):
     if live(old['owner']) or list(campaign.rglob('owner.lock')):raise RuntimeError('V40 still owns optimizer resources')
     root.mkdir();checkpoint=read(local/'checkpoint.json');state=checkpoint['state'];contract=checkpoint['contract']
     if state['completed']!=100 or digest(state)!=checkpoint['state_sha256']:raise ValueError('V40 checkpoint invalid')
+    # Historical comparison stays on its own immutable dependency snapshot.
+    # The queue may be rebound to newer compiler engineering after V40 finishes.
+    import research.vectorized_backtest as package
+    package.__path__.insert(0,str(Path(old['code'])/'research/vectorized_backtest'))
     engine=importlib.import_module('research.vectorized_backtest.v40.run_search')
     if engine.source_hash()!=contract['source_sha256'] or contract['source_sha256']!=old['owner']['source_sha256']:raise ValueError('V40 immutable source changed')
     folder=local/'generation-0100';seal=read(folder/'complete.json');receipt=read(folder/'2026-08-04/receipt.json');scores=read(folder/'scores.json')

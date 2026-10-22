@@ -1,4 +1,5 @@
 """Capture chronological GPU transitions without a host launch per second."""
+from research.vectorized_backtest.v6.torch_backtest.compile_lifecycle import scoped_compile
 import torch
 import time
 import os
@@ -65,7 +66,7 @@ def replay(position, aggregate, opened, policy, prices, observed, membership,
     # buffers every tick. Capture direct in-place ledger kernels instead: measured
     # 32x faster ledger appends at 512x622, still no host launch per clock.
     dynamic=os.environ.get('V37_TRANSITION_DYNAMIC','0')=='1'
-    compiled_transition=torch.compile(transition_tick,fullgraph=True,dynamic=dynamic)
+    compiled_transition=scoped_compile(transition_tick,fullgraph=True,dynamic=dynamic)
     append_ledger=episodes.append_events if episodes is not None else None
     def compiled():
         if signal_provider is not None:signal_provider(index.clamp_max(total)-1,position,opened)

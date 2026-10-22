@@ -6,6 +6,7 @@ sequential; no Python loop over candidates, tickers, positions, or trades exists
 in tick(). There are no tensor-to-host reads, database calls or frame operations
 in tick(). Compiled/captured execution reuses fixed pointers across batches.
 """
+from research.vectorized_backtest.v6.torch_backtest.compile_lifecycle import scoped_compile
 
 import json
 import math
@@ -1071,7 +1072,7 @@ class SqueezeRunner:
             # It also fails broadcast codegen for searchable remainder IDs.
             # Keep this graph's intermediates contiguous; arithmetic and
             # account tensor shapes are unchanged for every ledger mode.
-            torch.compile(
+            scoped_compile(
                 self.tick,
                 fullgraph=True,
                 options={"comprehensive_padding": False},

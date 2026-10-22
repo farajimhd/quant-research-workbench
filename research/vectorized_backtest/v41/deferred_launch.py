@@ -85,10 +85,14 @@ def run(job):
             result=subprocess.run([sys.executable.replace('pythonw.exe','python.exe'),'-B',*args],cwd=job['code'],stdout=log,stderr=subprocess.STDOUT,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0),timeout=600)
         if result.returncode:raise RuntimeError(name+' failed; evidence retained')
     write(root/'queue-status.json',dict(status='replaying',stage='Frozen V40 generation100 top20 on Aug5 before V41',epoch=time.time()))
-    checked('v40-g100-aug05.log',['-m','research.vectorized_backtest.v41.predecessor_replay','--job',str(root/'job.json')])
     replay=root/'diagnostics/v40-g100-aug05/complete.json'
+    if not replay.exists():
+        checked('v40-g100-aug05.log',['-m','research.vectorized_backtest.v41.predecessor_replay','--job',str(root/'job.json')])
     proof=read(replay)
     if proof['generation']!=100 or proof['candidates']!=20 or not proof['full_session'] or not proof['no_selection_feedback']:raise ValueError('V40 Aug5 replay not complete')
+    replay_root=replay.parent;frozen=read(replay_root/'frozen.json')
+    if sha(replay_root/'frozen.json')!=proof['frozen_sha256'] or sha(replay_root/'evaluation/generation-0001/2026-08-05/receipt.json')!=proof['receipt_sha256'] or sha(replay_root/'comparison.json')!=proof['comparison_sha256']:raise ValueError('V40 replay evidence changed')
+    if frozen['checkpoint_sha256']!=sha(Path(job['predecessor']['campaign'])/'local/2026-08-04/checkpoint.json') or proof['source_sha256']!=job['predecessor']['owner']['source_sha256']:raise ValueError('V40 replay checkpoint/source changed')
     write(root/'queue-status.json',dict(status='profiling',stage='Short GPU parity checks after V40 replay release',epoch=time.time()))
     checked('gpu-boundaries.log',['-m','pytest',job['cuda_test'],'-k','cuda','-q','-p','no:cacheprovider','-c',job['pytest_config'],'--basetemp',str(root/'diagnostics/pytest-cuda')])
     checked('gpu-profile.log',['-m','research.vectorized_backtest.v41.bounded_profile','--training',job['training'],'--pool',job['initial_pool'],'--output',str(root/'diagnostics/gpu-profile')])

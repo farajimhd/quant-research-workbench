@@ -4,6 +4,7 @@ Python advances the common clock; every market/account calculation is Torch.
 There are no CPU tensor reads, dataframe plans, transfers, or database calls in
 the tick function. CUDA graphs can launch the complete tick as one graph replay.
 """
+from research.vectorized_backtest.v6.torch_backtest.compile_lifecycle import scoped_compile
 
 from math import isfinite
 from time import perf_counter
@@ -207,7 +208,7 @@ class ReplayRunner:
         with torch.inference_mode():
             if self.backend in {"compile", "compiled_graph"}:
                 started = perf_counter()
-                self.step = torch.compile(self._tick, fullgraph=True, mode="default")
+                self.step = scoped_compile(self._tick, fullgraph=True, mode="default")
                 self.step()
                 if self.tape.device.type == "cuda":
                     torch.cuda.synchronize(self.tape.device)

@@ -6,6 +6,7 @@ sequential; no Python loop over candidates, tickers, positions, or trades exists
 in tick(). There are no tensor-to-host reads, database calls or frame operations
 in tick(). Compiled/captured execution reuses fixed pointers across batches.
 """
+from research.vectorized_backtest.v6.torch_backtest.compile_lifecycle import scoped_compile
 from dataclasses import asdict
 from hashlib import sha256
 import json
@@ -470,7 +471,7 @@ class SqueezeRunner:
     def compile(self):
         """Compile once; fixed parameter/state pointers permit in-place reuse."""
         started = perf_counter()
-        self.step = torch.compile(self.tick, fullgraph=True) if self.backend in ("compile", "compiled_graph") else self.tick
+        self.step = scoped_compile(self.tick, fullgraph=True) if self.backend in ("compile", "compiled_graph") else self.tick
         if self.backend in ("compile", "compiled_graph"):
             self.reset()
             with torch.inference_mode():

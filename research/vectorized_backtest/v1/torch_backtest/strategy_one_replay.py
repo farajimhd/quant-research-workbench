@@ -6,6 +6,7 @@ position witnesses. Tick sequencing is broker -> evidence -> management/entry.
 Shared cash is folded in the app's lexical ticker order; independent candidate
 accounts remain vectorized on dimension B. No GPU scalar controls Python flow.
 """
+from research.vectorized_backtest.v6.torch_backtest.compile_lifecycle import scoped_compile
 
 from dataclasses import fields
 from time import perf_counter
@@ -1254,29 +1255,29 @@ class StrategyOneReplay:
         self.broker_step = (
             match_listing
             if self.unified
-            else torch.compile(match_listing, fullgraph=True)
+            else scoped_compile(match_listing, fullgraph=True)
         )
-        self.entry_step = torch.compile(self.entry_graph.evaluate, fullgraph=True)
-        self.add_step = torch.compile(self.add_graph.evaluate, fullgraph=True)
+        self.entry_step = scoped_compile(self.entry_graph.evaluate, fullgraph=True)
+        self.add_step = scoped_compile(self.add_graph.evaluate, fullgraph=True)
         self.action_steps = {
-            name: torch.compile(graph.evaluate, fullgraph=True)
+            name: scoped_compile(graph.evaluate, fullgraph=True)
             for name, graph in self.action_graphs.items()
         }
-        self.reprice_step = torch.compile(reprice_book, fullgraph=True)
-        self.amend_step = torch.compile(amend_book, fullgraph=True)
-        self._manage = torch.compile(self._manage, fullgraph=True)
-        self._decisions = torch.compile(self._decisions, fullgraph=True)
-        self._prepare_funding = torch.compile(self._prepare_funding, fullgraph=True)
+        self.reprice_step = scoped_compile(reprice_book, fullgraph=True)
+        self.amend_step = scoped_compile(amend_book, fullgraph=True)
+        self._manage = scoped_compile(self._manage, fullgraph=True)
+        self._decisions = scoped_compile(self._decisions, fullgraph=True)
+        self._prepare_funding = scoped_compile(self._prepare_funding, fullgraph=True)
         # Batch, listing count and lexical listing selectors are setup constants.
         # Automatic symbolic generalization makes scatter-fusion analysis grow
         # pathologically for B>1 and offers no benefit to fixed-topology search.
-        self._admit = torch.compile(self._admit, fullgraph=True, dynamic=False)
-        self._record = torch.compile(self._record, fullgraph=True)
-        self._copy_masked = torch.compile(self._copy_masked, fullgraph=True)
+        self._admit = scoped_compile(self._admit, fullgraph=True, dynamic=False)
+        self._record = scoped_compile(self._record, fullgraph=True)
+        self._copy_masked = scoped_compile(self._copy_masked, fullgraph=True)
         if self.unified:
-            self._observe_inputs = torch.compile(self._observe_inputs, fullgraph=True)
-            self._broker_inputs = torch.compile(self._broker_inputs, fullgraph=True)
-            self._match_account = torch.compile(self._match_account, fullgraph=True)
+            self._observe_inputs = scoped_compile(self._observe_inputs, fullgraph=True)
+            self._broker_inputs = scoped_compile(self._broker_inputs, fullgraph=True)
+            self._match_account = scoped_compile(self._match_account, fullgraph=True)
         self.compiled_step = self.tick
         with torch.inference_mode():
             self.compiled_step()

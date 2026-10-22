@@ -4,6 +4,7 @@ Atomic inputs here depend ONLY on immutable market tape, never account state.
 Chunking bounds intermediates; [T,B,N] boolean gates replace four dispatches
 and a history copy on every causal portfolio tick. No future slot is selected.
 """
+from research.vectorized_backtest.v6.torch_backtest.compile_lifecycle import scoped_compile
 
 from time import perf_counter
 
@@ -75,7 +76,7 @@ class RuleCompiler:
     def __init__(self, runner, *, chunk_seconds=128):
         self.runner, self.chunk_seconds = runner, chunk_seconds
         self.compiled = (
-            torch.compile(chunk_gate, fullgraph=True)
+            scoped_compile(chunk_gate, fullgraph=True)
             if runner.backend in ("compile", "compiled_graph")
             else chunk_gate
         )

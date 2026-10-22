@@ -6,6 +6,7 @@ ledger writes. No Python loop over accounts, tickers or orders is executed.
 CUDA uses a separately compiled mutation kernel inside this opaque boundary;
 CPU retains native expressions as its oracle. No host reads or fallback.
 """
+from research.vectorized_backtest.v6.torch_backtest.compile_lifecycle import scoped_compile
 from functools import wraps
 
 import torch
@@ -83,7 +84,7 @@ def _dispatch(*args, **kwargs):
     # Creating a compiler at module import can cache "Triton unavailable"
     # before that setup, even though the eventual CUDA process is configured.
     if _advance_cuda is None:
-        _advance_cuda = torch.compile(
+        _advance_cuda = scoped_compile(
             _advance, fullgraph=True,
             options={"comprehensive_padding": False, "deterministic": True}
         )

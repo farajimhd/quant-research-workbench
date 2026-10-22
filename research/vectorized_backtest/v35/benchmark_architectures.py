@@ -4,6 +4,7 @@ One job owns one independent lane. An external controller may release multiple
 ready lanes together using a shared start-file. Results include startup separately
 from repeated replay, and retain complete financial outputs for comparison.
 """
+from research.vectorized_backtest.v6.torch_backtest.compile_lifecycle import scoped_compile
 import os
 os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
 for _key in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'POLARS_MAX_THREADS'):
@@ -35,7 +36,7 @@ class HybridPlan:
         self.graph = None
         self.transfer_seconds = 0.
         self.calls = 0
-        self.outcomes = torch.compile(outcome_values, fullgraph=True, dynamic=False)
+        self.outcomes = scoped_compile(outcome_values, fullgraph=True, dynamic=False)
 
     def prepare(self, b, u):
         self.gpu.prepare(b, u)
@@ -131,7 +132,7 @@ def run(job):
         plan = HybridPlan(members, gpu_data)
         replay_data = data
         backend = 'eager'
-        evaluator.step = torch.compile(evaluator.step, fullgraph=True, dynamic=False)
+        evaluator.step = scoped_compile(evaluator.step, fullgraph=True, dynamic=False)
     else:
         raise ValueError('Unknown benchmark mode')
     execution = evaluator.Execution(fee_per_share=.005, minimum_order_fee=1)

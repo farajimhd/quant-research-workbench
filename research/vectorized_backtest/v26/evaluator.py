@@ -1,4 +1,5 @@
 """Vectorized position lanes; chronology is required only inside each lane."""
+from research.vectorized_backtest.v6.torch_backtest.compile_lifecycle import scoped_compile
 from dataclasses import dataclass
 import math
 import torch
@@ -233,8 +234,8 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
         routing_context=(owner,policies_pair,ages_pair,modes)
     clocks=torch.arange(t,device=device,dtype=torch.float64)
     lengths=torch.tensor([v.clocks for v in data],device=device)
-    select_signals=torch.compile(state_signals,fullgraph=True,dynamic=False) if backend=='compile' else state_signals
-    transition=torch.compile(step,fullgraph=True,dynamic=False) if backend=='compile' else step
+    select_signals=scoped_compile(state_signals,fullgraph=True,dynamic=False) if backend=='compile' else state_signals
+    transition=scoped_compile(step,fullgraph=True,dynamic=False) if backend=='compile' else step
     # All strategy/market computations are parallel on these axes; the time
     # loop preserves entry-dependent position semantics.
     if backend=='compile' and device.type=='cuda':
