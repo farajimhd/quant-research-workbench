@@ -2,8 +2,19 @@
 import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
 from pathlib import Path
-import json
+import json,re
 from research.vectorized_backtest.v27 import local_details as canvas
+
+
+def candidate_label(row):
+    """Compact display only; retained pedigree and program identity stay exact."""
+    serial=str(row['serial']);raw=row.get('candidate_id',serial)
+    match=re.fullmatch(r'(G[0-9]+)-T([0-9]+)-R([0-9]+)-[0-9]+-M([0-9]+)-X([0-9]+)-[a-f0-9]+',raw)
+    if match is None:return raw
+    generation,t,r,m,x=match.groups();t,r=int(t),int(r);total=t+r
+    if total<=0:return raw
+    template=(100*t+total//2)//total
+    return f'{generation}-T{template}R{100-template}-M{int(m)}X{int(x)}/{serial}'
 
 
 class DetailObserver(canvas.DetailObserver):
@@ -70,7 +81,7 @@ def detail_lines(row,payload,view,stage):
         lines[1]=f"Target: +{100*payload['policy']['target_fraction']:.3f}% | target-hit reduction {100*payload['policy']['reduce_fraction']:.3f}%"
         lines[2]=f"Entry: neural fraction x $1000 cap | add: neural fraction x $200 cap, maximum {payload['policy']['maximum_adds']} additions"
         lines.append('Signal-driven reduction: independent neural fraction. Prior requests and actual fills feed the next clock.')
-    return ([row.get('candidate_id',str(row['serial']))]+lines) if row else lines
+    return ([candidate_label(row),'T/R: ancestry contribution % | M/X: primary-lineage mutation/crossover counts']+lines) if row else lines
 
 
 def render(data,width,height,mode,selection,view,stage,page):
@@ -94,10 +105,9 @@ def render(data,width,height,mode,selection,view,stage,page):
     layout=canvas.render(data,width,height,mode,selection,view,stage,page)
     rows=canvas.ordered_rows(data.get('rows',[]),mode);size=canvas.ranking_size(height);selection=min(selection,max(0,len(rows)-1));start=selection//size*size
     table=Table(expand=True,padding=(0,0),show_edge=False)
-    for c in ('Rank','Origin / serial','Net P&L $','Win %','Positions'):table.add_column(c,justify='left' if c=='Origin / serial' else 'right',no_wrap=True)
+    for c in ('Rank','Origin %, M/X / serial','Net P&L $','Win %','Positions'):table.add_column(c,justify='left' if c=='Origin %, M/X / serial' else 'right',no_wrap=True)
     for i,row in enumerate(rows[start:start+size],start):
-        label=row.get('candidate_id',str(row['serial']));parts=label.split('-')
-        label='-'.join(parts[:3])+'/'+str(row['serial']) if len(parts)>3 else label
+        label=candidate_label(row)
         m=row['metrics'];table.add_row(str(row['rank']),label,f"{m['net_pnl']:,.2f}",'-' if m['win_rate'] is None else f"{100*m['win_rate']:.1f}",str(int(m['closed_positions'])),style='bold cyan' if i==selection else None)
     layout['leaders'].update(Panel(table,title=f"Sealed generation {data.get('generation',0)} | {len(rows)} candidates | {mode}"))
     layout['keys'].update('h: initial/current family tables | 1-4: rank | j/k: select | f/o/p: details | e/x/a/d/t: networks | q: close')
