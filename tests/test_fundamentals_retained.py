@@ -195,3 +195,17 @@ def test_live_receipt_acknowledged_before_cleanup_recovers(live):
     with pytest.raises(ConnectionResetError):publish(interrupted,b,db)
     assert publish(q,b,db)['state']=='unchanged'
     assert q(f'SELECT count() n FROM {db}.reference_stage_v1')[0]['n']==0
+
+def test_population_multilisting_is_not_multiissuer():
+    from pipelines.fundamentals.population import snapshot_population
+    population=[dict(symbol_id=s,security_id=s,issuer_id='i',ticker=s) for s in ('A','B','C')]
+    bridge=[dict(symbol_id=s,cik=c,mapping_status='active',ambiguity_status=a) for s,c,a in
+        [('A','0000000001','ambiguous_multi_listing'),('B','0000000002','unique'),
+         ('B','0000000003','ambiguous_multi_listing')]]
+    def query(sql):
+        if 'id_issuer_identifier_v1' in sql:return [dict(issuer_id='i',cik='0000000004')]
+        return bridge if 'SELECT symbol_id,cik' in sql else population
+    result=snapshot_population(query,date(2026,10,5))
+    assert result['families']['sec_bulk']==['0000000001','0000000004']
+    assert result['provenance']['sec_mapped_symbols']==2
+    assert result['provenance']['sec_unresolved_symbols']==1
