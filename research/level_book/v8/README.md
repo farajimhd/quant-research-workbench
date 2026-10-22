@@ -178,3 +178,39 @@ for this bounded research sample. This is not a production checkpoint engine.
 Checks cover prefix invariance, new discoveries, retest direction, frozen bounds,
 zero age on role change, strict breaks, stable identities, independent reaction
 aggregation, live score updates and score bounds.
+
+## 07 — Compiled replay and pressure testing
+
+`07_compiled_replay_pressure_test.ipynb` preserves notebook 06's per-event
+discovery and lifecycle rules while moving numeric scans/state transitions into
+Numba (`cache=False`). `pressure_engine.py` uses prefix range totals, a price-to-band
+owner index, observed-price masks, and compact evidence changes plus shared
+normalizers instead of per-band/per-event score dictionaries. Age is reconstructed
+at read time. Sequential causality remains; compiled loops replace Python overhead.
+
+`pressure_source.py` is a separate bounded canonical loader for up to 100,000
+trades. The notebook uses 50,000 AAPL trades from 2026-08-20, extending the read
+window to the regular session because the first hour contains fewer than 50,000
+eligible trades. Original eligibility, reporting checks, metadata rereads and
+source hashing remain in force. No database writes or raw-file reads occur.
+
+Run all cells in `ml4t` (Numba, Polars, NumPy, Matplotlib, psutil, ipywidgets).
+The notebook profiles the old engine, reports compilation separately, compares
+every transition and saved score on 2,000/10,000 events, and pressure-tests
+2,000/10,000/25,000/50,000 prefixes. An independent direct trade scan audits breaks
+and retests, with prefix/future-perturbation checks. It records wall time, retained
+array size, process RSS, band growth, pending bands and deferral counts.
+
+Existing bands are **not merged or expired**. Pending zones retain ownership;
+overlapping candidates are deferred. The notebook exposes this accumulation
+instead of changing the method during optimization. Saved compact NPZ results
+are analysis caches, not streaming-resume checkpoints.
+
+The interactive chart keeps event/threshold controls and opacity history, with
+active-only or all-history views and optional waiting bands. Exact tables and
+scores are retained. Long-view opacity uses a disclosed bounded display stride;
+at most 20 strongest qualifying active bands receive margin labels. Rendering
+limits do not change discovery or numerical results.
+
+Source caches, per-tier receipts, executed notebooks, profiles, charts and compact
+results belong under `D:/TradingML/runtimes/level-book-v8/pressure-test/`.
