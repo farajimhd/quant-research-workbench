@@ -59,6 +59,19 @@ def test_transport_publication_cannot_escape_owned_root(tmp_path):
     from research.vectorized_backtest.v42.distributed_storage import publish
     with pytest.raises(ValueError,match='escaped'):publish(tmp_path/'owned',tmp_path/'other.json',{})
 
+def test_transport_read_retries_only_transient_access(monkeypatch,tmp_path):
+    from pathlib import Path
+    from research.vectorized_backtest.v42.distributed_bus import read
+    attempts=[]
+    def content(self):
+        attempts.append(1)
+        if len(attempts)<3:raise PermissionError('atomic replace')
+        return b'{"complete":true}'
+    monkeypatch.setattr(Path,'read_bytes',content)
+    assert read(tmp_path/'x.json')=={'complete':True} and len(attempts)==3
+    monkeypatch.setattr(Path,'read_bytes',lambda self:b'invalid')
+    with pytest.raises(ValueError):read(tmp_path/'x.json')
+
 def test_memory_pressure_evicts_inactive_data_before_unchanged_admission(monkeypatch,tmp_path):
     from research.vectorized_backtest.v42.session_lanes import Worker
     import psutil

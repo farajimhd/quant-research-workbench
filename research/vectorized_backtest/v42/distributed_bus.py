@@ -5,7 +5,14 @@ from .publication import write_json
 from .distributed_assets import sha,copy_verified,remote
 
 def digest(value):return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
-def read(path):return json.loads(Path(path).read_bytes())
+def read(path):
+    # SMB can briefly deny an open during atomic replacement. Never retry
+    # malformed data or hide a persistent access failure.
+    for attempt in range(12):
+        try:return json.loads(Path(path).read_bytes())
+        except PermissionError:
+            if attempt==11:raise
+            time.sleep(.01*(attempt+1))
 
 class Bus:
     def __init__(self,job,node='laptop'):
