@@ -199,7 +199,7 @@ def test_live_receipt_acknowledged_before_cleanup_recovers(live):
 def test_population_multilisting_is_not_multiissuer():
     from pipelines.fundamentals.population import snapshot_population
     population=[dict(symbol_id=s,security_id=s,issuer_id='i',ticker=s) for s in ('A','B','C')]
-    bridge=[dict(symbol_id=s,cik=c,mapping_status='active',ambiguity_status=a) for s,c,a in
+    bridge=[dict(symbol_id=s,cik=c,mapping_status='active',ambiguity_status=a,mapping_method='issuer_cik_to_active_market_listing') for s,c,a in
         [('A','0000000001','ambiguous_multi_listing'),('B','0000000002','unique'),
          ('B','0000000003','ambiguous_multi_listing')]]
     def query(sql):
@@ -209,3 +209,45 @@ def test_population_multilisting_is_not_multiissuer():
     assert result['families']['sec_bulk']==['0000000001','0000000004']
     assert result['provenance']['sec_mapped_symbols']==2
     assert result['provenance']['sec_unresolved_symbols']==1
+
+
+def test_subsidiary_never_resolves_as_stock_issuer():
+    from pipelines.fundamentals.population import snapshot_population,DIRECT_METHOD,ASSOCIATION_METHOD,resolve_ticker
+    population=[dict(symbol_id='A',security_id='S',issuer_id='P',ticker='A')]
+    bridge=[dict(symbol_id='A',cik=c,mapping_status='active',ambiguity_status='unique',mapping_method=m)
+            for c,m in [('0000000001',DIRECT_METHOD),('0000000002',ASSOCIATION_METHOD)]]
+    def query(sql):
+        if 'id_issuer_identifier_v1' in sql:return []
+        return bridge if 'SELECT symbol_id,cik' in sql else population
+    result=snapshot_population(query,date(2026,10,5))
+    assert result['families']['sec_bulk']==['0000000001']
+    bridge.pop(0)
+    with pytest.raises(ValueError,match='No unambiguous'):snapshot_population(query,date(2026,10,5))
+    def dated(sql):
+        if 'id_symbol_interval_v1' in sql:return [dict(security_id='S',listing_id='L')]
+        assert "mapping_method='issuer_cik_to_active_market_listing'" in sql
+        assert 'valid_from_date<=' in sql and 'inserted_at<=' in sql
+        return []
+    result=resolve_ticker(dated,'A',datetime(2026,10,5,tzinfo=timezone.utc),known_at=datetime.now(timezone.utc))
+    assert result['issuer_cik'] is None
+
+
+def test_association_audit_does_not_certify_candidates():
+    from pipelines.fundamentals.associations import coverage,exhibit_sql,cofiling_sql
+    result=coverage(['A','B','C'],[dict(cik='A',documents=2)],
+        [dict(primary_cik='B')],[dict(parent_cik='A',relationship_status='active')])
+    assert all(r['completeness']=='unknown' for r in result)
+    assert [r['status'] for r in result]==['document_review_required','cofiling_review_required','no_retained_candidate_found']
+    assert "_partition_id='63'" in cofiling_sql(['0000000001'],63)
+    assert 'FINAL' in exhibit_sql(['0000000001'])
+    with pytest.raises(ValueError):cofiling_sql(['A'],64)
+
+
+def test_live_parent_and_subsidiary_facts_remain_distinct(live,monkeypatch):
+    q,db,b,insert=live
+    monkeypatch.setitem(ADAPTERS,'borrow',replace(ADAPTERS['borrow'],kind='issuer_cik'))
+    q(f"INSERT INTO {db}.borrow VALUES ('parent','0000312069','test','test','2026-10-01',1000,2,1.5,NULL,'available','p','hash','2026-06-30'),('child','0000312070','test','test','2026-10-01',200,2,1.5,NULL,'available','c','hash','2026-06-30')",read=False)
+    publish(q,replace(b,entities=('0000312069','0000312070')),db)
+    for cik,expected in [('0000312069',1000),('0000312070',200)]:
+        rows=q(observations_sql(db,'issuer_cik',[cik],['borrow.shortable_shares'],datetime(2026,10,2,tzinfo=timezone.utc)))
+        assert len(rows)==1 and rows[0]['value']==expected

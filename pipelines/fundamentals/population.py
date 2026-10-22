@@ -3,6 +3,16 @@ from datetime import date, datetime, timezone
 from pipelines.certified_research.contracts import literal, digest
 from .adapters import ADAPTERS
 
+DIRECT_METHOD = 'issuer_cik_to_active_market_listing'
+ASSOCIATION_METHOD = 'filing_issuer_to_listed_parent'
+
+
+def direct_rows(rows):
+    """An association describes relevance, never the identity of a stock."""
+    return [r for r in rows if r['mapping_method']==DIRECT_METHOD
+            and r['mapping_status']=='active'
+            and r['ambiguity_status'] in ('unique','ambiguous_multi_listing')]
+
 
 def snapshot_population(query, day):
     if type(day) is not date:raise ValueError('Explicit universe snapshot date required')
@@ -11,11 +21,11 @@ def snapshot_population(query, day):
     if not rows:raise ValueError('Requested universe snapshot is absent')
     symbols=('SELECT symbol_id FROM q_live.feature_tradable_universe_v1 FINAL '
         f'WHERE universe_date=toDate({literal(day)}) AND is_tradable=1')
-    bridge=query('SELECT symbol_id,cik,mapping_status,ambiguity_status FROM q_live.id_sec_market_bridge_v3 FINAL '
+    bridge=query('SELECT symbol_id,cik,mapping_status,ambiguity_status,mapping_method FROM q_live.id_sec_market_bridge_v3 FINAL '
         f'WHERE symbol_id IN ({symbols}) ORDER BY symbol_id,cik')
     # Bridge ambiguity counts listings per CIK, not CIKs per symbol. Multiple
     # listings are valid issuer links; competing CIKs still fail closed below.
-    admitted=[x for x in bridge if x['mapping_status']=='active' and x['ambiguity_status'] in ('unique','ambiguous_multi_listing')]
+    admitted=direct_rows(bridge)
     by_symbol={}
     for x in admitted:by_symbol.setdefault(x['symbol_id'],set()).add(x['cik'])
     identifiers=query('SELECT issuer_id,identifier_value_normalized AS cik FROM q_live.id_issuer_identifier_v1 FINAL '
@@ -28,7 +38,7 @@ def snapshot_population(query, day):
             by_issuer.setdefault(x['issuer_id'],set()).add(cik)
     # Snapshot issuer identifiers are not dated ticker history. Never use this
     # path to bypass a competing, rejected or ambiguous direct bridge.
-    bridged={x['symbol_id'] for x in bridge}
+    bridged={x['symbol_id'] for x in bridge if x['mapping_method']!=ASSOCIATION_METHOD}
     issuer_resolved=0
     for row in rows:
         candidates=by_issuer.get(row['issuer_id'],set())
@@ -41,12 +51,13 @@ def snapshot_population(query, day):
            'issuer':sorted({x['issuer_id'] for x in rows if x['issuer_id']}),'issuer_cik':ciks}
     return {'families':{f:kinds[a.kind] for f,a in ADAPTERS.items()},
         'captured_at':datetime.now(timezone.utc).isoformat(),
-        'provenance':{'policy':'retained_snapshot_population_v1','universe_date':str(day),
+        'provenance':{'policy':'retained_snapshot_population_v2_direct_issuer','universe_date':str(day),
             'population_rows':len(rows),'population_hash':digest(rows),'bridge_hash':digest(bridge),
             'issuer_identifier_hash':digest(identifiers),'sec_issuer_identifier_symbols':issuer_resolved,
             'sec_mapped_symbols':sum(len(v)==1 for v in by_symbol.values()),
             'sec_unresolved_symbols':len(rows)-sum(len(v)==1 for v in by_symbol.values()),
             'excluded_bridge_rows':len(bridge)-len(admitted),
+            'subsidiary_association_rows':sum(x['mapping_method']==ASSOCIATION_METHOD for x in bridge),
             'scope':'Snapshot cohort only; not historical membership or current account buy permission'}}
 
 
@@ -66,6 +77,7 @@ def resolve_ticker(query, ticker, at, *, known_at=None):
     security=rows[0]['security_id']
     bridge=query('SELECT DISTINCT issuer_id,cik FROM q_live.id_sec_market_bridge_v3 FINAL '
         f'WHERE security_id={literal(security)} '
+        f'AND mapping_method={literal(DIRECT_METHOD)} '
         f"AND mapping_status='active' AND ambiguity_status IN ('unique','ambiguous_multi_listing') "
         f'AND isNotNull(valid_from_date) AND valid_from_date<=toDate({day}) '
         f'AND (isNull(valid_to_date_exclusive) OR valid_to_date_exclusive>toDate({day}))'

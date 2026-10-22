@@ -143,3 +143,36 @@ publication/reuse/audit, ambiguous write recovery, corrections, context seeds,
 same-time conflicts, missing-output detection and schema drift. Live tests require
 `FUNDAMENTALS_LIVE_TEST=1`; they create isolated SSD databases and remove them.
 Production coverage must be assessed separately from these bounded tests.
+
+## Direct identity and subsidiary associations
+
+Snapshot policy `retained_snapshot_population_v2_direct_issuer` admits direct
+issuer-to-listing bridges only. `filing_issuer_to_listed_parent` is a disclosure
+association, never an alternative stock identity. A unique retained issuer CIK
+identifier can supply a snapshot identity where no direct/rejected/unknown
+bridge exists; it never supplies dated ticker history. Dated resolution keeps
+interval and optional knowledge-time guards. Subsidiary SEC observations retain
+the subsidiary CIK; they are not copied to or summed into parent fundamentals.
+Existing population manifests are immutable: export a new manifest and re-plan;
+do not replace the request of an existing receipt-bearing campaign.
+
+`q_live.id_issuer_relationship_v1` remains the verified association authority.
+Do not create a second ownership table from co-filing or name similarity.
+Run the read-only retained-evidence audit before publication:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B scripts/audit_fundamentals_associations.py --snapshot-date 2026-10-05 --run-dir D:/TradingML/runtimes/fundamentals-association-audit --endpoint http://192.168.1.218:18123
+```
+
+The audit searches all selected issuers for EX-21/subsidiary document metadata
+and distinct co-filing entities. It scans each co-filing partition once and
+bounds document lookups to 256 issuers. Per-unit hashed receipts support resume;
+source/schema/part fingerprints invalidate changed input. STOP drains the active
+bounded read. It writes coverage, candidate evidence locators and existing
+verified relationships under the runtime directory, without production writes.
+Candidates require document review to establish parent/child direction, entity
+identity, ownership type and effective dates. Archive dates are not ownership
+inception or public availability. No candidate found is unknown coverage, not
+proof of no subsidiaries. Original-document/public-time qualification remains
+an independent backfill gate.
