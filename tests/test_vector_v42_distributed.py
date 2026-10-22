@@ -58,3 +58,15 @@ def test_validation_subset_reuses_training_pack_without_rng():
 def test_transport_publication_cannot_escape_owned_root(tmp_path):
     from research.vectorized_backtest.v42.distributed_storage import publish
     with pytest.raises(ValueError,match='escaped'):publish(tmp_path/'owned',tmp_path/'other.json',{})
+
+def test_memory_pressure_evicts_inactive_data_before_unchanged_admission(monkeypatch,tmp_path):
+    from research.vectorized_backtest.v42.session_lanes import Worker
+    import psutil
+    from types import SimpleNamespace
+    from collections import OrderedDict
+    worker=Worker.__new__(Worker);worker.config=dict(output=str(tmp_path),device='cpu',host_reserve_gib=12.,host_admission_gib=8.)
+    closed=[];worker.prefetch=SimpleNamespace(close=lambda:closed.append('prefetch'));worker.plans=OrderedDict(one=SimpleNamespace(close=lambda:closed.append('plan')));worker.staging=SimpleNamespace(close=lambda:closed.append('staging'));worker.host=OrderedDict(old=SimpleNamespace(close=lambda:closed.append('data')));worker.resident_results={'authoritative':'cache copy'}
+    monkeypatch.setattr(psutil,'virtual_memory',lambda:SimpleNamespace(available=19*2**30))
+    worker.release_inactive_sessions()
+    assert set(closed)=={'prefetch','plan','staging','data'} and not worker.host and not worker.plans
+    assert worker.config['host_reserve_gib']==12 and worker.config['host_admission_gib']==8

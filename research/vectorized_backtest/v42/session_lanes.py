@@ -88,9 +88,24 @@ class Worker:
             item.close();raise ValueError('Session input crossed training/validation boundary')
         return item
 
+    def release_inactive_sessions(self):
+        """Only between completed replays; evict recomputable data, not results."""
+        before=__import__('psutil').virtual_memory().available
+        self.prefetch.close()
+        for plan in self.plans.values():plan.close()
+        self.plans.clear();self.staging.close();self.staging=TransferStaging()
+        for item in self.host.values():item.close()
+        self.host.clear();self.resident_results=None
+        gc.collect()
+        if torch.device(self.config['device']).type=='cuda':torch.cuda.empty_cache()
+        from .publication import write_json
+        write_json(Path(self.config['output'])/'host-cache-events'/f'{os.getpid()}-{__import__("time").time_ns()}.json',dict(reason='inactive session blocks unchanged admission',available_before_bytes=before,available_after_bytes=__import__('psutil').virtual_memory().available,reserve_gib=self.config.get('host_reserve_gib',128.),admission_gib=self.config.get('host_admission_gib',32.),financial_results_preserved=True))
+
     def load(self,day):
         c=self.config
         if day not in self.host:
+            required=(c.get('host_reserve_gib',128.)+c.get('host_admission_gib',32.))*2**30
+            if self.host and __import__('psutil').virtual_memory().available<required:self.release_inactive_sessions()
             # Evict before allocation, rather than temporarily retaining a third
             # complete session. Plans own any still-live device references.
             while len(self.host)>=self.maximum_host_sessions:self.host.popitem(last=False)
