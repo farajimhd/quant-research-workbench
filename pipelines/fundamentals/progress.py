@@ -25,7 +25,7 @@ def estimate(state):
         values=samples.get('published',[])
         if len(values)<3:return None
         work.append((remaining,median(values)))
-    if not work:return 0
+    if not work:return None if state.get('queued',0) else 0
     lanes=max(1,state.get('workers',1))
     return max(sum(n*t for n,t in work)/lanes,max(t for _,t in work))
 
@@ -43,14 +43,14 @@ def render(state,width=80,height=24,now=None):
     barwidth=max(8,min(32,width-18));filled=int(barwidth*done/total) if total else 0
     bar='['+'#'*filled+'-'*(barwidth-filled)+']'
     lines=[f"Fundamentals | {current} | {state.get('mode','backfill')}",
-        f'{bar} {done:,}/{total:,} batches' if total else 'Planning scope; total not yet known',
+        f"{bar} {done:,}/{total:,} {state.get('unit','batches')}" if total else 'Planning scope; total not yet known',
         f"{c.get('published',0):,} published | {c.get('unchanged',0):,} unchanged | {c.get('audited',0):,} audited",
         f"Active {len(state.get('active',{}))} | queued {state.get('queued',0):,} | failed {c.get('failed',0)} | retries 0",
         f"Blocked {state.get('blocked',0)} | exclusions {state.get('exclusions',0)}",
         f"Elapsed {duration(state.get('elapsed',0))} | ETA {('finished' if current=='complete' else 'blocked' if current in ('blocked','failed','stopped') else duration(None if age and age>45 else estimate(state)))}",
         'ETA uses new-work family samples; reuse is counted separately.',
         f"New facts {state.get('new_rows',0):,} | reused facts {state.get('reused_rows',0):,}",
-        'Retained observations; not public-time certified.']
+        state.get('qualification_status','Retained observations; not public-time certified.')]
     if state.get('error'):lines.insert(1,'ERROR: '+state['error'])
     active=list(state.get('active',{}).values())
     room=max(0,height-len(lines)-2)

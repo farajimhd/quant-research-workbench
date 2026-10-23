@@ -54,7 +54,7 @@ def records(witnesses,qualifications,receipt):
             document_hash=witness['document_hash'],archive_version_key=witness['archive_version_key'],member_ordinal=witness['member_ordinal'],
             available_at=timestamp(datetime.fromisoformat(qualified['available_at'])),precision=qualified['precision'],
             proof=json.dumps(dict(witness=witness,qualification=qualified),sort_keys=True,separators=(',',':'))))
-    source={k:receipt[k] for k in ('source_kind','source_url','source_date','downloaded_at_utc','byte_size','sha256','last_modified','status')}
+    source=sec_public_archive_time.sec_receipt_recovery.canonical(receipt)
     archive=dict(receipt_hash=receipt_hash,source_date=receipt['source_date'],container_sha256=receipt['sha256'],source_url=receipt['source_url'],
         downloaded_at_utc=timestamp(datetime.fromisoformat(receipt['downloaded_at_utc'].replace('Z','+00:00'))),
         last_modified_utc=timestamp(parsedate_to_datetime(receipt['last_modified'])),byte_size=receipt['byte_size'],

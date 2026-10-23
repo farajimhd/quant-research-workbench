@@ -6,6 +6,7 @@ import re
 
 from .contracts import digest
 from .facts import CONSERVATIVE_TIME
+from . import sec_receipt_recovery
 
 VERSION='verified-sec-public-feed-day-v1'
 NY=ZoneInfo('America/New_York')
@@ -31,7 +32,8 @@ def qualify(witness,receipt,*,mode='acceptance_checked_day'):
     if witness.get('official_filing_date')!=str(day) or witness.get('filing_date_change')!=str(day):
         raise ValueError('SEC official filing/change dates do not prove the selected public feed day')
     url=f'https://www.sec.gov/Archives/edgar/Feed/{day.year}/QTR{quarter}/{day:%Y%m%d}.nc.tar.gz'
-    if (receipt.get('status')!='downloaded' or receipt.get('source_kind')!='daily_feed_archive'
+    source=sec_receipt_recovery.canonical(receipt)
+    if (receipt.get('source_kind')!='daily_feed_archive'
             or receipt.get('source_url')!=url or receipt.get('source_date')!=str(day)
             or receipt.get('sha256')!=witness['container_sha256'] or not re.fullmatch('[0-9a-f]{64}',receipt.get('sha256') or '')
             or type(receipt.get('byte_size')) is not int or receipt['byte_size']!=witness['archive_bytes']
@@ -53,7 +55,6 @@ def qualify(witness,receipt,*,mode='acceptance_checked_day'):
         if accepted.date()==day and accepted.time()>=deadline:
             raise ValueError('Same-day SEC dissemination is unproven for a late acceptance')
     available=datetime.combine(day+timedelta(days=1),time(),NY).astimezone(timezone.utc)
-    source={k:receipt[k] for k in ('source_kind','source_url','source_date','downloaded_at_utc','byte_size','sha256','last_modified','status')}
     result=dict(version=VERSION,mode=mode,witness_hash=hash_,receipt_hash=digest(source),source_date=str(day),
         available_at=available.isoformat(),precision=CONSERVATIVE_TIME,precision_name='conservative_day',public_time_qualified=True,
         exact_posting_time=False,allocation_certified=False)

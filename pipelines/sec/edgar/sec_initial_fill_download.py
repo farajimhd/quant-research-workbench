@@ -827,6 +827,8 @@ def stream_download(
                                 message=target.name,
                             )
                             last_progress_at = now
+                if length and bytes_written != length:
+                    raise RuntimeError(f"incomplete download: expected {length:,} bytes, got {bytes_written:,}")
                 progress.update(job_id, status="finalizing", downloaded=bytes_written, total=length, message="moving part file")
             part_path.replace(target)
             return etag, last_modified

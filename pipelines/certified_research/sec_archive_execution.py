@@ -60,7 +60,7 @@ def execute(plan,prepared,receipts,claim,stop,publish,source_guard,*,mode,
             stat=source.stat()
             if (stat.st_size,stat.st_mtime_ns)!=(size,group['source_mtime_ns']):raise ValueError('SEC backup changed after planning')
             receipt=receipts.get(name)
-            if (receipt is None or receipt.get('status')!='downloaded' or receipt.get('byte_size')!=size
+            if (receipt is None or receipt.get('status') not in ('downloaded','recovered_verified_representation') or receipt.get('byte_size')!=size
                     or not re.fullmatch('[0-9a-f]{64}',receipt.get('sha256') or '')):
                 raise ValueError('Original successful SEC download receipt is missing or incompatible')
             documents=tuple(sources[d['document_key']] for d in group['documents'])

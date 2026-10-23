@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from . import sec_archive_execution,sec_archive_staging_plan,sec_archive_witness,sec_public_archive_time
-from . import sec_witness_publication,sec_share_source,sec_share_preparation,sec_document_lineage
+from . import sec_witness_publication,sec_share_source,sec_share_preparation,sec_document_lineage,sec_receipt_recovery
 from .contracts import digest,literal
 
 PRODUCT='sec_archive_witness'
@@ -12,7 +12,7 @@ PRODUCT='sec_archive_witness'
 
 def recipe_hash():
     modules=(sys.modules[__name__],sec_archive_execution,sec_archive_staging_plan,sec_archive_witness,sec_public_archive_time,
-             sec_witness_publication,sec_share_source,sec_share_preparation,sec_document_lineage)
+             sec_witness_publication,sec_share_source,sec_share_preparation,sec_document_lineage,sec_receipt_recovery)
     return digest(dict(version='sec-archive-source-execution-v1',
         algorithms={m.__name__:digest(Path(m.__file__).read_text(encoding='utf-8')) for m in modules},
         ddl=tuple(t.ddl('q_live') for t in sec_witness_publication.tables())))
@@ -30,11 +30,10 @@ def receipts(path,archives):
             if len(line.encode('utf-8'))>1024*1024:raise ValueError('SEC receipt line exceeds 1MiB')
             if not line.strip():continue
             row=json.loads(line)
-            if row.get('status')!='downloaded' or row.get('source_kind')!='daily_feed_archive':continue
+            if row.get('status') not in ('downloaded','recovered_verified_representation') or row.get('source_kind')!='daily_feed_archive':continue
             key='/'.join(str(row.get('source_url','')).split('/')[-3:])
             if key not in wanted:continue
-            source={k:row.get(k) for k in ('source_kind','source_url','source_date','downloaded_at_utc',
-                'byte_size','sha256','last_modified','status')}
+            source=sec_receipt_recovery.canonical(row)
             if key in selected and selected[key]!=source:raise ValueError('Competing original SEC download receipts')
             selected[key]=source
     after=path.stat()
