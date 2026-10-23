@@ -53,3 +53,13 @@ def test_wrong_complete_bytes_and_incomplete_repair_fail(tmp_path):
     with pytest.raises(ValueError):recovery.recover(path,original,repair)
     repair['truncated_by_limit']=True
     with pytest.raises(ValueError):recovery.recover(path,original,repair)
+
+
+def test_identical_complete_downloads_select_earliest_without_waiving_conflicts():
+    _,receipt=inputs()
+    later=deepcopy(receipt);later['downloaded_at_utc']='2026-10-23T00:00:00Z'
+    assert recovery.select_complete([later,receipt],receipt['byte_size'])==receipt
+    bad=deepcopy(later);bad['sha256']='f'*64
+    with pytest.raises(ValueError,match='Competing'):
+        recovery.select_complete([receipt,bad],receipt['byte_size'])
+    assert recovery.select_complete([receipt],receipt['byte_size']+1) is None

@@ -169,9 +169,9 @@ def _main():
                     try:
                         d=date.fromisoformat(day);relative=Path(str(d.year),f'QTR{(d.month-1)//3+1}',d.strftime('%Y%m%d')+'.nc.tar.gz')
                         archive=a.archive_root/relative;size=archive.stat().st_size
-                        candidates=receipt_index[day];matching={digest(sec_receipt_recovery.canonical(r)):r for r in candidates if r['byte_size']==size}
-                        if len(matching)==1:receipt=sec_receipt_recovery.canonical(next(iter(matching.values())))
-                        elif not matching and len(candidates)==1 and day in repairs:
+                        candidates=receipt_index[day];receipt=sec_receipt_recovery.select_complete(candidates,size)
+                        if receipt is not None:pass
+                        elif len(candidates)==1 and day in repairs:
                             recovery_path=root/('recovered-'+day+'.json')
                             if recovery_path.exists():
                                 receipt=json.loads(recovery_path.read_text());sec_receipt_recovery.validate(receipt)
@@ -208,6 +208,7 @@ def _main():
                         state['active'].pop('archive',None)
                         state['archive_samples'].append(time.monotonic()-archive_started)
                         state['archive_remaining']-=1
+                    witness_lock=threading.Lock()
                     def unit(row,descriptor,witness):
                         own=Client(a.endpoint);began=time.monotonic();request_tuple=(row['cik'],row['accession'],row['document']);token=digest(row)
                         stages={};last_stage=[None,began]
@@ -228,7 +229,10 @@ def _main():
                         try:
                             update('public time and original extraction')
                             qualified_time=sec_public_archive_time.qualify(witness,receipt,mode='official_filing_day')
-                            witness_publication.Publisher(own.query,'q_live',claim,stable,admission).publish((witness,),(qualified_time,),receipt)
+                            # All documents of a day share one immutable receipt.
+                            # Serialize its check/insert/readback under the campaign claim.
+                            with witness_lock:
+                                witness_publication.Publisher(own.query,'q_live',claim,stable,admission).publish((witness,),(qualified_time,),receipt)
                             if witness['version']=='sec-archive-original-document-witness-v3':
                                 from hashlib import sha256
                                 raw=(original_cache/(witness['document_hash']+'.html')).read_bytes()

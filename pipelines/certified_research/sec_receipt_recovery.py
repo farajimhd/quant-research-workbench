@@ -90,3 +90,17 @@ def canonical(receipt):
     elif receipt.get('status')!='downloaded':
         raise ValueError('Unknown SEC download receipt status')
     return result
+
+
+def select_complete(candidates, size):
+    """Choose earliest download of identical bytes; conflicting evidence blocks."""
+    rows=[canonical(r) for r in candidates if r.get('byte_size')==size]
+    if not rows:return None
+    identity=lambda r:tuple(r[k] for k in FIELDS if k!='downloaded_at_utc')
+    if len({identity(r) for r in rows})!=1:
+        raise ValueError('Competing complete SEC archive receipts')
+    def timestamp(r):
+        value=datetime.fromisoformat(r['downloaded_at_utc'].replace('Z','+00:00'))
+        if value.tzinfo is None:raise ValueError('Archive receipt timestamp is not aware')
+        return value
+    return min(rows,key=timestamp)
