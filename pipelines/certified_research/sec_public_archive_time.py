@@ -21,11 +21,19 @@ def qualify(witness,receipt,*,mode='acceptance_checked_day'):
     """
     if mode not in ('acceptance_checked_day','official_filing_day'):raise ValueError('Unknown explicit SEC public-day mode')
     body=dict(witness);hash_=body.pop('witness_hash',None)
-    if (hash_!=digest(body) or witness.get('version')!='sec-archive-document-byte-witness-v2'
+    if (hash_!=digest(body) or witness.get('version') not in ('sec-archive-document-byte-witness-v2','sec-archive-original-document-witness-v3')
             or witness.get('original_bytes_verified') is not True or witness.get('container_digest_verified') is not True
             or witness.get('special_release') is not False or type(witness.get('public_document_count')) is not int
             or witness['public_document_count']<=0):
         raise ValueError('SEC public-day qualification requires a verified ordinary public submission')
+    if witness['version']=='sec-archive-original-document-witness-v3':
+        if (witness.get('source_authority')!='original_archive_document'
+                or not re.fullmatch('[0-9a-f]{64}',witness.get('retained_document_hash',''))
+                or not re.fullmatch('[0-9a-f]{64}',witness.get('document_hash',''))
+                or not re.fullmatch('0*[1-9][0-9]{0,9}',witness.get('cik',''))
+                or not re.fullmatch('[0-9]{10}-[0-9]{2}-[0-9]{6}',witness.get('accession',''))
+                or not witness.get('document_name')):
+            raise ValueError('Archive-original document identity is incomplete')
     if not isinstance(witness.get('form_type'),str) or not witness['form_type']:
         raise ValueError('SEC public-day submission type is unknown')
     day=date.fromisoformat(witness['source_archive_date']);quarter=(day.month-1)//3+1

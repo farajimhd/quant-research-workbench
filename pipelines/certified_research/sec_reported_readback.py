@@ -57,6 +57,7 @@ def verify(query,database,binding_hash,claim,source_guard,*,include_source=False
     result=dict(result,evidence_hash=digest(result))
     if include_source:
         result.update(extraction=extraction,document_key=header['document_key'],
+            source_witness=proof['witness'],
             source_document_hash=proof['witness']['document_hash'],
             reconciliation={k:source[k] for k in ('all_bulk_matched','comparison_status_counts',
                 'unmatched_original_context_counts','parity_input_blockers')})

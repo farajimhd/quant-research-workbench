@@ -59,6 +59,23 @@ def test_different_original_document_hash_is_not_a_witness():
         with pytest.raises(ValueError,match='payload differs'):witness.inspect_archive(path,prepared)
 
 
+def test_explicit_archive_original_preserves_both_transport_hashes():
+    with fixture() as (path,prepared):
+        original=prepared['document']['lineage']['document']['content_sha256']
+        prepared['document']['lineage']['document']['content_sha256']='c'*64
+        prepared['document']['lineage']['document_revision_state']='live_pending_archive_bytes'
+        prepared.pop('prepared_hash');prepared['prepared_hash']=digest(prepared)
+        captured=[]
+        result=witness.inspect_archive(path,prepared,original_document_sink=lambda proof,text:captured.append((proof,text)))
+        assert result['document_hash']==original and result['retained_document_hash']=='c'*64
+        assert sha256(captured[0][1].encode()).hexdigest()==original
+        assert result['source_authority']=='original_archive_document'
+        prepared['document']['lineage']['document_revision_state']='legacy'
+        prepared.pop('prepared_hash');prepared['prepared_hash']=digest(prepared)
+        with pytest.raises(ValueError,match='live/archive'):
+            witness.inspect_archive(path,prepared,original_document_sink=lambda *a:None)
+
+
 def test_v2_container_and_official_date_evidence_are_checked_independently():
     with fixture() as (path,prepared):
         staging=dict(status='staged',bytes=path.stat().st_size,sha256=sha256(path.read_bytes()).hexdigest())

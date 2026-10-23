@@ -19,7 +19,7 @@ def test_cross_campaign_reuse_preserves_authority_observation_time(monkeypatch):
     stamp=datetime(2026,10,23,tzinfo=timezone.utc)
     def query(sql,**kwargs):
         if sql.startswith('SELECT DISTINCT toString(observed_at)'):
-            return [dict(observed_at=stamp.strftime('%Y-%m-%d %H:%M:%S.%f'))] if 'receipt' in stored else []
+            return [dict(observed_at=stamp.strftime('%Y-%m-%d %H:%M:%S.%f'),recipe_hash=stored['receipt']['recipe_hash'])] if 'receipt' in stored else []
         if sql.startswith('SELECT fact_rows,output_hash'):
             return [stored['receipt']] if 'receipt' in stored else []
         return []

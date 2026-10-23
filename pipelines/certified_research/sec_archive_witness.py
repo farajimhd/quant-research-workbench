@@ -10,7 +10,8 @@ from .contracts import digest
 
 
 def inspect_archives(path,prepared,*,stop=None,progress=None,maximum_archive_bytes=2*1024**3,
-                    maximum_member_bytes=64*1024**2,maximum_scan_bytes=32*1024**3,maximum_members=100000,staging_receipt=None):
+                    maximum_member_bytes=64*1024**2,maximum_scan_bytes=32*1024**3,maximum_members=100000,staging_receipt=None,
+                    original_document_sink=None):
     """Read only a designated D copy and compare raw bytes with retained lineage.
 
     Staging owns the G→D copy/digest/reserve policy. This verifier establishes
@@ -71,11 +72,18 @@ def inspect_archives(path,prepared,*,stop=None,progress=None,maximum_archive_byt
                 s['document']['lineage']['document']['document_name'],
                 s['document']['lineage']['document']['document_type']) for s in sources}
             document_hashes={key:[] for key in selected}
+            document_payloads={}
             for row in filing['documents']:
                 identity=(row['sequence_number'],row['document_name'],row['document_type'])
-                if identity in document_hashes:document_hashes[identity].append(sha256(row['payload'].encode('utf-8')).hexdigest())
+                if identity in document_hashes:
+                    document_hashes[identity].append(sha256(row['payload'].encode('utf-8')).hexdigest())
+                    document_payloads[identity]=row['payload']
             for source in sources:
-                check();result=_document_witness(source,len(raw),submission_hash,index,filing,document_hashes,before.st_size,container_hash)
+                check();result=_document_witness(source,len(raw),submission_hash,index,filing,document_hashes,before.st_size,container_hash,
+                    archive_original=original_document_sink is not None)
+                if result['version']=='sec-archive-original-document-witness-v3':
+                    doc=source['document']['lineage']['document']
+                    original_document_sink(result,document_payloads[(doc['sequence_number'],doc['document_name'],doc['document_type'])])
                 results[result['document_key']]=result
             if not pending:break
     if pending:raise ValueError('Selected SEC submission is absent from the archive: '+','.join(sorted(pending)[:4]))
@@ -84,7 +92,7 @@ def inspect_archives(path,prepared,*,stop=None,progress=None,maximum_archive_byt
     return tuple(results[key] for key in keys)
 
 
-def _document_witness(prepared,raw_bytes,submission_hash,ordinal,filing,document_hashes,archive_bytes,container_hash):
+def _document_witness(prepared,raw_bytes,submission_hash,ordinal,filing,document_hashes,archive_bytes,container_hash,*,archive_original=False):
     lineage=prepared['document']['lineage'];document=lineage['document']
     if submission_hash!=lineage['archive_submission_hash']:raise ValueError('Original SEC submission hash differs')
     revision=source_revision(archive_date=document['source_archive_date'],archive_member=document['source_archive_member'],
@@ -94,7 +102,7 @@ def _document_witness(prepared,raw_bytes,submission_hash,ordinal,filing,document
     if filing['accession_number']!=document['accession_number'] or str(int(filing['cik']))!=str(int(document['cik'])):
         raise ValueError('Original SEC submission identity differs')
     selected=document_hashes[(document['sequence_number'],document['document_name'],document['document_type'])]
-    if len(selected)!=1 or selected[0]!=document['content_sha256']:
+    if len(selected)!=1 or (selected[0]!=document['content_sha256'] and not archive_original):
         raise ValueError('Original SEC document payload differs')
     header=filing['header_text']
     public_counts=re.findall(r'(?:<PUBLIC-DOCUMENT-COUNT>\s*|PUBLIC DOCUMENT COUNT:\s*)([0-9]+)',header,re.I)
@@ -112,6 +120,12 @@ def _document_witness(prepared,raw_bytes,submission_hash,ordinal,filing,document
             or bool(re.search(r'^\s*(?:CORRECTION|DELETION|PRIVATE[- ]TO[- ]PUBLIC|PAPER)\s*:',header,re.I|re.M)),
         container_sha256=container_hash,container_digest_verified=container_hash is not None,
         original_bytes_verified=True,public_time_qualified=False,allocation_certified=False)
+    if selected[0]!=document['content_sha256']:
+        if lineage.get('document_revision_state')!='live_pending_archive_bytes':
+            raise ValueError('Archive-original transport requires an explicit live/archive candidate')
+        result.update(version='sec-archive-original-document-witness-v3',document_hash=selected[0],
+            retained_document_hash=document['content_sha256'],cik=document['cik'],accession=document['accession_number'],
+            document_name=document['document_name'],source_authority='original_archive_document')
     return dict(result,witness_hash=digest(result))
 
 

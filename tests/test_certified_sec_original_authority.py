@@ -56,3 +56,17 @@ def test_authority_blocks_lineage_drift_and_ubs():
     with pytest.raises(ValueError):
         authority.verify_document(query,'q_live','1610520','0000320193-25-000079','filing.htm','b'*64,Mock(),Mock())
     query.assert_not_called()
+
+
+def test_archive_original_uses_original_values_without_rewriting_live_identity():
+    lineage,checked=evidence();original_hash=checked['source_document_hash']
+    lineage['document']['content_sha256']='e'*64;lineage['archive_version_key']='f'*64
+    checked['source_witness']=dict(version='sec-archive-original-document-witness-v3',
+        retained_document_hash='e'*64,candidate_hash=lineage['candidate_hash'],archive_version_key='f'*64,
+        cik='320193',accession='0000320193-25-000079',document_name='filing.htm')
+    with patch.object(authority.sec_document_lineage,'inspect',return_value=lineage),\
+         patch.object(authority.sec_reported_readback,'verify',return_value=checked):
+        result=invoke()
+        assert result['document_hash']==original_hash and result['retained_document_hash']=='e'*64
+        checked['source_witness']['accession']='0000320193-25-000080'
+        with pytest.raises(ValueError,match='transport lineage'):invoke()

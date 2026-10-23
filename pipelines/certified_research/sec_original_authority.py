@@ -21,10 +21,18 @@ def verify_document(query,database,cik,accession,document,binding_hash,claim,sou
     checked=sec_reported_readback.verify(query,database,binding_hash,claim,source_guard,include_source=True)
     extraction=checked['extraction']
     key=digest(dict(version=sec_share_source.VERSION,candidate_hash=before['candidate_hash'],parser=sec_share_context.VERSION))
+    witness=checked.get('source_witness',{})
+    archive_original=witness.get('version')=='sec-archive-original-document-witness-v3'
+    retained_hash=witness.get('retained_document_hash') if archive_original else checked['source_document_hash']
+    if archive_original and (witness.get('candidate_hash')!=before['candidate_hash']
+            or witness.get('archive_version_key')!=before['archive_version_key']
+            or str(int(witness['cik']))!=str(int(cik)) or witness.get('accession')!=accession
+            or witness.get('document_name')!=document):
+        raise ValueError('Archive-original authority differs from current issuer/transport lineage')
     if (checked['readback_verified'] is not True or checked['public_time_qualified'] is not True
             or checked['binding_hash']!=binding_hash or checked['document_key']!=key
-            or checked['source_document_hash']!=before['document']['content_sha256']
-            or extraction['source_text_hash']!=before['document']['content_sha256']
+            or retained_hash!=before['document']['content_sha256']
+            or extraction['source_text_hash']!=checked['source_document_hash']
             or extraction['catalog_hash']!=facts.catalog_hash()):
         raise ValueError('Original filing authority differs from current document/time/catalog binding')
     nils=tuple(r for r in extraction['rejected'] if r['reason']=='nil_share_fact'
@@ -46,4 +54,5 @@ def verify_document(query,database,cik,accession,document,binding_hash,claim,sou
         groups=projection['groups'],reconciliation=checked['reconciliation'],
         document_qualified=True,whole_scope_certified=False,aggregation='none')
     if nils:result['declared_missing_observations']=nils
+    if archive_original:result.update(version='qualified-archive-original-filing-authority-v2',retained_document_hash=retained_hash)
     return dict(result,authority_hash=digest(result))

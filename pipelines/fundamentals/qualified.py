@@ -27,9 +27,8 @@ def publish(query,source_database,database,request,binding_hash,population_hash,
     claim.check();schema.verify(query,database)
     verified=sec_original_authority.verify_document(query,source_database,*request,binding_hash,claim,source_guard)
     recipe=recipe_hash();source_id=verified['authority_hash']
-    key=digest(dict(source_id=source_id,recipe=recipe,population_hash=population_hash))
     stamp=observed_at.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')
-    prior=query(f"SELECT DISTINCT toString(observed_at) observed_at FROM {database}.reference_source_v1 FINAL "
+    prior=query(f"SELECT DISTINCT toString(observed_at) observed_at,recipe_hash FROM {database}.reference_source_v1 FINAL "
         f"WHERE family='sec_original_qualified' AND entity_id={literal(verified['cik'])} AND source_id={literal(source_id)}")
     if len(prior)>1:raise ValueError('Qualified original has competing observation timestamps')
     if prior:
@@ -37,6 +36,8 @@ def publish(query,source_database,database,request,binding_hash,population_hash,
         # encounters it. Preserve it across profile/full-run and resume paths.
         from datetime import datetime
         stamp=datetime.fromisoformat(prior[0]['observed_at']).strftime('%Y-%m-%d %H:%M:%S.%f')
+        recipe=prior[0]['recipe_hash']
+    key=digest(dict(source_id=source_id,recipe=recipe,population_hash=population_hash))
     stage=f'{database}.reference_stage_v1 FINAL WHERE batch_key={literal(key)}'
     receipt_where=f'batch_key={literal(key)} AND source_signature={literal(source_id)} AND recipe_hash={literal(recipe)} AND population_hash={literal(population_hash)}'
     source=dict(source_id=source_id,family='sec_original_qualified',entity_kind='issuer_cik',entity_id=verified['cik'],

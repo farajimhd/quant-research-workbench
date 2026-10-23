@@ -29,7 +29,7 @@ from pipelines.fundamentals import qualified,schema
 from pipelines.fundamentals.eligibility import require_eligible
 
 
-def main():
+def _main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--population',type=Path,required=True)
     parser.add_argument('--run-dir',type=Path,required=True)
@@ -39,6 +39,7 @@ def main():
     parser.add_argument('--workers',type=int,default=4)
     parser.add_argument('--profile',action='store_true',help='Three real original documents, then exact receipt reuse; no full launch')
     parser.add_argument('--plan-only',action='store_true')
+    parser.add_argument('--upgrade-recipe',action='store_true',help='Archive the prior request and independently verify existing qualified receipts before reuse')
     parser.add_argument('--profile-result',type=Path)
     parser.add_argument('--family-verification',type=Path,help='Reviewed family verification report, including unresolved identity coverage')
     parser.add_argument('--archive-root',type=Path,default=Path('G:/market-data/sec_core/daily_archives'))
@@ -54,7 +55,11 @@ def main():
         endpoint=a.endpoint,source='retained_original_SEC',destination='arte',numeric_mode='round-to-nearest')
     if (root/'request.json').exists():
         old=json.loads((root/'request.json').read_text())
-        if {k:old[k] for k in request}!=request:raise ValueError('Immutable campaign request differs; preserve existing receipts')
+        if {k:old[k] for k in request}!=request:
+            if not a.upgrade_recipe or any(old[k]!=request[k] for k in request if k!='recipe'):
+                raise ValueError('Immutable campaign request differs; preserve existing receipts')
+            save(root/('request-before-'+old['recipe']+'.json'),old)
+            save(root/'request.json',dict(request,observed_at=old['observed_at'],previous_recipe=old['recipe']))
         observed=datetime.fromisoformat(old['observed_at'])
     else:
         observed=datetime.now(timezone.utc);save(root/'request.json',dict(request,observed_at=observed.isoformat()))
@@ -71,7 +76,7 @@ def main():
         while not stop.wait(5):status()
     def guard():
         if (root/'STOP').exists() or stop.is_set():raise InterruptedError('Qualified campaign stopped at durable boundary')
-    with lock(runtime/'qualified-fundamentals.lock'),closing(Client(a.endpoint)) as client:
+    with closing(Client(a.endpoint)) as client:
         selected_ciks=('0000320193','0000789019','0001089113') if a.profile else ciks
         ids=','.join(map(literal,selected_ciks));documents=[]
         for year in range(a.start.year,a.end.year+1):
@@ -135,7 +140,17 @@ def main():
                         receipt_path=root/'receipts'/(digest(row)+'.json')
                         if receipt_path.exists():
                             saved=json.loads(receipt_path.read_text())
-                            if saved['document']!=row or saved['recipe']!=recipe:raise ValueError('Completed document receipt differs')
+                            if saved['document']!=row:raise ValueError('Completed document identity differs')
+                            if saved['recipe']!=recipe:
+                                if not a.upgrade_recipe:raise ValueError('Completed document recipe requires explicit audit migration')
+                                headers=client.query("SELECT source_hash FROM arte.reference_source_v1 FINAL WHERE family='sec_original_qualified' "
+                                    f"AND entity_id={literal(row['cik'])} AND source_id={literal(saved['publication']['source_id'])}")
+                                if len(headers)!=1:raise ValueError('Prior qualified source is missing or ambiguous')
+                                checked=qualified.publish(client.query,'q_live','arte',(row['cik'],row['accession'],row['document']),
+                                    headers[0]['source_hash'],pop_hash,observed,claim,owned)
+                                if checked!=dict(saved['publication'],state='reused'):raise ValueError('Prior qualified receipt failed migration readback')
+                                save(root/'receipts'/(digest(row)+'.before-'+saved['recipe']+'.json'),saved)
+                                saved.update(recipe=recipe,migration_audit=checked);save(receipt_path,saved)
                             with mutex:state['counts']['unchanged']+=1;state['queued']-=1;state['reused_rows']+=saved['publication']['rows']
                         else:pending.append(row)
                     if not pending:continue
@@ -171,8 +186,16 @@ def main():
                             with target.open('rb') as stream:checksum=file_digest(stream,'sha256').hexdigest()
                             copied=dict(status='staged',bytes=size,sha256=checksum)
                         if copied.get('sha256')!=receipt['sha256']:raise ValueError('Staged archive differs from qualified receipt')
+                        original_cache=root/'original-documents';original_cache.mkdir(exist_ok=True)
+                        def original_sink(witness,text):
+                            from hashlib import sha256
+                            raw=text.encode('utf-8')
+                            if len(raw)>64*1024**2 or sha256(raw).hexdigest()!=witness['document_hash']:
+                                raise ValueError('Original document exceeds bound or differs')
+                            (original_cache/(witness['document_hash']+'.html')).write_bytes(raw)
                         witnesses=sec_archive_witness.inspect_archives(target,descriptors,stop=stop,staging_receipt=copied,
-                            maximum_member_bytes=256*1024**2)
+                            maximum_member_bytes=256*1024**2,maximum_archive_bytes=8*1024**3,
+                            maximum_scan_bytes=64*1024**3,original_document_sink=original_sink)
                     except (ValueError,OSError,EOFError,tarfile.TarError) as error:
                         for row in admitted:blocked(row,error)
                         with mutex:state['active'].pop('archive',None)
@@ -198,7 +221,14 @@ def main():
                             update('public time and original extraction')
                             qualified_time=sec_public_archive_time.qualify(witness,receipt,mode='official_filing_day')
                             witness_publication.Publisher(own.query,'q_live',claim,stable,admission).publish((witness,),(qualified_time,),receipt)
-                            text=payload.load(own.query,*request_tuple,witness['document_hash'],maximum_bytes=64*1024**2,guard=owned)
+                            if witness['version']=='sec-archive-original-document-witness-v3':
+                                from hashlib import sha256
+                                raw=(original_cache/(witness['document_hash']+'.html')).read_bytes()
+                                if len(raw)>64*1024**2 or sha256(raw).hexdigest()!=witness['document_hash']:
+                                    raise ValueError('Captured original document changed')
+                                text=raw.decode('utf-8');del raw
+                            else:
+                                text=payload.load(own.query,*request_tuple,witness['document_hash'],maximum_bytes=64*1024**2,guard=owned)
                             extracted=extraction.extract(text,witness['document_hash'],row['cik'],maximum_bytes=64*1024**2);del text
                             tags=tuple(sorted({t for m in facts.catalog() for t in m.tags}))
                             bulk=reconciliation.load_bulk(own.query,*request_tuple[:2],tags)
@@ -236,6 +266,12 @@ def main():
         except BaseException as error:
             state.update(state='stopped' if isinstance(error,InterruptedError) else 'failed',error=str(error)[:500]);status();raise
         finally:stop.set();heartbeat.join(timeout=6)
+
+
+def main():
+    runtime=Path('D:/TradingML/runtimes')
+    if not runtime.is_dir():raise ValueError('Required runtime root is unavailable')
+    with lock(runtime/'qualified-fundamentals.lock'):return _main()
 
 
 if __name__=='__main__':raise SystemExit(main())
