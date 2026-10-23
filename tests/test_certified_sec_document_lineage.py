@@ -84,3 +84,25 @@ def test_valid_but_changed_archive_occurrence_does_not_return_candidate():
     owner=SimpleNamespace(check=lambda:None)
     with pytest.raises(ValueError,match='changed'):
         lineage.inspect(query,'320193',text['accession_number'],'filing.htm',owner,lambda:None)
+
+
+def test_live_archive_candidate_requires_later_byte_witness_and_seals_both_transports():
+    from datetime import datetime,timezone
+    text,document,archive=fixture()
+    live=dict(archive,source_archive_path='D:/live/submission.txt',source_content_sha256='c'*64)
+    revision=source_revision(archive_date=live['source_archive_date'],archive_member=live['source_archive_member'],
+        archive_path=live['source_archive_path'],source_content_sha256=live['source_content_sha256'],
+        occurrence_at_utc=datetime(2025,10,31,20,12,1,tzinfo=timezone.utc))
+    live.update(asdict(revision))
+    for row in (text,document):
+        row['source_archive_path']=live['source_archive_path'];row.update(asdict(revision))
+    result=lineage.live_archive_candidate(text,document,[archive,live])
+    assert result['document']['source_archive_path']==archive['source_archive_path']
+    assert result['retained_live_document']['source_archive_path']==live['source_archive_path']
+    assert result['candidate_only'] and not result['original_vintage_qualified']
+    assert not result['archive_byte_equivalence_verified']
+    with pytest.raises(ValueError):lineage.live_archive_candidate(text,document,[archive,live,archive])
+    bad=dict(text,actual_text_hash='d'*64)
+    with pytest.raises(ValueError):lineage.live_archive_candidate(bad,document,[archive,live])
+    bad=dict(live,source_version_key='d'*64)
+    with pytest.raises(ValueError):lineage.live_archive_candidate(text,document,[archive,bad])

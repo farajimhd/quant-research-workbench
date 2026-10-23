@@ -4,7 +4,7 @@ from threading import Event
 import re
 import sys
 
-from . import capacity,sec_share_capture,sec_share_source,sec_share_context,sec_document_lineage,sec_document_payload
+from . import capacity,sec_share_capture,sec_share_source,sec_share_context,sec_document_lineage,sec_document_payload,sec_taxonomy
 from .contracts import digest
 from .execution import Unit,execute
 
@@ -22,7 +22,7 @@ def request(value):
 
 def recipe_hash():
     from pipelines.sec.edgar.sec_pipeline import revision
-    modules=(sys.modules[__name__],sec_share_capture,sec_share_source,sec_share_context,sec_document_lineage,sec_document_payload,revision)
+    modules=(sys.modules[__name__],sec_share_capture,sec_share_source,sec_share_context,sec_document_lineage,sec_document_payload,sec_taxonomy,revision)
     return digest(dict(version='sec-share-source-execution-v1',python=tuple(sys.version_info[:2]),
         algorithms={m.__name__:digest(Path(m.__file__).read_text(encoding='utf-8')) for m in modules},
         ddl=tuple(t.ddl('q_live') for t in sec_share_capture.tables()),memory_reservation=MEMORY,

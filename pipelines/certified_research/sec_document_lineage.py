@@ -60,9 +60,16 @@ def inspect(query,cik,accession,document_name,claim,source_guard):
         # differing versions must remain visible to the ambiguity check below.
         text=query(f'SELECT DISTINCT {columns},lower(hex(SHA256(source_text))) actual_text_hash FROM q_live.sec_filing_text_v3 PREWHERE {where} LIMIT 2')
         document=query(f'SELECT DISTINCT {columns} FROM q_live.sec_filing_document_v3 WHERE {where} LIMIT 2')
+        live_pair=len(text)==len(document)==1 and text[0].get('source_revision_kind')=='live_feed_occurrence'
+        limit=3 if live_pair else 2
         archive=query('SELECT DISTINCT accession_number,primary_cik,source_archive_date,source_archive_member,source_archive_path,'
             'source_content_sha256,source_version_key,source_revision_rank,source_revision_at,source_revision_kind,pac_event_id '
-            f'FROM q_live.sec_filing_archive_accession_v3 WHERE accession_number={literal(accession)} LIMIT 2')
+            f'FROM q_live.sec_filing_archive_accession_v3 WHERE accession_number={literal(accession)} LIMIT {limit}')
+        if live_pair:
+            # Two legitimate transport occurrences are possible. Three means
+            # ambiguity, never silently choose the newest occurrence.
+            for row in (*text,*document,*archive):row['source_revision_rank']=int(row['source_revision_rank'])
+            return live_archive_candidate(text[0],document[0],archive)
         if any(len(rows)!=1 for rows in (text,document,archive)):
             raise ValueError('Document lineage is missing or ambiguous; explicit reconciliation required')
         archive[0]['source_revision_rank']=int(archive[0]['source_revision_rank'])
@@ -72,3 +79,45 @@ def inspect(query,cik,accession,document_name,claim,source_guard):
     guard();first=load();guard();second=load();guard()
     if first!=second:raise ValueError('SEC candidate lineage changed during inspection')
     return first
+
+
+def live_archive_candidate(text,document,occurrences):
+    """Propose exact document bytes for archive verification, not historical authority.
+
+    Both transport identities remain sealed. Only the subsequent archive witness
+    may establish that the retained live document existed in the daily archive.
+    """
+    ordinary=[r for r in occurrences if r.get('source_revision_kind')=='archive_occurrence']
+    live=[r for r in occurrences if r.get('source_revision_kind')=='live_feed_occurrence']
+    if len(occurrences)!=2 or len(ordinary)!=1 or len(live)!=1:
+        raise ValueError('Live/archive occurrence pair is missing or ambiguous')
+    live=live[0];archive=ordinary[0]
+    if live.get('pac_event_id') or archive.get('pac_event_id'):
+        raise ValueError('PAC needs separate qualification')
+    if not re.fullmatch('[0-9a-f]{64}',live.get('source_content_sha256') or ''):
+        raise ValueError('Live submission hash is missing')
+    for key in ('accession_number','source_archive_date','source_archive_member','source_archive_path'):
+        if not text.get(key) or text[key]!=document.get(key) or text[key]!=live.get(key):
+            raise ValueError('Live document transport identity differs')
+    if (archive['accession_number']!=live['accession_number'] or
+            str(int(archive.get('primary_cik') or '0'))!=str(int(live.get('primary_cik') or '0'))):
+        raise ValueError('Live/archive issuer or accession differs')
+    timestamp=datetime.fromisoformat(str(live['source_revision_at'])).replace(tzinfo=timezone.utc)
+    revision=source_revision(archive_date=live['source_archive_date'],archive_member=live['source_archive_member'],
+        archive_path=live['source_archive_path'],source_content_sha256=live['source_content_sha256'],occurrence_at_utc=timestamp)
+    for row in (text,document,live):
+        if any(row.get(k)!=getattr(revision,k) for k in ('source_version_key','source_revision_rank','source_revision_kind')) or str(row.get('source_revision_at'))!=revision.source_revision_at:
+            raise ValueError('Live occurrence version cannot be reproduced')
+    # Validate the proposed archive target through the same strict archive
+    # validator. Preserve the actual live provenance separately in the seal.
+    target=[]
+    for row in (text,document):
+        proposed=dict(row)
+        for key in ('source_archive_date','source_archive_member','source_archive_path','source_version_key','source_revision_rank','source_revision_kind','source_revision_at'):
+            proposed[key]=archive[key]
+        target.append(proposed)
+    result=bridge(*target,archive)
+    result.pop('candidate_hash')
+    result.update(version='sec-document-live-archive-candidate-v1',document_revision_state='live_pending_archive_bytes',
+        retained_live_document=dict(document),retained_live_occurrence=dict(live),archive_byte_equivalence_verified=False)
+    return dict(result,candidate_hash=digest(result))

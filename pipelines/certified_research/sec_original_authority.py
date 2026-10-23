@@ -27,7 +27,9 @@ def verify_document(query,database,cik,accession,document,binding_hash,claim,sou
             or extraction['source_text_hash']!=before['document']['content_sha256']
             or extraction['catalog_hash']!=facts.catalog_hash()):
         raise ValueError('Original filing authority differs from current document/time/catalog binding')
-    if extraction['rejected'] or extraction['security_cover']['rejected']:
+    nils=tuple(r for r in extraction['rejected'] if r['reason']=='nil_share_fact'
+        and extraction.get('version')=='sec-inline-fundamental-context-v4')
+    if len(extraction['rejected'])!=len(nils) or extraction['security_cover']['rejected']:
         raise ValueError('Original filing contains unresolved numeric or identity-cover observations')
     projection=sec_precision.select_reported(extraction,mode=checked['numeric_mode'])
     if projection['projection_hash']!=checked['projection_hash'] or len(projection['groups'])!=checked['groups']:
@@ -43,4 +45,5 @@ def verify_document(query,database,cik,accession,document,binding_hash,claim,sou
         precision=checked['precision'],numeric_mode=checked['numeric_mode'],catalog_hash=extraction['catalog_hash'],
         groups=projection['groups'],reconciliation=checked['reconciliation'],
         document_qualified=True,whole_scope_certified=False,aggregation='none')
+    if nils:result['declared_missing_observations']=nils
     return dict(result,authority_hash=digest(result))

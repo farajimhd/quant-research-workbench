@@ -11,7 +11,7 @@ from . import sec_fundamental_readback
 from . import sec_precision
 from . import sec_reported_publication
 from . import sec_reported_readback
-from . import sec_document_payload
+from . import sec_document_payload,sec_taxonomy
 from .contracts import digest,literal
 
 PRODUCT='sec_fundamental_source'
@@ -19,7 +19,7 @@ PRODUCT='sec_fundamental_source'
 
 def recipe_hash():
     modules=(sys.modules[__name__],sec_fundamental_context,sec_fundamental_reconciliation,sec_fundamental_publication,
-             sec_document_lineage,sec_document_payload,sec_share_preparation,sec_public_archive_time,facts,sec_share_context,sec_fundamental_readback,sec_precision)
+             sec_document_lineage,sec_document_payload,sec_taxonomy,sec_share_preparation,sec_public_archive_time,facts,sec_share_context,sec_fundamental_readback,sec_precision)
     return digest(dict(version='sec-original-fundamental-preparation-v1',
         algorithms={m.__name__:digest(Path(m.__file__).read_text(encoding='utf-8')) for m in modules},
         catalog_hash=facts.catalog_hash(),ddl=tuple(t.ddl('q_live') for t in sec_fundamental_publication.tables())))

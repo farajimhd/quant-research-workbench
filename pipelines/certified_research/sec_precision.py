@@ -71,6 +71,14 @@ def inventory(extraction):
         observations=len(positions),semantic_groups=len(groups),duplicate_groups=sum(g['observations']>1 for g in groups),
         dimensioned_groups=sum(g['dimensioned'] for g in groups),rejected_numeric_facts=len(extraction['rejected']),
         mode_status_counts={mode:dict(sorted(values.items())) for mode,values in counts.items()},certified=False)
+    # Explicit, empty xsi:nil is a retained missing-data declaration, never a
+    # numeric value or an unresolved conversion. Older extraction contracts do
+    # not validate nil content and cannot use this qualification rule.
+    if extraction.get('version')=='sec-inline-fundamental-context-v4':
+        nils=tuple(r['source_position'] for r in extraction['rejected'] if r['reason']=='nil_share_fact')
+        if nils:
+            result.update(version='original-sec-precision-inventory-v2',declared_nil_positions=nils,
+                rejected_numeric_facts=len(extraction['rejected'])-len(nils))
     return dict(result,inventory_hash=digest(result))
 
 

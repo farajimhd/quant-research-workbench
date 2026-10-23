@@ -5,6 +5,7 @@ from hashlib import sha256
 from io import BytesIO
 import re
 from xml.etree import ElementTree as ET
+from . import sec_taxonomy
 
 VERSION='sec-inline-share-context-v1'
 XBRL='http://www.xbrl.org/2003/instance'
@@ -101,7 +102,10 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
             concept=qname(name,fact)
             taxonomy_pattern=(r'\{(?:http://xbrl.sec.gov/dei|http://fasb.org/us-gaap)/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?\}[A-Za-z_][A-Za-z0-9_]*'
                 if fundamental else r'\{http://xbrl.sec.gov/dei/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?\}EntityCommonStockSharesOutstanding|\{http://fasb.org/us-gaap/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?\}CommonStockSharesOutstanding')
-            if not re.fullmatch(taxonomy_pattern,concept):
+            if fundamental:
+                try:sec_taxonomy.identity(concept)
+                except ValueError:raise ValueError('unsupported_share_taxonomy') from None
+            elif not re.fullmatch(taxonomy_pattern,concept):
                 raise ValueError('unsupported_share_taxonomy')
             context=contexts.get(row['context_id']);unit=units.get(row['unit_id'])
             if context is None or unit is None:raise ValueError('missing_context_or_unit')
@@ -139,7 +143,9 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
             dimensions=tuple(sorted((qname(m.get('dimension',''),m),qname((m.text or '').strip(),m))
                 for m in context.iter('{'+DIM+'}explicitMember')))
             if len({axis for axis,member in dimensions})!=len(dimensions):raise ValueError('duplicate_dimension_axis')
-            if fact.get('{http://www.w3.org/2001/XMLSchema-instance}nil') in ('true','1'):raise ValueError('nil_share_fact')
+            if fact.get('{http://www.w3.org/2001/XMLSchema-instance}nil') in ('true','1'):
+                if ''.join(fact.itertext()).strip():raise ValueError('nil_fact_has_content')
+                raise ValueError('nil_share_fact')
             if any(True for _ in fact.iter('{'+IX+'}exclude')):raise ValueError('unsupported_inline_exclusion')
             fixed_zero=fundamental and row['format'].split(':')[-1]=='fixed-zero'
             word_number=fundamental and row['format'].split(':')[-1]=='numwordsen'
@@ -172,7 +178,7 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
             observations.append(observation)
         except (ValueError,TypeError,InvalidOperation) as error:
             rejected.append(dict(row,reason=str(error)))
-    result=dict(version='sec-inline-fundamental-context-v3' if fundamental else VERSION,observations=tuple(observations),rejected=tuple(rejected),
+    result=dict(version='sec-inline-fundamental-context-v4' if fundamental else VERSION,observations=tuple(observations),rejected=tuple(rejected),
         source_text_hash=expected_hash,parsing_prefix_bytes=prefix_bytes,parsing_suffix_bytes=suffix_bytes,
         sec_xbrl_envelope=envelope,allocation_certified=False)
     if include_security_cover:

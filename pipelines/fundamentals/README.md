@@ -27,6 +27,19 @@ of the qualified original authority into downstream historical products remain
 separate required steps; do not advertise normalization or a single-document
 pilot as their completion.
 
+The original parser recognizes dated US GAAP, DEI and HTTP/HTTPS IFRS-full
+namespaces without merging their concept identities. Version 4 preserves empty
+`xsi:nil` declarations as missing observations; they never become zero or a
+selected numeric value. Nonempty nil declarations remain invalid. Original
+precision and all source/public-time/readback checks still apply.
+
+Live-feed documents may form an explicit archive-verification candidate when
+exactly one reproducible live occurrence and one ordinary archive occurrence
+agree on issuer/accession. Both transport identities are sealed separately.
+This is not archive equivalence: the archive witness must still verify exact
+document bytes and the original download receipt must match the container.
+Competing occurrences, PACs and mismatched archive receipts remain blocked.
+
 The new tables contain retained observations, **not automatically certified
 public fundamentals**. Missing publication timestamps remain NULL. Bulk/company
 SEC facts retain `original_document_parity_required`; invalid Reg SHO date

@@ -4,7 +4,7 @@ from decimal import Decimal,InvalidOperation
 import json
 import re
 
-from . import sec_public_archive_time
+from . import sec_public_archive_time,sec_taxonomy
 from .contracts import digest,literal
 from .facts import CURRENCY_UNITS
 
@@ -26,9 +26,8 @@ def compare_original(extraction,bulk):
         return (row['taxonomy'],row['tag'],unit,row['period_start'],row['period_end'],tuple(sorted(dimensions)))
     original=defaultdict(list)
     for row in extraction['observations']:
-        match=re.fullmatch(r'\{(http://fasb.org/us-gaap|http://xbrl.sec.gov/dei)/[^}]+\}(.+)',row['concept'])
-        if match is None:raise ValueError('Unsupported extracted fundamental taxonomy')
-        normalized=dict(row,taxonomy='us-gaap' if 'fasb.org' in match[1] else 'dei',tag=match[2])
+        taxonomy,tag=sec_taxonomy.identity(row['concept'])
+        normalized=dict(row,taxonomy=taxonomy,tag=tag)
         original[key(normalized)].append(normalized)
     seen=set();used=set();rows=[]
     for row in bulk:

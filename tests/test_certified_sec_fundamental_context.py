@@ -10,6 +10,23 @@ from tests.test_certified_sec_share_context import document
 def run(payload):return context.extract(payload,sha256(payload.encode()).hexdigest(),'320193')
 
 
+@pytest.mark.parametrize('scheme', ('http', 'https'))
+def test_ifrs_exact_namespace_and_bulk_identity(scheme):
+    from pipelines.certified_research.sec_fundamental_reconciliation import compare_original
+    payload=document('1234').replace('dei:EntityCommonStockSharesOutstanding','g:Assets')
+    payload=payload.replace('http://fasb.org/us-gaap/2025',scheme+'://xbrl.ifrs.org/taxonomy/2025-03-27/ifrs-full')
+    result=run(payload)
+    assert not result['rejected']
+    row=result['observations'][0]
+    assert row['value']=='1234' and '/ifrs-full}' in row['concept']
+    bulk=dict(row,source_record='test',taxonomy='ifrs-full',tag='Assets',source_numeric_type='String')
+    assert compare_original(result,[bulk])['comparisons'][0]['status']=='matched'
+    bulk['taxonomy']='us-gaap'
+    assert compare_original(result,[bulk])['comparisons'][0]['status']=='missing_original_context'
+    bad=payload.replace('xbrl.ifrs.org','xbrl.ifrs.org.example.com')
+    assert run(bad)['rejected'][0]['reason']=='unsupported_share_taxonomy'
+
+
 def test_duration_currency_and_negative_scaled_decimal_are_exact():
     payload=document('12345678901234567890.12',fact_extra='sign="-" scale="3"')
     payload=payload.replace('xmlns:g=', 'xmlns:iso="http://www.xbrl.org/2003/iso4217" xmlns:g=')
@@ -97,3 +114,23 @@ def test_real_retained_apple_catalog_extraction():
         assert any(row['unit']=='USD' for row in result['observations'])
         assert result['certified'] is False
     finally:client.close()
+
+
+def test_explicit_nil_is_retained_missing_not_zero_or_unresolved_numeric():
+    from pipelines.certified_research import sec_precision
+    payload=document('1234').replace('decimals="-3"','decimals="0"').replace('</html>',
+        '<ix:nonFraction xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'name="g:Assets" contextRef="c" unitRef="u" xsi:nil="true" decimals="0"></ix:nonFraction></html>')
+    # Use the fixture's exact context/unit IDs.
+    import re
+    payload=payload.replace('contextRef="c"', 'contextRef="'+re.search(r'contextRef="([^"]+)"',payload)[1]+'"')
+    payload=payload.replace('unitRef="u"', 'unitRef="'+re.search(r'unitRef="([^"]+)"',payload)[1]+'"')
+    result=run(payload)
+    assert len(result['observations'])==1
+    assert result['rejected'][0]['reason']=='nil_share_fact'
+    inventory=sec_precision.inventory(result)
+    assert inventory['declared_nil_positions']==(1,) and inventory['rejected_numeric_facts']==0
+    assert sec_precision.gate(result,mode='round-to-nearest')['ready']
+    bad=run(payload.replace('decimals="0"></ix:nonFraction>', 'decimals="0">123</ix:nonFraction>'))
+    assert bad['rejected'][0]['reason']=='nil_fact_has_content'
+    assert not sec_precision.gate(bad,mode='round-to-nearest')['ready']
