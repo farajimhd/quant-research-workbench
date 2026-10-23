@@ -41,6 +41,8 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
         parsing_view=inner.lstrip(b' \t\r\n')
         prefix_bytes+=len(b'<XBRL>')+len(inner)-len(parsing_view)
     namespaces={};stack=[];pending=[];maps={};nodes=0
+    elements=[];retention=[];retained_nodes=0
+    collected={'context':[], 'unit':[], 'nonFraction':[], 'nonNumeric':[]}
     try:
         parser=ET.iterparse(BytesIO(parsing_view),events=('start-ns','start','end'))
         for event,node in parser:
@@ -48,12 +50,26 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
             if event=='start':
                 if pending:namespaces=dict(namespaces,**dict(pending));pending=[]
                 stack.append(namespaces);nodes+=1
-                if nodes>250000 or len(stack)>128:raise ValueError('SEC XML complexity exceeds its bound')
-                if node.tag.rsplit('}',1)[-1] in ('nonFraction','nonNumeric') or node.tag in ('{'+XBRL+'}measure','{'+DIM+'}explicitMember'):
+                local=node.tag.rsplit('}',1)[-1]
+                selected=(local in ('nonFraction','nonNumeric') or node.tag in ('{'+XBRL+'}context','{'+XBRL+'}unit'))
+                keep=selected or bool(retention and retention[-1])
+                retention.append(keep);elements.append(node)
+                if keep:retained_nodes+=1
+                # Presentation markup can dominate large annual reports. Bound
+                # total work separately from retained evidence/tree memory.
+                if nodes>2000000 or retained_nodes>250000 or len(stack)>128:
+                    raise ValueError('SEC XML complexity exceeds its bound')
+                if selected:collected[local].append(node)
+                if local in ('nonFraction','nonNumeric') or node.tag in ('{'+XBRL+'}measure','{'+DIM+'}explicitMember'):
                     maps[id(node)]=namespaces
             else:
+                keep=retention.pop();elements.pop()
+                # Preserve text, tails, nested facts and every context subtree.
+                # Outside evidence subtrees discard presentation immediately.
+                if not keep:
+                    node.clear()
+                    if elements:elements[-1].remove(node)
                 stack.pop();namespaces=stack[-1] if stack else {}
-        root=parser.root
     except ET.ParseError as error:raise ValueError('SEC source is not strict XML') from error
     def qname(value,node):
         prefix,sep,local=value.partition(':')
@@ -63,7 +79,7 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
         return '{'+uri+'}'+local
     contexts={};units={}
     for tag,destination in (('context',contexts),('unit',units)):
-        for node in root.iter('{'+XBRL+'}'+tag):
+        for node in collected[tag]:
             key=node.get('id')
             if not key or key in destination:raise ValueError('Missing or duplicate XBRL identity')
             destination[key]=node
@@ -73,7 +89,7 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
         raise ValueError('Invalid bounded fundamental concept catalog')
     selected_tags=set(catalog_tags) if fundamental else TAGS
     observations=[];rejected=[]
-    for position,fact in enumerate(n for n in root.iter() if n.tag.rsplit('}',1)[-1]=='nonFraction'):
+    for position,fact in enumerate(collected['nonFraction']):
         name=fact.get('name','');local=name.split(':')[-1]
         if local not in selected_tags:continue
         if len(observations)+len(rejected)>=maximum_facts:raise ValueError('SEC share fact bound exceeded')
@@ -161,7 +177,7 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
         sec_xbrl_envelope=envelope,allocation_certified=False)
     if include_security_cover:
         cover=[];failures=[];selected={'Security12bTitle','TradingSymbol','SecurityExchangeName'}
-        for position,fact in enumerate(n for n in root.iter() if n.tag.rsplit('}',1)[-1]=='nonNumeric'):
+        for position,fact in enumerate(collected['nonNumeric']):
             name=fact.get('name','')
             if name.split(':')[-1] not in selected:continue
             if len(cover)+len(failures)>=10000:raise ValueError('SEC cover fact bound exceeded')

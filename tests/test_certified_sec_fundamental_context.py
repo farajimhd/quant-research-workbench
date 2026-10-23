@@ -67,6 +67,21 @@ def test_unsupported_english_numbers_are_not_guessed_or_converted_to_zero():
     assert run(payload)['rejected'][0]['reason']=='unsupported_numwordsen_input'
 
 
+def test_presentation_nodes_do_not_consume_evidence_tree_budget():
+    payload=document().replace('</html>', '<div>'+'<span>x</span>'*250001+'</div></html>')
+    extracted=run(payload)
+    assert extracted['observations'][0]['value']=='1234'
+    assert extracted['observations'][0]['source_position']==0
+    assert not extracted['rejected']
+
+
+def test_streaming_preserves_nested_fact_text_tail_and_positions():
+    payload=document('1234').replace('>1234</ix:nonFraction>',
+        '>1<span>2</span>34</ix:nonFraction>')
+    row=run(payload)['observations'][0]
+    assert row['raw_text']=='1234' and row['value']=='1234' and row['source_position']==0
+
+
 @pytest.mark.skipif(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')!='1',reason='explicit ClickHouse opt-in')
 def test_real_retained_apple_catalog_extraction():
     from scripts import build_market_day as builder
