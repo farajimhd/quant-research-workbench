@@ -291,8 +291,19 @@ HTML mappings certify **reviewed observations**, not the whole filing. This scop
 is recorded in the ARTE source evidence/reason and local receipt. A processed
 filing count must not be interpreted as complete catalog or issuer coverage.
 The initial mappings cover dated share counts in twelve retained amendments and
-ten statement cells in the retained Oroplata 2018-12-31 report. Other facts and
-filings require additional explicit source review; they are not inferred.
+ten statement cells in the retained Oroplata 2018-12-31 report. The additional
+`sec_html_reviewed_2019.py` registry covers all 24 remaining reviewed originals
+with 175 selected observations: primary issuer balance-sheet totals, reported
+EPS/weighted shares, native DKK IFRS financial data, and dated cover counts.
+Physical period headers and statement-subject headings are checked. Investee
+tables are not attributed to the filing issuer; cash components are not summed,
+and missing-marker liabilities are not converted into zero. Alphabet's three
+share classes retain explicit source-labeled dimensions without an inferred
+total or a security-allocation certificate. The joint Spectrum/SB-RH filing's
+parent count is restricted to CIK 109177, not subsidiary CIK 1592706, as verified
+against the retained SEC header. Incorporated financial statements are not
+implicitly copied from another document. These 37 filings/197 observations do
+not imply whole-filing coverage. Other facts require additional explicit review.
 After the parent owner drains, the blocked retry profiles up to three registered
 HTML targets through publication, independent readback and immediate reuse before
 attempting the wider retry. The original writer is never hot-patched.

@@ -71,3 +71,56 @@ def test_nested_table_cannot_masquerade_as_flat_financial_row():
     text,source,plan=fixture();text=text.replace('Total assets','Total assets<table><tr><td>hidden</td></tr></table>')
     source=sha256(text.encode()).hexdigest();plan['document_hash']=source
     with pytest.raises(ValueError,match='Nested'):html.extract(text,source,'1',seal(plan))
+
+
+@pytest.mark.parametrize('change',['subject','header'])
+def test_statement_subject_and_physical_period_headers_fail_closed(change):
+    text,source,plan=fixture()
+    plan['facts'][0]['table_proof']=dict(heading='December 31, 2018. USD in thousands.',
+        headers=[[0,['Total assets','(1,234)']]])
+    assert html.extract(text,source,'1',seal(plan))['observations'][0]['value']=='-1234000'
+    if change=='subject':plan['facts'][0]['table_proof']['heading']='Subsidiary financial statements'
+    else:plan['facts'][0]['table_proof']['headers'][0][1]=['Total assets','2017']
+    with pytest.raises(ValueError,match='heading|headers'):html.extract(text,source,'1',seal(plan))
+
+
+def test_share_classes_remain_separate_and_registered_readback_rejects_relabeling(monkeypatch):
+    text='At January 31, 2019: 123 shares Class A common stock; 456 shares Class B common stock.'
+    source=sha256(text.encode()).hexdigest();_,_,plan=fixture();plan['document_hash']=source
+    template=plan['facts'][0];selected=[]
+    for value,klass in [('123','Class A common stock'),('456','Class B common stock')]:
+        fact=deepcopy(template);quote=value+' shares '+klass
+        fact.update(concept='{http://xbrl.sec.gov/dei/2018}EntityCommonStockSharesOutstanding',
+            period_start=None,period_end='2019-01-31',unit='shares',scale=0,decimals='0',expected_value=value,
+            label='shares',evidence=[text],locator=dict(kind='quote',quote=quote,value_text=value),
+            dimensions=[['reviewed-html:share-class',klass]])
+        selected.append(fact)
+    plan['facts']=selected;plan=seal(plan);out=html.extract(text,source,'1',plan)
+    assert len(sec_precision.select_reported(out,mode='round-to-nearest')['groups'])==2
+    assert len({r['context_id'] for r in out['observations']})==2
+    monkeypatch.setattr(sec_html_reviewed,'plan_for',lambda *args:plan)
+    html.verify_registered(out,'1')
+    altered=deepcopy(out);altered['observations'][0]['dimensions']=()
+    altered.pop('extraction_hash');altered['extraction_hash']=digest(altered)
+    with pytest.raises(ValueError,match='semantic'):html.verify_registered(altered,'1')
+    plan['facts'][0]['dimensions']=[['reviewed-html:share-class','Class C capital stock']]
+    with pytest.raises(ValueError,match='share-class'):html.extract(text,source,'1',seal(plan))
+
+
+def test_reviewed_registry_keeps_source_issuer_and_reporting_basis():
+    from pipelines.certified_research.sec_html_reviewed_2019 import REVIEWED
+    assert len(REVIEWED)==24
+    assert sum(len(v['facts']) for v in REVIEWED.values())==175
+    for source,row in REVIEWED.items():
+        plan=sec_html_reviewed.plan_for(source,row['cik'])
+        assert plan['scope']=='reviewed_observations'
+        assert sec_html_reviewed.plan_for(source,'9999999999') is None
+        body=dict(plan);body.pop('plan_hash');assert digest(body)==plan['plan_hash']
+    joint='6d1cb007f8718f2abfc052f12c2ea93f36b042dcc6da415ef63144f1d25472dd'
+    assert sec_html_reviewed.plan_for(joint,'1592706') is None
+    assert sec_html_reviewed.plan_for(joint,'109177')['facts'][0]['expected_value']=='53423237'
+    novo=sec_html_reviewed.plan_for('6b92ee048096f8fb19451efcdfa114b5263ee888134dc55113e67e7c0fa7e8c0','353278')
+    assert all(f['unit']=='DKK' and f['scale']==6 for f in novo['facts'])
+    assert {f['period_end'] for f in novo['facts']}=={f'{year}-12-31' for year in range(2014,2019)}
+    ares=sec_html_reviewed.plan_for('783727213c37bb808ad29c6d733c764645e9c793880d878aa385f0f5769d9ab0','1287750')
+    assert {f['locator']['table'] for f in ares['facts']}=={270}  # Table 201 is an investee.

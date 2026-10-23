@@ -37,6 +37,9 @@ SHARES=(
 
 
 def plan_for(document_hash,cik):
+    from .sec_html_reviewed_2019 import plan_for as remaining
+    reviewed=remaining(document_hash,cik)
+    if reviewed is not None:return reviewed
     if document_hash=='02e3c758d608b4130b69b9fbef02e08f726b4b81608782d689bd0199f51f036a' and str(int(cik)).zfill(10)=='0001576873':
         # Oroplata 2018-12-31 original: physical TD coordinates, not inferred
         # column offsets. No dashes, per-share ambiguity or narrative values.

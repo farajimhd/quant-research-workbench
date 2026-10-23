@@ -30,7 +30,7 @@ class Tables(HTMLParser):
         if tag in ('script','style'):self.hidden+=1
         if tag=='table':
             if len(self.tables)>=10000 or len(self.stack)>=32:raise ValueError('HTML table bound exceeded')
-            row=dict(rows=[],nested=False,cell_open=False)
+            row=dict(rows=[],nested=False,cell_open=False,preceding=normalize(' '.join(self.text[-256:]))[-2048:])
             if self.stack:self.stack[-1]['nested']=True
             self.tables.append(row);self.stack.append(row)
         elif tag=='tr' and self.stack:
@@ -96,12 +96,26 @@ def extract(payload,expected_hash,cik,plan,*,maximum_bytes=64*1024**2):
         evidence=item['evidence']
         if not 1<=len(evidence)<=12 or any(not isinstance(q,str) or not q or len(q)>4096 or q not in text for q in evidence):
             raise ValueError('HTML period/unit/issuer review evidence differs')
+        dimensions=tuple(tuple(d) for d in item.get('dimensions',()))
+        if dimensions and (len(dimensions)!=1 or len(dimensions[0])!=2
+                or dimensions[0][0]!='reviewed-html:share-class'
+                or dimensions[0][1] not in ('Class A common stock','Class B common stock','Class C capital stock')
+                or unit!='shares' or dimensions[0][1] not in ' '.join(evidence)):
+            raise ValueError('HTML share-class context lacks reviewed source evidence')
         locator=item['locator']
         if locator['kind']=='cells':
             ti,ri,columns=locator['table'],locator['row'],locator['columns']
             if type(ti) is not int or type(ri) is not int or ti<0 or ri<0:raise ValueError('Invalid HTML locator')
             table=parsed.tables[ti]
             if table['nested']:raise ValueError('Nested layout table cannot be a financial fact')
+            if 'table_proof' in item:
+                proof=item['table_proof']
+                context=table['preceding']+' '+normalize(' '.join(c['text'] for row in table['rows'][:10] for c in row))
+                if not proof['heading'] or proof['heading'] not in context:
+                    raise ValueError('HTML statement subject heading differs')
+                for index,cells in proof['headers']:
+                    if [normalize(c['text']) for c in table['rows'][index]]!=cells:
+                        raise ValueError('HTML reviewed period column headers differ')
             row=table['rows'][ri]
             if (not isinstance(columns,list) or not 1<=len(columns)<=4 or columns!=sorted(set(columns))
                     or any(type(c) is not int or c<0 for c in columns)):raise ValueError('Invalid HTML cell selection')
@@ -131,8 +145,8 @@ def extract(payload,expected_hash,cik,plan,*,maximum_bytes=64*1024**2):
         if value!=item['expected_value'] or decimals!=item['decimals']:
             raise ValueError('HTML value or precision differs from independently reviewed value')
         observations.append(dict(source_position=position,concept=concept,period_start=start,period_end=end,
-            unit=unit,dimensions=(),value=value,decimals=decimals,scale=str(scale),format='',raw_text=value_text,
-            source_text_hash=expected_hash,context_id=digest((start,end,unit)),fact_id='',
+            unit=unit,dimensions=dimensions,value=value,decimals=decimals,scale=str(scale),format='',raw_text=value_text,
+            source_text_hash=expected_hash,context_id=digest((start,end,unit,dimensions)) if dimensions else digest((start,end,unit)),fact_id='',
             html_proof=dict(plan_hash=seal,locator=locator,label=item['label'],evidence=evidence)))
     result=dict(version=VERSION,observations=tuple(observations),rejected=(),source_text_hash=expected_hash,
         html_plan=plan,extraction_scope='reviewed_observations',whole_document_coverage=False,
@@ -155,7 +169,8 @@ def verify_registered(extraction,cik):
         expected=dict(source_position=position,concept=item['concept'],period_start=item['period_start'],
             period_end=item['period_end'],unit=item['unit'],value=item['expected_value'],decimals=item['decimals'],
             scale=str(item['scale']),source_text_hash=extraction['source_text_hash'])
-        if any(row.get(k)!=v for k,v in expected.items()) or row['dimensions']:
+        if (any(row.get(k)!=v for k,v in expected.items())
+                or tuple(tuple(d) for d in row['dimensions'])!=tuple(tuple(d) for d in item.get('dimensions',()))):
             raise ValueError('HTML reviewed semantic observation differs')
         if row['html_proof']!=dict(plan_hash=plan['plan_hash'],locator=item['locator'],label=item['label'],evidence=item['evidence']):
             raise ValueError('HTML source location proof differs')
