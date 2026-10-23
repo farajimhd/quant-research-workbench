@@ -347,3 +347,68 @@ Evidence under `D:/TradingML/runtimes/level-book-v8/horizon-transfer/` includes
 full predictions, coverage, daily/pooled metrics and provenance. Validation
 reproduced 15 saved score sets, independently scanned 500 as-of endpoints,
 checked 1,200 scalar baseline updates, and checked exact timestamp/close ties.
+
+### Fixed-pair first-boundary-break experiment
+
+Run `python -B research/level_book/v8/run_boundary_race.py`. This reuses the
+hash-verified canonical-derived cache and replays August 13 plus the same five
+evaluation sessions (August 14, 17, 18, 19 and 20). Outputs live under
+`D:/TradingML/runtimes/level-book-v8/boundary-race/aapl-fixed-pairs-v2`.
+No notebook or database writes are involved.
+
+Starting at event 200, select the nearest active support entirely below price
+and resistance entirely above it. Freeze both identities and their outer band
+boundaries until a subsequent trade strictly crosses one boundary. New levels
+do not replace an open pair. Only one race is pending at a time; a new race can
+start on the previous race's resolution event. Session-close pending races are
+reported separately. Missing brackets are counted, not filled with invented
+levels. These are new pair episodes on the same sessions, not the individual
+touch cohort used by earlier experiments.
+
+The online count model predicts upper-boundary-first using price position
+(five bins), last nonzero trade direction, each role's age (below/above 60
+seconds), and each boundary's half-bonus reaction estimate (fixed thirds).
+It backs off from 540 full cells to 15 position/direction cells, then to the
+distance probability `(price - lower) / (upper - lower)`, using fixed weight
+20 at each step. Training uses the previous session and only current-session
+outcomes resolved strictly before the prediction event. Same-event outcomes
+are withheld. Existing reaction estimates follow the same availability rule.
+The smoothing weight is an engineering default, not a tuned parameter.
+
+Comparisons include the learned position/direction-only model, distance,
+historical upper-first frequency, last-direction continuation, and 50/50.
+Fenwick trees select active boundaries in O((events + role periods) log bands)
+time; scoring uses constant-size count tables. The existing band replay engine
+is unchanged. Validation independently scans sampled future paths and active
+boundaries, checks truncated-prefix identity, and reconstructs predictions
+from admitted outcome prefixes. Reused evaluation sessions remain diagnostic,
+not fresh confirmation or evidence of profitability.
+
+The five-session experiment evaluated 23,399 resolved races from 1,056,104
+trades, with five pending at close. After the initial 199 events per session,
+27,307 events lacked a valid active bracket (21,581 while no race was pending).
+Median resolution time was 1.370 seconds, the 90th percentile 12.938 seconds,
+and median frozen outer-boundary width $0.06. Upper-first outcomes were 50.17%.
+
+| Method | Accuracy | Mean daily AUC | Brier error |
+| --- | ---: | ---: | ---: |
+| Full model, including reaction and age | 63.69% | 0.6792 | 0.22541 |
+| Learned position/direction only | 63.81% | 0.6792 | 0.22520 |
+| Distance baseline | 63.81% | 0.6847 | 0.23404 |
+| Historical outcome frequency | 50.11% | 0.4949 | 0.25020 |
+| Last-direction continuation | 55.87% | 0.5589 | N/A |
+| Constant 50/50 | 50.17% | 0.5000 | 0.25000 |
+
+The constant predictor's accuracy uses an upper-first tie decision, not a
+simulated random coin. The direction rule emits hard 0/1 predictions; its
+probability errors are retained in the artifact but not treated as calibrated
+probabilities. Both learned models improve Brier error over distance on all
+five days. The full model beats distance accuracy on only two days and does
+not improve aggregate accuracy or Brier over the simpler learned model. Thus
+this experiment supports learning probability calibration for boundary
+distance, but does not establish incremental value from the reaction/age
+features. Validation passed 1,200 independent first-break/nearest-pair checks,
+six prefix comparisons and 500 independent prediction reconstructions.
+Reaction probabilities are represented by coarse fixed bins, so this is a
+test of this specific simple model, not proof that richer reaction features
+cannot add predictive value.
