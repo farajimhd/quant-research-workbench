@@ -242,6 +242,13 @@ def run(training,validation,output,*,population_size=1024,generations=50,batch_s
                     for day,h in sealed['session_receipts'].items():
                         if file_hash(root/day/'receipt.json')!=h:raise ValueError('Interrupted generation receipt changed')
                     train_timings=[]
+                elif generation==1 and (root/'screen-reuse.json').exists():
+                    reused=json.loads((root/'screen-reuse.json').read_bytes())
+                    if reused['population_sha256']!=token or reused['screen']!=initial_population.get('screen'):raise ValueError('Screen survivor population changed')
+                    if set(reused['session_receipts'])!=set(train['days']) or reused['validation_feedback'] is not False:raise ValueError('Screen training coverage changed')
+                    for day,h in reused['session_receipts'].items():
+                        if file_hash(root/day/'receipt.json')!=h:raise ValueError('Screen survivor receipt changed')
+                    train_timings=[]
                 else:train_timings=trainers.generation(train['days'],population,generation,token,
                     **({'prepared_population':prepared_population} if shared_replay else {}))
                 pipeline['training_evaluation_seconds']=perf_counter()-stage_started;stage_started=perf_counter()
