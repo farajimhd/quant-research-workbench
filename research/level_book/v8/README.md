@@ -279,3 +279,33 @@ but weak discrimination and worse probability calibration. Pooled AUCs differ
 Five thousand independently scanned encounter outcomes, seeded prefix isolation
 for all three histories, original notebook-08 prediction parity and hash-verified
 source-cache reuse passed. Full receipts are in that runtime directory.
+
+### Separate recency and personal-bonus diagnostics
+
+Run `python -B research/level_book/v8/run_score_ablation.py`. It reuses the
+hash-verified full-session experiment above; no source reads from ClickHouse,
+band recalculation or notebook are needed. Generated evidence goes under
+`D:/TradingML/runtimes/level-book-v8/score-ablation/` in a new run directory.
+
+Each of the 1/5/20-session histories is evaluated on the same five sessions.
+Recency-only variants weight prior-session counts and duration sums by
+`2 ** (-session_lag / half_life)`, with half-lives 1 and 5 sessions. The previous
+session has lag 1; newly resolved current-session outcomes have unit weight.
+There is no intraday decay, and the original personal bonus remains unchanged.
+Bonus-only variants retain uniform history and use
+`p_shared + multiplier * (p_original - p_shared)` for multipliers 0.5 and 0.
+The shared estimate still excludes the current role period. No combined
+recency-plus-reduced-bonus variant is tested. Matching recency-weighted global
+baselines are also reported.
+
+The 20261023T150151337431Z run reproduced all 15 original prediction sets
+exactly and passed 30 weighted prefix-isolation checks. On 86,682 resolved
+encounters, the primary 20-session comparison had Brier errors: current 0.24907,
+global baseline 0.24509, recency H1 0.24640, recency H5 0.24766, half bonus
+0.24485, zero bonus 0.24508. Halving the bonus retained mean daily AUC near
+0.5494; removing it reduced AUC to 0.5051. The 1-session half-bonus control
+had Brier 0.24265 versus baseline 0.24414 and accuracy 58.02% versus 57.61%.
+Half bonus beat each matching baseline on Brier on all five days for 1/5-session
+histories, and three days for 20 sessions. These are calibration improvements,
+not strong level discrimination. The previously inspected evaluation sessions
+make this diagnostic reuse, not fresh held-out confirmation.
