@@ -62,6 +62,9 @@ def verify_document(query,database,cik,accession,document,binding_hash,claim,sou
         result.update(document_qualified=False,observations_qualified=True,
             qualification_scope='reviewed_html_observations',whole_document_coverage=False,
             html_plan_hash=extraction['html_plan']['plan_hash'])
+        native={r['concept']:r['html_proof']['native'] for r in extraction['observations']
+                if 'native' in r['html_proof']}
+        if native:result['native_definitions']=native
     if extraction.get('extraction_scope')=='all_tagged_numeric':
         census=extraction.get('numeric_census',{})
         rows=(*extraction['observations'],*extraction['rejected'])

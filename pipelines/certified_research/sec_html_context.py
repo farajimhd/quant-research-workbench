@@ -83,8 +83,13 @@ def extract(payload,expected_hash,cik,plan,*,maximum_bytes=64*1024**2):
     parsed=parse(payload,expected_hash,maximum_bytes);text=normalize(' '.join(parsed.text));observations=[];positions=set()
     catalog=facts.catalog();tags={t for metric in catalog for t in metric.tags}
     for position,item in enumerate(body['facts']):
-        concept=item['concept'];taxonomy,tag=sec_taxonomy.identity(concept)
-        if tag not in tags:raise ValueError('HTML concept is outside reviewed fundamental catalog')
+        concept=item['concept'];taxonomy,tag=sec_taxonomy.identity(concept,allow_extension=True)
+        native=None
+        if taxonomy.startswith('html-native|'):
+            from .sec_html_native import verify
+            native=verify(item,cik)
+        elif taxonomy.startswith('extension|') or tag not in tags or 'native' in item:
+            raise ValueError('HTML concept is outside reviewed fundamental catalog')
         start=item['period_start'];end=str(_period_date(item['period_end']))
         if start is not None:
             start=str(_period_date(start))
@@ -148,6 +153,7 @@ def extract(payload,expected_hash,cik,plan,*,maximum_bytes=64*1024**2):
             unit=unit,dimensions=dimensions,value=value,decimals=decimals,scale=str(scale),format='',raw_text=value_text,
             source_text_hash=expected_hash,context_id=digest((start,end,unit,dimensions)) if dimensions else digest((start,end,unit)),fact_id='',
             html_proof=dict(plan_hash=seal,locator=locator,label=item['label'],evidence=evidence)))
+        if native:observations[-1]['html_proof']['native']=native
     result=dict(version=VERSION,observations=tuple(observations),rejected=(),source_text_hash=expected_hash,
         html_plan=plan,extraction_scope='reviewed_observations',whole_document_coverage=False,
         security_cover=dict(observations=(),rejected=(),class_completeness_proven=False),
@@ -172,5 +178,9 @@ def verify_registered(extraction,cik):
         if (any(row.get(k)!=v for k,v in expected.items())
                 or tuple(tuple(d) for d in row['dimensions'])!=tuple(tuple(d) for d in item.get('dimensions',()))):
             raise ValueError('HTML reviewed semantic observation differs')
-        if row['html_proof']!=dict(plan_hash=plan['plan_hash'],locator=item['locator'],label=item['label'],evidence=item['evidence']):
+        proof=dict(plan_hash=plan['plan_hash'],locator=item['locator'],label=item['label'],evidence=item['evidence'])
+        if 'native' in item:
+            from .sec_html_native import verify
+            proof['native']=verify(item,cik)
+        if row['html_proof']!=proof:
             raise ValueError('HTML source location proof differs')

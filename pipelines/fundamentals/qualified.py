@@ -59,6 +59,33 @@ def publish(query,source_database,database,request,binding_hash,population_hash,
     identities={(r['metric'],r['context_id']) for r in rows}
     if len(identities)!=len(rows):raise ValueError('Competing qualified original semantic groups')
     expected_hash=digest(rows)
+    definitions=[]
+    native_concepts={g['concept'] for g in verified['groups']
+        if sec_taxonomy.identity(g['concept'],allow_extension=True)[0].startswith('html-native|')}
+    if native_concepts!=set(verified.get('native_definitions',{})):
+        raise ValueError('Native facts and qualified definitions differ')
+    for concept,definition in verified.get('native_definitions',{}).items():
+        from pipelines.certified_research.sec_html_native import definition as native_definition
+        if (native_definition(verified['cik'],definition['label'],definition['statement_scope'])!=definition
+                or concept!=definition['concept']):
+            raise ValueError('Native definition differs from qualified issuer/source')
+        taxonomy,tag=sec_taxonomy.identity(concept,allow_extension=True)
+        definitions.append(dict(metric=taxonomy+':'+tag,**{k:definition[k] for k in
+            ('issuer_cik','label','statement_scope','definition_hash')}))
+    if definitions:
+        wanted=','.join(literal(d['metric']) for d in definitions)
+        sql=f'SELECT {names(schema.METRIC)} FROM {database}.reference_metric_definition_v1 FINAL WHERE metric IN ({wanted})'
+        prior_definitions=query(sql)
+        expected={d['metric']:d for d in definitions}
+        if any(expected.get(d['metric'])!=d for d in prior_definitions):
+            raise ValueError('Native metric definition conflicts with retained metadata')
+        present={d['metric'] for d in prior_definitions}
+        missing=[d for d in definitions if d['metric'] not in present]
+        for start in range(0,len(missing),256):
+            source_guard();claim.check()
+            insert_rows(query,database,'reference_metric_definition_v1',missing[start:start+256],maximum_bytes=2*1024**2)
+        if sorted(query(sql),key=lambda d:d['metric'])!=sorted(definitions,key=lambda d:d['metric']):
+            raise ValueError('Native metric definition readback differs')
     receipts=query(f'SELECT fact_rows,output_hash FROM {database}.reference_batch_receipt_v1 FINAL WHERE {receipt_where}')
     if receipts:
         if len(receipts)!=1 or int(receipts[0]['fact_rows'])!=len(rows) or receipts[0]['output_hash']!=expected_hash:

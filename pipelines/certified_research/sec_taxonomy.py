@@ -4,6 +4,9 @@ from urllib.parse import urlsplit
 
 
 def identity(concept,*,allow_extension=False):
+    if allow_extension:
+        native=re.fullmatch(r'\{(urn:tradingml:sec-html-native:v1:cik:[0-9]{10})\}(N_[0-9a-f]{64})',concept)
+        if native:return 'html-native|'+native[1],native[2]
     patterns = (
         ('us-gaap', r'http://fasb.org/us-gaap/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?'),
         ('dei', r'http://xbrl.sec.gov/dei/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?'),

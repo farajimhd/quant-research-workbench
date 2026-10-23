@@ -20,6 +20,27 @@ def seal(plan):
     return dict(plan,plan_hash=digest(plan))
 
 
+def test_native_measure_keeps_exact_identity_and_registered_source(monkeypatch):
+    from pipelines.certified_research.sec_html_native import definition
+    from pipelines.certified_research.sec_taxonomy import identity
+    text,source,plan=fixture();fact=plan['facts'][0]
+    scope='December 31, 2018. USD in thousands.'
+    fact['native']=definition('1',fact['label'],scope)
+    fact['concept']=fact['native']['concept']
+    fact['table_proof']=dict(heading=scope,headers=[[0,['Total assets','(1,234)']]])
+    plan=seal(plan);out=html.extract(text,source,'1',plan)
+    assert out['observations'][0]['html_proof']['native']==fact['native']
+    assert identity(fact['concept'],allow_extension=True)[0].startswith('html-native|')
+    with pytest.raises(ValueError):identity(fact['concept'])
+    monkeypatch.setattr(sec_html_reviewed,'plan_for',lambda *args:plan)
+    html.verify_registered(out,'1')
+    for key,value in [('issuer_cik','0000000002'),('label','Other assets')]:
+        changed=deepcopy(plan);changed['facts'][0]['native'][key]=value
+        with pytest.raises(ValueError):html.extract(text,source,'1',seal(changed))
+    changed=deepcopy(plan);changed['facts'][0].pop('table_proof')
+    with pytest.raises(ValueError):html.extract(text,source,'1',seal(changed))
+
+
 def test_exact_cells_precision_and_scoped_source_proof(monkeypatch):
     text,source,plan=fixture();out=html.extract(text,source,'1',plan)
     assert out['observations'][0]['value']=='-1234000'

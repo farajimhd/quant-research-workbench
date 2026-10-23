@@ -20,7 +20,10 @@ STAGE = (('batch_key','FixedString(64)'),) + SOURCE + CONTEXT + (
 RECEIPT = (('batch_key','FixedString(64)'), ('source_signature','FixedString(64)'),
     ('recipe_hash','FixedString(64)'), ('population_hash','FixedString(64)'),
     ('source_rows','UInt64'), ('fact_rows','UInt64'), ('output_hash','FixedString(64)'), ('completed_at',TIME))
+METRIC = (('metric','String'),('issuer_cik','String'),('label','String'),
+    ('statement_scope','String'),('definition_hash','FixedString(64)'))
 DEFINITIONS = {
+    'reference_metric_definition_v1': (METRIC, 'metric', 'tuple()'),
     'reference_context_v1': (CONTEXT, 'context_id', 'tuple()'),
     'reference_source_v1': (SOURCE, 'family,entity_kind,entity_id,source_id', 'tuple()'),
     'reference_fact_v1': (FACT, 'entity_kind,entity_id,metric,ordering_time,source_id,context_id', 'toYYYYMM(ordering_time)'),

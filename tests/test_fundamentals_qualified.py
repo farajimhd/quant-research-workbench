@@ -44,6 +44,37 @@ def test_qualified_progress_has_truthful_units_and_no_premature_eta():
     assert 'Qualified originals' in rendered
 
 
+def test_native_publication_requires_exact_definitions_and_reuses_dictionary(monkeypatch):
+    from pipelines.certified_research.sec_html_native import definition
+    native=definition('320193','Adjusted operating result','Consolidated operating measures')
+    verified=dict(authority_hash='a'*64,cik='0000320193',available_at='2025-11-01 04:00:00',
+        native_definitions={native['concept']:native},groups=[dict(concept=native['concept'],
+        period_start='2025-01-01',period_end='2025-09-30',dimensions=(),unit='USD',value='123')])
+    monkeypatch.setattr(qualified.schema,'verify',lambda *a:None)
+    monkeypatch.setattr(qualified.sec_original_authority,'verify_document',lambda *a:verified)
+    monkeypatch.setattr(qualified,'_different',lambda *a:None)
+    stored={};definitions=[];writes=[]
+    def insert(query,database,table,rows,**kwargs):
+        writes.append(table)
+        if table=='reference_metric_definition_v1':definitions.extend(rows)
+        if table=='reference_batch_receipt_v1':stored['receipt']=rows[0]
+    monkeypatch.setattr(qualified,'insert_rows',insert)
+    def query(sql,**kwargs):
+        if 'SELECT metric,issuer_cik,label,statement_scope,definition_hash' in sql:return definitions
+        if sql.startswith('SELECT fact_rows,output_hash'):return [stored['receipt']] if stored else []
+        return []
+    args=(query,'q_live','arte',('0000320193','accession','document'),'b'*64,'c'*64,
+        datetime(2026,10,23,tzinfo=timezone.utc),Mock(),lambda:None)
+    qualified.publish(*args)
+    assert definitions[0]['label']=='Adjusted operating result'
+    count=len(writes)
+    assert qualified.publish(*args)['state']=='reused' and len(writes)==count
+    definitions[0]['label']='Operating income'
+    with pytest.raises(ValueError,match='conflicts'):qualified.publish(*args)
+    verified['native_definitions']={}
+    with pytest.raises(ValueError,match='definitions differ'):qualified.publish(*args)
+
+
 def test_eta_includes_serial_archive_work_and_does_not_hide_unsampled_stages():
     state=dict(state='running',workers=4,queued=100,remaining_by_family={'SEC':100},
         samples={'SEC':{'published':[8,8,8]}},archive_remaining=10,archive_samples=[20,20])
