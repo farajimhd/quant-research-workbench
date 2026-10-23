@@ -412,3 +412,85 @@ six prefix comparisons and 500 independent prediction reconstructions.
 Reaction probabilities are represented by coarse fixed bins, so this is a
 test of this specific simple model, not proof that richer reaction features
 cannot add predictive value.
+
+### Top-N nonredundant level selection
+
+Run `python -B research/level_book/v8/run_top_levels.py`. It reads the same
+hash-verified canonical-derived cache and evaluates August 14, 17, 18, 19 and
+20, 2026. A new timestamped output directory is created under
+`D:/TradingML/runtimes/level-book-v8/top-levels/`; pass `--run` with that
+directory to resume. Source/configuration identities and saved output hashes
+must match before reuse. No notebook, acquisition or database writer is used.
+
+At each minute from 09:31 through 15:59, rank active bands entirely below or
+above the current price. Primary N=6 means at most three supports and three
+resistances; N=2 and N=10 are additional fixed comparisons. Greedy suppression
+requires at least $0.02 between same-side band edges. This uses the existing
+reaction distance, not a tuned clustering parameter. Identities/boundaries
+remain unchanged; suppressing a candidate does not delete its history.
+
+Four methods share this candidate universe and suppression rule:
+
+- Model: previous-session shared reaction counts plus already resolved
+  current-session outcomes, using the previously evaluated half personal bonus.
+  Age is evaluated at selection time; the score is frozen with the selection.
+- Nearest: smallest distance to the approachable band edge.
+- Swing: most recently confirmed directional-change extreme inside a candidate
+  band. An extreme becomes available only after a $0.02 reversal. Candidates
+  without a confirmed swing are not used to fill empty slots.
+- Count/volume: equal-weight normalized cumulative trade count and volume
+  inside the band, using observed trades and current same-role maxima.
+
+Selections remain fixed for the next minute, with no replacements. Label the
+first fresh touch during that interval. After a touch, follow the frozen band
+until a $0.02 move beyond its favorable outer edge or a strict break beyond its
+opposite edge, whichever occurs first; unresolved session-close touches remain
+unknown. A gap through a selected band before touching it is separately counted.
+Training admits only outcomes resolved strictly before the snapshot event.
+Trades are ordered by timestamp and ordinal; snapshots include all events at
+their timestamp, and the next-minute upper time boundary is exclusive.
+
+Report fill rate, touch rate, rejection rate among resolved touches, successful
+rejections per selected slot, gaps and unresolved labels. Saved candidates,
+selections and slot accounting expose every denominator and missing slot.
+This evaluates ranking within the existing causal band generator, not a new
+independent swing-level generator. Repeated minute selections and overlapping
+reaction paths are correlated; daily comparisons are retained, and these
+previously inspected sessions are diagnostic rather than fresh validation.
+
+Run `20261023T183134032296Z` completed all 1,945 minute snapshots across the
+five sessions. Primary N=6 results (selection counts count each minute-level
+slot, not unique bands):
+
+| Ranking | Selected slots | Touches | Touch rate | Rejection given touch | Rejections per selected slot |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Model | 11,506 | 1,119 | 9.73% | 35.92% | 3.49% |
+| Nearest | 11,508 | 4,786 | 41.59% | 34.60% | 14.39% |
+| Recent confirmed swing | 11,490 | 4,585 | 39.90% | 35.38% | 14.12% |
+| Count/volume | 11,506 | 1,735 | 15.08% | 39.60% | 5.97% |
+
+There were no unresolved touched selections at close. Gap-before-touch counts
+were 391/2,391/1,630/379 respectively; these are outside the conditional
+rejection denominator but remain in selected-slot accounting. Fill rates were
+98.46%-98.61% of the 11,670 requested slots. Median distances were
+$0.555/$0.055/$0.070/$0.400 respectively.
+
+| Total N | Model rejection rate | Nearest | Recent swing | Count/volume |
+| --- | ---: | ---: | ---: | ---: |
+| 2 | 35.70% | 33.19% | 34.01% | 41.33% |
+| 6 | 35.92% | 34.60% | 35.38% | 39.60% |
+| 10 | 36.99% | 35.32% | 35.86% | 38.05% |
+
+For N=6 the model beat nearest on conditional rejection rate on three of five
+days, but lost on August 19 and 20; count/volume had the highest pooled rate
+for every tested N. The model's top-two selections were not more reliable than
+its top-ten set. This does not establish a useful strongest-level ranking:
+the model's small pooled improvement over nearest comes with much lower reach,
+and the count/volume baseline is better on both reach and conditional rejection.
+Candidate bands and the one-minute reach window remain explicit limitations.
+
+Validation passed 1,250 independent outcome/count/volume checks, 200 independent
+score reconstructions, all selection spacing/cardinality checks, and five
+actual source-prefix band replays with identical candidate features. Toy checks
+covered first touch, gap, rejection, break, unresolved state and causal swing
+confirmation. Hash-verified resume reproduced results exactly.
