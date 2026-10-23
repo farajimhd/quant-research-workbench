@@ -222,7 +222,9 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
                             '{http://www.sec.gov/inlineXBRL/transformation/2015-08-31}exchnameen'):
                         raise ValueError('unsupported_cover_transform')
                     reviewed={'the nasdaq stock market llc':'NASDAQ','nasdaq stock market llc':'NASDAQ','nasdaq global select market':'NASDAQ','nasdaq':'NASDAQ',
-                        'the new york stock exchange':'NYSE','new york stock exchange llc':'NYSE','nyse american llc':'NYSEAMER',
+                        # SEC EDGAR XBRL Guide 2026-02, section 11.12 permits
+                        # leading "The" and trailing "LLC" to be omitted.
+                        'the new york stock exchange':'NYSE','new york stock exchange':'NYSE','new york stock exchange llc':'NYSE','nyse american llc':'NYSEAMER',
                         'nyse arca, inc.':'NYSEArca'}
                     transformed=reviewed.get(text.casefold())
                     if transformed is None:raise ValueError('unsupported_exchange_transform_input')

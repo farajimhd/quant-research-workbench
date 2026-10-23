@@ -39,6 +39,9 @@ def test_reviewed_sec_exchange_transform_keeps_raw_value_and_normalized_code():
     row=next(r for r in result['observations'] if r['concept'].endswith('SecurityExchangeName'))
     assert row['value']=='The Nasdaq Stock Market LLC' and row['transformed_value']=='NASDAQ'
     assert run(text.replace('The Nasdaq Stock Market LLC','Unknown exchange'))['rejected'][0]['reason']=='unsupported_exchange_transform_input'
+    nyse=run(text.replace('The Nasdaq Stock Market LLC','New York Stock Exchange'))
+    assert not nyse['rejected']
+    assert any(r['transformed_value']=='NYSE' and r['value']=='New York Stock Exchange' for r in nyse['observations'])
 
 
 @pytest.mark.skipif(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')!='1',reason='explicit ClickHouse opt-in')
