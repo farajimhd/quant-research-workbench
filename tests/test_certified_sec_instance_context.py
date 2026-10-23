@@ -73,3 +73,17 @@ def test_rate_retains_exact_unit_and_is_never_aliased_to_ratio():
     r=run(s);assert not r['rejected']
     assert r['observations'][0]['unit']=='{http://www.xbrl.org/2009/utr}Rate'
     assert r['observations'][0]['value']=='0.25'
+
+
+@pytest.mark.parametrize('duration',[False,True])
+def test_cover_uses_same_strict_xml_date_parser_as_numeric_context(duration):
+    s=source().replace('<x:xbrl ', '<x:xbrl xmlns:d="http://xbrl.sec.gov/dei/2018-01-31" ')
+    s=s.replace('</x:xbrl>','<d:TradingSymbol contextRef="c">TEST</d:TradingSymbol></x:xbrl>')
+    if duration:
+        s=s.replace('<x:instant>2018-11-25</x:instant>', '<x:startDate>\n2018-01-01\t</x:startDate><x:endDate>\n2018-11-25\n</x:endDate>')
+    else:s=s.replace('>2018-11-25<','>\n2018-11-25\t<')
+    r=run(s)
+    assert not r['security_cover']['rejected']
+    assert r['security_cover']['observations'][0]['period_end']=='2018-11-25'
+    assert r['source_text_hash']==sha256(s.encode()).hexdigest()
+    assert run(s.replace('2018-11-25','2018- 11-25'))['security_cover']['rejected']

@@ -253,9 +253,9 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
                 starts=context.findall('./{'+XBRL+'}period/{'+XBRL+'}startDate')
                 ends=context.findall('./{'+XBRL+'}period/{'+XBRL+'}endDate')
                 if len(instant)==1 and not starts and not ends:
-                    period_start=None;period_end=str(date.fromisoformat(instant[0].text))
+                    period_start=None;period_end=str(_period_date(instant[0].text))
                 elif not instant and len(starts)==len(ends)==1:
-                    period_start=str(date.fromisoformat(starts[0].text));period_end=str(date.fromisoformat(ends[0].text))
+                    period_start=str(_period_date(starts[0].text));period_end=str(_period_date(ends[0].text))
                     if period_start>period_end:raise ValueError('invalid_cover_period_order')
                 else:raise ValueError('invalid_cover_period')
                 text=''.join(fact.itertext()).strip()
