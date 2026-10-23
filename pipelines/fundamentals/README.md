@@ -208,3 +208,24 @@ identity, ownership type and effective dates. Archive dates are not ownership
 inception or public availability. No candidate found is unknown coverage, not
 proof of no subsidiaries. Original-document/public-time qualification remains
 an independent backfill gate.
+
+## Qualified original publication
+
+`run_qualified_fundamentals.py` qualifies retained original SEC documents and
+publishes exact decimal text into the shared normalized ARTE source/context/fact
+schema. Original authority, archive public-time evidence, source identity,
+precision and independent normalized readback remain required. Bulk differences
+are reconciliation evidence, not a substitute for qualified originals.
+
+Source validation is cached only while table UUIDs and the complete bounded
+active source-part fingerprint remain unchanged and no source mutation is
+pending. Any change forces exact lineage and bulk reconciliation checks again.
+The worker queue is bounded to twice the configured concurrency. Progress counts
+new publication separately from reuse; ETA includes serial archive work and is
+withheld until both stages have sufficient observations.
+
+`arte.reference_family_disclosure_v1` records verified document disclosures,
+not a competing ownership authority. Unknown child identities and effective
+dates remain unknown. Disclosure verification does not certify complete family
+coverage or permit parent/subsidiary facts to be summed. The existing verified
+relationship authority remains separate.

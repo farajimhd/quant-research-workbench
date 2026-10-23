@@ -42,3 +42,11 @@ def test_qualified_progress_has_truthful_units_and_no_premature_eta():
     rendered=progress.render(state,120,30)
     assert '0/3 documents' in rendered and 'ETA estimating' in rendered
     assert 'Qualified originals' in rendered
+
+
+def test_eta_includes_serial_archive_work_and_does_not_hide_unsampled_stages():
+    state=dict(state='running',workers=4,queued=100,remaining_by_family={'SEC':100},
+        samples={'SEC':{'published':[8,8,8]}},archive_remaining=10,archive_samples=[20,20])
+    assert progress.estimate(state) is None
+    state['archive_samples'].append(20)
+    assert progress.estimate(state)==400

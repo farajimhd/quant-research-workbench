@@ -10,7 +10,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import argparse,json,time,threading,tarfile
 from datetime import date,datetime,timezone
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor,as_completed
+from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED
 from contextlib import closing
 from uuid import uuid5,NAMESPACE_URL
 from scripts.run_fundamentals import Client,save,lock
@@ -24,6 +24,7 @@ from pipelines.certified_research import sec_share_source,sec_share_context,sec_
 from pipelines.certified_research import sec_fundamental_reconciliation as reconciliation,sec_fundamental_publication as originals
 from pipelines.certified_research import sec_reported_publication as reported,sec_witness_publication as witness_publication
 from pipelines.certified_research import sec_archive_witness,sec_public_archive_time,sec_receipt_recovery
+from pipelines.certified_research.sec_source_guard import SourceGuard
 from pipelines.market_sip.flatfiles import archive_staging
 from pipelines.fundamentals import qualified,schema
 from pipelines.fundamentals.eligibility import require_eligible
@@ -65,12 +66,13 @@ def _main():
         observed=datetime.now(timezone.utc);save(root/'request.json',dict(request,observed_at=observed.isoformat()))
     load_env_files(discover_clickhouse_env_files(),verbose=False)
     state=dict(state='planning',mode='QUALIFIED ORIGINAL SEC',unit='documents',counts=dict(published=0,unchanged=0,audited=0,failed=0),
-        total=0,active={},queued=0,blocked=0,workers=a.workers,new_rows=0,reused_rows=0,samples={},remaining_by_family={},
+        total=0,active={},queued=0,blocked=0,workers=a.workers,new_rows=0,reused_rows=0,samples={},remaining_by_family={},counts_include_active=True,
         qualification_status='Only verified documents are published; blocked coverage is not certified.')
     mutex=threading.RLock();start=time.monotonic();stop=threading.Event()
     def status():
         with mutex:
             state.update(updated_at=datetime.now(timezone.utc).isoformat(),elapsed=time.monotonic()-start)
+            if state['total']:state['remaining_by_family']={'SEC':state['queued']}
             save(root/'status.json',state)
     def pulse():
         while not stop.wait(5):status()
@@ -119,6 +121,7 @@ def _main():
                     repairs[r['archive_date']]={k:r.get(k) for k in ('status','repair_status','archive_date','archive_path','archive_bytes','parse_errors','truncated_by_limit','members','original_error')}
         groups=defaultdict(list)
         for row in documents:groups[row['day']].append(row)
+        state.update(archive_remaining=len(groups),archive_samples=[])
         state['state']='running';heartbeat=threading.Thread(target=pulse,daemon=True);heartbeat.start()
         try:
             with closing(open_workstation_keeper_session()) as keeper,closing(KeeperClaim(keeper.client,str(uuid5(NAMESPACE_URL,'qualified-original-fundamentals-v1')))) as claim:
@@ -135,7 +138,7 @@ def _main():
                     with mutex:state['blocked']+=1;state['queued']-=1;state['error']=str(error)[:300]
                     status()
                 for day,rows in sorted(groups.items()):
-                    owned();pending=[]
+                    owned();pending=[];archive_started=time.monotonic()
                     for row in rows:
                         receipt_path=root/'receipts'/(digest(row)+'.json')
                         if receipt_path.exists():
@@ -153,7 +156,7 @@ def _main():
                                 saved.update(recipe=recipe,migration_audit=checked);save(receipt_path,saved)
                             with mutex:state['counts']['unchanged']+=1;state['queued']-=1;state['reused_rows']+=saved['publication']['rows']
                         else:pending.append(row)
-                    if not pending:continue
+                    if not pending:state['archive_remaining']-=1;continue
                     descriptors=[];admitted=[]
                     for row in pending:
                         try:
@@ -162,7 +165,7 @@ def _main():
                             descriptor=dict(document=dict(document_key=key,lineage=before));descriptor['prepared_hash']=digest(descriptor)
                             descriptors.append(descriptor);admitted.append(row)
                         except ValueError as error:blocked(row,error)
-                    if not admitted:continue
+                    if not admitted:state['archive_remaining']-=1;continue
                     try:
                         d=date.fromisoformat(day);relative=Path(str(d.year),f'QTR{(d.month-1)//3+1}',d.strftime('%Y%m%d')+'.nc.tar.gz')
                         archive=a.archive_root/relative;size=archive.stat().st_size
@@ -199,8 +202,12 @@ def _main():
                     except (ValueError,OSError,EOFError,tarfile.TarError) as error:
                         for row in admitted:blocked(row,error)
                         with mutex:state['active'].pop('archive',None)
+                        state['archive_remaining']-=1
                         continue
-                    with mutex:state['active'].pop('archive',None)
+                    with mutex:
+                        state['active'].pop('archive',None)
+                        state['archive_samples'].append(time.monotonic()-archive_started)
+                        state['archive_remaining']-=1
                     def unit(row,descriptor,witness):
                         own=Client(a.endpoint);began=time.monotonic();request_tuple=(row['cik'],row['accession'],row['document']);token=digest(row)
                         stages={};last_stage=[None,began]
@@ -210,13 +217,14 @@ def _main():
                             last_stage[:]=[stage,now]
                             with mutex:state['active'][token]=dict(family=row['cik'],stage=stage,started=began-start)
                         bulk=None
-                        def stable():
+                        def source_audit():
                             owned()
                             # Exact current lineage remains a publication guard.
                             if lineage.inspect(own.query,*request_tuple,claim,guard)!=descriptor['document']['lineage']:
                                 raise ValueError('Original source lineage changed')
-                            if bulk is not None and reconciliation.load_bulk(own.query,*request_tuple[:2],tags)!=bulk:
+                            if bulk is not None and digest(sorted(reconciliation.load_bulk(own.query,*request_tuple[:2],tags),key=lambda r:r['source_record']))!=digest(sorted(bulk,key=lambda r:r['source_record'])):
                                 raise ValueError('Retained bulk reconciliation evidence changed')
+                        stable=SourceGuard(own.query,source_audit,owned)
                         try:
                             update('public time and original extraction')
                             qualified_time=sec_public_archive_time.qualify(witness,receipt,mode='official_filing_day')
@@ -232,6 +240,7 @@ def _main():
                             extracted=extraction.extract(text,witness['document_hash'],row['cik'],maximum_bytes=64*1024**2);del text
                             tags=tuple(sorted({t for m in facts.catalog() for t in m.tags}))
                             bulk=reconciliation.load_bulk(own.query,*request_tuple[:2],tags)
+                            stable.signature=None
                             update('normalized original evidence and precision')
                             original=originals.capture(own.query,'q_live',extracted,bulk,witness,qualified_time,receipt,claim,stable,admission)
                             projection=reported.capture(own.query,'q_live',extracted,witness,qualified_time,receipt,claim,stable,admission,
@@ -244,7 +253,8 @@ def _main():
                                 reuse=again['state']=='reused'
                                 if not reuse:raise ValueError('Qualified profile failed receipt reuse')
                             update('complete')
-                            record=dict(document=row,recipe=recipe,publication=result,seconds=time.monotonic()-began,reuse_verified=reuse,stage_seconds=stages)
+                            record=dict(document=row,recipe=recipe,publication=result,seconds=time.monotonic()-began,reuse_verified=reuse,stage_seconds=stages,
+                                source_guard=dict(checks=stable.checks,cache_hits=stable.cache_hits,full_audits=stable.full_audits))
                             save(root/'receipts'/(token+'.json'),record)
                             with mutex:
                                 state['counts']['published']+=1;state['queued']-=1;state['new_rows']+=result['rows']
@@ -255,8 +265,15 @@ def _main():
                             with mutex:state['active'].pop(token,None)
                             status()
                     with ThreadPoolExecutor(max_workers=a.workers) as pool:
-                        futures=[pool.submit(unit,*values) for values in zip(admitted,descriptors,witnesses)]
-                        for future in as_completed(futures):future.result();owned()
+                        values=iter(zip(admitted,descriptors,witnesses));futures=set();exhausted=False
+                        while futures or not exhausted:
+                            while not exhausted and len(futures)<2*a.workers:
+                                item=next(values,None)
+                                if item is None:exhausted=True
+                                else:futures.add(pool.submit(unit,*item))
+                            if futures:
+                                done,futures=wait(futures,return_when=FIRST_COMPLETED)
+                                for future in done:future.result();owned()
                     if target.resolve().is_relative_to((root/'archive-staging').resolve()):target.unlink()
                     state['remaining_by_family']={'SEC':state['queued']};status()
             state['state']='blocked' if state['blocked'] else 'complete'
@@ -271,7 +288,16 @@ def _main():
 def main():
     runtime=Path('D:/TradingML/runtimes')
     if not runtime.is_dir():raise ValueError('Required runtime root is unavailable')
-    with lock(runtime/'qualified-fundamentals.lock'):return _main()
+    with lock(runtime/'qualified-fundamentals.lock'):
+        try:return _main()
+        except Exception as error:
+            if '--run-dir' in sys.argv:
+                root=Path(sys.argv[sys.argv.index('--run-dir')+1]).resolve()
+                if root.is_relative_to(runtime.resolve()) and (root/'status.json').exists():
+                    state=json.loads((root/'status.json').read_text())
+                    state.update(state='failed',error=str(error)[:500],updated_at=datetime.now(timezone.utc).isoformat())
+                    state['counts']['failed']=max(1,state['counts'].get('failed',0));save(root/'status.json',state)
+            raise
 
 
 if __name__=='__main__':raise SystemExit(main())

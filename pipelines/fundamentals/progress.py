@@ -27,7 +27,12 @@ def estimate(state):
         work.append((remaining,median(values)))
     if not work:return None if state.get('queued',0) else 0
     lanes=max(1,state.get('workers',1))
-    return max(sum(n*t for n,t in work)/lanes,max(t for _,t in work))
+    archive_seconds=0
+    if state.get('archive_remaining',0):
+        archive_samples=state.get('archive_samples',[])
+        if len(archive_samples)<3:return None
+        archive_seconds=state['archive_remaining']*median(archive_samples)
+    return max(sum(n*t for n,t in work)/lanes,max(t for _,t in work))+archive_seconds
 
 
 def render(state,width=80,height=24,now=None):
@@ -45,7 +50,7 @@ def render(state,width=80,height=24,now=None):
     lines=[f"Fundamentals | {current} | {state.get('mode','backfill')}",
         f"{bar} {done:,}/{total:,} {state.get('unit','batches')}" if total else 'Planning scope; total not yet known',
         f"{c.get('published',0):,} published | {c.get('unchanged',0):,} unchanged | {c.get('audited',0):,} audited",
-        f"Active {len(state.get('active',{}))} | queued {state.get('queued',0):,} | failed {c.get('failed',0)} | retries 0",
+        f"Active {len(state.get('active',{}))} | queued {max(0,state.get('queued',0)-(sum(k!='archive' for k in state.get('active',{})) if state.get('counts_include_active') else 0)):,} | failed {c.get('failed',0)} | retries 0",
         f"Blocked {state.get('blocked',0)} | exclusions {state.get('exclusions',0)}",
         f"Elapsed {duration(state.get('elapsed',0))} | ETA {('finished' if current=='complete' else 'blocked' if current in ('blocked','failed','stopped') else duration(None if age and age>45 else estimate(state)))}",
         'ETA uses new-work family samples; reuse is counted separately.',
