@@ -8,6 +8,7 @@ from collections import Counter
 from datetime import date,datetime,timezone
 from types import SimpleNamespace
 from pipelines.certified_research import sec_document_lineage,sec_fundamental_context,sec_fundamental_reconciliation,sec_precision,facts
+from pipelines.certified_research import sec_document_payload
 from pipelines.certified_research.contracts import digest,literal
 from pipelines.fundamentals.eligibility import require_eligible
 from scripts.run_fundamentals import Client,save
@@ -27,12 +28,9 @@ def inspect_document(query,row):
     readonly=SimpleNamespace(check=lambda:None)
     lineage=sec_document_lineage.inspect(query,cik,accession,name,readonly,lambda:None)
     step('lineage')
-    payload=query('SELECT source_text FROM q_live.sec_filing_text_v3 PREWHERE '
-        f'cik IN ({literal(cik)},{literal(str(int(cik)))}) AND accession_number={literal(accession)} '
-        f'AND document_name={literal(name)} AND length(source_text)<=16777216 LIMIT 2')
-    if len(payload)!=1:raise ValueError('Original payload missing, ambiguous or over 16MiB')
+    payload=sec_document_payload.load(query,cik,accession,name,lineage['document']['content_sha256'])
     step('fetch')
-    extracted=sec_fundamental_context.extract(payload[0]['source_text'],lineage['document']['content_sha256'],cik)
+    extracted=sec_fundamental_context.extract(payload,lineage['document']['content_sha256'],cik)
     step('parse')
     tags=tuple(sorted({tag for metric in facts.catalog() for tag in metric.tags}))
     bulk=sec_fundamental_reconciliation.load_bulk(query,cik,accession,tags);step('bulk')

@@ -1,6 +1,6 @@
 """Compose one retained document into normalized candidate source records."""
-from . import sec_document_lineage,sec_share_context
-from .contracts import digest,literal
+from . import sec_document_lineage,sec_share_context,sec_document_payload
+from .contracts import digest
 
 VERSION='normalized-sec-share-source-candidate-v1'
 
@@ -19,17 +19,11 @@ def prepare(query,cik,accession,document_name,claim,source_guard,*,maximum_bytes
     guard()
     before=sec_document_lineage.inspect(query,cik,accession,document_name,claim,source_guard)
     original=before['document'];text_hash=original['content_sha256']
-    ciks=','.join(literal(v) for v in sorted({str(int(cik)),str(int(cik)).zfill(10)}))
-    where=f'cik IN ({ciks}) AND accession_number={literal(accession)} AND document_name={literal(document_name)}'
-    census=query(f'SELECT count() n,max(length(source_text)) bytes FROM q_live.sec_filing_text_v3 WHERE {where}')
-    if len(census)!=1 or int(census[0]['n'])!=1:raise ValueError('SEC share source is missing or ambiguous')
-    if not 0<int(census[0]['bytes'])<=maximum_bytes:raise ValueError('SEC share source exceeds its byte bound')
-    guard()
-    payloads=query('SELECT source_text FROM q_live.sec_filing_text_v3 '
-        f'WHERE {where} AND content_sha256={literal(text_hash)} AND length(source_text)<={maximum_bytes} LIMIT 1')
-    if len(payloads)!=1:raise ValueError('SEC share source changed before extraction')
-    extracted=sec_share_context.extract(payloads[0]['source_text'],text_hash,cik,
+    payload=sec_document_payload.load(query,cik,accession,document_name,text_hash,maximum_bytes=maximum_bytes,guard=guard)
+    source_bytes=len(payload.encode('utf-8'))
+    extracted=sec_share_context.extract(payload,text_hash,cik,
         maximum_bytes=maximum_bytes,maximum_facts=maximum_facts)
+    del payload
     guard();contexts={};observations=[]
     document_key=digest(dict(version=VERSION,candidate_hash=before['candidate_hash'],parser=extracted['version']))
     for row in extracted['observations']:
@@ -54,7 +48,7 @@ def prepare(query,cik,accession,document_name,claim,source_guard,*,maximum_bytes
     guard()
     if after!=before:raise ValueError('SEC share document lineage changed during preparation')
     source=dict(document_key=document_key,cik=str(int(cik)),lineage=before,parser_version=extracted['version'],
-        source_text_hash=text_hash,source_bytes=int(census[0]['bytes']),parsing_prefix_bytes=extracted['parsing_prefix_bytes'],
+        source_text_hash=text_hash,source_bytes=source_bytes,parsing_prefix_bytes=extracted['parsing_prefix_bytes'],
         parsing_suffix_bytes=extracted['parsing_suffix_bytes'],sec_xbrl_envelope=extracted['sec_xbrl_envelope'])
     result=dict(version=VERSION,document=source,contexts=tuple(contexts[key] for key in sorted(contexts)),
         observations=tuple(observations),candidate_only=True,original_vintage_qualified=False,allocation_certified=False)

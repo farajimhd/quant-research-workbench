@@ -126,12 +126,22 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
             if fact.get('{http://www.w3.org/2001/XMLSchema-instance}nil') in ('true','1'):raise ValueError('nil_share_fact')
             if any(True for _ in fact.iter('{'+IX+'}exclude')):raise ValueError('unsupported_inline_exclusion')
             fixed_zero=fundamental and row['format'].split(':')[-1]=='fixed-zero'
-            if row['format'] and row['format'].split(':')[-1] not in ('num-dot-decimal','numdotdecimal') and not fixed_zero:
+            word_number=fundamental and row['format'].split(':')[-1]=='numwordsen'
+            if row['format'] and row['format'].split(':')[-1] not in ('num-dot-decimal','numdotdecimal') and not (fixed_zero or word_number):
                 raise ValueError('unsupported_numeric_transform')
-            if row['format'] and not re.fullmatch(r'\{http://www.xbrl.org/inlineXBRL/transformation/[0-9]{4}-[0-9]{2}-[0-9]{2}\}.+',qname(row['format'],fact)):
+            if row['format'] and not word_number and not re.fullmatch(r'\{http://www.xbrl.org/inlineXBRL/transformation/[0-9]{4}-[0-9]{2}-[0-9]{2}\}.+',qname(row['format'],fact)):
                 raise ValueError('unsupported_transform_namespace')
             text=''.join(fact.itertext()).strip()
             raw_text=text
+            if word_number:
+                if qname(row['format'],fact)!='{http://www.sec.gov/inlineXBRL/transformation/2015-08-31}numwordsen':
+                    raise ValueError('unsupported_transform_namespace')
+                # SEC EFM II 5.2.5.12 explicitly defines no/none as exact zero.
+                # Other English-number inputs stay rejected until implemented
+                # and validated; never guess from a partial word match.
+                if text.casefold() not in ('no','none'):
+                    raise ValueError('unsupported_numwordsen_input')
+                text='0'
             if fixed_zero:
                 if qname(row['format'],fact)!='{http://www.xbrl.org/inlineXBRL/transformation/2020-02-12}fixed-zero':
                     raise ValueError('unsupported_fixed_zero_namespace')
@@ -146,7 +156,7 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
             observations.append(observation)
         except (ValueError,TypeError,InvalidOperation) as error:
             rejected.append(dict(row,reason=str(error)))
-    result=dict(version='sec-inline-fundamental-context-v2' if fundamental else VERSION,observations=tuple(observations),rejected=tuple(rejected),
+    result=dict(version='sec-inline-fundamental-context-v3' if fundamental else VERSION,observations=tuple(observations),rejected=tuple(rejected),
         source_text_hash=expected_hash,parsing_prefix_bytes=prefix_bytes,parsing_suffix_bytes=suffix_bytes,
         sec_xbrl_envelope=envelope,allocation_certified=False)
     if include_security_cover:

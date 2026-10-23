@@ -49,6 +49,24 @@ def test_fixed_zero_preserves_display_text_and_rejects_wrong_registry():
     assert result['rejected'][0]['reason']=='unsupported_fixed_zero_namespace'
 
 
+@pytest.mark.parametrize('text', ('no','None','NO'))
+def test_sec_word_zero_preserves_original_text_and_exact_namespace(text):
+    payload=document(text).replace('t:num-dot-decimal','t:numwordsen').replace(
+        'http://www.xbrl.org/inlineXBRL/transformation/2020-02-12',
+        'http://www.sec.gov/inlineXBRL/transformation/2015-08-31')
+    row=run(payload)['observations'][0]
+    assert row['value']=='0' and row['raw_text']==text
+    bad=payload.replace('www.sec.gov/inlineXBRL','example.com/inlineXBRL')
+    assert run(bad)['rejected'][0]['reason']=='unsupported_transform_namespace'
+
+
+def test_unsupported_english_numbers_are_not_guessed_or_converted_to_zero():
+    payload=document('not known').replace('t:num-dot-decimal','t:numwordsen').replace(
+        'http://www.xbrl.org/inlineXBRL/transformation/2020-02-12',
+        'http://www.sec.gov/inlineXBRL/transformation/2015-08-31')
+    assert run(payload)['rejected'][0]['reason']=='unsupported_numwordsen_input'
+
+
 @pytest.mark.skipif(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')!='1',reason='explicit ClickHouse opt-in')
 def test_real_retained_apple_catalog_extraction():
     from scripts import build_market_day as builder

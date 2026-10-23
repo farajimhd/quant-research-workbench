@@ -54,6 +54,8 @@ def test_bounded_stage_uses_retained_evidence_and_rechecks_before_capture(readba
     def query(sql,**kwargs):
         if 'research_sec_document_archive_time_v1' in sql:return [dict(proof=json.dumps(dict(witness=witness,qualification=qualified)),receipt_hash=qualified['receipt_hash'])]
         if 'research_sec_archive_download_receipt_v1' in sql:return [dict(proof=json.dumps(receipt))]
+        if 'SELECT DISTINCT content_sha256,length(source_text)' in sql:
+            return [dict(content_sha256=extraction['source_text_hash'],bytes=len(document().encode()))]
         if 'source_text FROM' in sql:return [dict(source_text=document())]
         raise AssertionError(sql)
     dictionary=Mock();dictionary.dictionary_database='q_live'

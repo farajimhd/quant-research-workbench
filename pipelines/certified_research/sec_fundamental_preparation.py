@@ -11,6 +11,7 @@ from . import sec_fundamental_readback
 from . import sec_precision
 from . import sec_reported_publication
 from . import sec_reported_readback
+from . import sec_document_payload
 from .contracts import digest,literal
 
 PRODUCT='sec_fundamental_source'
@@ -18,7 +19,7 @@ PRODUCT='sec_fundamental_source'
 
 def recipe_hash():
     modules=(sys.modules[__name__],sec_fundamental_context,sec_fundamental_reconciliation,sec_fundamental_publication,
-             sec_document_lineage,sec_share_preparation,sec_public_archive_time,facts,sec_share_context,sec_fundamental_readback,sec_precision)
+             sec_document_lineage,sec_document_payload,sec_share_preparation,sec_public_archive_time,facts,sec_share_context,sec_fundamental_readback,sec_precision)
     return digest(dict(version='sec-original-fundamental-preparation-v1',
         algorithms={m.__name__:digest(Path(m.__file__).read_text(encoding='utf-8')) for m in modules},
         catalog_hash=facts.catalog_hash(),ddl=tuple(t.ddl('q_live') for t in sec_fundamental_publication.tables())))
@@ -74,12 +75,8 @@ def prepare(query,config,requests,claim,dictionary_factory,profile,*,mode,stop,p
         receipts=query(receipt_sql)
         if len(receipts)!=1:raise ValueError('Original fundamental download receipt is missing or ambiguous')
         receipt=json.loads(receipts[0]['proof'])
-        ciks=','.join(literal(v) for v in sorted({str(int(cik)),str(int(cik)).zfill(10)}))
-        payload=query('SELECT source_text FROM q_live.sec_filing_text_v3 '
-            f'WHERE cik IN ({ciks}) AND accession_number={literal(accession)} AND document_name={literal(name)} '
-            'AND length(source_text)<=16777216 LIMIT 2')
-        if len(payload)!=1:raise ValueError('Original fundamental document is missing, oversized or ambiguous')
-        extraction=sec_fundamental_context.extract(payload[0]['source_text'],lineage['document']['content_sha256'],cik)
+        payload=sec_document_payload.load(query,cik,accession,name,lineage['document']['content_sha256'],guard=guard)
+        extraction=sec_fundamental_context.extract(payload,lineage['document']['content_sha256'],cik)
         del payload
         bulk=sec_fundamental_reconciliation.load_bulk(query,cik,accession,tags)
         bulk_hash=digest(sorted(bulk,key=lambda row:row['source_record']))
