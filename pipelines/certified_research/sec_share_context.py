@@ -14,6 +14,15 @@ IX='http://www.xbrl.org/2013/inlineXBRL'
 TAGS={'EntityCommonStockSharesOutstanding','CommonStockSharesOutstanding'}
 
 
+def _period_date(text):
+    # XML Schema date has whiteSpace=collapse. Only XML whitespace is removed;
+    # embedded whitespace, timezone syntax and malformed dates still fail.
+    value=(text or '').strip(' \t\r\n')
+    if not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}',value):
+        raise ValueError('invalid_fundamental_period_date')
+    return date.fromisoformat(value)
+
+
 def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=10000,catalog_tags=None,include_security_cover=False):
     """Retain distinct facts and dimensions; never infer class completeness.
 
@@ -122,9 +131,9 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
             starts=context.findall('./{'+XBRL+'}period/{'+XBRL+'}startDate')
             ends=context.findall('./{'+XBRL+'}period/{'+XBRL+'}endDate')
             period_start=None
-            if len(instant)==1 and not starts and not ends:measured=date.fromisoformat(instant[0].text)
+            if len(instant)==1 and not starts and not ends:measured=_period_date(instant[0].text)
             elif fundamental and not instant and len(starts)==len(ends)==1:
-                period_start=date.fromisoformat(starts[0].text);measured=date.fromisoformat(ends[0].text)
+                period_start=_period_date(starts[0].text);measured=_period_date(ends[0].text)
                 if period_start>measured:raise ValueError('invalid_duration_order')
             else:raise ValueError('share_context_requires_instant' if not fundamental else 'invalid_fundamental_period')
             measures=unit.findall('./{'+XBRL+'}measure')
@@ -191,6 +200,12 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
                 if qname(row['format'],fact)!='{http://www.xbrl.org/inlineXBRL/transformation/2020-02-12}fixed-zero':
                     raise ValueError('unsupported_fixed_zero_namespace')
                 text='0'
+            if fundamental and not row['format'] and id(fact) not in native:
+                # Untransformed nonFraction decimal lexical forms may omit the
+                # zero before/after the decimal point. Never repair grouping,
+                # exponents, signs or arbitrary presentation text.
+                if re.fullmatch(r'\.[0-9]+',text):text='0'+text
+                elif re.fullmatch(r'[0-9]+\.',text):text+='0'
             if not re.fullmatch(r'(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]+)?',text):raise ValueError('invalid_share_number')
             scale=int(row['scale'])
             if not -12<=scale<=12 or fact.get('sign','') not in (('','+','-') if fundamental else ('','+')):raise ValueError('invalid_share_scale_or_sign')

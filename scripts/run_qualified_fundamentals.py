@@ -40,6 +40,7 @@ def _main():
     parser.add_argument('--workers',type=int,default=4)
     parser.add_argument('--profile',action='store_true',help='Three real original documents, then exact receipt reuse; no full launch')
     parser.add_argument('--profile-count',type=int,default=3)
+    parser.add_argument('--retry-manifest',type=Path,help='Sealed blocked-only selection in a separate run directory; never rewrites source receipts')
     parser.add_argument('--plan-only',action='store_true')
     parser.add_argument('--upgrade-recipe',action='store_true',help='Archive the prior request and independently verify existing qualified receipts before reuse')
     parser.add_argument('--profile-result',type=Path)
@@ -55,6 +56,13 @@ def _main():
     recipe=digest(dict(publisher=qualified.recipe_hash(),files={p.name:digest(p.read_text(encoding='utf-8')) for p in Path(lineage.__file__).parent.glob('sec_*.py')}))
     request=dict(population_hash=pop_hash,start=str(a.start),end=str(a.end),recipe=recipe,profile=a.profile,
         endpoint=a.endpoint,source='retained_original_SEC',destination='arte',numeric_mode='round-to-nearest')
+    retry_documents=None;already_completed=[]
+    if a.retry_manifest:
+        from pipelines.fundamentals.retry import select
+        manifest=json.loads(a.retry_manifest.read_text())
+        if a.profile or root==Path(manifest['source_run_dir']).resolve():raise ValueError('Retry requires a separate non-profile run directory')
+        retry_documents,already_completed=select(manifest,population_hash=pop_hash,start=a.start,end=a.end,runtime=runtime)
+        request['retry_manifest_hash']=manifest['manifest_hash']
     if (root/'request.json').exists():
         old=json.loads((root/'request.json').read_text())
         if {k:old[k] for k in request}!=request:
@@ -69,6 +77,9 @@ def _main():
     state=dict(state='planning',mode='QUALIFIED ORIGINAL SEC',unit='documents',counts=dict(published=0,unchanged=0,audited=0,failed=0),
         total=0,active={},queued=0,blocked=0,workers=a.workers,new_rows=0,reused_rows=0,samples={},remaining_by_family={},counts_include_active=True,
         qualification_status='Only verified documents are published; blocked coverage is not certified.')
+    if a.retry_manifest:
+        state.update(retry_targets=len(retry_documents),already_completed=len(already_completed))
+        save(root/'source-completed-preserved.json',already_completed)
     mutex=threading.RLock();start=time.monotonic();stop=threading.Event()
     def status():
         with mutex:
@@ -82,7 +93,7 @@ def _main():
     with closing(Client(a.endpoint)) as client:
         selected_ciks=('0000320193','0000789019','0001089113') if a.profile else ciks
         ids=','.join(map(literal,selected_ciks));documents=[]
-        for year in range(a.start.year,a.end.year+1):
+        for year in (() if retry_documents is not None else range(a.start.year,a.end.year+1)):
             guard();status()
             documents+=client.query('SELECT DISTINCT cik,accession_number accession,document_name document,source_archive_date day,document_type form,content_sha256,source_version_key '
                 'FROM q_live.sec_filing_document_v3 PREWHERE cik IN ('+ids+') '
@@ -106,6 +117,7 @@ def _main():
                 documents.append(completed[key])
             elif len(instances)==1:documents.extend(instances)
             else:documents.extend(reports)
+        if retry_documents is not None:documents=retry_documents
         if a.profile:
             if a.profile_count not in (3,6,9,12):raise ValueError('Profile count must be 3, 6, 9 or 12')
             selected=[]
@@ -351,7 +363,8 @@ def _main():
                     state['remaining_by_family']={'SEC':state['queued']};status()
             state['state']='blocked' if state['blocked'] else 'complete'
             save(root/'completion.json',dict(recipe=recipe,qualified=state['counts']['published']+state['counts']['unchanged'],
-                blocked=state['blocked'],reuse_verified=a.profile and state['blocked']==0,seconds=time.monotonic()-start,full_scope=not a.profile))
+                blocked=state['blocked'],reuse_verified=a.profile and state['blocked']==0,seconds=time.monotonic()-start,
+                full_scope=not a.profile and not a.retry_manifest,already_completed=len(already_completed)))
             status();return 1 if state['blocked'] else 0
         except BaseException as error:
             state.update(state='stopped' if isinstance(error,InterruptedError) else 'failed',error=str(error)[:500]);status();raise

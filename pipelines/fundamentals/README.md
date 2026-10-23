@@ -243,3 +243,21 @@ copy overlaps current work; source lineage preparation uses bounded independent
 clients. Completed census versions are archived when representation selection
 changes. Benchmark worker counts with fresh isolated SSD publication, identical
 inputs and normalized semantic hashes; reuse timings are not throughput evidence.
+
+Blocked-only retries use a sealed `qualified-blocked-retry-v1` manifest with the
+original request/census hashes and exact document identities. The retry has a
+separate runtime and never changes the source campaign's requests, blocked
+evidence or completed receipts. Source receipts completed before retry selection
+are excluded with their receipt hashes recorded. This is a subset retry, not a
+full-scope completion certificate.
+
+`retry_qualified_fundamentals.py` waits for both PID/creation-time owners to exit,
+requires normal terminal source state and a released shared publication lock,
+then validates the new recipe against the existing three-document profile before
+retrying. The existing visible progress task switches only after the old writer
+exits. Failed/interrupted sources do not automatically trigger publication.
+
+Period dates accept XML Schema whitespace around the exact date lexical form;
+untransformed inline decimals accept `.71` and `12.` without altering source
+bytes, hashes or precision. HTML repair, taxonomy aliases, ambiguous public dates
+and unresolved original observations remain disallowed.

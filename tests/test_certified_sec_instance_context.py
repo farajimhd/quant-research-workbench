@@ -35,3 +35,21 @@ def test_legacy_zero_dash_requires_exact_registry_and_single_dash():
     assert sample('\u2014')['observations'][0]['value']=='0'
     assert sample('12')['rejected'][0]['reason']=='unsupported_zerodash_input_or_namespace'
     assert sample('')['rejected']
+
+
+def test_period_xml_whitespace_preserves_source_and_rejects_internal_whitespace():
+    s=source().replace('>2018-11-25<','>\n\t2018-11-25\r\n<')
+    r=run(s)
+    assert not r['rejected'] and r['observations'][0]['period_end']=='2018-11-25'
+    assert r['source_text_hash']==sha256(s.encode()).hexdigest()
+    assert run(source().replace('2018-11-25','2018- 11-25'))['rejected']
+
+
+@pytest.mark.parametrize('value,expected',[('.71','0.71'),('12.','12.0')])
+def test_untransformed_inline_decimal_lexical_forms(value,expected):
+    from tests.test_certified_sec_share_context import document
+    from pipelines.certified_research.sec_share_context import extract as parse
+    s=document(value).replace(' format="t:num-dot-decimal"','')
+    r=parse(s,sha256(s.encode()).hexdigest(),'320193',catalog_tags=('EntityCommonStockSharesOutstanding',))
+    assert not r['rejected'] and r['observations'][0]['value']==expected
+    assert r['observations'][0]['raw_text']==value
