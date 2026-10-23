@@ -69,9 +69,20 @@ def lock(path):
 
 
 def save(path, value):
-    tmp=path.with_suffix('.tmp')
-    tmp.write_text(json.dumps(value,indent=2,default=str),encoding='utf-8')
-    tmp.replace(path)
+    tmp=path.with_name(path.name+'.'+uuid4().hex+'.tmp')
+    try:
+        tmp.write_text(json.dumps(value,indent=2,default=str),encoding='utf-8')
+        for attempt in range(21):
+            try:
+                tmp.replace(path)
+                return
+            except PermissionError:
+                # Windows readers may briefly hold a non-delete-sharing handle.
+                # Preserve the old complete JSON until an atomic replace succeeds.
+                if attempt==20:raise
+                time.sleep(.1)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def run(args):
