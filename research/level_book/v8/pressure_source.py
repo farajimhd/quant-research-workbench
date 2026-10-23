@@ -22,11 +22,15 @@ from pipelines.market_sip.events.trade_reporting_flags import EVALUATED, DELAYED
 def load_pressure_sample(ticker="AAPL", day="2026-08-20", count=50000):
     """First N eligible trades in 09:30-16:00 ET; fail if unavailable.
 
+    count=None reads the complete regular session, capped at 2 million eligible
+    trades with an explicit error rather than truncation. Integer counts retain
+    the original sample behavior.
     Order is SIP availability time then canonical ordinal, not execution time.
     Differences describe adjacent *eligible* trades. Excluded records are audited.
     """
-    if not ticker.isascii() or not ticker.isalnum() or not 2 <= count <= 100000:
-        raise ValueError("Expected an ASCII ticker and 2..100000 trades")
+    if not ticker.isascii() or not ticker.isalnum() or (count is not None and not 2 <= count <= 100000):
+        raise ValueError("Expected an ASCII ticker and 2..100000 trades or None for a full session")
+    result_cap = 2000000 if count is None else count+5000
     start = datetime.fromisoformat(day + "T09:30:00").replace(tzinfo=ZoneInfo("America/New_York"))
     end = start + timedelta(hours=6, minutes=30)
     load_env_files(discover_clickhouse_env_files(), verbose=False)
@@ -34,7 +38,7 @@ def load_pressure_sample(ticker="AAPL", day="2026-08-20", count=50000):
         default_clickhouse_url(), default_clickhouse_user(), default_clickhouse_password(),
         timeout_seconds=90, persistent=True,
         default_query_params=dict(readonly=1, max_threads=2, max_memory_usage=1073741824,
-                                  max_result_rows=count+5000, max_result_bytes=64000000,
+                                  max_result_rows=result_cap, max_result_bytes=512000000 if count is None else 64000000,
                                   result_overflow_mode="throw"),
     )
     def query(sql):
@@ -72,18 +76,21 @@ def load_pressure_sample(ticker="AAPL", day="2026-08-20", count=50000):
                       "countIf(unknown_clock) unknown_clock_count, countIf(delayed) delayed_count, "
                       "countIf(invalid) invalid_count, countIf(NOT condition_ok) condition_rejected, "
                       "countIf(NOT unknown_clock AND NOT delayed AND NOT invalid AND condition_ok) eligible " + source)
+        expected = int(audit[0]['eligible']) if count is None else count
+        if expected < 2 or expected > result_cap:
+            raise ValueError(f"Eligible session size {expected} outside bounded read capacity {result_cap}")
         sql = (with_sql + " SELECT ordinal,toInt64(sip_timestamp_us) AS time_us, "
                "toInt64(price_primary_int)*if(bitAnd(event_meta,2)=2,1,100) AS price_units, "
                "toFloat64(size_primary) AS volume " + source +
                f" AND NOT unknown_clock AND NOT delayed AND NOT invalid AND condition_ok "
-               f"ORDER BY sip_timestamp_us,ordinal LIMIT {count}")
+               "ORDER BY sip_timestamp_us,ordinal" + (f" LIMIT {count}" if count is not None else ""))
         rows = query(sql)
-        if len(rows) != count:
-            raise ValueError(f"Required {count} eligible trades, found {len(rows)}")
+        if len(rows) != expected:
+            raise ValueError(f"Required {expected} eligible trades, found {len(rows)}")
         if (query(metadata_sql), query(rules_sql), query(reporting_sql)) != (metadata, rules, reporting):
             raise ValueError("Canonical metadata changed during read")
         keys = [(int(r['time_us']), int(r['ordinal'])) for r in rows]
-        if keys != sorted(keys) or len({r['ordinal'] for r in rows}) != count:
+        if keys != sorted(keys) or len({r['ordinal'] for r in rows}) != expected:
             raise ValueError("Non-unique or unordered trade coordinates")
         provenance = dict(ticker=ticker, day=day, requested_count=count,
                           source_table=f"market_sip_compact.events_{start.year}",

@@ -83,9 +83,16 @@ class CountModel:
         self.total += value
 
 
-def predict_online(table, cutoff, final_event):
+def predict_online(table, cutoff, final_event, initial_groups=None):
     """Same-event labels wait until the next event; tied touches share history."""
     model = CountModel()
+    if initial_groups is not None:
+        seed = np.asarray(initial_groups, dtype=float)
+        if seed.shape != (2, 2, 4) or not np.isfinite(seed).all() or (seed < 0).any():
+            raise ValueError('Expected nonnegative finite role/age aggregates with shape (2,2,4)')
+        # Only shared evidence crosses sessions. Personal role identities restart.
+        model.groups = seed.copy()
+        model.total = seed.sum(axis=(0, 1))
     pending = []
     predictions = []
     updates = []

@@ -243,3 +243,39 @@ does not establish cross-session accuracy, profitability or calibrated scores.
 Executed notebooks, aggregate snapshots, predictions and manifests belong under
 `D:/TradingML/runtimes/level-book-v8/incremental-prediction/`. Snapshots are
 research evidence, not a complete streaming-resume implementation.
+
+### Full-session history-length comparison
+
+Run `python -B research/level_book/v8/run_history_comparison.py` from the repository
+root. The launcher sets `PYTHONDONTWRITEBYTECODE` itself. Defaults use AAPL's
+25 canonical sessions ending 2026-08-20, with the final five held fixed for
+evaluation and rolling 1/5/20 prior-session histories. All eligible regular-session
+trades are read; the bounded loader fails rather than truncating beyond its
+two-million-trade capacity. The existing integer-count sample loader is unchanged.
+
+Each history contributes only resolved shared role/age aggregates. Personal
+state and bands reset daily. Pending close encounters are reported and never
+converted to failures or carried into a new session. Within each evaluation
+session, resolved outcomes update the model strictly after their event. Identical
+encounter identities/outcomes are asserted across all history lengths.
+
+Outputs under `D:/TradingML/runtimes/level-book-v8/history-comparison/` include
+per-session canonical provenance, source hashes, labels, completion receipts,
+predictions, paired daily/pooled metrics and calibration. A rerun reuses only
+hash- and implementation-matched completed sessions; changed configuration or
+code requires a new `--run` directory. No notebook or database writer is involved.
+Metrics compare the personal model with shared-only, role-only, global-online and
+frozen-history baselines. Five correlated sessions are descriptive evidence, not
+a statistical significance or profitability claim.
+
+Measured default run (`aapl-20260820-full`): 7,151,346 eligible trades across
+25 sessions; evaluation on 2026-08-14, 17, 18, 19 and 20 used 86,682 resolved
+encounters, with four pending encounters excluded. For 1/5/20 prior sessions,
+pooled model Brier errors were 0.24603/0.24669/0.24907, versus online global
+baselines 0.24414/0.24428/0.24509. Mean per-session model AUCs were
+0.54520/0.54303/0.54937: slightly stronger within-session ranking with 20 days,
+but weak discrimination and worse probability calibration. Pooled AUCs differ
+(0.55044/0.54258/0.54452) because they also compare scores between sessions.
+Five thousand independently scanned encounter outcomes, seeded prefix isolation
+for all three histories, original notebook-08 prediction parity and hash-verified
+source-cache reuse passed. Full receipts are in that runtime directory.
