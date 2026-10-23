@@ -216,3 +216,30 @@ limits do not change discovery or numerical results.
 
 Source caches, per-tier receipts, executed notebooks, profiles, charts and compact
 results belong under `D:/TradingML/runtimes/level-book-v8/pressure-test/`.
+
+## 08: Incremental reaction prediction
+
+`08_incremental_reaction_prediction.ipynb` tests a small online count model on
+the same verified 50,000 AAPL events and notebook-07 band engine. Run all cells
+in order. The first 25,000 events build history; later touches are scored before
+their outcomes are admitted. `incremental_prediction.py` holds the shared
+extractor and learner. The notebook shows raw trades, encounters, toy arithmetic,
+shared/personal counts, duration sums, individual predictions and an as-of viewer.
+
+A fresh approach-side entry after activation starts an encounter. A two-cent
+move away from the band's near edge is rejection; a strict opposite-boundary
+crossing is a break. Pending encounters are excluded from accuracy but reported.
+Shared history is split by role and age at touch (under/over 60 seconds); a
+weight-4 blend adds personal role-period evidence without counting it twice.
+Reaction durations are stored, not yet used to update pending probabilities.
+
+Evaluation reports accuracy, balanced accuracy, ROC AUC, Brier error, log loss,
+calibration and role/age slices against shared-only, role-only, global-online
+and frozen-warmup baselines. Prefix replay, toy labels in both directions,
+pending/tied-event semantics and update counts are checked in the runnable
+notebook. Settings are illustrative and fixed before evaluation. One session
+does not establish cross-session accuracy, profitability or calibrated scores.
+
+Executed notebooks, aggregate snapshots, predictions and manifests belong under
+`D:/TradingML/runtimes/level-book-v8/incremental-prediction/`. Snapshots are
+research evidence, not a complete streaming-resume implementation.
