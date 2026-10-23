@@ -162,7 +162,10 @@ def _main():
         state.update(archive_remaining=len(groups),archive_samples=[])
         state['state']='running';heartbeat=threading.Thread(target=pulse,daemon=True);heartbeat.start()
         try:
-            with closing(open_workstation_keeper_session()) as keeper,closing(KeeperClaim(keeper.client,str(uuid5(NAMESPACE_URL,'qualified-original-fundamentals-v1')))) as claim, ThreadPoolExecutor(max_workers=1) as archive_pool:
+            # Archive/HTML parsing is batch CPU work. Use the connector's
+            # supported 30s session budget; SUSPENDED/LOST still permanently
+            # invalidates this claim and cannot rearm publication.
+            with closing(open_workstation_keeper_session(timeout_seconds=30)) as keeper,closing(KeeperClaim(keeper.client,str(uuid5(NAMESPACE_URL,'qualified-original-fundamentals-v1')))) as claim, ThreadPoolExecutor(max_workers=1) as archive_pool:
                 with closing(DictionaryClaim(keeper.client,'q_live')) as ddl_claim:
                     originals.install(client.query,'q_live',ddl_claim);reported.install(client.query,'q_live',ddl_claim);witness_publication.install(client.query,'q_live',ddl_claim)
                 schema.install(client.query,'arte')
