@@ -56,7 +56,12 @@ def render(state,width=80,height=24,now=None):
         'ETA uses new-work family samples; reuse is counted separately.',
         f"New facts {state.get('new_rows',0):,} | reused facts {state.get('reused_rows',0):,}",
         state.get('qualification_status','Retained observations; not public-time certified.')]
-    if state.get('error'):lines.insert(1,'ERROR: '+state['error'])
+    if state.get('error'):
+        # Older writers retain the most recent blocked-document reason in
+        # error while continuing other units. Do not imply the owner stopped.
+        label=('Latest blocked document: ' if state['state']=='running'
+            and state.get('blocked',0) and not c.get('failed',0) else 'ERROR: ')
+        lines.insert(1,label+state['error'])
     active=list(state.get('active',{}).values())
     room=max(0,height-len(lines)-2)
     for worker in active[:room]:

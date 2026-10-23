@@ -56,3 +56,22 @@ def test_family_cycles_and_bounds_fail_without_truncation():
     with pytest.raises(ValueError,match='Cyclic'):retained_family(query,root,datetime.now(timezone.utc))
     calls.clear()
     with pytest.raises(ValueError,match='bound'):retained_family(query,root,datetime.now(timezone.utc),maximum_entities=1)
+
+
+def test_running_blocker_is_not_a_stopped_campaign():
+    state=dict(state='running',counts={'failed':0},blocked=1,error='Missing identity',total=10)
+    result=render(state,100,24)
+    assert 'Latest blocked document: Missing identity' in result
+    assert 'ERROR:' not in result
+    state['state']='failed'
+    assert 'ERROR:' in render(state,100,24)
+
+
+def test_monitor_survives_status_read_failure(monkeypatch):
+    from pathlib import Path
+    from scripts.monitor_fundamentals import snapshot
+    def denied(*args,**kwargs):raise PermissionError('status replacement in progress')
+    monkeypatch.setattr(Path,'read_text',denied)
+    result=snapshot(Path('unused'),80,24)
+    assert 'STATUS UNAVAILABLE' in result and 'PermissionError' in result
+    assert 'No completion or ETA is assumed' in result

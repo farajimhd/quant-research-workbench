@@ -7,6 +7,18 @@ import argparse,json,shutil,time
 from pipelines.fundamentals.progress import render
 
 
+def snapshot(root,width,height):
+    """A transient status read failure must not terminate the read-only panel."""
+    try:
+        state=json.loads((root/'status.json').read_text(encoding='utf-8'))
+    except (OSError,json.JSONDecodeError) as error:
+        return ('Fundamentals | STATUS UNAVAILABLE\n'
+            'Controller health is unknown; retrying status read.\n'
+            f'{type(error).__name__}: {error}\n'
+            'No completion or ETA is assumed.')
+    return render(state,width,height)
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--run-dir',required=True)
@@ -39,11 +51,10 @@ def main():
                         heading=f"Scope {index+1}/{len(scopes)}: {scope['label']} (ETA is for this scope)"
                         if prior.get('state')!='complete':break
                     footer=campaign.get('qualification_status','Qualification not yet established')
-                state=json.loads((selected/'status.json').read_text(encoding='utf-8'))
-                size=shutil.get_terminal_size((100,28));text=render(state,size.columns,size.lines-3)
+                size=shutil.get_terminal_size((100,28));text=snapshot(selected,size.columns,size.lines-3)
                 if heading:text=heading[:size.columns]+'\n'+text+'\n'+footer[:size.columns]
-            except (FileNotFoundError,json.JSONDecodeError):
-                text=(heading+'\n' if heading else '')+'Fundamentals | awaiting controller status\nNo completion or ETA is assumed.'
+            except (OSError,json.JSONDecodeError) as error:
+                text=(heading+'\n' if heading else '')+f'Fundamentals | STATUS UNAVAILABLE: {type(error).__name__}\nNo completion or ETA is assumed.'
             if interactive:
                 sys.stdout.write('\x1b[H'+text+'\x1b[J');sys.stdout.flush()
             elif text!=last:print(text,flush=True)
