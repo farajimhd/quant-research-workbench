@@ -6,7 +6,7 @@ from pipelines.sec.edgar.sec_pipeline.revision import source_revision,REVISION_T
 from .contracts import digest,literal
 
 
-def bridge(text,document,archive):
+def bridge(text,document,archive,*,metadata_only=False):
     """Require exact retained document identity and reproducible archive metadata."""
     identity=('document_id','accession_number','cik','sequence_number','document_name','document_type',
         'source_archive_date','source_archive_member','source_archive_path','content_sha256')
@@ -18,7 +18,8 @@ def bridge(text,document,archive):
         raise ValueError('Archive issuer differs')
     for row,key in ((text,'content_sha256'),(archive,'source_content_sha256'),(archive,'source_version_key')):
         if not re.fullmatch('[0-9a-f]{64}',row.get(key) or ''):raise ValueError('Archive/document hash is missing')
-    if text.get('actual_text_hash')!=text['content_sha256']:raise ValueError('Retained text bytes differ from their hash')
+    if not metadata_only and text.get('actual_text_hash')!=text['content_sha256']:raise ValueError('Retained text bytes differ from their hash')
+    if metadata_only and document['document_type']!='EX-101.INS':raise ValueError('Archive-only candidate requires original instance metadata')
     if archive.get('source_revision_kind')!='archive_occurrence' or archive.get('pac_event_id'):
         raise ValueError('Candidate bridge requires an ordinary archive occurrence; PAC needs separate qualification')
     day=date.fromisoformat(str(archive['source_archive_date']))
@@ -41,6 +42,7 @@ def bridge(text,document,archive):
         document_revision_state='legacy' if legacy else 'versioned_archive',
         archive_version_key=expected.source_version_key,archive_submission_hash=archive['source_content_sha256'],
         archive_revision_rank=rank,candidate_only=True,original_vintage_qualified=False)
+    if metadata_only:result.update(version='sec-instance-metadata-candidate-v1',document_revision_state='archive_metadata_only',retained_text_verified=False)
     return dict(result,candidate_hash=digest(result))
 
 
@@ -70,6 +72,9 @@ def inspect(query,cik,accession,document_name,claim,source_guard):
             # ambiguity, never silently choose the newest occurrence.
             for row in (*text,*document,*archive):row['source_revision_rank']=int(row['source_revision_rank'])
             return live_archive_candidate(text[0],document[0],archive)
+        if not text and len(document)==len(archive)==1 and document[0]['document_type']=='EX-101.INS':
+            for row in (*document,*archive):row['source_revision_rank']=int(row['source_revision_rank'])
+            return bridge(document[0],document[0],archive[0],metadata_only=True)
         if any(len(rows)!=1 for rows in (text,document,archive)):
             raise ValueError('Document lineage is missing or ambiguous; explicit reconciliation required')
         archive[0]['source_revision_rank']=int(archive[0]['source_revision_rank'])

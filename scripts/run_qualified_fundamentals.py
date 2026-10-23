@@ -39,6 +39,7 @@ def _main():
     parser.add_argument('--end',type=date.fromisoformat,default=date(2026,10,2))
     parser.add_argument('--workers',type=int,default=4)
     parser.add_argument('--profile',action='store_true',help='Three real original documents, then exact receipt reuse; no full launch')
+    parser.add_argument('--profile-count',type=int,default=3)
     parser.add_argument('--plan-only',action='store_true')
     parser.add_argument('--upgrade-recipe',action='store_true',help='Archive the prior request and independently verify existing qualified receipts before reuse')
     parser.add_argument('--profile-result',type=Path)
@@ -86,13 +87,32 @@ def _main():
             documents+=client.query('SELECT DISTINCT cik,accession_number accession,document_name document,source_archive_date day,document_type form,content_sha256,source_version_key '
                 'FROM q_live.sec_filing_document_v3 PREWHERE cik IN ('+ids+') '
                 f'AND source_archive_date BETWEEN toDate({literal(max(a.start,date(year,1,1)))}) AND toDate({literal(min(a.end,date(year,12,31)))}) '
-                "AND document_type IN ('10-K','10-K/A','10-Q','10-Q/A','20-F','20-F/A','40-F','40-F/A') ORDER BY day,cik,accession,document")
+                "AND document_type IN ('10-K','10-K/A','10-Q','10-Q/A','20-F','20-F/A','40-F','40-F/A','EX-101.INS') ORDER BY day,cik,accession,document")
+        # Select one original representation per filing. Preserve every already
+        # completed representation across explicit recipe upgrades.
+        completed={}
+        for path in (root/'receipts').glob('*.json'):
+            prior=json.loads(path.read_text())['document'];completed[(prior['cik'],prior['accession'])]=prior
+        filings=defaultdict(list)
+        for row in documents:filings[(row['cik'],row['accession'])].append(row)
+        documents=[]
+        for key,rows in filings.items():
+            reports=[r for r in rows if r['form']!='EX-101.INS']
+            instances=[r for r in rows if r['form']=='EX-101.INS']
+            if not reports:continue
+            if key in completed:
+                if completed[key] not in rows:raise ValueError('Completed filing source disappeared from census')
+                documents.append(completed[key])
+            elif len(instances)==1:documents.extend(instances)
+            else:documents.extend(reports)
         if a.profile:
+            if a.profile_count not in (3,6,9,12):raise ValueError('Profile count must be 3, 6, 9 or 12')
             selected=[]
             for cik in ('0000320193','0000789019','0001089113'):
-                matches=[r for r in documents if r['cik']==cik and r['form'] in ('10-K','20-F','40-F')]
+                matches=sorted([r for r in documents if r['cik']==cik],key=lambda r:(r['day'],r['accession'],r['document']))
                 if not matches:raise ValueError('Representative profile issuer missing')
-                selected.append(max(matches,key=lambda r:(r['day'],r['accession'],r['document'])))
+                count=a.profile_count//3
+                for i in range(count):selected.append(matches[-1] if count==1 else matches[i*(len(matches)-1)//(count-1)])
             documents=selected
         save(root/'census.json',dict(documents=documents,census_hash=digest(documents)))
         state.update(total=len(documents),queued=len(documents),remaining_by_family={'SEC':len(documents)});status()
@@ -104,7 +124,7 @@ def _main():
                 raise ValueError('Family verification is missing or belongs to another population')
             if a.profile_result is None:raise ValueError('Full campaign requires real runnable-path profile')
             profile=json.loads(a.profile_result.read_text())
-            if profile.get('recipe')!=recipe or profile.get('qualified')!=3 or not profile.get('reuse_verified'):
+            if profile.get('recipe')!=recipe or profile.get('qualified',0)<3 or not profile.get('reuse_verified'):
                 raise ValueError('Representative qualified profile is missing or incompatible')
         receipt_index=defaultdict(list)
         for file in sorted((a.evidence_root/'sec_daily_feed_archives').glob('*.jsonl')):
@@ -124,7 +144,7 @@ def _main():
         state.update(archive_remaining=len(groups),archive_samples=[])
         state['state']='running';heartbeat=threading.Thread(target=pulse,daemon=True);heartbeat.start()
         try:
-            with closing(open_workstation_keeper_session()) as keeper,closing(KeeperClaim(keeper.client,str(uuid5(NAMESPACE_URL,'qualified-original-fundamentals-v1')))) as claim:
+            with closing(open_workstation_keeper_session()) as keeper,closing(KeeperClaim(keeper.client,str(uuid5(NAMESPACE_URL,'qualified-original-fundamentals-v1')))) as claim, ThreadPoolExecutor(max_workers=1) as archive_pool:
                 with closing(DictionaryClaim(keeper.client,'q_live')) as ddl_claim:
                     originals.install(client.query,'q_live',ddl_claim);reported.install(client.query,'q_live',ddl_claim);witness_publication.install(client.query,'q_live',ddl_claim)
                 schema.install(client.query,'arte')
@@ -137,8 +157,24 @@ def _main():
                     save(root/'blocked'/ (digest(row)+'.json'),dict(document=row,error=str(error)))
                     with mutex:state['blocked']+=1;state['queued']-=1;state['error']=str(error)[:300]
                     status()
-                for day,rows in sorted(groups.items()):
+                ordered=sorted(groups.items());prefetched={}
+                def prefetch(day):
+                    d=date.fromisoformat(day);relative=Path(str(d.year),f'QTR{(d.month-1)//3+1}',d.strftime('%Y%m%d')+'.nc.tar.gz')
+                    source=a.archive_root/relative;target=root/'archive-staging'/relative
+                    if not source.exists():return None
+                    size=source.stat().st_size
+                    if size>8*1024**3 or sec_receipt_recovery.select_complete(receipt_index[day],size) is None:return None
+                    return archive_staging.copy_file(source,target,a.archive_root,root/'archive-staging',size,stop=stop,reserve_bytes=800*1024**3,reserve_fraction=.1)
+                for day_index,(day,rows) in enumerate(ordered):
                     owned();pending=[];archive_started=time.monotonic()
+                    future=prefetched.pop(day,None);prefetched_copy=None;prefetch_error=None
+                    if future:
+                        try:prefetched_copy=future.result()
+                        except (ValueError,OSError) as error:prefetch_error=error
+                    if day_index+1<len(ordered):
+                        next_day,next_rows=ordered[day_index+1]
+                        if any(not (root/'receipts'/(digest(r)+'.json')).exists() for r in next_rows):
+                            prefetched[next_day]=archive_pool.submit(prefetch,next_day)
                     for row in rows:
                         receipt_path=root/'receipts'/(digest(row)+'.json')
                         if receipt_path.exists():
@@ -182,12 +218,14 @@ def _main():
                         else:raise ValueError('Archive download evidence is missing or ambiguous')
                         cache=root/'archive-staging';target=cache/relative
                         with mutex:state['active']['archive']=dict(family=day,stage='copy and archive byte verification',started=time.monotonic()-start)
-                        copied=archive_staging.copy_file(archive,target,a.archive_root,cache,size,stop=stop,reserve_bytes=800*1024**3,reserve_fraction=.1)
+                        if prefetch_error is not None:raise prefetch_error
+                        copied=prefetched_copy
+                        if copied is None:copied=archive_staging.copy_file(archive,target,a.archive_root,cache,size,stop=stop,reserve_bytes=800*1024**3,reserve_fraction=.1)
                         # Every selected member is checked in one archive pass.
                         if copied.get('status')=='cached':
-                            from hashlib import file_digest
-                            with target.open('rb') as stream:checksum=file_digest(stream,'sha256').hexdigest()
-                            copied=dict(status='staged',bytes=size,sha256=checksum)
+                            # The independent witness reader hashes the entire
+                            # cached container while reading selected members.
+                            copied=dict(status='staged',bytes=size,sha256=receipt['sha256'])
                         if copied.get('sha256')!=receipt['sha256']:raise ValueError('Staged archive differs from qualified receipt')
                         original_cache=root/'original-documents';original_cache.mkdir(exist_ok=True)
                         def original_sink(witness,text):
@@ -233,7 +271,7 @@ def _main():
                             # Serialize its check/insert/readback under the campaign claim.
                             with witness_lock:
                                 witness_publication.Publisher(own.query,'q_live',claim,stable,admission).publish((witness,),(qualified_time,),receipt)
-                            if witness['version']=='sec-archive-original-document-witness-v3':
+                            if (original_cache/(witness['document_hash']+'.html')).exists():
                                 from hashlib import sha256
                                 raw=(original_cache/(witness['document_hash']+'.html')).read_bytes()
                                 if len(raw)>64*1024**2 or sha256(raw).hexdigest()!=witness['document_hash']:

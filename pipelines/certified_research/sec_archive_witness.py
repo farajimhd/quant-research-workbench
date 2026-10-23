@@ -4,6 +4,12 @@ from pathlib import Path,PureWindowsPath
 import re
 import tarfile
 
+
+class _DigestReader:
+    def __init__(self, stream):self.stream=stream;self.digest=sha256()
+    def read(self, size=-1):
+        data=self.stream.read(size);self.digest.update(data);return data
+
 from pipelines.sec.edgar.sec_filing_text_extract_parts import parse_filing
 from pipelines.sec.edgar.sec_pipeline.revision import source_revision
 from .contracts import digest
@@ -46,13 +52,11 @@ def inspect_archives(path,prepared,*,stop=None,progress=None,maximum_archive_byt
         if (staging_receipt.get('status')!='staged' or staging_receipt.get('bytes')!=before.st_size
                 or not re.fullmatch('[0-9a-f]{64}',staging_receipt.get('sha256') or '')):
             raise ValueError('SEC staging receipt is not a verified bounded copy')
-        checksum=sha256()
-        with path.open('rb') as reader:
-            while chunk:=reader.read(8*1024**2):check();checksum.update(chunk)
-        container_hash=checksum.hexdigest()
-        if container_hash!=staging_receipt['sha256']:raise ValueError('Staged SEC container digest differs')
+        container_hash=staging_receipt['sha256']
     scanned=0;results={}
-    with tarfile.open(path,'r|gz') as archive:
+    with path.open('rb') as compressed:
+      hashed=_DigestReader(compressed)
+      with tarfile.open(fileobj=hashed,mode='r|gz') as archive:
         for index,member in enumerate(archive,start=1):
             check()
             scanned+=512+((member.size+511)//512)*512
@@ -86,11 +90,16 @@ def inspect_archives(path,prepared,*,stop=None,progress=None,maximum_archive_byt
             for source in sources:
                 check();result=_document_witness(source,raw_size,submission_hash,index,filing,document_hashes,before.st_size,container_hash,
                     archive_original=original_document_sink is not None)
-                if result['version']=='sec-archive-original-document-witness-v3':
+                if original_document_sink is not None:
                     doc=source['document']['lineage']['document']
                     original_document_sink(result,document_payloads[(doc['sequence_number'],doc['document_name'],doc['document_type'])])
                 results[result['document_key']]=result
             if not pending:break
+      # The tar reader may stop after the last selected member. Hash the rest
+      # without another read of the prefix; publication is forbidden until EOF.
+      while hashed.read(8*1024**2):check()
+      if staging_receipt is not None and hashed.digest.hexdigest()!=container_hash:
+          raise ValueError('Staged SEC container digest differs')
     if pending:raise ValueError('Selected SEC submission is absent from the archive: '+','.join(sorted(pending)[:4]))
     after=path.stat();check()
     if (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):raise ValueError('Staged SEC archive changed during verification')

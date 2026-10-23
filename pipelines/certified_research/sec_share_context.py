@@ -42,7 +42,7 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
         parsing_view=inner.lstrip(b' \t\r\n')
         prefix_bytes+=len(b'<XBRL>')+len(inner)-len(parsing_view)
     namespaces={};stack=[];pending=[];maps={};nodes=0
-    elements=[];retention=[];retained_nodes=0
+    elements=[];retention=[];retained_nodes=0;instance=False;native=set()
     collected={'context':[], 'unit':[], 'nonFraction':[], 'nonNumeric':[]}
     try:
         parser=ET.iterparse(BytesIO(parsing_view),events=('start-ns','start','end'))
@@ -51,7 +51,12 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
             if event=='start':
                 if pending:namespaces=dict(namespaces,**dict(pending));pending=[]
                 stack.append(namespaces);nodes+=1
+                if nodes==1:instance=node.tag=='{'+XBRL+'}xbrl'
                 local=node.tag.rsplit('}',1)[-1]
+                native_fact=instance and catalog_tags is not None and len(stack)==2 and node.get('contextRef') is not None
+                if native_fact:
+                    native.add(id(node));node.set('name',node.tag)
+                    local='nonFraction' if node.get('unitRef') is not None else 'nonNumeric'
                 selected=(local in ('nonFraction','nonNumeric') or node.tag in ('{'+XBRL+'}context','{'+XBRL+'}unit'))
                 keep=selected or bool(retention and retention[-1])
                 retention.append(keep);elements.append(node)
@@ -73,6 +78,7 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
                 stack.pop();namespaces=stack[-1] if stack else {}
     except ET.ParseError as error:raise ValueError('SEC source is not strict XML') from error
     def qname(value,node):
+        if id(node) in native and value==node.tag:return value
         prefix,sep,local=value.partition(':')
         if not sep:local=prefix;prefix=''
         uri=maps[id(node)].get(prefix)
@@ -91,14 +97,14 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
     selected_tags=set(catalog_tags) if fundamental else TAGS
     observations=[];rejected=[]
     for position,fact in enumerate(collected['nonFraction']):
-        name=fact.get('name','');local=name.split(':')[-1]
+        name=fact.get('name','');local=name.rsplit('}',1)[-1] if id(fact) in native else name.split(':')[-1]
         if local not in selected_tags:continue
         if len(observations)+len(rejected)>=maximum_facts:raise ValueError('SEC share fact bound exceeded')
         row=dict(source_position=position,fact_id=fact.get('id',''),context_id=fact.get('contextRef',''),concept=name,
             unit_id=fact.get('unitRef',''),decimals=fact.get('decimals',''),scale=fact.get('scale','0'),
             format=fact.get('format',''),source_text_hash=expected_hash)
         try:
-            if fact.tag!='{'+IX+'}nonFraction':raise ValueError('unsupported_inline_namespace')
+            if fact.tag!='{'+IX+'}nonFraction' and id(fact) not in native:raise ValueError('unsupported_inline_namespace')
             concept=qname(name,fact)
             taxonomy_pattern=(r'\{(?:http://xbrl.sec.gov/dei|http://fasb.org/us-gaap)/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?\}[A-Za-z_][A-Za-z0-9_]*'
                 if fundamental else r'\{http://xbrl.sec.gov/dei/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?\}EntityCommonStockSharesOutstanding|\{http://fasb.org/us-gaap/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?\}CommonStockSharesOutstanding')
@@ -155,6 +161,16 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
                 raise ValueError('unsupported_transform_namespace')
             text=''.join(fact.itertext()).strip()
             raw_text=text
+            native_negative=False
+            if id(fact) in native:
+                if list(fact) or row['format'] or fact.get('scale') or fact.get('sign'):
+                    raise ValueError('invalid_instance_numeric_content')
+                native_negative=text.startswith('-')
+                if text.startswith(('+','-')):text=text[1:]
+                if not re.fullmatch(r'(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)',text):
+                    raise ValueError('invalid_instance_decimal')
+                if text.startswith('.'):text='0'+text
+                if text.endswith('.'):text+='0'
             if word_number:
                 if qname(row['format'],fact)!='{http://www.sec.gov/inlineXBRL/transformation/2015-08-31}numwordsen':
                     raise ValueError('unsupported_transform_namespace')
@@ -172,7 +188,7 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
             scale=int(row['scale'])
             if not -12<=scale<=12 or fact.get('sign','') not in (('','+','-') if fundamental else ('','+')):raise ValueError('invalid_share_scale_or_sign')
             number=Decimal(text.replace(',','')).as_tuple()
-            value=Decimal((int(fact.get('sign','')=='-'),number.digits,number.exponent+scale))
+            value=Decimal((int(native_negative or fact.get('sign','')=='-'),number.digits,number.exponent+scale))
             observation=dict(row,concept=concept,period_end=str(measured),dimensions=dimensions,value=format(value,'f'))
             if fundamental:observation.update(period_start=str(period_start) if period_start else None,unit=unit_code,raw_text=raw_text)
             observations.append(observation)
@@ -185,11 +201,12 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
         cover=[];failures=[];selected={'Security12bTitle','TradingSymbol','SecurityExchangeName'}
         for position,fact in enumerate(collected['nonNumeric']):
             name=fact.get('name','')
-            if name.split(':')[-1] not in selected:continue
+            local=name.rsplit('}',1)[-1] if id(fact) in native else name.split(':')[-1]
+            if local not in selected:continue
             if len(cover)+len(failures)>=10000:raise ValueError('SEC cover fact bound exceeded')
             row=dict(source_position=position,concept=name,context_id=fact.get('contextRef',''),fact_id=fact.get('id',''),format=fact.get('format',''))
             try:
-                if fact.tag!='{'+IX+'}nonNumeric':raise ValueError('unsupported_cover_inline_namespace')
+                if fact.tag!='{'+IX+'}nonNumeric' and id(fact) not in native:raise ValueError('unsupported_cover_inline_namespace')
                 concept=qname(name,fact)
                 if not re.fullmatch(r'\{http://xbrl.sec.gov/dei/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?\}.+',concept):
                     raise ValueError('unsupported_cover_taxonomy')

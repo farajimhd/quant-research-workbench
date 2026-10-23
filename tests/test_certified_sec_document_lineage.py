@@ -106,3 +106,13 @@ def test_live_archive_candidate_requires_later_byte_witness_and_seals_both_trans
     with pytest.raises(ValueError):lineage.live_archive_candidate(bad,document,[archive,live])
     bad=dict(live,source_version_key='d'*64)
     with pytest.raises(ValueError):lineage.live_archive_candidate(text,document,[archive,bad])
+
+
+def test_metadata_only_instance_is_never_claimed_as_verified_text():
+    _,document,archive=fixture();document['document_type']='EX-101.INS'
+    result=lineage.bridge(document,document,archive,metadata_only=True)
+    assert result['document_revision_state']=='archive_metadata_only'
+    assert result['retained_text_verified'] is False and result['candidate_only']
+    document['document_type']='10-K'
+    with pytest.raises(ValueError,match='instance metadata'):
+        lineage.bridge(document,document,archive,metadata_only=True)
