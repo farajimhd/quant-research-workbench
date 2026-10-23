@@ -8,6 +8,25 @@ receipts, not historical fact payloads.
 
 ## Authority and qualification
 
+The approved `qualified-original-filing-authority-v1` path is implemented in
+`pipelines.certified_research.sec_original_authority.verify_document`. Qualified
+original filings are authoritative for their reported observations; missing or
+disagreeing bulk observations remain reconciliation evidence. The verifier binds
+current document lineage to independently reconstructed original rows, exact
+reported-value selection and a verified archive/public-time binding. It rejects
+unresolved numeric and identity-cover observations. Dimensional contexts remain
+separate, and repeated presentations of the same semantic fact retain their
+source positions without being added together.
+
+This is document qualification, not complete-history certification. Its result
+explicitly sets `whole_scope_certified=False`. The old bulk-derived publisher and
+its strict parity guard remain unchanged: relaxing that guard would still publish
+bulk values and would not implement original-filing authority. The retained ARTE
+normalization receipts are unaffected. Full-census orchestration and publication
+of the qualified original authority into downstream historical products remain
+separate required steps; do not advertise normalization or a single-document
+pilot as their completion.
+
 The new tables contain retained observations, **not automatically certified
 public fundamentals**. Missing publication timestamps remain NULL. Bulk/company
 SEC facts retain `original_document_parity_required`; invalid Reg SHO date

@@ -52,6 +52,12 @@ def test_real_projection_publication_readback_and_restart_reuse():
         assert capture()['inserted_rows']==0
         verified=sec_reported_readback.verify(client.query,database,first['binding_hash'],Mock(),Mock())
         assert verified['groups']==1 and verified['public_time_qualified'] and not verified['certified']
+        full=sec_reported_readback.verify(client.query,database,first['binding_hash'],Mock(),Mock(),include_source=True)
+        assert full['evidence_hash']==verified['evidence_hash']
+        assert full['extraction']['source_text_hash']==extraction['source_text_hash']
+        assert full['document_key']==witness['document_key']
+        assert full['source_document_hash']==witness['document_hash']
+        assert 'all_bulk_matched' in full['reconciliation']
         reported.sec_share_capture.verify(client.query,database,required=True,catalog=reported.tables())
         table=reported.tables()[0].name
         client.query(f'INSERT INTO {database}.{table} SELECT * FROM {database}.{table}',read=False)

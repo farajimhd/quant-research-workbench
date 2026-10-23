@@ -6,7 +6,7 @@ from . import sec_reported_publication,sec_fundamental_readback,sec_witness_publ
 from .contracts import digest,literal
 
 
-def verify(query,database,binding_hash,claim,source_guard):
+def verify(query,database,binding_hash,claim,source_guard,*,include_source=False):
     if not isinstance(binding_hash,str) or not re.fullmatch('[0-9a-f]{64}',binding_hash):raise ValueError('Invalid reported binding locator')
     catalog=sec_reported_publication.tables()
     def guard():
@@ -54,4 +54,10 @@ def verify(query,database,binding_hash,claim,source_guard):
         extraction_hash=header['extraction_hash'],source_reconciliation_hash=header['source_reconciliation_hash'],
         numeric_mode=header['numeric_mode'],groups=len(actual),available_at=header['available_at'],precision=header['precision'],
         public_time_qualified=True,certified=False,allocation_certified=False)
-    return dict(result,evidence_hash=digest(result))
+    result=dict(result,evidence_hash=digest(result))
+    if include_source:
+        result.update(extraction=extraction,document_key=header['document_key'],
+            source_document_hash=proof['witness']['document_hash'],
+            reconciliation={k:source[k] for k in ('all_bulk_matched','comparison_status_counts',
+                'unmatched_original_context_counts','parity_input_blockers')})
+    return result
