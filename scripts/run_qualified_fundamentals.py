@@ -72,11 +72,12 @@ def main():
     def guard():
         if (root/'STOP').exists() or stop.is_set():raise InterruptedError('Qualified campaign stopped at durable boundary')
     with lock(runtime/'qualified-fundamentals.lock'),closing(Client(a.endpoint)) as client:
-        ids=','.join(map(literal,ciks));documents=[]
+        selected_ciks=('0000320193','0000789019','0001089113') if a.profile else ciks
+        ids=','.join(map(literal,selected_ciks));documents=[]
         for year in range(a.start.year,a.end.year+1):
             guard();status()
             documents+=client.query('SELECT DISTINCT cik,accession_number accession,document_name document,source_archive_date day,document_type form,content_sha256,source_version_key '
-                'FROM q_live.sec_filing_document_v3 FINAL WHERE cik IN ('+ids+') '
+                'FROM q_live.sec_filing_document_v3 PREWHERE cik IN ('+ids+') '
                 f'AND source_archive_date BETWEEN toDate({literal(max(a.start,date(year,1,1)))}) AND toDate({literal(min(a.end,date(year,12,31)))}) '
                 "AND document_type IN ('10-K','10-K/A','10-Q','10-Q/A','20-F','20-F/A','40-F','40-F/A') ORDER BY day,cik,accession,document")
         if a.profile:
