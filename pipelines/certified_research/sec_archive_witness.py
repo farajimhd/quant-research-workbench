@@ -64,13 +64,18 @@ def inspect_archives(path,prepared,*,stop=None,progress=None,maximum_archive_byt
                 raise ValueError('SEC submission is not a bounded regular archive member')
             reader=archive.extractfile(member)
             if reader is None:raise ValueError('SEC submission cannot be opened')
-            with reader:raw=reader.read(maximum_member_bytes+1)
-            if len(raw)!=member.size:raise ValueError('SEC submission member byte count differs')
             check();sources=pending.pop(wanted)
-            submission_hash=sha256(raw).hexdigest();filing=parse_filing(raw,wanted)
             selected={(s['document']['lineage']['document']['sequence_number'],
                 s['document']['lineage']['document']['document_name'],
                 s['document']['lineage']['document']['document_type']) for s in sources}
+            with reader:
+                if member.size>256*1024**2:
+                    from .sec_submission_stream import read
+                    filing,raw_size,submission_hash=read(reader,wanted,selected,check=check)
+                else:
+                    raw=reader.read(maximum_member_bytes+1);raw_size=len(raw)
+                    submission_hash=sha256(raw).hexdigest();filing=parse_filing(raw,wanted);del raw
+            if raw_size!=member.size:raise ValueError('SEC submission member byte count differs')
             document_hashes={key:[] for key in selected}
             document_payloads={}
             for row in filing['documents']:
@@ -79,7 +84,7 @@ def inspect_archives(path,prepared,*,stop=None,progress=None,maximum_archive_byt
                     document_hashes[identity].append(sha256(row['payload'].encode('utf-8')).hexdigest())
                     document_payloads[identity]=row['payload']
             for source in sources:
-                check();result=_document_witness(source,len(raw),submission_hash,index,filing,document_hashes,before.st_size,container_hash,
+                check();result=_document_witness(source,raw_size,submission_hash,index,filing,document_hashes,before.st_size,container_hash,
                     archive_original=original_document_sink is not None)
                 if result['version']=='sec-archive-original-document-witness-v3':
                     doc=source['document']['lineage']['document']

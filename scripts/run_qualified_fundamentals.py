@@ -194,7 +194,7 @@ def _main():
                                 raise ValueError('Original document exceeds bound or differs')
                             (original_cache/(witness['document_hash']+'.html')).write_bytes(raw)
                         witnesses=sec_archive_witness.inspect_archives(target,descriptors,stop=stop,staging_receipt=copied,
-                            maximum_member_bytes=256*1024**2,maximum_archive_bytes=8*1024**3,
+                            maximum_member_bytes=4*1024**3,maximum_archive_bytes=8*1024**3,
                             maximum_scan_bytes=64*1024**3,original_document_sink=original_sink)
                     except (ValueError,OSError,EOFError,tarfile.TarError) as error:
                         for row in admitted:blocked(row,error)
