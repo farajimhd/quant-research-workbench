@@ -80,4 +80,7 @@ class Bus:
     def mirror(self,node,path,expected):
         if node=='laptop':
             if sha(path)!=expected:raise ValueError('Local result changed')
+        elif Path(path).name in ('checkpoint.json','status.json'):
+            from .distributed_mirror import copy_atomic
+            copy_atomic(remote(path,self.job['workstation_share']),path,expected)
         else:copy_verified(remote(path,self.job['workstation_share']),path,expected)

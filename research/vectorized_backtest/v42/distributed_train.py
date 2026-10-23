@@ -10,22 +10,11 @@ import psutil
 from .distributed_bus import Bus,read,digest
 from .distributed_assets import sha,remote,receipt_inventory
 from .publication import write_json
+from .distributed_mirror import snapshot
 
 class Coordinator:
     def __init__(self,job):self.job=job;self.bus=Bus(job);self.stamps={};self.sealed={}
-    def snapshot(self,node,source,target):
-        source=remote(source,self.job['workstation_share']) if node=='workstation' else Path(source);target=Path(target)
-        if source==target or not source.exists():return
-        stat=source.stat();stamp=(stat.st_size,stat.st_mtime_ns)
-        if self.stamps.get(str(source))==stamp:return
-        target.parent.mkdir(parents=True,exist_ok=True)
-        temporary=target.with_name(target.name+'.mirror.tmp')
-        # Source publication swaps whole files atomically. An open source handle
-        # remains a coherent version even if the next checkpoint is published.
-        with source.open('rb') as src,temporary.open('wb') as dst:
-            import shutil
-            shutil.copyfileobj(src,dst,16*1024**2)
-        os.replace(temporary,target);self.stamps[str(source)]=stamp
+    snapshot=snapshot
     def local_progress(self,key,day):
         claim=self.bus.root/'claims'/(key+'.json')/'owner.json'
         if not claim.exists():return

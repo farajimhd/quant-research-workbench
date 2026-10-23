@@ -72,6 +72,46 @@ def test_transport_read_retries_only_transient_access(monkeypatch,tmp_path):
     monkeypatch.setattr(Path,'read_bytes',lambda self:b'invalid')
     with pytest.raises(ValueError):read(tmp_path/'x.json')
 
+def test_mirror_verified_replacement_and_failure_preserves_old(tmp_path):
+    import hashlib
+    from research.vectorized_backtest.v42.distributed_mirror import copy_atomic
+    source=tmp_path/'source.json';target=tmp_path/'checkpoint.json'
+    source.write_bytes(b'new checkpoint');target.write_bytes(b'old checkpoint')
+    with pytest.raises(ValueError,match='hash changed'):copy_atomic(source,target,'0'*64)
+    assert target.read_bytes()==b'old checkpoint'
+    copy_atomic(source,target,hashlib.sha256(source.read_bytes()).hexdigest())
+    assert target.read_bytes()==source.read_bytes() and not list(tmp_path.glob('*.mirror.tmp'))
+
+def test_mirror_persistent_lock_does_not_advance_stamp(monkeypatch,tmp_path):
+    from types import SimpleNamespace
+    from research.vectorized_backtest.v42 import distributed_mirror as m
+    source=tmp_path/'source.json';target=tmp_path/'checkpoint.json'
+    source.write_bytes(b'new');target.write_bytes(b'old')
+    owner=SimpleNamespace(stamps={})
+    attempts=[]
+    def locked(*args):attempts.append(1);raise PermissionError('held open')
+    monkeypatch.setattr(m.os,'replace',locked);monkeypatch.setattr(m.time,'sleep',lambda _:None)
+    with pytest.raises(PermissionError):m.snapshot(owner,'laptop',source,target)
+    assert len(attempts)==20 and not owner.stamps and target.read_bytes()==b'old'
+    assert not list(tmp_path.glob('*.mirror.tmp'))
+
+def test_mirror_real_windows_destination_lock(tmp_path):
+    import os,ctypes,threading
+    if os.name!='nt':pytest.skip('Windows sharing contract')
+    from ctypes import wintypes
+    from research.vectorized_backtest.v42.distributed_mirror import copy_atomic
+    source=tmp_path/'source.json';target=tmp_path/'checkpoint.json'
+    source.write_bytes(b'new');target.write_bytes(b'old')
+    api=ctypes.WinDLL('kernel32',use_last_error=True)
+    api.CreateFileW.argtypes=[wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,ctypes.c_void_p,wintypes.DWORD,wintypes.DWORD,wintypes.HANDLE]
+    api.CreateFileW.restype=wintypes.HANDLE;api.CloseHandle.argtypes=[wintypes.HANDLE]
+    handle=api.CreateFileW(str(target),0x80000000,1,None,3,0,None)
+    assert handle!=wintypes.HANDLE(-1).value
+    timer=threading.Timer(.2,lambda:api.CloseHandle(handle));timer.start()
+    try:copy_atomic(source,target)
+    finally:timer.join()
+    assert target.read_bytes()==b'new'
+
 def test_memory_pressure_evicts_inactive_data_before_unchanged_admission(monkeypatch,tmp_path):
     from research.vectorized_backtest.v42.session_lanes import Worker
     import psutil
