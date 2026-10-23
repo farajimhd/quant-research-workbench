@@ -309,3 +309,41 @@ Half bonus beat each matching baseline on Brier on all five days for 1/5-session
 histories, and three days for 20 sessions. These are calibration improvements,
 not strong level discrimination. The previously inspected evaluation sessions
 make this diagnostic reuse, not fresh held-out confirmation.
+
+### Fixed-horizon direction transfer
+
+Run `python -B research/level_book/v8/run_horizon_transfer.py`. This evaluates
+the saved ablation probabilities at 1/2/5/10 seconds on the same five sessions,
+without fitting the reaction models again. Scores are reproduced exactly before
+use. At support, `p(up)=p(rejection)`; at resistance, `p(up)=1-p(rejection)`.
+The one-session, half-bonus variant is the prespecified primary model.
+
+Targets use the latest eligible trade at or before the deadline (last ordinal
+on a timestamp tie), measured against the touch trade. Deadlines at/after the
+regular-session close are unavailable. Unchanged prices are counted separately;
+binary accuracy/AUC/Brier condition on price change. Accuracy across every
+available outcome is also reported, counting unchanged outcomes as incorrect
+for these up/down-only forecasts. Last-trade staleness and no-new-trade counts
+are retained. All 86,686 original touches are considered, including the four
+encounters without a resolved barrier-reaction label.
+
+Baselines include incoming-direction continuation and historical fixed-horizon
+direction frequencies, both global and conditioned on support/resistance. The
+frequency baselines use the matching 1/5/20 prior sessions and only current-day
+outcomes whose deadlines have strictly passed; ties remain withheld. Saved
+reaction-rate baselines are also transferred unchanged. No combined parameter
+tuning or threshold search is performed.
+
+The 20261023T155144887180Z run found primary-model changed-price accuracies of
+46.07/47.31/48.39/48.90%, versus role-conditioned direction-frequency baseline
+56.52/54.66/52.94/51.89%. The original one-session model scored
+48.64/49.29/49.74/49.82%. Unchanged counts were 14,089/9,239/5,641/3,850;
+close-excluded counts were 133/247/591/1,037. The saved reaction scores do not
+transfer successfully to these fixed-horizon targets. This is diagnostic reuse
+of previously inspected sessions, with correlated encounters and last-trade
+price targets; it is not fresh validation or a profitability estimate.
+
+Evidence under `D:/TradingML/runtimes/level-book-v8/horizon-transfer/` includes
+full predictions, coverage, daily/pooled metrics and provenance. Validation
+reproduced 15 saved score sets, independently scanned 500 as-of endpoints,
+checked 1,200 scalar baseline updates, and checked exact timestamp/close ties.
