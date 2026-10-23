@@ -43,9 +43,10 @@ def publish(query,source_database,database,request,binding_hash,population_hash,
     source=dict(source_id=source_id,family='sec_original_qualified',entity_kind='issuer_cik',entity_id=verified['cik'],
         event_key=request[1],source_table=source_database+'.research_sec_reported_document_v1',
         source_hash=binding_hash,evidence_ref=json.dumps(dict(authority_hash=source_id,binding_hash=binding_hash,
-            document=request[2],scope='document',whole_scope_certified=False),sort_keys=True,separators=(',',':')),
+            document=request[2],scope=verified.get('qualification_scope','document'),whole_scope_certified=False),sort_keys=True,separators=(',',':')),
         available_at=verified['available_at'],observed_at=stamp,quality='certified',
-        reason='qualified_original_document_scope',recipe_hash=recipe)
+        reason=('qualified_reviewed_html_observations' if verified.get('qualification_scope')=='reviewed_html_observations'
+            else 'qualified_original_document_scope'),recipe_hash=recipe)
     rows=[]
     for group in verified['groups']:
         taxonomy,tag=sec_taxonomy.identity(group['concept'],allow_extension=True)

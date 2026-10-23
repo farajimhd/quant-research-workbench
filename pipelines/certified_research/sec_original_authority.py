@@ -39,6 +39,9 @@ def verify_document(query,database,cik,accession,document,binding_hash,claim,sou
         and extraction.get('version')=='sec-inline-fundamental-context-v4')
     if len(extraction['rejected'])!=len(nils) or extraction['security_cover']['rejected']:
         raise ValueError('Original filing contains unresolved numeric or identity-cover observations')
+    if extraction.get('version')=='sec-reviewed-html-context-v1':
+        from .sec_html_context import verify_registered
+        verify_registered(extraction,cik)
     projection=sec_precision.select_reported(extraction,mode=checked['numeric_mode'])
     if projection['projection_hash']!=checked['projection_hash'] or len(projection['groups'])!=checked['groups']:
         raise ValueError('Original filing authority differs from verified reported projection')
@@ -55,4 +58,8 @@ def verify_document(query,database,cik,accession,document,binding_hash,claim,sou
         document_qualified=True,whole_scope_certified=False,aggregation='none')
     if nils:result['declared_missing_observations']=nils
     if archive_original:result.update(version='qualified-archive-original-filing-authority-v2',retained_document_hash=retained_hash)
+    if extraction.get('version')=='sec-reviewed-html-context-v1':
+        result.update(document_qualified=False,observations_qualified=True,
+            qualification_scope='reviewed_html_observations',whole_document_coverage=False,
+            html_plan_hash=extraction['html_plan']['plan_hash'])
     return dict(result,authority_hash=digest(result))

@@ -4,6 +4,10 @@ from .contracts import digest
 
 
 def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=10000):
+    from . import sec_html_reviewed,sec_html_context
+    plan=sec_html_reviewed.plan_for(expected_hash,cik)
+    if plan is not None:
+        return sec_html_context.extract(payload,expected_hash,cik,plan,maximum_bytes=maximum_bytes)
     metrics=facts.catalog()
     tags=tuple(sorted({tag for metric in metrics for tag in metric.tags}))
     result=sec_share_context.extract(payload,expected_hash,cik,maximum_bytes=maximum_bytes,

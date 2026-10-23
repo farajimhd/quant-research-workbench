@@ -60,8 +60,10 @@ def _main():
     if a.retry_manifest:
         from pipelines.fundamentals.retry import select
         manifest=json.loads(a.retry_manifest.read_text())
-        if a.profile or root==Path(manifest['source_run_dir']).resolve():raise ValueError('Retry requires a separate non-profile run directory')
+        if root==Path(manifest['source_run_dir']).resolve():raise ValueError('Retry requires a separate run directory')
         retry_documents,already_completed=select(manifest,population_hash=pop_hash,start=a.start,end=a.end,runtime=runtime)
+        if a.profile and not 1<=len(retry_documents)<=12:
+            raise ValueError('Retry profiling requires 1..12 exact blocked targets')
         request['retry_manifest_hash']=manifest['manifest_hash']
     if (root/'request.json').exists():
         old=json.loads((root/'request.json').read_text())
@@ -118,7 +120,7 @@ def _main():
             elif len(instances)==1:documents.extend(instances)
             else:documents.extend(reports)
         if retry_documents is not None:documents=retry_documents
-        if a.profile:
+        if a.profile and retry_documents is None:
             if a.profile_count not in (3,6,9,12):raise ValueError('Profile count must be 3, 6, 9 or 12')
             selected=[]
             for cik in ('0000320193','0000789019','0001089113'):
@@ -343,6 +345,9 @@ def _main():
                             update('complete')
                             record=dict(document=row,recipe=recipe,publication=result,seconds=time.monotonic()-began,reuse_verified=reuse,stage_seconds=stages,
                                 source_guard=dict(checks=stable.checks,cache_hits=stable.cache_hits,full_audits=stable.full_audits))
+                            if extracted.get('version')=='sec-reviewed-html-context-v1':
+                                record.update(qualification_scope='reviewed_html_observations',whole_document_coverage=False,
+                                    html_plan_hash=extracted['html_plan']['plan_hash'])
                             save(root/'receipts'/(token+'.json'),record)
                             with mutex:
                                 reused=result['state']=='reused'

@@ -278,3 +278,25 @@ all remaining blocked census units after the source owners drain, including new
 blockers. It never expands the population/date census or rewrites completed
 source receipts. Metadata is bounded to 250,000 census units; publication still
 uses eight workers and a bounded pending queue.
+
+Untagged HTML has a separate, source-hash-bound reviewed extraction path in
+`sec_html_context.py`. `sec_html_reviewed.py` records exact original cells or
+quotes, issuer, concept, dates, units, scale, precision and independently reviewed
+values. It does not guess a tag from a similar label, reuse another filing's
+facts, turn dashes into zero, or repair HTML into XBRL. Normalized readback checks
+the registered review again. Archive/time, current lineage, Keeper ownership,
+precision, storage and exact output readback remain mandatory.
+
+HTML mappings certify **reviewed observations**, not the whole filing. This scope
+is recorded in the ARTE source evidence/reason and local receipt. A processed
+filing count must not be interpreted as complete catalog or issuer coverage.
+The initial mappings cover dated share counts in twelve retained amendments and
+ten statement cells in the retained Oroplata 2018-12-31 report. Other facts and
+filings require additional explicit source review; they are not inferred.
+After the parent owner drains, the blocked retry profiles up to three registered
+HTML targets through publication, independent readback and immediate reuse before
+attempting the wider retry. The original writer is never hot-patched.
+
+The batch writer requests a 30-second Keeper session to tolerate bounded batch
+CPU pauses. Every connection suspension/loss still permanently invalidates the
+claim. A reconnect cannot resume publication under the old claim.

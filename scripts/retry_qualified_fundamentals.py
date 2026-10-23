@@ -74,6 +74,18 @@ def main():
                     return result.returncode
                 result=run('profile_readback',['--run-dir',str(profile),'--profile','--upgrade-recipe'])
                 if result:raise ValueError('Retry recipe profile failed; inspect retry-build.log')
+                # Exercise the newly supported HTML path, not only the legacy
+                # XBRL profile. This happens only after the original owner drains.
+                from pipelines.certified_research.sec_html_reviewed import plan_for
+                html_targets=[row for row in documents if plan_for(row['content_sha256'],row['cik'])]
+                html_targets.sort(key=lambda row: plan_for(row['content_sha256'],row['cik'])['facts'][0]['locator']['kind']!='cells')
+                if html_targets:
+                    selected={k:v for k,v in m.items() if k not in ('documents','manifest_hash')}
+                    selected['documents']=html_targets[:3];selected['manifest_hash']=digest(selected)
+                    pilot_manifest=root/'html-profile-manifest.json';save(pilot_manifest,selected)
+                    result=run('html_source_publication_and_reuse',['--run-dir',str(root/'html-profile'),'--profile',
+                        '--retry-manifest',str(pilot_manifest)])
+                    if result:raise ValueError('HTML source publication/readback profile failed; full retry has not started')
                 args=['--run-dir',str(root),'--retry-manifest',str(a.manifest),'--profile-result',str(profile/'completion.json'),
                       '--family-verification',str(a.family_verification)]
                 result=run('retry_plan',args+['--plan-only'])
