@@ -229,3 +229,17 @@ not a competing ownership authority. Unknown child identities and effective
 dates remain unknown. Disclosure verification does not certify complete family
 coverage or permit parent/subsidiary facts to be summed. The existing verified
 relationship authority remains separate.
+
+Historical qualification selects a unique retained `EX-101.INS` representation
+when available, otherwise the original report. Already completed report choices
+are retained. Metadata-only instance candidates remain unverified until exact
+submission/document/archive byte verification; no HTML recovery is used.
+Standalone decimal facts and the 2015 `zerodash` transform share the existing
+context, precision, identity and readback checks.
+
+Archive verification hashes the compressed stream during its single read,
+including the remainder after selected members. One bounded next-day staging
+copy overlaps current work; source lineage preparation uses bounded independent
+clients. Completed census versions are archived when representation selection
+changes. Benchmark worker counts with fresh isolated SSD publication, identical
+inputs and normalized semantic hashes; reuse timings are not throughput evidence.

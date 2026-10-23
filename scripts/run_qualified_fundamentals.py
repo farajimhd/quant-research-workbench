@@ -115,7 +115,12 @@ def _main():
                 count=a.profile_count//3
                 for i in range(count):selected.append(matches[-1] if count==1 else matches[i*(len(matches)-1)//(count-1)])
             documents=selected
-        save(root/'census.json',dict(documents=documents,census_hash=digest(documents)))
+        census=dict(documents=documents,census_hash=digest(documents),selection_policy='one-original-instance-or-report-preserve-completed-v1')
+        if (root/'census.json').exists():
+            prior_census=json.loads((root/'census.json').read_text())
+            if prior_census['census_hash']!=census['census_hash']:
+                save(root/('census-before-'+prior_census['census_hash']+'.json'),prior_census)
+        save(root/'census.json',census)
         state.update(total=len(documents),queued=len(documents),remaining_by_family={'SEC':len(documents)});status()
         if a.plan_only:return 0
         if not a.profile:
@@ -195,14 +200,23 @@ def _main():
                         else:pending.append(row)
                     if not pending:state['archive_remaining']-=1;continue
                     descriptors=[];admitted=[]
-                    for row in pending:
+                    with mutex:state['active']['archive']=dict(family=day,stage='bounded source lineage preparation',started=time.monotonic()-start)
+                    def prepare(row):
                         try:
-                            before=lineage.inspect(client.query,row['cik'],row['accession'],row['document'],claim,guard)
+                            with closing(Client(a.endpoint)) as lane:
+                                before=lineage.inspect(lane.query,row['cik'],row['accession'],row['document'],claim,guard)
                             key=digest(dict(version=sec_share_source.VERSION,candidate_hash=before['candidate_hash'],parser=sec_share_context.VERSION))
                             descriptor=dict(document=dict(document_key=key,lineage=before));descriptor['prepared_hash']=digest(descriptor)
-                            descriptors.append(descriptor);admitted.append(row)
-                        except ValueError as error:blocked(row,error)
-                    if not admitted:state['archive_remaining']-=1;continue
+                            return row,descriptor,None
+                        except ValueError as error:return row,None,error
+                    with ThreadPoolExecutor(max_workers=a.workers) as preparation_pool:
+                        for offset in range(0,len(pending),2*a.workers):
+                            for row,descriptor,error in preparation_pool.map(prepare,pending[offset:offset+2*a.workers]):
+                                if error is not None:blocked(row,error)
+                                else:descriptors.append(descriptor);admitted.append(row)
+                    if not admitted:
+                        with mutex:state['active'].pop('archive',None);state['archive_remaining']-=1
+                        continue
                     try:
                         d=date.fromisoformat(day);relative=Path(str(d.year),f'QTR{(d.month-1)//3+1}',d.strftime('%Y%m%d')+'.nc.tar.gz')
                         archive=a.archive_root/relative;size=archive.stat().st_size
@@ -210,7 +224,9 @@ def _main():
                         if receipt is not None:pass
                         elif len(candidates)==1 and day in repairs:
                             recovery_path=root/('recovered-'+day+'.json')
-                            retained=client.query('SELECT DISTINCT proof FROM q_live.research_sec_archive_download_receipt_v1 WHERE source_date='+literal(day)+f' AND byte_size={size} LIMIT 3')
+                            retained=client.query('SELECT DISTINCT r.proof FROM q_live.research_sec_archive_download_receipt_v1 r '
+                                'INNER JOIN q_live.research_sec_document_archive_time_v1 w ON r.receipt_hash=w.receipt_hash '
+                                'WHERE r.source_date='+literal(day)+f' AND r.byte_size={size} LIMIT 3')
                             verified=[]
                             for entry in retained:
                                 prior=json.loads(entry['proof'])
@@ -312,8 +328,10 @@ def _main():
                                 source_guard=dict(checks=stable.checks,cache_hits=stable.cache_hits,full_audits=stable.full_audits))
                             save(root/'receipts'/(token+'.json'),record)
                             with mutex:
-                                state['counts']['published']+=1;state['queued']-=1;state['new_rows']+=result['rows']
-                                state['samples'].setdefault('SEC',{'published':[]})['published'].append(record['seconds'])
+                                reused=result['state']=='reused'
+                                state['counts']['unchanged' if reused else 'published']+=1;state['queued']-=1
+                                state['reused_rows' if reused else 'new_rows']+=result['rows']
+                                if not reused:state['samples'].setdefault('SEC',{'published':[]})['published'].append(record['seconds'])
                         except ValueError as error:blocked(row,error)
                         finally:
                             own.close()
