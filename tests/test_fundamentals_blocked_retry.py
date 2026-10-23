@@ -53,3 +53,16 @@ def test_failed_or_stale_source_cannot_launch_retry(tmp_path,monkeypatch):
     state=dict(state='failed',updated_at='2026-01-01T00:00:00+00:00',counts=dict(failed=1),active={},queued=0)
     (tmp_path/'status.json').write_text(json.dumps(state))
     with pytest.raises(ValueError):runner.require_drained(tmp_path,[dict(pid=1,created=1)])
+
+
+def test_refresh_includes_only_current_blocked_census_and_excludes_receipts(tmp_path):
+    from pipelines.fundamentals.retry import refresh
+    source,row,m,args=fixture(tmp_path)
+    extra=dict(row,document='new.xml');census=[row,extra]
+    (source/'census.json').write_text(json.dumps(dict(documents=census,census_hash=digest(census))))
+    m.pop('manifest_hash');m['source_census_hash']=digest(census);m['manifest_hash']=digest(m)
+    (source/'blocked'/(digest(extra)+'.json')).write_text(json.dumps(dict(document=extra,error='new blocker')))
+    changed=refresh(m);assert changed['documents']==census
+    (source/'receipts'/(digest(row)+'.json')).write_text(json.dumps(dict(document=row,publication=dict(state='published'),reuse_verified=True)))
+    changed=refresh(m);assert changed['documents']==[extra]
+    assert select(changed,**args)==([extra],[])

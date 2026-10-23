@@ -261,3 +261,20 @@ Period dates accept XML Schema whitespace around the exact date lexical form;
 untransformed inline decimals accept `.71` and `12.` without altering source
 bytes, hashes or precision. HTML repair, taxonomy aliases, ambiguous public dates
 and unresolved original observations remain disallowed.
+
+The explicit `official_feed_representation_day` policy (v2) handles an earlier
+SEC post-acceptance change date without interpreting it as dissemination time.
+It retains exact archive/download verification, official filing day equality,
+same-day representation Last-Modified, release/acceptance guards and the next-day
+cutoff. Existing v1 policy receipts retain their original checks and identities.
+
+Issuer concepts sharing a catalog local name retain their full namespace as an
+`extension|URI` taxonomy; they never reconcile to standard concepts by name alone.
+The legacy `{http://www.xbrl.org/2009/utr}Rate` unit is preserved literally, not
+converted to `ratio`. Unknown standard taxonomy namespaces remain rejected.
+
+With `--refresh-blocked`, the waiting retry controller seals a new manifest of
+all remaining blocked census units after the source owners drain, including new
+blockers. It never expands the population/date census or rewrites completed
+source receipts. Metadata is bounded to 250,000 census units; publication still
+uses eight workers and a bounded pending queue.

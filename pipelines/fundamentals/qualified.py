@@ -48,7 +48,7 @@ def publish(query,source_database,database,request,binding_hash,population_hash,
         reason='qualified_original_document_scope',recipe_hash=recipe)
     rows=[]
     for group in verified['groups']:
-        taxonomy,tag=sec_taxonomy.identity(group['concept'])
+        taxonomy,tag=sec_taxonomy.identity(group['concept'],allow_extension=True)
         context=dict(period_start=group['period_start'],period_end=group['period_end'],taxonomy=taxonomy,
             dimensions=json.dumps(group['dimensions'],separators=(',',':')),unit=group['unit'])
         context=dict(context_id=digest(context),**context)

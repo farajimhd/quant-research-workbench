@@ -307,7 +307,9 @@ def _main():
                         stable=SourceGuard(own.query,source_audit,owned)
                         try:
                             update('public time and original extraction')
-                            qualified_time=sec_public_archive_time.qualify(witness,receipt,mode='official_filing_day')
+                            mode=('official_feed_representation_day' if isinstance(witness.get('filing_date_change'),str)
+                                  and witness['filing_date_change']<witness['source_archive_date'] else 'official_filing_day')
+                            qualified_time=sec_public_archive_time.qualify(witness,receipt,mode=mode)
                             # All documents of a day share one immutable receipt.
                             # Serialize its check/insert/readback under the campaign claim.
                             with witness_lock:

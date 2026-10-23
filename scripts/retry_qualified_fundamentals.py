@@ -7,7 +7,7 @@ import argparse,json,subprocess,time,shutil
 from datetime import datetime,timezone,date
 import psutil
 from scripts.run_fundamentals import lock,save
-from pipelines.fundamentals.retry import select
+from pipelines.fundamentals.retry import select,refresh
 from pipelines.certified_research.contracts import digest
 
 
@@ -34,6 +34,7 @@ def main():
     p.add_argument('--manifest',type=Path,required=True);p.add_argument('--population',type=Path,required=True)
     p.add_argument('--run-dir',type=Path,required=True);p.add_argument('--profile-source',type=Path,required=True)
     p.add_argument('--family-verification',type=Path,required=True);p.add_argument('--owners',type=Path,required=True)
+    p.add_argument('--refresh-blocked',action='store_true',help='After source drain, seal all remaining blocked census units including newly encountered blockers')
     p.add_argument('--check-only',action='store_true');a=p.parse_args()
     runtime=Path('D:/TradingML/runtimes').resolve();root=a.run_dir.resolve();code=Path(__file__).resolve().parents[1]
     if not root.is_relative_to(runtime) or not runtime.is_dir():raise ValueError('Required runtime unavailable')
@@ -54,7 +55,10 @@ def main():
                 time.sleep(30)
             # Check the shared OS lock as well as PID+creation identity. Each
             # child acquires this same lock again and fails closed on a race.
-            with lock(runtime/'qualified-fundamentals.lock'):documents,preserved=selection()
+            with lock(runtime/'qualified-fundamentals.lock'):
+                if a.refresh_blocked:
+                    m=refresh(m);a.manifest=root/'expanded-retry-manifest.json';save(a.manifest,m)
+                documents,preserved=selection()
             if (root/'STOP').exists():raise InterruptedError('Retry stopped before publication')
             profile=root/'profile';profile.mkdir(exist_ok=True);(profile/'receipts').mkdir(exist_ok=True)
             if not (profile/'request.json').exists():

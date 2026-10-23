@@ -61,3 +61,19 @@ def test_explicit_official_day_mode_requires_dates_without_fabricating_acceptanc
     assert result['available_at']=='2025-11-01T04:00:00+00:00' and result['exact_posting_time'] is False
     witness['filing_date_change']=None;reseal(witness)
     with pytest.raises(ValueError,match='dates'):timing.qualify(witness,receipt,mode='official_filing_day')
+
+
+def test_representation_day_preserves_old_policy_and_never_backdates_change_date():
+    w,r=inputs();w.update(filing_date_change='2025-10-30',acceptance_datetime_raw='');reseal(w)
+    with pytest.raises(ValueError):timing.qualify(w,r,mode='official_filing_day')
+    q=timing.qualify(w,r,mode='official_feed_representation_day')
+    assert q['version']=='verified-sec-feed-representation-day-v2'
+    assert q['available_at']=='2025-11-01T04:00:00+00:00'
+    r['sha256']='b'*64
+    with pytest.raises(ValueError):timing.qualify(w,r,mode='official_feed_representation_day')
+
+
+@pytest.mark.parametrize('change',[None,'','2025-11-01','2025-10-31','2025-02-30'])
+def test_representation_day_rejects_unknown_or_invalid_chronology(change):
+    w,r=inputs();w['filing_date_change']=change;reseal(w)
+    with pytest.raises(ValueError):timing.qualify(w,r,mode='official_feed_representation_day')

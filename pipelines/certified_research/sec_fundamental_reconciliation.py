@@ -26,7 +26,7 @@ def compare_original(extraction,bulk):
         return (row['taxonomy'],row['tag'],unit,row['period_start'],row['period_end'],tuple(sorted(dimensions)))
     original=defaultdict(list)
     for row in extraction['observations']:
-        taxonomy,tag=sec_taxonomy.identity(row['concept'])
+        taxonomy,tag=sec_taxonomy.identity(row['concept'],allow_extension=extraction.get('extension_namespace_policy')=='exact-original-qname-v1')
         normalized=dict(row,taxonomy=taxonomy,tag=tag)
         original[key(normalized)].append(normalized)
     seen=set();used=set();rows=[]

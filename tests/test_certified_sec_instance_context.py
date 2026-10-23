@@ -53,3 +53,23 @@ def test_untransformed_inline_decimal_lexical_forms(value,expected):
     r=parse(s,sha256(s.encode()).hexdigest(),'320193',catalog_tags=('EntityCommonStockSharesOutstanding',))
     assert not r['rejected'] and r['observations'][0]['value']==expected
     assert r['observations'][0]['raw_text']==value
+
+
+def test_issuer_concept_is_separate_from_standard_same_local_name():
+    from pipelines.certified_research import sec_taxonomy,sec_fundamental_reconciliation
+    s=source('123').replace('http://fasb.org/us-gaap/2018','https://issuer.example/2018')
+    r=run(s);assert not r['rejected']
+    concept=r['observations'][0]['concept']
+    assert r['extension_namespace_policy']=='exact-original-qname-v1'
+    assert sec_taxonomy.identity(concept,allow_extension=True)==('extension|https://issuer.example/2018','Assets')
+    with pytest.raises(ValueError):sec_taxonomy.identity(concept)
+    bulk=[dict(source_record='a',taxonomy='us-gaap',tag='Assets',unit='USD',period_start=None,period_end='2018-11-25',dimensions=[],value='123')]
+    comparisons=sec_fundamental_reconciliation.compare_original(r,bulk)
+    assert 'exact' not in str(comparisons)
+
+
+def test_rate_retains_exact_unit_and_is_never_aliased_to_ratio():
+    s=source('0.25').replace('http://www.xbrl.org/2003/iso4217','http://www.xbrl.org/2009/utr').replace('iso:USD','iso:Rate')
+    r=run(s);assert not r['rejected']
+    assert r['observations'][0]['unit']=='{http://www.xbrl.org/2009/utr}Rate'
+    assert r['observations'][0]['value']=='0.25'

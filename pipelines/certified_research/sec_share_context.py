@@ -104,7 +104,7 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
             or any(not isinstance(tag,str) or not re.fullmatch('[A-Za-z_][A-Za-z0-9_]*',tag) for tag in catalog_tags)):
         raise ValueError('Invalid bounded fundamental concept catalog')
     selected_tags=set(catalog_tags) if fundamental else TAGS
-    observations=[];rejected=[]
+    observations=[];rejected=[];extension_namespaces=set()
     for position,fact in enumerate(collected['nonFraction']):
         name=fact.get('name','');local=name.rsplit('}',1)[-1] if id(fact) in native else name.split(':')[-1]
         if local not in selected_tags:continue
@@ -118,7 +118,9 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
             taxonomy_pattern=(r'\{(?:http://xbrl.sec.gov/dei|http://fasb.org/us-gaap)/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?\}[A-Za-z_][A-Za-z0-9_]*'
                 if fundamental else r'\{http://xbrl.sec.gov/dei/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?\}EntityCommonStockSharesOutstanding|\{http://fasb.org/us-gaap/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?\}CommonStockSharesOutstanding')
             if fundamental:
-                try:sec_taxonomy.identity(concept)
+                try:
+                    taxonomy,_=sec_taxonomy.identity(concept,allow_extension=True)
+                    if taxonomy.startswith('extension|'):extension_namespaces.add(taxonomy[10:])
                 except ValueError:raise ValueError('unsupported_share_taxonomy') from None
             elif not re.fullmatch(taxonomy_pattern,concept):
                 raise ValueError('unsupported_share_taxonomy')
@@ -142,6 +144,7 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
                 measure=qname(measures[0].text,measures[0])
                 if measure=='{'+XBRL+'}shares':unit_code='shares'
                 elif fundamental and measure=='{'+XBRL+'}pure':unit_code='ratio'
+                elif fundamental and measure=='{http://www.xbrl.org/2009/utr}Rate':unit_code=measure
                 elif fundamental and re.fullmatch(r'\{http://www.xbrl.org/2003/iso4217\}[A-Z]{3}',measure):unit_code=measure[-3:]
             elif fundamental and len(list(unit))==1:
                 divide=unit.find('./{'+XBRL+'}divide')
@@ -219,6 +222,8 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
     result=dict(version='sec-inline-fundamental-context-v4' if fundamental else VERSION,observations=tuple(observations),rejected=tuple(rejected),
         source_text_hash=expected_hash,parsing_prefix_bytes=prefix_bytes,parsing_suffix_bytes=suffix_bytes,
         sec_xbrl_envelope=envelope,allocation_certified=False)
+    if extension_namespaces:
+        result.update(extension_namespace_policy='exact-original-qname-v1',extension_namespaces=tuple(sorted(extension_namespaces)))
     if include_security_cover:
         cover=[];failures=[];selected={'Security12bTitle','TradingSymbol','SecurityExchangeName'}
         for position,fact in enumerate(collected['nonNumeric']):
