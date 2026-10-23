@@ -155,12 +155,19 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
             if any(True for _ in fact.iter('{'+IX+'}exclude')):raise ValueError('unsupported_inline_exclusion')
             fixed_zero=fundamental and row['format'].split(':')[-1]=='fixed-zero'
             word_number=fundamental and row['format'].split(':')[-1]=='numwordsen'
-            if row['format'] and row['format'].split(':')[-1] not in ('num-dot-decimal','numdotdecimal') and not (fixed_zero or word_number):
+            zero_dash=fundamental and row['format'].split(':')[-1]=='zerodash'
+            if row['format'] and row['format'].split(':')[-1] not in ('num-dot-decimal','numdotdecimal') and not (fixed_zero or word_number or zero_dash):
                 raise ValueError('unsupported_numeric_transform')
             if row['format'] and not word_number and not re.fullmatch(r'\{http://www.xbrl.org/inlineXBRL/transformation/[0-9]{4}-[0-9]{2}-[0-9]{2}\}.+',qname(row['format'],fact)):
                 raise ValueError('unsupported_transform_namespace')
             text=''.join(fact.itertext()).strip()
             raw_text=text
+            if zero_dash:
+                # XBRL Transformation Registry 3, zerodashType (2015-02-26).
+                if qname(row['format'],fact)!='{http://www.xbrl.org/inlineXBRL/transformation/2015-02-26}zerodash' or text not in '-\u058a\u05be\u2010\u2011\u2012\u2013\u2014\u2015\ufe58\ufe63\uff0d':
+                    raise ValueError('unsupported_zerodash_input_or_namespace')
+                if len(text)!=1:raise ValueError('unsupported_zerodash_input_or_namespace')
+                text='0'
             native_negative=False
             if id(fact) in native:
                 if list(fact) or row['format'] or fact.get('scale') or fact.get('sign'):

@@ -90,6 +90,7 @@ def _main():
                 "AND document_type IN ('10-K','10-K/A','10-Q','10-Q/A','20-F','20-F/A','40-F','40-F/A','EX-101.INS') ORDER BY day,cik,accession,document")
         # Select one original representation per filing. Preserve every already
         # completed representation across explicit recipe upgrades.
+        annual_keys={(r['cik'],r['accession']) for r in documents if r['form'] in ('10-K','20-F','40-F')}
         completed={}
         for path in (root/'receipts').glob('*.json'):
             prior=json.loads(path.read_text())['document'];completed[(prior['cik'],prior['accession'])]=prior
@@ -109,7 +110,7 @@ def _main():
             if a.profile_count not in (3,6,9,12):raise ValueError('Profile count must be 3, 6, 9 or 12')
             selected=[]
             for cik in ('0000320193','0000789019','0001089113'):
-                matches=sorted([r for r in documents if r['cik']==cik],key=lambda r:(r['day'],r['accession'],r['document']))
+                matches=sorted([r for r in documents if r['cik']==cik and (r['cik'],r['accession']) in annual_keys],key=lambda r:(r['day'],r['accession'],r['document']))
                 if not matches:raise ValueError('Representative profile issuer missing')
                 count=a.profile_count//3
                 for i in range(count):selected.append(matches[-1] if count==1 else matches[i*(len(matches)-1)//(count-1)])
@@ -209,6 +210,18 @@ def _main():
                         if receipt is not None:pass
                         elif len(candidates)==1 and day in repairs:
                             recovery_path=root/('recovered-'+day+'.json')
+                            retained=client.query('SELECT DISTINCT proof FROM q_live.research_sec_archive_download_receipt_v1 WHERE source_date='+literal(day)+f' AND byte_size={size} LIMIT 3')
+                            verified=[]
+                            for entry in retained:
+                                prior=json.loads(entry['proof'])
+                                if prior.get('status')=='recovered_verified_representation':
+                                    sec_receipt_recovery.validate(prior)
+                                    if prior['recovery']['original_receipt']==candidates[0]:verified.append(prior)
+                            if len(verified)>1:raise ValueError('Competing recovered archive receipts')
+                            if verified:
+                                if recovery_path.exists() and json.loads(recovery_path.read_text())!=verified[0]:
+                                    save(root/('recovered-'+day+'-superseded-local.json'),json.loads(recovery_path.read_text()))
+                                save(recovery_path,verified[0])
                             if recovery_path.exists():
                                 receipt=json.loads(recovery_path.read_text());sec_receipt_recovery.validate(receipt)
                                 if receipt['recovery']['original_receipt']!=candidates[0]:raise ValueError('Recovered source receipt changed')

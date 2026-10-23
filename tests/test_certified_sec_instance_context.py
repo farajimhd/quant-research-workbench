@@ -24,3 +24,14 @@ def test_native_instance_exact_decimal_context_and_original_hash(value,expected)
 @pytest.mark.parametrize('value,extra',[('1,000',''),('1e3',''),('2','scale="3"'),('<b>2</b>','')])
 def test_instance_does_not_apply_inline_or_html_recovery(value,extra):
     r=run(source(value,extra));assert not r['observations'] and len(r['rejected'])==1
+
+
+def test_legacy_zero_dash_requires_exact_registry_and_single_dash():
+    from tests.test_certified_sec_share_context import document
+    from pipelines.certified_research.sec_share_context import extract as parse
+    def sample(value):
+        s=document(value).replace('transformation/2020-02-12','transformation/2015-02-26').replace('t:num-dot-decimal','t:zerodash')
+        return parse(s,sha256(s.encode()).hexdigest(),'320193',catalog_tags=('EntityCommonStockSharesOutstanding',))
+    assert sample('\u2014')['observations'][0]['value']=='0'
+    assert sample('12')['rejected'][0]['reason']=='unsupported_zerodash_input_or_namespace'
+    assert sample('')['rejected']
