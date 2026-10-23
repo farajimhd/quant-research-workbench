@@ -23,7 +23,7 @@ def _period_date(text):
     return date.fromisoformat(value)
 
 
-def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=10000,catalog_tags=None,include_security_cover=False):
+def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=10000,catalog_tags=None,include_security_cover=False,all_numeric=False):
     """Retain distinct facts and dimensions; never infer class completeness.
 
     Inputs are exact UTF-8 source text and its independently retained text hash.
@@ -75,7 +75,7 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
                 if nodes>2000000 or retained_nodes>250000 or len(stack)>128:
                     raise ValueError('SEC XML complexity exceeds its bound')
                 if selected:collected[local].append(node)
-                if local in ('nonFraction','nonNumeric') or node.tag in ('{'+XBRL+'}measure','{'+DIM+'}explicitMember'):
+                if local in ('nonFraction','nonNumeric') or node.tag in ('{'+XBRL+'}measure','{'+DIM+'}explicitMember','{'+DIM+'}typedMember'):
                     maps[id(node)]=namespaces
             else:
                 keep=retention.pop();elements.pop()
@@ -100,6 +100,8 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
             if not key or key in destination:raise ValueError('Missing or duplicate XBRL identity')
             destination[key]=node
     fundamental=catalog_tags is not None
+    if type(all_numeric) is not bool or (all_numeric and not fundamental):
+        raise ValueError('Complete numeric extraction requires fundamental context validation')
     if fundamental and (not isinstance(catalog_tags,(tuple,list)) or not catalog_tags or len(catalog_tags)>1000
             or any(not isinstance(tag,str) or not re.fullmatch('[A-Za-z_][A-Za-z0-9_]*',tag) for tag in catalog_tags)):
         raise ValueError('Invalid bounded fundamental concept catalog')
@@ -107,7 +109,7 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
     observations=[];rejected=[];extension_namespaces=set()
     for position,fact in enumerate(collected['nonFraction']):
         name=fact.get('name','');local=name.rsplit('}',1)[-1] if id(fact) in native else name.split(':')[-1]
-        if local not in selected_tags:continue
+        if not all_numeric and local not in selected_tags:continue
         if len(observations)+len(rejected)>=maximum_facts:raise ValueError('SEC share fact bound exceeded')
         row=dict(source_position=position,fact_id=fact.get('id',''),context_id=fact.get('contextRef',''),concept=name,
             unit_id=fact.get('unitRef',''),decimals=fact.get('decimals',''),scale=fact.get('scale','0'),
@@ -146,6 +148,13 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
                 elif fundamental and measure=='{'+XBRL+'}pure':unit_code='ratio'
                 elif fundamental and measure=='{http://www.xbrl.org/2009/utr}Rate':unit_code=measure
                 elif fundamental and re.fullmatch(r'\{http://www.xbrl.org/2003/iso4217\}[A-Z]{3}',measure):unit_code=measure[-3:]
+                elif all_numeric:
+                    # An issuer-declared measure is retained by its full QName,
+                    # never reclassified as shares, currency or a standard unit.
+                    try:
+                        unit_taxonomy,_=sec_taxonomy.identity(measure,allow_extension=True)
+                        if unit_taxonomy.startswith('extension|'):unit_code=measure
+                    except ValueError:pass
             elif fundamental and len(list(unit))==1:
                 divide=unit.find('./{'+XBRL+'}divide')
                 if divide is not None and len(list(divide))==2:
@@ -157,9 +166,24 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
                                 and qname(denominator[0].text,denominator[0])=='{'+XBRL+'}shares'):
                             unit_code=currency[-3:]+'/share'
             if unit_code is None:raise ValueError('unsupported_share_unit' if not fundamental else 'unsupported_fundamental_unit')
-            if any(True for _ in context.iter('{'+DIM+'}typedMember')):raise ValueError('unsupported_typed_dimension')
+            typed=[]
+            for member in context.iter('{'+DIM+'}typedMember'):
+                axis=qname(member.get('dimension',''),member)
+                children=list(member)
+                # Only the exact, observed date-domain shape is qualified here.
+                # Other typed values remain explicit blockers, not flattened text.
+                if (not all_numeric or len(children)!=1 or member.attrib.keys()!={'dimension'}
+                        or (member.text or '').strip() or children[0].attrib or list(children[0])
+                        or (children[0].tail or '').strip()
+                        or not re.fullmatch(r'\{http://fasb.org/us-gaap/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?\}RevenueRemainingPerformanceObligationExpectedTimingOfSatisfactionStartDateAxis',axis)
+                        or children[0].tag!=axis+'.domain'):
+                    raise ValueError('unsupported_typed_dimension')
+                value=children[0].text or ''
+                if str(_period_date(value))!=value:raise ValueError('invalid_typed_date')
+                typed.append((axis,'typed-date|'+children[0].tag+'|'+value))
             dimensions=tuple(sorted((qname(m.get('dimension',''),m),qname((m.text or '').strip(),m))
-                for m in context.iter('{'+DIM+'}explicitMember')))
+                for m in context.iter('{'+DIM+'}explicitMember')))+tuple(typed)
+            if typed:dimensions=tuple(sorted(dimensions))
             if len({axis for axis,member in dimensions})!=len(dimensions):raise ValueError('duplicate_dimension_axis')
             if fact.get('{http://www.w3.org/2001/XMLSchema-instance}nil') in ('true','1'):
                 if ''.join(fact.itertext()).strip():raise ValueError('nil_fact_has_content')
@@ -196,9 +220,12 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
                 # SEC EFM II 5.2.5.12 explicitly defines no/none as exact zero.
                 # Other English-number inputs stay rejected until implemented
                 # and validated; never guess from a partial word match.
-                if text.casefold() not in ('no','none'):
+                words=dict(zip(('zero','one','two','three','four','five','six','seven','eight','nine',
+                    'ten','eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen'),map(str,range(20)))) if all_numeric else {}
+                words.update(no='0',none='0')
+                if text.casefold() not in words:
                     raise ValueError('unsupported_numwordsen_input')
-                text='0'
+                text=words[text.casefold()]
             if fixed_zero:
                 if qname(row['format'],fact)!='{http://www.xbrl.org/inlineXBRL/transformation/2020-02-12}fixed-zero':
                     raise ValueError('unsupported_fixed_zero_namespace')
@@ -222,6 +249,14 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
     result=dict(version='sec-inline-fundamental-context-v4' if fundamental else VERSION,observations=tuple(observations),rejected=tuple(rejected),
         source_text_hash=expected_hash,parsing_prefix_bytes=prefix_bytes,parsing_suffix_bytes=suffix_bytes,
         sec_xbrl_envelope=envelope,allocation_certified=False)
+    if all_numeric:
+        # Completeness of enumeration is separate from qualification. Unsupported
+        # units, contexts and transforms remain rejected and block publication.
+        result.update(extraction_scope='all_tagged_numeric',numeric_census=dict(
+            source_facts=len(collected['nonFraction']),extracted=len(observations),rejected=len(rejected)),
+            whole_document_coverage=False)
+        if len(observations)+len(rejected)!=len(collected['nonFraction']):
+            raise ValueError('Numeric source census did not reconcile')
     if extension_namespaces:
         result.update(extension_namespace_policy='exact-original-qname-v1',extension_namespaces=tuple(sorted(extension_namespaces)))
     if include_security_cover:

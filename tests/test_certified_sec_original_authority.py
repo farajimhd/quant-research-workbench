@@ -70,3 +70,23 @@ def test_archive_original_uses_original_values_without_rewriting_live_identity()
         assert result['document_hash']==original_hash and result['retained_document_hash']=='e'*64
         checked['source_witness']['accession']='0000320193-25-000080'
         with pytest.raises(ValueError,match='transport lineage'):invoke()
+
+
+@pytest.mark.parametrize('broken', [False,True])
+def test_complete_tagged_census_is_checked_and_not_whole_document_coverage(broken):
+    lineage,checked=evidence();extraction=checked['extraction']
+    n=len(extraction['observations'])
+    extraction.update(extraction_scope='all_tagged_numeric',whole_document_coverage=False,
+        numeric_census=dict(source_facts=n+int(broken),extracted=n,rejected=0))
+    extraction.pop('extraction_hash');extraction['extraction_hash']=digest(extraction)
+    projection=sec_precision.select_reported(extraction,mode='round-to-nearest')
+    checked.update(projection_hash=projection['projection_hash'],groups=len(projection['groups']))
+    with patch.object(authority.sec_document_lineage,'inspect',return_value=lineage),\
+         patch.object(authority.sec_reported_readback,'verify',return_value=checked):
+        if broken:
+            with pytest.raises(ValueError,match='census'):invoke()
+        else:
+            result=invoke()
+            assert result['qualification_scope']=='all_tagged_numeric'
+            assert result['observations_qualified'] and not result['document_qualified']
+            assert not result['whole_document_coverage']

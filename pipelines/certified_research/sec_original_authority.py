@@ -62,4 +62,12 @@ def verify_document(query,database,cik,accession,document,binding_hash,claim,sou
         result.update(document_qualified=False,observations_qualified=True,
             qualification_scope='reviewed_html_observations',whole_document_coverage=False,
             html_plan_hash=extraction['html_plan']['plan_hash'])
+    if extraction.get('extraction_scope')=='all_tagged_numeric':
+        census=extraction.get('numeric_census',{})
+        rows=(*extraction['observations'],*extraction['rejected'])
+        if (census!=dict(source_facts=len(rows),extracted=len(extraction['observations']),rejected=len(extraction['rejected']))
+                or sorted(r['source_position'] for r in rows)!=list(range(len(rows)))):
+            raise ValueError('Complete tagged numeric source census differs from readback')
+        result.update(document_qualified=False,observations_qualified=True,
+            qualification_scope='all_tagged_numeric',whole_document_coverage=False,numeric_census=census)
     return dict(result,authority_hash=digest(result))
