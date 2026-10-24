@@ -61,7 +61,7 @@ def run_session(config,day,output,generations=50,population_size=1024,seed=2020,
     contract=dict(feature_semantics="v21-magnitude-ratio-v1",version='v43-local-session-v1',source_sha256=source_hash(),day=day,generations=generations,population=population_size,seed=seed,
                   objective=asdict(objective),selection=asdict(selection),recombination=settings(selection),archive_capacity=archive_capacity,archive_shortlist=archive_shortlist,initial_multiplier=initial_multiplier,
                   dataset={k:config.get(k) for k in ['inputs','history','indicator_root','enriched_root','input_receipts','indicator_receipts','enriched_receipts']},execution=config['execution'],
-                  backend=config['backend'],device=config['device'],batch_size=config['batch_size'],capture_gib=config.get('capture_gib',4.),host_reserve_gib=config.get('host_reserve_gib'),host_admission_gib=config.get('host_admission_gib'),local_other_session_penalty='unavailable: single-session V43 uses max(trade,ticker) removal',validation_opened=False)
+                  backend=config['backend'],device=config['device'],batch_size=config['batch_size'],capture_gib=config.get('capture_gib',4.),host_reserve_gib=config.get('host_reserve_gib'),host_admission_gib=config.get('host_admission_gib'),local_other_session_penalty='unavailable: single-session V43 uses trade removal only',validation_opened=False)
     contract['initialization_probe_sha256']=probe['sha256']
     contract['shared_replay']=config.get('shared_replay',False)
     reuse_path=config.get('reuse_initial_manifest')

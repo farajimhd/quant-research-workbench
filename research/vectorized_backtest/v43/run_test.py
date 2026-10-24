@@ -122,7 +122,7 @@ def run(job_path, output, day, initial_pool=None):
         host_reserve_gib=12., host_admission_gib=8., host_prefetch=False, shared_replay=False,
         maximum_data_gib=4., maximum_gate_gib=8., episode_capacity=65536, plan_limit=1,
         reuse_initial_manifest=str(reuse_path), reuse_initial_manifest_sha256=file_hash(reuse_path))
-    stage('Run V43: 50 generations, population1024, exact V42 6144 cohort; trade/ticker objective')
+    stage('Run V43: 50 generations, population1024, exact V42 6144 cohort; trade-only objective')
     result = run_session(cfg, day, output / 'local' / day, 50, 1024, 2020, initial_multiplier=6)
     write_json(output / 'exit.json', dict(result=result, epoch=time.time()))
     stage('Complete' if result['status'] == 'complete' else result['status'])

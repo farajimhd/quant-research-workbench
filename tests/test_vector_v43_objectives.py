@@ -43,11 +43,11 @@ def test_multiple_sessions_remove_largest_profitable_session():
     assert result['score'][0] == -10.
 
 
-def test_repeated_ticker_episodes_cannot_evade_ticker_penalty():
+def test_ticker_concentration_is_diagnostic_only():
     result = local_panel([metrics([10.] * 12 + [-10.], {'one': 120., 'loss': -10.})])
     assert result['T_trades'][0, 0] == 20.
     assert result['T_tickers'][0, 0] == 120.
-    assert result['values'][0, 0] == -10.
+    assert result['values'][0, 0] == 90.
 
 
 def test_preserves_original_financial_feasibility():

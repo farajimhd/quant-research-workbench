@@ -38,9 +38,9 @@ def install(ui):
     def details(row, payload, view, stage):
         if row and view == 'objective':
             return [f"Saved V43 score ${row['score']:,.2f} | parent eligible: {row['eligible']}",
-                    'Score = net profit - max(trade removal, ticker removal) - 0.05 x drawdown.',
+                    'Score = net profit - trade removal - 0.05 x drawdown.',
                     'Remove top 10% of positive contributors, rounded up; retain every loss.',
-                    'Session concentration unavailable for this single-day test. Higher score is better.']
+                    'Ticker concentration is diagnostic only; session penalty unavailable here. Higher is better.']
         return original_details(row, payload, view, stage)
 
     ui.render = render

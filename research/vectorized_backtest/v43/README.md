@@ -7,15 +7,15 @@ are separate. It imports unchanged V42 numerical infrastructure from a pinned
 runtime snapshot; it never patches the active V42 deployment.
 
 Remove the largest `ceil(0.10 * positive_count)` positive contributions, retaining
-all losses. Maximize net profit minus the maximum of the trade, ticker and session
+all losses. Maximize net profit minus the maximum of the trade and session
 removals, minus 0.05 times the sum of daily drawdowns. Trades are complete net
 position episodes, including adds, reductions and fees. Tickers aggregate across
 the evaluated sessions. With no positive contributions, removal is zero.
 
 For a single-session local search, session concentration is unavailable and is
 explicitly omitted; removing that only session would erase every positive result.
-The local objective uses the maximum of trade and ticker removal. Diagnostics are
-sealed in each generation's scores.json. No trade-count reward or complexity
+The local objective uses the trade removal only. Diagnostics are
+sealed in each generation's scores.json. Ticker concentration is diagnostic only and never affects fitness. No trade-count reward or complexity
 penalty is added; all original financial feasibility checks remain in force.
 
 The authorized laptop test is 2026-08-13, 50 generations, population 1024, seed
