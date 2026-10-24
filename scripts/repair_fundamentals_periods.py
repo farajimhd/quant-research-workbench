@@ -9,7 +9,7 @@ import argparse,json,time,platform
 from concurrent.futures import ThreadPoolExecutor,as_completed
 from scripts.run_fundamentals import Client,save,lock
 from pipelines.fundamentals import schema
-from pipelines.fundamentals.period_recovery import candidates_sql,recovery_sql,VERSION
+from pipelines.fundamentals.period_recovery import candidates_sql,recovery_sql,identity_sql,VERSION
 from pipelines.certified_research.contracts import literal,digest
 from research.mlops.env import load_env_files
 from research.mlops.clickhouse import discover_clickhouse_env_files
@@ -47,7 +47,7 @@ def run(a):
                 recovered=unmatched=reused=0
                 for i in range(0,len(keys),128):
                     if (root/'STOP').exists():raise RuntimeError('Graceful STOP requested')
-                    batch=keys[i:i+128];key=digest((VERSION,batch));receipt=root/(key+'.json')
+                    batch=keys[i:i+128];key=digest((VERSION,'json-slash-v2',batch));receipt=root/(key+'.json')
                     if a.execute and receipt.exists():
                         old=json.loads(receipt.read_text());reused+=old['unmatched'];continue
                     pairs=','.join('('+literal(x['company_fact_id'])+','+literal(x['source_hash'])+')' for x in batch)
@@ -58,12 +58,12 @@ def run(a):
                         found=int(q('SELECT count() n FROM arte.reference_period_evidence_v1 FINAL WHERE (company_fact_id,source_hash) IN ('+pairs+')')[0]['n'])
                         # Recompute the proof against retained identities on readback.
                         retained=candidates_sql(ids,exclude_completed=False)
+                        identity=identity_sql('r.cik','r.taxonomy','r.tag','r.unit_code','toString(p.period_start)','toString(r.period_end_date)','assumeNotNull(r.accession_number)','p.frame')
                         proof=f'''SELECT r.company_fact_id,r.source_hash FROM ({retained}) r
                           INNER JOIN arte.reference_period_evidence_v1 AS p FINAL
                           ON r.company_fact_id=p.company_fact_id AND r.source_hash=p.source_hash
                           WHERE (r.company_fact_id,r.source_hash) IN ({pairs}) AND
-                          lower(hex(SHA256(toJSONString(['sec-xbrl-company-fact',r.cik,r.taxonomy,r.tag,r.unit_code,
-                          toString(p.period_start),toString(r.period_end_date),assumeNotNull(r.accession_number),p.frame]))))=r.company_fact_id'''
+                          {identity}=r.company_fact_id'''
                         verified=int(q('SELECT count() n FROM ('+proof+')')[0]['n'])
                         if verified!=found:raise ValueError('Period identity readback mismatch')
                         save(receipt,dict(version=VERSION,keys=batch,recovered=found,unmatched=len(batch)-found))

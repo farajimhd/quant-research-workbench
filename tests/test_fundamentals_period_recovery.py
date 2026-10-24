@@ -17,13 +17,14 @@ def test_serving_keeps_receipts_and_conservative_clocks():
     with pytest.raises(ValueError):recovery_sql('SELECT 1',maximum_days=732)
 
 
-def test_live_exact_period_identity_recovery(live):
+@pytest.mark.parametrize('unit',['USD','USD/shares'])
+def test_live_exact_period_identity_recovery(live,unit):
     q,db,_,_=live
-    parts=['sec-xbrl-company-fact','0000320193','us-gaap','Revenues','USD',
+    parts=['sec-xbrl-company-fact','0000320193','us-gaap','Revenues',unit,
            '2026-03-29','2026-06-27','0000320193-26-000020','CY2026Q2']
     identity=hashlib.sha256(json.dumps(parts,separators=(',',':')).encode()).hexdigest()
     candidate=f'''SELECT {literal(identity)} company_fact_id,'source' source_hash,
-      '0000320193' cik,'us-gaap' taxonomy,'Revenues' tag,'USD' unit_code,
+      '0000320193' cik,'us-gaap' taxonomy,'Revenues' tag,{literal(unit)} unit_code,
       toDate('2026-06-27') period_end_date,'0000320193-26-000020' accession_number'''
     rows=q(recovery_sql(candidate))
     assert len(rows)==1 and rows[0]['period_start']=='2026-03-29'

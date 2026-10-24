@@ -12,6 +12,12 @@ COLUMNS=(('company_fact_id','String'),('source_hash','String'),('period_start','
          ('frame','String'),('method','LowCardinality(String)'),('completed_at',"DateTime64(6,'UTC')"))
 
 
+def identity_sql(cik,taxonomy,tag,unit,start,end,accession,frame):
+    # Python json.dumps leaves '/' literal; ClickHouse escapes it by default.
+    encoded=f"toJSONString(['sec-xbrl-company-fact',{cik},{taxonomy},{tag},{unit},{start},{end},{accession},{frame}])"
+    return "lower(hex(SHA256(replaceAll("+encoded+","+literal('\\/')+",'/'))))"
+
+
 def candidates_sql(ciks,database='arte',*,exclude_completed=True):
     identifier(database)
     if not 1<=len(ciks)<=128:raise ValueError('Bound issuer cohorts to 128')
@@ -38,11 +44,11 @@ def recovery_sql(candidates,*,maximum_days=731):
     if not 1<=maximum_days<=731:raise ValueError('Bounded period search required')
     # A finite search is not an inference: unmatched IDs remain unresolved.
     frames="arrayConcat([''],arrayFlatten(arrayMap(y -> arrayMap(s -> concat('CY',toString(y),s),['','Q1','Q2','Q3','Q4','Q1I','Q2I','Q3I','Q4I']),[toYear(period_end_date)-1,toYear(period_end_date),toYear(period_end_date)+1])))"
+    identity=identity_sql('cik','taxonomy','tag','unit_code','toString(start)','toString(period_end_date)','assumeNotNull(accession_number)','frame')
     return f'''SELECT company_fact_id,source_hash,any(start) period_start,any(frame) recovered_frame,
        {literal(VERSION)} method,now64(6,'UTC') completed_at FROM
        (SELECT *,subtractDays(assumeNotNull(period_end_date),day_offset) start FROM ({candidates})
          ARRAY JOIN range({maximum_days}) AS day_offset)
        ARRAY JOIN {frames} AS frame
-       WHERE lower(hex(SHA256(toJSONString(['sec-xbrl-company-fact',cik,taxonomy,tag,unit_code,
-          toString(start),toString(period_end_date),assumeNotNull(accession_number),frame]))))=company_fact_id
+       WHERE {identity}=company_fact_id
        GROUP BY company_fact_id,source_hash HAVING uniqExact(tuple(start,frame))=1'''
