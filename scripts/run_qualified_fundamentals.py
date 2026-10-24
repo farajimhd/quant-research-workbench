@@ -41,6 +41,7 @@ def _main():
     parser.add_argument('--profile',action='store_true',help='Three real original documents, then exact receipt reuse; no full launch')
     parser.add_argument('--profile-count',type=int,default=3)
     parser.add_argument('--retry-manifest',type=Path,help='Sealed blocked-only selection in a separate run directory; never rewrites source receipts')
+    parser.add_argument('--actual-gap-manifest',type=Path,help='At most 12 exact uncompleted retained census documents; all qualification checks still apply')
     parser.add_argument('--plan-only',action='store_true')
     parser.add_argument('--upgrade-recipe',action='store_true',help='Archive the prior request and independently verify existing qualified receipts before reuse')
     parser.add_argument('--profile-result',type=Path)
@@ -57,11 +58,14 @@ def _main():
     request=dict(population_hash=pop_hash,start=str(a.start),end=str(a.end),recipe=recipe,profile=a.profile,
         endpoint=a.endpoint,source='retained_original_SEC',destination='arte',numeric_mode='round-to-nearest')
     retry_documents=None;already_completed=[]
-    if a.retry_manifest:
+    if a.retry_manifest and a.actual_gap_manifest:raise ValueError('Choose blocked retries or actual gaps')
+    if a.actual_gap_manifest and not a.profile:raise ValueError('Actual gaps use bounded profile and independent reuse validation')
+    selection_manifest=a.retry_manifest or a.actual_gap_manifest
+    if selection_manifest:
         from pipelines.fundamentals.retry import select
-        manifest=json.loads(a.retry_manifest.read_text())
+        manifest=json.loads(selection_manifest.read_text())
         if root==Path(manifest['source_run_dir']).resolve():raise ValueError('Retry requires a separate run directory')
-        retry_documents,already_completed=select(manifest,population_hash=pop_hash,start=a.start,end=a.end,runtime=runtime)
+        retry_documents,already_completed=select(manifest,population_hash=pop_hash,start=a.start,end=a.end,runtime=runtime,actual_gaps=bool(a.actual_gap_manifest))
         if a.profile and not 1<=len(retry_documents)<=12:
             raise ValueError('Retry profiling requires 1..12 exact blocked targets')
         request['retry_manifest_hash']=manifest['manifest_hash']
@@ -79,7 +83,7 @@ def _main():
     state=dict(state='planning',mode='QUALIFIED ORIGINAL SEC',unit='documents',counts=dict(published=0,unchanged=0,audited=0,failed=0),
         total=0,active={},queued=0,blocked=0,workers=a.workers,new_rows=0,reused_rows=0,samples={},remaining_by_family={},counts_include_active=True,
         qualification_status='Only verified documents are published; blocked coverage is not certified.')
-    if a.retry_manifest:
+    if selection_manifest:
         state.update(retry_targets=len(retry_documents),already_completed=len(already_completed))
         save(root/'source-completed-preserved.json',already_completed)
     mutex=threading.RLock();start=time.monotonic();stop=threading.Event()

@@ -27,6 +27,20 @@ def test_only_failed_targets_and_completed_receipts_are_untouched(tmp_path):
     assert not selected and done[0]['receipt_hash']==digest(record) and receipt.read_bytes()==before
 
 
+def test_actual_gap_accepts_only_sealed_uncompleted_census_target(tmp_path):
+    source,row,m,args=fixture(tmp_path)
+    (source/'blocked'/(digest(row)+'.json')).unlink()
+    with pytest.raises(FileNotFoundError):select(m,**args)
+    m.pop('manifest_hash');m.update(version='qualified-actual-gap-v1',reason='retained_structured_values_missing')
+    m['manifest_hash']=digest(m)
+    with pytest.raises(ValueError):select(m,**args)
+    assert select(m,actual_gaps=True,**args)==([row],[])
+    (source/'receipts'/(digest(row)+'.json')).write_text(json.dumps(dict(document=row,publication=dict(state='published'),reuse_verified=True)))
+    assert select(m,actual_gaps=True,**args)[0]==[]
+    m.pop('manifest_hash');m['documents']=[dict(row,document='unreviewed.xml')];m['manifest_hash']=digest(m)
+    with pytest.raises(ValueError):select(m,actual_gaps=True,**args)
+
+
 @pytest.mark.parametrize('changed',['manifest','request','census','blocked','receipt'])
 def test_retry_rejects_changed_identity(tmp_path,changed):
     source,row,m,args=fixture(tmp_path)

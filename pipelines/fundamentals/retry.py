@@ -4,9 +4,10 @@ from pathlib import Path
 from pipelines.certified_research.contracts import digest
 
 
-def select(manifest, *, population_hash, start, end, runtime):
+def select(manifest, *, population_hash, start, end, runtime, actual_gaps=False):
     body=dict(manifest);sealed=body.pop('manifest_hash',None)
-    if sealed!=digest(body) or body.get('version')!='qualified-blocked-retry-v1':
+    version='qualified-actual-gap-v1' if actual_gaps else 'qualified-blocked-retry-v1'
+    if sealed!=digest(body) or body.get('version')!=version:
         raise ValueError('Invalid sealed blocked retry manifest')
     source=Path(body['source_run_dir']).resolve()
     if not source.is_relative_to(Path(runtime).resolve()):raise ValueError('Retry source outside runtime root')
@@ -19,6 +20,8 @@ def select(manifest, *, population_hash, start, end, runtime):
         raise ValueError('Retry source census changed')
     known={digest(row):row for row in census['documents']}
     targets=body['documents']
+    if actual_gaps and (not 1<=len(targets)<=12 or body.get('reason')!='retained_structured_values_missing'):
+        raise ValueError('Actual-gap extraction requires 1..12 explicit retained census documents')
     if not 0<=len(targets)<=min(250000,len(known)) or len({digest(row) for row in targets})!=len(targets):
         raise ValueError('Invalid bounded retry targets')
     selected=[];completed=[]
@@ -33,8 +36,9 @@ def select(manifest, *, population_hash, start, end, runtime):
                 raise ValueError('Invalid completed source receipt')
             completed.append(dict(document=row,receipt_hash=digest(saved)))
             continue
-        blocked=json.loads((source/'blocked'/(token+'.json')).read_text())
-        if blocked['document']!=row:raise ValueError('Blocked source identity changed')
+        if not actual_gaps:
+            blocked=json.loads((source/'blocked'/(token+'.json')).read_text())
+            if blocked['document']!=row:raise ValueError('Blocked source identity changed')
         selected.append(row)
     return selected,completed
 
