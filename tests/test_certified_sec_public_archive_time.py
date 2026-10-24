@@ -30,6 +30,20 @@ def test_conservative_feed_day_is_not_acceptance_or_later_download_time():
     assert result['public_time_qualified'] is True and result['allocation_certified'] is False
 
 
+def test_download_observation_requires_witnessed_absence_and_never_backdates():
+    w,r=inputs();w['filing_date_change']=None;w['acceptance_datetime_raw']='';reseal(w)
+    with pytest.raises(ValueError):timing.qualify(w,r,mode='verified_download_time')
+    w['filing_date_change_absent']=True;reseal(w)
+    q=timing.qualify(w,r,mode='verified_download_time')
+    assert q['available_at']=='2026-06-12T07:46:29.125026+00:00'
+    assert q['filing_date']=='2025-10-31'
+    assert q['change_date_basis']=='verified_original_header_field_absent'
+    with pytest.raises(ValueError):timing.qualify(w,r,mode='official_filing_day')
+    for change in ('bad','2025-11-01'):
+        w['filing_date_change']=change;reseal(w)
+        with pytest.raises(ValueError):timing.qualify(w,r,mode='verified_download_time')
+
+
 def test_explicit_download_policy_never_backdates_regenerated_archive():
     w,r=inputs();r['last_modified']='Sat, 01 Nov 2025 21:30:16 GMT'
     with pytest.raises(ValueError):timing.qualify(w,r,mode='official_filing_day')

@@ -134,6 +134,10 @@ def _document_witness(prepared,raw_bytes,submission_hash,ordinal,filing,document
             or bool(re.search(r'^\s*(?:CORRECTION|DELETION|PRIVATE[- ]TO[- ]PUBLIC|PAPER)\s*:',header,re.I|re.M)),
         container_sha256=container_hash,container_digest_verified=container_hash is not None,
         original_bytes_verified=True,public_time_qualified=False,allocation_certified=False)
+    # Absence is evidence only when the verified original header has no field.
+    # A malformed or duplicate field must never masquerade as an absent one.
+    if not re.search(r'DATE[- ]OF[- ]FILING[- ]DATE[- ]CHANGE',header,re.I):
+        result['filing_date_change_absent']=True
     if selected[0]!=document['content_sha256']:
         if lineage.get('document_revision_state')!='live_pending_archive_bytes':
             raise ValueError('Archive-original transport requires an explicit live/archive candidate')

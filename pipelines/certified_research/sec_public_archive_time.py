@@ -50,7 +50,8 @@ def qualify(witness,receipt,*,mode='acceptance_checked_day'):
         if not date(1900,1,1)<=date.fromisoformat(change)<day:
             raise ValueError('SEC change-date chronology is not an earlier date')
     elif mode=='verified_download_time':
-        if not isinstance(change,str) or not date(1900,1,1)<=date.fromisoformat(change)<=day:
+        witnessed_absence=change is None and witness.get('filing_date_change_absent') is True
+        if not witnessed_absence and (not isinstance(change,str) or not date(1900,1,1)<=date.fromisoformat(change)<=day):
             raise ValueError('SEC change-date chronology is unknown')
     elif change!=str(day):
         raise ValueError('SEC official filing/change dates do not prove the selected public feed day')
@@ -89,4 +90,6 @@ def qualify(witness,receipt,*,mode='acceptance_checked_day'):
         if receipt.get('status')!='downloaded':raise ValueError('Verified download time requires the original complete receipt')
         result.update(version='verified-sec-download-observation-v1',availability_basis='verified_public_download',
                       filing_date=str(day),exact_posting_time=False)
+        if witness.get('filing_date_change_absent') is True:
+            result['change_date_basis']='verified_original_header_field_absent'
     return dict(result,qualification_hash=digest(result))

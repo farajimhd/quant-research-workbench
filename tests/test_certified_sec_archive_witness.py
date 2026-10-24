@@ -15,10 +15,10 @@ from pipelines.sec.edgar.sec_pipeline.revision import source_revision
 
 
 @contextmanager
-def fixture(*,two_documents=False):
+def fixture(*,two_documents=False,change_field='<DATE-OF-FILING-DATE-CHANGE>20251031'):
     payload='<XBRL><html>original payload</html></XBRL>'
     raw=('<ACCESSION-NUMBER>0000320193-25-000079\n<CIK>0000320193\n<TYPE>10-K\n'
-        '<PUBLIC-DOCUMENT-COUNT>1\n<FILING-DATE>20251031\n<DATE-OF-FILING-DATE-CHANGE>20251031\n'
+        '<PUBLIC-DOCUMENT-COUNT>1\n<FILING-DATE>20251031\n'+change_field+'\n'
         '<DOCUMENT>\n<TYPE>10-K\n<SEQUENCE>1\n<FILENAME>filing.htm\n<TEXT>'+payload+'</TEXT>\n</DOCUMENT>').encode()
     if two_documents:
         raw+=b'<DOCUMENT>\n<TYPE>10-K\n<SEQUENCE>2\n<FILENAME>other.htm\n<TEXT>second payload</TEXT>\n</DOCUMENT>'
@@ -44,6 +44,15 @@ def test_original_submission_ordinal_and_document_bytes_match_without_public_cer
         result=witness.inspect_archive(path,prepared)
     assert result['member_ordinal']==2 and result['original_bytes_verified'] is True
     assert result['public_time_qualified'] is False and result['allocation_certified'] is False
+
+
+@pytest.mark.parametrize('field,absent',[('',True),('<DATE-OF-FILING-DATE-CHANGE>invalid',False),
+    ('<DATE-OF-FILING-DATE-CHANGE>20251031\n<DATE-OF-FILING-DATE-CHANGE>20251030',False)])
+def test_header_absence_is_not_malformed_or_conflicting_date(field,absent):
+    with fixture(change_field=field) as (path,prepared):
+        result=witness.inspect_archive(path,prepared)
+    assert (result.get('filing_date_change_absent') is True)==absent
+    assert result['filing_date_change'] is None
 
 
 @pytest.mark.parametrize('bound',('maximum_archive_bytes','maximum_member_bytes','maximum_scan_bytes','maximum_members'))
