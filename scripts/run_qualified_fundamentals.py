@@ -363,7 +363,8 @@ def _main():
                                 rw=resource_witnesses[digest(resource)]
                                 rq=sec_public_archive_time.qualify(rw,receipt,mode=mode)
                                 resources.append(dict(payload=(original_cache/(rw['document_hash']+'.html')).read_bytes().decode('utf-8'),source_text_hash=rw['document_hash']))
-                                resource_proofs.append(dict(witness=rw,qualification=rq,receipt=receipt))
+                                resource_proofs.append(dict(witness=rw,qualification=rq,receipt=receipt,
+                                    identity={k:resource[k] for k in ('cik','accession','document')}))
                             extracted=extraction.extract(text,witness['document_hash'],row['cik'],maximum_bytes=64*1024**2,resource_documents=resources);del text,resources
                             if resource_proofs:
                                 from pipelines.certified_research import sec_document_set

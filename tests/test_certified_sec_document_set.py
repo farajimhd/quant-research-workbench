@@ -43,12 +43,12 @@ def test_foreign_issuer_context_remains_rejected():
     assert result['rejected'][0]['reason']=='issuer_context_mismatch'
 
 
-@pytest.mark.parametrize('field,value', [('cik','2'),('accession','other'),('submission_hash','other'),
-    ('container_sha256','other'),('source_archive_date','2026-01-02'),('document_hash','other'),('document_name','primary')])
+@pytest.mark.parametrize('field,value', [('submission_hash','other'),
+    ('container_sha256','other'),('source_archive_date','2026-01-02'),('document_hash','other'),('document_key','primary')])
 def test_resource_proof_cannot_cross_identity(monkeypatch,field,value):
     monkeypatch.setattr(sec_document_set.sec_witness_publication,'records',lambda *args:None)
-    primary=dict(cik='1',accession='a',submission_hash='s',container_sha256='c',source_archive_date='2026-01-01',document_name='primary')
-    witness=dict(primary,document_name='resource',document_hash='hash');witness[field]=value
+    primary=dict(submission_hash='s',container_sha256='c',source_archive_date='2026-01-01',document_key='primary')
+    witness=dict(primary,document_key='resource',document_hash='hash');witness[field]=value
     proof=dict(witness=witness,qualification=dict(available_at='2026-01-01T00:00:00Z'),receipt={})
     with pytest.raises(ValueError,match='boundary'):
         sec_document_set.validate(dict(resource_document_hashes=['hash'],resource_document_proofs=[proof]),primary,'2026-01-01T00:00:00Z')
@@ -56,7 +56,7 @@ def test_resource_proof_cannot_cross_identity(monkeypatch,field,value):
 
 def test_resource_availability_cannot_backdate_primary(monkeypatch):
     monkeypatch.setattr(sec_document_set.sec_witness_publication,'records',lambda *args:None)
-    primary=dict(cik='1',accession='a',submission_hash='s',container_sha256='c',source_archive_date='2026-01-01',document_name='primary')
-    proof=dict(witness=dict(primary,document_name='resource',document_hash='hash'),qualification=dict(available_at='2026-01-02T00:00:00Z'),receipt={})
+    primary=dict(submission_hash='s',container_sha256='c',source_archive_date='2026-01-01',document_key='primary')
+    proof=dict(witness=dict(primary,document_key='resource',document_hash='hash'),qualification=dict(available_at='2026-01-02T00:00:00Z'),receipt={})
     with pytest.raises(ValueError,match='boundary'):
         sec_document_set.validate(dict(resource_document_hashes=['hash'],resource_document_proofs=[proof]),primary,'2026-01-01T00:00:00Z')

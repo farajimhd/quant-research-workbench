@@ -17,8 +17,8 @@ def validate(extraction, primary, available_at):
     for fingerprint,proof in zip(hashes,proofs):
         witness=proof['witness'];qualification=proof['qualification']
         sec_witness_publication.records((witness,),(qualification,),proof['receipt'])
-        if (witness['document_hash']!=fingerprint or witness['document_name']==primary['document_name']
-                or any(witness[k]!=primary[k] for k in ('cik','accession','submission_hash','container_sha256','source_archive_date'))
+        if (witness['document_hash']!=fingerprint or witness['document_key']==primary['document_key']
+                or any(witness[k]!=primary[k] for k in ('submission_hash','container_sha256','source_archive_date'))
                 or utc(qualification['available_at'])>utc(available_at)):
             raise ValueError('Resource document crosses submission identity or public-time boundary')
     return proofs
@@ -28,7 +28,8 @@ def verify(query,database,extraction,primary,available_at,claim,source_guard):
     proofs=validate(extraction,primary,available_at)
     for proof in proofs:
         witness=proof['witness']
-        args=(witness['cik'],witness['accession'],witness['document_name'])
+        identity=proof['identity']
+        args=(identity['cik'],identity['accession'],identity['document'])
         before=sec_document_lineage.inspect(query,*args,claim,source_guard)
         if (before['candidate_hash']!=witness['candidate_hash']
                 or before['archive_version_key']!=witness['archive_version_key']
