@@ -56,6 +56,10 @@ def main():
     args = parser.parse_args()
     arguments = args.arguments[1:] if args.arguments[:1] == ['--'] else args.arguments
     if args.execute_runtime:
+        # A file entry puts this package directory on sys.path. Its profile.py
+        # must not shadow the stdlib profile imported lazily by PyTorch.
+        package_directory = Path(__file__).resolve().parent
+        sys.path[:] = [p for p in sys.path if Path(p or os.curdir).resolve() != package_directory]
         sys.argv = [str(args.execute_runtime), *arguments]
         runpy.run_path(str(args.execute_runtime), run_name='__main__')
         return
