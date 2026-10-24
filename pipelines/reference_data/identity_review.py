@@ -8,6 +8,17 @@ from datetime import date
 from pipelines.certified_research.contracts import digest,literal
 
 METHOD='reviewed_sec_ticker_to_market_listing'
+# Explicit reviewed preferred-listing notation, never a general fuzzy matcher.
+SEC_ALIASES={
+    'SCHW PRD':('SCHW-PD','security:aa34bc0d2ade314d5aa15699'),
+    'SCHW PRJ':('SCHW-PJ','security:d911eafbae018f12d3a70f09'),
+}
+
+
+def sec_ticker_sql():
+    branches=','.join(f"(ifNull(ticker,'')={literal(t)} AND ifNull(security_id,'')={literal(s)}),{literal(a)}"
+                      for t,(a,s) in sorted(SEC_ALIASES.items()))
+    return f"multiIf({branches},ifNull(ticker,''))"
 
 
 def ensure_retained_issuer(query, ticker, cik, stamp):
@@ -75,8 +86,17 @@ def reviewed_identity(ticker, evidence, issuers, snapshot_day):
                 evidence=rows,evidence_hash=digest(rows))
 
 
-def applicability(forms, *, series_id=None, class_id=None):
+def applicability(forms, *, series_id=None, class_id=None, security_evidence=None):
     forms=set(forms)
+    # Listing identity wins over forms belonging to an adviser or an old user
+    # of the same ticker. Require explicit typed, source-bound security evidence.
+    if security_evidence is not None:
+        import re
+        if (not security_evidence.get('security_id') or not re.fullmatch('[0-9a-f]{64}',security_evidence.get('source_content_sha256',''))
+                or not security_evidence.get('last_seen_at_utc')):
+            raise ValueError('Security applicability evidence lacks identity or provenance')
+        if security_evidence.get('security_type')=='ETF':
+            return 'fund_specific_not_corporate_v1'
     corporate=bool(forms & {'10-K','10-Q','20-F','40-F','10-K/A','10-Q/A','20-F/A','40-F/A'})
     fund=bool(forms & {'N-CSR','N-CSRS','N-CEN','NPORT-P','N-1A','N-2','N-2/A','N-1A/A','N-CSR/A','NPORT-P/A'})
     if corporate:return 'corporate_financials_applicable'
@@ -85,14 +105,14 @@ def applicability(forms, *, series_id=None, class_id=None):
     return 'unresolved_applicability'
 
 
-def coverage_status(forms, *, public_observations=0, provider_observations=0, provider_identity_verified=False):
+def coverage_status(forms, *, public_observations=0, provider_observations=0, provider_identity_verified=False, security_evidence=None):
     """Keep applicability, available observations and public qualification separate.
 
     One observation establishes presence, never complete feature/history coverage.
     Provider data cannot repair a public-time gap merely because it has a period.
     """
     if min(public_observations,provider_observations)<0:raise ValueError('Negative coverage count')
-    kind=applicability(forms)
+    kind=applicability(forms,security_evidence=security_evidence)
     recorded=provider_observations>0 and provider_identity_verified
     status=('selected_observations_available' if public_observations else
             'not_applicable_corporate_v1' if kind=='fund_specific_not_corporate_v1' else
@@ -106,7 +126,8 @@ def coverage_status(forms, *, public_observations=0, provider_observations=0, pr
 def prepare(query,tickers,snapshot_day):
     if not 1<=len(tickers)<=16:raise ValueError('Review at most 16 explicit ticker conflicts')
     ticks=','.join(map(literal,sorted(set(tickers))))
-    evidence=query(f'SELECT * FROM sec_core.sec_bulk_mirror_company_ticker_v3 FINAL WHERE ticker IN ({ticks}) ORDER BY ticker,cik,mapping_id')
+    sec_ticks=','.join(map(literal,sorted({SEC_ALIASES.get(t,(t,None))[0] for t in tickers})))
+    evidence=query(f'SELECT * FROM sec_core.sec_bulk_mirror_company_ticker_v3 FINAL WHERE ticker IN ({sec_ticks}) ORDER BY ticker,cik,mapping_id')
     ciks=','.join(map(literal,sorted({x['cik'] for x in evidence})))
     if not ciks:raise ValueError('No retained identity evidence')
     issuers=query(f"SELECT DISTINCT identifier_value_normalized cik,issuer_id FROM q_live.id_issuer_identifier_v1 FINAL WHERE identifier_kind='cik' AND identifier_value_normalized IN ({ciks}) ORDER BY cik,issuer_id")
@@ -120,10 +141,15 @@ def prepare(query,tickers,snapshot_day):
     prior=query(f'SELECT * FROM q_live.id_sec_market_bridge_v3 FINAL WHERE ticker IN ({ticks}) ORDER BY ticker,cik,bridge_id')
     decisions=[]
     for ticker in sorted(set(tickers)):
-        identity=reviewed_identity(ticker,evidence,issuers,snapshot_day)
+        alias=SEC_ALIASES.get(ticker)
+        identity=reviewed_identity(alias[0] if alias else ticker,evidence,issuers,snapshot_day)
         targets=[x for x in listings if x['ticker']==ticker]
         if len(targets)!=1:raise ValueError('Reviewed listing is absent or competing')
         target=targets[0]
+        if alias:
+            if target['security_id']!=alias[1]:raise ValueError('Reviewed SEC alias listing identity changed')
+            if identity['cik']!='0000316709':raise ValueError('Reviewed preferred issuer changed')
+            identity['sec_ticker']=alias[0]
         begin=max(identity['valid_from_date'],str(target['list_date'] or identity['valid_from_date']))
         if begin>str(snapshot_day):raise ValueError('Listing/identity begins after snapshot')
         decisions.append(dict(ticker=ticker,identity=identity,listing=target,valid_from_date=begin))

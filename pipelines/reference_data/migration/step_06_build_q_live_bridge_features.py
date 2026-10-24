@@ -28,6 +28,7 @@ from research.mlops.clickhouse import (  # noqa: E402
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
 from research.mlops.paths import machine_name  # noqa: E402
 from pipelines.reference_data.sec_market_bridge import us_market_listing_predicate_sql  # noqa: E402
+from pipelines.reference_data.identity_review import sec_ticker_sql  # noqa: E402
 from services.reference_gateway.tradability import otc_venue_predicate_sql  # noqa: E402
 
 
@@ -483,7 +484,7 @@ reviewed_direct_rows AS
         source_content_sha256
     FROM {db}.id_sec_market_bridge_v3 FINAL
     WHERE mapping_method='reviewed_sec_ticker_to_market_listing' AND mapping_status='active'
-      AND (ifNull(ticker,''),cik) IN
+      AND ({sec_ticker_sql()},cik) IN
         (SELECT ticker,any(cik) FROM sec_core.sec_bulk_mirror_company_ticker_v3 FINAL
          WHERE is_active=1 GROUP BY ticker HAVING uniqExact(cik)=1)
 ),
@@ -606,7 +607,7 @@ def run_preflight(client: ClickHouseHttpClient, args: argparse.Namespace, specs:
     if any(spec.name == "sec_market_bridge" for spec in specs):
         reviewed_check=f'''SELECT count() FROM {quote_ident(args.target_database)}.id_sec_market_bridge_v3 FINAL
             WHERE mapping_method='reviewed_sec_ticker_to_market_listing' AND mapping_status='active'
-            AND (ifNull(ticker,''),cik) NOT IN
+            AND ({sec_ticker_sql()},cik) NOT IN
               (SELECT ticker,any(cik) FROM sec_core.sec_bulk_mirror_company_ticker_v3 FINAL
                WHERE is_active=1 GROUP BY ticker HAVING uniqExact(cik)=1)'''
         if scalar_int(client,reviewed_check):

@@ -4,6 +4,24 @@ from pipelines.reference_data.identity_review import reviewed_identity,applicabi
 from pipelines.fundamentals.population import direct_rows
 
 
+def test_source_bound_listing_type_distinguishes_fund_from_ticker_reuse():
+    evidence=dict(security_id='security:current',security_type='ETF',
+                  source_content_sha256='a'*64,last_seen_at_utc='2026-09-10 09:20:25.398')
+    assert applicability(['10-K'],security_evidence=evidence)=='fund_specific_not_corporate_v1'
+    assert applicability([],security_evidence=dict(evidence,security_type='CS'))=='unresolved_applicability'
+    with pytest.raises(ValueError,match='provenance'):
+        applicability([],security_evidence=dict(evidence,source_content_sha256=''))
+
+def test_preferred_alias_is_bound_to_exact_security_and_shared_with_rebuild():
+    from pipelines.reference_data.identity_review import sec_ticker_sql,SEC_ALIASES
+    from pipelines.reference_data.migration.step_06_build_q_live_bridge_features import sec_market_bridge_source_ctes_sql
+    expression=sec_ticker_sql()
+    assert expression in sec_market_bridge_source_ctes_sql('q_live')
+    assert set(SEC_ALIASES)=={'SCHW PRD','SCHW PRJ'}
+    for ticker,(alias,security) in SEC_ALIASES.items():
+        assert ticker in expression and alias in expression and security in expression
+
+
 def test_current_evidence_never_backdates_to_listing_inception():
     evidence=[dict(ticker='ABC',cik='0000000001',is_active=1,source_file_id='hash',last_seen_at_utc='2026-08-16 00:00:00')]
     issuers=[dict(cik='0000000001',issuer_id='issuer1')]
