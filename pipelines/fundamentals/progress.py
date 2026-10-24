@@ -16,6 +16,14 @@ def duration(seconds):
 def estimate(state):
     """No extrapolation from sparse families or metadata reuse to new writes."""
     if state['state']!='running':return None
+    if state.get('selected_v1'):
+        measured=[v for groups in state.get('samples',{}).values() for values in groups.values() for v in values]
+        if len(measured)<3:return None
+        pending=[]
+        for family,n in state.get('remaining_by_family',{}).items():
+            values=[v for group in state.get('samples',{}).get(family,{}).values() for v in group]
+            if n:pending.append((n,median(values or measured)))
+        return max(sum(n*t for n,t in pending)/max(1,state.get('workers',1)),max((t for _,t in pending),default=0))
     work=[]
     for family,remaining in state.get('remaining_by_family',{}).items():
         if not remaining:continue
@@ -53,7 +61,7 @@ def render(state,width=80,height=24,now=None):
         f"Active {len(state.get('active',{}))} | queued {max(0,state.get('queued',0)-(sum(k!='archive' for k in state.get('active',{})) if state.get('counts_include_active') else 0)):,} | failed {c.get('failed',0)} | retries 0",
         f"Blocked {state.get('blocked',0)} | exclusions {state.get('exclusions',0)}",
         f"Elapsed {duration(state.get('elapsed',0))} | ETA {('finished' if current=='complete' else 'blocked' if current in ('blocked','failed','stopped') else duration(None if age and age>45 else estimate(state)))}",
-        'ETA uses new-work family samples; reuse is counted separately.',
+        ('ETA provisional: measured cohort costs, including reuse.' if state.get('selected_v1') else 'ETA uses new-work family samples; reuse is counted separately.'),
         f"New facts {state.get('new_rows',0):,} | reused facts {state.get('reused_rows',0):,}",
         state.get('qualification_status','Retained observations; not public-time certified.')]
     if state.get('error'):

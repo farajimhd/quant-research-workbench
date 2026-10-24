@@ -142,7 +142,7 @@ for _family,_key in {'sec_reported':'cik','sec_bulk':'cik','massive_financials':
     ADAPTERS[_family]=replace(ADAPTERS[_family],scan_key=_key)
 
 
-def projection(family, entities, start, end, *, partition_id=None, scan_keys=()):
+def projection(family, entities, start, end, *, partition_id=None, scan_keys=(), selected=False,observed_since=None,observed_until=None):
     """One source pass per bounded entity cohort; complete contexts, no row loops."""
     a = ADAPTERS[family]
     if not 1 <= len(entities) <= 256 or type(start) is not date or type(end) is not date or end < start:
@@ -158,6 +158,13 @@ def projection(family, entities, start, end, *, partition_id=None, scan_keys=())
     # Fingerprint the entire normalized source observation, including nulls and
     # clocks. Source-provided hashes are provenance, never trusted as value proof.
     partition = '' if partition_id is None else f' AND _partition_id={literal(partition_id)}'
+    if selected:
+        from .v1 import predicate
+        partition+=' AND ('+predicate(family)+')'
+    for bound,operator in ((observed_since,'>='),(observed_until,'<')):
+        if bound is not None:
+            from .queries import _timestamp
+            partition+=f' AND {a.observed}{operator}{_timestamp(bound)}'
     inner = f"""SELECT {literal(family)} family,{literal(a.kind)} entity_kind,
         toString({a.entity}) entity_id,toString({a.key}) event_key,
         {literal(a.table)} source_table,ifNull(toString({a.source_hash}),'') source_hash,
@@ -180,4 +187,7 @@ def recipe_hash(family=None):
     # clock changes are included automatically.
     adapters={f:{k:v for k,v in asdict(a).items() if k!='scan_key'} for f,a in ADAPTERS.items()
         if family is None or f==family}
-    return digest({'adapters':adapters,'schema':schema.DEFINITIONS,'version':schema.VERSION})
+    # The additive native-label dictionary does not change existing observation
+    # values or hashes. Keep all previously completed normalizer receipts valid.
+    definitions={k:v for k,v in schema.DEFINITIONS.items() if k!='reference_metric_definition_v1'}
+    return digest({'adapters':adapters,'schema':definitions,'version':schema.VERSION})

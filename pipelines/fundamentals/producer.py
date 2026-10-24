@@ -5,7 +5,7 @@ Publication headers are the commit boundary. Stage -> exact readback -> headers
 -> receipt. Failure leaves no false completion; content IDs make retry idempotent.
 """
 from dataclasses import dataclass, asdict
-from datetime import date
+from datetime import date,datetime
 import json
 import time
 from . import schema
@@ -27,10 +27,18 @@ class Batch:
     end: date
     population_hash: str
     scan_keys: tuple[str, ...] = ()
+    selected: bool = False
+    observed_since: datetime | None = None
+    observed_until: datetime | None = None
 
     @property
     def key(self):
-        return digest(asdict(self))
+        body=asdict(self)
+        for name in ('observed_since','observed_until'):
+            if body[name] is None:body.pop(name)
+        if not body.pop('selected'):return digest(body)
+        from .v1 import contract_hash
+        return digest(dict(body,feature_contract=contract_hash()))
 
 
 def source_snapshot(query, family, partition_id=None):
@@ -51,7 +59,7 @@ def source_snapshot(query, family, partition_id=None):
     return rows, digest({'table':table_info,'parts':rows})
 
 
-def plan(query, population, start, end, cohort_size=128, *, cache_dir=None, progress=lambda family:None):
+def plan(query, population, start, end, cohort_size=128, *, cache_dir=None, progress=lambda family:None,selected=False,observed_since=None,observed_until=None):
     if not 1<=cohort_size<=256 or end<start:
         raise ValueError('Invalid range or cohort size')
     if not population or set(population)-set(ADAPTERS):
@@ -64,7 +72,15 @@ def plan(query, population, start, end, cohort_size=128, *, cache_dir=None, prog
             raise ValueError(f'{family}: nonempty reviewed entity IDs required')
         progress(family)
         _,signature = source_snapshot(query,family)
-        cache_key=digest([family,sorted(set(entities)),start,end,recipe_hash(family),ADAPTERS[family].scan_key])
+        from .v1 import predicate,contract_hash
+        feature_filter=' AND ('+predicate(family)+')' if selected else ''
+        for bound,operator in ((observed_since,'>='),(observed_until,'<')):
+            if bound is not None:
+                from .queries import _timestamp
+                feature_filter+=f' AND {ADAPTERS[family].observed}{operator}{_timestamp(bound)}'
+        cache_key=digest([family,sorted(set(entities)),start,end,recipe_hash(family),ADAPTERS[family].scan_key]+([contract_hash()] if selected else []))
+        if observed_since is not None or observed_until is not None:
+            cache_key=digest([cache_key,observed_since,observed_until])
         cache=None if cache_dir is None else cache_dir/('admission-'+cache_key+'.json')
         saved=json.loads(cache.read_text()) if cache is not None and cache.exists() else None
         if saved and saved['signature']==signature and saved['hash']==digest(saved['rows']):
@@ -77,13 +93,18 @@ def plan(query, population, start, end, cohort_size=128, *, cache_dir=None, prog
             occupied=query(f'SELECT _partition_id partition_id,arraySort(groupUniqArray('
                 f'tuple(toString({a.entity}),toString({a.scan_key})))) members FROM {a.table} '
                 f'WHERE {a.entity} IN ({ids}) AND coalesce({a.day},toDate({a.observed})) '
-                f'BETWEEN toDate({literal(start)}) AND toDate({literal(end)}) GROUP BY _partition_id ORDER BY _partition_id')
+                f'BETWEEN toDate({literal(start)}) AND toDate({literal(end)}){feature_filter} GROUP BY _partition_id ORDER BY _partition_id')
             if source_snapshot(query,family)[1]!=signature:
                 raise ValueError(f'{family}: source changed during admission discovery; rerun plan')
             if cache is not None:
                 tmp=cache.with_suffix('.tmp')
                 tmp.write_text(json.dumps({'signature':signature,'rows':occupied,'hash':digest(occupied)}))
                 tmp.replace(cache)
+        if selected:
+            # One cohort across occupied historical partitions. Existing
+            # headers remove committed sources in SQL; do not create thousands
+            # of empty month/cohort verification cycles on a preserved backfill.
+            occupied=[dict(partition_id='*',members=sorted({tuple(m) for p in occupied for m in p['members']}))]
         for partition in occupied:
             by_entity={}
             for entity,key in partition['members']:
@@ -93,7 +114,7 @@ def plan(query, population, start, end, cohort_size=128, *, cache_dir=None, prog
                 chosen=tuple(ids[i:i+cohort_size])
                 keys=tuple(sorted(set().union(*(by_entity[e] for e in chosen))))
                 if len(keys)>4096:raise ValueError('Index-key fanout exceeds bounded batch size')
-                batches.append(Batch(family,partition['partition_id'],chosen,start,end,pop_hash,keys))
+                batches.append(Batch(family,partition['partition_id'],chosen,start,end,pop_hash,keys,selected,observed_since,observed_until))
     return batches
 
 
@@ -124,7 +145,25 @@ def publish(query, batch, database='arte', *, audit=False, progress=lambda stage
         current=label
         progress(label)
     progress('source metadata')
-    _,signature=source_snapshot(query,batch.family,batch.partition_id)
+    projected=projection(batch.family,batch.entities,batch.start,batch.end,
+        partition_id=None if batch.partition_id=='*' else batch.partition_id,scan_keys=batch.scan_keys,selected=batch.selected,
+        observed_since=batch.observed_since,observed_until=batch.observed_until)
+    logical={}
+    def snapshot():
+        if not batch.selected:return source_snapshot(query,batch.family,batch.partition_id)[1]
+        # Logical identity is merge-neutral. A background merge cannot create
+        # new work. Two independent order-insensitive fingerprints plus count
+        # bind the complete normalized rows including revisions and clocks.
+        a=ADAPTERS[batch.family];db,table=a.table.split('.')
+        identity=query(f'SELECT uuid,create_table_query FROM system.tables WHERE database={literal(db)} AND name={literal(table)}')
+        if len(identity)!=1:raise ValueError('Structured source table absent')
+        if query(f'SELECT mutation_id FROM system.mutations WHERE database={literal(db)} AND table={literal(table)} AND NOT is_done LIMIT 1'):
+            raise ValueError('Source mutation active; retry after drain')
+        result=query(f'''SELECT count() n,sum(length(metrics)) facts,toString(sumWithOverflow(cityHash64(source_id))) h1,
+          toString(sumWithOverflow(sipHash64(source_id))) h2 FROM ({projected})''')
+        logical.update(result[0])
+        return digest([identity,result])
+    signature=snapshot()
     source_signature=signature
     destinations=query(f'SELECT name,uuid FROM system.tables WHERE database={literal(database)} '
         "AND name IN ('reference_source_v1','reference_context_v1','reference_fact_v1') ORDER BY name")
@@ -146,8 +185,6 @@ def publish(query, batch, database='arte', *, audit=False, progress=lambda stage
     if int(incompatible[0]['n']):
         raise ValueError('Stored observations use a different recipe; explicit migration required')
     query(f'ALTER TABLE {prefix}stage_v1 DROP PARTITION {literal(batch.key)}',read=False)
-    projected=projection(batch.family,batch.entities,batch.start,batch.end,
-        partition_id=batch.partition_id,scan_keys=batch.scan_keys)
     # SHA source identity includes the complete observation. Keep recipe identity
     # separate; semantic changes require an explicit versioned migration.
     committed='' if audit else (f' WHERE source_id NOT IN (SELECT source_id FROM {prefix}source_v1 FINAL '
@@ -166,8 +203,18 @@ def publish(query, batch, database='arte', *, audit=False, progress=lambda stage
     if int(stats['bad']):
         raise ValueError(f"{batch.family}: {stats['bad']} invalid identities or nonfinite facts; stage retained")
     # A changed source is not stamped complete. No headers have been published.
-    if source_snapshot(query,batch.family,batch.partition_id)[1]!=source_signature:
+    if snapshot()!=source_signature:
         raise ValueError('Source changed during staging; repeat this batch from retained receipts')
+    if batch.selected and not audit and not int(stats['fact_rows']):
+        # All selected source headers already exist from completed publications.
+        # Preserve them and their facts; no empty inserts or repeated readbacks.
+        query(f'INSERT INTO {prefix}batch_receipt_v1 VALUES (' + ','.join((literal(batch.key),literal(signature),
+            literal(recipe),literal(batch.population_hash),str(logical['n']),str(logical['facts']),
+            literal(digest(stats)),"now64(6,'UTC')")) + ')',read=False)
+        query(f'ALTER TABLE {prefix}stage_v1 DROP PARTITION {literal(batch.key)}',read=False)
+        step('done')
+        return dict(state='unchanged',rows=int(logical['facts']),source_rows=int(logical['n']),
+            seconds=sum(timings.values()),timings=timings,qualification='selected retained observations')
     step('publish facts and contexts')
     context_expected=f'SELECT DISTINCT {names(schema.CONTEXT)} FROM {stage}'
     fact_columns=names(schema.FACT)

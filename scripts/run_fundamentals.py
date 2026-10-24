@@ -8,7 +8,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import argparse
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone,timedelta
 import json
 import threading
 import time
@@ -99,6 +99,10 @@ def run(args):
     manifest=json.loads(Path(args.population).read_text(encoding='utf-8-sig'))
     if set(manifest)!={'families','provenance','captured_at'} or not manifest['provenance'] or not manifest['captured_at']:
         raise ValueError('Population must contain families, provenance and captured_at')
+    selected=getattr(args,'selected_v1',False)
+    if selected:
+        from pipelines.fundamentals.v1 import FAMILIES,contract_hash
+        manifest=dict(manifest,families={k:v for k,v in manifest['families'].items() if k in FAMILIES})
     root.mkdir(parents=True,exist_ok=True)
     load_env_files(discover_clickhouse_env_files(),verbose=False)
     owner=Client(args.endpoint)
@@ -106,23 +110,36 @@ def run(args):
         with lock(runtime/('fundamentals-'+digest(args.database)+'.lock')):
             if (root/'STOP').exists():
                 raise ValueError('STOP is present; preserve it until an explicit resume')
+            since=None;until=None
+            if selected and args.mode=='forward-fill':
+                since=getattr(args,'since_recorded',None)
+                if since is None and (root/'watermark.json').exists():
+                    watermark=json.loads((root/'watermark.json').read_text())
+                    if watermark.get('feature_contract')!=contract_hash():raise ValueError('Forward feature contract changed; explicit migration required')
+                    since=datetime.fromisoformat(watermark['through'])-timedelta(days=7)
+                if since is None:raise ValueError('First forward fill requires --since-recorded with an aware timestamp')
+                if since.tzinfo is None:raise ValueError('Forward watermark must be timezone-aware')
+                until=datetime.now(timezone.utc)
+                if since>=until:raise ValueError('Forward watermark must precede now')
             batches=plan(owner.query,manifest['families'],args.start,args.end,args.cohort_size,
-                cache_dir=root,progress=lambda f:print(f'Planning {f}: checking occupied source partitions',flush=True))
+                cache_dir=root,progress=lambda f:print(f'Planning {f}: checking occupied source partitions',flush=True),selected=selected,
+                observed_since=since,observed_until=until)
             profile_count=getattr(args,'profile_batches_per_family',0)
             if profile_count:
                 if args.database=='arte' or not 1<=profile_count<=3:
                     raise ValueError('Bounded profiling requires an isolated validation database and 1..3 batches per family')
-                selected=[]
+                sampled=[]
                 for family in manifest['families']:
                     family_batches=[b for b in batches if b.family==family]
                     if family_batches:
                         indexes=({0} if profile_count==1 else
                             {round(i*(len(family_batches)-1)/(profile_count-1)) for i in range(profile_count)})
-                        selected.extend(family_batches[i] for i in sorted(indexes))
-                batches=selected
+                        sampled.extend(family_batches[i] for i in sorted(indexes))
+                batches=sampled
             request={'population':manifest,'start':str(args.start),'end':str(args.end),
                 'database':args.database,'endpoint':args.endpoint,'cohort_size':args.cohort_size}
             if profile_count:request['profile_batches_per_family']=profile_count
+            if selected:request.update(feature_contract=contract_hash(),mode=args.mode)
             previous=root/'request.json'
             if previous.exists() and json.loads(previous.read_text())!=request:
                 raise ValueError('Existing request differs; use a separate run directory, retaining shared receipts')
@@ -134,12 +151,16 @@ def run(args):
                     f"{len(manifest['families'])} families. No database writes or acquisition.")
                 return 0
             save(previous,request)
+            if until:save(root/'window.json',dict(since=since.isoformat(),until=until.isoformat(),overlap_days=7))
             schema.install(owner.query,args.database)
             state={'state':'running','mode':args.mode,'counts':dict(published=0,unchanged=0,audited=0,failed=0),
                 'active':{},'queued':len(batches),'elapsed':0,'error':None,
                 'total':len(batches),'workers':args.workers,'new_rows':0,'reused_rows':0,'samples':{},
                 'exclusions':len(manifest['provenance'].get('exclusions',[])),
                 'remaining_by_family':{f:sum(b.family==f for b in batches) for f in manifest['families']}}
+            if selected:
+                state['selected_v1']=True
+                state['qualification_status']='Selected v1: structured normalization; public/recorded clocks explicit. Gap coverage reported separately.'
             timing_profile=getattr(args,'timing_profile',None)
             if timing_profile:
                 profile_root=Path(timing_profile).resolve()
@@ -212,6 +233,7 @@ def run(args):
                     snapshot(force=draining)
             state['state']='failed' if state['counts']['failed'] else 'stopped' if draining else 'complete'
             schema.verify(owner.query,args.database)
+            if state['state']=='complete' and until:save(root/'watermark.json',dict(through=until.isoformat(),feature_contract=contract_hash()))
             snapshot(force=True)
             return 1 if state['state']=='failed' else 130 if draining else 0
     finally:
@@ -231,6 +253,8 @@ def main(argv=None):
     p.add_argument('--cohort-size',type=int,default=128)
     p.add_argument('--execute',action='store_true',help='Publish retained sources; default is read-only planning')
     p.add_argument('--audit',action='store_true',help='Explicit exact source/output audit, including completed batches')
+    p.add_argument('--selected-v1',action='store_true',help='Selected v1 features; preserve existing records and use merge-neutral incremental receipts')
+    p.add_argument('--since-recorded',type=datetime.fromisoformat,help='First selected forward-fill observation watermark; subsequent runs use saved watermark with seven-day overlap')
     p.add_argument('--profile-batches-per-family',type=int,default=0,
         help='Isolated validation only: sample 1..3 source partitions per family before a full run')
     p.add_argument('--timing-profile',help='Matching isolated pilot runtime; seeds approximate per-family ETA only')
