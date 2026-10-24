@@ -4,6 +4,8 @@ from rich.layout import Layout
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+from rich.progress import Progress,TextColumn,BarColumn,TaskProgressColumn
+from rich.table import Column
 from .observer_model import SORTS,filtered,ordered,grouped
 
 
@@ -27,13 +29,14 @@ def render(data,width,height,settings,selection=0,detail='financial',stage='entr
     label='ISOLATED TICKER/SESSION' if phase==0 else 'MIXED SESSION'
     header=f"V48 | PHASE {phase} {label} | {data.get('day','')} | {status.upper()}\nGeneration {p.get('generation',1)}/{data.get('target',30)} | {data.get('generation',0)} sealed | {p.get('stage','Waiting for status')}"
     layout['header'].update(Text(header,style='cyan'))
-    def bar(label,done,total):
-        if not total:return f'{label:<12} awaiting worker progress'
-        size=max(5,width-38);filled=min(size,int(size*done/total))
-        return f"{label:<12} {'#'*filled}{'.'*(size-filled)} {done:,}/{total:,}"
-    layout['activity'].update(Text('\n'.join((bar('Generations',data.get('generation',0),data.get('target',30)),
-        bar('Batches',p.get('completed_local_batches',0),p.get('total_local_batches',0)),
-        bar('Replay clocks',p.get('completed_seconds',0),p.get('total_seconds',0))))))
+    bars=Progress(TextColumn('{task.description}',table_column=Column(width=13,no_wrap=True)),
+        BarColumn(bar_width=None,style='grey23',complete_style='cyan',finished_style='green',pulse_style='magenta'),
+        TaskProgressColumn(),TextColumn('{task.fields[units]}',table_column=Column(width=15,no_wrap=True)),expand=True)
+    for label,done,total in (('Generations',data.get('generation',0),data.get('target',30)),
+                            ('Batches',p.get('completed_local_batches',0),p.get('total_local_batches',0)),
+                            ('Replay clocks',p.get('completed_seconds',0),p.get('total_seconds',0))):
+        bars.add_task(label,total=total or None,completed=done,units=f'{done:,}/{total:,}' if total else 'waiting')
+    layout['activity'].update(bars)
     source=filtered(data,settings.get('case'),settings.get('eligible',False),settings.get('active',False))
     valid=[r for r in source if r['eligible']];scope=data.get('case_labels',{}).get(settings.get('case'),'ALL TICKERS' if phase==0 else 'FULL SESSION')
     if settings.get('eligible'):scope+=' [E-only]'
