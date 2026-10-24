@@ -11,7 +11,7 @@ from .queries import _timestamp
 from pipelines.certified_research.contracts import literal, identifier, digest
 
 VERSION='fundamentals-selected-v1'
-SERVING_VERSION='fundamentals-selected-serving-v3-qualified-units'
+SERVING_VERSION='fundamentals-selected-serving-v4-standard-taxonomy'
 # Feature, temporal kind, ordered explicit standard tags. Different debt
 # components remain separate inputs; no overlapping total is blindly summed.
 FINANCIAL={
@@ -84,6 +84,7 @@ Ties with different values remain conflicts, never arbitrary winners.
     reported_metadata="(s.family='sec_reported' AND isValidJSON(c.dimensions) AND arrayAll(k -> k IN ('fiscal_year','fiscal_period','form_type'),JSONExtractKeys(c.dimensions)))"
     fact_scope=f'''SELECT * FROM {database}.reference_fact_v1 FINAL
         WHERE entity_kind='issuer_cik' AND entity_id IN ({ids})
+          AND arrayElement(splitByChar(':',metric),1) IN ('us-gaap','ifrs-full','dei')
           AND ({field_cases("arrayElement(splitByChar(':',metric),-1)")})!='' '''
     # Source headers are the existing publication commit boundary; no raw row
     # is served without its completed normalized source header.
@@ -119,7 +120,9 @@ Ties with different values remain conflicts, never arbitrary winners.
         WHERE method={literal(period_version)} GROUP BY company_fact_id,source_hash
         HAVING uniqExact(tuple(period_start,frame))=1) p
         ON s.family='sec_reported' AND s.event_key=p.company_fact_id AND s.source_hash=p.source_hash
-      WHERE (c.dimensions IN ('{{}}','[]','') OR {reported_metadata}) AND isNotNull(c.period_end) AND isNotNull(value)'''
+      WHERE c.taxonomy IN ('us-gaap','ifrs-full','dei')
+      AND f.metric=concat(c.taxonomy,':',{tag})
+      AND (c.dimensions IN ('{{}}','[]','') OR {reported_metadata}) AND isNotNull(c.period_end) AND isNotNull(value)'''
     duration_names=','.join(literal(k) for k,(kind,_) in FINANCIAL.items() if kind=='duration')
     timing='coalesce(public_at,observed_at)' if include_recorded else 'public_at'
     eligible=f'''SELECT *,{timing} available_at,if(isNull(public_at),'recorded_only','public') availability_basis

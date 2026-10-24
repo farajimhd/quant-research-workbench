@@ -37,6 +37,13 @@ def test_qualified_per_share_unit_retains_provenance_and_canonicalizes_alias():
     assert 'c.unit source_unit' in sql
 
 
+def test_consolidated_reader_does_not_alias_source_native_local_names():
+    sql=financial_sql(['0001318605'],datetime.now(timezone.utc))
+    assert "arrayElement(splitByChar(':',metric),1) IN ('us-gaap','ifrs-full','dei')" in sql
+    assert "c.taxonomy IN ('us-gaap','ifrs-full','dei')" in sql
+    assert "f.metric=concat(c.taxonomy,':'" in sql
+
+
 def test_ratios_do_not_mix_period_currency_or_subsidiary():
     rows=[dict(cik='A',period_start='2025-01-01',period_end='2025-12-31',unit='USD',feature=f,value=v)
           for f,v in [('revenue','100'),('operating_income','20')]]
