@@ -5,6 +5,22 @@ from pipelines.certified_research.contracts import digest
 from pipelines.fundamentals.retry import select
 
 
+def test_retained_registration_gap_requires_exact_source_and_population():
+    from pipelines.fundamentals.retry import retained_gaps
+    row=dict(cik='0000000001',accession='0000000001-19-000001',document='registration.htm',
+             day='2019-01-02',form='F-1/A',content_sha256='a'*64,source_version_key='')
+    body=dict(version='retained-financial-gap-v1',population_hash='p',start='2019-01-01',end='2019-12-31',
+              reason='retained_structured_values_missing',documents=[row])
+    manifest=dict(body,manifest_hash=digest(body))
+    args=dict(population_hash='p',ciks=[row['cik']],start=date(2019,1,1),end=date(2019,12,31))
+    assert retained_gaps(manifest,lambda sql:[row],**args)==[row]
+    for response in ([],[dict(row,content_sha256='b'*64)],[row,row]):
+        with pytest.raises(ValueError):retained_gaps(manifest,lambda sql:response,**args)
+    with pytest.raises(ValueError):retained_gaps(manifest,lambda sql:[row],**dict(args,ciks=[]))
+    changed=dict(body,documents=[row,row]);changed['manifest_hash']=digest(changed)
+    with pytest.raises(ValueError):retained_gaps(changed,lambda sql:[row],**args)
+
+
 def fixture(tmp_path):
     source=tmp_path/'source';source.mkdir();(source/'blocked').mkdir();(source/'receipts').mkdir()
     row=dict(cik='0000000001',accession='0000000001-19-000001',document='a.xml',day='2019-01-02')
