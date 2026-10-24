@@ -20,3 +20,26 @@ def test_fund_status_is_not_guessed_from_registration_or_shareholder_forms():
     row=dict(mapping_method=METHOD,mapping_status='active',ambiguity_status='unique')
     assert direct_rows([row])==[row]
     assert direct_rows([dict(row,mapping_status='quarantined')])==[]
+
+
+def test_missing_issuer_recovers_partial_write_and_rejects_competing_identity():
+    import json
+    from pipelines.reference_data.identity_review import ensure_retained_issuer
+    tables={'id_issuer_v1':[],'id_issuer_identifier_v1':[]};fail=[True]
+    def q(sql,read=True):
+        if 'company_ticker_v3' in sql:return [dict(cik='0001227857',source_file_id='ticker-proof')]
+        if 'company_v3' in sql:return [dict(entity_name='Fund II',source_file_id='company-proof',last_seen_at_utc='2026-08-16 00:00:00.000',state_of_incorporation='MA',sic=None,sic_description=None)]
+        if 'system.tables' in sql:return [dict(engine='ReplacingMergeTree',storage_policy='live_market_ssd')]
+        if 'system.parts' in sql:return [dict(disk_name='live_market_ssd')]
+        if sql.startswith('INSERT'):
+            table=sql.split()[2].split('.')[1]
+            if table=='id_issuer_identifier_v1' and fail.pop():raise RuntimeError('interrupted')
+            tables[table].append(json.loads(sql.split('\n')[1]));return []
+        if 'INNER JOIN' in sql:return [dict(issuer_id='issuer:cik:0001227857',cik='0001227857')]
+        return tables['id_issuer_identifier_v1' if 'id_issuer_identifier_v1' in sql else 'id_issuer_v1']
+    with pytest.raises(RuntimeError):ensure_retained_issuer(q,'NCZ','0001227857','2026-10-24 00:00:00.000')
+    fail.append(False)
+    assert ensure_retained_issuer(q,'NCZ','0001227857','2026-10-24 00:00:01.000')['written']==1
+    assert ensure_retained_issuer(q,'NCZ','0001227857','2026-10-24 00:00:02.000')['written']==0
+    tables['id_issuer_identifier_v1'][0]['issuer_id']='competing'
+    with pytest.raises(ValueError):ensure_retained_issuer(q,'NCZ','0001227857','2026-10-24 00:00:03.000')

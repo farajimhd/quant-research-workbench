@@ -30,6 +30,13 @@ def test_contexts_and_gaps_are_not_per_filing_cartesian_products():
     assert 'LongTermDebtAndFinanceLeaseObligationsIncludingCurrentMaturities' not in FINANCIAL['debt_total'][1]
 
 
+def test_qualified_per_share_unit_retains_provenance_and_canonicalizes_alias():
+    sql=financial_sql(['0001318605'],datetime.now(timezone.utc))
+    assert "match(c.unit,'^[A-Z]{3}/share$')" in sql
+    assert "concat(substring(c.unit,1,3),'/shares')" in sql
+    assert 'c.unit source_unit' in sql
+
+
 def test_ratios_do_not_mix_period_currency_or_subsidiary():
     rows=[dict(cik='A',period_start='2025-01-01',period_end='2025-12-31',unit='USD',feature=f,value=v)
           for f,v in [('revenue','100'),('operating_income','20')]]

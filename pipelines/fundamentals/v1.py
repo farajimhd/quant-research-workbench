@@ -11,7 +11,7 @@ from .queries import _timestamp
 from pipelines.certified_research.contracts import literal, identifier, digest
 
 VERSION='fundamentals-selected-v1'
-SERVING_VERSION='fundamentals-selected-serving-v2-reported-periods'
+SERVING_VERSION='fundamentals-selected-serving-v3-qualified-units'
 # Feature, temporal kind, ordered explicit standard tags. Different debt
 # components remain separate inputs; no overlapping total is blindly summed.
 FINANCIAL={
@@ -89,7 +89,8 @@ Ties with different values remain conflicts, never arbitrary winners.
     # is served without its completed normalized source header.
     base=f'''SELECT f.entity_id cik,{selected} feature,f.metric source_metric,
       coalesce(c.period_start,if(s.family='sec_reported',p.recovered_start,NULL)) period_start,
-      c.period_end,c.unit,if({reported_metadata},'{{}}',c.dimensions) dimensions,
+      c.period_end,if(match(c.unit,'^[A-Z]{{3}}/share$'),concat(substring(c.unit,1,3),'/shares'),c.unit) unit,
+      c.unit source_unit,if({reported_metadata},'{{}}',c.dimensions) dimensions,
       c.dimensions source_dimensions,s.source_id AS source_id,s.family,
       if(s.family='sec_original_qualified',s.event_key,s.evidence_ref) accession,s.observed_at,
       coalesce(f.text_value,toString(f.value)) value,

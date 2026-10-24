@@ -10,6 +10,56 @@ from pipelines.certified_research.contracts import digest,literal
 METHOD='reviewed_sec_ticker_to_market_listing'
 
 
+def ensure_retained_issuer(query, ticker, cik, stamp):
+    """Add one missing canonical issuer from direct SEC metadata, never an alias.
+
+    Both writes have deterministic keys. A retry after either write verifies and
+    reuses it; competing canonical identities stop the correction.
+    """
+    import hashlib
+    import json
+    if len(cik)!=10 or not cik.isdigit():raise ValueError('Expected ten-digit CIK')
+    evidence=query(f'SELECT * FROM sec_core.sec_bulk_mirror_company_ticker_v3 FINAL WHERE ticker={literal(ticker)} AND is_active=1 ORDER BY mapping_id')
+    if not evidence or {x['cik'] for x in evidence}!={cik} or any(not x['source_file_id'] for x in evidence):
+        raise ValueError('Missing or competing direct SEC identity evidence')
+    companies=query(f'SELECT * FROM sec_core.sec_bulk_mirror_company_v3 FINAL WHERE cik={literal(cik)}')
+    if len(companies)!=1 or not companies[0]['entity_name'] or not companies[0]['source_file_id']:
+        raise ValueError('Missing canonical SEC company evidence')
+    company=companies[0];issuer='issuer:cik:'+cik
+    identifiers=query(f"SELECT * FROM q_live.id_issuer_identifier_v1 FINAL WHERE identifier_kind='cik' AND identifier_value_normalized={literal(cik)}")
+    if identifiers and {x['issuer_id'] for x in identifiers}!={issuer}:
+        raise ValueError('Existing canonical identifier competes with retained issuer')
+    existing=query(f'SELECT * FROM q_live.id_issuer_v1 FINAL WHERE issuer_id={literal(issuer)}')
+    proof=dict(company=company,tickers=evidence,policy='retained_sec_missing_issuer_v1')
+    source_hash=digest(proof)
+    if existing and (len(existing)!=1 or existing[0]['source_content_sha256']!=source_hash):
+        raise ValueError('Canonical issuer already exists; review instead of overwriting')
+    for table in ('id_issuer_v1','id_issuer_identifier_v1'):
+        layout=query(f"SELECT engine,storage_policy FROM system.tables WHERE database='q_live' AND name={literal(table)}")
+        disks=query(f"SELECT DISTINCT disk_name FROM system.parts WHERE active AND database='q_live' AND table={literal(table)}")
+        if layout!=[dict(engine='ReplacingMergeTree',storage_policy='live_market_ssd')] or any(x['disk_name']!='live_market_ssd' for x in disks):
+            raise ValueError('Canonical identity requires SSD storage')
+    observed=str(company['last_seen_at_utc'])[:23]
+    common=dict(first_seen_at_utc=observed,last_seen_at_utc=observed,
+                source_run_id='retained_sec_missing_issuer_v1',source_content_sha256=source_hash,inserted_at=stamp)
+    row=dict(issuer_id=issuer,issuer_name=company['entity_name'],issuer_name_normalized=company['entity_name'].upper(),
+        legal_name=company['entity_name'],branding_name=None,entity_type=None,domicile_country_code=None,
+        state_of_incorporation=company['state_of_incorporation'],sic_code=company['sic'],sic_description=company['sic_description'],
+        sector=None,industry=None,industry_group=None,website_url=None,investor_website_url=None,logo_asset_id=None,
+        status='active',last_verified_at_utc=stamp,**common)
+    identity=dict(issuer_identifier_id='issuer_identifier:'+hashlib.sha256((issuer+'|cik|'+cik).encode()).hexdigest(),
+        issuer_id=issuer,identifier_kind='cik',identifier_value=cik,identifier_value_normalized=cik,source_system='sec',
+        confidence_score=1,is_primary=1,valid_from_date=None,valid_to_date_exclusive=None,
+        evidence_json=json.dumps(proof,sort_keys=True),**common)
+    written=0
+    for table,old,value in [('id_issuer_v1',existing,row),('id_issuer_identifier_v1',identifiers,identity)]:
+        if not old:
+            query(f'INSERT INTO q_live.{table} FORMAT JSONEachRow\n'+json.dumps(value),read=False);written+=1
+    actual=query(f"SELECT i.issuer_id AS issuer_id,d.identifier_value_normalized AS cik FROM q_live.id_issuer_v1 AS i FINAL INNER JOIN q_live.id_issuer_identifier_v1 AS d FINAL ON i.issuer_id=d.issuer_id WHERE i.issuer_id={literal(issuer)} AND d.identifier_kind='cik'")
+    if actual!=[dict(issuer_id=issuer,cik=cik)]:raise ValueError('Canonical issuer readback differs')
+    return dict(issuer_id=issuer,cik=cik,written=written,evidence_hash=source_hash)
+
+
 def reviewed_identity(ticker, evidence, issuers, snapshot_day):
     rows=[x for x in evidence if x['ticker']==ticker and x['is_active']==1]
     ciks={x['cik'] for x in rows}
