@@ -1,6 +1,20 @@
 from pipelines.certified_research.sec_html_reviewed_gaps import plan_for,ADRX_HASH
 
 
+def test_fort_actual_statements_keep_negative_parentheses_and_per_share_scale():
+    from pipelines.certified_research.sec_html_reviewed_fort import plan_for, HASH
+    plan = plan_for(HASH, '2092967')
+    assert plan_for(HASH, '1') is None
+    rows = {(f['concept'].split('}')[-1], f['period_end']): f for f in plan['facts']}
+    assert len(rows) == 22
+    eps = rows['DilutedEarningsLossPerShare', '2025-12-31']
+    assert eps['expected_value'] == '-0.69' and eps['scale'] == 0
+    assert eps['locator']['columns'] == [5, 6]
+    assert rows['ProfitLoss', '2025-12-31']['expected_value'] == '-5830000'
+    assert rows['CashFlowsFromUsedInOperatingActivities', '2025-12-31']['locator']['columns'] == [3, 4]
+    assert not any('Weighted' in f['concept'] for f in plan['facts'])
+
+
 def test_aya_consolidated_totals_preserve_units_and_section_boundaries():
     import json
     from pipelines.certified_research.sec_html_reviewed_aya import plan_for, HASH

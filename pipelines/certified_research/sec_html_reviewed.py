@@ -37,6 +37,9 @@ SHARES=(
 
 
 def plan_for(document_hash,cik):
+    from .sec_html_reviewed_fort import plan_for as fort
+    reviewed=fort(document_hash,cik)
+    if reviewed is not None:return reviewed
     from .sec_html_reviewed_aya import plan_for as aya
     reviewed=aya(document_hash,cik)
     if reviewed is not None:return reviewed
