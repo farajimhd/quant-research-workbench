@@ -22,6 +22,8 @@ def verify_document(query,database,cik,accession,document,binding_hash,claim,sou
     extraction=checked['extraction']
     key=digest(dict(version=sec_share_source.VERSION,candidate_hash=before['candidate_hash'],parser=sec_share_context.VERSION))
     witness=checked.get('source_witness',{})
+    from . import sec_document_set
+    resource_evidence=sec_document_set.verify(query,database,extraction,witness,checked['available_at'],claim,source_guard)
     archive_original=witness.get('version')=='sec-archive-original-document-witness-v3'
     retained_hash=witness.get('retained_document_hash') if archive_original else checked['source_document_hash']
     if archive_original and (witness.get('candidate_hash')!=before['candidate_hash']
@@ -57,6 +59,7 @@ def verify_document(query,database,cik,accession,document,binding_hash,claim,sou
         groups=projection['groups'],reconciliation=checked['reconciliation'],
         document_qualified=True,whole_scope_certified=False,aggregation='none')
     if nils:result['declared_missing_observations']=nils
+    if resource_evidence:result['resource_evidence_hash']=resource_evidence
     if archive_original:result.update(version='qualified-archive-original-filing-authority-v2',retained_document_hash=retained_hash)
     if extraction.get('version')=='sec-reviewed-html-context-v1':
         result.update(document_qualified=False,observations_qualified=True,

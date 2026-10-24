@@ -23,7 +23,7 @@ def _period_date(text):
     return date.fromisoformat(value)
 
 
-def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=10000,catalog_tags=None,include_security_cover=False,all_numeric=False):
+def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=10000,catalog_tags=None,include_security_cover=False,all_numeric=False,resource_documents=(),_resources_only=False):
     """Retain distinct facts and dimensions; never infer class completeness.
 
     Inputs are exact UTF-8 source text and its independently retained text hash.
@@ -86,6 +86,37 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
                     if elements:elements[-1].remove(node)
                 stack.pop();namespaces=stack[-1] if stack else {}
     except ET.ParseError as error:raise ValueError('SEC source is not strict XML') from error
+    if _resources_only:
+        for tag in ('context','unit'):
+            keys=[n.get('id') for n in collected[tag]]
+            if any(not k for k in keys) or len(keys)!=len(set(keys)):
+                raise ValueError('Missing or duplicate supplemental XBRL identity')
+        return collected,maps
+    if not isinstance(resource_documents,(tuple,list)) or len(resource_documents)>4:
+        raise ValueError('Invalid bounded XBRL resource document set')
+    resource_hashes=[];resource_bytes=len(raw)
+    for resource in resource_documents:
+        if set(resource)!= {'payload','source_text_hash'} or resource['source_text_hash'] in (expected_hash,*resource_hashes):
+            raise ValueError('Duplicate or invalid XBRL resource source')
+        resource_bytes+=len(resource['payload'].encode('utf-8'))
+        if resource_bytes>64*1024**2:raise ValueError('Document set exceeds aggregate byte bound')
+        extra,extra_maps=extract(resource['payload'],resource['source_text_hash'],cik,
+            maximum_bytes=maximum_bytes,_resources_only=True)
+        # Only contexts and units cross a document boundary; supplemental
+        # observations must never be counted again as primary facts.
+        for tag in ('context','unit'):
+            existing={n.get('id'):n for n in collected[tag]}
+            for node in extra[tag]:
+                prior=existing.get(node.get('id'))
+                if prior is not None:
+                    if ET.tostring(prior)!=ET.tostring(node):
+                        raise ValueError('Conflicting document-set XBRL resource identity')
+                    for a,b in zip(prior.iter(),node.iter()):
+                        if id(a) in maps and maps[id(a)]!=extra_maps.get(id(b)):
+                            raise ValueError('Conflicting document-set resource namespaces')
+                    continue
+                collected[tag].append(node);existing[node.get('id')]=node
+        maps.update(extra_maps);resource_hashes.append(resource['source_text_hash'])
     def qname(value,node):
         if id(node) in native and value==node.tag:return value
         prefix,sep,local=value.partition(':')
@@ -253,6 +284,7 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
     result=dict(version='sec-inline-fundamental-context-v4' if fundamental else VERSION,observations=tuple(observations),rejected=tuple(rejected),
         source_text_hash=expected_hash,parsing_prefix_bytes=prefix_bytes,parsing_suffix_bytes=suffix_bytes,
         sec_xbrl_envelope=envelope,allocation_certified=False)
+    if resource_hashes:result['resource_document_hashes']=tuple(resource_hashes)
     if all_numeric:
         # Completeness of enumeration is separate from qualification. Unsupported
         # units, contexts and transforms remain rejected and block publication.

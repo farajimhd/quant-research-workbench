@@ -74,12 +74,14 @@ def _main():
         if a.profile and not 1<=len(retry_documents)<=12:
             raise ValueError('Retry profiling requires 1..12 exact blocked targets')
         request['retry_manifest_hash']=manifest['manifest_hash']
+    resource_rows={}
     if a.retained_gap_manifest:
         from pipelines.fundamentals.retry import retained_gaps
         manifest=json.loads(a.retained_gap_manifest.read_text())
         load_env_files(discover_clickhouse_env_files(),verbose=False)
         with closing(Client(a.endpoint)) as selection_client:
             retry_documents=retained_gaps(manifest,selection_client.query,population_hash=pop_hash,ciks=ciks,start=a.start,end=a.end)
+        resource_rows=manifest.get('resources',{})
         request['retry_manifest_hash']=manifest['manifest_hash']
     if (root/'request.json').exists():
         old=json.loads((root/'request.json').read_text())
@@ -251,6 +253,12 @@ def _main():
                         with mutex:state['active'].pop('archive',None);state['archive_remaining']-=1
                         continue
                     try:
+                        resource_descriptors={}
+                        for row in admitted:
+                            for resource in resource_rows.get(digest(row),[]):
+                                _,prepared,error=prepare(resource)
+                                if error is not None:raise error
+                                resource_descriptors[digest(resource)]=prepared
                         d=date.fromisoformat(day);relative=Path(str(d.year),f'QTR{(d.month-1)//3+1}',d.strftime('%Y%m%d')+'.nc.tar.gz')
                         archive=a.archive_root/relative;size=archive.stat().st_size
                         candidates=receipt_index[day];receipt=sec_receipt_recovery.select_complete(candidates,size)
@@ -296,9 +304,12 @@ def _main():
                             if len(raw)>64*1024**2 or sha256(raw).hexdigest()!=witness['document_hash']:
                                 raise ValueError('Original document exceeds bound or differs')
                             (original_cache/(witness['document_hash']+'.html')).write_bytes(raw)
-                        witnesses=sec_archive_witness.inspect_archives(target,descriptors,stop=stop,staging_receipt=copied,
+                        all_descriptors=descriptors+list(resource_descriptors.values())
+                        all_witnesses=sec_archive_witness.inspect_archives(target,all_descriptors,stop=stop,staging_receipt=copied,
                             maximum_member_bytes=4*1024**3,maximum_archive_bytes=8*1024**3,
                             maximum_scan_bytes=64*1024**3,original_document_sink=original_sink)
+                        witnesses=all_witnesses[:len(descriptors)]
+                        resource_witnesses=dict(zip(resource_descriptors,all_witnesses[len(descriptors):]))
                     except (ValueError,OSError,EOFError,tarfile.TarError) as error:
                         for row in admitted:blocked(row,error)
                         with mutex:state['active'].pop('archive',None)
@@ -323,6 +334,9 @@ def _main():
                             # Exact current lineage remains a publication guard.
                             if lineage.inspect(own.query,*request_tuple,claim,guard)!=descriptor['document']['lineage']:
                                 raise ValueError('Original source lineage changed')
+                            for resource in resource_rows.get(token,[]):
+                                if lineage.inspect(own.query,resource['cik'],resource['accession'],resource['document'],claim,guard)!=resource_descriptors[digest(resource)]['document']['lineage']:
+                                    raise ValueError('Supplemental source lineage changed')
                             if bulk is not None and digest(sorted(reconciliation.load_bulk(own.query,*request_tuple[:2],tags),key=lambda r:r['source_record']))!=digest(sorted(bulk,key=lambda r:r['source_record'])):
                                 raise ValueError('Retained bulk reconciliation evidence changed')
                         stable=SourceGuard(own.query,source_audit,owned)
@@ -344,7 +358,21 @@ def _main():
                                 text=raw.decode('utf-8');del raw
                             else:
                                 text=payload.load(own.query,*request_tuple,witness['document_hash'],maximum_bytes=64*1024**2,guard=owned)
-                            extracted=extraction.extract(text,witness['document_hash'],row['cik'],maximum_bytes=64*1024**2);del text
+                            resources=[];resource_proofs=[]
+                            for resource in resource_rows.get(token,[]):
+                                rw=resource_witnesses[digest(resource)]
+                                rq=sec_public_archive_time.qualify(rw,receipt,mode=mode)
+                                resources.append(dict(payload=(original_cache/(rw['document_hash']+'.html')).read_bytes().decode('utf-8'),source_text_hash=rw['document_hash']))
+                                resource_proofs.append(dict(witness=rw,qualification=rq,receipt=receipt))
+                            extracted=extraction.extract(text,witness['document_hash'],row['cik'],maximum_bytes=64*1024**2,resource_documents=resources);del text,resources
+                            if resource_proofs:
+                                from pipelines.certified_research import sec_document_set
+                                extracted['resource_document_proofs']=resource_proofs
+                                sec_document_set.validate(extracted,witness,qualified_time['available_at'])
+                                extracted['extraction_hash']=digest({k:v for k,v in extracted.items() if k!='extraction_hash'})
+                                with witness_lock:
+                                    witness_publication.Publisher(own.query,'q_live',claim,stable,admission).publish(
+                                        tuple(p['witness'] for p in resource_proofs),tuple(p['qualification'] for p in resource_proofs),receipt)
                             tags=tuple(sorted({t for m in facts.catalog() for t in m.tags}))
                             bulk=reconciliation.load_bulk(own.query,*request_tuple[:2],tags)
                             stable.signature=None

@@ -21,7 +21,19 @@ def retained_gaps(manifest,query,*,population_hash,ciks,start,end):
     rows=body['documents']
     if not 1<=len(rows)<=12 or len({(r['cik'],r['accession']) for r in rows})!=len(rows):
         raise ValueError('Select at most twelve distinct retained filings')
+    resources=body.get('resources',{})
+    if not isinstance(resources,dict) or set(resources)-{digest(r) for r in rows}:
+        raise ValueError('Resource sources must belong to selected gap documents')
+    additional=[]
     for row in rows:
+        linked=resources.get(digest(row),[])
+        if not isinstance(linked,list) or len(linked)>4 or len({r['document'] for r in linked})!=len(linked):
+            raise ValueError('Invalid bounded resource document selection')
+        for resource in linked:
+            if any(resource[k]!=row[k] for k in ('cik','accession','day')) or resource['document']==row['document']:
+                raise ValueError('Resource document must share the exact filing and source day')
+        additional.extend(linked)
+    for row in (*rows,*additional):
         if (row['cik'] not in ciks or not start<=date.fromisoformat(row['day'])<=end
                 or not re.fullmatch('[0-9a-f]{64}',row['content_sha256'])):
             raise ValueError('Retained gap is outside reviewed population or dates')
