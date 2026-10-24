@@ -58,11 +58,13 @@ def test_per_share_currency_unit_is_preserved():
     assert row['value']=='2.50' and row['unit']=='USD/share'
 
 
-def test_fixed_zero_preserves_display_text_and_rejects_wrong_registry():
+@pytest.mark.parametrize('registry',('2020-02-12','2022-02-16'))
+def test_fixed_zero_preserves_display_text_and_rejects_wrong_registry(registry):
     payload=document('—').replace('t:num-dot-decimal','t:fixed-zero')
+    payload=payload.replace('transformation/2020-02-12','transformation/'+registry)
     result=run(payload);row=result['observations'][0]
     assert row['value']=='0' and row['raw_text']=='—'
-    result=run(payload.replace('transformation/2020-02-12','transformation/2015-02-26'))
+    result=run(payload.replace('transformation/'+registry,'transformation/2015-02-26'))
     assert result['rejected'][0]['reason']=='unsupported_fixed_zero_namespace'
 
 

@@ -92,7 +92,7 @@ def applicability(forms, *, series_id=None, class_id=None, security_evidence=Non
     # of the same ticker. Require explicit typed, source-bound security evidence.
     if security_evidence is not None:
         import re
-        if (not security_evidence.get('security_id') or not re.fullmatch('[0-9a-f]{64}',security_evidence.get('source_content_sha256',''))
+        if (not security_evidence.get('security_id') or not re.fullmatch('[0-9a-fA-F]{64}',security_evidence.get('source_content_sha256') or '')
                 or not security_evidence.get('last_seen_at_utc')):
             raise ValueError('Security applicability evidence lacks identity or provenance')
         if security_evidence.get('security_type')=='ETF':

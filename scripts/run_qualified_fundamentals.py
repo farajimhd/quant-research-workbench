@@ -43,6 +43,7 @@ def _main():
     parser.add_argument('--retry-manifest',type=Path,help='Sealed blocked-only selection in a separate run directory; never rewrites source receipts')
     parser.add_argument('--actual-gap-manifest',type=Path,help='At most 12 exact uncompleted retained census documents; all qualification checks still apply')
     parser.add_argument('--retained-gap-manifest',type=Path,help='At most 12 exact retained originals outside the old form census; reviewed population and all qualification checks required')
+    parser.add_argument('--verified-download-time',action='store_true',help='Explicit bounded gap policy: availability begins at the verified complete public download, never the filing day')
     parser.add_argument('--plan-only',action='store_true')
     parser.add_argument('--upgrade-recipe',action='store_true',help='Archive the prior request and independently verify existing qualified receipts before reuse')
     parser.add_argument('--profile-result',type=Path)
@@ -61,6 +62,9 @@ def _main():
     retry_documents=None;already_completed=[]
     if sum(bool(x) for x in (a.retry_manifest,a.actual_gap_manifest,a.retained_gap_manifest))>1:raise ValueError('Choose one explicit gap selection')
     if (a.actual_gap_manifest or a.retained_gap_manifest) and not a.profile:raise ValueError('Actual gaps use bounded profile and independent reuse validation')
+    if a.verified_download_time:
+        if not a.profile or not (a.actual_gap_manifest or a.retained_gap_manifest):raise ValueError('Download-time qualification requires explicit bounded gap targets')
+        request['public_time_mode']='verified_download_time'
     selection_manifest=a.retry_manifest or a.actual_gap_manifest
     if selection_manifest:
         from pipelines.fundamentals.retry import select
@@ -326,6 +330,7 @@ def _main():
                             update('public time and original extraction')
                             mode=('official_feed_representation_day' if isinstance(witness.get('filing_date_change'),str)
                                   and witness['filing_date_change']<witness['source_archive_date'] else 'official_filing_day')
+                            if a.verified_download_time:mode='verified_download_time'
                             qualified_time=sec_public_archive_time.qualify(witness,receipt,mode=mode)
                             # All documents of a day share one immutable receipt.
                             # Serialize its check/insert/readback under the campaign claim.

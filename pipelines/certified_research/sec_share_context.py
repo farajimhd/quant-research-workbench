@@ -227,7 +227,11 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
                     raise ValueError('unsupported_numwordsen_input')
                 text=words[text.casefold()]
             if fixed_zero:
-                if qname(row['format'],fact)!='{http://www.xbrl.org/inlineXBRL/transformation/2020-02-12}fixed-zero':
+                # XBRL Transformation Registry 5 retains the same exact-zero
+                # rule: REC-2022-02-16 section 4.96 (any input -> zero).
+                if qname(row['format'],fact) not in (
+                        '{http://www.xbrl.org/inlineXBRL/transformation/2020-02-12}fixed-zero',
+                        '{http://www.xbrl.org/inlineXBRL/transformation/2022-02-16}fixed-zero'):
                     raise ValueError('unsupported_fixed_zero_namespace')
                 text='0'
             if fundamental and not row['format'] and id(fact) not in native:

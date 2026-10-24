@@ -30,6 +30,17 @@ def test_conservative_feed_day_is_not_acceptance_or_later_download_time():
     assert result['public_time_qualified'] is True and result['allocation_certified'] is False
 
 
+def test_explicit_download_policy_never_backdates_regenerated_archive():
+    w,r=inputs();r['last_modified']='Sat, 01 Nov 2025 21:30:16 GMT'
+    with pytest.raises(ValueError):timing.qualify(w,r,mode='official_filing_day')
+    result=timing.qualify(w,r,mode='verified_download_time')
+    assert result['available_at']=='2026-06-12T07:46:29.125026+00:00'
+    assert result['filing_date']=='2025-10-31' and result['availability_basis']=='verified_public_download'
+    assert not result['exact_posting_time']
+    for changes in (dict(sha256='b'*64),dict(status='reused'),dict(last_modified='Sat, 13 Jun 2026 21:30:16 GMT'),dict(last_modified='Thu, 30 Oct 2025 21:30:16 GMT')):
+        with pytest.raises(ValueError):timing.qualify(w,dict(r,**changes),mode='verified_download_time')
+
+
 @pytest.mark.parametrize('field,value',[
     ('special_release',True),('container_digest_verified',False),('public_document_count',None),
     ('public_document_count',0),('acceptance_datetime_raw',''),('acceptance_datetime_raw','20251031174000'),
