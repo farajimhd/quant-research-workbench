@@ -30,3 +30,15 @@ def test_serving_does_not_sum_or_strip_other_dimensions():
     assert "JSONExtract(c.dimensions,'Array(Array(String))')=[[a.axis,a.member]]" in sql
     assert "quality='certified'" in sql and 'source_dimensions' in sql
     assert 'source_id IN' in sql and 'sum(' not in sql
+
+
+def test_unpartitioned_dictionary_layout_and_actual_parts():
+    from pipelines.fundamentals.joint_issuers import verify,COLUMNS
+    def query(sql):
+        if 'system.tables' in sql:return [dict(engine='MergeTree',sorting_key='issuer_cik, source_id, association_id',partition_key='',storage_policy='live_market_ssd')]
+        if 'system.columns' in sql:return [dict(name=n,type=t) for n,t in COLUMNS]
+        return [dict(disk_name='live_market_ssd')]
+    verify(query)
+    def misplaced(sql):
+        return [dict(disk_name='default')] if 'system.parts' in sql else query(sql)
+    with pytest.raises(ValueError,match='misplaced'):verify(misplaced)

@@ -88,7 +88,8 @@ def verify(query,database='arte',*,required=True):
     compact=lambda s:s.replace(' ','').replace('`','')
     if tables:
         t=tables[0]
-        if len(tables)!=1 or t['engine']!='MergeTree' or compact(t['sorting_key'])!='issuer_cik,source_id,association_id' or compact(t['partition_key'])!='tuple()' or t['storage_policy']!='live_market_ssd':raise ValueError('Joint issuer table layout differs')
+        # ClickHouse reports omitted PARTITION BY as an empty expression.
+        if len(tables)!=1 or t['engine']!='MergeTree' or compact(t['sorting_key'])!='issuer_cik,source_id,association_id' or compact(t['partition_key'])!='' or t['storage_policy']!='live_market_ssd':raise ValueError('Joint issuer table layout differs')
         columns=query(f'SELECT name,type FROM system.columns WHERE database={literal(database)} AND table={literal(TABLE)} ORDER BY position')
         if [(x['name'],compact(x['type'])) for x in columns]!=[(n,compact(t)) for n,t in COLUMNS]:raise ValueError('Joint issuer columns differ')
     parts=query(f'SELECT DISTINCT disk_name FROM system.parts WHERE active AND database={literal(database)} AND table={literal(TABLE)}')
