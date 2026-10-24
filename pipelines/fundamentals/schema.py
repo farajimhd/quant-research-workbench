@@ -77,3 +77,5 @@ def install(query, database='arte'):
     for sql in ddl(database):
         query(sql, read=False)
     verify(query, database)
+    from .joint_issuers import install as install_joint_issuers
+    install_joint_issuers(query,database)
