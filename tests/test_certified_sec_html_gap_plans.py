@@ -1,6 +1,24 @@
 from pipelines.certified_research.sec_html_reviewed_gaps import plan_for,ADRX_HASH
 
 
+def test_medical_actual_periods_do_not_repeat_comparative_balances_or_map_parent_investment():
+    import json
+    from pipelines.certified_research.sec_html_reviewed_medical import REVIEWED, plan_for
+    counts = {'0001838003': 39, '0001958489': 27}
+    for h, spec in REVIEWED.items():
+        plan = plan_for(h, spec['cik'])
+        assert plan_for(h, '1') is None
+        assert json.loads(json.dumps(plan)) == plan
+        facts = plan['facts']
+        assert len(facts) == counts[spec['cik']]
+        assert len({(f['concept'], f['period_start'], f['period_end'], f['unit']) for f in facts}) == len(facts)
+        assert not any('parent deficit' in f['label'].lower() for f in facts)
+        if spec['cik'] == '0001958489':
+            cash = [f for f in facts if f['concept'].endswith('}CashAndCashEquivalentsAtCarryingValue')]
+            assert len(cash) == 3 and all('There were no cash equivalents' in f['evidence'][-1] for f in cash)
+            assert all(f['scale'] == 3 for f in facts)
+
+
 def test_fort_actual_statements_keep_negative_parentheses_and_per_share_scale():
     from pipelines.certified_research.sec_html_reviewed_fort import plan_for, HASH
     plan = plan_for(HASH, '2092967')
