@@ -85,6 +85,24 @@ def applicability(forms, *, series_id=None, class_id=None):
     return 'unresolved_applicability'
 
 
+def coverage_status(forms, *, public_observations=0, provider_observations=0, provider_identity_verified=False):
+    """Keep applicability, available observations and public qualification separate.
+
+    One observation establishes presence, never complete feature/history coverage.
+    Provider data cannot repair a public-time gap merely because it has a period.
+    """
+    if min(public_observations,provider_observations)<0:raise ValueError('Negative coverage count')
+    kind=applicability(forms)
+    recorded=provider_observations>0 and provider_identity_verified
+    status=('selected_observations_available' if public_observations else
+            'not_applicable_corporate_v1' if kind=='fund_specific_not_corporate_v1' else
+            'recorded_provider_only' if recorded else
+            'missing_selected_financials' if kind=='corporate_financials_applicable' else
+            'unresolved_applicability')
+    return dict(status=status,applicability=kind,public_observations=public_observations,
+                provider_recorded_available=recorded,complete_feature_coverage=False)
+
+
 def prepare(query,tickers,snapshot_day):
     if not 1<=len(tickers)<=16:raise ValueError('Review at most 16 explicit ticker conflicts')
     ticks=','.join(map(literal,sorted(set(tickers))))

@@ -43,3 +43,12 @@ def test_missing_issuer_recovers_partial_write_and_rejects_competing_identity():
     assert ensure_retained_issuer(q,'NCZ','0001227857','2026-10-24 00:00:02.000')['written']==0
     tables['id_issuer_identifier_v1'][0]['issuer_id']='competing'
     with pytest.raises(ValueError):ensure_retained_issuer(q,'NCZ','0001227857','2026-10-24 00:00:03.000')
+
+
+def test_provider_presence_never_becomes_public_or_complete_coverage():
+    from pipelines.reference_data.identity_review import coverage_status
+    assert coverage_status(['N-CSR'])['status']=='not_applicable_corporate_v1'
+    assert coverage_status(['10-Q'],provider_observations=20)['status']=='missing_selected_financials'
+    result=coverage_status(['10-Q'],provider_observations=20,provider_identity_verified=True)
+    assert result['status']=='recorded_provider_only' and result['public_observations']==0
+    assert not coverage_status(['10-Q'],public_observations=1)['complete_feature_coverage']
