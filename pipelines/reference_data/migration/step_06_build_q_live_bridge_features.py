@@ -470,6 +470,23 @@ WHERE u.universe_date = toDate({literal_feature_date})
 def sec_market_bridge_source_ctes_sql(db: str) -> str:
     eligible_listing = us_market_listing_predicate_sql()
     return f"""
+reviewed_symbols AS
+(
+    SELECT ifNull(symbol_id,'') symbol_id FROM {db}.id_sec_market_bridge_v3 FINAL
+    WHERE mapping_method='reviewed_sec_ticker_to_market_listing'
+),
+reviewed_direct_rows AS
+(
+    SELECT bridge_id,cik,issuer_id,security_id,listing_id,symbol_id,ticker,
+        valid_from_date,valid_to_date_exclusive,mapping_method,confidence_score,
+        if(JSONHas(evidence_json,'mapping'),JSONExtractString(evidence_json,'mapping'),evidence_json) AS base_evidence_json,
+        source_content_sha256
+    FROM {db}.id_sec_market_bridge_v3 FINAL
+    WHERE mapping_method='reviewed_sec_ticker_to_market_listing' AND mapping_status='active'
+      AND (ifNull(ticker,''),cik) IN
+        (SELECT ticker,any(cik) FROM sec_core.sec_bulk_mirror_company_ticker_v3 FINAL
+         WHERE is_active=1 GROUP BY ticker HAVING uniqExact(cik)=1)
+),
 direct_bridge_rows AS
 (
     SELECT
@@ -496,12 +513,14 @@ direct_bridge_rows AS
     LEFT JOIN {db}.id_symbol_v1 AS sym FINAL ON sym.listing_id = l.listing_id AND sym.primary_symbol_flag = 1
     INNER JOIN {db}.ref_exchange_v1 AS ex FINAL ON ex.exchange_code = l.exchange_code
     WHERE iii.identifier_kind = 'cik'
+      AND ifNull(sym.symbol_id,'') NOT IN (SELECT symbol_id FROM reviewed_symbols)
       AND {eligible_listing}
 ),
 direct_ciks AS
 (
     SELECT DISTINCT cik
     FROM direct_bridge_rows
+    UNION DISTINCT SELECT cik FROM reviewed_direct_rows
 ),
 relationship_bridge_rows AS
 (
@@ -541,6 +560,8 @@ relationship_bridge_rows AS
 all_bridge_rows AS
 (
     SELECT * FROM direct_bridge_rows
+    UNION ALL
+    SELECT * FROM reviewed_direct_rows
     UNION ALL
     SELECT * FROM relationship_bridge_rows
 ),
@@ -582,6 +603,14 @@ def run_preflight(client: ClickHouseHttpClient, args: argparse.Namespace, specs:
     missing = missing_tables(client, args.target_database, required_tables)
     if missing:
         raise SystemExit("Missing required target tables: " + json.dumps(missing, indent=2))
+    if any(spec.name == "sec_market_bridge" for spec in specs):
+        reviewed_check=f'''SELECT count() FROM {quote_ident(args.target_database)}.id_sec_market_bridge_v3 FINAL
+            WHERE mapping_method='reviewed_sec_ticker_to_market_listing' AND mapping_status='active'
+            AND (ifNull(ticker,''),cik) NOT IN
+              (SELECT ticker,any(cik) FROM sec_core.sec_bulk_mirror_company_ticker_v3 FINAL
+               WHERE is_active=1 GROUP BY ticker HAVING uniqExact(cik)=1)'''
+        if scalar_int(client,reviewed_check):
+            raise SystemExit('Reviewed SEC identity changed; resolve it before rebuilding the bridge')
     rows = []
     for spec in specs:
         expected_rows = scalar_int(client, spec.expected_sql)

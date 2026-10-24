@@ -3,6 +3,7 @@ from datetime import date, datetime, timezone
 from pipelines.certified_research.contracts import literal, digest
 from .adapters import ADAPTERS
 from . import eligibility
+from pipelines.reference_data.identity_review import METHOD as REVIEWED_DIRECT_METHOD
 
 DIRECT_METHOD = 'issuer_cik_to_active_market_listing'
 ASSOCIATION_METHOD = 'filing_issuer_to_listed_parent'
@@ -10,7 +11,7 @@ ASSOCIATION_METHOD = 'filing_issuer_to_listed_parent'
 
 def direct_rows(rows):
     """An association describes relevance, never the identity of a stock."""
-    return [r for r in rows if r['mapping_method']==DIRECT_METHOD
+    return [r for r in rows if r['mapping_method'] in (DIRECT_METHOD,REVIEWED_DIRECT_METHOD)
             and r['mapping_status']=='active'
             and r['ambiguity_status'] in ('unique','ambiguous_multi_listing')]
 
@@ -22,11 +23,13 @@ def snapshot_population(query, day):
     if not rows:raise ValueError('Requested universe snapshot is absent')
     symbols=('SELECT symbol_id FROM q_live.feature_tradable_universe_v1 FINAL '
         f'WHERE universe_date=toDate({literal(day)}) AND is_tradable=1')
-    bridge=query('SELECT symbol_id,cik,mapping_status,ambiguity_status,mapping_method FROM q_live.id_sec_market_bridge_v3 FINAL '
+    bridge=query('SELECT symbol_id,cik,mapping_status,ambiguity_status,mapping_method,valid_from_date,valid_to_date_exclusive FROM q_live.id_sec_market_bridge_v3 FINAL '
         f'WHERE symbol_id IN ({symbols}) ORDER BY symbol_id,cik')
     # Bridge ambiguity counts listings per CIK, not CIKs per symbol. Multiple
     # listings are valid issuer links; competing CIKs still fail closed below.
-    admitted=direct_rows(bridge)
+    admitted=[r for r in direct_rows(bridge) if r['mapping_method']!=REVIEWED_DIRECT_METHOD
+        or (r.get('valid_from_date') and date.fromisoformat(str(r['valid_from_date']))<=day
+            and (not r.get('valid_to_date_exclusive') or day<date.fromisoformat(str(r['valid_to_date_exclusive']))))]
     by_symbol={}
     for x in admitted:by_symbol.setdefault(x['symbol_id'],set()).add(x['cik'])
     identifiers=query('SELECT issuer_id,identifier_value_normalized AS cik FROM q_live.id_issuer_identifier_v1 FINAL '
@@ -89,7 +92,7 @@ def resolve_ticker(query, ticker, at, *, known_at=None):
     eligibility.require_eligible('security',[security])
     bridge=query('SELECT DISTINCT issuer_id,cik FROM q_live.id_sec_market_bridge_v3 FINAL '
         f'WHERE security_id={literal(security)} '
-        f'AND mapping_method={literal(DIRECT_METHOD)} '
+        f'AND mapping_method IN ({literal(DIRECT_METHOD)},{literal(REVIEWED_DIRECT_METHOD)}) '
         f"AND mapping_status='active' AND ambiguity_status IN ('unique','ambiguous_multi_listing') "
         f'AND isNotNull(valid_from_date) AND valid_from_date<=toDate({day}) '
         f'AND (isNull(valid_to_date_exclusive) OR valid_to_date_exclusive>toDate({day}))'
