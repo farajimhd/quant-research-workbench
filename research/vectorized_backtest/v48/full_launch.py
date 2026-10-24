@@ -11,7 +11,7 @@ from research.vectorized_backtest.v42.publication import write_json
 
 
 def assign(days,manifest,rates):
-    costs={d:(len(json.loads((Path(manifest['history'])/d/'complete.json').read_bytes())['listing_ids'])*(len(np.load(Path(manifest['inputs'])/d/'clocks.npy',mmap_mode='r'))-1)) for d in days}
+    costs={d:(len(json.loads((Path(manifest['history'])/d/'complete.json').read_bytes())['listing_ids'])*(json.loads((Path(manifest['inputs'])/d/'complete.json').read_bytes())['clocks']-1)) for d in days}
     load={n:0. for n in rates};out={n:[] for n in rates}
     for day in sorted(days,key=lambda d:(-costs[d],d)):
         node=min(rates,key=lambda n:(load[n]+costs[day]/rates[n],n));out[node].append(day);load[node]+=costs[day]/rates[node]
@@ -22,6 +22,8 @@ def prepare(source,root,laptop_code,workstation_code,profiles):
     root=Path(root)
     if (root/'full-job.json').exists():raise ValueError('Existing full campaign; audit it rather than preparing a duplicate')
     original=json.loads(Path(source).read_bytes());train=json.loads(Path(original['training']).read_bytes());valid=json.loads(Path(original['validation']).read_bytes())
+    from research.vectorized_backtest.v42.distributed_assets import receipt_inventory
+    receipt_inventory(original,'laptop')
     rates={}
     for node,path in profiles.items():
         result=json.loads(Path(path).read_bytes())
