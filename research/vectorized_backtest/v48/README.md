@@ -84,3 +84,24 @@ Tests cover execution and whole-network CPU/GPU parity, the actual compiled owne
 financial replay, owner-scoped cache/crossover/archives, loss accounting, dynamic
 budgets, deterministic reproduction restore, historical promotion/tamper rejection,
 and a short real-controller phase0/resume/promotion/phase1 integration path.
+
+## Read-only phase-aware observer
+
+The observer has an independent deployed overlay; updating it does not replace
+the immutable optimizer, change its source/checkpoint identity or restart training.
+Default view ranks all phase0 candidates by owned-case score and labels their
+ticker. G toggles ticker summaries; Enter opens the selected ticker; brackets
+cycle owned tickers and 0 clears the ticker filter. Summary Next counts are the
+sealed reproduction allocation for the next generation, not current row counts.
+
+Sort keys: 1 score, 2 raw net profit, 3 gross losses (low first), 4 realized
+drawdown (low first), 5 win rate, 6 closed positions, 7 maximum stop risk (low
+first). V reverses the order. Z toggles financial eligibility; C toggles active
+strategies. J/K selects rows; N/B pages. P shows policy; E/X/A/D/T shows the
+corresponding network; U/I pages network lines; Q closes only the observer.
+
+Ticker summaries use eligible candidates for best and median scores; invalid
+high-score candidates cannot become the group leader. Combined best-per-ticker
+score sums are display diagnostics from separate candidates, not portfolio
+profit or the score of a single strategy. Phase1 automatically clears owned-case
+filters and ranks full-session strategies using the unified session score.
