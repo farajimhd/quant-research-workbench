@@ -1,3 +1,7 @@
+import os
+os.environ['PYTHONDONTWRITEBYTECODE']='1'
+os.environ.setdefault('TRITON_CACHE_DIR','D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v46/qualification/test-cache/triton')
+os.environ.setdefault('TORCHINDUCTOR_CACHE_DIR','D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v46/qualification/test-cache/inductor')
 import unittest
 import numpy as np
 import torch
