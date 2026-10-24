@@ -24,7 +24,13 @@ def test_ifrs_exact_namespace_and_bulk_identity(scheme):
     bulk['taxonomy']='us-gaap'
     assert compare_original(result,[bulk])['comparisons'][0]['status']=='missing_original_context'
     bad=payload.replace('xbrl.ifrs.org','xbrl.ifrs.org.example.com')
-    assert run(bad)['rejected'][0]['reason']=='unsupported_share_taxonomy'
+    # Opaque issuer namespaces are retained, but cannot become IFRS merely
+    # because their local name (or hostname prefix) resembles the standard.
+    extension=run(bad)
+    from pipelines.certified_research.sec_taxonomy import identity
+    assert identity(extension['observations'][0]['concept'],allow_extension=True)[0].startswith('extension|')
+    bulk['taxonomy']='ifrs-full'
+    assert compare_original(extension,[bulk])['comparisons'][0]['status']=='missing_original_context'
 
 
 def test_duration_currency_and_negative_scaled_decimal_are_exact():
@@ -39,13 +45,15 @@ def test_duration_currency_and_negative_scaled_decimal_are_exact():
     assert result['certified'] is False and result['original_vintage_qualified'] is False
 
 
-def test_reversed_duration_and_unknown_taxonomy_are_retained_rejections():
+def test_reversed_duration_rejected_and_unknown_taxonomy_kept_separate():
     payload=document().replace('dei:EntityCommonStockSharesOutstanding','g:NetIncomeLoss')
     payload=payload.replace('<x:instant>2025-10-17</x:instant>',
         '<x:startDate>2025-10-17</x:startDate><x:endDate>2025-09-30</x:endDate>')
     assert run(payload)['rejected'][0]['reason']=='invalid_duration_order'
     payload=document().replace('http://xbrl.sec.gov/dei/2025','http://example.com/dei/2025')
-    assert run(payload)['rejected'][0]['reason']=='unsupported_share_taxonomy'
+    from pipelines.certified_research.sec_taxonomy import identity
+    result=run(payload)
+    assert identity(result['observations'][0]['concept'],allow_extension=True)==('extension|http://example.com/dei/2025','EntityCommonStockSharesOutstanding')
 
 
 def test_per_share_currency_unit_is_preserved():
