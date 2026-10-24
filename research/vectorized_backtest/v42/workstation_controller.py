@@ -49,6 +49,10 @@ def main():
     parser.add_argument('--repair', type=Path, required=True)
     parser.add_argument('--handoff', type=Path, required=True)
     args = parser.parse_args()
+    bootstrap = (args.handoff.parent / 'controller-bootstrap.log').open(
+        'a', encoding='utf-8', buffering=1)
+    sys.stdout = bootstrap
+    sys.stderr = bootstrap
     job = json.loads(args.job.read_bytes())
     audit = json.loads(args.handoff.read_bytes())
     repair = json.loads((args.repair / 'repair-proof.json').read_bytes())
