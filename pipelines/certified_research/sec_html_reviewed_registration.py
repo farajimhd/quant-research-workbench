@@ -71,7 +71,7 @@ def plan_for(document_hash,cik):
             selected.append(dict(concept='{https://xbrl.ifrs.org/taxonomy/2025-03-27/ifrs-full}'+tag,
                 period_start=start,period_end=end,unit=currency,scale=scale,label=label,
                 expected_value=format(number.scaleb(scale),'f'),decimals=str(-number.as_tuple().exponent-scale),
-                evidence=[issuer,*evidence],table_proof=dict(heading=headings[table],headers=headers[table]),
+                evidence=[issuer,*evidence],table_proof=dict(heading=headings[table],headers=[[index,cells] for index,cells in headers[table]]),
                 locator=dict(kind='cells',table=table,row=row,columns=[column,column+1] if split_negative and value.startswith('-') else [column],label_column=0)))
     body=dict(version=VERSION,document_hash=document_hash,cik=identity[document_hash],scope='reviewed_observations',facts=selected)
     return dict(body,plan_hash=digest(body))

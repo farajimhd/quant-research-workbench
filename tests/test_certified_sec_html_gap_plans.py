@@ -22,6 +22,9 @@ def test_registration_currency_scaling_and_periods():
         assert len(plan['facts'])==count
         assert p.plan_for(fingerprint,'1') is None
         assert all(f['table_proof']['headers'] for f in plan['facts'])
+        # Registered plans must compare exactly after normalized JSON readback.
+        import json
+        assert json.loads(json.dumps(plan)) == plan
         keys={(f['concept'],f['period_start'],f['period_end'],f['unit']) for f in plan['facts']}
         assert len(keys)==count
     ogc=p.plan_for(p.OGC,'1487326')['facts']
