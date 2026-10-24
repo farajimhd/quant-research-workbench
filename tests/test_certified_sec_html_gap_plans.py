@@ -1,6 +1,23 @@
 from pipelines.certified_research.sec_html_reviewed_gaps import plan_for,ADRX_HASH
 
 
+def test_aya_consolidated_totals_preserve_units_and_section_boundaries():
+    import json
+    from pipelines.certified_research.sec_html_reviewed_aya import plan_for, HASH
+    plan = plan_for(HASH, '1826836')
+    assert plan_for(HASH, '1') is None
+    assert json.loads(json.dumps(plan)) == plan
+    rows = {(f['concept'].split('}')[-1], f['period_end']): f for f in plan['facts']}
+    assert len(rows) == 28
+    assert rows['Assets', '2025-12-31']['expected_value'] == '631733000'
+    assert rows['DilutedEarningsLossPerShare', '2025-12-31']['expected_value'] == '0.32'
+    assert rows['AdjustedWeightedAverageShares', '2025-12-31']['expected_value'] == '142370945'
+    assert rows['ProfitLoss', '2025-12-31']['expected_value'] == '46280000'
+    for fact in plan['facts']:
+        if not fact['label']:
+            assert len(fact['table_proof']['headers']) >= 3
+
+
 def test_btq_dash_is_not_zero_and_canadian_units_are_preserved():
     from pipelines.certified_research.sec_html_reviewed_btq import plan_for,HASH
     rows=plan_for(HASH,'1821866')['facts'];assert len(rows)==17
