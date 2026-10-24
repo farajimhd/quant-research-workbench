@@ -1,6 +1,19 @@
 from pipelines.certified_research.sec_html_reviewed_gaps import plan_for,ADRX_HASH
 
 
+def test_qumulus_actual_periods_and_parent_equity_are_separate():
+    import json
+    from pipelines.certified_research.sec_html_reviewed_qumulus import plan_for,HASH
+    plan=plan_for(HASH,'2084026');assert len(plan['facts'])==28
+    assert plan_for(HASH,'1') is None and json.loads(json.dumps(plan))==plan
+    rows={(f['concept'].split('}')[-1],f['period_start'],f['period_end']):f for f in plan['facts']}
+    assert len(rows)==28
+    assert rows[('StockholdersEquity',None,'2026-06-30')]['expected_value']=='-3567675'
+    assert rows[('Revenues','2026-04-01','2026-06-30')]['expected_value']=='6712805'
+    assert rows[('Revenues','2026-01-01','2026-06-30')]['expected_value']=='10132723'
+    assert rows[('EarningsPerShareDiluted','2026-01-01','2026-06-30')]['unit']=='USD/shares'
+
+
 def test_adrx_review_is_exact_and_preserves_actual_periods():
     assert plan_for(ADRX_HASH,'1') is None
     assert plan_for('a'*64,'1802369') is None
