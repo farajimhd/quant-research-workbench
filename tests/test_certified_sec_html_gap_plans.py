@@ -13,3 +13,23 @@ def test_adrx_review_is_exact_and_preserves_actual_periods():
     assert rows[('NetIncomeLoss','2026-01-01','2026-06-30')]=='-48426000'
     assert rows[('NetCashProvidedByUsedInOperatingActivities','2025-01-01','2025-06-30')]=='300739000'
     assert set(f['locator']['table'] for f in plan['facts'])=={663,664,666,701,702,705}
+
+
+def test_registration_currency_scaling_and_periods():
+    from pipelines.certified_research import sec_html_reviewed_registration as p
+    for fingerprint,cik,count in ((p.OGC,'1487326',18),(p.NUR,'1680637',20),(p.AIBZ,'2100457',12)):
+        plan=p.plan_for(fingerprint,cik)
+        assert len(plan['facts'])==count
+        assert p.plan_for(fingerprint,'1') is None
+        assert all(f['table_proof']['headers'] for f in plan['facts'])
+        keys={(f['concept'],f['period_start'],f['period_end'],f['unit']) for f in plan['facts']}
+        assert len(keys)==count
+    ogc=p.plan_for(p.OGC,'1487326')['facts']
+    assert ogc[0]['expected_value']=='476500000' and ogc[0]['decimals']=='-5'
+    assert not any(f['concept'].endswith('}Inventories') for f in ogc)
+    nur=p.plan_for(p.NUR,'1680637')['facts']
+    assert all(f['unit']=='CAD' and f['scale']==0 for f in nur)
+    bitzero=p.plan_for(p.AIBZ,'2100457')['facts']
+    cashflow=[f for f in bitzero if f['concept'].endswith('}CashFlowsFromUsedInOperatingActivities')]
+    assert [(f['period_start'],f['period_end'],f['expected_value']) for f in cashflow]==[
+        ('2025-10-01','2026-03-31','-8225035'),('2024-10-01','2025-03-31','-12102491')]
