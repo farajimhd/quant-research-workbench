@@ -212,7 +212,7 @@ class Worker:
                         self.prefetch.release_under_pressure()
                         self.emit(day,stage='Replay positions',candidate_offset=offset,completed_seconds=done,total_seconds=total)
                     result=self.replay([item],members,[gates],execution=execution,backend=c['backend'],listing_width=replay_width,
-                        episode_capacity=c.get('episode_capacity',65536),trace=c.get('split','training')=='training',
+                        episode_capacity=c.get('episode_capacity',65536),trace=c.get('trace_validation',False) or c.get('split','training')=='training',
                         progress=replay_progress)[0]
                     metrics={k:v.detach().cpu().tolist() if isinstance(v,torch.Tensor) else v for k,v in result.items()}
 

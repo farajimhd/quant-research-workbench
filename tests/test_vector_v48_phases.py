@@ -149,7 +149,7 @@ class PhaseTests(unittest.TestCase):
 
     def test_penalty_and_session_simultaneous_close_drawdown(self):
         m=dict(net_pnl=[100.],closed_positions=[3],ticker_pnl=[{'a':150.,'b':-50.}],drawdown=[200.],maximum_position_risk=[1.],maximum_stop_distance=[.1],terminal_valid=[True],stop_risk_dollar_seconds=[0.],capital_dollar_seconds=[0.],episode_profits=[[200.,-50.,-50.]],episode_listings=[[0,0,1]],episode_exit_clocks=[[1,2,2]])
-        p=local_panel([m],case_maps=[MAPPING])
+        p=local_panel([m],Objective(loss_weight=.5),case_maps=[MAPPING])
         self.assertEqual(p['case_losses'].ravel().tolist(),[50.,50.])
         self.assertEqual(p['case_scores'].ravel().tolist(),[122.5,-77.5])
         self.assertEqual(p['selection_score'].tolist(),[45.])

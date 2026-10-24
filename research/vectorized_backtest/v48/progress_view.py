@@ -52,7 +52,7 @@ def render(data,width,height,settings,selection=0,detail='financial',stage='entr
             groups=grouped(source);positive=sum(g['score'] is not None and g['score']>0 for g in groups)
             note=f'{positive}/{len(groups)} positive tickers | best-score sum {num(total)}; diagnostic, not portfolio.'
         elif phase==0:note=f'Owned-case scores only; no combined portfolio. Median eligible S {num(med)}.'
-        else:note='Session score includes every ticker; one selection pool. Loss penalty = 0.5 x losing dollars.'
+        else:note=f"Session score includes every ticker; one pool. Loss penalty = {data.get('loss_weight',.75):g} x losing dollars."
     layout['summary'].update(Text(summary+'\n'+note,style='yellow' if data.get('display_error') else None))
     rows=visible(data,settings);size=page_size(height);selection=min(selection,max(0,len(rows)-1));start=selection//size*size
     table=Table(expand=True,padding=(0,0),show_edge=False);grouped_view=settings.get('grouped',False)
@@ -94,12 +94,12 @@ def render(data,width,height,settings,selection=0,detail='financial',stage='entr
                 f"Maximum adds {pol['maximum_adds']} | cooldown {pol['cooldown']} seconds | bid/ask fills."]
         else:lines=['Historical genome not retained in display cache; sealed score and receipt remain available.']
     else:
-        m=selected['metrics'];loss=selected['gross_losses'];dd=selected['realized_drawdown']
+        m=selected['metrics'];loss=selected['gross_losses'];dd=selected['realized_drawdown'];weight=selected.get('loss_weight',.5)
         lines=[f"{selected['ticker']} / {selected['serial']} | S {num(selected['score'])} | Net {num(m['net_pnl'])} | E {'YES' if selected['eligible'] else 'NO'}",
-            f"DD {num(dd)} x 0.05 = {num(.05*dd)}; gross losses {num(loss)} x 0.5 = {num(.5*loss)}",
+            f"DD {num(dd)} x 0.05 = {num(.05*dd)}; gross losses {num(loss)} x {weight:g} = {num(weight*loss)}",
             f"Positions {int(m['closed_positions'])} | stop risk {num(m['maximum_position_risk'])} | terminal {'closed' if m.get('terminal_valid',True) else 'NOT CLOSED'} | C filters inactive",
             f"Owner: {selected['case_owner'] or 'unrestricted mixed-session strategy'}",
-            'S = net - 0.05 x DD - 0.5 x losses, after fees.']
+            f'S = net - 0.05 x DD - {weight:g} x losses, after fees.']
     layout['details'].update(Panel(Text('\n'.join(lines)),title='READ-ONLY DETAILS',padding=0))
     keys=('1 Score  2 Net  3 Loss  4 DD  5 Win  6 Positions  7 Risk | V reverse\n'
           'G ticker summary | [ ] ticker | 0 all | Enter inspect | Z eligible | C active\n'

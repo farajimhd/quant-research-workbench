@@ -73,18 +73,19 @@ def promote(source,output,target=1024,expected_generations=30):
 def execute(config,day,root,owner):
     from .local_runner import run_session
     root=Path(root)
-    for phase,generations in ((0,30),(1,20)):
+    phase0_generations=config.get('phase0_generations',30);phase1_generations=config.get('phase1_generations',20)
+    for phase,generations in ((0,phase0_generations),(1,phase1_generations)):
         if (root/'STOP').exists():return dict(status='interrupted',phase=phase)
         output=root/f'phase-{phase}'
         write_json(output/'manifest.json',dict(days=[day],local_generations=generations,phase=phase,parent_campaign=str(root),source_sha256=owner['source_sha256']))
-        active=dict(owner,campaign=str(output),phase=phase,generations=generations,total_generations=50)
+        active=dict(owner,campaign=str(output),phase=phase,generations=generations,total_generations=phase0_generations+phase1_generations)
         write_json(root/'active.json',active);write_json(root.parent/'active-test.json',active)
         cfg=dict(config,phase=phase)
         if phase==1:
             promotion=root/'phase1-promotion.json'
-            promote(root/'phase-0/local'/day,promotion)
+            promote(root/'phase-0/local'/day,promotion,expected_generations=phase0_generations)
             cfg['promotion']=str(promotion)
         result=run_session(cfg,day,output/'local'/day,generations,1024,2020,initial_multiplier=6 if phase==0 else 1)
         if result['status']!='complete':return dict(result,phase=phase)
-    write_json(root/'complete.json',dict(status='complete',phase0_generations=30,phase1_generations=20,promotion_sha256=file_hash(root/'phase1-promotion.json'),validation_opened=False))
-    return dict(status='complete',phase0_generations=30,phase1_generations=20)
+    write_json(root/'complete.json',dict(status='complete',phase0_generations=phase0_generations,phase1_generations=phase1_generations,promotion_sha256=file_hash(root/'phase1-promotion.json'),validation_opened=False))
+    return dict(status='complete',phase0_generations=phase0_generations,phase1_generations=phase1_generations)

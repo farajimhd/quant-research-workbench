@@ -41,9 +41,9 @@ def enrich(rows,scores,labels):
     for row,serial,pnl,loss,dd,owner in zip(rows,*columns):
         if row['serial']!=serial:raise ValueError('Display serial alignment changed')
         if not all(math.isfinite(float(x)) for x in (pnl,loss,dd,row['score'])) or loss<0 or dd<0:raise ValueError('Invalid display score components')
-        if not math.isclose(row['score'],pnl-.05*dd-.5*loss,rel_tol=1e-9,abs_tol=1e-6):raise ValueError('Display cost does not reconcile')
+        if not math.isclose(row['score'],pnl-d.get('drawdown_weight',.05)*dd-d.get('loss_weight',.5)*loss,rel_tol=1e-9,abs_tol=1e-6):raise ValueError('Display cost does not reconcile')
         result.append(dict(row,case_owner=owner,ticker=labels.get(owner,owner.rsplit(':',1)[-1] if owner else 'MIXED'),
-                           gross_losses=float(loss),realized_drawdown=float(dd)))
+                           gross_losses=float(loss),realized_drawdown=float(dd),loss_weight=d.get('loss_weight',.5),drawdown_weight=d.get('drawdown_weight',.05)))
     return result
 
 
@@ -109,5 +109,5 @@ class Observer(BaseObserver):
                 while len(self.sealed_cache)>2:self.sealed_cache.pop(next(iter(self.sealed_cache)))
             rows,quotas=self.sealed_cache[cache_key]
         phase=data.get('session_progress',{}).get('phase',json.loads((root/'manifest.json').read_bytes()).get('phase'))
-        data.update(rows=rows,case_labels=self.labels_cache[key],next_quotas=quotas,phase=phase,display_ready=True)
+        data.update(loss_weight=rows[0].get('loss_weight',.75) if rows else .75,rows=rows,case_labels=self.labels_cache[key],next_quotas=quotas,phase=phase,display_ready=True)
         with self.lock:self.data=data;self.display_snapshot=data

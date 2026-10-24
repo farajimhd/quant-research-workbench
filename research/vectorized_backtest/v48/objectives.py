@@ -8,12 +8,12 @@ from research.vectorized_backtest.v42 import objectives as base
 @dataclass(frozen=True)
 class Objective:
     drawdown_weight: float = .05
-    loss_weight: float = .5
+    loss_weight: float = .75
 
     def validate(self):
         if not math.isfinite(self.drawdown_weight) or self.drawdown_weight < 0:
             raise ValueError('Finite nonnegative drawdown weight required')
-        if self.loss_weight!=.5:raise ValueError('Approved V48 lambda is 0.5')
+        if not math.isfinite(self.loss_weight) or self.loss_weight<0:raise ValueError('Finite nonnegative loss weight required')
         return self
 
 

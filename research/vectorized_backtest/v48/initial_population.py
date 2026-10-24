@@ -8,6 +8,10 @@ from .genome import Individual
 
 
 def initialize(rng, size, *, probe=None):
+    if 'V48_INITIAL_POOL' not in os.environ:
+        from research.vectorized_backtest.v42.initial_population import initialize as original
+        members,report=original(rng,size,probe=probe)
+        return [Individual.restore(m.payload()) for m in members],dict(report,experiment='v48',fresh_calibrated_initialization=True)
     path = Path(os.environ['V48_INITIAL_POOL'])
     if hashlib.sha256(path.read_bytes()).hexdigest() != os.environ['V48_INITIAL_POOL_SHA256']:
         raise ValueError('Pinned initial population file changed')

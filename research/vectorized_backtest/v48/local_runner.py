@@ -62,7 +62,7 @@ def run_session(config,day,output,generations=50,population_size=1024,seed=2020,
     if phase not in (0,1):raise ValueError('Explicit phase0/phase1 required')
     from .ownership import inventory,assign_initial,audit
     cases=inventory(config,day)
-    output=require_runtime(output);objective=Objective();selection=Selection(**config.get('selection',{}));selection.validate()
+    output=require_runtime(output);objective=Objective(**config.get('objective',{}));selection=Selection(**config.get('selection',{}));selection.validate()
     from .composition import settings
     contract=dict(feature_semantics="v21-magnitude-ratio-v1",version='v48-local-session-v1',source_sha256=source_hash(),day=day,generations=generations,population=population_size,seed=seed,
                   objective=asdict(objective),selection=asdict(selection),recombination=settings(selection),archive_capacity=archive_capacity,archive_shortlist=archive_shortlist,initial_multiplier=initial_multiplier,
