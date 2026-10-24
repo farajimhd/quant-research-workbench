@@ -1,6 +1,15 @@
 from pipelines.certified_research.sec_html_reviewed_gaps import plan_for,ADRX_HASH
 
 
+def test_btq_dash_is_not_zero_and_canadian_units_are_preserved():
+    from pipelines.certified_research.sec_html_reviewed_btq import plan_for,HASH
+    rows=plan_for(HASH,'1821866')['facts'];assert len(rows)==17
+    revenues=[r for r in rows if r['concept'].endswith('}Revenue')]
+    assert len(revenues)==1 and revenues[0]['period_end']=='2025-03-31'
+    assert all(r['unit'] in ('CAD','CAD/shares','shares') for r in rows)
+    assert not any(r['expected_value']=='0' for r in rows)
+
+
 def test_qumulus_actual_periods_and_parent_equity_are_separate():
     import json
     from pipelines.certified_research.sec_html_reviewed_qumulus import plan_for,HASH
