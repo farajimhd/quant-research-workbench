@@ -11,6 +11,7 @@ from .queries import _timestamp
 from pipelines.certified_research.contracts import literal, identifier, digest
 
 VERSION='fundamentals-selected-v1'
+SERVING_VERSION='fundamentals-selected-serving-v2-reported-periods'
 # Feature, temporal kind, ordered explicit standard tags. Different debt
 # components remain separate inputs; no overlapping total is blindly summed.
 FINANCIAL={
@@ -73,40 +74,56 @@ company-facts adapter. A bounded CIK predicate is applied before every join.
 Qualified originals have precedence within the identical period/unit context.
 Ties with different values remain conflicts, never arbitrary winners.
 """
+    from .period_recovery import VERSION as period_version
     identifier(database);require_eligible('issuer_cik',ciks)
     if not 1<=len(ciks)<=128:raise ValueError('Use 1..128 issuer CIKs per query')
     end=_timestamp(cutoff);ids=','.join(map(literal,sorted(set(ciks))))
     known='' if known_at is None else ' AND observed_at<='+_timestamp(known_at)
     tag="arrayElement(splitByChar(':',f.metric),-1)"
     selected=field_cases(tag)
+    reported_metadata="(s.family='sec_reported' AND isValidJSON(c.dimensions) AND arrayAll(k -> k IN ('fiscal_year','fiscal_period','form_type'),JSONExtractKeys(c.dimensions)))"
     fact_scope=f'''SELECT * FROM {database}.reference_fact_v1 FINAL
         WHERE entity_kind='issuer_cik' AND entity_id IN ({ids})
           AND ({field_cases("arrayElement(splitByChar(':',metric),-1)")})!='' '''
     # Source headers are the existing publication commit boundary; no raw row
     # is served without its completed normalized source header.
     base=f'''SELECT f.entity_id cik,{selected} feature,f.metric source_metric,
-      c.period_start,c.period_end,c.unit,c.dimensions,s.source_id AS source_id,s.family,
+      coalesce(c.period_start,if(s.family='sec_reported',p.recovered_start,NULL)) period_start,
+      c.period_end,c.unit,if({reported_metadata},'{{}}',c.dimensions) dimensions,
+      c.dimensions source_dimensions,s.source_id AS source_id,s.family,
       if(s.family='sec_original_qualified',s.event_key,s.evidence_ref) accession,s.observed_at,
       coalesce(f.text_value,toString(f.value)) value,
       if(s.family='sec_original_qualified',s.available_at,
-        if(isNotNull(b.filing_day),toTimeZone(toDateTime64(concat(toString(addDays(b.filing_day,1)),' 00:00:00'),9,'America/New_York'),'UTC'),
+        if(isNotNull(coalesce(b.filing_day,r.filing_day)),toTimeZone(toDateTime64(concat(toString(addDays(coalesce(b.filing_day,r.filing_day),1)),' 00:00:00'),9,'America/New_York'),'UTC'),
           CAST(NULL AS Nullable(DateTime64(9,'UTC'))))) public_at,
-      if(s.family='sec_original_qualified',1,2) authority_priority
+      multiIf(s.family='sec_original_qualified',1,s.family='sec_bulk',2,3) authority_priority
       FROM ({fact_scope}) f
       INNER JOIN (SELECT * FROM {database}.reference_source_v1 FINAL
         WHERE entity_kind='issuer_cik' AND entity_id IN ({ids})
-        AND family IN ('sec_bulk','sec_original_qualified'){known}) s USING(source_id)
+        AND family IN ('sec_bulk','sec_reported','sec_original_qualified'){known}) s USING(source_id)
       INNER JOIN (SELECT * FROM {database}.reference_context_v1 FINAL
         WHERE context_id IN (SELECT context_id FROM ({fact_scope}))) c USING(context_id)
       LEFT JOIN (SELECT cik,fact_id,source_file_id,any(filed_date) filing_day FROM sec_core.sec_bulk_mirror_xbrl_fact_v3 FINAL
-        WHERE cik IN ({ids}) AND {predicate('sec_bulk')} GROUP BY cik,fact_id,source_file_id
+        PREWHERE cik IN ({ids}) AND {predicate('sec_bulk')} GROUP BY cik,fact_id,source_file_id
         HAVING uniqExact(filed_date)=1) b ON s.family='sec_bulk' AND s.entity_id=b.cik AND s.event_key=b.fact_id
         AND s.source_hash=b.source_file_id
-      WHERE c.dimensions IN ('{{}}','[]','') AND isNotNull(c.period_end) AND isNotNull(value)'''
+      LEFT JOIN (SELECT cik,company_fact_id,source_content_sha256,any(toDate(filed_at_utc)) filing_day
+        FROM q_live.sec_xbrl_company_fact_v3 FINAL
+        PREWHERE cik IN ({ids}) AND {predicate('sec_reported')}
+        GROUP BY cik,company_fact_id,source_content_sha256 HAVING uniqExact(toDate(filed_at_utc))=1) r
+        ON s.family='sec_reported' AND s.entity_id=r.cik AND s.event_key=r.company_fact_id
+        AND s.source_hash=r.source_content_sha256
+      LEFT JOIN (SELECT company_fact_id,source_hash,any(toNullable(period_start)) recovered_start
+        FROM {database}.reference_period_evidence_v1
+        WHERE method={literal(period_version)} GROUP BY company_fact_id,source_hash
+        HAVING uniqExact(tuple(period_start,frame))=1) p
+        ON s.family='sec_reported' AND s.event_key=p.company_fact_id AND s.source_hash=p.source_hash
+      WHERE (c.dimensions IN ('{{}}','[]','') OR {reported_metadata}) AND isNotNull(c.period_end) AND isNotNull(value)'''
     duration_names=','.join(literal(k) for k,(kind,_) in FINANCIAL.items() if kind=='duration')
     timing='coalesce(public_at,observed_at)' if include_recorded else 'public_at'
     eligible=f'''SELECT *,{timing} available_at,if(isNull(public_at),'recorded_only','public') availability_basis
       FROM ({base}) WHERE isNotNull({timing}) AND {timing}<={end}
+      AND period_end<=toDate({end})
       AND (feature NOT IN ({duration_names}) OR isNotNull(period_start))
       AND multiIf(feature IN ('shares_outstanding','shares_diluted_weighted'),unit='shares',
         feature='eps_diluted',match(unit,'^[A-Z]{{3}}/shares$'),match(unit,'^[A-Z]{{3}}$'))'''

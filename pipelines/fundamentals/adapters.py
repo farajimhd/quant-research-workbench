@@ -194,5 +194,5 @@ def recipe_hash(family=None):
         if family is None or f==family}
     # The additive native-label dictionary does not change existing observation
     # values or hashes. Keep all previously completed normalizer receipts valid.
-    definitions={k:v for k,v in schema.DEFINITIONS.items() if k!='reference_metric_definition_v1'}
+    definitions={k:v for k,v in schema.DEFINITIONS.items() if k not in ('reference_metric_definition_v1','reference_period_evidence_v1')}
     return digest({'adapters':adapters,'schema':definitions,'version':schema.VERSION})

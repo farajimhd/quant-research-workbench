@@ -22,7 +22,10 @@ RECEIPT = (('batch_key','FixedString(64)'), ('source_signature','FixedString(64)
     ('source_rows','UInt64'), ('fact_rows','UInt64'), ('output_hash','FixedString(64)'), ('completed_at',TIME))
 METRIC = (('metric','String'),('issuer_cik','String'),('label','String'),
     ('statement_scope','String'),('definition_hash','FixedString(64)'))
+PERIOD = (('company_fact_id','String'),('source_hash','String'),('period_start','Date'),
+    ('frame','String'),('method','LowCardinality(String)'),('completed_at',"DateTime64(6,'UTC')"))
 DEFINITIONS = {
+    'reference_period_evidence_v1': (PERIOD, 'company_fact_id,source_hash', 'tuple()'),
     'reference_metric_definition_v1': (METRIC, 'metric', 'tuple()'),
     'reference_context_v1': (CONTEXT, 'context_id', 'tuple()'),
     'reference_source_v1': (SOURCE, 'family,entity_kind,entity_id,source_id', 'tuple()'),
