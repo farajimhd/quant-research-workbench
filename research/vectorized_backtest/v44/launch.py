@@ -4,7 +4,7 @@ os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
 import argparse
 from pathlib import Path
 import sys
-from research.vectorized_backtest.v42.scheduled_launch import install
+from .scheduled_launch import install
 from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime
 
 
@@ -28,7 +28,7 @@ def main():
         "from research.vectorized_backtest.v44.run_test import main\n"
         "if __name__=='__main__':main()\n", encoding='utf-8')
     launcher = output / 'scheduled_launch.py'
-    from research.vectorized_backtest.v42 import scheduled_launch
+    from . import scheduled_launch
     launcher.write_bytes(Path(scheduled_launch.__file__).read_bytes())
     arguments = ['--job', str(args.job), '--output', str(output), '--day', '2026-08-13',
                  '--initial-pool', str(args.initial_pool), '--authorize-run']
