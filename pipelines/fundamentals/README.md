@@ -311,3 +311,21 @@ attempting the wider retry. The original writer is never hot-patched.
 The batch writer requests a 30-second Keeper session to tolerate bounded batch
 CPU pauses. Every connection suspension/loss still permanently invalidates the
 claim. A reconnect cannot resume publication under the old claim.
+
+Selected serving also admits normalized `sec_reported` observations with exact
+retained source-hash matches. Fiscal metadata is not an XBRL dimension; its
+original JSON remains in `source_dimensions`. Public filing dates use the next
+New York midnight. Duration facts require an explicit period start; a fiscal
+quarter label is never used to guess one.
+
+`scripts/repair_fundamentals_periods.py` recovers omitted start/frame metadata
+only by uniquely matching the original SEC importer SHA256 identity. It searches
+bounded recent structured gaps inside ClickHouse, writes a small SSD evidence
+table, and independently checks each inserted identity. Existing normalized
+facts and normalizer receipts are unchanged. Unmatched identities stay blocked.
+The default invocation profiles at most eight 32-issuer cohorts; `--execute`
+requires an immutable workstation deployment and excludes completed identities.
+Use the existing selected population manifest, a runtime `--run-dir`, and at
+most four workers. A runtime `STOP` requests graceful drain. Historical security
+identity gaps and genuinely absent structured values are separate dependencies;
+this repair neither invents successor mappings nor starts archive extraction.
