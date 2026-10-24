@@ -56,7 +56,7 @@ def render(state,width=80,height=24,now=None):
     barwidth=max(8,min(32,width-18));filled=int(barwidth*done/total) if total else 0
     bar='['+'#'*filled+'-'*(barwidth-filled)+']'
     lines=[f"Fundamentals | {current} | {state.get('mode','backfill')}",
-        f"{bar} {done:,}/{total:,} {state.get('unit','batches')}" if total else 'Planning scope; total not yet known',
+        f"{bar} {done:,}/{total:,} {state.get('unit','batches')}" if total else ('No new eligible observations' if current=='complete' else 'Planning scope; total not yet known'),
         f"{c.get('published',0):,} published | {c.get('unchanged',0):,} unchanged | {c.get('audited',0):,} audited",
         f"Active {len(state.get('active',{}))} | queued {max(0,state.get('queued',0)-(sum(k!='archive' for k in state.get('active',{})) if state.get('counts_include_active') else 0)):,} | failed {c.get('failed',0)} | retries 0",
         f"Blocked {state.get('blocked',0)} | exclusions {state.get('exclusions',0)}",

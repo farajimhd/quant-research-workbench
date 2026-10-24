@@ -7,6 +7,12 @@ from pipelines.fundamentals.v1 import FINANCIAL, financial_sql, gap_sql, derived
 from tests.test_fundamentals_retained import live
 
 
+def test_empty_forward_completion_is_not_displayed_as_planning():
+    from pipelines.fundamentals.progress import render
+    text=render(dict(state='complete',mode='forward-fill',counts={},total=0,queued=0,elapsed=0))
+    assert 'No new eligible observations' in text and 'Planning scope' not in text
+
+
 def test_legacy_receipt_identity_preserved():
     b=Batch('borrow','202601',('S',),date(2026,1,1),date(2026,2,1),'p')
     old=asdict(b)
