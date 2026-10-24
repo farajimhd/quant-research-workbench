@@ -113,7 +113,9 @@ def run(job_path, output, day, initial_pool=None):
     stage('Stage certified August training session on laptop; no acquisition')
     staging_job = dict(job, campaign=str(output / 'staging'))
     ensure_day(staging_job, 'laptop', 'training', day)
-    cfg = dict(prior['dataset'], authorization='v43-training', source_sha256=source_hash(),
+    training_manifest = json.loads(Path(job['training']).read_bytes())
+    cfg = dict(prior['dataset'], feature_cache=training_manifest.get('feature_cache'),
+        authorization='v43-training', source_sha256=source_hash(),
         training_manifest=job['training'], initialization_probe=str(probe_path),
         execution=prior['execution'], selection=prior['selection'], backend=prior['backend'],
         device=prior['device'], batch_size=prior['batch_size'], capture_gib=job['machines']['laptop']['capture_gib'],
