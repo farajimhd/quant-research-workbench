@@ -160,9 +160,12 @@ def publish(query, batch, database='arte', *, audit=False, progress=lambda stage
         if query(f'SELECT mutation_id FROM system.mutations WHERE database={literal(db)} AND table={literal(table)} AND NOT is_done LIMIT 1'):
             raise ValueError('Source mutation active; retry after drain')
         result=query(f'''SELECT count() n,sum(length(metrics)) facts,toString(sumWithOverflow(cityHash64(source_id))) h1,
-          toString(sumWithOverflow(sipHash64(source_id))) h2 FROM ({projected})''')
+          toString(sumWithOverflow(sipHash64(source_id))) h2,
+          countIf(source_id NOT IN (SELECT source_id FROM {prefix}source_v1 FINAL
+          WHERE family={literal(batch.family)} AND {entity_filter} AND recipe_hash={literal(recipe)})) missing
+          FROM ({projected})''')
         logical.update(result[0])
-        return digest([identity,result])
+        return digest([identity,[{k:v for k,v in row.items() if k!='missing'} for row in result]])
     signature=snapshot()
     source_signature=signature
     destinations=query(f'SELECT name,uuid FROM system.tables WHERE database={literal(database)} '
@@ -184,6 +187,17 @@ def publish(query, batch, database='arte', *, audit=False, progress=lambda stage
         f'family={literal(batch.family)} AND {entity_filter} AND recipe_hash!={literal(recipe)}')
     if int(incompatible[0]['n']):
         raise ValueError('Stored observations use a different recipe; explicit migration required')
+    if batch.selected and not audit and not int(logical['missing']):
+        step('verify retained source identity')
+        if snapshot()!=source_signature:raise ValueError('Source changed during reuse verification')
+        query(f'INSERT INTO {prefix}batch_receipt_v1 VALUES (' + ','.join((literal(batch.key),literal(signature),
+            literal(recipe),literal(batch.population_hash),str(logical['n']),str(logical['facts']),
+            literal(digest(logical)),"now64(6,'UTC')")) + ')',read=False)
+        if int(query(f'SELECT count() n FROM {stage}')[0]['n']):
+            query(f'ALTER TABLE {prefix}stage_v1 DROP PARTITION {literal(batch.key)}',read=False)
+        step('done')
+        return dict(state='unchanged',rows=int(logical['facts']),source_rows=int(logical['n']),
+            seconds=sum(timings.values()),timings=timings,qualification='selected retained observations')
     query(f'ALTER TABLE {prefix}stage_v1 DROP PARTITION {literal(batch.key)}',read=False)
     # SHA source identity includes the complete observation. Keep recipe identity
     # separate; semantic changes require an explicit versioned migration.

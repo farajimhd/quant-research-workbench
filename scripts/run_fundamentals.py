@@ -121,8 +121,14 @@ def run(args):
                 if since.tzinfo is None:raise ValueError('Forward watermark must be timezone-aware')
                 until=datetime.now(timezone.utc)
                 if since>=until:raise ValueError('Forward watermark must precede now')
+            planning_started=time.monotonic()
+            def planning(f):
+                save(root/'status.json',dict(state='planning',mode=args.mode,counts={},active={},queued=0,
+                    elapsed=time.monotonic()-planning_started,updated_at=datetime.now(timezone.utc).isoformat(),
+                    qualification_status=f'Planning {f}: retained source discovery; completed receipts preserved.'))
+                print(f'Planning {f}: checking occupied source partitions',flush=True)
             batches=plan(owner.query,manifest['families'],args.start,args.end,args.cohort_size,
-                cache_dir=root,progress=lambda f:print(f'Planning {f}: checking occupied source partitions',flush=True),selected=selected,
+                cache_dir=root,progress=planning,selected=selected,
                 observed_since=since,observed_until=until)
             profile_count=getattr(args,'profile_batches_per_family',0)
             if profile_count:
