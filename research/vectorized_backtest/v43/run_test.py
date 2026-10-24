@@ -6,6 +6,7 @@ for key in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS'):
 
 import argparse
 import json
+import shutil
 from pathlib import Path
 import sys
 import time
@@ -17,7 +18,7 @@ from research.vectorized_backtest.v42.publication import write_json
 from research.vectorized_backtest.v6.torch_backtest.runtime import file_hash, require_runtime
 
 
-def run(job_path, output, day):
+def run(job_path, output, day, initial_pool=None):
     from research.vectorized_backtest.v42.run_search import source_hash as base_hash
     from research.vectorized_backtest.v42.calibration import load_probe
     from research.vectorized_backtest.v42.initial_population import initialize
@@ -56,6 +57,23 @@ def run(job_path, output, day):
 
     pool_path = output / 'initial-pool.json'
     proof_path = output / 'fairness-proof.json'
+    if initial_pool is not None and not pool_path.exists():
+        stage('Verify retained original-environment initial cohort against V42 seal')
+        supplied = json.loads(initial_pool.read_bytes())
+        expected_rng = np.random.default_rng(np.random.SeedSequence([2020, int(day.replace('-', ''))]))
+        if (supplied['source_sha256'] != base_hash()
+                or supplied['probe_sha256'] != probe['sha256']
+                or len(supplied['population']) != 6144
+                or digest(supplied['population']) != seal['population_sha256']
+                or supplied['population_sha256'] != seal['population_sha256']
+                or supplied['rng_before'] != expected_rng.bit_generator.state):
+            raise ValueError('Supplied initial cohort differs from exact V42 initialization')
+        shutil.copyfile(initial_pool, pool_path)
+        write_json(proof_path, dict(initial_pool_sha256=file_hash(pool_path),
+            population_sha256=supplied['population_sha256'], source_seal_sha256=file_hash(folder / 'complete.json'),
+            source_receipt_sha256=file_hash(receipt), source_job_sha256=file_hash(job_path),
+            exact_initial_candidate_count=6144, old_scores_imported=False, offspring_imported=False,
+            prepared_pool_source=str(initial_pool), prepared_pool_sha256=file_hash(initial_pool)))
     if pool_path.exists():
         proof = json.loads(proof_path.read_bytes())
         if file_hash(pool_path) != proof['initial_pool_sha256']:
@@ -69,7 +87,8 @@ def run(job_path, output, day):
         members, report = initialize(rng, 6144, probe=probe)
         payload = [m.payload() for m in members]
         if digest(payload) != seal['population_sha256']:
-            raise ValueError('Reconstructed initial cohort differs from V42')
+            raise ValueError('Reconstructed initial cohort differs from V42: '
+                             + digest(payload) + ' != ' + seal['population_sha256'])
         pool = dict(population=payload, population_sha256=digest(payload), report=report,
                     rng_before=before, rng_after=rng.bit_generator.state,
                     source_sha256=base_hash(), probe_sha256=probe['sha256'])
@@ -112,6 +131,8 @@ def main():
     parser.add_argument('--job', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--day', choices=['2026-08-13'], default='2026-08-13')
+    parser.add_argument('--initial-pool', type=Path,
+                        help='Original-environment cohort; must match the exact sealed V42 hash')
     parser.add_argument('--authorize-run', action='store_true', required=True)
     args = parser.parse_args()
     output = require_runtime(args.output)
@@ -119,7 +140,7 @@ def main():
     sys.stdout = log
     sys.stderr = log
     try:
-        run(args.job, output, args.day)
+        run(args.job, output, args.day, args.initial_pool)
     except BaseException:
         write_json(output / 'failure.json', dict(traceback=traceback.format_exc(), epoch=time.time()))
         traceback.print_exc()
