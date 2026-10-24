@@ -192,6 +192,9 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
     lengths=torch.tensor([t],device=device);signals=torch.zeros((1,b,u),device=device,dtype=torch.int16)
     from .ownership import action_mask
     owner_actions=action_mask(item,members,u) if any(getattr(m,'case_owner',None) is not None for m in members) else None
+    if hasattr(plan,'members'):
+        from .ownership import bind_neural_lanes
+        bind_neural_lanes(plan,item,members)
     def provide(index,p,o):
         previous=prices.index_select(0,index.reshape(1)).squeeze(0)
         plan.signals(item,index,p,o,previous,out=signals)

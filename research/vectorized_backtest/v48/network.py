@@ -31,7 +31,7 @@ def outcome_values(before,after,price,signals,ratios,feedback):
 class NetworkPlan:
     builds=hits=evictions=capture_seconds=0
     def __init__(self,members,device,*,packed=None):
-        self.members=members;self.device=torch.device(device)
+        self.members=members;self.device=torch.device(device);self.owner_indices=None
         self.cuda_block=int(os.environ.get('V42_NEURAL_BLOCK','128'))
         if self.cuda_block not in (32,64,128,256):raise ValueError('Unsupported neural CUDA tile')
         # Fixed catalog layout makes normalization independent of cohort membership.

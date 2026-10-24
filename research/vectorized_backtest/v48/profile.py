@@ -73,33 +73,47 @@ def main():
     cases=sorted({day+':'+x for x in case_map['security_ids']})
     composed=[replace(m,case_owner=cases[i%len(cases)]) for i,m in enumerate(composed)]
     data.clocks=min(data.clocks,1025)
-    members=composed;programs=PopulationPrograms(members,'cuda');plan=programs.evaluate(data)
+    members=composed
+    results={};financial={}
     try:
-        capture=perf_counter()
-        prepared=replay_cohort([data],members,[plan],execution=Execution(**prior['execution']),
-            backend='compile',episode_capacity=65536,trace=True,listing_width=len(data.listing_ids),capture_only=True)
-        capture_seconds=perf_counter()-capture
-        prepared.replay.reset();torch.cuda.synchronize()
-        begin=torch.cuda.Event(enable_timing=True);end=torch.cuda.Event(enable_timing=True)
-        begin.record();prepared.replay.enqueue();end.record();torch.cuda.synchronize()
-        gpu_seconds=begin.elapsed_time(end)/1000
-        raw=prepared.export()[0]
-        metrics={k:v.detach().cpu().tolist() if isinstance(v,torch.Tensor) else v for k,v in raw.items()}
-        from .financial import ticker_totals
-        metrics['ticker_pnl']=ticker_totals(metrics,data)
-        audit(members,metrics,case_map)
-        if not torch.isfinite(raw['net_pnl']).all():raise ValueError('Nonfinite composed replay')
+        for name,enabled in (('dense','0'),('owned','1')):
+            os.environ['V48_OWNER_LANES']=enabled
+            programs=PopulationPrograms(members,'cuda');plan=programs.evaluate(data)
+            try:
+                capture=perf_counter()
+                prepared=replay_cohort([data],members,[plan],execution=Execution(**prior['execution']),
+                    backend='compile',episode_capacity=65536,trace=True,listing_width=len(data.listing_ids),capture_only=True)
+                capture_seconds=perf_counter()-capture
+                prepared.replay.reset();torch.cuda.synchronize()
+                begin=torch.cuda.Event(enable_timing=True);end=torch.cuda.Event(enable_timing=True)
+                begin.record();prepared.replay.enqueue();end.record();torch.cuda.synchronize()
+                gpu_seconds=begin.elapsed_time(end)/1000
+                raw=prepared.export()[0]
+                metrics={k:v.detach().cpu().tolist() if isinstance(v,torch.Tensor) else v for k,v in raw.items()}
+                from .financial import ticker_totals
+                metrics['ticker_pnl']=ticker_totals(metrics,data)
+                audit(members,metrics,case_map)
+                if not torch.isfinite(raw['net_pnl']).all():raise ValueError('Nonfinite composed replay')
+                financial[name]=digest(metrics)
+                results[name]=dict(capture_seconds=capture_seconds,gpu_replay_seconds=gpu_seconds,financial_sha256=financial[name])
+                print(name,results[name],flush=True)
+            finally:
+                programs.close()
+                del prepared,plan,programs
+                gc.collect();torch.cuda.empty_cache()
+        if financial['dense']!=financial['owned']:raise ValueError('Owned neural lanes changed financial or episode outputs')
         result=dict(source_sha256=source_hash(),composed_candidates=len(members),
             clocks=data.clocks-1,listing_width=len(data.listing_ids),load_seconds=load_seconds,
-            upload_seconds=upload_seconds,capture_seconds=capture_seconds,gpu_replay_seconds=gpu_seconds,
-            total_nodes=plan.total_nodes,parent_indexes=pairs,
-            cohort_sha256=digest([m.payload() for m in members]),
+            upload_seconds=upload_seconds,gpu_replay_seconds=results['owned']['gpu_replay_seconds'],
+            variants=results,dense_vs_owned_speedup=results['dense']['gpu_replay_seconds']/results['owned']['gpu_replay_seconds'],
+            exact_financial_parity=True,cohort_sha256=digest([m.payload() for m in members]),
             original_initial_population_sha256=pool['population_sha256'],
             finite_financial_results=True,ownership_verified=True,validation_opened=False,
             peak_allocated_bytes=torch.cuda.max_memory_allocated())
         write_json(out/'profile.json',result);print(json.dumps(result),flush=True)
     finally:
-        programs.close();staging.close();data.close()
+        os.environ.pop('V48_OWNER_LANES',None)
+        staging.close();data.close()
 
 
 if __name__=='__main__':main()

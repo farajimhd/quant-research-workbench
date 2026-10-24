@@ -32,6 +32,24 @@ def action_mask(item,members,width):
     return torch.tensor(np.where(allowed,31,30)[None],dtype=torch.int16,device=item.device)
 
 
+def bind_neural_lanes(plan,item,members):
+    """Skip neural work in permanently nontradable phase0 lanes only.
+
+    Projection/normalization still reads the full causal cross-section. Recurrent
+    state is listing-local; no skipped lane can hold a position or feed an owner.
+    """
+    import os
+    plan.owner_indices=None
+    if os.environ.get('V48_OWNER_LANES','1')=='0' or not any(m.case_owner is not None for m in members):return
+    if any(m.case_owner is None for m in members):raise ValueError('Mixed neural lane ownership')
+    cases=[item.root.name+':'+item.receipt['listings'][int(i)]['security_id'] for i in item.listing_ids]
+    lookup={case:[i for i,c in enumerate(cases) if c==case] for case in set(cases)}
+    indexes=[lookup[m.case_owner] for m in members];width=max(map(len,indexes))
+    packed=np.full((len(members),width),-1,np.int32)
+    for i,rows in enumerate(indexes):packed[i,:len(rows)]=rows
+    plan.owner_indices=torch.as_tensor(packed,device=item.device)
+
+
 def audit(members,metrics,mapping):
     cases=[mapping['day']+':'+s for s in mapping['security_ids']]
     listing=dict(zip(mapping['listing_ids'],cases))

@@ -28,9 +28,13 @@ def state_kernel(P,OPENED,PREVIOUS,CLOCK,FEEDBACK,OUT,U:tl.constexpr,STATES:tl.c
 
 
 @tr.jit
-def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr):
+def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr):
     """One clock of scratch, directly indexed; no N-way register gathers."""
-    member=tl.program_id(0);action=tl.program_id(1);u=tl.program_id(2)*BLOCK+tl.arange(0,BLOCK);live=u<U
+    member=tl.program_id(0);action=tl.program_id(1);j=tl.program_id(2)*BLOCK+tl.arange(0,BLOCK)
+    if OWNED:
+        u=tl.load(OWNER_IDS+member*OWNED_K+j,j<OWNED_K,-1);live=(j<OWNED_K)&(u>=0)&(u<U)
+    else:
+        u=j;live=u<U
     net=member*5+action;ncount=tl.load(COUNTS+net);base=tl.load(OFFSETS+net)
     phase=tl.load(PHASE)&1
     old=tl.where(phase!=0,WORK,MEMORY);current=tl.where(phase!=0,MEMORY,WORK)
@@ -140,13 +144,15 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
 
 def signals(plan,values,valid,position,opened,previous,index,out=None):
     b=position.shape[1];u=position.shape[2];values=values.T.contiguous();valid=valid.T.contiguous()
-    actions=torch.empty((b,5,u),device=position.device,dtype=torch.bool)
+    owners=getattr(plan,'owner_indices',None);owned=owners is not None;owned_k=owners.shape[1] if owned else u
+    actions=(torch.zeros if owned else torch.empty)((b,5,u),device=position.device,dtype=torch.bool)
     block=getattr(plan,'cuda_block',128)
+    if owned:block=32
     if block not in (32,64,128,256):raise ValueError('Unsupported neural CUDA tile')
     state_kernel[(b,tr.cdiv(u,256))](position,opened,previous,index,plan.feedback,plan.position_states,u,len(STATES),256,enable_fp_fusion=False)
-    workspace_kernel[(b,5,tr.cdiv(u,block))](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.operations,plan.bias,plan.counts,plan.offsets,plan.threshold,
+    workspace_kernel[(b,5,tr.cdiv(owned_k,block))](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.operations,plan.bias,plan.counts,plan.offsets,plan.threshold,
         plan.size_source,plan.size_weight,plan.size_bias,plan.position_states,plan.memory,plan.memory_known,plan.ratios,
-        plan.workspace,plan.known,plan.buffer_phase,actions,opened,index,u,len(plan.columns),len(STATES),FAN_IN,block,enable_fp_fusion=False)
+        plan.workspace,plan.known,plan.buffer_phase,actions,opened,index,owners if owned else plan.sources,owned,owned_k,u,len(plan.columns),len(STATES),FAN_IN,block,enable_fp_fusion=False)
     result=out if out is not None else torch.empty((1,b,u),device=position.device,dtype=torch.int16)
     pack[(tr.cdiv(b*u,256),)](actions,result,plan.buffer_phase,b*u,u,256)
     return result
