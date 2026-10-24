@@ -41,6 +41,7 @@ def render(data,width,height,settings,selection=0,detail='financial',stage='entr
     best=max((r['score'] for r in valid),default=None);med=median([r['score'] for r in valid]) if valid else None
     summary=f"{scope} | {len(source):,} candidates | {len(valid):,} eligible | {sum(r['score']>0 for r in valid):,} positive | best S {num(best)}"
     if compact:summary=f"{scope} | N {len(source):,} | E {len(valid):,} | best S {num(best)}"
+    if not data.get('display_ready',True):summary=f"Reading sealed generation {data.get('generation',0)} score panel..."
     note=data.get('display_error')
     if not note:
         if settings.get('grouped'):
@@ -74,7 +75,7 @@ def render(data,width,height,settings,selection=0,detail='financial',stage='entr
     title=f"{'TICKER SUMMARY' if grouped_view else 'CANDIDATES'} | {sort[1]} {'low first' if ascending else 'high first'} | {start+1 if rows else 0}-{min(start+size,len(rows))}/{len(rows)}"
     layout['ranking'].update(Panel(table,title=title,padding=0))
     selected=rows[selection] if rows else None
-    if not selected:lines=['Awaiting the first sealed ranking.' if not data.get('generation') else 'No candidates match. Press 0 for all tickers; Z/C toggle eligibility/activity filters.']
+    if not selected:lines=['Loading the sealed score panel; no empty-result claim yet.' if not data.get('display_ready',True) else 'Awaiting the first sealed ranking.' if not data.get('generation') else 'No candidates match. Press 0 for all tickers; Z/C toggle eligibility/activity filters.']
     elif grouped_view:
         lines=[f"{selected['ticker']}: {selected['count']} candidates; {selected['eligible_count']} eligible; {selected['positive_count']} positive.",
                f"Best eligible serial {selected['best_serial'] if selected['best_serial'] is not None else '-'} | next-generation slots {selected['next_slots'] if selected['next_slots'] is not None else '-'}.",

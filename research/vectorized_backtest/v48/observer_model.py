@@ -90,8 +90,8 @@ class Observer(BaseObserver):
         data=super().read()
         if not data:return data
         if 'phase' in data and all('gross_losses' in r for r in data.get('rows',[])):return data
-        if self.display_snapshot:return dict(self.display_snapshot,display_error=data.get('display_error','Reading the next sealed score panel'))
-        return dict(data,rows=[],phase=data.get('session_progress',{}).get('phase'),case_labels={},next_quotas={})
+        if self.display_snapshot:return dict(self.display_snapshot,display_ready=True,display_error=data.get('display_error','Reading the next sealed score panel'))
+        return dict(data,rows=[],phase=data.get('session_progress',{}).get('phase'),case_labels={},next_quotas={},display_ready=False,display_error=data.get('display_error','Loading sealed score panel'))
 
     def refresh(self):
         super().refresh()
@@ -109,5 +109,5 @@ class Observer(BaseObserver):
                 while len(self.sealed_cache)>2:self.sealed_cache.pop(next(iter(self.sealed_cache)))
             rows,quotas=self.sealed_cache[cache_key]
         phase=data.get('session_progress',{}).get('phase',json.loads((root/'manifest.json').read_bytes()).get('phase'))
-        data.update(rows=rows,case_labels=self.labels_cache[key],next_quotas=quotas,phase=phase)
+        data.update(rows=rows,case_labels=self.labels_cache[key],next_quotas=quotas,phase=phase,display_ready=True)
         with self.lock:self.data=data;self.display_snapshot=data

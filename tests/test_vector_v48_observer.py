@@ -20,6 +20,16 @@ def fixture():
 
 
 class ObserverTests(unittest.TestCase):
+    def test_loading_never_claims_empty_and_keeps_last_verified_panel(self):
+        import threading
+        from research.vectorized_backtest.v48.observer_model import Observer
+        observer=Observer.__new__(Observer);observer.lock=threading.Lock()
+        observer.data=dict(generation=5,rows=[dict(score=1)],session_progress={'phase':0});observer.display_snapshot={}
+        self.assertFalse(observer.read()['display_ready'])
+        observer.display_snapshot=dict(fixture(),display_ready=True)
+        self.assertEqual(len(observer.read()['rows']),4)
+        self.assertTrue(observer.read()['display_ready'])
+
     def test_ticker_summary_excludes_ineligible_leader(self):
         data=fixture();g={x['ticker']:x for x in grouped(data['rows'],data['next_quotas'])}
         self.assertEqual(g['XHG']['score'],10.);self.assertEqual(g['XHG']['best_serial'],2)

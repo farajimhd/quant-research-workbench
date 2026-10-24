@@ -68,12 +68,15 @@ def main(argv=None):
     args=parser.parse_args(argv)
     console=Console(width=args.width,height=args.height);once=args.once or not console.is_terminal
     observer=Observer(args.active).start();controls=Controls();controls.settings.update(grouped=args.groups,sort=args.sort)
-    phase=None;initial_ticker=args.ticker
+    phase=None;initial_ticker=args.ticker;started=time.monotonic()
     try:
         with nullcontext() if once else canvas.FixedTerminal(console) as live:
             while True:
                 data=observer.read()
                 if not data or 'phase' not in data:time.sleep(.1);continue
+                if once and not data.get('display_ready',False):
+                    if time.monotonic()-started>30:raise RuntimeError(data.get('display_error','Display did not finish loading'))
+                    time.sleep(.1);continue
                 if phase is not None and phase!=data['phase']:
                     controls.settings.update(case=None,grouped=False);controls.selection=0
                 phase=data['phase']
