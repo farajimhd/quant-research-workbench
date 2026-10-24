@@ -47,3 +47,15 @@ def test_live_selected_reuses_legacy_then_adds_only_gap(live):
     assert result['state']=='published' and result['rows']==5
     assert q(f'SELECT count() n FROM {db}.reference_fact_v1 FINAL')[0]['n']==10
     assert publish(q,selected,db)['state']=='unchanged'
+
+
+def test_live_forward_window_includes_late_observations(live):
+    q,db,b,insert=live
+    insert('old','2026-10-01 14:00:00',period='2020-12-31')
+    insert('new','2026-10-03 14:00:00',period='2020-12-31')
+    window=replace(b,selected=True,partition_id='*',
+        observed_since=datetime(2026,10,2,tzinfo=timezone.utc),
+        observed_until=datetime(2026,10,4,tzinfo=timezone.utc))
+    assert publish(q,window,db)['rows']==5
+    assert q(f'SELECT event_key FROM {db}.reference_source_v1 FINAL')==[{'event_key':'new'}]
+    assert publish(q,window,db)['state']=='unchanged'

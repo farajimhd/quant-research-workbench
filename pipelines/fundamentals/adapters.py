@@ -160,7 +160,12 @@ def projection(family, entities, start, end, *, partition_id=None, scan_keys=(),
     partition = '' if partition_id is None else f' AND _partition_id={literal(partition_id)}'
     if selected:
         from .v1 import predicate
-        partition+=' AND ('+predicate(family)+')'
+        if family in ('sec_reported','sec_bulk'):
+            # Both taxonomy and tag are immutable sorting-key columns in SEC
+            # sources. Filter before FINAL deduplication, not after loading all
+            # unselected metrics for a multi-decade issuer cohort.
+            indexed+='('+predicate(family)+') AND '
+        else:partition+=' AND ('+predicate(family)+')'
     for bound,operator in ((observed_since,'>='),(observed_until,'<')):
         if bound is not None:
             from .queries import _timestamp
