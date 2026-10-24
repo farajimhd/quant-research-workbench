@@ -38,6 +38,9 @@ def test_reviewed_sec_exchange_transform_keeps_raw_value_and_normalized_code():
     assert result['candidates'][0]['fields']['SecurityExchangeName']==('NASDAQ',)
     row=next(r for r in result['observations'] if r['concept'].endswith('SecurityExchangeName'))
     assert row['value']=='The Nasdaq Stock Market LLC' and row['transformed_value']=='NASDAQ'
+    global_select=run(text.replace('The Nasdaq Stock Market LLC','The Nasdaq Global Select Market'))
+    assert not global_select['rejected']
+    assert global_select['candidates'][0]['fields']['SecurityExchangeName']==('NASDAQ',)
     assert run(text.replace('The Nasdaq Stock Market LLC','Unknown exchange'))['rejected'][0]['reason']=='unsupported_exchange_transform_input'
     nyse=run(text.replace('The Nasdaq Stock Market LLC','New York Stock Exchange'))
     assert not nyse['rejected']
