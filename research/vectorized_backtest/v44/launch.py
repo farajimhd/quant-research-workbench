@@ -2,6 +2,7 @@
 import os
 os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
 import argparse
+import json
 from pathlib import Path
 import sys
 from .scheduled_launch import install
@@ -21,6 +22,9 @@ def main():
     output = require_runtime(args.output)
     if (output / 'active.json').exists() or (output / 'entry.py').exists():
         raise ValueError('Existing experiment: inspect ownership/checkpoint before resuming')
+    (output / 'manifest.json').write_text(json.dumps(dict(version='v44',
+        days=['2026-08-13'], local_generations=50, population=1024,
+        seed=2020, initial_candidates=6144, validation_opened=False)), encoding='utf-8')
     entry = output / 'entry.py'
     entry.write_text("import os,sys\nos.environ['PYTHONDONTWRITEBYTECODE']='1'\n"
         "os.environ.update(V42_CPU_RESERVE_GIB='12',V42_CPU_ADMISSION_GIB='8',V42_PREPARATION_WORKERS='2')\n"
