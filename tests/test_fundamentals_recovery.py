@@ -7,6 +7,20 @@ from pipelines.certified_research.contracts import digest
 C='0000000001'
 
 
+def test_compact_inventory_preserves_old_identity_changes_and_rejects_bad_results():
+    now=datetime(2026,10,25,tzinfo=timezone.utc)
+    row=dict(cik=C,fingerprint='A'*64,entries=3)
+    def read(rows):return recovery.source_inventory(lambda sql:rows,[C],now)
+    original=read([row])
+    assert original==read([dict(row)])
+    assert original!=read([dict(row,fingerprint='B'*64)])
+    assert original!=read([dict(row,entries=4)])
+    assert original!=read([])
+    for bad in ([row,row],[dict(row,cik='0000000002')],
+                [dict(row,fingerprint='truncated')],[dict(row,entries=0)]):
+        with pytest.raises(ValueError):read(bad)
+
+
 def test_period_and_units_are_not_mixed_or_declared_complete():
     row=dict(cik=C,period_start=None,period_end='2026-06-30',unit='USD',present=['assets'],conflicts=[],accessions=['a'])
     case=recovery.reconcile([C],[row],[dict(cik=C,forms=['S-1'])])[0]

@@ -28,14 +28,15 @@ def validate_ids(ciks):
 def source_inventory(query, ciks, cutoff, database='arte'):
     """Exact merge-neutral metadata fingerprint, not a numeric fact rescan.
 
-    Keep individual hashes rather than a lossy sum or latest timestamp. Changes
-    to an older retained document must also invalidate an unchanged-case cache.
+    Hash sorted distinct complete identities on the server rather than fetching
+    them or using a lossy sum/latest timestamp. Older-document changes still
+    invalidate the cache; at most one compact row is returned per issuer.
     """
     from .queries import _timestamp
     identifier(database);validate_ids(ciks);stamp=_timestamp(cutoff)
     if len(ciks)>32:raise ValueError('Recovery metadata cohort exceeds 32 issuers')
     ids=','.join(map(literal,sorted(set(ciks))))
-    rows=query(f'''SELECT DISTINCT cik,kind,key,hash FROM (
+    inventory=f'''SELECT DISTINCT cik,kind,key,hash FROM (
       SELECT cik,'filing' kind,accession_number key,
         toString(tuple(source_content_sha256,form_type,filing_date,acceptance_datetime_raw,primary_document)) hash
       FROM q_live.sec_filing_v3 FINAL WHERE cik IN ({ids})
@@ -45,10 +46,20 @@ def source_inventory(query, ciks, cutoff, database='arte'):
       UNION ALL SELECT entity_id cik,'normalized' kind,source_id key,
         toString(tuple(source_hash,recipe_hash,available_at,available_at<={stamp},quality,reason)) hash
       FROM {database}.reference_source_v1 FINAL WHERE entity_kind='issuer_cik' AND entity_id IN ({ids}))
-      ORDER BY cik,kind,key,hash''')
+      ORDER BY cik,kind,key,hash'''
+    # Hash each complete identity before collecting it. Keeping raw strings in
+    # groupUniqArray can exceed memory; fetching them can exceed result limits.
+    # Sorted SHA-256 identities retain old-version changes and are merge-neutral.
+    rows=query(f'''SELECT cik,
+      hex(SHA256(arrayStringConcat(arraySort(groupUniqArray(
+        hex(SHA256(toJSONString(tuple(kind,key,hash))))))))) fingerprint,
+      count() entries FROM ({inventory}) GROUP BY cik ORDER BY cik''')
     groups={c:[] for c in ciks}
     for row in rows:
         if row['cik'] not in groups:raise ValueError('Source inventory escaped issuer scope')
+        if groups[row['cik']]:raise ValueError('Duplicate source inventory issuer')
+        if not re.fullmatch('[0-9A-F]{64}',str(row.get('fingerprint',''))) or int(row.get('entries',0))<1:
+            raise ValueError('Invalid compact source inventory')
         groups[row['cik']].append(row)
     return {c:digest(v) for c,v in groups.items()}
 
