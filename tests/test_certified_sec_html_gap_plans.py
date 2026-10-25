@@ -257,3 +257,14 @@ def test_spac_gaps_keep_inception_periods_and_actual_negative_zero():
             assert cf[0]['period_start']=='2021-03-10'
         assert not any('CashAndCashEquivalents' in f['concept'] for f in p['facts'])
 
+def test_unifoil_does_not_substitute_comprehensive_income_or_duplicate_periods():
+    from pipelines.certified_research.sec_html_reviewed_unifoil import plan_for,HASH
+    p=plan_for(HASH,'1965671')
+    rows={(f['concept'].split('}')[-1],f['period_start'],f['period_end']):f for f in p['facts']}
+    assert len(rows)==len(p['facts'])==43
+    assert rows['NetIncomeLoss','2023-01-01','2023-12-31']['expected_value']=='169672'
+    assert rows['NetIncomeLoss','2024-01-01','2024-06-30']['expected_value']=='1132260'
+    assert rows['NetIncomeLoss','2024-04-01','2024-06-30']['expected_value']=='724023'
+    assert rows['StockholdersEquity',None,'2022-12-31']['expected_value']=='-4177622'
+    assert all('SharesOutstanding' not in f['concept'] for f in p['facts'])
+
