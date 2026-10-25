@@ -108,6 +108,7 @@ def reviewed_documents(query, ciks, start, end, database='arte'):
     reparsing every blocked original. Existing qualified documents are immutable.
     """
     from pipelines.certified_research.sec_html_reviewed import plan_for
+    from pipelines.certified_research.sec_trust_context import registered
     identifier(database);validate_ids(ciks);out=[]
     for offset in range(0,len(ciks),32):
         ids=','.join(map(literal,sorted(set(ciks[offset:offset+32]))))
@@ -123,7 +124,7 @@ def reviewed_documents(query, ciks, start, end, database='arte'):
             ORDER BY cik,accession,document,content_sha256''')
         for row in rows:
             if row['cik'] not in ciks[offset:offset+32]:raise ValueError('Reviewed document escaped recovery scope')
-            if plan_for(row['content_sha256'],row['cik']) is not None:out.append(row)
+            if plan_for(row['content_sha256'],row['cik']) is not None or registered(row['content_sha256'],row['cik']):out.append(row)
     keys=[(d['cik'],d['accession'],d['document']) for d in out]
     if len(set(keys))!=len(keys):raise ValueError('Reviewed document has competing retained occurrences')
     return out

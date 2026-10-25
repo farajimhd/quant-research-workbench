@@ -47,6 +47,16 @@ def test_reviewed_sec_exchange_transform_keeps_raw_value_and_normalized_code():
     assert any(r['transformed_value']=='NYSE' and r['value']=='New York Stock Exchange' for r in nyse['observations'])
 
 
+def test_released_quarter_dei_and_literal_nyse_exchange():
+    text=payload().replace('http://xbrl.sec.gov/dei/2025','http://xbrl.sec.gov/dei/2021q4')
+    text=text.replace('xmlns:g=', 'xmlns:s="http://www.sec.gov/inlineXBRL/transformation/2015-08-31" xmlns:g=')
+    text=text.replace('name="dei:SecurityExchangeName"','format="s:exchnameen" name="dei:SecurityExchangeName"')
+    text=text.replace('>Nasdaq</ix:nonNumeric>','>NYSE </ix:nonNumeric>')
+    result=run(text)
+    assert not result['rejected']
+    assert any(r['transformed_value']=='NYSE' for r in result['observations'])
+
+
 @pytest.mark.skipif(os.environ.get('CERTIFIED_RESEARCH_CLICKHOUSE_TEST')!='1',reason='explicit ClickHouse opt-in')
 def test_real_retained_apple_security_cover():
     from scripts import build_market_day as builder

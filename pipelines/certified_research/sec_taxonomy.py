@@ -9,7 +9,7 @@ def identity(concept,*,allow_extension=False):
         if native:return 'html-native|'+native[1],native[2]
     patterns = (
         ('us-gaap', r'http://fasb.org/us-gaap/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?'),
-        ('dei', r'http://xbrl.sec.gov/dei/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?'),
+        ('dei', r'http://xbrl.sec.gov/dei/(?:[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?|2021q4)'),
         ('srt', r'http://fasb.org/srt/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?'),
         ('ecd', r'http://xbrl.sec.gov/ecd/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?'),
         ('ifrs-full', r'https?://xbrl.ifrs.org/taxonomy/[0-9]{4}-[0-9]{2}-[0-9]{2}/ifrs-full'),

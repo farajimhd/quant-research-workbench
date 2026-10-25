@@ -306,7 +306,9 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
             try:
                 if fact.tag!='{'+IX+'}nonNumeric' and id(fact) not in native:raise ValueError('unsupported_cover_inline_namespace')
                 concept=qname(name,fact)
-                if not re.fullmatch(r'\{http://xbrl.sec.gov/dei/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?\}.+',concept):
+                # SEC's released 2021q4 DEI namespace is not an issuer extension.
+                # https://xbrl.sec.gov/dei/2021q4/
+                if not re.fullmatch(r'\{http://xbrl.sec.gov/dei/(?:[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?|2021q4)\}.+',concept):
                     raise ValueError('unsupported_cover_taxonomy')
                 if fact.get('continuedAt') or fact.get('{http://www.w3.org/2001/XMLSchema-instance}nil') in ('true','1'):
                     raise ValueError('unsupported_cover_transform_continuation_or_nil')
@@ -339,7 +341,7 @@ def extract(payload,expected_hash,cik,*,maximum_bytes=16*1024**2,maximum_facts=1
                     reviewed={'the nasdaq stock market llc':'NASDAQ','nasdaq stock market llc':'NASDAQ','nasdaq global select market':'NASDAQ','the nasdaq global select market':'NASDAQ','nasdaq':'NASDAQ',
                         # SEC EDGAR XBRL Guide 2026-02, section 11.12 permits
                         # leading "The" and trailing "LLC" to be omitted.
-                        'the new york stock exchange':'NYSE','new york stock exchange':'NYSE','new york stock exchange llc':'NYSE','nyse american llc':'NYSEAMER',
+                        'the new york stock exchange':'NYSE','new york stock exchange':'NYSE','new york stock exchange llc':'NYSE','nyse':'NYSE','nyse american llc':'NYSEAMER',
                         'nyse arca, inc.':'NYSEArca'}
                     transformed=reviewed.get(text.casefold())
                     if transformed is None:raise ValueError('unsupported_exchange_transform_input')
