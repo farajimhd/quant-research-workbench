@@ -37,6 +37,9 @@ SHARES=(
 
 
 def plan_for(document_hash,cik):
+    from .sec_html_reviewed_spac_remaining import plan_for as remaining_spacs
+    reviewed=remaining_spacs(document_hash,cik)
+    if reviewed is not None:return reviewed
     from .sec_html_reviewed_wcgc import plan_for as wcgc
     reviewed=wcgc(document_hash,cik)
     if reviewed is not None:return reviewed

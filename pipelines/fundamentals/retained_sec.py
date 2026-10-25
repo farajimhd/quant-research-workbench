@@ -21,13 +21,16 @@ NY = ZoneInfo('America/New_York')
 def historical_time(metadata):
     """Reject unknown/special chronology rather than inventing a publication time."""
     raw = metadata.get('acceptance_datetime_raw') or ''
-    if not re.fullmatch(r'[0-9]{14}', raw):
+    if re.fullmatch(r'[0-9]{14}', raw):
+        naive = datetime.strptime(raw, '%Y%m%d%H%M%S')
+        accepted = naive.replace(tzinfo=NY)
+        if (accepted.utcoffset() != accepted.replace(fold=1).utcoffset()
+                or accepted.astimezone(timezone.utc).astimezone(NY).replace(tzinfo=None) != naive):
+            raise ValueError('Ambiguous or invalid SEC acceptance timezone')
+    elif metadata.get('time_metadata_source') == 'sec_filing_v3' and re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?Z', raw):
+        accepted = datetime.fromisoformat(raw.replace('Z','+00:00')).astimezone(NY)
+    else:
         raise ValueError('SEC acceptance timestamp is absent or malformed')
-    naive = datetime.strptime(raw, '%Y%m%d%H%M%S')
-    accepted = naive.replace(tzinfo=NY)
-    if (accepted.utcoffset() != accepted.replace(fold=1).utcoffset()
-            or accepted.astimezone(timezone.utc).astimezone(NY).replace(tzinfo=None) != naive):
-        raise ValueError('Ambiguous or invalid SEC acceptance timezone')
     filing = datetime.strptime(metadata.get('filing_date') or '', '%Y-%m-%d').date()
     if (metadata.get('private_to_public') or metadata.get('pac_event_id')
             or int(metadata.get('public_document_count') or 0) <= 0):
@@ -61,13 +64,27 @@ def inspect(query, document):
         raise ValueError('Retained document differs from the sealed version, date or form')
     if not 0 < int(source['bytes']) <= 64 * 1024**2:
         raise ValueError('Retained document exceeds bounded payload size')
+    version_scope = ' AND source_version_key=' + literal(source['source_version_key']) if source['source_version_key'] else ''
     metadata = query('SELECT DISTINCT primary_cik,form_type,filing_date,acceptance_datetime_raw,'
                      'public_document_count,private_to_public,pac_event_id,source_content_sha256,source_version_key '
                      'FROM q_live.sec_filing_archive_accession_v3 WHERE accession_number=' + literal(accession)
-                     + ' AND source_version_key=' + literal(source['source_version_key']) + ' LIMIT 2')
+                     + version_scope + ' LIMIT 2')
     if (len(metadata) != 1 or str(int(metadata[0]['primary_cik'])).zfill(10) != cik
             or metadata[0]['form_type'] != source['document_type']):
         raise ValueError('Retained SEC issuer/form metadata is missing or competing')
+    if not metadata[0]['acceptance_datetime_raw']:
+        # Legacy text rows predate occurrence keys. Bind a unique retained
+        # submissions record by the exact primary document and issuer, never ticker.
+        times = query('SELECT DISTINCT cik,form_type,filing_date,primary_document,acceptance_datetime_raw,'
+                      'source_content_sha256 FROM q_live.sec_filing_v3 FINAL WHERE cik='+literal(cik)
+                      +' AND accession_number='+literal(accession)+' LIMIT 2')
+        if (len(times)!=1 or times[0]['primary_document']!=name
+                or times[0]['form_type']!=metadata[0]['form_type']
+                or times[0]['filing_date']!=metadata[0]['filing_date']
+                or not re.fullmatch('[0-9a-f]{64}',times[0]['source_content_sha256'])):
+            raise ValueError('Legacy SEC acceptance metadata is missing or competing')
+        metadata[0]=dict(metadata[0], acceptance_datetime_raw=times[0]['acceptance_datetime_raw'],
+                         time_metadata_source='sec_filing_v3',time_metadata_evidence=times[0])
     return dict(document=source, metadata=metadata[0], time_evidence=historical_time(metadata[0]))
 
 

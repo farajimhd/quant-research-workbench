@@ -23,6 +23,13 @@ def test_later_filing_day_is_not_backdated_to_late_acceptance():
     assert historical_time(row)['availability_basis']=='sec_later_filing_day'
 
 
+def test_retained_submissions_timestamp_preserves_utc():
+    row=metadata();row.update(acceptance_datetime_raw='2026-08-25T16:00:00.000Z',time_metadata_source='sec_filing_v3')
+    assert historical_time(row)['available_at']=='2026-08-25 16:00:00.000000'
+    del row['time_metadata_source']
+    with pytest.raises(ValueError):historical_time(row)
+
+
 @pytest.mark.parametrize('updates',[
     {'acceptance_datetime_raw':None}, {'private_to_public':1}, {'pac_event_id':'correction'},
     {'public_document_count':0}, {'filing_date':'2026-08-24'},
@@ -40,3 +47,20 @@ def test_competing_payload_versions_are_not_hidden_by_expected_hash():
         assert "content_sha256='" not in sql
         return [dict(content_sha256='a'*64),dict(content_sha256='b'*64)]
     with pytest.raises(ValueError,match='competing'):inspect(query,doc)
+
+
+@pytest.mark.parametrize('wrong', [False, True])
+def test_legacy_time_requires_matching_primary_document(wrong):
+    doc=dict(cik='0001849288',accession='0001104659-21-064667',document='a.htm',content_sha256='a'*64)
+    def query(sql):
+        if 'sec_filing_text_v3' in sql:
+            return [dict(content_sha256='a'*64,bytes=100,source_version_key='',document_type='S-1')]
+        if 'sec_filing_archive_accession_v3' in sql:
+            return [dict(primary_cik=doc['cik'],form_type='S-1',filing_date='2021-05-11',acceptance_datetime_raw=None,
+                         public_document_count=1,private_to_public=0,pac_event_id=None)]
+        return [dict(cik=doc['cik'],form_type='S-1',filing_date='2021-05-11',primary_document='other.htm' if wrong else 'a.htm',
+                     acceptance_datetime_raw='2021-05-11T17:31:20.000Z',source_content_sha256='b'*64)]
+    if wrong:
+        with pytest.raises(ValueError,match='Legacy'):inspect(query,doc)
+    else:
+        assert inspect(query,doc)['time_evidence']['available_at']=='2021-05-11 17:31:20.000000'
