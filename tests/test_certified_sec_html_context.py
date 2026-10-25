@@ -20,6 +20,19 @@ def seal(plan):
     return dict(plan,plan_hash=digest(plan))
 
 
+def test_registered_tuple_plan_survives_json_without_allowing_semantic_changes(monkeypatch):
+    import json
+    text,source,plan=fixture()
+    plan['facts']=tuple(plan['facts'])
+    plan=seal(plan)
+    result=json.loads(json.dumps(html.extract(text,source,'1',plan)))
+    monkeypatch.setattr(sec_html_reviewed,'plan_for',lambda *args:plan)
+    html.verify_registered(result,'1')
+    result['html_plan']['facts'][0]['expected_value']='1234000'
+    result['extraction_hash']=digest({k:v for k,v in result.items() if k!='extraction_hash'})
+    with pytest.raises(ValueError):html.verify_registered(result,'1')
+
+
 def test_native_measure_keeps_exact_identity_and_registered_source(monkeypatch):
     from pipelines.certified_research.sec_html_native import definition
     from pipelines.certified_research.sec_taxonomy import identity

@@ -27,6 +27,13 @@ def publish(query,source_database,database,request,binding_hash,population_hash,
     claim.check();schema.verify(query,database)
     scope={} if occurrence is None else dict(occurrence=occurrence)
     verified=sec_original_authority.verify_document(query,source_database,*request,binding_hash,claim,source_guard,**scope)
+    return _publish_verified(query,source_database,database,request,binding_hash,population_hash,
+                             observed_at,claim,source_guard,verified)
+
+
+def _publish_verified(query,source_database,database,request,binding_hash,population_hash,
+                      observed_at,claim,source_guard,verified):
+    """Internal normalized publisher shared by independently verified authorities."""
     recipe=recipe_hash();source_id=verified['authority_hash']
     stamp=observed_at.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')
     prior=query(f"SELECT DISTINCT toString(observed_at) observed_at,recipe_hash FROM {database}.reference_source_v1 FINAL "
@@ -42,9 +49,10 @@ def publish(query,source_database,database,request,binding_hash,population_hash,
     stage=f'{database}.reference_stage_v1 FINAL WHERE batch_key={literal(key)}'
     receipt_where=f'batch_key={literal(key)} AND source_signature={literal(source_id)} AND recipe_hash={literal(recipe)} AND population_hash={literal(population_hash)}'
     source=dict(source_id=source_id,family='sec_original_qualified',entity_kind='issuer_cik',entity_id=verified['cik'],
-        event_key=request[1],source_table=source_database+'.research_sec_reported_document_v1',
+        event_key=request[1],source_table=verified.get('source_table',source_database+'.research_sec_reported_document_v1'),
         source_hash=binding_hash,evidence_ref=json.dumps(dict(authority_hash=source_id,binding_hash=binding_hash,
-            document=request[2],scope=verified.get('qualification_scope','document'),whole_scope_certified=False),sort_keys=True,separators=(',',':')),
+            document=request[2],scope=verified.get('qualification_scope','document'),whole_scope_certified=False,
+            **({'time_evidence':verified['time_evidence']} if 'time_evidence' in verified else {})),sort_keys=True,separators=(',',':')),
         available_at=verified['available_at'],observed_at=stamp,quality='certified',
         reason=({'reviewed_html_observations':'qualified_reviewed_html_observations',
             'all_tagged_numeric':'qualified_all_tagged_numeric'}.get(verified.get('qualification_scope'),

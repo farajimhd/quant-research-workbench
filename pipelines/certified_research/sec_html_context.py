@@ -170,7 +170,9 @@ def verify_registered(extraction,cik):
     from .sec_html_reviewed import plan_for
     plan=plan_for(extraction['source_text_hash'],cik)
     body=dict(extraction);seal=body.pop('extraction_hash',None)
-    if (not plan or plan!=extraction.get('html_plan') or digest(body)!=seal
+    # JSON persistence changes tuples into arrays. Compare the sealed canonical
+    # representation, not Python container types; all semantic bytes still bind.
+    if (not plan or digest(plan)!=digest(extraction.get('html_plan')) or digest(body)!=seal
             or extraction.get('whole_document_coverage') is not False
             or extraction.get('extraction_scope')!='reviewed_observations'
             or extraction['rejected'] or len(plan['facts'])!=len(extraction['observations'])):

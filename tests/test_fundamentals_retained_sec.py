@@ -1,0 +1,42 @@
+from datetime import datetime, timezone
+import pytest
+from pipelines.fundamentals.retained_sec import historical_time, inspect
+
+
+def metadata(**updates):
+    return dict(filing_date='2026-08-25', acceptance_datetime_raw='20260825120000',
+                private_to_public=0, pac_event_id=None, public_document_count=5, **updates)
+
+
+def test_historical_clock_is_not_the_fallback_ingestion_clock():
+    result = historical_time(metadata())
+    assert result['available_at'] == '2026-08-25 16:00:00.000000'
+    assert result['availability_basis'] == 'sec_acceptance_proxy'
+    assert result['exact_publication_time'] is False
+    assert result['recorded_time_basis'] == 'ingestion_time_fallback_no_download_receipt'
+    assert '2026-10-25' not in str(result)
+
+
+def test_later_filing_day_is_not_backdated_to_late_acceptance():
+    row=metadata(); row.update(filing_date='2026-08-26',acceptance_datetime_raw='20260825180000')
+    assert historical_time(row)['available_at']=='2026-08-26 04:00:00.000000'
+    assert historical_time(row)['availability_basis']=='sec_later_filing_day'
+
+
+@pytest.mark.parametrize('updates',[
+    {'acceptance_datetime_raw':None}, {'private_to_public':1}, {'pac_event_id':'correction'},
+    {'public_document_count':0}, {'filing_date':'2026-08-24'},
+    {'filing_date':'2026-11-01','acceptance_datetime_raw':'20261101013000'},
+    {'filing_date':'2026-03-08','acceptance_datetime_raw':'20260308023000'},
+])
+def test_ambiguous_or_special_times_still_block(updates):
+    row=metadata(); row.update(updates)
+    with pytest.raises(ValueError):historical_time(row)
+
+
+def test_competing_payload_versions_are_not_hidden_by_expected_hash():
+    doc=dict(cik='0001903784',accession='0001185185-26-004101',document='a.htm',content_sha256='a'*64)
+    def query(sql):
+        assert "content_sha256='" not in sql
+        return [dict(content_sha256='a'*64),dict(content_sha256='b'*64)]
+    with pytest.raises(ValueError,match='competing'):inspect(query,doc)
