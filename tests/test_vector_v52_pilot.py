@@ -35,8 +35,9 @@ class PilotTests(unittest.TestCase):
     def test_fresh_seed_no_archived_experts_and_sixfold_founders(self):
         from research.vectorized_backtest.v52.full_seed import global_seed
         job=dict(population=10,initial_multiplier=6,seed=2020,source_sha256='source')
-        with patch('research.vectorized_backtest.v52.full_seed.initialize',return_value=(members(60),dict(initial_families=['random']*60))):
+        with patch('research.vectorized_backtest.v52.full_seed.initialize',return_value=(members(60),dict(initial_families=['random']*60,coverage={2:1,10:2}))):
             seed=global_seed({},job,{})
+        self.assertEqual(digest(seed),digest(json.loads(json.dumps(seed))))
         self.assertEqual(len(seed['population']),60);self.assertEqual(seed['expert_count'],0)
         self.assertEqual(len(seed['pedigree']),60);self.assertTrue(all(r['random_ancestry']==1 for r in seed['pedigree']))
         with self.assertRaisesRegex(ValueError,'prior session'):global_seed({'old':{}},job,{})
