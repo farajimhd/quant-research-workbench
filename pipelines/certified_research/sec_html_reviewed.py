@@ -37,6 +37,9 @@ SHARES=(
 
 
 def plan_for(document_hash,cik):
+    from .sec_html_reviewed_optimi import plan_for as optimi
+    reviewed=optimi(document_hash,cik)
+    if reviewed is not None:return reviewed
     from .sec_html_reviewed_xjet_empro import plan_for as xjet_empro
     reviewed=xjet_empro(document_hash,cik)
     if reviewed is not None:return reviewed

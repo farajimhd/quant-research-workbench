@@ -120,6 +120,21 @@ def test_adrx_review_is_exact_and_preserves_actual_periods():
     assert set(f['locator']['table'] for f in plan['facts'])=={663,664,666,701,702,705}
 
 
+def test_optimi_fiscal_periods_and_lexical_precision():
+    from pipelines.certified_research.sec_html_reviewed_optimi import HASH, plan_for
+    plan = plan_for(HASH, '2027329')
+    assert plan_for(HASH, '1') is None
+    rows = {(f['concept'].split('}')[-1], f['period_start'], f['period_end']): f for f in plan['facts']}
+    assert len(rows) == len(plan['facts']) == 38
+    annual = rows['DilutedEarningsLossPerShare', '2024-10-01', '2025-09-30']
+    assert (annual['expected_value'], annual['decimals'], annual['unit']) == ('-1.2', '1', 'CAD/shares')
+    quarter = rows['DilutedEarningsLossPerShare', '2025-10-01', '2025-12-31']
+    assert (quarter['expected_value'], quarter['decimals']) == ('-0.48', '2')
+    assert rows['Assets', None, '2025-12-31']['expected_value'] == '14236203'
+    assert all(f['unit'] in ('CAD', 'CAD/shares', 'shares') for f in plan['facts'])
+    assert not any(f['expected_value'] == '0' for f in plan['facts'])
+
+
 def test_registration_currency_scaling_and_periods():
     from pipelines.certified_research import sec_html_reviewed_registration as p
     for fingerprint,cik,count in ((p.OGC,'1487326',18),(p.NUR,'1680637',20),(p.AIBZ,'2100457',12)):
