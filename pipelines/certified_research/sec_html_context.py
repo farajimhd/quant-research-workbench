@@ -156,6 +156,12 @@ def extract(payload,expected_hash,cik,plan,*,maximum_bytes=64*1024**2):
         positions.add(source_identity)
         # Exact fixed-point lexical conversion. No missing markers become zero.
         numeric=value_text.removeprefix('$')
+        if item.get('explicit_nil'):
+            if (item['explicit_nil'] is not True or locator['kind']!='quote'
+                    or numeric.casefold()!='nil' or tag!='CashAndCashEquivalentsAtCarryingValue'
+                    or item['expected_value']!='0' or scale!=0 or start is not None):
+                raise ValueError('Explicit nil requires an exact reviewed dated cash quote')
+            numeric='0'
         if numeric.startswith('R$'):
             if unit not in ('BRL', 'BRL/shares'):
                 raise ValueError('HTML currency prefix differs from reviewed unit')

@@ -49,6 +49,23 @@ def test_competing_payload_versions_are_not_hidden_by_expected_hash():
     with pytest.raises(ValueError,match='competing'):inspect(query,doc)
 
 
+@pytest.mark.parametrize('wrong_member',[False,True])
+def test_exhibit_requires_exact_versioned_parent_membership(wrong_member):
+    doc=dict(cik='0002041208',accession='0001213900-26-088473',document='ex15.htm',content_sha256='a'*64)
+    source=dict(cik=doc['cik'],accession_number=doc['accession'],document_name=doc['document'],
+                content_sha256='a'*64,source_version_key='b'*64,document_type='EX-15.6',source_archive_date='2026-08-25')
+    def query(sql):
+        if 'sec_filing_text_v3' in sql:return [dict(source,bytes=100)]
+        if 'sec_filing_document_v3' in sql:return [dict(source,content_sha256='c'*64 if wrong_member else 'a'*64)]
+        return [dict(metadata(),primary_cik=doc['cik'],form_type='20-F',source_version_key='b'*64)]
+    if wrong_member:
+        with pytest.raises(ValueError,match='membership'):inspect(query,doc)
+    else:
+        result=inspect(query,doc)
+        assert result['metadata']['exhibit_member']==source
+        assert result['time_evidence']['available_at']=='2026-08-25 16:00:00.000000'
+
+
 @pytest.mark.parametrize('wrong', [False, True])
 def test_legacy_time_requires_matching_primary_document(wrong):
     doc=dict(cik='0001849288',accession='0001104659-21-064667',document='a.htm',content_sha256='a'*64)

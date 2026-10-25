@@ -69,9 +69,21 @@ def inspect(query, document):
                      'public_document_count,private_to_public,pac_event_id,source_content_sha256,source_version_key '
                      'FROM q_live.sec_filing_archive_accession_v3 WHERE accession_number=' + literal(accession)
                      + version_scope + ' LIMIT 2')
+    exhibit=bool(re.fullmatch(r'EX-[0-9]+(?:\.[0-9]+)?',source['document_type']))
     if (len(metadata) != 1 or str(int(metadata[0]['primary_cik'])).zfill(10) != cik
-            or metadata[0]['form_type'] != source['document_type']):
+            or (metadata[0]['form_type'] != source['document_type'] and not exhibit)):
         raise ValueError('Retained SEC issuer/form metadata is missing or competing')
+    if exhibit:
+        # An exhibit has its own type, but derives availability from its exact
+        # parent occurrence. Require the original retained document membership;
+        # an accession-looking filename or an unrelated primary form is not proof.
+        if not source['source_version_key'] or not metadata[0]['acceptance_datetime_raw']:
+            raise ValueError('Exhibit needs versioned parent acceptance evidence')
+        members=query(f'SELECT DISTINCT {columns} FROM q_live.sec_filing_document_v3 WHERE {where} LIMIT 2')
+        expected={k:source[k] for k in columns.split(',')}
+        if members!=[expected]:
+            raise ValueError('Retained exhibit membership differs from source occurrence')
+        metadata[0]=dict(metadata[0],exhibit_member=members[0])
     if not metadata[0]['acceptance_datetime_raw']:
         # Legacy text rows predate occurrence keys. Bind a unique retained
         # submissions record by the exact primary document and issuer, never ticker.

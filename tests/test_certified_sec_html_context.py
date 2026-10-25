@@ -42,6 +42,22 @@ def test_soulgate_preserves_rmb_and_excludes_duplicate_currency_columns():
     assert all(f['locator']['table'] in (420,422,423,425,496,498,499,500) for f in plan['facts'])
 
 
+def test_explicit_nil_cash_is_not_a_missing_marker(monkeypatch):
+    text='<p>As of December 31, 2025, aggregate cash was $Nil. U.S. dollars.</p>'
+    source=sha256(text.encode()).hexdigest()
+    fact=dict(concept='{http://fasb.org/us-gaap/2025}CashAndCashEquivalentsAtCarryingValue',
+        period_start=None,period_end='2025-12-31',unit='USD',scale=0,decimals='0',expected_value='0',
+        label='aggregate cash',explicit_nil=True,evidence=['As of December 31, 2025, aggregate cash was $Nil.','U.S. dollars.'],
+        locator=dict(kind='quote',quote='As of December 31, 2025, aggregate cash was $Nil.',value_text='Nil'))
+    plan=seal(dict(version=html.VERSION,document_hash=source,cik='0000000001',scope='reviewed_observations',facts=[fact]))
+    out=html.extract(text,source,'1',plan)
+    assert out['observations'][0]['value']=='0' and out['observations'][0]['raw_text']=='Nil'
+    monkeypatch.setattr(sec_html_reviewed,'plan_for',lambda *args:plan)
+    html.verify_registered(out,'1')
+    fact.pop('explicit_nil')
+    with pytest.raises(ValueError,match='ambiguous or missing'):html.extract(text,source,'1',seal(dict(plan,facts=[fact])))
+
+
 def test_registered_tuple_plan_survives_json_without_allowing_semantic_changes(monkeypatch):
     import json
     text,source,plan=fixture()
