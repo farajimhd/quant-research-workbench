@@ -217,3 +217,15 @@ def test_icici_reconciled_us_gaap_excludes_indian_basis_and_minority_totals():
     assert all(f['locator']['row'] not in (3,30,31) for f in plan['facts'])
     assert all(f['table_proof']['headers'] for f in plan['facts'])
 
+def test_caliber_actual_statements_keep_units_periods_and_exclude_net_capex():
+    from pipelines.certified_research.sec_html_reviewed_caliber import plan_for,HASH
+    plan=plan_for(HASH,'1821440')
+    assert len(plan['facts'])==37 and plan_for(HASH,'1') is None
+    rows={(f['concept'].split('}')[-1],f['period_start'],f['period_end']):f for f in plan['facts']}
+    assert len(rows)==37
+    assert rows['Assets',None,'2020-09-30']['expected_value']=='10852014000'
+    assert rows['CashAndCashEquivalentsAtCarryingValue',None,'2020-09-30']['expected_value']=='493642000'
+    eps=rows['EarningsPerShareDiluted','2019-01-01','2019-09-30']
+    assert (eps['expected_value'],eps['scale'],eps['decimals'])==('-0.16',0,'2')
+    assert not any('PaymentsToAcquire' in f['concept'] for f in plan['facts'])
+
