@@ -140,6 +140,10 @@ def extract(payload,expected_hash,cik,plan,*,maximum_bytes=64*1024**2):
         positions.add(source_identity)
         # Exact fixed-point lexical conversion. No missing markers become zero.
         numeric=value_text.removeprefix('$')
+        if numeric.startswith('R$'):
+            if unit not in ('BRL', 'BRL/shares'):
+                raise ValueError('HTML currency prefix differs from reviewed unit')
+            numeric=numeric[2:].strip()
         negative=numeric.startswith('(') and numeric.endswith(')')
         if negative:numeric=numeric[1:-1]
         if not re.fullmatch(r'(?:0|[1-9][0-9]*|[1-9][0-9]{0,2}(?:,[0-9]{3})+)(?:\.[0-9]+)?',numeric):

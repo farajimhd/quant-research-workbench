@@ -78,6 +78,20 @@ def test_missing_or_ambiguous_cells_never_become_numbers(number):
     with pytest.raises(ValueError,match='ambiguous or missing'):html.extract(text,source,'1',seal(plan))
 
 
+@pytest.mark.parametrize('number', ['R$(1,234)', 'R$ (1,234)'])
+def test_brazilian_currency_prefix_requires_matching_reviewed_unit(number):
+    text, source, plan = fixture()
+    text = text.replace('(1,234)', number).replace('USD', 'BRL')
+    source = sha256(text.encode()).hexdigest()
+    plan['document_hash'] = source
+    fact = plan['facts'][0]
+    fact.update(unit='BRL', evidence=['December 31, 2018. BRL in thousands.'])
+    assert html.extract(text, source, '1', seal(plan))['observations'][0]['value'] == '-1234000'
+    fact['unit'] = 'USD'
+    with pytest.raises(ValueError, match='currency prefix'):
+        html.extract(text, source, '1', seal(plan))
+
+
 def test_no_fuzzy_quote_or_duplicate_occurrence():
     text='Shares outstanding as of December 31, 2018 were 123.';source=sha256(text.encode()).hexdigest()
     _,_,plan=fixture();plan['document_hash']=source;f=plan['facts'][0]

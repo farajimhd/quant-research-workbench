@@ -120,6 +120,21 @@ def test_adrx_review_is_exact_and_preserves_actual_periods():
     assert set(f['locator']['table'] for f in plan['facts'])=={663,664,666,701,702,705}
 
 
+def test_moove_keeps_reporting_currency_parent_profit_and_periods():
+    from pipelines.certified_research.sec_html_reviewed_moove import HASH, plan_for
+    plan = plan_for(HASH, '2026793')
+    assert plan_for(HASH, '1') is None
+    rows = {(f['concept'].split('}')[-1], f['period_start'], f['period_end']): f for f in plan['facts']}
+    assert len(rows) == len(plan['facts']) == 68
+    assert rows['ProfitLoss', '2023-01-01', '2023-12-31']['expected_value'] == '265984000'
+    assert rows['ProfitLossAttributableToOwnersOfParent', '2023-01-01', '2023-12-31']['expected_value'] == '265694000'
+    assert rows['DilutedEarningsLossPerShare', '2023-01-01', '2023-06-30']['expected_value'] == '-1.67'
+    assert rows['Revenue', '2024-04-01', '2024-06-30']['expected_value'] == '2579624000'
+    assert all(f['unit'] in ('BRL', 'BRL/shares') for f in plan['facts'])
+    assert not any('StockholdersEquity' in f['concept'] for f in plan['facts'])
+    assert all(len(f['table_proof']['headers']) >= 4 for f in plan['facts'] if not f['label'])
+
+
 def test_optimi_fiscal_periods_and_lexical_precision():
     from pipelines.certified_research.sec_html_reviewed_optimi import HASH, plan_for
     plan = plan_for(HASH, '2027329')
