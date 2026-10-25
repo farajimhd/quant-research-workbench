@@ -195,8 +195,8 @@ def write_queue(query, root, ciks, start, end, cutoff, *, database='arte',
     dependency=dependency_inventory(query,database)
     # Coverage is historical-public as-of. Advancing a UTC date can expose a
     # newly public observation without an insertion; conservatively re-audit.
-    from . import v1
-    cache_scope=dict(dependency=dependency,review_contract=digest((Path(__file__).read_text(),Path(v1.__file__).read_text())),
+    from . import v1, reporting_notices
+    cache_scope=dict(dependency=dependency,review_contract=digest((Path(__file__).read_text(),Path(v1.__file__).read_text(),Path(reporting_notices.__file__).read_text())),
                      public_day=cutoff.date().isoformat(),
                      public_ny_day=cutoff.astimezone(ZoneInfo('America/New_York')).date().isoformat())
     for offset in range(0,len(ids),32):
@@ -216,6 +216,11 @@ def write_queue(query, root, ciks, start, end, cutoff, *, database='arte',
         if selected:
             values=reconcile(selected,query(coverage_query(selected,cutoff,database)),query(filing_query(selected,start,end)),
                              query(native_query(selected,cutoff,database)))
+            notices=reporting_notices.inspect_notices(query,selected,cutoff)
+            for value in values:
+                if notices[value['cik']]:
+                    value['reporting_notices']=notices[value['cik']]
+                    value['case_hash']=digest({k:v for k,v in value.items() if k!='case_hash'})
             after=source_inventory(query,chunk,cutoff,database)
             if before!=after:raise ValueError('Recovery sources changed during reconciliation; retry without resetting cases')
             for value in values:

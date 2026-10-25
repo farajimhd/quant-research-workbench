@@ -37,6 +37,9 @@ SHARES=(
 
 
 def plan_for(document_hash,cik):
+    from .sec_html_reviewed_abve import plan_for as abve
+    reviewed=abve(document_hash,cik)
+    if reviewed is not None:return reviewed
     from .sec_html_reviewed_treo import plan_for as treo
     reviewed=treo(document_hash,cik)
     if reviewed is not None:return reviewed
