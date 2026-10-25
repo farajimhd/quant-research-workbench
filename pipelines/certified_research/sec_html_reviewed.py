@@ -37,6 +37,12 @@ SHARES=(
 
 
 def plan_for(document_hash,cik):
+    from .sec_html_reviewed_current_ifrs import plan_for as current_ifrs
+    reviewed=current_ifrs(document_hash,cik)
+    if reviewed is not None:return reviewed
+    from .sec_html_reviewed_dtss import plan_for as dtss
+    reviewed=dtss(document_hash,cik)
+    if reviewed is not None:return reviewed
     from .sec_html_reviewed_abve import plan_for as abve
     reviewed=abve(document_hash,cik)
     if reviewed is not None:return reviewed

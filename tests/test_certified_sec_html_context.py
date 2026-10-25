@@ -58,6 +58,20 @@ def test_explicit_nil_cash_is_not_a_missing_marker(monkeypatch):
     with pytest.raises(ValueError,match='ambiguous or missing'):html.extract(text,source,'1',seal(dict(plan,facts=[fact])))
 
 
+def test_current_exhibit_plans_keep_quarters_units_and_consolidation_separate():
+    from pipelines.certified_research.sec_html_reviewed_current_ifrs import REVIEWED
+    from pipelines.certified_research.sec_html_reviewed_dtss import REVIEWED as DTSS
+    mda=next(p for p in REVIEWED.values() if p['cik']=='0001857047')
+    revenue=[f for f in mda['facts'] if f['concept'].endswith('}Revenue')]
+    assert {f['period_start'] for f in revenue}=={'2026-04-01','2025-04-01','2026-01-01','2025-01-01'}
+    assert {f['unit'] for f in revenue}=={'CAD'}
+    assert [f['expected_value'] for f in revenue]==['498600000','373300000','962700000','724300000']
+    dtss=next(iter(DTSS.values()))
+    assert len(dtss['facts'])==26
+    assert {f['locator']['table'] for f in dtss['facts']}=={1,2,4}
+    assert sum('cash_outflow_sign' in f for f in dtss['facts'])==2
+
+
 def test_registered_tuple_plan_survives_json_without_allowing_semantic_changes(monkeypatch):
     import json
     text,source,plan=fixture()
