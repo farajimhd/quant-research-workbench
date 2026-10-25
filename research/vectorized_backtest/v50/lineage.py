@@ -137,7 +137,7 @@ def training_shortlist(global_values,eligible,order,valid,size,generation,ids,*,
 
 
 
-def next_population(rng,population,ids,pedigree,rank,generation,config=Selection(),*,session_values,session_eligible,global_values,global_eligible,target_size=None,behavior=None,species=None,ordered=None,case_values=None,case_ids=None):
+def next_population(rng,population,ids,pedigree,rank,generation,config=Selection(),*,session_values,session_eligible,global_values,global_eligible,target_size=None,behavior=None,species=None,ordered=None,case_values=None,case_ids=None,probe=None):
     """One score pool in mixed phase; strictly owned case pools in phase0."""
     from dataclasses import replace
     from .species import Species
@@ -154,7 +154,10 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
     if isolation and (any(x is None for x in owners) or not set(owners)<=set(case_ids)):raise ValueError('Incomplete phase0 ownership')
     labels=owners if isolation else ['SESSION']*n
     cases=sorted(case_ids) if isolation else ['SESSION']
-    groups={c:sorted([i for i in range(n) if labels[i]==c and valid[i] and values[i]>0],key=lambda i:(-values[i],ids[i])) for c in cases}
+    active=np.asarray([m['closed_positions'] for m in ordered],float).sum(axis=0)>0
+    if active.shape!=(n,):raise ValueError('Aligned training activity required')
+    # Fitness ranks valid trading candidates; positivity is not a reproduction gate.
+    groups={c:sorted([i for i in range(n) if labels[i]==c and valid[i] and active[i]],key=lambda i:(-values[i],ids[i])) for c in cases}
     groups={c:p for c,p in groups.items() if p}
     allocation=quotas(cases,groups,target,generation) if isolation else {'SESSION':target}
     remaining=dict(allocation)
@@ -176,7 +179,8 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
             case=available[(generation+len(children))%len(available)]
         if remaining[case]<=0:raise ValueError('Case allocation exhausted')
         for attempt in range(64):
-            m=sample(Proposal(root_key,(generation,len(children),'immigrant',attempt)),1)[0]
+            from .initial_population import immigrant
+            m=immigrant(Proposal(root_key,(generation,len(children),'immigrant',attempt)),probe)
             if isolation:m=replace(m,case_owner=case).validate()
             key=program_key(m)
             if key not in keys:break
@@ -185,7 +189,24 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
         keys.add(key);children.append(m);parents.append((-1,-1));ops.append('fresh');remaining[case]-=1
         metadata.append(dict(route=reason,case=case if isolation else None,case_owner=m.case_owner))
     for _ in range(fresh_budget):fresh('fresh')
-    for _ in range(elite_budget-len(selected)):fresh('insufficient-positive-elites')
+    for _ in range(elite_budget-len(selected)):fresh('insufficient-active-elites')
+    def parent_mutation(pool,case,slot,reason):
+        """No mate is required to improve a valid parent; preserve its ancestry."""
+        if not pool:
+            fresh('no-valid-active-parent',case);return
+        for attempt in range(config.mate_attempts):
+            parent=pool[(rank_index(len(pool),slot,generation)+attempt)%len(pool)]
+            proposal=Proposal(root_key,(generation,len(children),'parent-mutation',attempt))
+            try:child,fields=mutation(proposal,population[parent],1+slot%5)
+            except (ValueError,RuntimeError):continue
+            key=program_key(child)
+            if key in keys:continue
+            keys.add(key);children.append(child);parents.append((int(ids[parent]),-1));ops.append('parent_mutation');remaining[case]-=1
+            metadata.append(dict(route=reason,case=None,case_owner=None,mutation_fields=fields,
+                parent_objectives=[float(values[parent])],structural_mutation=any(f['field'].startswith('structure:') for f in fields)))
+            return
+        # Do not silently turn a viable-parent route back into random search.
+        raise RuntimeError('Distinct parent-mutation offspring attempts exhausted')
     whole_plan=balanced(cross_budget,[.25,.75],generation)==0
     whole_modes=balanced(int(whole_plan.sum()),[.5,.25,.25],generation)
     route_plan=balanced(cross_budget,SETTINGS['mating_weights'],generation)
@@ -213,7 +234,7 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
                 slot=cross_slot;cross_slot+=1;whole=bool(whole_plan[slot])
                 whole_mode=('union','intersection','xor')[int(whole_modes[whole_offset])] if whole else None
                 if whole:whole_offset+=1
-                if pair is None:fallbacks+=1;fresh('no-compatible-unrelated-parent',case);continue
+                if pair is None:fallbacks+=1;parent_mutation(pool,case,slot,'no-compatible-unrelated-parent');continue
                 first,second=pair if (sibling+generation)%2==0 else pair[::-1]
                 offset=int(starts[slot]);width=int(action_counts[slot]);plan=dict(orientation=0,count=width,action_start=offset,modes=[SETTINGS['action_modes'][int(i)] for i in modes[offset:offset+width]])
                 accepted=False
@@ -232,14 +253,15 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
                         crossover=operator,whole_network=whole,whole_mode=whole_mode,pair_group=group,sibling_index=sibling,parent_objectives=[float(values[first]),float(values[second])],
                         structural_delta=sum(len(v.nodes) for v in child.networks.values())-sum(len(v.nodes) for v in population[first].networks.values())))
                     accepted_group.append(len(metadata)-1);accepted=True;break
-                if not accepted:fallbacks+=1;fresh('invalid-or-duplicate-child',case)
+                if not accepted:fallbacks+=1;parent_mutation(pool,case,slot,'invalid-or-duplicate-child')
             if accepted_group:
                 sibling_realized[len(accepted_group)]+=1
                 for i in accepted_group:metadata[i]['sibling_count']=len(accepted_group)
     assert cross_slot==cross_budget and whole_offset==len(whole_modes) and not any(remaining.values())
     rate=SETTINGS['mutation_fraction']
     if not config.mutation_min<=rate<=config.mutation_max:raise ValueError('Mutation schedule outside approved envelope')
-    chosen=np.flatnonzero(balanced(len(children),[rate,1-rate],generation)==0)
+    mutation_pool=np.asarray([i for i,o in enumerate(ops) if o!='parent_mutation'],dtype=int)
+    chosen=mutation_pool[balanced(len(mutation_pool),[rate,1-rate],generation)==0]
     edit_counts=1+balanced(len(chosen),SETTINGS['edit_weights'],generation)
     edit_modes=balanced(int(edit_counts.sum()),[SETTINGS['parameter_fraction'],1-SETTINGS['parameter_fraction']],generation)
     parameter_fields=balanced(int((edit_modes==0).sum()),SETTINGS['parameter_weights'],generation)
@@ -273,7 +295,10 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
     telemetry=dict(species.telemetry,selection_policy='isolated-case-score' if isolation else 'unified-session-score',
         requested_elites=elite_budget,elites=len(selected),baseline_fresh=fresh_budget,requested_crossovers=cross_budget,
         fresh_candidates=sum(o.startswith('fresh') for o in ops),crossovers=sum('crossover' in o for o in ops),
-        mutations=len(chosen),mutation_rate=rate,structural_mutations=structural,rejected_duplicates=duplicates,
+        active_parent_candidates=int((valid&active).sum()),parent_mutations=ops.count('parent_mutation'),
+        reproduction_policy='v50-ranked-active-calibrated-v2',
+        mutations=len(chosen)+ops.count('parent_mutation'),mutation_rate=rate,
+        structural_mutations=structural+sum(m.get('structural_mutation',False) for o,m in zip(ops,metadata) if o=='parent_mutation'),rejected_duplicates=duplicates,
         invalid_crossover_attempts=invalid_crossovers,fallbacks=fallbacks,case_quotas=allocation,ownership_verified=True,
         sibling_requests=sibling_requests,sibling_realized=sibling_realized,
         whole_network=dict(requested=int(whole_plan.sum()),accepted=sum(m.get('whole_network',False) for m in metadata),rejected_reasons=whole_rejections,

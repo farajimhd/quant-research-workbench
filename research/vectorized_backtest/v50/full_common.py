@@ -22,6 +22,8 @@ def check_job(job):
     elif job['training_days']!=['2026-08-13'] or job['validation_days'] or job['training_days'][0] not in train:raise ValueError('Pilot restricted to certified Aug13 training')
     if (job['population'],job['initial_multiplier'],job['phase2_generations'])!=(1024,6,100 if full else 50):raise ValueError('Approved population/budget mismatch')
     if job['objective']!=dict(drawdown_weight=1.,loss_weight=.1):raise ValueError('V50 cost differs from authorization')
+    from .reproduction_resume import validate_transition
+    validate_transition(job)
 
 
 def config(job,node,role='training'):

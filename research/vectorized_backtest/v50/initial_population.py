@@ -2,6 +2,18 @@
 from .genome import Individual
 from .lineage import program_key
 
+def immigrant(rng,probe):
+    """Use the same training-only priors and activation calibration as founders."""
+    if probe is None:raise ValueError('Fresh V50 offspring require the sealed training probe')
+    from .genome import sample
+    from research.vectorized_backtest.v42.calibration import policy_families,calibrate
+    member=sample(rng,1)[0]
+    # policy_families balances batches; a singleton would always be independent.
+    members,_=policy_families(rng,[member,member])
+    members=[members[int(rng.integers(2))]]
+    members,_=calibrate(rng,members,probe)
+    return members[0]
+
 def initialize(rng,size,*,probe=None):
     if size!=6144:raise ValueError('V50 pilot requires 3072 templates plus 3072 fresh random candidates')
     from research.vectorized_backtest.v42.initial_population import initialize_random

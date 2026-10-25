@@ -22,3 +22,23 @@ certified windows. Validation is opened after successor/RNG freeze and never cha
 Memory guards remain128GiB reserve +32GiB admission; one GPU process, two CPU data entries,
 one compiler graph plan and one bounded CPU prefetch. Progress T toggles sealed training/validation.
 The original Aug13 pilot and its source/checkpoints remain preserved separately.
+
+## Reproduction repair and generation-2 continuation
+
+Reproduction v2 ranks financially eligible candidates with closed training positions,
+including negative scores. Inactive candidates cannot supply elites or parents.
+The 10% elite / 20% fresh / 70% offspring allocation is unchanged. Missing mating
+pairs and invalid crossover children use unique mutation-only descendants of ranked
+parents; ancestry remains explicit. With no valid active parent, calibrated fresh
+immigrants fill the missing slots. Every fresh immigrant uses the sealed training
+activation probe and founder policy priors. Ordinary and whole-network crossover,
+execution guards, objective weights and validation isolation remain unchanged.
+
+`reproduction_resume.py export-context` runs under the stopped original deployment
+and reconstructs generation-2 ancestry/RNG by reproducing generation 1 on CPU from
+its verified training receipts. Its output must exactly match the saved successor.
+`prepare` runs under the repaired deployment, verifies unchanged replay code and
+generation-2 training receipts, and builds the corrected generation-3 successor.
+Neither operation executes market replay. A separate linked continuation preserves
+the original generation seals and binds the replacement successor in an explicit
+transition receipt. Old partial generation-3 replay results are not reused.

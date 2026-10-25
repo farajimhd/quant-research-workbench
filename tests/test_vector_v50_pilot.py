@@ -13,6 +13,7 @@ from research.vectorized_backtest.v50.full_common import aggregate
 from research.vectorized_backtest.v50.objectives import Objective
 from research.vectorized_backtest.v50.identity import digest
 from research.vectorized_backtest.v50.progress import render
+from research.vectorized_backtest.v50.genome import sample
 
 
 def members(n):
@@ -49,7 +50,9 @@ class PilotTests(unittest.TestCase):
             initial,report=initialize(np.random.default_rng(2020),6144,probe={})
         self.assertEqual(len(initial),6144);self.assertEqual(report['random_count'],3072);self.assertEqual(report['seed_count'],3072);self.assertFalse(report['past_results_loaded'])
 
-    def test_real_phase2_loop_reduces_population_resume_and_validation_rng(self):
+    @patch('research.vectorized_backtest.v42.calibration.load_probe',return_value={})
+    @patch('research.vectorized_backtest.v50.initial_population.immigrant',side_effect=lambda rng,probe:sample(rng,1)[0])
+    def test_real_phase2_loop_reduces_population_resume_and_validation_rng(self,*mocks):
         runtime=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v50/preparation/tests');runtime.mkdir(parents=True,exist_ok=True)
         founders=members(30);hashes=[]
         for val in (20.,-100000.):
