@@ -46,7 +46,7 @@ def bridge(text,document,archive,*,metadata_only=False):
     return dict(result,candidate_hash=digest(result))
 
 
-def inspect(query,cik,accession,document_name,claim,source_guard):
+def inspect(query,cik,accession,document_name,claim,source_guard,*,occurrence=None):
     """At most two distinct versions per source; no publication or repair."""
     if (not isinstance(cik,str) or not re.fullmatch('0*[1-9][0-9]{0,9}',cik)
             or not isinstance(accession,str) or not re.fullmatch('[0-9]{10}-[0-9]{2}-[0-9]{6}',accession)
@@ -55,6 +55,15 @@ def inspect(query,cik,accession,document_name,claim,source_guard):
     def guard():claim.check();source_guard();claim.check()
     ciks=','.join(literal(v) for v in sorted({str(int(cik)),str(int(cik)).zfill(10)}))
     where=f'accession_number={literal(accession)} AND document_name={literal(document_name)} AND cik IN ({ciks})'
+    archive_where=f'accession_number={literal(accession)}'
+    if occurrence is not None:
+        if (set(occurrence)!={'day','content_sha256','source_version_key'}
+                or not re.fullmatch('[0-9a-f]{64}',occurrence['content_sha256'])
+                or not re.fullmatch('(?:[0-9a-f]{64})?',occurrence['source_version_key'])):
+            raise ValueError('Invalid explicit archive occurrence')
+        day=str(date.fromisoformat(occurrence['day']))
+        where+=f' AND source_archive_date={literal(day)} AND content_sha256={literal(occurrence["content_sha256"])} AND source_version_key={literal(occurrence["source_version_key"])}'
+        archive_where+=f' AND source_archive_date={literal(day)}'
     columns='document_id,accession_number,cik,sequence_number,document_name,document_type,source_archive_date,source_archive_member,source_archive_path,content_sha256,source_revision_kind,source_version_key,source_revision_rank,source_revision_at'
     def load():
         # Filter the exact document before reading large text payload columns.
@@ -66,7 +75,7 @@ def inspect(query,cik,accession,document_name,claim,source_guard):
         limit=3 if live_pair else 2
         archive=query('SELECT DISTINCT accession_number,primary_cik,source_archive_date,source_archive_member,source_archive_path,'
             'source_content_sha256,source_version_key,source_revision_rank,source_revision_at,source_revision_kind,pac_event_id '
-            f'FROM q_live.sec_filing_archive_accession_v3 WHERE accession_number={literal(accession)} LIMIT {limit}')
+            f'FROM q_live.sec_filing_archive_accession_v3 WHERE {archive_where} LIMIT {limit}')
         if live_pair:
             # Two legitimate transport occurrences are possible. Three means
             # ambiguity, never silently choose the newest occurrence.

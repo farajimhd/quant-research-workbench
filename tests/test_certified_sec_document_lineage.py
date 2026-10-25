@@ -65,6 +65,23 @@ def test_inspection_is_bounded_read_only_and_rechecks_stability():
     assert all(' PREWHERE ' in sql and ' FINAL ' not in sql for sql in payload_queries)
 
 
+def test_explicit_occurrence_filters_and_rechecks_selected_archive():
+    text,document,archive=fixture();queries=[]
+    def query(sql):
+        queries.append(sql)
+        assert "source_archive_date='2025-10-31'" in sql
+        if '.sec_filing_archive_accession_v3 ' not in sql:
+            assert "content_sha256='"+'b'*64+"'" in sql
+            assert "source_version_key=''" in sql
+        return [deepcopy(text if '.sec_filing_text_v3 ' in sql else
+                         document if '.sec_filing_document_v3 ' in sql else archive)]
+    owner=SimpleNamespace(check=lambda:None)
+    result=lineage.inspect(query,'320193',text['accession_number'],'filing.htm',owner,lambda:None,
+        occurrence=dict(day='2025-10-31',content_sha256='b'*64,source_version_key=''))
+    assert len(queries)==6 and result['document']['source_archive_date']=='2025-10-31'
+    assert result['candidate_only'] and not result['original_vintage_qualified']
+
+
 def test_ambiguous_physical_versions_require_reconciliation():
     owner=SimpleNamespace(check=lambda:None)
     with pytest.raises(ValueError,match='ambiguous'):

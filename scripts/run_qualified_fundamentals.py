@@ -75,6 +75,7 @@ def _main():
             raise ValueError('Retry profiling requires 1..12 exact blocked targets')
         request['retry_manifest_hash']=manifest['manifest_hash']
     resource_rows={}
+    occurrence_rows={}
     if a.retained_gap_manifest:
         from pipelines.fundamentals.retry import retained_gaps
         manifest=json.loads(a.retained_gap_manifest.read_text())
@@ -82,6 +83,8 @@ def _main():
         with closing(Client(a.endpoint)) as selection_client:
             retry_documents=retained_gaps(manifest,selection_client.query,population_hash=pop_hash,ciks=ciks,start=a.start,end=a.end)
         resource_rows=manifest.get('resources',{})
+        occurrence_rows={digest(row):{k:row[k] for k in ('day','content_sha256','source_version_key')}
+                         for row in retry_documents if digest(row) in manifest.get('equivalent_occurrences',{})}
         request['retry_manifest_hash']=manifest['manifest_hash']
     if (root/'request.json').exists():
         old=json.loads((root/'request.json').read_text())
@@ -239,7 +242,8 @@ def _main():
                     def prepare(row):
                         try:
                             with closing(Client(a.endpoint)) as lane:
-                                before=lineage.inspect(lane.query,row['cik'],row['accession'],row['document'],claim,guard)
+                                before=lineage.inspect(lane.query,row['cik'],row['accession'],row['document'],claim,guard,
+                                                       occurrence=occurrence_rows.get(digest(row)))
                             key=digest(dict(version=sec_share_source.VERSION,candidate_hash=before['candidate_hash'],parser=sec_share_context.VERSION))
                             descriptor=dict(document=dict(document_key=key,lineage=before));descriptor['prepared_hash']=digest(descriptor)
                             return row,descriptor,None
@@ -332,7 +336,7 @@ def _main():
                         def source_audit():
                             owned()
                             # Exact current lineage remains a publication guard.
-                            if lineage.inspect(own.query,*request_tuple,claim,guard)!=descriptor['document']['lineage']:
+                            if lineage.inspect(own.query,*request_tuple,claim,guard,occurrence=occurrence_rows.get(token))!=descriptor['document']['lineage']:
                                 raise ValueError('Original source lineage changed')
                             for resource in resource_rows.get(token,[]):
                                 if lineage.inspect(own.query,resource['cik'],resource['accession'],resource['document'],claim,guard)!=resource_descriptors[digest(resource)]['document']['lineage']:
