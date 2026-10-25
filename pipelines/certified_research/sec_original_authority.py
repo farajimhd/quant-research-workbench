@@ -12,12 +12,13 @@ from pipelines.fundamentals.eligibility import require_eligible
 VERSION='qualified-original-filing-authority-v1'
 
 
-def verify_document(query,database,cik,accession,document,binding_hash,claim,source_guard):
+def verify_document(query,database,cik,accession,document,binding_hash,claim,source_guard,*,occurrence=None):
     require_eligible('issuer_cik',[str(cik).zfill(10)])
     def guard():
         claim.check();source_guard();claim.check()
     guard()
-    before=sec_document_lineage.inspect(query,cik,accession,document,claim,source_guard)
+    scope={} if occurrence is None else dict(occurrence=occurrence)
+    before=sec_document_lineage.inspect(query,cik,accession,document,claim,source_guard,**scope)
     checked=sec_reported_readback.verify(query,database,binding_hash,claim,source_guard,include_source=True)
     extraction=checked['extraction']
     key=digest(dict(version=sec_share_source.VERSION,candidate_hash=before['candidate_hash'],parser=sec_share_context.VERSION))
@@ -47,7 +48,7 @@ def verify_document(query,database,cik,accession,document,binding_hash,claim,sou
     projection=sec_precision.select_reported(extraction,mode=checked['numeric_mode'])
     if projection['projection_hash']!=checked['projection_hash'] or len(projection['groups'])!=checked['groups']:
         raise ValueError('Original filing authority differs from verified reported projection')
-    after=sec_document_lineage.inspect(query,cik,accession,document,claim,source_guard)
+    after=sec_document_lineage.inspect(query,cik,accession,document,claim,source_guard,**scope)
     guard()
     if before!=after:raise ValueError('Original filing lineage changed during authority verification')
     result=dict(version=VERSION,cik=str(int(cik)).zfill(10),accession=accession,document=document,

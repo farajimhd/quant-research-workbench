@@ -386,10 +386,10 @@ def _main():
                             projection=reported.capture(own.query,'q_live',extracted,witness,qualified_time,receipt,claim,stable,admission,
                                 numeric_mode='round-to-nearest',source_reconciliation_hash=original['reconciliation_hash'])
                             update('qualified ARTE publication and readback')
-                            result=qualified.publish(own.query,'q_live','arte',request_tuple,projection['binding_hash'],pop_hash,observed,claim,stable)
+                            result=qualified.publish(own.query,'q_live','arte',request_tuple,projection['binding_hash'],pop_hash,observed,claim,stable,occurrence=occurrence_rows.get(token))
                             reuse=True
                             if a.profile:
-                                again=qualified.publish(own.query,'q_live','arte',request_tuple,projection['binding_hash'],pop_hash,observed,claim,stable)
+                                again=qualified.publish(own.query,'q_live','arte',request_tuple,projection['binding_hash'],pop_hash,observed,claim,stable,occurrence=occurrence_rows.get(token))
                                 reuse=again['state']=='reused'
                                 if not reuse:raise ValueError('Qualified profile failed receipt reuse')
                             update('complete')

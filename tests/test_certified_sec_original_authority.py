@@ -25,6 +25,21 @@ def invoke():
     return authority.verify_document(Mock(),'q_live','320193','0000320193-25-000079','filing.htm','b'*64,Mock(),Mock())
 
 
+def test_explicit_occurrence_survives_both_authority_checks_without_bypassing_binding():
+    lineage,checked=evidence()
+    occurrence=dict(day='2025-10-18',content_sha256=checked['source_document_hash'],source_version_key='')
+    with patch.object(authority.sec_document_lineage,'inspect',return_value=lineage) as inspect,\
+         patch.object(authority.sec_reported_readback,'verify',return_value=checked):
+        args=(Mock(),'q_live','320193','0000320193-25-000079','filing.htm','b'*64,Mock(),Mock())
+        result=authority.verify_document(*args,occurrence=occurrence)
+        assert result['document_qualified']
+        assert inspect.call_count==2
+        assert all(call.kwargs==dict(occurrence=occurrence) for call in inspect.call_args_list)
+        checked['document_key']='f'*64
+        with pytest.raises(ValueError,match='binding'):
+            authority.verify_document(*args,occurrence=occurrence)
+
+
 @pytest.mark.parametrize('bulk_status', ['missing_bulk_comparison_census','value_mismatch'])
 def test_original_values_are_authoritative_and_bulk_disagreements_survive(bulk_status):
     lineage,checked=evidence()

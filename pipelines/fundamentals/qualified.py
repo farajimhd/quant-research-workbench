@@ -20,12 +20,13 @@ def recipe_hash():
         authority=Path(sec_original_authority.__file__).read_text(encoding='utf-8')))
 
 
-def publish(query,source_database,database,request,binding_hash,population_hash,observed_at,claim,source_guard):
+def publish(query,source_database,database,request,binding_hash,population_hash,observed_at,claim,source_guard,*,occurrence=None):
     identifier(database);identifier(source_database)
     if observed_at.tzinfo is None:raise ValueError('Qualified publication requires an aware observation timestamp')
     require_eligible('issuer_cik',[str(request[0]).zfill(10)])
     claim.check();schema.verify(query,database)
-    verified=sec_original_authority.verify_document(query,source_database,*request,binding_hash,claim,source_guard)
+    scope={} if occurrence is None else dict(occurrence=occurrence)
+    verified=sec_original_authority.verify_document(query,source_database,*request,binding_hash,claim,source_guard,**scope)
     recipe=recipe_hash();source_id=verified['authority_hash']
     stamp=observed_at.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')
     prior=query(f"SELECT DISTINCT toString(observed_at) observed_at,recipe_hash FROM {database}.reference_source_v1 FINAL "
