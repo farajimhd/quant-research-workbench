@@ -1,6 +1,25 @@
 from pipelines.certified_research.sec_html_reviewed_gaps import plan_for,ADRX_HASH
 
 
+def test_xjet_empro_keep_units_contexts_and_taxonomies():
+    from pipelines.certified_research.sec_html_reviewed_xjet_empro import REVIEWED, plan_for
+    for h, spec in REVIEWED.items():
+        facts = plan_for(h, spec['cik'])['facts']
+        assert plan_for(h, '1') is None
+        assert len({(f['concept'], f['period_start'], f['period_end'], f['unit']) for f in facts}) == len(facts)
+        if spec['cik'] == '0001960081':
+            assert len(facts) == 22
+            assert all(f['scale'] == 0 for f in facts if f['unit'] != 'USD')
+            assert all(f['locator']['table'] == 38 for f in facts if f['concept'].endswith('}NetIncomeLoss'))
+        else:
+            assert len(facts) == 16
+            assert all('ifrs-full}' in f['concept'] for f in facts)
+            assert not any(f['unit'] == 'USD/shares' for f in facts)
+            for f in facts:
+                if f['label'] == '':
+                    assert len(f['table_proof']['headers']) == 4
+
+
 def test_origin_liftoff_keep_actual_contexts_and_share_units():
     from pipelines.certified_research.sec_html_reviewed_origin_liftoff import REVIEWED, plan_for
     for h, spec in REVIEWED.items():
