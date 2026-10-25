@@ -65,7 +65,7 @@ def snapshot_population(query, day):
     if not ciks:raise ValueError('No unambiguous SEC issuer mapping for this population')
     kinds={'security':sorted({x['security_id'] for x in included if x['security_id']}),
            'issuer':sorted({x['issuer_id'] for x in included if x['issuer_id']}),'issuer_cik':ciks}
-    return {'families':{f:kinds[a.kind] for f,a in ADAPTERS.items()},
+    population = {'families':{f:kinds[a.kind] for f,a in ADAPTERS.items()},
         'captured_at':datetime.now(timezone.utc).isoformat(),
         'provenance':{'policy':'retained_snapshot_population_v2_direct_issuer','universe_date':str(day),
             'population_rows':len(rows),'population_hash':digest(rows),'bridge_hash':digest(bridge),
@@ -76,6 +76,9 @@ def snapshot_population(query, day):
             'excluded_bridge_rows':len(bridge)-len(admitted),
             'subsidiary_association_rows':sum(x['mapping_method']==ASSOCIATION_METHOD for x in bridge),
             'scope':'Snapshot cohort only; not historical membership or current account buy permission'}}
+    from .issuer_lineage import extend_population
+    from datetime import time
+    return extend_population(query,population,datetime.combine(day,time.max,timezone.utc))
 
 
 def resolve_ticker(query, ticker, at, *, known_at=None):
