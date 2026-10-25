@@ -9,7 +9,7 @@ import argparse,json,time,platform
 from concurrent.futures import ThreadPoolExecutor,as_completed
 from scripts.run_fundamentals import Client,save,lock
 from pipelines.fundamentals import schema
-from pipelines.fundamentals.period_recovery import candidates_sql,recovery_sql,identity_sql,VERSION
+from pipelines.fundamentals.period_recovery import candidates_sql,recovery_sql,identity_sql,classification_sql,VERSION
 from pipelines.certified_research.contracts import literal,digest
 from research.mlops.env import load_env_files
 from research.mlops.clickhouse import discover_clickhouse_env_files
@@ -43,7 +43,13 @@ def run(a):
                 if not a.execute:
                     sql=sql.replace('SELECT company_fact_id,source_hash FROM arte.reference_period_evidence_v1 FINAL',"SELECT '' company_fact_id,'' source_hash WHERE 0")
                 # Only immutable IDs cross the wire; values/history stay in CH.
-                keys=q('SELECT DISTINCT company_fact_id,source_hash FROM ('+sql+') ORDER BY company_fact_id,source_hash')
+                classified=q('SELECT DISTINCT company_fact_id,source_hash,source_instant_context FROM ('+
+                    classification_sql(sql)+') ORDER BY company_fact_id,source_hash')
+                rejected=[r for r in classified if r['source_instant_context']]
+                keys=[{k:r[k] for k in ('company_fact_id','source_hash')} for r in classified if not r['source_instant_context']]
+                if rejected:
+                    save(root/('instant-contexts-'+digest(ids)+'.json'),dict(version=VERSION,
+                        reason='exact_source_identity_has_no_duration_start',source_facts_preserved=True,rows=rejected))
                 recovered=unmatched=reused=0
                 for i in range(0,len(keys),128):
                     if (root/'STOP').exists():raise RuntimeError('Graceful STOP requested')
@@ -69,7 +75,7 @@ def run(a):
                         save(receipt,dict(version=VERSION,keys=batch,recovered=found,unmatched=len(batch)-found))
                     else:found=int(q('SELECT count() n FROM ('+recovery+')')[0]['n'])
                     recovered+=found;unmatched+=len(batch)-found
-                return dict(ciks=ids,candidates=len(keys),recovered=recovered,unmatched=unmatched,reused_unmatched=reused,seconds=time.monotonic()-begin)
+                return dict(ciks=ids,candidates=len(keys),source_instant_contexts=len(rejected),recovered=recovered,unmatched=unmatched,reused_unmatched=reused,seconds=time.monotonic()-begin)
             finally:client.close()
         with ThreadPoolExecutor(max_workers=a.workers) as pool:
             futures=[pool.submit(work,ids) for ids in jobs]
@@ -83,7 +89,7 @@ def run(a):
                 state=dict(state='running',completed=len(results),total=len(jobs),elapsed=elapsed,
                            eta_seconds=elapsed/len(results)*(len(jobs)-len(results)),results=results)
                 save(root/'status.json',state)
-                print(f"[{len(results)}/{len(jobs)}] recovered {sum(x['recovered'] for x in results)} | unmatched {sum(x['unmatched'] for x in results)} | {elapsed:.1f}s | ETA {state['eta_seconds']:.1f}s",flush=True)
+                print(f"[{len(results)}/{len(jobs)}] recovered {sum(x['recovered'] for x in results)} | unmatched {sum(x['unmatched'] for x in results)} | source instant contexts {sum(x['source_instant_contexts'] for x in results)} | {elapsed:.1f}s | ETA {state['eta_seconds']:.1f}s",flush=True)
         if a.execute:
             c=Client(a.endpoint)
             try:schema.verify(c.query)

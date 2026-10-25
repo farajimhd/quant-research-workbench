@@ -38,6 +38,17 @@ def test_competing_identity_and_ubs_are_rejected():
     with pytest.raises(ValueError):recovery.reconcile(['0001610520'],[],[])
 
 
+def test_registered_fund_is_not_an_unresolved_corporate_identity():
+    case=recovery.reconcile([C],[],[dict(cik=C,forms=['N-CSR','NPORT-P','N-CEN'])])[0]
+    assert case['lane']=='not_applicable_corporate_v1'
+    assert case['reason']=='registered_fund_reporting_regime'
+    assert not case['requires_review'] and not case['full_history_complete']
+    # A later corporate report invalidates that applicability disposition.
+    changed=recovery.reconcile([C],[],[dict(cik=C,forms=['N-CSR','10-K'])])[0]
+    assert changed['lane']=='extraction' and changed['requires_review']
+    assert recovery.reconcile([C],[],[dict(cik=C,forms=['N-2'])])[0]['requires_review']
+
+
 def test_debt_variants_are_not_simultaneous_required_features():
     row=dict(cik=C,period_start=None,period_end='2026-06-30',unit='USD',
              present=['assets','debt_total'],conflicts=[],accessions=['a'])

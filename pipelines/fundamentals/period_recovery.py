@@ -18,6 +18,23 @@ def identity_sql(cik,taxonomy,tag,unit,start,end,accession,frame):
     return "lower(hex(SHA256(replaceAll("+encoded+","+literal('\\/')+",'/'))))"
 
 
+def frames_sql():
+    return "arrayConcat([''],arrayFlatten(arrayMap(y -> arrayMap(s -> concat('CY',toString(y),s),['','Q1','Q2','Q3','Q4','Q1I','Q2I','Q3I','Q4I']),[toYear(period_end_date)-1,toYear(period_end_date),toYear(period_end_date)+1])))"
+
+
+def classification_sql(candidates):
+    """Prove an originally empty start before attempting any duration search.
+
+    An instant-tagged revenue/EPS record is invalid as a duration input. Its
+    exact retained hash proves the empty start; no period or zero is invented.
+    Keep this explicit rejection in operational accounting and preserve facts.
+    """
+    original=identity_sql('cik','taxonomy','tag','unit_code',literal(''),
+        'toString(period_end_date)','assumeNotNull(accession_number)','candidate_frame')
+    return f'''SELECT *,arrayExists(candidate_frame -> {original}=company_fact_id,
+        {frames_sql()}) source_instant_context FROM ({candidates})'''
+
+
 def candidates_sql(ciks,database='arte',*,exclude_completed=True):
     identifier(database)
     if not 1<=len(ciks)<=128:raise ValueError('Bound issuer cohorts to 128')
@@ -43,7 +60,7 @@ def candidates_sql(ciks,database='arte',*,exclude_completed=True):
 def recovery_sql(candidates,*,maximum_days=731):
     if not 1<=maximum_days<=731:raise ValueError('Bounded period search required')
     # A finite search is not an inference: unmatched IDs remain unresolved.
-    frames="arrayConcat([''],arrayFlatten(arrayMap(y -> arrayMap(s -> concat('CY',toString(y),s),['','Q1','Q2','Q3','Q4','Q1I','Q2I','Q3I','Q4I']),[toYear(period_end_date)-1,toYear(period_end_date),toYear(period_end_date)+1])))"
+    frames=frames_sql()
     identity=identity_sql('cik','taxonomy','tag','unit_code','toString(start)','toString(period_end_date)','assumeNotNull(accession_number)','frame')
     return f'''SELECT company_fact_id,source_hash,any(start) period_start,any(frame) recovered_frame,
        {literal(VERSION)} method,now64(6,'UTC') completed_at FROM

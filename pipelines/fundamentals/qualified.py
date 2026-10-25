@@ -52,6 +52,8 @@ def _publish_verified(query,source_database,database,request,binding_hash,popula
         event_key=request[1],source_table=verified.get('source_table',source_database+'.research_sec_reported_document_v1'),
         source_hash=binding_hash,evidence_ref=json.dumps(dict(authority_hash=source_id,binding_hash=binding_hash,
             document=request[2],scope=verified.get('qualification_scope','document'),whole_scope_certified=False,
+            **({k:verified[k] for k in ('supplements_authority','review_scope_id','parent_state_hash')}
+               if verified.get('review_scope_id') else {}),
             **({'time_evidence':verified['time_evidence']} if 'time_evidence' in verified else {})),sort_keys=True,separators=(',',':')),
         available_at=verified['available_at'],observed_at=stamp,quality='certified',
         reason=({'reviewed_html_observations':'qualified_reviewed_html_observations',

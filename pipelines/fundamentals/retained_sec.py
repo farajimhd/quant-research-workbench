@@ -100,12 +100,20 @@ def inspect(query, document):
     return dict(document=source, metadata=metadata[0], time_evidence=historical_time(metadata[0]))
 
 
-def prepare(query, document, claim, guard=lambda: None):
+def prepare(query, document, claim, guard=lambda: None, *, database='arte'):
     claim.check(); guard()
     before = inspect(query, document)
     payload = sec_document_payload.load(query, document['cik'], document['accession'], document['document'],
         document['content_sha256'], maximum_bytes=64*1024**2, guard=claim.check)
     extracted = sec_fundamental_context.extract(payload, document['content_sha256'], document['cik'], maximum_bytes=64*1024**2)
+    addition=None
+    if document.get('review_scope_id'):
+        from pipelines.certified_research.sec_html_additions import entry_for
+        from pipelines.certified_research.sec_html_context import extract,verify_registered
+        addition=entry_for(document['review_scope_id'],document['cik'],document['content_sha256'])
+        verify_registered(extracted,document['cik'])
+        base_groups=sec_precision.select_reported(extracted,mode='round-to-nearest')['groups']
+        extracted=extract(payload,document['content_sha256'],document['cik'],addition['plan'])
     del payload
     # Exact serialization readback, registered HTML semantics and precision
     # checks are shared with the archive-qualified original path.
@@ -136,6 +144,18 @@ def prepare(query, document, claim, guard=lambda: None):
     native = {r['concept']:r['html_proof']['native'] for r in extracted['observations']
               if 'native' in r.get('html_proof', {})}
     if native: result['native_definitions'] = native
+    if addition:
+        from .additive import parent_state
+        parent=addition['parent_authority']
+        state=parent_state(query,database,document['cik'],document['accession'],document['document'],
+                           parent,base_groups,result['groups'])
+        # New observation time is recorded separately. Historical availability
+        # remains the verified parent's clock, not a reinterpreted timestamp.
+        result.update(supplements_authority=parent,review_scope_id=document['review_scope_id'],
+            parent_state_hash=digest(state),qualification_scope='reviewed_additive_html_observations',
+            available_at=state['headers'][0]['available_at'])
+        result['time_evidence']=dict(result['time_evidence'],
+            available_at=result['available_at'],availability_basis='completed_parent_authority_clock')
     from pipelines.certified_research import sec_trust_context as trust
     if document['content_sha256'] == trust.SUPPLEMENT_DOCUMENT and document['cik'] == trust.SOURCE_CIK:
         result['groups'] = [g for g in result['groups'] if trust.subject(g)]
@@ -149,21 +169,23 @@ def publish(query, database, document, population_hash, observed_at, claim, guar
     identifier(database)
     if observed_at.tzinfo is None: raise ValueError('Aware ingestion timestamp required')
     schema.verify(query, database)
-    verified, before = prepare(query, document, claim, guard)
+    verified, before = prepare(query, document, claim, guard,database=database)
     prior = query(f"SELECT DISTINCT source_id FROM {database}.reference_source_v1 FINAL "
         "WHERE family='sec_original_qualified' AND entity_id="+literal(document['cik'])+
         ' AND event_key='+literal(document['accession'])+
         ' AND JSONExtractString(evidence_ref,\'document\')='+literal(document['document']))
     permitted = {verified['authority_hash']}
     parent = verified.get('supplements_authority')
+    addition=bool(verified.get('review_scope_id'))
     if parent:
         permitted.add(parent)
         if parent not in {r['source_id'] for r in prior}:raise ValueError('Trust supplement parent authority is absent')
         receipts=query(f'SELECT fact_rows,output_hash FROM {database}.reference_batch_receipt_v1 FINAL WHERE source_signature='+literal(parent))
         if not receipts or any(int(r['fact_rows'])<=0 for r in receipts):raise ValueError('Trust supplement parent receipt is absent')
         # The reviewed additive path must not repeat any original trust fact.
-        overlap=query(f"SELECT count() n FROM {database}.reference_fact_v1 f FINAL INNER JOIN {database}.reference_context_v1 c FINAL ON f.context_id=c.context_id WHERE f.entity_id="+literal(document['cik'])+' AND f.source_id='+literal(parent)+" AND positionCaseInsensitive(c.dimensions,'trust')>0")
-        if overlap != [dict(n=0)]:raise ValueError('Existing trust contexts require explicit reconciliation')
+        if not addition:
+            overlap=query(f"SELECT count() n FROM {database}.reference_fact_v1 f FINAL INNER JOIN {database}.reference_context_v1 c FINAL ON f.context_id=c.context_id WHERE f.entity_id="+literal(document['cik'])+' AND f.source_id='+literal(parent)+" AND positionCaseInsensitive(c.dimensions,'trust')>0")
+            if overlap != [dict(n=0)]:raise ValueError('Existing trust contexts require explicit reconciliation')
     if any(r['source_id'] not in permitted for r in prior):
         raise ValueError('Existing qualified document is preserved; explicit time-policy migration required')
     def stable():
@@ -172,6 +194,12 @@ def publish(query, database, document, population_hash, observed_at, claim, guar
             raise ValueError('Retained original changed before publication')
         if parent and query(f'SELECT fact_rows,output_hash FROM {database}.reference_batch_receipt_v1 FINAL WHERE source_signature='+literal(parent)) != receipts:
             raise ValueError('Trust supplement parent receipt changed')
+        if addition:
+            from .additive import snapshot
+            # Recheck bounded normalized parent state, never re-fetch/reparse.
+            state,_=snapshot(query,database,document['cik'],document['accession'],parent)
+            if digest(state)!=verified['parent_state_hash']:
+                raise ValueError('Additive scope parent changed before publication')
     result = qualified._publish_verified(query, 'q_live', database,
         (document['cik'], document['accession'], document['document']), verified['authority_hash'],
         population_hash, observed_at, claim, stable, verified)

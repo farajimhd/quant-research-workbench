@@ -228,7 +228,12 @@ def extract(payload,expected_hash,cik,plan,*,maximum_bytes=64*1024**2):
 def verify_registered(extraction,cik):
     """Independent normalized readback against the immutable reviewed mapping."""
     from .sec_html_reviewed import plan_for
-    plan=plan_for(extraction['source_text_hash'],cik)
+    scope=extraction.get('html_plan',{}).get('review_scope_id')
+    if scope:
+        from .sec_html_additions import entry_for
+        plan=entry_for(scope,cik,extraction['source_text_hash'])['plan']
+    else:
+        plan=plan_for(extraction['source_text_hash'],cik)
     body=dict(extraction);seal=body.pop('extraction_hash',None)
     # JSON persistence changes tuples into arrays. Compare the sealed canonical
     # representation, not Python container types; all semantic bytes still bind.

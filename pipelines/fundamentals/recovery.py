@@ -17,6 +17,7 @@ REGISTRATION = {'S-1','S-1/A','F-1','F-1/A','S-11','S-11/A','F-10','F-10/A',
                 'S-4','S-4/A','F-4','F-4/A','424B3','424B4','8-K12B'}
 DEBT_VARIANTS = {'debt_total','long_term_debt_including_current',
                  'long_term_debt_and_finance_leases','debt_current','debt_noncurrent'}
+FUND_REPORTS = {'N-CSR','N-CSRS','NPORT-P','N-CEN'}
 
 
 def validate_ids(ciks):
@@ -136,7 +137,30 @@ def reviewed_documents(query, ciks, start, end, database='arte'):
         for row in rows:
             if row['cik'] not in ciks[offset:offset+32]:raise ValueError('Reviewed document escaped recovery scope')
             if plan_for(row['content_sha256'],row['cik']) is not None or registered(row['content_sha256'],row['cik']):out.append(row)
-    keys=[(d['cik'],d['accession'],d['document']) for d in out]
+    # Exact registered supplements are discoverable even when the original
+    # document is already complete. Metadata only; no historical payload scans.
+    from pipelines.certified_research.sec_html_additions import REGISTERED,entry_for
+    for scope,entry in REGISTERED.items():
+        plan=entry['plan'];cik=plan['cik']
+        if cik not in ciks:continue
+        entry_for(scope,cik,plan['document_hash'])
+        pending=query(f'''SELECT DISTINCT t.cik,t.accession_number accession,t.document_name document,
+            t.content_sha256,t.source_archive_date day,t.document_type form,t.source_version_key
+            FROM q_live.sec_filing_text_v3 t
+            WHERE t.cik={literal(cik)} AND t.content_sha256={literal(plan['document_hash'])}
+            AND t.source_archive_date BETWEEN toDate({literal(start)}) AND toDate({literal(end)})
+            AND (t.cik,t.accession_number,t.document_name) IN (
+                SELECT entity_id,event_key,JSONExtractString(evidence_ref,'document')
+                FROM {database}.reference_source_v1 FINAL
+                WHERE family='sec_original_qualified' AND entity_kind='issuer_cik'
+                AND entity_id={literal(cik)} AND source_id={literal(entry['parent_authority'])}
+                AND source_id IN (SELECT source_signature FROM {database}.reference_batch_receipt_v1 FINAL))
+            AND NOT EXISTS (SELECT 1 FROM {database}.reference_source_v1 FINAL
+                WHERE family='sec_original_qualified' AND entity_kind='issuer_cik'
+                AND entity_id={literal(cik)} AND JSONExtractString(evidence_ref,'review_scope_id')={literal(scope)}
+                AND source_id IN (SELECT source_signature FROM {database}.reference_batch_receipt_v1 FINAL))''')
+        out.extend(dict(row,review_scope_id=scope) for row in pending)
+    keys=[(d['cik'],d['accession'],d['document'],d.get('review_scope_id')) for d in out]
     if len(set(keys))!=len(keys):raise ValueError('Reviewed document has competing retained occurrences')
     return out
 
@@ -174,16 +198,19 @@ def reconcile(ciks, coverage, filings, native=()):
         contexts=by_cik[cik];meta=metadata.get(cik,{});forms=set(meta.get('forms',[]))
         conflicts=sum(len(x['conflicts']) for x in contexts)
         missing=sum(len(x['missing_candidates']) for x in contexts)
-        lane=('native_accounting' if not contexts and native_counts.get(cik,0) else
+        fund_only=bool(forms & FUND_REPORTS) and not forms & PERIODIC
+        lane=('not_applicable_corporate_v1' if not contexts and fund_only else
+              'native_accounting' if not contexts and native_counts.get(cik,0) else
               'identity' if not forms or not forms & (PERIODIC|REGISTRATION) else
               'extraction' if not contexts or missing or conflicts else 'reconciliation')
-        reason=('source_native_measures_not_standard_financials' if lane=='native_accounting' else
+        reason=('registered_fund_reporting_regime' if lane=='not_applicable_corporate_v1' else
+                'source_native_measures_not_standard_financials' if lane=='native_accounting' else
                 'source_identity_or_reporting_channel_review' if lane=='identity' else
                 'conflicting_values' if conflicts else 'feature_period_review' if contexts and missing else
                 'no_selected_public_observations' if not contexts else 'observed_contexts_covered_history_unverified')
         body=dict(cik=cik,lane=lane,reason=reason,contexts=contexts,filings=meta,
                   missing_candidates=missing,conflicts=conflicts,native_observations=native_counts.get(cik,0),
-                  full_history_complete=False,requires_review=True)
+                  full_history_complete=False,requires_review=lane!='not_applicable_corporate_v1')
         out.append(dict(body,case_hash=digest(body)))
     return out
 
