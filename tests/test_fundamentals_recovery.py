@@ -80,6 +80,21 @@ def test_source_changes_do_not_publish_a_case(tmp_path,monkeypatch):
     assert not list((tmp_path/'cases').iterdir())
 
 
+def test_native_mapping_change_invalidates_unchanged_coverage(tmp_path,monkeypatch):
+    from pipelines.fundamentals import native_features
+    monkeypatch.setattr(recovery,'source_inventory',lambda q,ids,*a:{c:'same' for c in ids})
+    monkeypatch.setattr(recovery,'dependency_inventory',lambda *a:'same')
+    mapping=['first']
+    monkeypatch.setattr(native_features,'mapping_hash',lambda:mapping[0])
+    def save(p,v):p.write_text(json.dumps(v))
+    def run():return recovery.write_queue(lambda sql:[],tmp_path,[C],'2019-01-01','2026-10-02',
+        datetime(2026,10,25,tzinfo=timezone.utc),save=save)
+    assert run()['updated']==1
+    assert run()['unchanged']==1
+    mapping[0]='second'
+    assert run()['updated']==1
+
+
 def test_only_registered_unpublished_originals_are_queued():
     from pipelines.certified_research.sec_html_reviewed_spac_native import REVIEWED
     key,plan=next(iter(REVIEWED.items()));cik=plan['cik']

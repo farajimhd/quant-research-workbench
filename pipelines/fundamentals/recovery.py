@@ -207,8 +207,9 @@ def write_queue(query, root, ciks, start, end, cutoff, *, database='arte',
     dependency=dependency_inventory(query,database)
     # Coverage is historical-public as-of. Advancing a UTC date can expose a
     # newly public observation without an insertion; conservatively re-audit.
-    from . import v1, reporting_notices
-    cache_scope=dict(dependency=dependency,review_contract=digest((Path(__file__).read_text(),Path(v1.__file__).read_text(),Path(reporting_notices.__file__).read_text())),
+    from . import v1, reporting_notices, native_features
+    cache_scope=dict(dependency=dependency,review_contract=digest((Path(__file__).read_text(),Path(v1.__file__).read_text(),Path(reporting_notices.__file__).read_text(),
+                     Path(native_features.__file__).read_text(),native_features.mapping_hash())),
                      public_day=cutoff.date().isoformat(),
                      public_ny_day=cutoff.astimezone(ZoneInfo('America/New_York')).date().isoformat())
     for offset in range(0,len(ids),32):
