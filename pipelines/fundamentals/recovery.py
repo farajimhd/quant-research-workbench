@@ -15,6 +15,8 @@ VERSION = 'fundamentals-recovery-queue-v1'
 PERIODIC = {'10-K','10-Q','20-F','40-F','10-K/A','10-Q/A','20-F/A','40-F/A'}
 REGISTRATION = {'S-1','S-1/A','F-1','F-1/A','S-11','S-11/A','F-10','F-10/A',
                 'S-4','S-4/A','F-4','F-4/A','424B3','424B4','8-K12B'}
+DEBT_VARIANTS = {'debt_total','long_term_debt_including_current',
+                 'long_term_debt_and_finance_leases','debt_current','debt_noncurrent'}
 
 
 def validate_ids(ciks):
@@ -144,7 +146,13 @@ def reconcile(ciks, coverage, filings, native=()):
                     or ('shares' not in f and f!='eps_diluted' and len(row['unit'])==3))]
         present=set(row['present']);conflicts=set(row['conflicts'])
         if (present|conflicts)-set(FINANCIAL):raise ValueError('Unknown selected feature')
-        by_cik[row['cik']].append(dict(row,missing_candidates=sorted(set(expected)-present-conflicts)))
+        absent=set(expected)-present-conflicts
+        # Different debt definitions are not simultaneous mandatory fields.
+        # Preserve every observed definition; never sum them or infer zero.
+        by_cik[row['cik']].append(dict(row,missing_candidates=sorted(absent-DEBT_VARIANTS),
+            debt_review_required=bool(expected_kind=='instant' and len(row['unit'])==3
+                                      and not ((present|conflicts)&DEBT_VARIANTS)),
+            unreported_debt_variants=sorted(absent&DEBT_VARIANTS)))
     native_counts={}
     for row in native:
         if row['cik'] not in allowed or row['cik'] in native_counts:raise ValueError('Native inventory escaped issuer scope')

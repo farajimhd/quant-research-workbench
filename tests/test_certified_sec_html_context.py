@@ -20,6 +20,28 @@ def seal(plan):
     return dict(plan,plan_hash=digest(plan))
 
 
+def test_payment_sign_is_explicit_source_checked_and_preserved(monkeypatch):
+    text,source,plan=fixture();fact=plan['facts'][0]
+    fact.update(concept='{http://fasb.org/us-gaap/2021}PaymentsToAcquirePropertyPlantAndEquipment',
+                period_start='2018-01-01',cash_outflow_sign='reported_negative_to_payment_positive')
+    plan=seal(plan);out=html.extract(text,source,'1',plan)
+    assert out['observations'][0]['value']=='1234000'
+    assert out['observations'][0]['html_proof']['source_value']=='-1234000'
+    monkeypatch.setattr(sec_html_reviewed,'plan_for',lambda *args:plan)
+    html.verify_registered(out,'1')
+    fact['concept']='{http://fasb.org/us-gaap/2021}Assets'
+    with pytest.raises(ValueError,match='payment semantics'):html.extract(text,source,'1',seal(dict(plan,facts=[fact])))
+
+
+def test_soulgate_preserves_rmb_and_excludes_duplicate_currency_columns():
+    from pipelines.certified_research.sec_html_reviewed_soulgate import REVIEWED
+    plan=next(iter(REVIEWED.values()))
+    assert len(plan['facts'])==50
+    assert {f['unit'] for f in plan['facts']}=={'CNY','CNY/shares','shares'}
+    assert len([f for f in plan['facts'] if 'cash_outflow_sign' in f])==4
+    assert all(f['locator']['table'] in (420,422,423,425,496,498,499,500) for f in plan['facts'])
+
+
 def test_registered_tuple_plan_survives_json_without_allowing_semantic_changes(monkeypatch):
     import json
     text,source,plan=fixture()

@@ -82,6 +82,11 @@ def extract(payload,expected_hash,cik,plan,*,maximum_bytes=64*1024**2):
         raise ValueError('HTML reviewed plan identity or scope differs')
     parsed=parse(payload,expected_hash,maximum_bytes);text=normalize(' '.join(parsed.text));observations=[];positions=set()
     catalog=facts.catalog();tags={t for metric in catalog for t in metric.tags}
+    # The production selected contract includes explicit concepts absent from
+    # the older UI catalog (for example income available to common holders).
+    # Reuse that authority; do not invent aliases or change existing plans.
+    from pipelines.fundamentals.v1 import FINANCIAL
+    tags.update(t for _, alternatives in FINANCIAL.values() for t in alternatives)
     for position,item in enumerate(body['facts']):
         concept=item['concept'];taxonomy,tag=sec_taxonomy.identity(concept,allow_extension=True)
         native=None
@@ -164,11 +169,20 @@ def extract(payload,expected_hash,cik,plan,*,maximum_bytes=64*1024**2):
         decimals=str(-digits.exponent-scale)
         if value!=item['expected_value'] or decimals!=item['decimals']:
             raise ValueError('HTML value or precision differs from independently reviewed value')
+        if 'cash_outflow_sign' in item:
+            if (item['cash_outflow_sign']!='reported_negative_to_payment_positive'
+                    or tag!='PaymentsToAcquirePropertyPlantAndEquipment' or native is not None
+                    or Decimal(value)>0 or start is None):
+                raise ValueError('HTML cash outflow sign requires reviewed payment semantics')
+            value=format(Decimal(value).copy_negate(),'f')
         observations.append(dict(source_position=position,concept=concept,period_start=start,period_end=end,
             unit=unit,dimensions=dimensions,value=value,decimals=decimals,scale=str(scale),format='',raw_text=value_text,
             source_text_hash=expected_hash,context_id=digest((start,end,unit,dimensions)) if dimensions else digest((start,end,unit)),fact_id='',
             html_proof=dict(plan_hash=seal,locator=locator,label=item['label'],evidence=evidence)))
         if native:observations[-1]['html_proof']['native']=native
+        if 'cash_outflow_sign' in item:
+            observations[-1]['html_proof']['cash_outflow_sign']=item['cash_outflow_sign']
+            observations[-1]['html_proof']['source_value']=item['expected_value']
     result=dict(version=VERSION,observations=tuple(observations),rejected=(),source_text_hash=expected_hash,
         html_plan=plan,extraction_scope='reviewed_observations',whole_document_coverage=False,
         security_cover=dict(observations=(),rejected=(),class_completeness_proven=False),
@@ -192,12 +206,17 @@ def verify_registered(extraction,cik):
         expected=dict(source_position=position,concept=item['concept'],period_start=item['period_start'],
             period_end=item['period_end'],unit=item['unit'],value=item['expected_value'],decimals=item['decimals'],
             scale=str(item['scale']),source_text_hash=extraction['source_text_hash'])
+        if 'cash_outflow_sign' in item:
+            expected['value']=format(Decimal(item['expected_value']).copy_negate(),'f')
         if (any(row.get(k)!=v for k,v in expected.items())
                 or tuple(tuple(d) for d in row['dimensions'])!=tuple(tuple(d) for d in item.get('dimensions',()))):
             raise ValueError('HTML reviewed semantic observation differs')
         proof=dict(plan_hash=plan['plan_hash'],locator=item['locator'],label=item['label'],evidence=item['evidence'])
+        if 'cash_outflow_sign' in item:
+            proof.update(cash_outflow_sign=item['cash_outflow_sign'],source_value=item['expected_value'])
         if 'native' in item:
             from .sec_html_native import verify
             proof['native']=verify(item,cik)
         if row['html_proof']!=proof:
             raise ValueError('HTML source location proof differs')
+

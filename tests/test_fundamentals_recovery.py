@@ -24,6 +24,18 @@ def test_competing_identity_and_ubs_are_rejected():
     with pytest.raises(ValueError):recovery.reconcile(['0001610520'],[],[])
 
 
+def test_debt_variants_are_not_simultaneous_required_features():
+    row=dict(cik=C,period_start=None,period_end='2026-06-30',unit='USD',
+             present=['assets','debt_total'],conflicts=[],accessions=['a'])
+    context=recovery.reconcile([C],[row],[])[0]['contexts'][0]
+    assert not context['debt_review_required']
+    assert not set(context['missing_candidates'])&recovery.DEBT_VARIANTS
+    assert 'debt_noncurrent' in context['unreported_debt_variants']
+    row['present']=['assets']
+    context=recovery.reconcile([C],[row],[])[0]['contexts'][0]
+    assert context['debt_review_required']
+
+
 def test_queue_preserves_unchanged_cases_and_detects_changed_evidence(tmp_path,monkeypatch):
     fingerprint=['a']; dependency=['d'];reads=[]
     monkeypatch.setattr(recovery,'source_inventory',lambda q,ids,*a:{c:fingerprint[0] for c in ids})
