@@ -90,3 +90,19 @@ def test_earlier_vintages_preserve_semantics_and_are_hash_bound():
         for fact,item in zip(plan['facts'],row['items']):
             expected=base['facts'][item['index']]
             assert {k:v for k,v in fact.items() if k not in ('locator','unit_locator','table_proof')} == {k:v for k,v in expected.items() if k not in ('locator','unit_locator','table_proof')}
+
+
+def test_remaining_vintages_keep_original_subjects_and_unknown_dollar_units():
+    from pipelines.certified_research.sec_html_reviewed_final_vintages import REVIEWED
+    assert len(REVIEWED)==11
+    assert sum(len(p['facts']) for p in REVIEWED.values())==182
+    for h,p in REVIEWED.items():
+        assert sec_html_reviewed.plan_for(h,p['cik'])==p
+        assert digest({k:v for k,v in p.items() if k!='plan_hash'})==p['plan_hash']
+        assert all(f['unit']=='source:$' for f in p['facts'])
+        if p['cik']=='0002067746':
+            assert any('COMBINED' in f['native']['statement_scope'] for f in p['facts'])
+            assert any('REIT, INC.' in f['native']['statement_scope'] for f in p['facts'])
+        if p['cik']=='0002122505':
+            assert p['source_mode']=='mixed_inline_reviewed_tables'
+            assert {f['period_start'] for f in p['facts']}=={None,'2026-03-04'}

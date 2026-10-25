@@ -20,6 +20,21 @@ def seal(plan):
     return dict(plan,plan_hash=digest(plan))
 
 
+def test_mixed_inline_sources_remain_opt_in_and_source_bound():
+    text,source,plan=fixture()
+    plan['source_mode']='mixed_inline_reviewed_tables'
+    with pytest.raises(ValueError,match='reviewed registration'):
+        html.extract(text,source,'1',seal(plan))
+    text='<table><tr><td><ix:nonFraction>123</ix:nonFraction></td></tr></table>'
+    source=sha256(text.encode()).hexdigest()
+    with pytest.raises(ValueError,match='not untagged HTML'):
+        html.parse(text,source)
+    assert html.parse(text,source,allow_mixed=True).tables[0]['inline_tagged']
+    entity='<!ENTITY unsafe "123">'+text
+    with pytest.raises(ValueError,match='not untagged HTML'):
+        html.parse(entity,sha256(entity.encode()).hexdigest(),allow_mixed=True)
+
+
 def test_payment_sign_is_explicit_source_checked_and_preserved(monkeypatch):
     text,source,plan=fixture();fact=plan['facts'][0]
     fact.update(concept='{http://fasb.org/us-gaap/2021}PaymentsToAcquirePropertyPlantAndEquipment',

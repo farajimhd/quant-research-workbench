@@ -42,6 +42,8 @@ class Tables(HTMLParser):
             self.stack[-1]['cell_open']=True
             self.stack[-1]['rows'][-1].append(dict(text='',rowspan=a.get('rowspan','1'),colspan=a.get('colspan','1')))
         elif tag=='br':self.handle_data(' ')
+        if tag.startswith('ix:') and self.stack:
+            self.stack[-1]['inline_tagged']=True
 
     def handle_endtag(self,tag):
         if tag in ('script','style'):self.hidden=max(0,self.hidden-1)
@@ -59,11 +61,12 @@ class Tables(HTMLParser):
             self.stack[-1]['rows'][-1][-1]['text']+=text
 
 
-def parse(payload,expected_hash,maximum_bytes=64*1024**2):
+def parse(payload,expected_hash,maximum_bytes=64*1024**2,*,allow_mixed=False):
     if not isinstance(payload,str) or len(payload)>maximum_bytes:raise ValueError('HTML source exceeds bound')
     raw=payload.encode('utf-8')
     if len(raw)>maximum_bytes or sha256(raw).hexdigest()!=expected_hash:raise ValueError('HTML original source hash differs')
-    if re.search(r'<!ENTITY|<\s*ix:',payload,re.I):raise ValueError('Tagged or entity-declaring source is not untagged HTML')
+    if re.search(r'<!ENTITY',payload,re.I) or (not allow_mixed and re.search(r'<\s*ix:',payload,re.I)):
+        raise ValueError('Tagged or entity-declaring source is not untagged HTML')
     parser=Tables();parser.feed(payload);parser.close()
     if parser.stack:raise ValueError('Unclosed HTML table')
     return parser
@@ -80,7 +83,20 @@ def extract(payload,expected_hash,cik,plan,*,maximum_bytes=64*1024**2):
             or str(int(cik)).zfill(10)!=body.get('cik')
             or body.get('scope')!='reviewed_observations' or not 1<=len(body.get('facts',[]))<=10000):
         raise ValueError('HTML reviewed plan identity or scope differs')
-    parsed=parse(payload,expected_hash,maximum_bytes);text=normalize(' '.join(parsed.text));observations=[];positions=set()
+    mixed=body.get('source_mode')=='mixed_inline_reviewed_tables'
+    cover=dict(observations=(),rejected=(),class_completeness_proven=False)
+    if body.get('source_mode') is not None:
+        # This reviewed source has SPAC offering tags, not tagged historical
+        # financials. Validate its XML and contexts rather than stripping tags.
+        if not mixed or expected_hash!='2872eea309192822c32795c91f2ca58dab526c7ada046094955ffaee684748a9':
+            raise ValueError('Mixed HTML source lacks reviewed registration')
+        from .sec_share_context import extract as tagged_extract
+        tagged=tagged_extract(payload,expected_hash,cik,maximum_bytes=maximum_bytes,
+            catalog_tags=tuple(sorted({t for m in facts.catalog() for t in m.tags})),include_security_cover=True)
+        if tagged['rejected'] or tagged['observations'] or tagged['security_cover']['rejected']:
+            raise ValueError('Mixed HTML tagged content requires separate reconciliation')
+        cover=tagged['security_cover']
+    parsed=parse(payload,expected_hash,maximum_bytes,allow_mixed=mixed);text=normalize(' '.join(parsed.text));observations=[];positions=set()
     catalog=facts.catalog();tags={t for metric in catalog for t in metric.tags}
     # The production selected contract includes explicit concepts absent from
     # the older UI catalog (for example income available to common holders).
@@ -121,6 +137,7 @@ def extract(payload,expected_hash,cik,plan,*,maximum_bytes=64*1024**2):
             if type(ti) is not int or type(ri) is not int or ti<0 or ri<0:raise ValueError('Invalid HTML locator')
             table=parsed.tables[ti]
             if table['nested']:raise ValueError('Nested layout table cannot be a financial fact')
+            if table.get('inline_tagged'):raise ValueError('Reviewed HTML financial table contains inline tags')
             if source_symbol:
                 # This is the printed symbol, deliberately not an ISO currency.
                 # Only native measures can retain it; standard calculations
@@ -157,6 +174,7 @@ def extract(payload,expected_hash,cik,plan,*,maximum_bytes=64*1024**2):
             value_text=''.join(normalize(c['text']) for c in cells)
             source_identity=(ti,ri,tuple(columns))
         elif locator['kind']=='quote':
+            if mixed:raise ValueError('Mixed HTML requires untagged table cells')
             if source_symbol:raise ValueError('Native dollar symbol requires reviewed table cells')
             quote=locator['quote'];value_text=locator['value_text']
             if (text.count(quote)!=1 or quote.count(value_text)!=1 or item['label'] not in quote
@@ -202,7 +220,7 @@ def extract(payload,expected_hash,cik,plan,*,maximum_bytes=64*1024**2):
             observations[-1]['html_proof']['source_value']=item['expected_value']
     result=dict(version=VERSION,observations=tuple(observations),rejected=(),source_text_hash=expected_hash,
         html_plan=plan,extraction_scope='reviewed_observations',whole_document_coverage=False,
-        security_cover=dict(observations=(),rejected=(),class_completeness_proven=False),
+        security_cover=cover,
         catalog_hash=facts.catalog_hash(catalog),original_vintage_qualified=False,certified=False,allocation_certified=False)
     return dict(result,extraction_hash=digest(result))
 

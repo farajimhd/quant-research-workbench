@@ -40,6 +40,9 @@ def plan_for(document_hash,cik):
     from .sec_html_reviewed_lec import plan_for as lec
     reviewed=lec(document_hash,cik)
     if reviewed is not None:return reviewed
+    from .sec_html_reviewed_final_vintages import plan_for as final_vintage
+    reviewed=final_vintage(document_hash,cik)
+    if reviewed is not None:return reviewed
     from .sec_html_reviewed_vintages import plan_for as vintage
     reviewed=vintage(document_hash,cik)
     if reviewed is not None:return reviewed
