@@ -37,16 +37,24 @@ def source_inventory(query, ciks, cutoff, database='arte'):
     identifier(database);validate_ids(ciks);stamp=_timestamp(cutoff)
     if len(ciks)>32:raise ValueError('Recovery metadata cohort exceeds 32 issuers')
     ids=','.join(map(literal,sorted(set(ciks))))
+    from .filing_order_witnesses import inventory as witness_inventory
+    witness=witness_inventory(ciks)
+    witness_union=(' UNION ALL SELECT cik,\'acceptance_header\' kind,accession_number key,'
+        'toString(tuple(acceptance_datetime_raw,filing_date,source_content_sha256,public_document_count,private_to_public,pac_event_id)) hash'
+        ' FROM ('+witness+')') if witness else ''
     inventory=f'''SELECT DISTINCT cik,kind,key,hash FROM (
       SELECT cik,'filing' kind,accession_number key,
         toString(tuple(source_content_sha256,form_type,filing_date,acceptance_datetime_raw,primary_document)) hash
       FROM q_live.sec_filing_v3 FINAL WHERE cik IN ({ids})
+      UNION ALL SELECT cik,'acceptance_bulk' kind,accession_number key,
+        toString(tuple(accepted_at_utc,acceptance_datetime_raw,filing_date,accepted_at_source,source_file_id)) hash
+      FROM sec_core.sec_bulk_mirror_filing_v3 FINAL PREWHERE cik IN ({ids})
       UNION ALL SELECT cik,'document' kind,toString(tuple(accession_number,document_name)) key,
         toString(tuple(content_sha256,source_version_key,document_type,source_archive_date)) hash
       FROM q_live.sec_filing_text_v3 WHERE cik IN ({ids})
       UNION ALL SELECT entity_id cik,'normalized' kind,source_id key,
         toString(tuple(source_hash,recipe_hash,available_at,available_at<={stamp},quality,reason)) hash
-      FROM {database}.reference_source_v1 FINAL WHERE entity_kind='issuer_cik' AND entity_id IN ({ids}))
+      FROM {database}.reference_source_v1 FINAL WHERE entity_kind='issuer_cik' AND entity_id IN ({ids}){witness_union})
       ORDER BY cik,kind,key,hash'''
     # Hash each complete identity before collecting it. Keeping raw strings in
     # groupUniqArray can exceed memory; fetching them can exceed result limits.
@@ -89,6 +97,24 @@ def coverage_query(ciks, cutoff, database='arte'):
         FROM ({financial_sql(ciks,cutoff,database=database)})
         GROUP BY cik,period_start,period_end,unit
         ORDER BY cik,period_end,period_start,unit'''
+
+
+def read_coverage(query,ciks,cutoff,database='arte'):
+    """Split only a measured query-memory failure; never raise the memory cap.
+
+    This is a read-only retry of disjoint issuers, not a campaign restart or
+    partial-result acceptance. All other failures and single-issuer failures
+    remain actionable errors.
+    """
+    try:
+        return query(coverage_query(ciks,cutoff,database))
+    except Exception as error:
+        message=str(error)
+        if len(ciks)<2 or 'Code: 241.' not in message or 'MEMORY_LIMIT_EXCEEDED' not in message:
+            raise
+        middle=len(ciks)//2
+        return (read_coverage(query,ciks[:middle],cutoff,database)
+                +read_coverage(query,ciks[middle:],cutoff,database))
 
 
 def filing_query(ciks, start, end):
@@ -278,7 +304,7 @@ def write_queue(query, root, ciks, start, end, cutoff, *, database='arte',
                   or prior[c].get('cache_scope')!=case_scope(c)]
         unchanged+=len(chunk)-len(selected)
         if selected:
-            values=reconcile(selected,query(coverage_query(selected,cutoff,database)),query(filing_query(selected,start,end)),
+            values=reconcile(selected,read_coverage(query,selected,cutoff,database),query(filing_query(selected,start,end)),
                              query(native_query(selected,cutoff,database)))
             notices=reporting_notices.inspect_notices(query,selected,cutoff)
             for value in values:

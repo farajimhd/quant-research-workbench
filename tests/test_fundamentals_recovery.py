@@ -154,3 +154,16 @@ def test_atomic_receipt_save_does_not_extend_a_long_hash_filename(tmp_path):
     save(path,dict(preserved=True));save(path,dict(preserved=True,reused=True))
     assert json.loads(path.read_text())==dict(preserved=True,reused=True)
     assert list(parent.iterdir())==[path]
+
+
+def test_coverage_memory_retry_is_disjoint_and_does_not_hide_other_errors(monkeypatch):
+    monkeypatch.setattr(recovery,'coverage_query',lambda ids,*args:tuple(ids))
+    calls=[]
+    def q(ids):
+        calls.append(ids)
+        if len(ids)>1:raise RuntimeError('Code: 241. MEMORY_LIMIT_EXCEEDED')
+        return [dict(cik=ids[0])]
+    assert recovery.read_coverage(q,['a','b'],None)==[dict(cik='a'),dict(cik='b')]
+    assert calls==[('a','b'),('a',),('b',)]
+    def broken(_):raise RuntimeError('source identity changed')
+    with pytest.raises(RuntimeError,match='identity changed'):recovery.read_coverage(broken,['a','b'],None)

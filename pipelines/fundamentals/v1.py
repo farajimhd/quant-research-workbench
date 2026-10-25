@@ -11,7 +11,7 @@ from .queries import _timestamp
 from pipelines.certified_research.contracts import literal, identifier, digest
 
 VERSION='fundamentals-selected-v1'
-SERVING_VERSION='fundamentals-selected-serving-v6-reviewed-native-features'
+SERVING_VERSION='fundamentals-selected-serving-v7-retained-filing-order'
 # Feature, temporal kind, ordered explicit standard tags. Different debt
 # components remain separate inputs; no overlapping total is blindly summed.
 FINANCIAL={
@@ -142,8 +142,10 @@ Ties with different values remain conflicts, never arbitrary winners.
     eligible=f'''SELECT * EXCEPT(best_authority) FROM (SELECT *,min(authority_priority)
       OVER (PARTITION BY {key},accession) best_authority FROM ({eligible}))
       WHERE authority_priority=best_authority'''
+    from .filing_order import sql as ordered_filings_sql
+    eligible=ordered_filings_sql(eligible,ciks,key)
     ranked=f'''SELECT *,dense_rank() OVER (PARTITION BY {key}
-       ORDER BY available_at DESC,authority_priority ASC) vintage FROM ({eligible})'''
+       ORDER BY available_at DESC,authority_priority ASC,filing_order DESC) vintage FROM ({eligible})'''
     if since is None:
         return f'''SELECT * EXCEPT(vintage),uniqExact(value) OVER (PARTITION BY {key})>1 conflict
           FROM ({ranked}) WHERE vintage=1 ORDER BY cik,feature,period_end,period_start'''
@@ -151,7 +153,7 @@ Ties with different values remain conflicts, never arbitrary winners.
     if since>=cutoff:raise ValueError('History start must precede cutoff')
     return f'''WITH observations AS ({eligible}) SELECT * FROM observations WHERE available_at>={start}
       UNION ALL SELECT * EXCEPT(rn) FROM (SELECT *,rank() OVER(PARTITION BY {key}
-      ORDER BY available_at DESC,authority_priority ASC) rn FROM observations WHERE available_at<{start}) WHERE rn=1'''
+      ORDER BY available_at DESC,authority_priority ASC,filing_order DESC) rn FROM observations WHERE available_at<{start}) WHERE rn=1'''
 
 
 def reference_sql(securities,metrics,cutoff,*,since=None,database='arte'):
