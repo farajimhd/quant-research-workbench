@@ -116,7 +116,8 @@ def reviewed_documents(query, ciks, start, end, database='arte'):
             AND (cik,accession_number,document_name) NOT IN (
                 SELECT entity_id,event_key,JSONExtractString(evidence_ref,'document')
                 FROM {database}.reference_source_v1 FINAL WHERE entity_kind='issuer_cik'
-                AND entity_id IN ({ids}) AND family='sec_original_qualified')
+                AND entity_id IN ({ids}) AND family='sec_original_qualified'
+                AND source_id IN (SELECT source_signature FROM {database}.reference_batch_receipt_v1 FINAL))
             ORDER BY cik,accession,document,content_sha256''')
         for row in rows:
             if row['cik'] not in ciks[offset:offset+32]:raise ValueError('Reviewed document escaped recovery scope')

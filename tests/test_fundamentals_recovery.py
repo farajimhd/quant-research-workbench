@@ -74,3 +74,13 @@ def test_spac_native_does_not_correct_an_inconsistent_reported_total():
     prior={f['label']:f['expected_value'] for f in sunfire['facts'] if f['period_end']=='2021-12-31'}
     assert prior['Total Assets']=='669200'
     assert int(prior['Total Current Liabilities'])+int(prior['Total Shareholder’s Equity'])==669220
+
+
+def test_atomic_receipt_save_does_not_extend_a_long_hash_filename(tmp_path):
+    from scripts.run_fundamentals import save
+    parent=tmp_path/('p'*max(1,180-len(str(tmp_path))-1));parent.mkdir()
+    path=parent/('a'*64+'.json')
+    assert len(str(path))<260 and len(str(path))+38>260
+    save(path,dict(preserved=True));save(path,dict(preserved=True,reused=True))
+    assert json.loads(path.read_text())==dict(preserved=True,reused=True)
+    assert list(parent.iterdir())==[path]

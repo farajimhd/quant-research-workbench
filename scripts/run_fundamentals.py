@@ -70,7 +70,9 @@ def lock(path):
 
 
 def save(path, value):
-    tmp=path.with_name(path.name+'.'+uuid4().hex+'.tmp')
+    # A hash-named receipt can already approach Windows MAX_PATH. Keep the
+    # temporary sibling independent of its basename, retaining atomic replace.
+    tmp=path.with_name('.'+uuid4().hex+'.tmp')
     try:
         tmp.write_text(json.dumps(value,indent=2,default=str),encoding='utf-8')
         for attempt in range(21):
@@ -266,7 +268,7 @@ def run(args):
                     for offset in range(0,len(documents),128):
                         body=dict(version='retained-gap-documents-v1',population_hash=digest(original_population),
                             start=str(args.start),end=str(args.end),documents=documents[offset:offset+128])
-                        seal=digest(body);child=root/'reviewed-recovery'/seal;child.mkdir(parents=True,exist_ok=True)
+                        seal=digest(body);child=root/'reviewed-recovery'/seal[:24];child.mkdir(parents=True,exist_ok=True)
                         packet=child/'manifest.json';save(packet,dict(body,manifest_hash=seal))
                         state['child_run_dir']=str(child)
                         state['qualification_status']=f'Publishing {len(body["documents"])} newly reviewed originals; existing authorities preserved.'
