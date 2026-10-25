@@ -28,6 +28,17 @@ def test_source_binding():
     assert not trust.registered('0'*64,'0000827052')
 
 
+def test_earlier_html_trust_columns_are_separate_and_no_missing_markers():
+    from pipelines.certified_research.sec_html_reviewed_sce import plan_for,DOCUMENT,CIK
+    plan=plan_for(DOCUMENT,CIK)
+    assert plan_for(DOCUMENT,'0001122392') is None
+    assert len(plan['facts'])==10
+    assert len({(f['locator']['row'],tuple(f['locator']['columns'])) for f in plan['facts']})==10
+    assert {f['native']['statement_scope'] for f in plan['facts']}=={'Trust II','Trust VI'}
+    assert all(f['unit']=='source:$' and f['native']['issuer_cik']==CIK for f in plan['facts'])
+    assert not any(f['native']['statement_scope']=='Trust VI' and f['period_end']=='2016-12-31' for f in plan['facts'])
+
+
 def test_query_requires_public_and_known_time_and_receipts():
     sql=[]
     at=datetime(2026,1,1,tzinfo=timezone.utc)

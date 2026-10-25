@@ -14,7 +14,7 @@ def observations(query, ciks, cutoff, *, known_at=None, database='arte'):
     requested = set(ciks)
     if not requested or not requested <= set(MEMBERS.values()):
         raise ValueError('Unreviewed trust identity')
-    accessions = ','.join(map(literal, ACCESSIONS))
+    accessions = ','.join(map(literal, (*ACCESSIONS,'0000827052-19-000034')))
     known = '' if known_at is None else ' AND observed_at<=' + _timestamp(known_at)
     sources = f"""SELECT * FROM {database}.reference_source_v1 FINAL
         WHERE entity_kind='issuer_cik' AND entity_id={literal(SOURCE_CIK)}
@@ -35,9 +35,19 @@ def observations(query, ciks, cutoff, *, known_at=None, database='arte'):
         ORDER BY s.available_at,f.source_id,f.metric,c.context_id LIMIT 10001""")
     if len(rows) > 10000:
         raise ValueError('Trust response exceeds bound; narrow the source window')
+    from pipelines.certified_research.sec_html_reviewed_sce import SUBJECTS, CIK
+    from pipelines.certified_research.sec_html_native import definition
+    from pipelines.certified_research.sec_taxonomy import identity
+    native_subjects={}
+    for name,issuer in SUBJECTS.items():
+        for label in ('Dividend income','Dividend distributions'):
+            tax,tag=identity(definition(CIK,label,name)['concept'],allow_extension=True)
+            native_subjects[tax+':'+tag]=issuer
     result = []
     for row in rows:
         owner = subject(dict(dimensions=json.loads(row['dimensions'])))
+        if owner is None and row['accession']=='0000827052-19-000034':
+            owner=native_subjects.get(row['metric'])
         if owner in requested:
             result.append(dict(row, subject_cik=owner, aggregation='none'))
     return result
