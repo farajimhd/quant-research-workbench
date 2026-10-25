@@ -204,3 +204,16 @@ def test_registration_currency_scaling_and_periods():
     cashflow=[f for f in bitzero if f['concept'].endswith('}CashFlowsFromUsedInOperatingActivities')]
     assert [(f['period_start'],f['period_end'],f['expected_value']) for f in cashflow]==[
         ('2025-10-01','2026-03-31','-8225035'),('2024-10-01','2025-03-31','-12102491')]
+def test_icici_reconciled_us_gaap_excludes_indian_basis_and_minority_totals():
+    from pipelines.certified_research.sec_html_reviewed_icici import plan_for,HASH
+    plan=plan_for(HASH,'1103838')
+    assert len(plan['facts'])==11
+    assert plan_for(HASH,'1') is None
+    rows={(f['concept'].split('}')[-1],f['period_end']):f for f in plan['facts']}
+    assert rows['NetIncomeLoss','2026-03-31']['expected_value']=='560374700000'
+    assert rows['StockholdersEquity','2026-03-31']['expected_value']=='4090932600000'
+    eps=rows['EarningsPerShareDiluted','2026-03-31']
+    assert (eps['expected_value'],eps['unit'],eps['scale'])==('77.29','INR/shares',0)
+    assert all(f['locator']['row'] not in (3,30,31) for f in plan['facts'])
+    assert all(f['table_proof']['headers'] for f in plan['facts'])
+
