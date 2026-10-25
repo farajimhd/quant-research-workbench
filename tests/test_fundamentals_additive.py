@@ -59,3 +59,14 @@ def test_live_addition_preserves_parent_reuses_and_rejects_corruption(live):
     q(f"ALTER TABLE {db}.reference_fact_v1 UPDATE text_value='CORRUPT' WHERE source_id='{parent}' SETTINGS mutations_sync=2",read=False)
     with pytest.raises(ValueError,match='parent facts differ'):
         publish(q,db,document,'a'*64,datetime.now(timezone.utc),Claim())
+
+
+def test_all_additions_bind_an_unchanged_parent_and_unique_source_positions():
+    from pipelines.certified_research.sec_html_reviewed import plan_for
+    for scope,entry in registry.REGISTERED.items():
+        p=entry['plan'];verified=registry.entry_for(scope,p['cik'],p['document_hash'])
+        assert verified['parent_authority']==entry['parent_authority']
+        base=plan_for(p['document_hash'],p['cik'])
+        assert base['plan_hash']==entry['parent_plan_hash']
+        assert p['plan_hash']==digest({k:v for k,v in p.items() if k!='plan_hash'})
+        assert len({digest(f['locator']) for f in p['facts']})==len(p['facts'])

@@ -140,26 +140,46 @@ def reviewed_documents(query, ciks, start, end, database='arte'):
     # Exact registered supplements are discoverable even when the original
     # document is already complete. Metadata only; no historical payload scans.
     from pipelines.certified_research.sec_html_additions import REGISTERED,entry_for
+    entries=[]
     for scope,entry in REGISTERED.items():
-        plan=entry['plan'];cik=plan['cik']
-        if cik not in ciks:continue
-        entry_for(scope,cik,plan['document_hash'])
-        pending=query(f'''SELECT DISTINCT t.cik,t.accession_number accession,t.document_name document,
-            t.content_sha256,t.source_archive_date day,t.document_type form,t.source_version_key
-            FROM q_live.sec_filing_text_v3 t
-            WHERE t.cik={literal(cik)} AND t.content_sha256={literal(plan['document_hash'])}
-            AND t.source_archive_date BETWEEN toDate({literal(start)}) AND toDate({literal(end)})
-            AND (t.cik,t.accession_number,t.document_name) IN (
-                SELECT entity_id,event_key,JSONExtractString(evidence_ref,'document')
-                FROM {database}.reference_source_v1 FINAL
-                WHERE family='sec_original_qualified' AND entity_kind='issuer_cik'
-                AND entity_id={literal(cik)} AND source_id={literal(entry['parent_authority'])}
-                AND source_id IN (SELECT source_signature FROM {database}.reference_batch_receipt_v1 FINAL))
-            AND NOT EXISTS (SELECT 1 FROM {database}.reference_source_v1 FINAL
-                WHERE family='sec_original_qualified' AND entity_kind='issuer_cik'
-                AND entity_id={literal(cik)} AND JSONExtractString(evidence_ref,'review_scope_id')={literal(scope)}
-                AND source_id IN (SELECT source_signature FROM {database}.reference_batch_receipt_v1 FINAL))''')
-        out.extend(dict(row,review_scope_id=scope) for row in pending)
+        plan=entry['plan']
+        if plan['cik'] in ciks:
+            entry_for(scope,plan['cik'],plan['document_hash'])
+            entries.append((scope,entry))
+    for offset in range(0,len(entries),32):
+        packet=entries[offset:offset+32]
+        ids=','.join(map(literal,sorted({e['plan']['cik'] for _,e in packet})))
+        parents=','.join(literal(e['parent_authority']) for _,e in packet)
+        scopes=','.join(literal(scope) for scope,_ in packet)
+        headers=query(f"""SELECT DISTINCT entity_id cik,event_key accession,
+            JSONExtractString(evidence_ref,'document') document,source_id,
+            JSONExtractString(evidence_ref,'review_scope_id') review_scope_id
+            FROM {database}.reference_source_v1 FINAL
+            WHERE family='sec_original_qualified' AND entity_kind='issuer_cik' AND entity_id IN ({ids})
+            AND (source_id IN ({parents}) OR JSONExtractString(evidence_ref,'review_scope_id') IN ({scopes}))
+            AND source_id IN (SELECT source_signature FROM {database}.reference_batch_receipt_v1 FINAL)""")
+        wanted={}
+        for scope,entry in packet:
+            complete=[h for h in headers if h['review_scope_id']==scope]
+            if len(complete)>1:raise ValueError('Additive completion has competing authorities')
+            if complete:continue
+            parent=[h for h in headers if h['source_id']==entry['parent_authority']]
+            if len(parent)>1:raise ValueError('Additive parent has competing documents')
+            if not parent:continue
+            h=parent[0];key=(h['cik'],h['accession'],h['document'],entry['plan']['document_hash'])
+            if key in wanted:raise ValueError('Competing additive scopes for one document')
+            wanted[key]=scope
+        if not wanted:continue
+        keys_sql=','.join('('+','.join(map(literal,key))+')' for key in wanted)
+        pending=query(f"""SELECT DISTINCT cik,accession_number accession,document_name document,
+            content_sha256,source_archive_date day,document_type form,source_version_key
+            FROM q_live.sec_filing_text_v3 WHERE cik IN ({ids})
+            AND (cik,accession_number,document_name,content_sha256) IN ({keys_sql})
+            AND source_archive_date BETWEEN toDate({literal(start)}) AND toDate({literal(end)})""")
+        for row in pending:
+            key=tuple(row[k] for k in ('cik','accession','document','content_sha256'))
+            if key not in wanted:raise ValueError('Additive source escaped sealed metadata scope')
+            out.append(dict(row,review_scope_id=wanted[key]))
     keys=[(d['cik'],d['accession'],d['document'],d.get('review_scope_id')) for d in out]
     if len(set(keys))!=len(keys):raise ValueError('Reviewed document has competing retained occurrences')
     return out
