@@ -8,12 +8,19 @@ from research.vectorized_backtest.v42.distributed_assets import sha
 
 
 def check_job(job):
-    if job['version']!='v50-pilot-v1' or source_hash()!=job['source_sha256']:raise ValueError('V50 pilot source mismatch')
-    if sha(job['source_job'])!=job['source_job_sha256'] or sha(job['initialization_probe'])!=job['initialization_probe_sha256']:raise ValueError('Pilot source/probe changed')
+    full=job['version']=='v50-full-v1'
+    if job['version'] not in ('v50-pilot-v1','v50-full-v1') or source_hash()!=job['source_sha256']:raise ValueError('V50 source mismatch')
+    if sha(job['source_job'])!=job['source_job_sha256'] or sha(job['initialization_probe'])!=job['initialization_probe_sha256']:raise ValueError('Source/probe changed')
     if sha(job['training'])!=job['training_sha256']:raise ValueError('Training manifest changed')
-    if job['training_days']!=['2026-08-13'] or job['validation_days']:raise ValueError('Only the authorized Aug13 training pilot may run')
-    if job['training_days'][0] not in json.loads(Path(job['training']).read_bytes())['days']:raise ValueError('Uncertified training date')
-    if (job['population'],job['initial_multiplier'],job['phase2_generations'])!=(1024,6,50):raise ValueError('Pilot population/budget mismatch')
+    train=json.loads(Path(job['training']).read_bytes())['days']
+    if full:
+        if sha(job['validation'])!=job['validation_sha256']:raise ValueError('Validation manifest changed')
+        valid=json.loads(Path(job['validation']).read_bytes())['days']
+        if len(train)!=24 or len(set(train))!=24 or len(valid)!=12 or len(set(valid))!=12 or max(train)>=min(valid):raise ValueError('Chronological certified24/12 split required')
+        if job['training_days']!=train or job['validation_days']!=valid or set(job['machines'])!={'workstation'}:raise ValueError('Full run must use all sessions on workstation only')
+        if job['machines']['workstation']['days']!=dict(training=train,validation=valid):raise ValueError('Workstation session ownership changed')
+    elif job['training_days']!=['2026-08-13'] or job['validation_days'] or job['training_days'][0] not in train:raise ValueError('Pilot restricted to certified Aug13 training')
+    if (job['population'],job['initial_multiplier'],job['phase2_generations'])!=(1024,6,100 if full else 50):raise ValueError('Approved population/budget mismatch')
     if job['objective']!=dict(drawdown_weight=1.,loss_weight=.1):raise ValueError('V50 cost differs from authorization')
 
 

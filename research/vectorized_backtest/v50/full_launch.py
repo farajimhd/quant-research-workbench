@@ -25,8 +25,32 @@ def prepare(source,root,code):
         initial_candidates=6144,initial_random=3072,initial_templates=3072,source_sha256=job['source_sha256'],commit=job['commit'],objective=job['objective'],validation_opened=False,global_only=True))
     return job
 
+def prepare_full(source,root,code):
+    """Fresh workstation-only job; the pilot checkpoint is never an input."""
+    root=Path(root);code=Path(code)
+    if (root/'full-job.json').exists():raise ValueError('Existing campaign must be audited, not recreated')
+    original=json.loads(Path(source).read_bytes())
+    train=json.loads(Path(original['training']).read_bytes())['days']
+    valid=json.loads(Path(original['validation']).read_bytes())['days']
+    from research.vectorized_backtest.v42.probes import global_probe
+    probe=global_probe(original['training'],train,original['probe_root'])
+    job=dict(version='v50-full-v1',source_sha256=source_hash(),source_job=str(source),source_job_sha256=sha(source),
+        commit=json.loads((code/'deployment.json').read_bytes())['commit'],campaign=str(root),code=str(code),
+        training=original['training'],training_sha256=original['training_sha256'],
+        validation=original['validation'],validation_sha256=original['validation_sha256'],
+        training_days=train,validation_days=valid,initialization_probe=str(probe),initialization_probe_sha256=sha(probe),
+        population=1024,initial_multiplier=6,seed=2020,phase2_generations=100,
+        objective=dict(drawdown_weight=1.,loss_weight=.1),execution=original['execution'],selection=original['selection'],batch_size=1024,
+        transport=str(root/'asset-bus'),workstation_share=original['workstation_share'],assets=original['assets'],asset_sha256=original['asset_sha256'],
+        machines={'workstation':dict(original['machines']['workstation'],code=str(code),days=dict(training=train,validation=valid))})
+    check_job(job);root.mkdir(parents=True,exist_ok=True);write_json(root/'full-job.json',job)
+    write_json(root/'manifest.json',dict(version='v50-full-v1',training_days=train,validation_days=valid,
+        generations=100,population=1024,initial_candidates=6144,source_sha256=job['source_sha256'],commit=job['commit'],
+        objective=job['objective'],validation_display_only=True,global_only=True,node='workstation'))
+    return job
+
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--source-job',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--code',type=Path,required=True);a=p.parse_args()
-    j=prepare(a.source_job,a.output,a.code);print(j['campaign'])
+    p=argparse.ArgumentParser();p.add_argument('--source-job',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--code',type=Path,required=True);p.add_argument('--full',action='store_true');a=p.parse_args()
+    j=(prepare_full if a.full else prepare)(a.source_job,a.output,a.code);print(j['campaign'])
 
 if __name__=='__main__':main()
