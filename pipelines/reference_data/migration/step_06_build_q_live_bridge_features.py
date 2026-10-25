@@ -28,7 +28,7 @@ from research.mlops.clickhouse import (  # noqa: E402
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
 from research.mlops.paths import machine_name  # noqa: E402
 from pipelines.reference_data.sec_market_bridge import us_market_listing_predicate_sql  # noqa: E402
-from pipelines.reference_data.identity_review import sec_ticker_sql  # noqa: E402
+from pipelines.reference_data.identity_review import sec_ticker_sql, rejected_direct_sql  # noqa: E402
 from services.reference_gateway.tradability import otc_venue_predicate_sql  # noqa: E402
 
 
@@ -514,6 +514,7 @@ direct_bridge_rows AS
     LEFT JOIN {db}.id_symbol_v1 AS sym FINAL ON sym.listing_id = l.listing_id AND sym.primary_symbol_flag = 1
     INNER JOIN {db}.ref_exchange_v1 AS ex FINAL ON ex.exchange_code = l.exchange_code
     WHERE iii.identifier_kind = 'cik'
+      AND {rejected_direct_sql('sec.security_id','iii.identifier_value_normalized')}
       AND ifNull(sym.symbol_id,'') NOT IN (SELECT symbol_id FROM reviewed_symbols)
       AND {eligible_listing}
 ),

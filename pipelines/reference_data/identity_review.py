@@ -8,6 +8,25 @@ from datetime import date
 from pipelines.certified_research.contracts import digest,literal
 
 METHOD='reviewed_sec_ticker_to_market_listing'
+# Reviewed retained SEC company and filing metadata contradict these imported
+# market-provider links. Scope the rejection to a security/CIK pair, never to
+# the filing issuer globally: its own facts and legitimate associations remain.
+REJECTED_DIRECT_PAIRS = {
+    ('security:9efe99914dfd0da2c2292c56','0001961415'):
+        'HIFS provider CIK identifies Maren Capital LLC; retained filings are manager/shareholder reports',
+    ('security:0a563631d715c99df52aa06e','0001170279'):
+        'TOWN provider CIK identifies WHIRLPOOL CORP; retained filings are SC 13G and SC 13G/A',
+}
+
+
+def rejected_direct(security,cik):
+    return (security,cik) in REJECTED_DIRECT_PAIRS
+
+
+def rejected_direct_sql(security_expression,cik_expression):
+    pairs=','.join('('+literal(s)+','+literal(c)+')' for s,c in sorted(REJECTED_DIRECT_PAIRS))
+    return f'({security_expression},{cik_expression}) NOT IN ({pairs})'
+
 # Explicit reviewed preferred-listing notation, never a general fuzzy matcher.
 SEC_ALIASES={
     'SCHW PRD':('SCHW-PD','security:aa34bc0d2ade314d5aa15699'),
@@ -146,6 +165,8 @@ def prepare(query,tickers,snapshot_day):
         targets=[x for x in listings if x['ticker']==ticker]
         if len(targets)!=1:raise ValueError('Reviewed listing is absent or competing')
         target=targets[0]
+        if rejected_direct(target['security_id'],identity['cik']):
+            raise ValueError('Reviewed SEC identity contradicts retained direct-issuer adjudication')
         if alias:
             if target['security_id']!=alias[1]:raise ValueError('Reviewed SEC alias listing identity changed')
             if identity['cik']!='0000316709':raise ValueError('Reviewed preferred issuer changed')

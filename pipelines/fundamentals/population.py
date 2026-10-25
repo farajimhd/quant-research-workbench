@@ -4,6 +4,7 @@ from pipelines.certified_research.contracts import literal, digest
 from .adapters import ADAPTERS
 from . import eligibility
 from pipelines.reference_data.identity_review import METHOD as REVIEWED_DIRECT_METHOD
+from pipelines.reference_data.identity_review import rejected_direct
 
 DIRECT_METHOD = 'issuer_cik_to_active_market_listing'
 ASSOCIATION_METHOD = 'filing_issuer_to_listed_parent'
@@ -12,6 +13,7 @@ ASSOCIATION_METHOD = 'filing_issuer_to_listed_parent'
 def direct_rows(rows):
     """An association describes relevance, never the identity of a stock."""
     return [r for r in rows if r['mapping_method'] in (DIRECT_METHOD,REVIEWED_DIRECT_METHOD)
+            and not rejected_direct(r.get('security_id'),r.get('cik'))
             and r['mapping_status']=='active'
             and r['ambiguity_status'] in ('unique','ambiguous_multi_listing')]
 
@@ -23,7 +25,7 @@ def snapshot_population(query, day):
     if not rows:raise ValueError('Requested universe snapshot is absent')
     symbols=('SELECT symbol_id FROM q_live.feature_tradable_universe_v1 FINAL '
         f'WHERE universe_date=toDate({literal(day)}) AND is_tradable=1')
-    bridge=query('SELECT symbol_id,cik,mapping_status,ambiguity_status,mapping_method,valid_from_date,valid_to_date_exclusive FROM q_live.id_sec_market_bridge_v3 FINAL '
+    bridge=query('SELECT symbol_id,security_id,cik,mapping_status,ambiguity_status,mapping_method,valid_from_date,valid_to_date_exclusive FROM q_live.id_sec_market_bridge_v3 FINAL '
         f'WHERE symbol_id IN ({symbols}) ORDER BY symbol_id,cik')
     # Bridge ambiguity counts listings per CIK, not CIKs per symbol. Multiple
     # listings are valid issuer links; competing CIKs still fail closed below.
@@ -46,7 +48,8 @@ def snapshot_population(query, day):
     issuer_resolved=0
     for row in rows:
         candidates=by_issuer.get(row['issuer_id'],set())
-        if row['symbol_id'] not in bridged and len(candidates)==1:
+        if (row['symbol_id'] not in bridged and len(candidates)==1
+                and not rejected_direct(row['security_id'],next(iter(candidates)))):
             by_symbol[row['symbol_id']]=candidates
             issuer_resolved+=1
     excluded=[];included=[]
@@ -97,8 +100,9 @@ def resolve_ticker(query, ticker, at, *, known_at=None):
         f'AND isNotNull(valid_from_date) AND valid_from_date<=toDate({day}) '
         f'AND (isNull(valid_to_date_exclusive) OR valid_to_date_exclusive>toDate({day}))'
         + ('' if known_at is None else f' AND inserted_at<={_timestamp(known_at)}'))
-    unique={(x['issuer_id'],x['cik']) for x in bridge}
+    rejected=[x for x in bridge if rejected_direct(security,x['cik'])]
+    unique={(x['issuer_id'],x['cik']) for x in bridge if not rejected_direct(security,x['cik'])}
     eligibility.require_eligible('issuer_cik',[cik for _,cik in unique])
     return {'security':security,'issuer':next(iter(unique))[0] if len(unique)==1 else None,
         'issuer_cik':next(iter(unique))[1] if len(unique)==1 else None,
-        'issuer_mapping_status':'resolved' if len(unique)==1 else 'missing_or_ambiguous'}
+        'issuer_mapping_status':'resolved' if len(unique)==1 else 'rejected_direct_identity' if rejected else 'missing_or_ambiguous'}

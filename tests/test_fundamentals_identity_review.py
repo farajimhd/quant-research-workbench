@@ -4,6 +4,29 @@ from pipelines.reference_data.identity_review import reviewed_identity,applicabi
 from pipelines.fundamentals.population import direct_rows
 
 
+def test_reviewed_wrong_issuer_pair_is_blocked_without_blocking_issuer_globally():
+    from pipelines.reference_data.identity_review import REJECTED_DIRECT_PAIRS,rejected_direct_sql
+    from pipelines.reference_data.migration.step_06_build_q_live_bridge_features import sec_market_bridge_source_ctes_sql
+    for security,cik in REJECTED_DIRECT_PAIRS:
+        row=dict(security_id=security,cik=cik,mapping_method=METHOD,mapping_status='active',ambiguity_status='unique')
+        assert direct_rows([row])==[]
+        other=dict(row,security_id='different-security')
+        assert direct_rows([other])==[other]
+    sql=rejected_direct_sql('sec.security_id','iii.identifier_value_normalized')
+    assert sql in sec_market_bridge_source_ctes_sql('q_live')
+
+
+def test_ticker_resolution_exposes_reviewed_identity_rejection():
+    from datetime import datetime,timezone
+    from pipelines.fundamentals.population import resolve_ticker
+    def query(sql):
+        if 'id_symbol_interval_v1' in sql:
+            return [dict(security_id='security:9efe99914dfd0da2c2292c56',listing_id='listing')]
+        return [dict(issuer_id='issuer:manager',cik='0001961415')]
+    result=resolve_ticker(query,'HIFS',datetime(2026,10,5,tzinfo=timezone.utc))
+    assert result['issuer_cik'] is None and result['issuer_mapping_status']=='rejected_direct_identity'
+
+
 def test_source_bound_listing_type_distinguishes_fund_from_ticker_reuse():
     evidence=dict(security_id='security:current',security_type='ETF',
                   source_content_sha256='a'*64,last_seen_at_utc='2026-09-10 09:20:25.398')
