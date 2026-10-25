@@ -136,6 +136,12 @@ def prepare(query, document, claim, guard=lambda: None):
     native = {r['concept']:r['html_proof']['native'] for r in extracted['observations']
               if 'native' in r.get('html_proof', {})}
     if native: result['native_definitions'] = native
+    from pipelines.certified_research import sec_trust_context as trust
+    if document['content_sha256'] == trust.SUPPLEMENT_DOCUMENT and document['cik'] == trust.SOURCE_CIK:
+        result['groups'] = [g for g in result['groups'] if trust.subject(g)]
+        if not result['groups']:raise ValueError('Trust supplement has no explicit contexts')
+        result['supplements_authority'] = trust.SUPPLEMENT_PARENT
+        result['qualification_scope'] = 'reviewed_trust_context_supplement'
     return dict(result, authority_hash=digest(result)), before
 
 
@@ -148,12 +154,24 @@ def publish(query, database, document, population_hash, observed_at, claim, guar
         "WHERE family='sec_original_qualified' AND entity_id="+literal(document['cik'])+
         ' AND event_key='+literal(document['accession'])+
         ' AND JSONExtractString(evidence_ref,\'document\')='+literal(document['document']))
-    if any(r['source_id'] != verified['authority_hash'] for r in prior):
+    permitted = {verified['authority_hash']}
+    parent = verified.get('supplements_authority')
+    if parent:
+        permitted.add(parent)
+        if parent not in {r['source_id'] for r in prior}:raise ValueError('Trust supplement parent authority is absent')
+        receipts=query(f'SELECT fact_rows,output_hash FROM {database}.reference_batch_receipt_v1 FINAL WHERE source_signature='+literal(parent))
+        if not receipts or any(int(r['fact_rows'])<=0 for r in receipts):raise ValueError('Trust supplement parent receipt is absent')
+        # The reviewed additive path must not repeat any original trust fact.
+        overlap=query(f"SELECT count() n FROM {database}.reference_fact_v1 f FINAL INNER JOIN {database}.reference_context_v1 c FINAL ON f.context_id=c.context_id WHERE f.entity_id="+literal(document['cik'])+' AND f.source_id='+literal(parent)+" AND positionCaseInsensitive(c.dimensions,'trust')>0")
+        if overlap != [dict(n=0)]:raise ValueError('Existing trust contexts require explicit reconciliation')
+    if any(r['source_id'] not in permitted for r in prior):
         raise ValueError('Existing qualified document is preserved; explicit time-policy migration required')
     def stable():
         claim.check(); guard()
         if inspect(query, document) != before:
             raise ValueError('Retained original changed before publication')
+        if parent and query(f'SELECT fact_rows,output_hash FROM {database}.reference_batch_receipt_v1 FINAL WHERE source_signature='+literal(parent)) != receipts:
+            raise ValueError('Trust supplement parent receipt changed')
     result = qualified._publish_verified(query, 'q_live', database,
         (document['cik'], document['accession'], document['document']), verified['authority_hash'],
         population_hash, observed_at, claim, stable, verified)

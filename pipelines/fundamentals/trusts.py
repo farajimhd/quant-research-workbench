@@ -5,7 +5,7 @@ trust CIKs nor adds trust investments to the guarantor's consolidated financials
 """
 import json
 from pipelines.certified_research.contracts import literal, identifier
-from pipelines.certified_research.sec_trust_context import DOCUMENTS, MEMBERS, SOURCE_CIK, subject
+from pipelines.certified_research.sec_trust_context import ACCESSIONS, MEMBERS, SOURCE_CIK, subject
 from .queries import _timestamp
 
 
@@ -14,12 +14,12 @@ def observations(query, ciks, cutoff, *, known_at=None, database='arte'):
     requested = set(ciks)
     if not requested or not requested <= set(MEMBERS.values()):
         raise ValueError('Unreviewed trust identity')
-    hashes = ','.join(map(literal, sorted(DOCUMENTS)))
+    accessions = ','.join(map(literal, ACCESSIONS))
     known = '' if known_at is None else ' AND observed_at<=' + _timestamp(known_at)
     sources = f"""SELECT * FROM {database}.reference_source_v1 FINAL
         WHERE entity_kind='issuer_cik' AND entity_id={literal(SOURCE_CIK)}
         AND family='sec_original_qualified' AND quality='certified'
-        AND source_hash IN ({hashes}) AND available_at<={_timestamp(cutoff)}{known}
+        AND event_key IN ({accessions}) AND available_at<={_timestamp(cutoff)}{known}
         AND source_id IN (SELECT source_signature FROM {database}.reference_batch_receipt_v1 FINAL)"""
     facts = f"""SELECT * FROM {database}.reference_fact_v1 FINAL
         WHERE entity_kind='issuer_cik' AND entity_id={literal(SOURCE_CIK)}
@@ -27,7 +27,7 @@ def observations(query, ciks, cutoff, *, known_at=None, database='arte'):
     rows = query(f"""SELECT f.entity_id source_cik,f.source_id,f.metric,
         c.period_start,c.period_end,c.unit,c.dimensions,
         coalesce(f.text_value,toString(f.value)) value,s.available_at,s.observed_at,
-        s.source_hash document_hash,s.event_key accession
+        s.source_hash source_binding_hash,s.event_key accession
         FROM ({facts}) f
         INNER JOIN ({sources}) s ON f.source_id=s.source_id
         INNER JOIN (SELECT * FROM {database}.reference_context_v1 FINAL
