@@ -290,3 +290,16 @@ def test_sos_income_excludes_translation_oci_and_cash_label_is_not_equivalents()
     assert rows['StockholdersEquity','2022-12-31']['expected_value']=='-108778'
     assert not any('CashAndCashEquivalents' in f['concept'] for f in p['facts'])
 
+
+def test_wcgc_successor_excludes_predecessor_units_and_scales_only_money():
+    from pipelines.certified_research.sec_html_reviewed_wcgc import plan_for,HASH
+    p=plan_for(HASH,'1861104')
+    rows={(f['concept'].split('}')[-1],f['period_start'],f['period_end']):f for f in p['facts']}
+    assert len(rows)==len(p['facts'])==34
+    assert plan_for(HASH,'1') is None
+    assert all(f['period_end']>='2020-12-31' or f['period_end']=='2020-03-31' for f in p['facts'])
+    assert rows['CashAndCashEquivalentsAtCarryingValue',None,'2020-12-31']['expected_value']=='177902000'
+    assert rows['NetIncomeLoss','2020-01-01','2020-12-31']['expected_value']=='-95274000'
+    assert rows['EarningsPerShareDiluted','2020-01-01','2020-12-31']['expected_value']=='-0.29'
+    assert rows['WeightedAverageNumberOfDilutedSharesOutstanding','2020-01-01','2020-12-31']['expected_value']=='330534874'
+
