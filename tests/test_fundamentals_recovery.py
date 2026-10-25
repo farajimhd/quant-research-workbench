@@ -85,7 +85,7 @@ def test_native_mapping_change_invalidates_unchanged_coverage(tmp_path,monkeypat
     monkeypatch.setattr(recovery,'source_inventory',lambda q,ids,*a:{c:'same' for c in ids})
     monkeypatch.setattr(recovery,'dependency_inventory',lambda *a:'same')
     mapping=['first']
-    monkeypatch.setattr(native_features,'mapping_hash',lambda:mapping[0])
+    monkeypatch.setattr(native_features,'mapping_hash',lambda ciks=None:mapping[0])
     def save(p,v):p.write_text(json.dumps(v))
     def run():return recovery.write_queue(lambda sql:[],tmp_path,[C],'2019-01-01','2026-10-02',
         datetime(2026,10,25,tzinfo=timezone.utc),save=save)
@@ -93,6 +93,24 @@ def test_native_mapping_change_invalidates_unchanged_coverage(tmp_path,monkeypat
     assert run()['unchanged']==1
     mapping[0]='second'
     assert run()['updated']==1
+
+
+def test_native_mapping_only_reaudits_affected_issuer(tmp_path,monkeypatch):
+    from pipelines.fundamentals import native_features
+    other='0000000002';mapping={C:'a',other:'b'};reads=[]
+    monkeypatch.setattr(recovery,'source_inventory',lambda q,ids,*a:{c:'same' for c in ids})
+    monkeypatch.setattr(recovery,'dependency_inventory',lambda *a:'same')
+    monkeypatch.setattr(native_features,'mapping_hash',lambda ids:mapping[ids[0]])
+    def save(p,v):p.write_text(json.dumps(v))
+    def query(sql):reads.append(sql);return []
+    def run():return recovery.write_queue(query,tmp_path,[C,other],'2019-01-01','2026-10-02',
+        datetime(2026,10,25,tzinfo=timezone.utc),save=save)
+    assert run()['updated']==2
+    preserved=(tmp_path/'cases'/(other+'.json')).read_bytes();reads.clear();mapping[C]='changed'
+    result=run()
+    assert result['updated']==1 and result['unchanged']==1
+    assert all(other not in sql for sql in reads)
+    assert (tmp_path/'cases'/(other+'.json')).read_bytes()==preserved
 
 
 def test_only_registered_unpublished_originals_are_queued():

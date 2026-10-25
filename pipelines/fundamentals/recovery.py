@@ -209,9 +209,13 @@ def write_queue(query, root, ciks, start, end, cutoff, *, database='arte',
     # newly public observation without an insertion; conservatively re-audit.
     from . import v1, reporting_notices, native_features
     cache_scope=dict(dependency=dependency,review_contract=digest((Path(__file__).read_text(),Path(v1.__file__).read_text(),Path(reporting_notices.__file__).read_text(),
-                     Path(native_features.__file__).read_text(),native_features.mapping_hash())),
+                     Path(native_features.__file__).read_text())),
                      public_day=cutoff.date().isoformat(),
                      public_ny_day=cutoff.astimezone(ZoneInfo('America/New_York')).date().isoformat())
+    def case_scope(cik):
+        # A newly reviewed issuer must not invalidate every other issuer's
+        # expensive feature audit. Shared reader changes still invalidate all.
+        return dict(cache_scope,native_mapping=native_features.mapping_hash([cik]))
     for offset in range(0,len(ids),32):
         chunk=ids[offset:offset+32]
         # Exact metadata inventory also detects late arrival with an old recorded
@@ -224,7 +228,7 @@ def write_queue(query, root, ciks, start, end, cutoff, *, database='arte',
                 if p.get('cik')!=c or digest(body)!=p.get('case_hash'):
                     raise ValueError('Recovery case receipt changed; preserve for review')
         selected=[c for c in chunk if not prior[c] or prior[c].get('source_fingerprint')!=before[c]
-                  or prior[c].get('cache_scope')!=cache_scope]
+                  or prior[c].get('cache_scope')!=case_scope(c)]
         unchanged+=len(chunk)-len(selected)
         if selected:
             values=reconcile(selected,query(coverage_query(selected,cutoff,database)),query(filing_query(selected,start,end)),
@@ -238,7 +242,7 @@ def write_queue(query, root, ciks, start, end, cutoff, *, database='arte',
             if before!=after:raise ValueError('Recovery sources changed during reconciliation; retry without resetting cases')
             for value in values:
                 path=cases/(value['cik']+'.json')
-                save(path,dict(value,source_fingerprint=before[value['cik']],cache_scope=cache_scope));updated+=1
+                save(path,dict(value,source_fingerprint=before[value['cik']],cache_scope=case_scope(value['cik'])));updated+=1
         progress(min(offset+32,len(ids)),len(ids))
     if dependency_inventory(query,database)!=dependency:
         raise ValueError('Recovery serving dependencies changed during audit; retry preserves completed cases')

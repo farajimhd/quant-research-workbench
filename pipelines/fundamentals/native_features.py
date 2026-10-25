@@ -3,8 +3,8 @@ from pipelines.certified_research.contracts import literal, identifier, digest
 from .native_feature_mappings import MAPPINGS
 
 
-def mapping_hash():
-    return digest(MAPPINGS)
+def mapping_hash(ciks=None):
+    return digest(MAPPINGS if ciks is None else tuple(r for r in MAPPINGS if r[0] in ciks))
 
 
 def base_sql(ciks, database, known_at=None):

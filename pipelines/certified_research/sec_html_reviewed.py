@@ -37,6 +37,9 @@ SHARES=(
 
 
 def plan_for(document_hash,cik):
+    from .sec_html_reviewed_owls import plan_for as owls
+    reviewed=owls(document_hash,cik)
+    if reviewed is not None:return reviewed
     from .sec_html_reviewed_lec import plan_for as lec
     reviewed=lec(document_hash,cik)
     if reviewed is not None:return reviewed
