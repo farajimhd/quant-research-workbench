@@ -55,3 +55,15 @@ def test_lirum_loss_sign_comes_from_cash_flow_statement_not_unsigned_display():
     rows = [f for f in issuer('0001965411')['facts'] if f['label'] == 'Net loss']
     assert rows and all(f['expected_value'].startswith('-') for f in rows)
     assert {f['locator']['table'] for f in rows} == {28, 36}
+def test_earlier_vintages_preserve_semantics_and_are_hash_bound():
+    from pipelines.certified_research.sec_html_reviewed_vintages import REGISTRY,plan_for
+    from pipelines.certified_research.sec_html_reviewed_issuer_recovery import plan_for as original
+    from pipelines.certified_research.contracts import digest
+    assert len(REGISTRY)==35
+    for h,row in REGISTRY.items():
+        plan=plan_for(h,row['cik']);base=original(row['template'],row['cik'])
+        body=dict(plan);seal=body.pop('plan_hash');assert digest(body)==seal
+        assert plan_for(h,'0000000001') is None
+        for fact,item in zip(plan['facts'],row['items']):
+            expected=base['facts'][item['index']]
+            assert {k:v for k,v in fact.items() if k not in ('locator','unit_locator','table_proof')} == {k:v for k,v in expected.items() if k not in ('locator','unit_locator','table_proof')}
