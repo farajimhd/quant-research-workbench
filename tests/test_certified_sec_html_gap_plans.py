@@ -240,3 +240,20 @@ def test_roze_july_maps_same_reviewed_statements_but_pins_its_own_document():
         assert {k:v for k,v in a.items() if k!='locator'}=={k:v for k,v in b.items() if k!='locator'}
         assert a['locator']['table']=={585:567,587:569,591:573}[b['locator']['table']]
 
+def test_spac_gaps_keep_inception_periods_and_actual_negative_zero():
+    from pipelines.certified_research.sec_html_reviewed_spac_gaps import REVIEWED,plan_for
+    for h,review in REVIEWED.items():
+        p=plan_for(h,review['cik'])
+        assert plan_for(h,'1') is None
+        assert len({(f['concept'],f['period_start'],f['period_end']) for f in p['facts']})==len(p['facts'])
+        if review['cik']=='0001845855':
+            assert len(p['facts'])==14
+            eps=[f for f in p['facts'] if f['concept'].endswith('}EarningsPerShareDiluted')]
+            assert all(f['expected_value']=='-0.00' and f['decimals']=='2' for f in eps)
+        else:
+            assert len(p['facts'])==11
+            cf=[f for f in p['facts'] if 'NetCashProvided' in f['concept']]
+            assert len(cf)==1 and cf[0]['expected_value']=='-33611'
+            assert cf[0]['period_start']=='2021-03-10'
+        assert not any('CashAndCashEquivalents' in f['concept'] for f in p['facts'])
+
