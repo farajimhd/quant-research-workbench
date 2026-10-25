@@ -130,9 +130,11 @@ def native_query(ciks, cutoff, database='arte'):
     from .queries import _timestamp
     identifier(database);validate_ids(ciks)
     ids=','.join(map(literal,sorted(set(ciks))))
+    from .authority_corrections import exclusion
+    superseded=exclusion(ciks)
     return f'''SELECT entity_id cik,uniqExact(tuple(source_id,metric,context_id)) observations
         FROM {database}.reference_fact_v1 FINAL
-        WHERE entity_kind='issuer_cik' AND entity_id IN ({ids}) AND startsWith(metric,'html-native|')
+        WHERE entity_kind='issuer_cik' AND entity_id IN ({ids}) AND startsWith(metric,'html-native|'){superseded}
         AND source_id IN (SELECT source_id FROM {database}.reference_source_v1 FINAL
             WHERE entity_kind='issuer_cik' AND entity_id IN ({ids}) AND family='sec_original_qualified'
             AND available_at<={_timestamp(cutoff)}) GROUP BY cik'''
@@ -288,7 +290,9 @@ def write_queue(query, root, ciks, start, end, cutoff, *, database='arte',
     def case_scope(cik):
         # A newly reviewed issuer must not invalidate every other issuer's
         # expensive feature audit. Shared reader changes still invalidate all.
-        return dict(cache_scope,native_mapping=native_features.mapping_hash([cik]))
+        from .authority_corrections import policy_hash
+        return dict(cache_scope,native_mapping=native_features.mapping_hash([cik]),
+                    native_corrections=policy_hash([cik]))
     for offset in range(0,len(ids),32):
         chunk=ids[offset:offset+32]
         # Exact metadata inventory also detects late arrival with an old recorded

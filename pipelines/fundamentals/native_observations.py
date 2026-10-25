@@ -16,8 +16,10 @@ def financial_sql(ciks, cutoff, *, since=None, known_at=None, database='arte'):
     if since is not None and since>=cutoff:raise ValueError('History start must precede cutoff')
     ids=','.join(map(literal,sorted(set(ciks))))
     known='' if known_at is None else ' AND observed_at<='+_timestamp(known_at)
+    from .authority_corrections import exclusion
+    superseded=exclusion(ciks)
     facts=f'''SELECT * FROM {database}.reference_fact_v1 FINAL
-        WHERE entity_kind='issuer_cik' AND entity_id IN ({ids}) AND startsWith(metric,'html-native|')'''
+        WHERE entity_kind='issuer_cik' AND entity_id IN ({ids}) AND startsWith(metric,'html-native|'){superseded}'''
     base=f'''SELECT f.entity_id cik,f.metric metric,d.label label,d.statement_scope statement_scope,
         d.definition_hash definition_hash,f.context_id context_id,c.period_start period_start,
         c.period_end period_end,c.unit unit,c.dimensions dimensions,

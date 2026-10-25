@@ -43,9 +43,11 @@ def observations_sql(database, entity_kind, entities, metrics, cutoff, *, clock=
         ('c','period_start period_end taxonomy dimensions unit'),
         ('s','family event_key source_id source_table source_hash evidence_ref quality reason observed_at available_at'))
         for name in fields.split())
+    from .authority_corrections import exclusion
+    superseded=exclusion(entities) if entity_kind=='issuer_cik' else ''
     facts=f'''SELECT * FROM {database}.reference_fact_v1 FINAL
             WHERE entity_kind={literal(entity_kind)} AND entity_id IN ({ids})
-              AND metric IN ({wanted}){ordering}'''
+              AND metric IN ({wanted}){ordering}{superseded}'''
     base=f'''SELECT {columns},{time} at
         FROM ({facts}) f
         INNER JOIN (SELECT * FROM {database}.reference_source_v1 FINAL

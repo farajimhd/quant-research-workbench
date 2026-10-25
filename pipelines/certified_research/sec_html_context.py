@@ -83,6 +83,8 @@ def extract(payload,expected_hash,cik,plan,*,maximum_bytes=64*1024**2):
             or str(int(cik)).zfill(10)!=body.get('cik')
             or body.get('scope')!='reviewed_observations' or not 1<=len(body.get('facts',[]))<=10000):
         raise ValueError('HTML reviewed plan identity or scope differs')
+    if body.get('native_scope_policy') not in (None,'nearest_statement_heading_v1'):
+        raise ValueError('Unknown native statement ownership policy')
     mixed=body.get('source_mode')=='mixed_inline_reviewed_tables'
     cover=dict(observations=(),rejected=(),class_completeness_proven=False)
     if body.get('source_mode') is not None:
@@ -161,6 +163,11 @@ def extract(payload,expected_hash,cik,plan,*,maximum_bytes=64*1024**2):
                 context=table['preceding']+' '+normalize(' '.join(c['text'] for row in table['rows'][:10] for c in row))
                 if not proof['heading'] or proof['heading'] not in context:
                     raise ValueError('HTML statement subject heading differs')
+                if body.get('native_scope_policy')=='nearest_statement_heading_v1' and native:
+                    own=table['preceding'][-1200:]+' '+normalize(' '.join(c['text'] for r in table['rows'][:3] for c in r))
+                    headings=list(re.finditer(r'(?:CONDENSED\s+)?(?:CONSOLIDATED\s+)?STATE\s*MENTS? OF',own,re.I))
+                    if not headings or not normalize(own[headings[-1].start():]).startswith(proof['heading']):
+                        raise ValueError('Native fact inherited an adjacent statement heading')
                 for index,cells in proof['headers']:
                     if [normalize(c['text']) for c in table['rows'][index]]!=cells:
                         raise ValueError('HTML reviewed period column headers differ')

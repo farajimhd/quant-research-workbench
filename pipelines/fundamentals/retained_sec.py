@@ -156,6 +156,12 @@ def prepare(query, document, claim, guard=lambda: None, *, database='arte'):
             available_at=state['headers'][0]['available_at'])
         result['time_evidence']=dict(result['time_evidence'],
             available_at=result['available_at'],availability_basis='completed_parent_authority_clock')
+        if addition.get('mode')=='native_statement_scope_correction':
+            from pipelines.certified_research.sec_html_additions import replacement_keys
+            from pipelines.certified_research.sec_html_reviewed import plan_for
+            keys=replacement_keys(plan_for(document['content_sha256'],document['cik']),addition['plan'])
+            if keys!=addition['replaces_fact_keys']:raise ValueError('Native scope retirement proof changed')
+            result.update(qualification_scope='reviewed_native_scope_correction',supersedes_native_fact_keys=keys)
     from pipelines.certified_research import sec_trust_context as trust
     if document['content_sha256'] == trust.SUPPLEMENT_DOCUMENT and document['cik'] == trust.SOURCE_CIK:
         result['groups'] = [g for g in result['groups'] if trust.subject(g)]

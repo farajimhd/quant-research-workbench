@@ -54,9 +54,12 @@ def _publish_verified(query,source_database,database,request,binding_hash,popula
             document=request[2],scope=verified.get('qualification_scope','document'),whole_scope_certified=False,
             **({k:verified[k] for k in ('supplements_authority','review_scope_id','parent_state_hash')}
                if verified.get('review_scope_id') else {}),
+            **({'supersedes_native_fact_keys':verified['supersedes_native_fact_keys']}
+               if 'supersedes_native_fact_keys' in verified else {}),
             **({'time_evidence':verified['time_evidence']} if 'time_evidence' in verified else {})),sort_keys=True,separators=(',',':')),
         available_at=verified['available_at'],observed_at=stamp,quality='certified',
         reason=({'reviewed_html_observations':'qualified_reviewed_html_observations',
+            'reviewed_native_scope_correction':'qualified_native_scope_correction',
             'all_tagged_numeric':'qualified_all_tagged_numeric'}.get(verified.get('qualification_scope'),
             'qualified_original_document_scope')),recipe_hash=recipe)
     rows=[]

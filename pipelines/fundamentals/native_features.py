@@ -19,8 +19,10 @@ def base_sql(ciks, database, known_at=None):
     mappings=' UNION ALL '.join('SELECT '+','.join(literal(v)+' '+n for v,n in zip(
         r,('cik','source_id','document_hash','metric','unit','feature','serving_unit','currency_evidence'))) for r in rows)
     known='' if known_at is None else ' AND observed_at<='+_timestamp(known_at)
+    from .authority_corrections import exclusion
+    superseded=exclusion(ciks)
     facts=f'''SELECT * FROM {database}.reference_fact_v1 FINAL
-        WHERE entity_kind='issuer_cik' AND entity_id IN ({ids}) AND source_id IN ({sources})'''
+        WHERE entity_kind='issuer_cik' AND entity_id IN ({ids}) AND source_id IN ({sources}){superseded}'''
     return f'''SELECT f.entity_id cik,m.feature feature,f.metric source_metric,
         c.period_start,c.period_end,m.serving_unit unit,c.unit source_unit,c.dimensions dimensions,
         c.dimensions source_dimensions,s.source_id AS source_id,s.family,s.event_key accession,
