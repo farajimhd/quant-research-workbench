@@ -95,7 +95,8 @@ def extract(payload,expected_hash,cik,plan,*,maximum_bytes=64*1024**2):
             start=str(_period_date(start))
             if start>end:raise ValueError('HTML period order differs')
         unit=item['unit'];scale=item['scale']
-        if unit not in (*facts.CURRENCY_UNITS,'shares',*(u+'/shares' for u in facts.CURRENCY_UNITS)):
+        source_symbol = unit == 'source:$' and native is not None
+        if not source_symbol and unit not in (*facts.CURRENCY_UNITS,'shares',*(u+'/shares' for u in facts.CURRENCY_UNITS)):
             raise ValueError('HTML unit is unsupported')
         if type(scale) is not int or not 0<=scale<=9:raise ValueError('HTML scale is unsupported')
         evidence=item['evidence']
@@ -113,6 +114,15 @@ def extract(payload,expected_hash,cik,plan,*,maximum_bytes=64*1024**2):
             if type(ti) is not int or type(ri) is not int or ti<0 or ri<0:raise ValueError('Invalid HTML locator')
             table=parsed.tables[ti]
             if table['nested']:raise ValueError('Nested layout table cannot be a financial fact')
+            if source_symbol:
+                # This is the printed symbol, deliberately not an ISO currency.
+                # Only native measures can retain it; standard calculations
+                # cannot consume it as USD. Bind it to this statement's cells.
+                symbol=item.get('unit_locator',{})
+                sr,sc=symbol.get('row'),symbol.get('column')
+                if (symbol.get('table')!=ti or type(sr) is not int or type(sc) is not int
+                        or sr<0 or sc<0 or normalize(table['rows'][sr][sc]['text'])!='$'):
+                    raise ValueError('Native dollar symbol lacks exact statement evidence')
             if 'table_proof' in item:
                 proof=item['table_proof']
                 context=table['preceding']+' '+normalize(' '.join(c['text'] for row in table['rows'][:10] for c in row))
@@ -131,6 +141,7 @@ def extract(payload,expected_hash,cik,plan,*,maximum_bytes=64*1024**2):
             value_text=''.join(normalize(c['text']) for c in cells)
             source_identity=(ti,ri,tuple(columns))
         elif locator['kind']=='quote':
+            if source_symbol:raise ValueError('Native dollar symbol requires reviewed table cells')
             quote=locator['quote'];value_text=locator['value_text']
             if (text.count(quote)!=1 or quote.count(value_text)!=1 or item['label'] not in quote
                     or len(quote)>4096):raise ValueError('HTML quote is ambiguous or differs')

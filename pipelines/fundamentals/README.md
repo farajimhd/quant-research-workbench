@@ -6,6 +6,39 @@ forward-fill use the same publisher; forward-fill runs after an owning gateway
 has durably inserted updates. Re-running an unchanged source reads metadata and
 receipts, not historical fact payloads.
 
+## Incremental recovery review
+
+`scripts/audit_fundamentals_recovery.py` reconciles an explicit JSON list of
+reviewed CIKs against a population manifest without restarting normalization.
+It keeps separate issuer/period/unit coverage, conflicts, source-native presence
+and identity/reporting-channel review cases. Missing candidates are never zeros
+or a declaration that an issuer did not report a feature. Audit completion is
+not full-history completion.
+
+For the same behavior after structured forward fill, configure
+`run_fundamentals.py forward-fill --selected-v1 --recovery-scope <cik-list.json>`
+alongside the normal population, runtime, dates and first observation watermark.
+The runtime persists that scope; later invocations in the same runtime reuse it
+even when the option is omitted. The forward watermark advances only after the
+recovery queue has been durably reconciled. A different scope needs a separate
+request runtime; completed database receipts remain reusable. This is an
+explicit scope, not automatic discovery of every newly listed issuer.
+
+Recovery reads bounded metadata cohorts of 32 issuers, performs coverage
+aggregation inside ClickHouse only for invalidated cases, and preserves unchanged
+case files byte-for-byte. Source changes, serving-join part changes, public-date
+boundaries and recovery/serving code changes invalidate cached review. Part
+merges may conservatively cause another review. Neither mode automatically
+guesses identity, creates HTML semantic mappings or marks partial history complete.
+Reviewed original extraction remains the shared `retained_sec` publisher and
+receipt-preserving `run_retained_sec_fundamentals.py` path.
+
+Royalty-trust HTML mappings retain modified-cash measures in the existing native
+metric namespace. A printed `$` without verified ISO currency is stored as
+`source:$`, with an exact same-statement symbol locator; it is never USD and is
+excluded from standard financial features and currency arithmetic. These rows
+use the existing normalized fact/context/source tables, not separate trust tables.
+
 ## Authority and qualification
 
 The approved `qualified-original-filing-authority-v1` path is implemented in

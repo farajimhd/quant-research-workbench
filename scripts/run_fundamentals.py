@@ -104,6 +104,17 @@ def run(args):
         from pipelines.fundamentals.v1 import FAMILIES,contract_hash
         manifest=dict(manifest,families={k:v for k,v in manifest['families'].items() if k in FAMILIES})
     root.mkdir(parents=True,exist_ok=True)
+    recovery_file=getattr(args,'recovery_scope',None)
+    saved_recovery=root/'recovery-scope.json'
+    recovery_scope=json.loads(Path(recovery_file).read_text(encoding='utf-8-sig')) if recovery_file else (
+        json.loads(saved_recovery.read_text()) if saved_recovery.exists() else None)
+    if recovery_scope is not None:
+        from pipelines.fundamentals.recovery import validate_ids
+        if not selected or not isinstance(recovery_scope,list):raise ValueError('Recovery requires selected v1 and an explicit issuer list')
+        validate_ids(recovery_scope)
+        if not set(recovery_scope)<=set(manifest['families'].get('sec_bulk',[])):
+            raise ValueError('Recovery issuer outside reviewed population')
+        recovery_scope=sorted(set(recovery_scope))
     load_env_files(discover_clickhouse_env_files(),verbose=False)
     owner=Client(args.endpoint)
     try:
@@ -146,6 +157,7 @@ def run(args):
                 'database':args.database,'endpoint':args.endpoint,'cohort_size':args.cohort_size}
             if profile_count:request['profile_batches_per_family']=profile_count
             if selected:request.update(feature_contract=contract_hash(),mode=args.mode)
+            if recovery_scope is not None:request['recovery_scope_hash']=digest(recovery_scope)
             previous=root/'request.json'
             if previous.exists() and json.loads(previous.read_text())!=request:
                 raise ValueError('Existing request differs; use a separate run directory, retaining shared receipts')
@@ -157,6 +169,7 @@ def run(args):
                     f"{len(manifest['families'])} families. No database writes or acquisition.")
                 return 0
             save(previous,request)
+            if recovery_scope is not None:save(saved_recovery,recovery_scope)
             if until:save(root/'window.json',dict(since=since.isoformat(),until=until.isoformat(),overlap_days=7))
             schema.install(owner.query,args.database)
             state={'state':'running','mode':args.mode,'counts':dict(published=0,unchanged=0,audited=0,failed=0),
@@ -239,6 +252,21 @@ def run(args):
                     snapshot(force=draining)
             state['state']='failed' if state['counts']['failed'] else 'stopped' if draining else 'complete'
             schema.verify(owner.query,args.database)
+            if state['state']=='complete' and recovery_scope is not None:
+                from pipelines.fundamentals.recovery import write_queue
+                state['state']='running'
+                def recovery_progress(done,total):
+                    state['qualification_status']=f'Recovery coverage review {done}/{total} issuers; unresolved cases remain explicit.'
+                    snapshot(force=True)
+                try:
+                    state['recovery']=write_queue(owner.query,root/'recovery',recovery_scope,args.start,args.end,
+                        until or datetime.now(timezone.utc),database=args.database,save=save,progress=recovery_progress)
+                    state['state']='complete'
+                except Exception as exc:
+                    state['state']='failed';state['counts']['failed']+=1
+                    state['error']='Recovery review failed: '+str(exc)[:1600]
+                    snapshot(force=True)
+                    raise
             if state['state']=='complete' and until:save(root/'watermark.json',dict(through=until.isoformat(),feature_contract=contract_hash()))
             snapshot(force=True)
             return 1 if state['state']=='failed' else 130 if draining else 0
@@ -264,6 +292,7 @@ def main(argv=None):
     p.add_argument('--profile-batches-per-family',type=int,default=0,
         help='Isolated validation only: sample 1..3 source partitions per family before a full run')
     p.add_argument('--timing-profile',help='Matching isolated pilot runtime; seeds approximate per-family ETA only')
+    p.add_argument('--recovery-scope',help='Reviewed JSON CIK list for incremental gap review after normalization. Persisted and reused by subsequent forward fills in this runtime; no automatic unreviewed extraction.')
     args=p.parse_args(argv)
     try:return run(args)
     except KeyboardInterrupt:

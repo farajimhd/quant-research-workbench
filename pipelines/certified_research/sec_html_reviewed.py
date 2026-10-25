@@ -37,6 +37,9 @@ SHARES=(
 
 
 def plan_for(document_hash,cik):
+    from .sec_html_reviewed_royalty import plan_for as royalty
+    reviewed=royalty(document_hash,cik)
+    if reviewed is not None:return reviewed
     from .sec_html_reviewed_samsara import plan_for as samsara
     reviewed=samsara(document_hash,cik)
     if reviewed is not None:return reviewed
