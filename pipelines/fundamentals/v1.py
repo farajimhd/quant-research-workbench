@@ -11,7 +11,7 @@ from .queries import _timestamp
 from pipelines.certified_research.contracts import literal, identifier, digest
 
 VERSION='fundamentals-selected-v1'
-SERVING_VERSION='fundamentals-selected-serving-v5-joint-issuer-contexts'
+SERVING_VERSION='fundamentals-selected-serving-v6-reviewed-native-features'
 # Feature, temporal kind, ordered explicit standard tags. Different debt
 # components remain separate inputs; no overlapping total is blindly summed.
 FINANCIAL={
@@ -125,6 +125,9 @@ Ties with different values remain conflicts, never arbitrary winners.
       AND (c.dimensions IN ('{{}}','[]','') OR {reported_metadata}) AND isNotNull(c.period_end) AND isNotNull(value)'''
     from .joint_issuers import base_sql
     base+=' UNION ALL '+base_sql(ciks,database,known_at)
+    from .native_features import base_sql as native_base_sql
+    native=native_base_sql(ciks,database,known_at)
+    if native:base+=' UNION ALL '+native
     duration_names=','.join(literal(k) for k,(kind,_) in FINANCIAL.items() if kind=='duration')
     timing='coalesce(public_at,observed_at)' if include_recorded else 'public_at'
     eligible=f'''SELECT *,{timing} available_at,if(isNull(public_at),'recorded_only','public') availability_basis
