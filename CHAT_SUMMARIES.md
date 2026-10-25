@@ -7,6 +7,10 @@ each year.
 
 ## 2026
 
+### [2026-10-25 - V16 through V50 optimization and active workstation handoff](docs/codex/chat-summaries/2026/CHAT-20261013-1149-v16-v50-optimization-handoff.md)
+
+TASK-0223. V16-V49 experiments are historical/stopped; V50 now runs global-only on workstation, 24 training/12 display-only validation sessions, 100 generations, fresh 6,144 random/template founders and population 1,024. Score is net minus 0.1 gross losses minus 1.0 equity drawdown. Records scheduler recovery, bid/ask execution, rejected phase 0/ticker quotas, V49 transfer failures, controlled feature-noise results and unimplemented Boolean-head/closed-form ideas. Generation 1 training finished; validation was in progress at handoff, not a completed optimization. Preserve immutable deployments, checkpoint/RNG/receipt seals and paused monitoring; archiving this chat must not stop the scheduled run. Earlier context is partial.
+
 ### [2026-10-16 - Certified research launcher incomplete; archive handoff](docs/codex/chat-summaries/2026/CHAT-20261011-0705-certified-research-launcher-handoff.md)
 
 TASK-0226; related TASK-0215/0206/0208. Source socket recovery, four December strict certificates, AAPL bars and partial all-admitted bars/indicators delivered. General efficient end-to-end launcher, live normalized V7, fundamentals and terminal monitor remain unfinished. Performance profiling identified excessive metadata/readback round trips; committed batching and execution overrides were not activated. Thirty-six workstation tests passed for 8c18cb7ad; source-batch candidate 09cb93183 lacks live parity validation. User stopped implementation, paused monitoring, then requested all chat-owned scripts terminate. Preserve receipts and explicit quarantines; no automatic restart. Summary records exact shutdown evidence and resumption dependencies. Early chat content partial.
