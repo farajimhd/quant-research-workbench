@@ -120,6 +120,24 @@ def test_adrx_review_is_exact_and_preserves_actual_periods():
     assert set(f['locator']['table'] for f in plan['facts'])=={663,664,666,701,702,705}
 
 
+def test_braiin_roze_actual_groups_do_not_sum_acquisitions_or_invent_zeroes():
+    from pipelines.certified_research.sec_html_reviewed_braiin_roze import REVIEWED, plan_for
+    for fingerprint, review in REVIEWED.items():
+        plan=plan_for(fingerprint,review['cik'])
+        rows={(f['concept'].split('}')[-1],f['period_end']):f for f in plan['facts']}
+        assert len(rows)==len(plan['facts'])
+        assert not any(f['expected_value']=='0' for f in plan['facts'])
+        if review['cik']=='0002076975':
+            assert len(rows)==16 and not any(tag=='Revenue' for tag,end in rows)
+            assert rows['Assets','2025-06-30']['expected_value']=='294004'
+            assert set(f['locator']['table'] for f in plan['facts'])=={649,650,652}
+        else:
+            assert len(rows)==24
+            assert rows['CashAndCashEquivalents','2025-12-31']['locator']['table']==591
+            assert rows['Revenue','2025-12-31']['expected_value']=='2295237'
+            assert rows['ProfitLoss','2025-12-31']['expected_value']=='-6030257'
+
+
 def test_liberty_uses_ifrs_restated_periods_and_unscaled_shares():
     from pipelines.certified_research.sec_html_reviewed_liberty import HASH, plan_for
     plan = plan_for(HASH, '1919776')
@@ -138,7 +156,9 @@ def test_moove_keeps_reporting_currency_parent_profit_and_periods():
     plan = plan_for(HASH, '2026793')
     assert plan_for(HASH, '1') is None
     rows = {(f['concept'].split('}')[-1], f['period_start'], f['period_end']): f for f in plan['facts']}
-    assert len(rows) == len(plan['facts']) == 68
+    assert len(rows) == len(plan['facts']) == 71
+    assert rows['EquityAttributableToOwnersOfParent', None, '2023-12-31']['expected_value'] == '2263834000'
+    assert rows['Equity', None, '2023-12-31']['expected_value'] == '2264461000'
     assert rows['ProfitLoss', '2023-01-01', '2023-12-31']['expected_value'] == '265984000'
     assert rows['ProfitLossAttributableToOwnersOfParent', '2023-01-01', '2023-12-31']['expected_value'] == '265694000'
     assert rows['DilutedEarningsLossPerShare', '2023-01-01', '2023-06-30']['expected_value'] == '-1.67'

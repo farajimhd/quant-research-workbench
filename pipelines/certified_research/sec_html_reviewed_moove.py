@@ -247,6 +247,17 @@ TABLES = {549: {'heading': 'Consolidated Statement of Financial Position',
                   [11])]}}
 
 
+TABLES[550]['facts'].extend([
+    (36, 'EquityAttributableToOwnersOfParent', 'Equity attributable to equity holders of the parent',
+     None, '2023-12-31', 'BRL', 3, '-3', '2263834000', [5]),
+    (36, 'EquityAttributableToOwnersOfParent', 'Equity attributable to equity holders of the parent',
+     None, '2022-12-31', 'BRL', 3, '-3', '2284257000', [9]),
+])
+TABLES[476]['facts'].append(
+    (36, 'EquityAttributableToOwnersOfParent', 'Equity attributable to equity holders of the parent',
+     None, '2024-06-30', 'BRL', 3, '-3', '1723358000', [7]))
+
+
 def plan_for(document_hash, cik):
     if document_hash not in (HASH, ORIGINAL_HASH) or str(int(cik)).zfill(10) != CIK:
         return None

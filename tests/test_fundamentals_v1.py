@@ -7,6 +7,17 @@ from pipelines.fundamentals.v1 import FINANCIAL, financial_sql, gap_sql, derived
 from tests.test_fundamentals_retained import live
 
 
+def test_selected_ifrs_parent_equity_has_distinct_qualification_metric():
+    from pipelines.certified_research.facts import catalog
+    metrics = {m.name: m for m in catalog()}
+    parent = metrics['fundamental.equity_parent']
+    assert parent.tags == ('EquityAttributableToOwnersOfParent',)
+    assert parent.unit == 'USD'
+    assert parent.key not in {m.key for m in metrics.values() if m.name != parent.name}
+    assert 'EquityAttributableToOwnersOfParent' in FINANCIAL['equity_parent'][1]
+    assert 'Equity' not in FINANCIAL['equity_parent'][1]
+
+
 def test_empty_forward_completion_is_not_displayed_as_planning():
     from pipelines.fundamentals.progress import render
     text=render(dict(state='complete',mode='forward-fill',counts={},total=0,queued=0,elapsed=0))

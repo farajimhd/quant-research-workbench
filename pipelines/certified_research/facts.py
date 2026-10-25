@@ -72,7 +72,8 @@ def catalog():
         by_name[name]=Metric(name,unit,formula=formula)
     by_name['short.volume_ratio']=Metric('short.volume_ratio','ratio',formula='short.volume/short.total_volume; same source venue')
     by_name['short.interest_float_ratio']=Metric('short.interest_float_ratio','ratio',formula='short.interest/qualified_float; matching share basis')
-    for name,tags in [('fundamental.total_borrowings',('Borrowings',)),
+    for name,tags in [('fundamental.equity_parent',('EquityAttributableToOwnersOfParent',)),
+            ('fundamental.total_borrowings',('Borrowings',)),
             ('fundamental.debt_current_component',('LongTermDebtCurrent','CurrentPortionOfLongTermDebt','ShorttermBorrowings')),
             ('fundamental.debt_noncurrent_component',('LongTermDebtNoncurrent','LongtermBorrowings','NoncurrentPortionOfOtherNoncurrentBorrowings'))]:
         by_name[name]=Metric(name,'USD',tags)
