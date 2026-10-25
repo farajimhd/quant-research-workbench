@@ -37,6 +37,9 @@ SHARES=(
 
 
 def plan_for(document_hash,cik):
+    from .sec_html_reviewed_ltgo import plan_for as ltgo
+    reviewed=ltgo(document_hash,cik)
+    if reviewed is not None:return reviewed
     from .sec_html_reviewed_lynx import plan_for as lynx
     reviewed=lynx(document_hash,cik)
     if reviewed is not None:return reviewed

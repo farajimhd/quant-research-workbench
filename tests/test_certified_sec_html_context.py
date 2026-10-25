@@ -106,22 +106,26 @@ def test_native_measure_keeps_exact_identity_and_registered_source(monkeypatch):
     with pytest.raises(ValueError):html.extract(text,source,'1',seal(changed))
 
 
-def test_native_symbol_is_not_a_standard_currency_and_requires_local_proof():
+@pytest.mark.parametrize('unit,label',[('source:$','Income'),('source:$/shares','Income per share')])
+def test_native_symbol_is_not_a_standard_currency_and_requires_local_proof(unit,label):
     from pipelines.certified_research.sec_html_native import definition
-    text='<p>Trust statement at December 31, 2018</p><table><tr><td>Income</td><td>$</td><td>123</td></tr></table>'
+    text='<p>Trust statement at December 31, 2018</p><table><tr><td>'+label+'</td><td>$</td><td>123</td></tr></table>'
     source=sha256(text.encode()).hexdigest()
-    native=definition('1','Income','Trust statement at December 31, 2018')
+    native=definition('1',label,'Trust statement at December 31, 2018')
     fact=dict(concept=native['concept'],native=native,period_start=None,period_end='2018-12-31',
-        unit='source:$',scale=0,decimals='0',expected_value='123',label='Income',evidence=[native['statement_scope']],
-        table_proof=dict(heading=native['statement_scope'],headers=[[0,['Income','$','123']]]),
+        unit=unit,scale=0,decimals='0',expected_value='123',label=label,evidence=[native['statement_scope']],
+        table_proof=dict(heading=native['statement_scope'],headers=[[0,[label,'$','123']]]),
         locator=dict(kind='cells',table=0,row=0,label_column=0,columns=[2]),unit_locator=dict(table=0,row=0,column=1))
     plan=dict(version=html.VERSION,document_hash=source,cik='0000000001',scope='reviewed_observations',facts=[fact])
     out=html.extract(text,source,'1',seal(plan))
-    assert sec_precision.select_reported(out,mode='round-to-nearest')['groups'][0]['unit']=='source:$'
+    assert sec_precision.select_reported(out,mode='round-to-nearest')['groups'][0]['unit']==unit
     changed=deepcopy(plan);changed['facts'][0]['unit_locator']['column']=2
     with pytest.raises(ValueError,match='symbol'):html.extract(text,source,'1',seal(changed))
     changed=deepcopy(plan);changed['facts'][0].pop('native');changed['facts'][0]['concept']='{http://fasb.org/us-gaap/2018}Assets'
     with pytest.raises(ValueError,match='unit'):html.extract(text,source,'1',seal(changed))
+    if unit=='source:$':
+        changed=deepcopy(plan);changed['facts'][0]['unit']='source:$/shares'
+        with pytest.raises(ValueError,match='per-share label'):html.extract(text,source,'1',seal(changed))
 
 
 def test_royalty_plans_preserve_native_accounting_and_unknown_currency():
