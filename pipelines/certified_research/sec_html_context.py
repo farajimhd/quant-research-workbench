@@ -128,7 +128,16 @@ def extract(payload,expected_hash,cik,plan,*,maximum_bytes=64*1024**2):
                 symbol=item.get('unit_locator',{})
                 sr,sc=symbol.get('row'),symbol.get('column')
                 if (symbol.get('table')!=ti or type(sr) is not int or type(sc) is not int
-                        or sr<0 or sc<0 or normalize(table['rows'][sr][sc]['text'])!='$'):
+                        or sr<0 or sc<0):
+                    raise ValueError('Native dollar symbol lacks exact statement evidence')
+                printed=normalize(table['rows'][sr][sc]['text'])
+                # Some source tables print "$16,267" in one cell instead of
+                # separate symbol/value cells. Bind the entire reviewed token;
+                # this still preserves an unknown dollar currency, never USD.
+                expected_symbol=symbol.get('value_text','$')
+                amount=r'[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?'
+                if (printed!=expected_symbol or (expected_symbol!='$' and
+                        not re.fullmatch(r'\$(?:'+amount+r'|\('+amount+r'\))',expected_symbol))):
                     raise ValueError('Native dollar symbol lacks exact statement evidence')
             if 'table_proof' in item:
                 proof=item['table_proof']

@@ -137,6 +137,43 @@ def test_royalty_plans_preserve_native_accounting_and_unknown_currency():
         assert all(f['unit']=='source:$' and f['native']['concept']==f['concept'] for f in plan['facts'])
 
 
+def test_native_dollar_amount_in_one_cell_requires_exact_reviewed_token():
+    from pipelines.certified_research.sec_html_native import definition
+    text='<p>Operating LLC balance sheet</p><table><tr><td>Cash</td><td>$1,234</td></tr></table>'
+    source=sha256(text.encode()).hexdigest()
+    native=definition('1','Cash','Operating LLC balance sheet')
+    fact=dict(concept=native['concept'],native=native,period_start=None,period_end='2025-12-31',
+        unit='source:$',scale=0,decimals='0',expected_value='1234',label='Cash',evidence=[native['statement_scope']],
+        table_proof=dict(heading=native['statement_scope'],headers=[[0,['Cash','$1,234']]]),
+        locator=dict(kind='cells',table=0,row=0,label_column=0,columns=[1]),
+        unit_locator=dict(table=0,row=0,column=1,value_text='$1,234'))
+    plan=dict(version=html.VERSION,document_hash=source,cik='0000000001',scope='reviewed_observations',facts=[fact])
+    assert html.extract(text,source,'1',seal(plan))['observations'][0]['value']=='1234'
+    for token in ('$1,235','$','USD','$(1,234'):
+        changed=deepcopy(plan);changed['facts'][0]['unit_locator']['value_text']=token
+        with pytest.raises(ValueError,match='symbol'):html.extract(text,source,'1',seal(changed))
+
+
+def test_accelevation_separates_operating_subject_and_accounting_basis():
+    from pipelines.certified_research.sec_html_reviewed_accv import REVIEWED
+    plan=next(iter(REVIEWED.values()))
+    assert len(plan['facts'])==41
+    assert sec_html_reviewed.plan_for(plan['document_hash'],plan['cik'])==plan
+    assert all(f['unit']=='source:$' and 'Accelevation LLC' in f['native']['statement_scope'] for f in plan['facts'])
+    assert all(f['period_start']!='2025-01-01' for f in plan['facts'])
+    assert sum(f['period_end']=='2025-12-31' and f['period_start'] is None for f in plan['facts'])==7
+
+
+def test_xtend_merger_party_is_native_and_retains_explicit_currency():
+    from pipelines.certified_research.sec_html_reviewed_xtnd import REVIEWED
+    plan=next(iter(REVIEWED.values()))
+    assert len(plan['facts'])==42
+    assert sec_html_reviewed.plan_for(plan['document_hash'],plan['cik'])==plan
+    assert all(f['native']['statement_scope'].startswith('XTEND REALITY EXPANSION LTD.') for f in plan['facts'])
+    assert all(f['unit'] in ('USD','USD/shares') for f in plan['facts'])
+    assert sum(f['period_end']=='2025-12-31' and f['period_start'] is None for f in plan['facts'])==6
+
+
 def test_exact_cells_precision_and_scoped_source_proof(monkeypatch):
     text,source,plan=fixture();out=html.extract(text,source,'1',plan)
     assert out['observations'][0]['value']=='-1234000'
