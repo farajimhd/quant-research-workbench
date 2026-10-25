@@ -11,6 +11,10 @@ def snapshot(root,width,height):
     """A transient status read failure must not terminate the read-only panel."""
     try:
         state=json.loads((root/'status.json').read_text(encoding='utf-8'))
+        if state.get('child_run_dir'):
+            child=Path(state['child_run_dir']).resolve()
+            if not child.is_relative_to(root.resolve()):raise ValueError('Recovery monitor child escapes parent runtime')
+            state=json.loads((child/'status.json').read_text(encoding='utf-8'))
     except (OSError,json.JSONDecodeError) as error:
         return ('Fundamentals | STATUS UNAVAILABLE\n'
             'Controller health is unknown; retrying status read.\n'

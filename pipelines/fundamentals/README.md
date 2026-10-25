@@ -30,8 +30,13 @@ case files byte-for-byte. Source changes, serving-join part changes, public-date
 boundaries and recovery/serving code changes invalidate cached review. Part
 merges may conservatively cause another review. Neither mode automatically
 guesses identity, creates HTML semantic mappings or marks partial history complete.
-Reviewed original extraction remains the shared `retained_sec` publisher and
-receipt-preserving `run_retained_sec_fundamentals.py` path.
+After normalization, the shared launcher discovers exact registered HTML mappings
+that have no existing qualified authority, then drains sealed packets of at most
+128 documents through the existing `retained_sec` publisher and receipt-preserving
+`run_retained_sec_fundamentals.py` path. Thus a newly reviewed mapping is retried by
+the next forward fill without resetting the campaign or reparsing other blocked
+documents. Failure prevents watermark advancement. The same progress terminal
+follows the active recovery child. Unknown mappings remain explicit review cases.
 
 Royalty-trust HTML mappings retain modified-cash measures in the existing native
 metric namespace. A printed `$` without verified ISO currency is stored as

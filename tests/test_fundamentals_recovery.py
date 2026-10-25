@@ -52,3 +52,25 @@ def test_source_changes_do_not_publish_a_case(tmp_path,monkeypatch):
     with pytest.raises(ValueError,match='sources changed'):
         recovery.write_queue(lambda sql:[],tmp_path,[C],'2019-01-01','2026-10-02',datetime.now(timezone.utc),save=save)
     assert not list((tmp_path/'cases').iterdir())
+
+
+def test_only_registered_unpublished_originals_are_queued():
+    from pipelines.certified_research.sec_html_reviewed_spac_native import REVIEWED
+    key,plan=next(iter(REVIEWED.items()));cik=plan['cik']
+    row=dict(cik=cik,accession='0000000001-21-000001',document='filing.htm',content_sha256=key,
+             day='2021-03-17',form='S-1/A',source_version_key='')
+    queries=[]
+    def query(sql):queries.append(sql);return [row,dict(row,document='unknown.htm',content_sha256='0'*64)]
+    assert recovery.reviewed_documents(query,[cik],'2019-01-01','2026-10-02')==[row]
+    assert 'NOT IN' in queries[0] and 'sec_original_qualified' in queries[0]
+    with pytest.raises(ValueError,match='competing'):
+        recovery.reviewed_documents(lambda q:[row,row],[cik],'2019-01-01','2026-10-02')
+
+
+def test_spac_native_does_not_correct_an_inconsistent_reported_total():
+    from pipelines.certified_research.sec_html_reviewed_spac_native import REVIEWED
+    assert len(REVIEWED)==4 and sum(len(p['facts']) for p in REVIEWED.values())==20
+    sunfire=next(p for p in REVIEWED.values() if p['cik']=='0001873885')
+    prior={f['label']:f['expected_value'] for f in sunfire['facts'] if f['period_end']=='2021-12-31'}
+    assert prior['Total Assets']=='669200'
+    assert int(prior['Total Current Liabilities'])+int(prior['Total Shareholder’s Equity'])==669220

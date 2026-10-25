@@ -14,6 +14,7 @@ import threading
 import time
 import platform
 import shutil
+import subprocess
 from uuid import uuid4
 from pipelines.certified_research.contracts import digest
 from pipelines.fundamentals import schema
@@ -253,16 +254,43 @@ def run(args):
             state['state']='failed' if state['counts']['failed'] else 'stopped' if draining else 'complete'
             schema.verify(owner.query,args.database)
             if state['state']=='complete' and recovery_scope is not None:
-                from pipelines.fundamentals.recovery import write_queue
+                from pipelines.fundamentals.recovery import write_queue,reviewed_documents
                 state['state']='running'
                 def recovery_progress(done,total):
                     state['qualification_status']=f'Recovery coverage review {done}/{total} issuers; unresolved cases remain explicit.'
                     snapshot(force=True)
                 try:
+                    documents=reviewed_documents(owner.query,recovery_scope,args.start,args.end,args.database)
+                    if documents and args.database!='arte':raise ValueError('Reviewed original recovery requires production authority; profile extraction separately')
+                    original_population=json.loads(Path(args.population).read_text(encoding='utf-8-sig'))
+                    for offset in range(0,len(documents),128):
+                        body=dict(version='retained-gap-documents-v1',population_hash=digest(original_population),
+                            start=str(args.start),end=str(args.end),documents=documents[offset:offset+128])
+                        seal=digest(body);child=root/'reviewed-recovery'/seal;child.mkdir(parents=True,exist_ok=True)
+                        packet=child/'manifest.json';save(packet,dict(body,manifest_hash=seal))
+                        state['child_run_dir']=str(child)
+                        state['qualification_status']=f'Publishing {len(body["documents"])} newly reviewed originals; existing authorities preserved.'
+                        snapshot(force=True)
+                        command=[sys.executable,'-B',str(Path(__file__).with_name('run_retained_sec_fundamentals.py')),
+                            '--population',str(args.population),'--manifest',str(packet),'--run-dir',str(child),
+                            '--endpoint',args.endpoint,'--workers',str(args.workers)]
+                        save(child/'status.json',dict(state='planning',mode='reviewed recovery',unit='documents',
+                            total=len(body['documents']),queued=len(body['documents']),counts={},active={},
+                            updated_at=datetime.now(timezone.utc).isoformat()))
+                        process=subprocess.Popen(command)
+                        try:
+                            returncode=process.wait()
+                        except BaseException:
+                            (child/'STOP').write_text('Parent interrupted; drain reviewed publication before releasing ownership.\n')
+                            process.wait()
+                            raise
+                        state.pop('child_run_dir',None)
+                        if returncode:raise ValueError('Reviewed recovery did not complete; inspect '+str(child/'status.json'))
                     state['recovery']=write_queue(owner.query,root/'recovery',recovery_scope,args.start,args.end,
                         until or datetime.now(timezone.utc),database=args.database,save=save,progress=recovery_progress)
                     state['state']='complete'
                 except Exception as exc:
+                    state.pop('child_run_dir',None)
                     state['state']='failed';state['counts']['failed']+=1
                     state['error']='Recovery review failed: '+str(exc)[:1600]
                     snapshot(force=True)

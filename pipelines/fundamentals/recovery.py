@@ -98,6 +98,34 @@ def native_query(ciks, cutoff, database='arte'):
             AND available_at<={_timestamp(cutoff)}) GROUP BY cik'''
 
 
+def reviewed_documents(query, ciks, start, end, database='arte'):
+    """Queue only source-bound reviewed mappings not already published.
+
+    Unknown HTML stays a semantic review case. Inspect metadata only: adding a
+    reviewed mapping in a later release makes its exact source eligible without
+    reparsing every blocked original. Existing qualified documents are immutable.
+    """
+    from pipelines.certified_research.sec_html_reviewed import plan_for
+    identifier(database);validate_ids(ciks);out=[]
+    for offset in range(0,len(ciks),32):
+        ids=','.join(map(literal,sorted(set(ciks[offset:offset+32]))))
+        rows=query(f'''SELECT DISTINCT cik,accession_number accession,document_name document,
+            content_sha256,source_archive_date day,document_type form,source_version_key
+            FROM q_live.sec_filing_text_v3 WHERE cik IN ({ids})
+            AND source_archive_date BETWEEN toDate({literal(start)}) AND toDate({literal(end)})
+            AND (cik,accession_number,document_name) NOT IN (
+                SELECT entity_id,event_key,JSONExtractString(evidence_ref,'document')
+                FROM {database}.reference_source_v1 FINAL WHERE entity_kind='issuer_cik'
+                AND entity_id IN ({ids}) AND family='sec_original_qualified')
+            ORDER BY cik,accession,document,content_sha256''')
+        for row in rows:
+            if row['cik'] not in ciks[offset:offset+32]:raise ValueError('Reviewed document escaped recovery scope')
+            if plan_for(row['content_sha256'],row['cik']) is not None:out.append(row)
+    keys=[(d['cik'],d['accession'],d['document']) for d in out]
+    if len(set(keys))!=len(keys):raise ValueError('Reviewed document has competing retained occurrences')
+    return out
+
+
 def reconcile(ciks, coverage, filings, native=()):
     require_eligible('issuer_cik',ciks)
     validate_ids(ciks)
