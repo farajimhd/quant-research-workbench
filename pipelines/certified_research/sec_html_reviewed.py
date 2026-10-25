@@ -37,6 +37,9 @@ SHARES=(
 
 
 def plan_for(document_hash,cik):
+    from .sec_html_reviewed_origin_liftoff import plan_for as origin_liftoff
+    reviewed=origin_liftoff(document_hash,cik)
+    if reviewed is not None:return reviewed
     from .sec_html_reviewed_medical import plan_for as medical
     reviewed=medical(document_hash,cik)
     if reviewed is not None:return reviewed

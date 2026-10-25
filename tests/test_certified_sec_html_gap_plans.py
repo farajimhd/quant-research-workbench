@@ -1,6 +1,21 @@
 from pipelines.certified_research.sec_html_reviewed_gaps import plan_for,ADRX_HASH
 
 
+def test_origin_liftoff_keep_actual_contexts_and_share_units():
+    from pipelines.certified_research.sec_html_reviewed_origin_liftoff import REVIEWED, plan_for
+    for h, spec in REVIEWED.items():
+        facts = plan_for(h, spec['cik'])['facts']
+        assert len({(f['concept'], f['period_start'], f['period_end'], f['unit']) for f in facts}) == len(facts)
+        assert all(f['scale'] == 0 for f in facts if f['unit'] in ('shares', 'USD/shares'))
+        assert not any(f['concept'].endswith('}PaymentsToAcquirePropertyPlantAndEquipment') for f in facts)
+        if spec['cik'] == '0001573901':
+            assert len(facts) == 46
+            assert not any(f['concept'].endswith('}Revenues') for f in facts)
+        else:
+            assert len(facts) == 48
+            assert all(f['locator']['table'] not in (87, 88, 89) for f in facts)
+
+
 def test_medical_actual_periods_do_not_repeat_comparative_balances_or_map_parent_investment():
     import json
     from pipelines.certified_research.sec_html_reviewed_medical import REVIEWED, plan_for
