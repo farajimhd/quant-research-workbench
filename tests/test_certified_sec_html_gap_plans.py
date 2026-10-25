@@ -133,7 +133,8 @@ def test_braiin_roze_actual_groups_do_not_sum_acquisitions_or_invent_zeroes():
             assert set(f['locator']['table'] for f in plan['facts'])=={649,650,652}
         else:
             assert len(rows)==24
-            assert rows['CashAndCashEquivalents','2025-12-31']['locator']['table']==591
+            from pipelines.certified_research.sec_html_reviewed_braiin_roze import ROZE_JULY
+            assert rows['CashAndCashEquivalents','2025-12-31']['locator']['table']==(573 if fingerprint==ROZE_JULY else 591)
             assert rows['Revenue','2025-12-31']['expected_value']=='2295237'
             assert rows['ProfitLoss','2025-12-31']['expected_value']=='-6030257'
 
@@ -228,4 +229,14 @@ def test_caliber_actual_statements_keep_units_periods_and_exclude_net_capex():
     eps=rows['EarningsPerShareDiluted','2019-01-01','2019-09-30']
     assert (eps['expected_value'],eps['scale'],eps['decimals'])==('-0.16',0,'2')
     assert not any('PaymentsToAcquire' in f['concept'] for f in plan['facts'])
+
+def test_roze_july_maps_same_reviewed_statements_but_pins_its_own_document():
+    from pipelines.certified_research.sec_html_reviewed_braiin_roze import plan_for,ROZE_JULY
+    july=plan_for(ROZE_JULY,'2075335')
+    august=plan_for('4667fa73d9c796d68636de5f043091560b247a479bbdad3105cced669177d03a','2075335')
+    assert len(july['facts'])==len(august['facts'])==24
+    assert july['document_hash']!=august['document_hash'] and july['plan_hash']!=august['plan_hash']
+    for a,b in zip(july['facts'],august['facts']):
+        assert {k:v for k,v in a.items() if k!='locator'}=={k:v for k,v in b.items() if k!='locator'}
+        assert a['locator']['table']=={585:567,587:569,591:573}[b['locator']['table']]
 

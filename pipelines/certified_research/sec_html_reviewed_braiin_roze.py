@@ -425,6 +425,16 @@ REVIEWED = {'375d7e3d2eb597eb58775df9ee6e41e7b7bd45219a19a9035358241b131d80de': 
                                                                                                   [7])]}}}}
 
 
+ROZE_JULY = '3771bd9adf6bb8b4b8cd83f66005b267efda2803ce4283d80e8aff080215dda1'
+_ROZE_AUGUST = '4667fa73d9c796d68636de5f043091560b247a479bbdad3105cced669177d03a'
+# Independently compared complete normalized tables, including spans and headers.
+# Only physical table positions differ. The July archive is qualified separately.
+REVIEWED[ROZE_JULY] = dict(
+    cik=REVIEWED[_ROZE_AUGUST]['cik'], evidence=REVIEWED[_ROZE_AUGUST]['evidence'],
+    tables={new: REVIEWED[_ROZE_AUGUST]['tables'][old]
+            for old, new in ((585, 567), (587, 569), (591, 573))})
+
+
 def plan_for(document_hash, cik):
     review = REVIEWED.get(document_hash)
     if review is None or str(int(cik)).zfill(10) != review['cik']:
