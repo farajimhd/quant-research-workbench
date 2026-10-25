@@ -81,6 +81,20 @@ def inspect(query,cik,accession,document_name,claim,source_guard,*,occurrence=No
             # ambiguity, never silently choose the newest occurrence.
             for row in (*text,*document,*archive):row['source_revision_rank']=int(row['source_revision_rank'])
             return live_archive_candidate(text[0],document[0],archive)
+        if occurrence is not None and len(text)==len(archive)==1 and not document:
+            # A replacing document-metadata table may retain only a later
+            # representation. Do not reconstruct or overwrite that table.
+            # The exact retained text row carries the older document identity;
+            # only the independent original-archive byte witness can qualify it.
+            for row in (*text,*archive):
+                if 'source_revision_rank' in row:row['source_revision_rank']=int(row['source_revision_rank'])
+            result=bridge(text[0],text[0],archive[0])
+            result.pop('candidate_hash')
+            result.update(version='sec-retained-text-archive-candidate-v1',
+                          document_revision_state='retained_text_pending_archive_bytes',
+                          document_metadata_basis='retained_text_occurrence',
+                          archive_byte_equivalence_verified=False)
+            return dict(result,candidate_hash=digest(result))
         if not text and len(document)==len(archive)==1 and document[0]['document_type']=='EX-101.INS':
             for row in (*document,*archive):row['source_revision_rank']=int(row['source_revision_rank'])
             return bridge(document[0],document[0],archive[0],metadata_only=True)

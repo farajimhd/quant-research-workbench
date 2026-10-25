@@ -82,6 +82,24 @@ def test_explicit_occurrence_filters_and_rechecks_selected_archive():
     assert result['candidate_only'] and not result['original_vintage_qualified']
 
 
+def test_selected_retained_text_without_old_document_metadata_stays_candidate():
+    text,document,archive=fixture()
+    def query(sql):
+        if '.sec_filing_text_v3 ' in sql:return [deepcopy(text)]
+        if '.sec_filing_document_v3 ' in sql:return []
+        return [deepcopy(archive)]
+    owner=SimpleNamespace(check=lambda:None)
+    args=(query,'320193',text['accession_number'],'filing.htm',owner,lambda:None)
+    with pytest.raises(ValueError,match='ambiguous'):lineage.inspect(*args)
+    result=lineage.inspect(*args,occurrence=dict(day='2025-10-31',content_sha256='b'*64,source_version_key=''))
+    assert result['document_metadata_basis']=='retained_text_occurrence'
+    assert result['candidate_only'] and not result['original_vintage_qualified']
+    assert not result['archive_byte_equivalence_verified']
+    text['actual_text_hash']='c'*64
+    with pytest.raises(ValueError,match='bytes differ'):
+        lineage.inspect(*args,occurrence=dict(day='2025-10-31',content_sha256='b'*64,source_version_key=''))
+
+
 def test_ambiguous_physical_versions_require_reconciliation():
     owner=SimpleNamespace(check=lambda:None)
     with pytest.raises(ValueError,match='ambiguous'):
