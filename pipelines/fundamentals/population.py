@@ -92,6 +92,9 @@ def resolve_ticker(query, ticker, at, *, known_at=None):
         f'WHERE ticker_normalized={literal(ticker.upper())} AND valid_from_date<=toDate({day}) '
         f'AND (isNull(valid_to_date_exclusive) OR valid_to_date_exclusive>toDate({day})) '
         f"AND mapping_status='mapped' AND is_deleted=0{knowledge}")
+    if not rows:
+        from .bank_identity import symbol_rows
+        rows=symbol_rows(query,ticker,at,known_at=known_at)
     if len({x['security_id'] for x in rows})!=1:
         raise ValueError('Ticker mapping absent or ambiguous at requested timestamp')
     security=rows[0]['security_id']
@@ -106,6 +109,13 @@ def resolve_ticker(query, ticker, at, *, known_at=None):
     rejected=[x for x in bridge if rejected_direct(security,x['cik'])]
     unique={(x['issuer_id'],x['cik']) for x in bridge if not rejected_direct(security,x['cik'])}
     eligibility.require_eligible('issuer_cik',[cik for _,cik in unique])
+    from .bank_identity import issuer as bank_issuer
+    bank=bank_issuer(query,security,known_at=known_at)
+    if bank and any(value!=bank for value,_ in unique):
+        raise ValueError('SEC and reviewed FDIC issuer identities conflict')
+    if bank and not unique:
+        return {'security':security,'issuer':bank,'issuer_cik':None,
+                'issuer_mapping_status':'resolved_fdic_without_sec_cik'}
     return {'security':security,'issuer':next(iter(unique))[0] if len(unique)==1 else None,
         'issuer_cik':next(iter(unique))[1] if len(unique)==1 else None,
         'issuer_mapping_status':'resolved' if len(unique)==1 else 'rejected_direct_identity' if rejected else 'missing_or_ambiguous'}
