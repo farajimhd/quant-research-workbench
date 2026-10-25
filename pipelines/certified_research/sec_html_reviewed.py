@@ -37,6 +37,9 @@ SHARES=(
 
 
 def plan_for(document_hash,cik):
+    from .sec_html_reviewed_registration_three import plan_for as registration_three
+    reviewed=registration_three(document_hash,cik)
+    if reviewed is not None:return reviewed
     from .sec_html_reviewed_accv import plan_for as accv
     reviewed=accv(document_hash,cik)
     if reviewed is not None:return reviewed
