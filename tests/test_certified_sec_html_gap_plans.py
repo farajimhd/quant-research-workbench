@@ -120,6 +120,19 @@ def test_adrx_review_is_exact_and_preserves_actual_periods():
     assert set(f['locator']['table'] for f in plan['facts'])=={663,664,666,701,702,705}
 
 
+def test_liberty_uses_ifrs_restated_periods_and_unscaled_shares():
+    from pipelines.certified_research.sec_html_reviewed_liberty import HASH, plan_for
+    plan = plan_for(HASH, '1919776')
+    rows = {(f['concept'].split('}')[-1], f['period_start'], f['period_end']): f for f in plan['facts']}
+    assert len(rows) == len(plan['facts']) == 58
+    assert rows['ProfitLoss', '2024-01-01', '2024-12-31']['expected_value'] == '-8845163'
+    assert rows['ProfitLoss', '2025-01-01', '2025-09-30']['expected_value'] == '-10510206'
+    assert rows['AdjustedWeightedAverageShares', '2025-07-01', '2025-09-30']['expected_value'] == '1459462'
+    assert rows['DilutedEarningsLossPerShare', '2023-01-01', '2023-12-31']['expected_value'] == '-32.90'
+    assert all('ifrs-full}' in f['concept'] and f['scale'] == 0 for f in plan['facts'])
+    assert plan_for(HASH, '1') is None
+
+
 def test_moove_keeps_reporting_currency_parent_profit_and_periods():
     from pipelines.certified_research.sec_html_reviewed_moove import HASH, plan_for
     plan = plan_for(HASH, '2026793')

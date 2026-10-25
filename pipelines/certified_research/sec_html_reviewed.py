@@ -37,6 +37,9 @@ SHARES=(
 
 
 def plan_for(document_hash,cik):
+    from .sec_html_reviewed_liberty import plan_for as liberty
+    reviewed=liberty(document_hash,cik)
+    if reviewed is not None:return reviewed
     from .sec_html_reviewed_moove import plan_for as moove
     reviewed=moove(document_hash,cik)
     if reviewed is not None:return reviewed

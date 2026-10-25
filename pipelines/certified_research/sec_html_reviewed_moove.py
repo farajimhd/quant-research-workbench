@@ -7,6 +7,7 @@ from .contracts import digest
 from .sec_html_context import VERSION
 
 HASH = '4cce2c20e9978886cf8cb7cac0613f1d61cd263c5dc887678110c08428fd2415'
+ORIGINAL_HASH = 'c194c1a9f6e5bf1d09a6810476ab225be0fc534374a1a67e31829f661320ef42'
 CIK = '0002026793'
 TABLES = {549: {'heading': 'Consolidated Statement of Financial Position',
        'headers': [[0, ['', '', '', '', '', '', '', '', '', '', '']],
@@ -247,7 +248,7 @@ TABLES = {549: {'heading': 'Consolidated Statement of Financial Position',
 
 
 def plan_for(document_hash, cik):
-    if document_hash != HASH or str(int(cik)).zfill(10) != CIK:
+    if document_hash not in (HASH, ORIGINAL_HASH) or str(int(cik)).zfill(10) != CIK:
         return None
     facts = []
     for table, spec in TABLES.items():
@@ -259,5 +260,5 @@ def plan_for(document_hash, cik):
                           'International Financial Reporting Standards (IFRS) as issued by the International Accounting Standards Board (IASB)'],
                 table_proof=dict(heading=spec['heading'], headers=spec['headers']),
                 locator=dict(kind='cells', table=table, row=row, label_column=0, columns=columns)))
-    body = dict(version=VERSION, document_hash=HASH, cik=CIK, scope='reviewed_observations', facts=facts)
+    body = dict(version=VERSION, document_hash=document_hash, cik=CIK, scope='reviewed_observations', facts=facts)
     return dict(body, plan_hash=digest(body))
