@@ -37,6 +37,12 @@ SHARES=(
 
 
 def plan_for(document_hash,cik):
+    from .sec_html_reviewed_sos import plan_for as sos
+    reviewed=sos(document_hash,cik)
+    if reviewed is not None:return reviewed
+    from .sec_html_reviewed_clarios import plan_for as clarios
+    reviewed=clarios(document_hash,cik)
+    if reviewed is not None:return reviewed
     from .sec_html_reviewed_unifoil import plan_for as unifoil
     reviewed=unifoil(document_hash,cik)
     if reviewed is not None:return reviewed

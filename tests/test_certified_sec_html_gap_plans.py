@@ -268,3 +268,25 @@ def test_unifoil_does_not_substitute_comprehensive_income_or_duplicate_periods()
     assert rows['StockholdersEquity',None,'2022-12-31']['expected_value']=='-4177622'
     assert all('SharesOutstanding' not in f['concept'] for f in p['facts'])
 
+def test_clarios_millions_do_not_scale_eps_or_shares_and_exclude_minority():
+    from pipelines.certified_research.sec_html_reviewed_clarios import plan_for,HASH
+    p=plan_for(HASH,'1857971')
+    assert len(p['facts'])==46 and plan_for(HASH,'1') is None
+    rows={(f['concept'].split('}')[-1],f['period_start'],f['period_end']):f for f in p['facts']}
+    assert len(rows)==46
+    assert rows['NetIncomeLoss','2023-10-01','2024-03-31']['expected_value']=='273000000'
+    assert rows['StockholdersEquity',None,'2024-03-31']['expected_value']=='2065000000'
+    assert rows['EarningsPerShareDiluted','2023-10-01','2024-03-31']['expected_value']=='273000'
+    shares=rows['WeightedAverageNumberOfDilutedSharesOutstanding','2023-10-01','2024-03-31']
+    assert (shares['expected_value'],shares['scale'],shares['unit'])==('1000',0,'shares')
+
+def test_sos_income_excludes_translation_oci_and_cash_label_is_not_equivalents():
+    from pipelines.certified_research.sec_html_reviewed_sos import plan_for,HASH
+    p=plan_for(HASH,'1861785')
+    assert len(p['facts'])==22
+    rows={(f['concept'].split('}')[-1],f['period_end']):f for f in p['facts']}
+    assert rows['NetIncomeLoss','2022-12-31']['expected_value']=='-7531851'
+    assert rows['WeightedAverageNumberOfDilutedSharesOutstanding','2022-12-31']['expected_value']=='6400079'
+    assert rows['StockholdersEquity','2022-12-31']['expected_value']=='-108778'
+    assert not any('CashAndCashEquivalents' in f['concept'] for f in p['facts'])
+
