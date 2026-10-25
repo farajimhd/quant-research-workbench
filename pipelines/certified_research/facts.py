@@ -24,7 +24,7 @@ EXACT_TIME=1
 CONSERVATIVE_TIME=2
 UNITS={'USD':1,'shares':2,'ratio':3,'days':4,'USD/share':5,'percent':6,'shares/day':7}
 CURRENCY_UNITS={'USD':1,'EUR':8,'CAD':9,'GBP':10,'CNY':11,'JPY':12,'AUD':13,'CHF':14,
-                'HKD':15,'INR':16,'SEK':17,'NOK':18,'DKK':19,'KRW':20,'BRL':21,'SGD':22,'TWD':23}
+                'HKD':15,'INR':16,'SEK':17,'NOK':18,'DKK':19,'KRW':20,'BRL':21,'SGD':22,'TWD':23,'RUB':24}
 UNITS.update(CURRENCY_UNITS)
 UNITS.update({currency+'/share':100+key for currency,key in CURRENCY_UNITS.items() if currency!='USD'})
 TAXONOMIES={'us-gaap':1,'ifrs-full':2,'dei':3}
