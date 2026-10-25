@@ -21,6 +21,33 @@ def test_retained_registration_gap_requires_exact_source_and_population():
     with pytest.raises(ValueError):retained_gaps(changed,lambda sql:[row],**args)
 
 
+@pytest.mark.parametrize('change', [None, 'value', 'span', 'text', 'bytes', 'occurrence'])
+def test_explicit_html_variants_require_complete_semantic_equivalence(change):
+    from hashlib import sha256
+    from pipelines.fundamentals.retry import retained_gaps
+    first='<html><p>Issuer USD</p><table><tr><td>Assets</td><td>123</td></tr></table></html>'
+    second=first.replace('Assets', ' Assets ')
+    if change=='value':second=second.replace('123','124')
+    if change=='span':second=second.replace('<td>123','<td rowspan="2">123')
+    if change=='text':second=second.replace('Issuer','Other issuer')
+    hashes=[sha256(x.encode()).hexdigest() for x in (first,second)]
+    row=dict(cik='0000000001',accession='0000000001-19-000001',document='registration.htm',
+             day='2019-01-02',form='F-1/A',content_sha256=hashes[0],source_version_key='')
+    other=dict(row,day='2019-01-03',content_sha256=hashes[1]);occurrences=[row,other]
+    body=dict(version='retained-financial-gap-v1',population_hash='p',start='2019-01-01',end='2019-12-31',
+              reason='retained_structured_values_missing',documents=[row],equivalent_occurrences={digest(row):occurrences})
+    manifest=dict(body,manifest_hash=digest(body))
+    def query(sql):
+        if 'SELECT DISTINCT source_text' in sql:
+            text=first if hashes[0] in sql else second
+            return [dict(source_text=text+'x' if change=='bytes' else text)]
+        return occurrences+[dict(other,day='2019-01-04')] if change=='occurrence' else occurrences
+    args=dict(population_hash='p',ciks=[row['cik']],start=date(2019,1,1),end=date(2019,12,31))
+    if change is None:assert retained_gaps(manifest,query,**args)==[row]
+    else:
+        with pytest.raises(ValueError):retained_gaps(manifest,query,**args)
+
+
 def fixture(tmp_path):
     source=tmp_path/'source';source.mkdir();(source/'blocked').mkdir();(source/'receipts').mkdir()
     row=dict(cik='0000000001',accession='0000000001-19-000001',document='a.xml',day='2019-01-02')

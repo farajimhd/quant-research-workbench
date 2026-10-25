@@ -24,6 +24,9 @@ def retained_gaps(manifest,query,*,population_hash,ciks,start,end):
     resources=body.get('resources',{})
     if not isinstance(resources,dict) or set(resources)-{digest(r) for r in rows}:
         raise ValueError('Resource sources must belong to selected gap documents')
+    equivalents=body.get('equivalent_occurrences',{})
+    if not isinstance(equivalents,dict) or set(equivalents)-{digest(r) for r in rows}:
+        raise ValueError('Equivalent occurrences must belong to selected gap documents')
     additional=[]
     for row in rows:
         linked=resources.get(digest(row),[])
@@ -37,12 +40,48 @@ def retained_gaps(manifest,query,*,population_hash,ciks,start,end):
         if (row['cik'] not in ciks or not start<=date.fromisoformat(row['day'])<=end
                 or not re.fullmatch('[0-9a-f]{64}',row['content_sha256'])):
             raise ValueError('Retained gap is outside reviewed population or dates')
+        expected=equivalents.get(digest(row))
         actual=query('SELECT DISTINCT cik,accession_number accession,document_name document,'
             'toString(source_archive_date) day,document_type form,content_sha256,source_version_key '
             'FROM q_live.sec_filing_text_v3 PREWHERE cik='+literal(row['cik'])+
-            ' AND accession_number='+literal(row['accession'])+' AND document_name='+literal(row['document'])+' LIMIT 2')
-        if actual!=[row]:raise ValueError('Retained gap source identity is absent, changed or competing')
+            ' AND accession_number='+literal(row['accession'])+' AND document_name='+literal(row['document'])+
+            (' LIMIT 9' if expected is not None else ' LIMIT 2'))
+        if expected is None:
+            if actual!=[row]:raise ValueError('Retained gap source identity is absent, changed or competing')
+        else:
+            _verify_equivalent_occurrences(row,expected,actual,query)
     return rows
+
+
+def _verify_equivalent_occurrences(selected,expected,actual,query):
+    """Explicit formatting-only HTML variants; never choose a different archive.
+
+    Every byte hash and occurrence is pinned in the manifest. Full normalized
+    text AND every table/cell/heading/span must agree. The selected occurrence
+    still undergoes its own archive witness and public-time qualification.
+    """
+    from pipelines.certified_research.contracts import literal
+    from pipelines.certified_research.sec_html_context import parse,normalize
+    if (not isinstance(expected,list) or not 2<=len(expected)<=8 or selected not in expected
+            or len({digest(r) for r in expected})!=len(expected)
+            or sorted(map(digest,actual))!=sorted(map(digest,expected))):
+        raise ValueError('Reviewed retained occurrence set differs')
+    for row in expected:
+        if (set(row)!=set(selected) or any(row[k]!=selected[k] for k in ('cik','accession','document','form'))
+                or not re.fullmatch('[0-9a-f]{64}',row['content_sha256'])):
+            raise ValueError('Retained equivalent filing identity differs')
+    fingerprints=set()
+    for fingerprint in sorted({r['content_sha256'] for r in expected}):
+        payloads=query('SELECT DISTINCT source_text FROM q_live.sec_filing_text_v3 PREWHERE cik='+literal(selected['cik'])+
+            ' AND accession_number='+literal(selected['accession'])+' AND document_name='+literal(selected['document'])+
+            ' AND content_sha256='+literal(fingerprint)+' LIMIT 2')
+        if len(payloads)!=1:raise ValueError('Retained equivalent bytes are ambiguous')
+        parsed=parse(payloads[0]['source_text'],fingerprint)
+        for table in parsed.tables:
+            for row in table['rows']:
+                for cell in row:cell['text']=normalize(cell['text'])
+        fingerprints.add(digest(dict(text=normalize(' '.join(parsed.text)),tables=parsed.tables)))
+    if len(fingerprints)!=1:raise ValueError('Retained versions differ beyond formatting')
 
 
 def select(manifest, *, population_hash, start, end, runtime, actual_gaps=False):
