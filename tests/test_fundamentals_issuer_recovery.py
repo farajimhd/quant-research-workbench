@@ -55,6 +55,29 @@ def test_lirum_loss_sign_comes_from_cash_flow_statement_not_unsigned_display():
     rows = [f for f in issuer('0001965411')['facts'] if f['label'] == 'Net loss']
     assert rows and all(f['expected_value'].startswith('-') for f in rows)
     assert {f['locator']['table'] for f in rows} == {28, 36}
+
+
+def test_lafayette_earlier_periods_preserve_inception_and_quarter_boundaries():
+    from pipelines.certified_research.sec_html_reviewed_lec import REVIEWED,plan_for
+    assert len(REVIEWED)==13
+    observations=[]
+    for source,expected in REVIEWED.items():
+        plan=sec_html_reviewed.plan_for(source,'0001936031')
+        assert plan==expected
+        assert digest({k:v for k,v in plan.items() if k!='plan_hash'})==plan['plan_hash']
+        assert plan_for(source,'0000000001') is None
+        observations.extend(plan['facts'])
+        plan['facts'].clear()
+        assert plan_for(source,'0001936031')['facts']
+    assert len(observations)==216
+    assert all(f['unit']=='source:$' for f in observations)
+    assert all(f['period_start']=='2022-02-07' for f in observations
+               if f['period_start'] and f['period_end'].startswith('2022'))
+    quarter=[f for f in observations if f['period_start']=='2024-04-01']
+    assert quarter and {f['expected_value'] for f in quarter}=={'-196573'}
+    ytd=[f for f in observations if f['period_start']=='2024-01-01'
+         and f['period_end']=='2024-06-30' and f['label']=='Net (loss)']
+    assert ytd and {f['expected_value'] for f in ytd}=={'-499314'}
 def test_earlier_vintages_preserve_semantics_and_are_hash_bound():
     from pipelines.certified_research.sec_html_reviewed_vintages import REGISTRY,plan_for
     from pipelines.certified_research.sec_html_reviewed_issuer_recovery import plan_for as original
