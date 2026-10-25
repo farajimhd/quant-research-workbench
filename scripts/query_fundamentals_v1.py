@@ -13,8 +13,8 @@ from pipelines.fundamentals.v1 import financial_sql,reference_sql,coverage_sql,g
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('mode',choices=('financial','reference','coverage','gaps'))
-    p.add_argument('--entities',nargs='+',required=True,help='Reviewed CIKs for financials, security IDs for references')
+    p.add_argument('mode',choices=('financial','bank-financial','reference','coverage','gaps'))
+    p.add_argument('--entities',nargs='+',required=True,help='Reviewed CIKs for financials, canonical issuer IDs for bank-financial, security IDs for references')
     p.add_argument('--metrics',nargs='+')
     p.add_argument('--as-of',required=True,type=datetime.fromisoformat)
     p.add_argument('--since',type=datetime.fromisoformat)
@@ -22,6 +22,9 @@ def main():
     p.add_argument('--endpoint',default='http://192.168.1.218:18123')
     a=p.parse_args()
     if a.mode=='financial':sql=financial_sql(a.entities,a.as_of,since=a.since,known_at=a.known_at)
+    elif a.mode=='bank-financial':
+        from pipelines.fundamentals.fdic_publish import financial_sql as bank_financial_sql
+        sql=bank_financial_sql(a.entities,a.as_of,since=a.since,known_at=a.known_at)
     elif a.mode=='reference':
         if not a.metrics:p.error('Reference queries require --metrics')
         sql=reference_sql(a.entities,a.metrics,a.as_of,since=a.since)

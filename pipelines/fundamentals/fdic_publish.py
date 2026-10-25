@@ -38,6 +38,15 @@ def publish(query,database,extracted,receipt,population_hash,guard):
     source_id=digest(dict(report=report,pdf=receipt['sha256'],observations=extracted['observations']))
     stamp=datetime.fromisoformat(receipt['downloaded_at']).astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')
     available=availability(report)
+    prior=query(f"SELECT DISTINCT recipe_hash,toString(observed_at) observed_at,source_hash,toString(available_at) available_at "
+        f"FROM {database}.reference_source_v1 FINAL WHERE family='fdic_report' AND entity_id={literal(issuer)} AND source_id={literal(source_id)}")
+    if prior:
+        if (len(prior)!=1 or prior[0]['source_hash']!=receipt['sha256']
+                or datetime.fromisoformat(prior[0]['available_at'])!=datetime.fromisoformat(available)):
+            raise ValueError('Published FDIC authority conflicts with verified source')
+        # A query/UI-only source revision must not rewrite completed receipts.
+        recipe=prior[0]['recipe_hash']
+        stamp=datetime.fromisoformat(prior[0]['observed_at']).strftime('%Y-%m-%d %H:%M:%S.%f')
     source=dict(source_id=source_id,family='fdic_report',entity_kind='issuer',entity_id=issuer,
         event_key=f"{report['filing_id']}/{report['attachment_id']}",source_table='official_fdic_securities_filings',
         source_hash=receipt['sha256'],evidence_ref=json.dumps(dict(report=report,extraction_hash=digest(extracted),
@@ -85,15 +94,27 @@ def financial_sql(issuers,cutoff,*,since=None,known_at=None,database='arte'):
     if not issuers or not set(issuers)<=set(ISSUERS.values()):raise ValueError('Unreviewed bank issuer')
     ids=','.join(map(literal,sorted(set(issuers))))
     known='' if known_at is None else ' AND observed_at<='+_timestamp(known_at)
-    lower='' if since is None else ' AND available_at>='+_timestamp(since)
-    return f'''SELECT * EXCEPT(latest) FROM (
-      SELECT *,max(available_at) OVER(PARTITION BY issuer_id,feature,period_start,period_end,unit) latest FROM (
+    base=f'''
       SELECT f.entity_id issuer_id,substring(f.metric,6) feature,c.period_start,c.period_end,c.unit,
-        f.text_value value,s.available_at,s.observed_at,s.source_id,s.event_key filing_id
+        f.text_value value,s.available_at AS available_at,s.observed_at AS observed_at,s.source_id AS source_id,s.event_key filing_id
       FROM (SELECT * FROM {database}.reference_fact_v1 FINAL WHERE entity_kind='issuer' AND entity_id IN ({ids}) AND startsWith(metric,'fdic:')) f
       INNER JOIN (SELECT * FROM {database}.reference_source_v1 FINAL WHERE family='fdic_report' AND entity_id IN ({ids}) AND available_at<={_timestamp(cutoff)}{known}) s USING(source_id)
       INNER JOIN (SELECT * FROM {database}.reference_context_v1 FINAL WHERE context_id IN (
         SELECT context_id FROM {database}.reference_fact_v1 FINAL WHERE entity_kind='issuer' AND entity_id IN ({ids}) AND startsWith(metric,'fdic:'))) c USING(context_id)
-      WHERE c.taxonomy='fdic' AND c.dimensions='{{}}')) WHERE available_at=latest{lower}
-      ORDER BY issuer_id,feature,period_end,period_start,source_id'''
-
+      WHERE c.taxonomy='fdic' AND c.dimensions='{{}}' '''
+    key='issuer_id,feature,period_start,period_end,unit'
+    if since is None:
+        selected=f'SELECT * EXCEPT(latest) FROM (SELECT *,max(available_at) OVER(PARTITION BY {key}) latest FROM ({base})) WHERE available_at=latest'
+    else:
+        if since>=cutoff:raise ValueError('History start must precede cutoff')
+        start=_timestamp(since)
+        selected=f'''WITH observations AS ({base}) SELECT * FROM observations WHERE available_at>={start}
+          UNION ALL SELECT * EXCEPT(latest) FROM (SELECT *,max(available_at) OVER(PARTITION BY {key}) latest
+          FROM observations WHERE available_at<{start}) WHERE available_at=latest'''
+    # Equal values from multiple filings carry multiple provenance IDs, not
+    # duplicate model inputs. Disagreeing same-time values remain explicit.
+    return f'''SELECT *,uniqExact(value) OVER(PARTITION BY {key},available_at)>1 conflict FROM (
+      SELECT {key},value,available_at,min(observed_at) observed_at,
+        arraySort(groupUniqArray(source_id)) source_ids,arraySort(groupUniqArray(filing_id)) filing_ids
+      FROM ({selected}) GROUP BY {key},value,available_at)
+      ORDER BY issuer_id,feature,period_end,period_start,available_at'''

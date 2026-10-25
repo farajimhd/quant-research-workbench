@@ -24,7 +24,9 @@ def run(args):
     if not 1<=args.workers<=4:raise ValueError('Use 1..4 bounded workers')
     if args.database!='arte' and not args.database.startswith('fundamentals_validation_'):raise ValueError('Unapproved database')
     if args.execute and args.database=='arte' and platform.node().upper()!='DESKTOP-SAAI85T':raise ValueError('Production is workstation-owned')
-    inventory=json.loads((root/'inventory.json').read_text(encoding='utf-8'))
+    inventory_path=(root/'inventory.json') if args.inventory is None else Path(args.inventory).resolve()
+    if not inventory_path.is_relative_to(operational):raise ValueError('Inventory must be under operational runtime root')
+    inventory=json.loads(inventory_path.read_text(encoding='utf-8'))
     if args.filing_ids:inventory=[r for r in inventory if r['filing_id'] in args.filing_ids]
     if not inventory:raise ValueError('Empty report inventory')
     run_dir.mkdir(parents=True,exist_ok=True)
@@ -96,6 +98,7 @@ def run(args):
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--source-root',required=True);p.add_argument('--run-dir',required=True)
+    p.add_argument('--inventory',help='New sealed inventory for forward fill; completed source receipts are shared')
     p.add_argument('--database',default='arte');p.add_argument('--endpoint',default='http://192.168.1.218:18123')
     p.add_argument('--workers',type=int,default=2);p.add_argument('--filing-ids',type=int,nargs='+')
     p.add_argument('--execute',action='store_true');a=p.parse_args()
