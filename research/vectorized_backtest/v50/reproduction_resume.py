@@ -19,6 +19,14 @@ from research.vectorized_backtest.v50.identity import digest,source_hash
 def read(path):return json.loads(Path(path).read_bytes())
 
 
+def verify_frozen(state,successor):
+    """Compare serialized identity, not Python tuples against JSON lists."""
+    frozen={k:state[k] for k in ('population','ids','rng')}
+    expected={k:successor[k] for k in frozen}
+    if digest(frozen)!=successor['sha256'] or digest(expected)!=successor['sha256']:
+        raise ValueError(f"Original CPU reproduction identity mismatch: actual={digest(frozen)}, expected={successor['sha256']}")
+
+
 def stopped(root):
     import psutil
     owner=read(root/'owner.json')
@@ -107,12 +115,10 @@ def export_context(root,output):
     state=read(root/'global/initial-pool.json');saved,pop,ordered=training(root,1,job)
     if state['population']!=pop['population'] or state['ids']!=pop['ids']:raise ValueError('Founder identity mismatch')
     state,_=reproduce(state,saved,ordered,job,2)
-    frozen={k:state[k] for k in ('population','ids','rng')}
     successor=read(root/'global/generation-0001/successor.json')
-    if digest(frozen)!=successor['sha256'] or any(frozen[k]!=successor[k] for k in frozen):
-        raise ValueError('Original CPU reproduction did not reproduce sealed generation-2 population/RNG')
+    verify_frozen(state,successor)
     pop2=read(root/'global/generation-0002/population.json')
-    if pop2['population']!=state['population'] or pop2['ids']!=state['ids']:raise ValueError('Generation-2 population mismatch')
+    if digest(pop2['population'])!=digest(state['population']) or pop2['ids']!=state['ids']:raise ValueError('Generation-2 population mismatch')
     output.parent.mkdir(parents=True,exist_ok=True)
     write_json(output,dict(binding=binding,state=state,state_sha256=digest(state),market_replays=0))
 

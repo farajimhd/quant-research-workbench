@@ -11,7 +11,7 @@ from research.vectorized_backtest.v50.genome import sample
 from research.vectorized_backtest.v50.lineage import next_population,program_key
 from research.vectorized_backtest.v50.local_runner import CompactPedigree
 from research.vectorized_backtest.v50.identity import digest
-from research.vectorized_backtest.v50.reproduction_resume import validate_transition
+from research.vectorized_backtest.v50.reproduction_resume import validate_transition,verify_frozen
 from research.vectorized_backtest.v42.publication import write_json,write_checkpoint
 from research.vectorized_backtest.v42.distributed_assets import sha
 
@@ -19,6 +19,14 @@ RUNTIME=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v50/repro
 
 
 class ReproductionTests(unittest.TestCase):
+    def test_frozen_identity_uses_json_canonical_form(self):
+        state=dict(population=[m.payload() for m in members(10)],ids=list(range(10)),rng=np.random.default_rng(1).bit_generator.state)
+        saved=json.loads(json.dumps(dict(state,sha256=digest(state))))
+        self.assertNotEqual(state['population'],saved['population'])
+        verify_frozen(state,saved)
+        saved['ids'][0]=99
+        with self.assertRaisesRegex(ValueError,'identity mismatch'):verify_frozen(state,saved)
+
     def evolve(self,scores,eligible,positions):
         pop=members(10);ped=CompactPedigree(3);ids=ped.birth(pop,1,[(-1,-1)]*10,['fresh']*10)
         m=metrics(1,10)
