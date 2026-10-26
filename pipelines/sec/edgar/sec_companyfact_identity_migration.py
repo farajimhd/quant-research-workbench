@@ -139,9 +139,11 @@ def main():
                 with mutex:status()
         finally:monitor.close()
     heartbeat_thread=threading.Thread(target=heartbeat,daemon=True)
-    heartbeat_thread.start()
+    owned=False
     try:
         with lock(root/'controller.lock'):
+            owned=True
+            heartbeat_thread.start()
             if (root/'STOP').exists():
                 raise ValueError('STOP retained; diagnose and drain the prior owner before resuming')
             current = table_info(c.query,SOURCE)
@@ -278,6 +280,8 @@ def main():
             print(json.dumps(proof))
             return 0
     except BaseException as error:
+        if not owned:
+            raise  # A rejected duplicate must not change the owner's status/STOP.
         if isinstance(error,InterruptedError):
             status(state='stopped',error=str(error))
             return 130
@@ -286,7 +290,9 @@ def main():
         (root/'STOP').write_text('Migration failed. Preserve tables and receipts; diagnose and drain before resume.\n',encoding='utf-8')
         raise
     finally:
-        heartbeat_stop.set();heartbeat_thread.join(timeout=2);c.close()
+        heartbeat_stop.set()
+        if owned:heartbeat_thread.join(timeout=2)
+        c.close()
 
 
 if __name__=='__main__':raise SystemExit(main())
