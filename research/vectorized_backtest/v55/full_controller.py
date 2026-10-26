@@ -21,6 +21,7 @@ from research.vectorized_backtest.v6.torch_backtest.materialize import owned_run
 def checkpoint_contract(job,train,valid):
     contract=dict(comparison=job.get('comparison'),experiment=dict(mutation_probe_size=job.get('mutation_probe_size',0),crossover_policy='uid-aligned-evolving-core-six-heads-v1',size_policy=dict(initial=64,minimum=16,total_nodes=512,grow=[1,2,4],prune=[1,2])),seed=job['seed'],source_sha256=job['source_sha256'],objective=job['objective'],training_sha256=job['training_sha256'],validation_sha256=job['validation_sha256'],generations=job['phase2_generations'],population=job['population'],initial_multiplier=job['initial_multiplier'],training_days=train,validation_days=valid,validation='display-only; successor and RNG frozen before opening')
     if job.get('founder_comparison'):contract['founder_comparison']=job['founder_comparison']
+    if job.get('continuation'):contract['continuation_sha256']=job['continuation']['context_sha256']
     return contract
 
 
@@ -41,6 +42,9 @@ class Controller:
             saved=read(cp)
             if saved['contract']!=contract or digest(saved['state'])!=saved['state_sha256']:raise ValueError('Global resume contract changed')
             state=saved['state'];completed=state['completed'];seals=state['seals'];species=Species(state['species'])
+            if self.job.get('continuation') and completed==10:
+                from .continuation import verify
+                if digest(state)!=verify(self.job)['state_sha256']:raise ValueError('Initial continuation state differs from its boundary proof')
             self.publish(generation=completed,completed_generations=completed)
             for g,h in seals.items():
                 f=root/f'generation-{int(g):04d}'

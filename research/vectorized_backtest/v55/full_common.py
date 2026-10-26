@@ -8,13 +8,13 @@ from research.vectorized_backtest.v42.distributed_assets import sha
 
 
 def check_job(job):
-    if job['version'] not in ('v55-pilot-v1',):raise ValueError('V55 is restricted to the Aug13 laptop pilot')
+    if job['version'] not in ('v55-pilot-v1','v55-pilot-v2'):raise ValueError('V55 is restricted to the Aug13 laptop pilot')
     if set(job['machines'])!={'laptop'}:raise ValueError('V55 requires laptop ownership')
-    if not job['phase2_generations']==10 or job.get('mutation_probe_size')!=32:raise ValueError('Invalid bounded V55 experiment')
+    if job['phase2_generations']!=(50 if job['version']=='v55-pilot-v2' else 10) or job.get('mutation_probe_size')!=32:raise ValueError('Invalid bounded V55 experiment')
     if job['machines']['laptop']['days']!=dict(training=['2026-08-13'],validation=[]):raise ValueError('Pilot session ownership changed')
     if job['seed']!=2021:raise ValueError('V55 fixed seed is 2021')
     full=False
-    if job['version'] not in ('v55-pilot-v1',) or source_hash()!=job['source_sha256']:raise ValueError('V55 source mismatch')
+    if job['version'] not in ('v55-pilot-v1','v55-pilot-v2') or source_hash()!=job['source_sha256']:raise ValueError('V55 source mismatch')
     if sha(job['source_job'])!=job['source_job_sha256'] or sha(job['initialization_probe'])!=job['initialization_probe_sha256']:raise ValueError('Source/probe changed')
     if sha(job['training'])!=job['training_sha256']:raise ValueError('Training manifest changed')
     train=json.loads(Path(job['training']).read_bytes())['days']
@@ -34,7 +34,11 @@ def check_job(job):
         raise ValueError('V55 must retain the complete V53 risk/execution envelope')
     if job.get('comparison') and sha(job['comparison']['population_file'])!=job['comparison']['population_file_sha256']:
         raise ValueError('Comparison founder file changed')
-    if job.get('continuation') or job.get('comparison'):raise ValueError('V55 requires fresh architecture-specific founders')
+    if job.get('comparison'):raise ValueError('Use the explicit V54 founder comparison contract')
+    if job['version']=='v55-pilot-v2':
+        from .continuation import verify
+        verify(job)
+    elif job.get('continuation'):raise ValueError('Continuation requires the versioned V55 v2 contract')
     if job.get('founder_comparison'):
         bound=job['founder_comparison']
         if sha(bound['initial_pool'])!=bound['initial_pool_sha256'] or sha(bound['financial_panel'])!=bound['financial_panel_sha256']:raise ValueError('V54 comparison evidence changed')

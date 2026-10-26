@@ -50,6 +50,15 @@ post-initialization RNG after normalizing only the payload version. It does not
 import trained candidates. Generation 1 also must reproduce every sealed V54
 financial panel field within 1e-8 before evolution may proceed.
 
+The authorized 50-generation extension uses `continuation`, not a fresh launch.
+It verifies the completed generation-10 checkpoint, all historical evidence and
+financial receipts, then produces the omitted generation-11 successor using the
+parent deployment and saved RNG. This boundary operation performs no market
+replay. A separate runtime preserves the original seals and binds the boundary
+state, numerical-engine hashes, financial contract, and new generation budget.
+Only the versioned v2 job can extend to 50; fresh v1 pilots remain restricted to
+ten generations. Population, neuron identities, species and ancestry continue.
+
 Fitness remains net P&L - gross losing-position dollars - 2 * mark-to-market
 maximum drawdown. Execution retains $1000/$200 entry/add caps, $300 prospective
 position-risk admission, 20% maximum stop distance, commissions and valid bid/ask
