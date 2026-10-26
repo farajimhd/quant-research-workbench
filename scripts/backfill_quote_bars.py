@@ -172,7 +172,7 @@ def run(a):
                         if not pending:break
                         finished,pending=wait(pending,timeout=1,return_when=FIRST_COMPLETED)
                         for f in finished:f.result()
-                        progress.flush(force=True)
+                        with progress.lock:progress.flush(force=True)
                     guard()
             bars.save(root/'quote-completion.json',dict(request=request,counts=counts,seconds=time.monotonic()-started,
                 profiles=profiles,luld_ready=True,halt_ready=True,official_bands=False,halt_state='unknown until explicit source status'))
