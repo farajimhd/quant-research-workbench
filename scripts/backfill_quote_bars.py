@@ -139,7 +139,12 @@ def run(a):
                 with mutex:
                     counts['completed']+=1
                     with (root/'profiles.jsonl').open('a',encoding='utf-8') as f:
-                        f.write(json.dumps(dict(day=day,ticker=ticker,seconds=time.monotonic()-began,source_events=row['event_count'],quote_events=expected['events'],rows=e['n'],signals=signal_result,profiles=client.profiles,totals=client.profile_totals))+'\n')
+                        record=dict(day=day,ticker=ticker,seconds=time.monotonic()-began,
+                            source_events=row['event_count'],quote_events=expected['events'],rows=e['n'],signals=signal_result,
+                            stage_seconds={k:v['seconds'] for k,v in client.profile_totals.items()})
+                        if profile_units or counts['completed']<=128 or counts['completed']%1000==0 or int(row['event_count'])>=4000000:
+                            record.update(profiles=client.profiles,totals=client.profile_totals)
+                        f.write(json.dumps(record)+'\n')
             except BaseException:
                 with mutex:counts['failed']+=1
                 stop.set();raise
