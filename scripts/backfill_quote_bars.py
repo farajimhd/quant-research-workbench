@@ -116,11 +116,17 @@ def run(a):
         session_times={str(stamp.date()):(int(r.market_open.timestamp()*1e6),int(r.market_close.timestamp()*1e6)) for stamp,r in schedule.iterrows()}
         old_signal=signal.signal(signal.SIGINT,lambda *_:stop.set())
         counts=dict(completed=0,reused=0,failed=0);profiles={};active_clients=[]
+        worker_local=threading.local();worker_clients=[]
         def guard():
             if stop.is_set() or (root/'stop.request').exists():raise InterruptedError('Graceful quote stop requested')
         def work(row,prior,retry=0):
             day=row['source_date'];ticker=row['ticker'];key=(day,ticker);source_hash=certified[key][0]
-            client=bars.Client(options);stage='quote_stage_'+uuid.uuid4().hex;attempt=str(uuid.uuid4());began=time.monotonic()
+            client=getattr(worker_local,'client',None)
+            if client is None:
+                client=bars.Client(options);worker_local.client=client
+                with mutex:worker_clients.append(client)
+            client.profiles=[];client.profile_totals={}
+            stage='quote_stage_'+uuid.uuid4().hex;attempt=str(uuid.uuid4());began=time.monotonic()
             with mutex:active_clients.append(client)
             name=threading.current_thread().name
             try:
@@ -174,6 +180,7 @@ def run(a):
                             f.write(json.dumps(dict(day=day,ticker=ticker,retry=retry+1,
                                 error=client.clean_error(error),last_query=client.profiles[-1] if client.profiles else None))+'\n')
                     progress.emit(f'{day} {ticker}: transport interrupted; reconcile receipt before bounded retry {retry+1}/2')
+                    client.close();worker_local.client=None
                     raise RetryUnit() from error
                 with mutex:
                     if isinstance(error,(InterruptedError,KeyboardInterrupt)):
@@ -195,7 +202,7 @@ def run(a):
                             elapsed=elapsed,ticker_days_per_hour=done*3600/elapsed,
                             new_ticker_days_per_hour=counts['completed']*3600/elapsed,
                             eta_seconds=(len(units)-done)*elapsed/counts['completed'] if counts['completed']>=max(3,a.bar_workers) else None)
-                    progress.worker(name,'Idle');client.close()
+                    progress.worker(name,'Idle')
         def resilient_work(row,prior):
             for retry in range(3):
                 if retry:
@@ -236,4 +243,6 @@ def run(a):
             (root/'stop.request').write_text('Preserve quote receipts. Diagnose and drain before deliberate resume.\n',encoding='utf-8')
             if interrupted:return 130
             raise
-        finally:signal.signal(signal.SIGINT,old_signal)
+        finally:
+            for client in worker_clients:client.close()
+            signal.signal(signal.SIGINT,old_signal)
