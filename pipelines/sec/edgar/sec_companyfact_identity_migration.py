@@ -116,6 +116,9 @@ def main():
     def status(**updates):
         state.update(updates,elapsed=time.monotonic()-started,updated_at=datetime.now(timezone.utc).isoformat())
         save(root/'status.json',state)
+    def guard():
+        if (root/'STOP').exists():
+            raise InterruptedError('Graceful stop requested; preserve tables and completed receipts')
     heartbeat_stop=threading.Event()
     def heartbeat():
         monitor=Client(a.endpoint)
@@ -217,6 +220,7 @@ def main():
                 if json.loads((root/'snapshot-complete.json').read_text(encoding='utf-8'))['uuid']!=table_info(c.query,snapshot)['uuid']:
                     raise ValueError('Raw snapshot identity differs from completed receipt')
                 verify_sec_write_storage(c.http,DATABASE,[snapshot,target])
+                guard()
                 status(state='running',total=len(work),queued=len(work),active={},qualification_status='Copy and exactly verify corrected fact/source identities')
             else:
                 if not (root/'verification.json').exists():raise ValueError('Verified preparation is required before cutover')
@@ -229,6 +233,7 @@ def main():
                 key=partition+'-'+str(shard)+'of'+str(shards)
                 q=Client(a.endpoint)
                 try:
+                    guard()
                     with mutex:
                         state['active'][key]=dict(stage='copy/readback' if a.mode=='prepare' else 'cutover integrity',started=time.monotonic()-started);status()
                     scope=scope_sql(partition,shard,shards)
@@ -258,6 +263,7 @@ def main():
             proof['legacy_visible_rows']=c.query(f'SELECT count() n FROM {DATABASE}.{SOURCE} FINAL')[0]['n']
             save(root/'verification.json',proof)
             if a.mode=='cutover':
+                guard()
                 active=c.query(f"SELECT query_id FROM system.processes WHERE startsWith(upper(trimLeft(query)),'INSERT') AND position(query,{literal(DATABASE)})>0 AND position(query,{literal(SOURCE)})>0 LIMIT 1")
                 if active:raise ValueError('SEC source insert is active; wait for its natural drain')
                 c.query(f'EXCHANGE TABLES {DATABASE}.{SOURCE} AND {DATABASE}.{target}',read=False)
@@ -272,6 +278,9 @@ def main():
             print(json.dumps(proof))
             return 0
     except BaseException as error:
+        if isinstance(error,InterruptedError):
+            status(state='stopped',error=str(error))
+            return 130
         state['counts']['failed']+=1
         status(state='failed',error=str(error)[:1600])
         (root/'STOP').write_text('Migration failed. Preserve tables and receipts; diagnose and drain before resume.\n',encoding='utf-8')
