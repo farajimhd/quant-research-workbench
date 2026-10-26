@@ -37,6 +37,9 @@ SHARES=(
 
 
 def plan_for(document_hash,cik):
+    from .sec_html_reviewed_mtr_gap import plan_for as mtr_gap
+    reviewed=mtr_gap(document_hash,cik)
+    if reviewed is not None:return reviewed
     from .sec_html_reviewed_registration_changed import plan_for as registration_changed
     reviewed=registration_changed(document_hash,cik)
     if reviewed is not None:return reviewed
