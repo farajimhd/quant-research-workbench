@@ -110,7 +110,7 @@ def condition_expressions(rules):
 
 
 def broker_sql(db, build, day, ticker, attempt, rules, source=None, *, verified_timely=False,
-               table_names=None, reporting_audit=False):
+               table_names=None, reporting_audit=False, quote_ohlc=False):
     if type(verified_timely) is not bool:
         raise ValueError("verified_timely must be a boolean")
     # Existing V5 artifacts retain their original meaning. The new certified
@@ -121,6 +121,10 @@ def broker_sql(db, build, day, ticker, attempt, rules, source=None, *, verified_
     delayed_gate = "bitAnd(event_meta,192)=192" if reporting_audit else f"bitAnd(event_meta,{DELAYED})!=0"
     form, last, high, volume = condition_expressions(rules)
     source = source or canonical_source(day, ticker)
+    if quote_ohlc:
+        from .quote_bars import broker_aggregates
+        quote_extra=','+broker_aggregates()
+    else:quote_extra=''
     window = "ORDER BY sip_timestamp_us,ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
     return f"""INSERT INTO {table(db,'broker_100ms',table_names)}
     WITH decoded AS (
@@ -192,6 +196,7 @@ def broker_sql(db, build, day, ticker, attempt, rules, source=None, *, verified_
       toUInt8(argMax(q.1,tuple(sip_timestamp_us,ordinal))>0
         AND argMax(q.2,tuple(sip_timestamp_us,ordinal))>0
         AND argMax(q.3,tuple(sip_timestamp_us,ordinal))>=argMax(q.2,tuple(sip_timestamp_us,ordinal)))
+      {quote_extra}
       FROM cumulative GROUP BY bucket"""
 
 

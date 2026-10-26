@@ -142,7 +142,7 @@ def derive_imported_days(args, days):
         child=Path(args.output_root_win)/'tradable-products'/day
         values=['backfill','--step','bars','--start-date',day,'--end-date',day,
             '--run-dir',str(child),'--endpoint',args.clickhouse_url,
-            '--bar-workers','32','--query-threads','1','--global-memory-gib','80']
+            '--bar-workers','32','--query-threads','1','--global-memory-gib','80','--with-quotes']
         if args.env_file:values+=['--env-file',str(args.env_file[-1])]
         if (child/'bars-request.json').exists():values+=['--resume']
         a=arguments(values)

@@ -36,7 +36,7 @@ GIB=1024**3
 def arguments(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('mode',choices=('backfill','forwardfill','monitor'))
-    p.add_argument('--step',choices=('trade-reporting-repair','bars','daily','structural'))
+    p.add_argument('--step',choices=('trade-reporting-repair','bars','quotes','daily','structural'))
     p.add_argument('--bars-run-dir',type=Path,default=Path('D:/TradingML/runtimes/market-data-pipeline/bars-2026-funnel-32'))
     p.add_argument('--migrate-structural-schema',action='store_true')
     p.add_argument('--allow-acquisition',action='store_true',help='Explicitly authorize provider discovery/download for forwardfill')
@@ -49,6 +49,7 @@ def arguments(argv=None):
     p.add_argument('--max-plan-units',type=int,default=250000)
     p.add_argument('--allow-carried-forward-universe',action='store_true')
     p.add_argument('--with-indicators',action='store_true')
+    p.add_argument('--with-quotes',action='store_true',help='Include exact quotes in the shared trade event scan; automatic for forwardfill')
     p.add_argument('--start-date',type=date.fromisoformat)
     p.add_argument('--end-date',type=date.fromisoformat,help='Inclusive; defaults to latest certified imported source day')
     p.add_argument('--run-dir',type=Path,required=True)
@@ -78,6 +79,7 @@ def arguments(argv=None):
     if a.global_memory_gib is None:a.global_memory_gib=80 if a.mode=='forwardfill' else 32
     a.query_threads=a.query_threads or (1 if a.mode=='forwardfill' or a.step=='daily' else 4)
     a.step=a.step or ('bars' if a.mode=='forwardfill' else 'trade-reporting-repair')
+    a.with_quotes=a.with_quotes or a.mode=='forwardfill'
     if a.mode=='forwardfill':
         if a.step!='bars' or a.identity_policy!='dated' or a.allow_carried_forward_universe:
             p.error('Forwardfill requires bars and exact dated tradable membership')
@@ -92,7 +94,7 @@ def arguments(argv=None):
     if not 1<=a.prefetch_gib<=256 or not 0<=a.reserve_gib or not 0<=a.reserve_fraction<1:
         p.error('Invalid SSD staging budget')
     if not 1<=a.query_memory_gib<=32 or not 1<=a.query_timeout<=3600:p.error('Invalid query budget')
-    if a.step in ('bars','daily') and a.mode=='backfill' and a.end_date is None:p.error('Bars/daily requires --end-date')
+    if a.step in ('bars','quotes','daily') and a.mode=='backfill' and a.end_date is None:p.error('Bars/quotes/daily requires --end-date')
     if a.step=='trade-reporting-repair' and (a.sql_workers+1)*a.query_memory_gib+1>a.global_memory_gib:
         p.error('SQL workers, coordinator and telemetry exceed the global query-memory budget')
     return a
@@ -139,6 +141,7 @@ def run_bars(a):
     if a.identity_anchor_date:values.extend(['--identity-anchor-date',str(a.identity_anchor_date)])
     if a.allow_carried_forward_universe:values.append('--allow-carried-forward-universe')
     if a.plan_only:values.append('--plan-only')
+    if a.with_quotes:values.append('--with-quotes')
     args=builder.parse_args(values)
     os.environ['QMD_CLICKHOUSE_URL']=a.endpoint
     a.run_dir.mkdir(parents=True,exist_ok=True)
@@ -199,6 +202,9 @@ def main(argv=None):
     if a.step=='daily':
         from scripts.market_data_forwardfill import migrate_daily
         return migrate_daily(a)
+    if a.step=='quotes':
+        from scripts.backfill_quote_bars import run
+        return run(a)
     if a.step=='bars':return run_bars(a)
     paths=acquisition.IngestionPaths(a.env_file,a.run_dir,a.cache_root,a.archive_root,a.clickhouse_cache_root)
     load_env_files([a.env_file],verbose=False)

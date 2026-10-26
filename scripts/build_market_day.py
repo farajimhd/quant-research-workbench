@@ -182,6 +182,7 @@ def parse_args(argv=None):
     p.add_argument("--max-threads", type=int, default=4)
     p.add_argument("--workers", type=int, default=4, help="Concurrent ticker workers (1-32); each uses its own bounded ClickHouse client")
     p.add_argument('--products',choices=('bars','bars-indicators'),default='bars-indicators')
+    p.add_argument('--with-quotes',action='store_true',help='Derive exact quote OHLC in the existing broker event scan')
     p.add_argument("--max-memory-gb", type=float, default=2.)
     p.add_argument('--global-memory-gb',type=float,default=64.)
     p.add_argument("--query-timeout", type=int, default=600)
@@ -1040,15 +1041,20 @@ def build_ticker(args, ledger, build, plan, ticker, rows, requested, calculation
             attempt = str(uuid.uuid4())
             mark(day,attempt,'broker 100ms / VWAP / NBBO')
             broker_query=sql.broker_sql(args.database,build,day,ticker,attempt,plan['rules'],verified_timely=True)
+            def write_broker(settings=''):
+                if args.with_quotes:
+                    from pipelines.market_sip.events.quote_bars import forward_broker
+                    forward_broker(client,args.database,build,day,ticker,attempt,plan['rules'],source_hash,settings)
+                else:client.query(broker_query+settings,'broker_100ms',False)
             if int(row['event_count'])>=4_000_000 and args.max_memory_gb<8:
                 # The ordered window for dense tickers can exceed the ordinary
                 # 2 GiB query cap. Limit concurrent 8 GiB scans separately;
                 # no external sort is permitted to spill onto the default disk.
                 with dense_slots:
                     if stop.is_set(): return client
-                    client.query(broker_query + f" SETTINGS max_memory_usage={8*1024**3}","broker_100ms",False)
+                    write_broker(f" SETTINGS max_memory_usage={8*1024**3}")
             else:
-                client.query(broker_query,"broker_100ms",False)
+                write_broker()
             broker_result=evidence(client,args.database,'broker_100ms',build,day,ticker,attempt)
             if broker_result['n']!=broker_result['unique_keys']:
                 raise ValueError(f'{day} {ticker}: duplicate broker 100ms bucket keys')
@@ -1198,6 +1204,11 @@ def run(args, *, typed_certificate_publisher=None, progress_sink=None):
                     coverage_authority='q_live.historical_trade_reporting_coverage_v1',
                     verified_coverage=reporting),storage_policy=sql.POLICY,
                 controller_location=digest([str(runtime),os.environ.get('COMPUTERNAME','')]))
+            if args.with_quotes:
+                from pipelines.market_sip.events import quote_bars
+                definition['quote_product']=dict(version=quote_bars.VERSION,frames=quote_bars.FRAMES,
+                    calculation_source=digest(Path(quote_bars.__file__).read_text(encoding='utf-8')))
+                quote_bars.verify_storage(client.query,args.database,['quote_bars_v1','quote_bars_coverage_v1'],required=False)
             build = digest(definition)
             if args.rebuild:
                 build += '-' + uuid.uuid4().hex[:12]
@@ -1239,6 +1250,9 @@ def run(args, *, typed_certificate_publisher=None, progress_sink=None):
             for statement in sql.ddl(args.database,include_liquidity_1s=True):
                 client.query(statement,"schema",False)
             storage_preflight(client,args.database,True,include_liquidity_1s=True,identity_policy=args.identity_policy)
+            if args.with_quotes:
+                for statement in quote_bars.ddl(args.database):client.query(statement,'quote_schema',False)
+                quote_bars.verify_storage(client.query,args.database,['quote_bars_v1','quote_bars_coverage_v1'])
             database_ready=True
             ledger=Ledger(runtime.parent / 'build-ledger-v2.sqlite3')
             ledger.build(build,definition,'building')

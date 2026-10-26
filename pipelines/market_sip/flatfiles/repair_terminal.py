@@ -64,6 +64,9 @@ def worker_view(name,row):
 
 
 def render(state,width=110,height=30):
+    if state.get('step')=='quotes':
+        from pipelines.market_sip.events.quote_terminal import snapshot as quote_snapshot
+        return quote_snapshot(state,width,height)
     from rich.console import Group
     from rich.panel import Panel
     from rich.progress_bar import ProgressBar
