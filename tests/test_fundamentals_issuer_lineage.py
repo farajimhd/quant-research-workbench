@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from hashlib import sha256
 import pytest
-from pipelines.fundamentals import issuer_lineage as m
+from pipelines.reference_data import issuer_lineage as m
 
 
 def test_exact_succession_bytes_identity_and_quotes():

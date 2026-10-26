@@ -190,7 +190,8 @@ class SecIssuerRelationshipTests(unittest.TestCase):
             clickhouse_write_database="q_live",
         )
         completed = SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
-        with mock.patch.object(publication_rebuild.subprocess, "run", side_effect=[completed, completed]) as run:
+        with mock.patch.object(publication_rebuild,'sync_reviewed_succession',return_value=dict(published=0,reused=1)), \
+                mock.patch.object(publication_rebuild.subprocess, "run", side_effect=[completed, completed]) as run:
             result = publication_rebuild.rebuild_sec_market_bridge(config, reason="test")
 
         self.assertEqual(result.status, "completed")
@@ -203,9 +204,13 @@ class SecIssuerRelationshipTests(unittest.TestCase):
             test_write_mode=False,
             rebuild_tradable_in_test_mode=False,
             clickhouse_write_database="q_live",
+            clickhouse_url='http://fixture',clickhouse_user='fixture',
         )
         completed = SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
-        with mock.patch.object(publication_rebuild.subprocess, "run", return_value=completed) as run:
+        with mock.patch('research.mlops.clickhouse.ClickHouseHttpClient'), \
+                mock.patch.object(publication_rebuild,'publish_retained_snapshot',return_value=dict(certified=True)), \
+                mock.patch.object(publication_rebuild,'record_missing_sessions',return_value=[]), \
+                mock.patch.object(publication_rebuild.subprocess, "run", return_value=completed) as run:
             result = publication_rebuild.rebuild_tradable_publications(config, reason="test")
 
         self.assertEqual(result.status, "completed")

@@ -1,7 +1,10 @@
 ﻿from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+import json
+import uuid
+import os
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -41,6 +44,7 @@ class LiveFilingRows:
     source_revision_rank: int
     metadata_status: str
     xbrl_expected: bool
+    original_outcomes: list[dict[str, Any]] = field(default_factory=list)
 
 
 class SecLiveFilingPipeline:
@@ -154,6 +158,12 @@ class SecLiveFilingPipeline:
                 source_kind="live_accession_text",
             )
         ]
+        if archive_accession_rows:
+            receipt_path=raw_path.with_suffix('.receipt.json')
+            receipt_bytes=receipt_path.read_bytes()
+            receipt=json.loads(receipt_bytes)
+            archive_accession_rows[0].update(downloaded_at_utc=receipt['downloaded_at'],
+                download_receipt_sha256=hashlib.sha256(receipt_bytes).hexdigest())
         has_xbrl_payload = False
         for document in [] if pac_event else (filing.get("documents") or []):
             doc_row, text_source_row, text_row, skip_row, _sample = build_rows(
@@ -178,6 +188,14 @@ class SecLiveFilingPipeline:
                 source_run_id=source_run_id,
                 inserted_at=inserted_at,
             )
+        from .original_facts import extract_accession
+        from .public_time import source_metadata
+        original_rows, original_outcomes = extract_accession(
+            text_source_rows, source_metadata(archive_accession_rows[0],filing_row) if archive_accession_rows else {},
+            cik=parent.cik, accession=parent.accession_number, inserted_at=inserted_at,
+            source_run_id=source_run_id, cache_root=Path(os.environ.get('SEC_ORIGINAL_CACHE_ROOT',
+                'D:/TradingML/runtimes/sec_gateway/original-extraction-cache')))
+        xbrl_rows.original_fact_rows.extend(original_rows)
         return LiveFilingRows(
             filing_row=filing_row,
             entity_rows=entity_rows,
@@ -195,14 +213,29 @@ class SecLiveFilingPipeline:
             source_revision_rank=revision.source_revision_rank,
             metadata_status=metadata_status,
             xbrl_expected=has_xbrl_payload or (submission is not None and submission.has_xbrl),
+            original_outcomes=original_outcomes,
         )
 
     def write_raw(self, item: SecFeedItem, raw: bytes) -> Path:
         dt = item.updated_at_utc or datetime.now(UTC)
-        root = self.raw_root_win / f"{dt.year:04d}" / f"{dt.month:02d}" / f"{dt.day:02d}"
+        content_hash=hashlib.sha256(raw).hexdigest()
+        root = self.raw_root_win / f"{dt.year:04d}" / f"{dt.month:02d}" / f"{dt.day:02d}" / item.accession_number
         root.mkdir(parents=True, exist_ok=True)
-        path = root / f"{item.accession_number}.txt"
-        path.write_bytes(raw)
+        path = root / (content_hash+'.txt')
+        if path.exists():
+            if hashlib.sha256(path.read_bytes()).hexdigest()!=content_hash:
+                raise ValueError('Retained live source bytes differ from their content identity')
+        else:
+            temporary=path.with_suffix('.'+uuid.uuid4().hex+'.tmp')
+            temporary.write_bytes(raw);temporary.replace(path)
+        receipt=path.with_suffix('.receipt.json')
+        if not receipt.exists():
+            body=dict(version='sec-live-download-receipt-v1',accession=item.accession_number,
+                requested_cik=item.cik,url=accession_text_url(item.cik,item.accession_number),
+                content_sha256=content_hash,bytes=len(raw),downloaded_at=datetime.now(UTC).isoformat(),
+                feed_updated_at=dt.isoformat())
+            temporary=receipt.with_suffix('.'+uuid.uuid4().hex+'.tmp')
+            temporary.write_text(json.dumps(body,sort_keys=True),encoding='utf-8');temporary.replace(receipt)
         return path
 
     def cache_stats(self) -> dict[str, int]:

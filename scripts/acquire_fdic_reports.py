@@ -6,7 +6,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import argparse,json
 from concurrent.futures import ThreadPoolExecutor
 import requests
-from pipelines.fundamentals.fdic_reports import BASE,CERTIFICATES,inventory,acquire
+from pipelines.fundamentals.fdic_reports import BASE,CERTIFICATES,inventory,acquire,retained_root
 from scripts.run_fundamentals import save,lock
 from pipelines.certified_research.contracts import digest
 
@@ -28,6 +28,8 @@ def main():
     parser.add_argument('--source-root',required=True);parser.add_argument('--inventory-file',required=True)
     parser.add_argument('--start',required=True);parser.add_argument('--end',required=True)
     parser.add_argument('--allow-acquisition',action='store_true')
+    parser.add_argument('--changed-since',help='Aware revision watermark; include changed older attachments')
+    parser.add_argument('--allow-revisions',action='store_true',help='Retain changed attachment metadata in a separate version directory')
     args=parser.parse_args()
     if not args.allow_acquisition:parser.error('Official acquisition requires --allow-acquisition')
     root=Path(args.source_root).resolve();target=Path(args.inventory_file).resolve();runtime=Path('D:/TradingML/runtimes').resolve()
@@ -36,9 +38,9 @@ def main():
     def bank(pair):
         ticker,cert=pair
         with requests.Session() as session:
-            reports=inventory(fetch(session,cert),ticker,args.start,args.end)
-            receipts=[acquire(report,root/'verified',session) for report in reports]
-            if inventory(fetch(session,cert),ticker,args.start,args.end)!=reports:raise ValueError('FDIC metadata changed during acquisition; preserve receipts and review')
+            reports=inventory(fetch(session,cert),ticker,args.start,args.end,changed_since=args.changed_since)
+            receipts=[acquire(report,retained_root(root/'verified',report) if args.allow_revisions else root/'verified',session) for report in reports]
+            if inventory(fetch(session,cert),ticker,args.start,args.end,changed_since=args.changed_since)!=reports:raise ValueError('FDIC metadata changed during acquisition; preserve receipts and review')
         return reports,dict(ticker=ticker,reports=len(reports),downloaded=sum(not r['reused'] for r in receipts),reused=sum(r['reused'] for r in receipts))
     with lock(root/'acquisition.lock'),ThreadPoolExecutor(max_workers=2) as pool:
         results=list(pool.map(bank,CERTIFICATES.items()))

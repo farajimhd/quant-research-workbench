@@ -1,5 +1,19 @@
 # Reference Gateway
 
+Reviewed bank identities and legal succession are owned by
+`pipelines.reference_data.bank_identity` and `issuer_lineage`; fundamentals
+imports compatibility wrappers. Bridge maintenance checks the exact bank
+identity proofs and publishes verified succession into the existing relationship
+table with type `legal_predecessor`. Curated parent/subsidiary synchronization
+continues to own only `listed_ultimate_parent` rows. Neither relation changes a
+stock's direct issuer identity or permits summing consolidated family facts.
+
+Durable reference commits notify the bounded workstation fundamentals publisher
+when its reviewed controller request exists. That controller can also maintain
+the four approved FDIC banks through their existing acquisition/extraction
+adapters; it does not acquire unsubscribed Massive data. Canonical sources and
+normalized ARTE publication retain separate restart-safe completion states.
+
 ## Account-specific live eligibility
 
 `market_ibkr_account_eligibility_v1` retains append-only UTC observations for each

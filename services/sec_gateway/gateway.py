@@ -95,6 +95,7 @@ class SecGatewayMetrics:
     sec_request_cooldown_reason: str = ""
     xbrl_concept_rows: int = 0
     xbrl_company_fact_rows: int = 0
+    original_fact_rows: int = 0
     xbrl_frame_rows: int = 0
     xbrl_frame_observation_rows: int = 0
     xbrl_context_rows: int = 0
@@ -447,6 +448,7 @@ class SecGateway:
             self.metrics.written_filings += result.filing_rows
             self.metrics.xbrl_concept_rows += result.xbrl_concept_rows
             self.metrics.xbrl_company_fact_rows += result.xbrl_company_fact_rows
+            self.metrics.original_fact_rows += result.original_fact_rows
             self.metrics.xbrl_frame_rows += result.xbrl_frame_rows
             self.metrics.xbrl_frame_observation_rows += result.xbrl_frame_observation_rows
             self.metrics.xbrl_context_rows += result.xbrl_context_rows
@@ -967,6 +969,8 @@ class SecGateway:
             "xbrl_status": rows.xbrl_rows.companyfacts_status,
             "source_run_id": self._run_id,
         }
+        manifest_row.update(original_outcomes=getattr(rows,'original_outcomes',[]),
+            expected_original_fact_rows=len(getattr(rows.xbrl_rows,'original_fact_rows',[])))
         self._live_manifest.mark_pending(**manifest_row)
         if self.config.xbrl_context_sync_enabled and expected_facts + expected_frames:
             self._xbrl_context.mark_pending(
@@ -989,6 +993,7 @@ class SecGateway:
                 xbrl_company_fact_rows=rows.xbrl_rows.company_fact_rows,
                 xbrl_frame_rows=rows.xbrl_rows.frame_rows,
                 xbrl_frame_observation_rows=rows.xbrl_rows.frame_observation_rows,
+                original_fact_rows=getattr(rows.xbrl_rows,'original_fact_rows',[]),
                 skip_existing=False,
                 skip_same_revision=False,
             )
@@ -1021,6 +1026,12 @@ class SecGateway:
             )
 
         self._live_manifest.mark_complete(**manifest_row)
+        try:
+            from services.gateway_core.fundamentals_handoff import notify
+            notify('sec',detail=str(rows.filing_row['accession_number']))
+        except Exception as error:
+            self.logger.exception('fundamentals_commit_notification_failed',error,
+                accession_number=item.accession_number)
         if self.config.xbrl_context_sync_enabled and expected_facts + expected_frames:
             try:
                 sync = self._xbrl_context.sync_rows(
@@ -1077,6 +1088,7 @@ class SecGateway:
             "texts": result.text_rows,
             "skips": result.skip_rows,
             "xbrl_facts": result.xbrl_company_fact_rows,
+            "original_facts": result.original_fact_rows,
             "xbrl_context_rows": result.xbrl_context_rows,
             "xbrl_context_pending_rows": result.xbrl_context_pending_rows,
             "xbrl_context_status": result.xbrl_context_status,

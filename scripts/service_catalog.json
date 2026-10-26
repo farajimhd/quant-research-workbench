@@ -119,7 +119,7 @@
       "fingerprint_env": ["SEC_GATEWAY_BIND"],
       "dependencies": [],
       "graceful_timeout_seconds": 330,
-      "watch": ["services/sec_gateway/**", "services/gateway_core/**", "scripts/run_sec_gateway.ps1"]
+      "watch": ["services/sec_gateway/**", "services/gateway_core/**", "pipelines/sec/edgar/sec_pipeline/**", "pipelines/certified_research/sec_*context.py", "pipelines/certified_research/sec_precision.py", "pipelines/certified_research/sec_taxonomy.py", "scripts/run_sec_gateway.ps1"]
     },
     "ibkr-supervisor": {
       "title": "IBKR Supervisor",

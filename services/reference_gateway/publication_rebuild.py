@@ -92,6 +92,7 @@ def _run_step_06_specs(
                 )
             )
         relationship_stdout = relationship_completed.stdout
+        relationship_stdout+='\n'+json.dumps(dict(succession=sync_reviewed_succession(config)))
     command = [
         sys.executable,
         str(STEP_06_SCRIPT),
@@ -138,3 +139,25 @@ def tail(value: str, *, max_chars: int = 4000) -> str:
     if len(value) <= max_chars:
         return value
     return value[-max_chars:]
+
+
+def sync_reviewed_succession(config):
+    from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
+    from pipelines.reference_data.issuer_lineage import REVIEWS, publish_relationships
+    from pipelines.reference_data.bank_identity import REVIEWED,issuer
+    client=ClickHouseHttpClient(config.clickhouse_url,config.clickhouse_user,default_clickhouse_password())
+    try:
+        def query(sql,*,read=True):
+            text=client.execute(sql+(' FORMAT JSONEachRow' if read else ''))
+            return [json.loads(line) for line in text.splitlines() if line.strip()] if read else []
+        # Only review registered succession when both its retained source
+        # and canonical issuer exist. Missing evidence remains pending.
+        ciks=query('SELECT DISTINCT cik FROM q_live.sec_filing_v3 FINAL WHERE cik IN ('+
+            ','.join("'"+r['cik']+"'" for r in REVIEWS)+')')
+        result=publish_relationships(query,[r['cik'] for r in ciks],datetime.now(UTC),database=config.clickhouse_write_database)
+        # These exact bank identities are intentionally independent of CIK.
+        # A provider refresh must not silently restore the rejected SEC link.
+        banks={security:issuer(query,security) for security in REVIEWED}
+        result['reviewed_bank_identities']=banks
+        return result
+    finally:client.close()

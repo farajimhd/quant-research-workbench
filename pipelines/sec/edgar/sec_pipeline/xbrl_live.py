@@ -4,6 +4,7 @@ import hashlib
 import json
 import threading
 import time
+from decimal import Decimal
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -17,6 +18,7 @@ COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 
 @dataclass(slots=True)
 class LiveXbrlRows:
+    original_fact_rows: list[dict[str, Any]] = field(default_factory=list)
     concept_rows: list[dict[str, Any]] = field(default_factory=list)
     company_fact_rows: list[dict[str, Any]] = field(default_factory=list)
     frame_rows: list[dict[str, Any]] = field(default_factory=list)
@@ -83,7 +85,7 @@ class SecLiveXbrlExtractor:
                     )
                 raise
             source_sha = hashlib.sha256(response.body).hexdigest()
-            payload = json.loads(response.body.decode("utf-8", errors="replace"))
+            payload = json.loads(response.body.decode("utf-8"), parse_float=Decimal)
             self._remember_payload(cik_text, payload, source_sha)
         else:
             payload, source_sha, _cached_at = cached
@@ -243,6 +245,9 @@ def extract_companyfacts_payload(
                             "fiscal_period": nullable_string(fact.get("fp")),
                             "filed_at_utc": filed_at(fact),
                             "period_end_date": period_end,
+                            "period_start_date": nullable_date(fact.get("start")),
+                            "frame": nullable_string(fact.get("frame")),
+                            "value_exact": str(fact['val']),
                             "value": value,
                             "form_type": nullable_string(fact.get("form")),
                             "accession_number": accession,

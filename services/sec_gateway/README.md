@@ -8,6 +8,26 @@ The SEC gateway is the live service layer for SEC filings. It is intentionally
 Python because SEC ingestion is network, text parsing, ClickHouse, and audit
 heavy rather than low-latency tick processing.
 
+New accession writes preserve explicit Company Facts duration starts, frames
+and exact numeric text. Shared, bounded original-document extraction publishes
+selected tagged/reviewed observations into `q_live.sec_xbrl_original_fact_v1`;
+existing bulk consumers remain unchanged. Original values, periods, dimensions,
+provenance and public clocks pass exact readback before ingest completion.
+Extraction outcomes (including unsupported HTML and conflicting contexts)
+remain in `original_extraction_json` on the existing ingest manifest. Raw ingest
+completion is not complete-filing financial certification. Content/recipe-bound
+caches retain review results so source retries do not reparse unchanged originals.
+
+Raw accession downloads are content-addressed and keep a separate download
+receipt. The shared public-time policy keeps acceptance/filing availability
+separate from retrieval. Private-to-public and correction events need review.
+
+When a reviewed `fundamentals-forward-gateway-v1/controller-request.json` exists,
+durable commits notify its workstation incremental publisher. The scheduled
+controller coalesces changes and checks source-part metadata as a lost-notification
+backstop. It does not run historical qualifications in filing workers or reset
+completed historical receipts.
+
 ## Runtime Flow
 
 ```text

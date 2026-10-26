@@ -57,7 +57,8 @@ def run(args):
                 client=Client(args.endpoint)
                 def source_guard():
                     guard()
-                    if hashlib.sha256((root/'verified'/(receipt['sha256']+'.pdf')).read_bytes()).hexdigest()!=receipt['sha256']:
+                    from pipelines.fundamentals.fdic_reports import retained_root
+                    if hashlib.sha256((retained_root(root/'verified',report)/(receipt['sha256']+'.pdf')).read_bytes()).hexdigest()!=receipt['sha256']:
                         raise ValueError('FDIC PDF changed during publication')
                 try:result=fdic_publish.publish(client.query,args.database,prepared,receipt,digest(fdic_publish.ISSUERS),source_guard)
                 finally:client.close()

@@ -35,6 +35,9 @@ class SecLiveIngestManifest:
             f"ALTER TABLE {quote_ident(self.config.database)}.{quote_ident(self.config.table)} "
             "ADD COLUMN IF NOT EXISTS renderer_version LowCardinality(String) DEFAULT '' AFTER source_revision_rank"
         )
+        self.client.execute(f'ALTER TABLE {quote_ident(self.config.database)}.{quote_ident(self.config.table)} '
+            "ADD COLUMN IF NOT EXISTS original_extraction_json String DEFAULT '[]', "
+            'ADD COLUMN IF NOT EXISTS expected_original_fact_rows UInt64 DEFAULT 0')
 
     def completed_revisions(self, accession_numbers: list[str]) -> dict[str, datetime]:
         values = sorted({str(value) for value in accession_numbers if str(value)})
@@ -106,6 +109,8 @@ FORMAT TSV
             "expected_xbrl_frame_observation_rows": int(row.get("expected_xbrl_frame_observation_rows") or 0),
             "metadata_status": str(row.get("metadata_status") or ""),
             "xbrl_status": str(row.get("xbrl_status") or ""),
+            "original_extraction_json": json.dumps(row.get('original_outcomes',[]),separators=(',',':')),
+            "expected_original_fact_rows": int(row.get('expected_original_fact_rows') or 0),
             "status": str(row["status"]),
             "error": str(row.get("error") or "")[:4000],
             "retry_after_utc": row.get("retry_after_utc"),

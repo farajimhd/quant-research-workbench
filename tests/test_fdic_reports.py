@@ -3,7 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from pipelines.fundamentals.fdic_reports import acquire, inventory
+from pipelines.fundamentals.fdic_reports import acquire, inventory,retained_root
 
 
 class FDICReportsTest(unittest.TestCase):
@@ -47,6 +47,19 @@ class FDICReportsTest(unittest.TestCase):
             with self.assertRaises(ValueError): acquire(changed, directory, session)
             Path(directory, first['sha256'] + '.pdf').write_bytes(b'corrupted')
             with self.assertRaises(ValueError): acquire(report, directory, session)
+
+    def test_forward_revision_keeps_old_receipt_and_detects_changed_old_attachment(self):
+        row=self.row();row['instFlngAtchList'][0]['sysLstActDttm']='2026-10-26T12:00:00Z'
+        self.assertEqual(inventory([row],'HIFS','2026-10-19','2026-10-26'),[])
+        reports=inventory([row],'HIFS','2026-10-19','2026-10-26',changed_since='2026-10-19T00:00:00Z')
+        self.assertEqual(len(reports),1)
+        with tempfile.TemporaryDirectory(dir='D:/TradingML/runtimes') as directory:
+            base=Path(directory);old=dict(reports[0],filename='old.pdf')
+            receipt=base/'1-1.json';receipt.write_text(json.dumps(dict(report=old,sha256='a'*64)))
+            before=receipt.read_bytes();revision=retained_root(base,reports[0])
+            self.assertTrue(revision.is_relative_to(base/'revisions'))
+            self.assertEqual(retained_root(base,old),base)
+            self.assertEqual(receipt.read_bytes(),before)
 
 
 if __name__ == '__main__': unittest.main()

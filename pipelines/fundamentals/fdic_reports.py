@@ -15,10 +15,13 @@ CERTIFICATES = {'HIFS': 90211, 'TOWN': 35095, 'OZK': 110, 'PFBC': 33539}
 MAX_BYTES = 32 * 1024**2
 
 
-def inventory(rows, ticker, start, end):
+def inventory(rows, ticker, start, end, *, changed_since=None):
     """Select public financial forms using the portal's displayed filing date."""
     cert = CERTIFICATES[ticker]
     start, end = date.fromisoformat(start), date.fromisoformat(end)
+    if changed_since is not None:
+        changed_since=datetime.fromisoformat(changed_since.replace('Z','+00:00'))
+        if changed_since.tzinfo is None:raise ValueError('FDIC change watermark must be aware')
     selected = []
     seen = set()
     for row in rows:
@@ -28,11 +31,15 @@ def inventory(rows, ticker, start, end):
         if not re.fullmatch(r'Form 10-[KQ](?:/A)?', form['instFlngFormNme'].split('~')[0]):
             continue
         filing_date = date.fromisoformat(row['sysLstActDttm'])
-        if not start <= filing_date <= end:
+        if filing_date>end or (changed_since is None and filing_date<start):
             continue
         if form['instFlngFormConfInd'] != 'N' or row.get('instFlngAllFilesPrivate'):
             raise ValueError('Non-public FDIC report')
         for attachment in row['instFlngAtchList']:
+            if filing_date<start:
+                changed=datetime.fromisoformat(attachment['sysLstActDttm'].replace('Z','+00:00'))
+                if changed.tzinfo is None:raise ValueError('Unzoned FDIC attachment revision')
+                if changed<changed_since:continue
             filing_id, attachment_id = int(row['instFlngId']), int(attachment['instFlngAtchId'])
             if int(attachment['instFlngId']) != filing_id or min(filing_id, attachment_id) <= 0:
                 raise ValueError('FDIC attachment identity mismatch')
@@ -51,6 +58,16 @@ def inventory(rows, ticker, start, end):
                 attachment_changed_at=attachment['sysLstActDttm'],
                 url=f'{BASE}/{filing_id}/attachment/{attachment_id}'))
     return sorted(selected, key=lambda r: (r['filing_date'], r['filing_id'], r['attachment_id']))
+
+
+def retained_root(root,report):
+    """A changed attachment gets a separate version; never overwrite a receipt."""
+    root=Path(root)
+    receipt=root/f"{report['filing_id']}-{report['attachment_id']}.json"
+    if receipt.exists() and json.loads(receipt.read_text(encoding='utf-8'))['report']!=report:
+        version=sha256(json.dumps(report,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+        return root/'revisions'/version
+    return root
 
 
 def _write_json(path, value):

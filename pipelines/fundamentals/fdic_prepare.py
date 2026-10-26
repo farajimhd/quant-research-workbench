@@ -19,9 +19,11 @@ def prepare(root,report):
     import fitz
     from scripts.run_fundamentals import save
     root=Path(root)
-    receipt=json.loads((root/'verified'/f"{report['filing_id']}-{report['attachment_id']}.json").read_text(encoding='utf-8'))
+    from .fdic_reports import retained_root
+    verified=retained_root(root/'verified',report)
+    receipt=json.loads((verified/f"{report['filing_id']}-{report['attachment_id']}.json").read_text(encoding='utf-8'))
     if receipt['report']!=report:raise ValueError('FDIC receipt metadata changed')
-    raw=(root/'verified'/(receipt['sha256']+'.pdf')).read_bytes()
+    raw=(verified/(receipt['sha256']+'.pdf')).read_bytes()
     if sha256(raw).hexdigest()!=receipt['sha256'] or len(raw)!=report['bytes']:
         raise ValueError('FDIC retained PDF changed')
     cache=root/'prepared';cache.mkdir(exist_ok=True)

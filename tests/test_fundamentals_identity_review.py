@@ -19,12 +19,17 @@ def test_reviewed_wrong_issuer_pair_is_blocked_without_blocking_issuer_globally(
 def test_ticker_resolution_exposes_reviewed_identity_rejection():
     from datetime import datetime,timezone
     from pipelines.fundamentals.population import resolve_ticker
+    from pipelines.reference_data.bank_identity import REVIEWED
+    security='security:9efe99914dfd0da2c2292c56'
+    bank,proof=REVIEWED[security]
     def query(sql):
         if 'id_symbol_interval_v1' in sql:
             return [dict(security_id='security:9efe99914dfd0da2c2292c56',listing_id='listing')]
+        if 'id_security_v1' in sql:return [dict(issuer_id=bank,source_content_sha256=proof)]
         return [dict(issuer_id='issuer:manager',cik='0001961415')]
     result=resolve_ticker(query,'HIFS',datetime(2026,10,5,tzinfo=timezone.utc))
-    assert result['issuer_cik'] is None and result['issuer_mapping_status']=='rejected_direct_identity'
+    assert result['issuer_cik'] is None and result['issuer_mapping_status']=='resolved_fdic_without_sec_cik'
+    assert result['issuer']==bank
 
 
 def test_source_bound_listing_type_distinguishes_fund_from_ticker_reuse():

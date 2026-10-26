@@ -41,6 +41,7 @@ WRITE_TABLES = [
 
 @dataclass(frozen=True, slots=True)
 class SecWriteResult:
+    original_fact_rows: int = 0
     filing_rows: int = 0
     entity_rows: int = 0
     archive_accession_rows: int = 0
@@ -120,6 +121,13 @@ class SecClickHouseWriter:
             raise RuntimeError(f"missing SEC target tables in {self.database}: {missing}")
         from .company_fact_identity import verify
         verify(self.client, self.database)
+        ensure_fact_context_columns(self.client, self.database)
+        from .original_facts import TABLE
+        self.client.execute(f'CREATE TABLE IF NOT EXISTS {qi(self.database)}.{TABLE} '
+            f'AS {qi(self.database)}.{XBRL_COMPANY_FACT_TABLE}')
+        ensure_fact_context_columns(self.client,self.database,table=TABLE)
+        verify(self.client,self.database,table=TABLE)
+        verify_sec_write_storage(self.client,self.database,[TABLE])
 
     def audit_integrity(self) -> SecWriteAudit:
         return SecWriteAudit(
@@ -271,10 +279,15 @@ class SecClickHouseWriter:
         xbrl_company_fact_rows: list[dict[str, Any]] | None = None,
         xbrl_frame_rows: list[dict[str, Any]] | None = None,
         xbrl_frame_observation_rows: list[dict[str, Any]] | None = None,
+        original_fact_rows: list[dict[str, Any]] | None = None,
         skip_existing: bool = True,
         skip_same_revision: bool = True,
     ) -> SecWriteResult:
         validate_source_lineage(document_rows, text_source_rows, text_rows)
+        sources={(str(r['cik']),str(r['accession_number']),r['document_name'],r['content_sha256']) for r in text_source_rows} if original_fact_rows else set()
+        for row in original_fact_rows or []:
+            if (str(row['cik']),str(row['accession_number']),row['document_name'],row['source_content_sha256']) not in sources:
+                raise ValueError('Original fact has no exact source document in this accession')
         incoming_rank = max((int(row.get("source_revision_rank") or 0) for row in document_rows), default=0)
         if (
             skip_same_revision
@@ -298,7 +311,12 @@ class SecClickHouseWriter:
         self.insert_rows(XBRL_COMPANY_FACT_TABLE, xbrl_company_fact_rows or [])
         self.insert_rows(XBRL_FRAME_TABLE, xbrl_frame_rows or [])
         self.insert_rows(XBRL_FRAME_OBSERVATION_TABLE, xbrl_frame_observation_rows or [])
+        from .original_facts import verify_readback, missing_rows, TABLE
+        new_originals=missing_rows(self.client,self.database,original_fact_rows or [])
+        self.insert_rows(TABLE,new_originals)
+        verify_readback(self.client,self.database,original_fact_rows or [])
         return SecWriteResult(
+            original_fact_rows=len(new_originals),
             filing_rows=1,
             entity_rows=len(entity_rows),
             archive_accession_rows=len(archive_accession_rows),
@@ -324,9 +342,9 @@ class SecClickHouseWriter:
         if not rows:
             return
         verify_sec_write_storage(self.client,self.database,[table])
-        if table == XBRL_COMPANY_FACT_TABLE:
+        if table in (XBRL_COMPANY_FACT_TABLE,'sec_xbrl_original_fact_v1'):
             from .company_fact_identity import verify
-            verify(self.client, self.database)
+            verify(self.client, self.database,table=table)
         body = "\n".join(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) for row in rows)
         self.client.execute(f"INSERT INTO {qi(self.database)}.{qi(table)} SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n{body}")
 
@@ -630,6 +648,26 @@ def verify_sec_write_storage(client,database,tables,*,require_tables=True):
     parts=rows(f'SELECT DISTINCT table,disk_name FROM system.parts WHERE database={sql_string(database)} AND table IN ({names})')
     if any(r['disk_name']!='live_market_ssd' for r in parts):
         raise ValueError('SEC writer parts are misplaced; verified migration required')
+
+
+def ensure_fact_context_columns(client, database,*,table=XBRL_COMPANY_FACT_TABLE):
+    """Additive source fields only; no old-row mutation or replacing-key change."""
+    from .original_facts import FACT_COLUMNS
+    verify_sec_write_storage(client,database,[table])
+    existing = {r['name']:r['type'] for r in (json.loads(line) for line in client.execute(
+        f'SELECT name,type FROM system.columns WHERE database={sql_string(database)} '
+        f'AND table={sql_string(table)} FORMAT JSONEachRow').splitlines() if line.strip())}
+    compact=lambda text:re.sub(r'\s+','',text)
+    if any(name in existing and compact(existing[name])!=compact(definition.split(' DEFAULT')[0])
+           for name,definition in FACT_COLUMNS.items()):
+        raise ValueError('SEC source context column types differ; explicit migration required')
+    missing=[f'ADD COLUMN IF NOT EXISTS {qi(name)} {definition}' for name,definition in FACT_COLUMNS.items() if name not in existing]
+    if missing:
+        client.execute(f'ALTER TABLE {qi(database)}.{qi(table)} '+', '.join(missing))
+    if table==XBRL_COMPANY_FACT_TABLE:
+        client.execute(f'ALTER TABLE {qi(database)}.{qi(ARCHIVE_ACCESSION_TABLE)} '
+            "ADD COLUMN IF NOT EXISTS downloaded_at_utc Nullable(DateTime64(9,'UTC')), "
+            "ADD COLUMN IF NOT EXISTS download_receipt_sha256 String DEFAULT ''")
 
 
 def infer_storage_policy(client: ClickHouseHttpClient, database: str, tables: list[str]) -> str:

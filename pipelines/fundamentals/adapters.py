@@ -113,6 +113,14 @@ ADAPTERS = {a.family: a for a in (
          numeric("'ipo.total_offer_size'",'total_offer_size',"ifNull(currency_code,'unknown')")), end='listing_date'),
 )}
 
+# Source-native context is now preserved by ingestion. Old rows retain NULL
+# starts and remain eligible for the existing targeted period recovery.
+ADAPTERS['sec_companyfacts_context'] = replace(ADAPTERS['sec_reported'],family='sec_companyfacts_context',
+    start='period_start_date',scan_key='cik')
+ADAPTERS['sec_ingested_original'] = replace(ADAPTERS['sec_reported'], family='sec_ingested_original',
+    table='q_live.sec_xbrl_original_fact_v1',dimensions='dimensions_json',quality="'certified'",
+    reason="'ingested_selected_original'",scan_key='cik',start='period_start_date',public='public_available_at')
+
 # Keep provider/venue and fiscal bases distinct. A ticker is an access route,
 # never a reason to duplicate issuer facts for every listing or trading day.
 for _family, _columns in {
@@ -129,6 +137,9 @@ for _family, _columns in {
 }.items():
     ADAPTERS[_family] = replace(ADAPTERS[_family], dimensions='toJSONString(map('
         + ','.join(f"{literal(c)},ifNull(toString({c}),'')" for c in _columns) + '))')
+
+ADAPTERS['sec_companyfacts_context'] = replace(ADAPTERS['sec_companyfacts_context'],
+    dimensions=ADAPTERS['sec_reported'].dimensions)
 
 for _family, _key in {'short_interest':'short_interest_id','short_volume':'short_volume_id',
         'borrow':'borrow_id','float':'security_float_id','splits':'stock_split_id',
@@ -154,13 +165,15 @@ def projection(family, entities, start, end, *, partition_id=None, scan_keys=(),
     for metric, expression, unit, is_text in a.metrics:
         value = 'CAST(NULL AS Nullable(Float64))' if is_text else f'toFloat64OrNull(toString({expression}))'
         string = f'CAST({expression} AS Nullable(String))' if is_text else 'CAST(NULL AS Nullable(String))'
+        if family in ('sec_companyfacts_context','sec_ingested_original') and not is_text:
+            string='value_exact'
         values.append(f'tuple({metric},{value},{string},ifNull({unit},\'unknown\'))')
     # Fingerprint the entire normalized source observation, including nulls and
     # clocks. Source-provided hashes are provenance, never trusted as value proof.
     partition = '' if partition_id is None else f' AND _partition_id={literal(partition_id)}'
     if selected:
         from .v1 import predicate
-        if family in ('sec_reported','sec_bulk'):
+        if family in ('sec_reported','sec_bulk','sec_companyfacts_context','sec_ingested_original'):
             # Both taxonomy and tag are immutable sorting-key columns in SEC
             # sources. Filter before FINAL deduplication, not after loading all
             # unselected metrics for a multi-decade issuer cohort.

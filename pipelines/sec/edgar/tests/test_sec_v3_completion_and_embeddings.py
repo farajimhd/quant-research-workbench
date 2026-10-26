@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
 import sys
@@ -28,6 +29,17 @@ from pipelines.sec.edgar import sec_historical_gap_fill as historical
 from pipelines.sec.edgar import sec_filing_text_extract_parts as filing_extract
 from pipelines.sec.edgar.sec_bulk_sources import BULK_SOURCE_NAMES, DEFAULT_BULK_SOURCES, require_complete_bulk_sources
 from pipelines.sec.edgar.sec_pipeline import submissions
+
+
+def ssd_metadata(sql):
+    """Model required storage evidence in non-network source lifecycle tests."""
+    if 'FROM system.storage_policies' in sql:return json.dumps(dict(disk='live_market_ssd'))
+    if 'FROM system.parts' in sql:return ''
+    if 'FROM system.tables' in sql and 'storage_policy' in sql:
+        names=re.search(r'name IN \(([^)]+)\)',sql).group(1)
+        return '\n'.join(json.dumps(dict(name=name,storage_policy='live_market_ssd'))
+                         for name in re.findall(r"'([^']+)'",names))
+    return None
 
 
 class SecV3CompletionAndEmbeddingTests(unittest.TestCase):
@@ -781,7 +793,10 @@ ISSUER:
 
     def test_bulk_snapshot_uses_snapshot_manifest_and_preserves_xbrl_fact_identity(self) -> None:
         statements: list[str] = []
-        client = SimpleNamespace(execute=statements.append)
+        def execute(sql):
+            statements.append(sql)
+            return ssd_metadata(sql) or ''
+        client = SimpleNamespace(execute=execute)
 
         bulk_ingest.create_database_and_tables(client, "sec_core", "")
 
@@ -857,10 +872,10 @@ ISSUER:
 
     def test_partial_ticker_snapshot_is_rejected_before_replacement(self) -> None:
         artifact = bulk_ingest.SourceArtifact("company_tickers", "company_tickers", "url", Path("x.json"), "id", 1, "sha")
-        args = SimpleNamespace()
+        args = SimpleNamespace(storage_policy='live_market_ssd',database='sec_core')
 
         with self.assertRaisesRegex(RuntimeError, "requires all ticker snapshots"):
-            snapshot_refresh.refresh_selected_snapshots(SimpleNamespace(), args, [artifact], "run", Path("report"), None)
+            snapshot_refresh.refresh_selected_snapshots(SimpleNamespace(execute=ssd_metadata), args, [artifact], "run", Path("report"), None)
 
     def test_snapshot_cutover_rolls_back_when_activation_manifest_fails(self) -> None:
         class FakeClient:
@@ -868,6 +883,8 @@ ISSUER:
                 self.exchanges: list[str] = []
 
             def execute(self, sql: str) -> str:
+                evidence=ssd_metadata(sql)
+                if evidence is not None:return evidence
                 if sql.startswith("SELECT count()"):
                     return "100\n"
                 if sql.startswith("EXCHANGE TABLES"):

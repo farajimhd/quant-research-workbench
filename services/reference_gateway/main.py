@@ -801,6 +801,8 @@ def main() -> None:
             f"saturated={plan.provider_saturated} wall_seconds={time.perf_counter() - source_sync_started:.2f}"
         )
         refresh_reference_state("after_source_sync_writes")
+        from services.gateway_core.fundamentals_handoff import notify
+        notify('reference',detail='durable_reference_source_sync')
 
     maintenance_allowed = config.execute and config.maintenance_mode != "skip" and write_policy.writes_allowed
     maintenance_skip_reason = "maintenance_disabled" if config.maintenance_mode == "skip" else write_policy.reason

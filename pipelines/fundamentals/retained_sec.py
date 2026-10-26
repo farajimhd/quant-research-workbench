@@ -4,8 +4,7 @@ Acceptance is a labelled historical proxy, not a claimed posting timestamp.
 The current ingest timestamp is never substituted for historical availability.
 Archive-qualified authorities and their receipts are not rewritten.
 """
-from datetime import datetime, time, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone
 import json
 import re
 
@@ -15,35 +14,7 @@ from pipelines.certified_research import sec_document_payload, sec_fundamental_c
 from pipelines.certified_research.contracts import digest, identifier, literal
 
 VERSION = 'retained-sec-acceptance-proxy-v1'
-NY = ZoneInfo('America/New_York')
-
-
-def historical_time(metadata):
-    """Reject unknown/special chronology rather than inventing a publication time."""
-    raw = metadata.get('acceptance_datetime_raw') or ''
-    if re.fullmatch(r'[0-9]{14}', raw):
-        naive = datetime.strptime(raw, '%Y%m%d%H%M%S')
-        accepted = naive.replace(tzinfo=NY)
-        if (accepted.utcoffset() != accepted.replace(fold=1).utcoffset()
-                or accepted.astimezone(timezone.utc).astimezone(NY).replace(tzinfo=None) != naive):
-            raise ValueError('Ambiguous or invalid SEC acceptance timezone')
-    elif metadata.get('time_metadata_source') == 'sec_filing_v3' and re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?Z', raw):
-        accepted = datetime.fromisoformat(raw.replace('Z','+00:00')).astimezone(NY)
-    else:
-        raise ValueError('SEC acceptance timestamp is absent or malformed')
-    filing = datetime.strptime(metadata.get('filing_date') or '', '%Y-%m-%d').date()
-    if (metadata.get('private_to_public') or metadata.get('pac_event_id')
-            or int(metadata.get('public_document_count') or 0) <= 0):
-        raise ValueError('Private, corrected or non-public SEC occurrence needs separate review')
-    if accepted.date() > filing or (filing - accepted.date()).days > 7:
-        raise ValueError('SEC filing and acceptance chronology conflicts')
-    # A later official filing day must not be pulled back to late acceptance.
-    available = max(accepted, datetime.combine(filing, time(), NY))
-    return dict(available_at=available.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f'),
-                acceptance_at=accepted.astimezone(timezone.utc).isoformat(), filing_date=str(filing),
-                availability_basis='sec_acceptance_proxy' if available == accepted else 'sec_later_filing_day',
-                exact_publication_time=False, policy=VERSION,
-                recorded_time_basis='ingestion_time_fallback_no_download_receipt')
+from pipelines.sec.edgar.sec_pipeline.public_time import historical_time
 
 
 def inspect(query, document):

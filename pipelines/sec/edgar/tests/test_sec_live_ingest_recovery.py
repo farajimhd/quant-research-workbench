@@ -207,9 +207,11 @@ class SecLiveIngestRecoveryTests(unittest.TestCase):
 
         manifest.ensure_table()
 
-        self.assertEqual(len(client.sql), 2)
+        self.assertEqual(len(client.sql), 3)
         self.assertIn("renderer_version LowCardinality(String)", client.sql[0])
         self.assertIn("ADD COLUMN IF NOT EXISTS renderer_version", client.sql[1])
+        self.assertIn('original_extraction_json',client.sql[2])
+        self.assertIn('expected_original_fact_rows',client.sql[2])
 
     def test_pending_source_retry_window_is_durable(self) -> None:
         class FakeClient:
