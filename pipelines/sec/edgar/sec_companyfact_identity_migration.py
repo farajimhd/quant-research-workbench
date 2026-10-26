@@ -217,7 +217,18 @@ def main():
                            source_rows=sum(int(r['n']) for r in parts),
                            qualification_status='Capture all distinct raw rows; no source FINAL or shared-merge pause',
                            active={'snapshot':{'stage':'server-side immutable raw snapshot'}})
-                    c.query(f'INSERT INTO {DATABASE}.{snapshot} SELECT * FROM {DATABASE}.{SOURCE} SETTINGS max_bytes_before_external_sort=268435456',read=False)
+                    snapshot_receipts=root/'snapshot-partitions';snapshot_receipts.mkdir(exist_ok=True)
+                    for part in parts:
+                        guard()
+                        partition=part['partition_id']
+                        receipt=snapshot_receipts/(partition+'.json')
+                        if receipt.exists():
+                            proof=json.loads(receipt.read_text(encoding='utf-8'))
+                            if proof.get('request_hash')!=seal or proof.get('table_uuid')!=table_info(c.query,snapshot)['uuid']:
+                                raise ValueError('Snapshot partition receipt identity differs')
+                            continue
+                        c.query(f'INSERT INTO {DATABASE}.{snapshot} SELECT * FROM {DATABASE}.{SOURCE} PREWHERE _partition_id={literal(partition)} SETTINGS max_bytes_before_external_sort=268435456',read=False)
+                        save(receipt,dict(partition=partition,request_hash=seal,table_uuid=table_info(c.query,snapshot)['uuid']))
                     save(root/'snapshot-complete.json',dict(table=snapshot,uuid=table_info(c.query,snapshot)['uuid']))
                 if json.loads((root/'snapshot-complete.json').read_text(encoding='utf-8'))['uuid']!=table_info(c.query,snapshot)['uuid']:
                     raise ValueError('Raw snapshot identity differs from completed receipt')
