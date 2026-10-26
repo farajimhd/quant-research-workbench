@@ -14,6 +14,37 @@ from research.vectorized_backtest.v53.mutation_probe import run_probe
 
 
 class MutationProbeTests(unittest.TestCase):
+    def test_real_controller_successor_and_rng_are_identical_with_probe_enabled(self):
+        from research.vectorized_backtest.v53.full_controller import Controller
+        from research.vectorized_backtest.v53.genome import sample
+        runtime = Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v53/preparation/tests')
+        runtime.mkdir(parents=True, exist_ok=True)
+        outcomes = []
+        for size in (0, 32):
+            with TemporaryDirectory(dir=runtime) as tmp:
+                c = Controller.__new__(Controller)
+                c.root = Path(tmp)
+                c.publish = lambda **values: None
+                c.worker = SimpleNamespace(config={'output': 'main'}, resident_results=None)
+                c.job = dict(population=10, initial_multiplier=3, seed=2021,
+                    phase2_generations=3, training='fixture', initialization_probe='fixture',
+                    source_sha256='source', objective=dict(drawdown_weight=0., loss_weight=0.),
+                    training_sha256='training', validation_sha256='validation', selection={},
+                    mutation_probe_size=size, training_days=['2026-08-13'])
+                c.evaluate = lambda role,days,pop,g: ([metrics(10.,len(pop))], {})
+                with patch('research.vectorized_backtest.v42.calibration.load_probe',return_value={}), \
+                     patch('research.vectorized_backtest.v53.full_seed.initialize',
+                           return_value=(members(30),dict(initial_families=['random']*30))), \
+                     patch('research.vectorized_backtest.v53.initial_population.immigrant',
+                           side_effect=lambda rng,probe:sample(rng,1)[0]):
+                    c.global_run({}, ['2026-08-13'], [])
+                state = json.loads((c.root/'global/checkpoint.json').read_bytes())['state']
+                outcomes.append(digest({k:state[k] for k in ('population','ids','rng','pedigree')}))
+                if size:
+                    probes = [json.loads(p.read_bytes()) for p in (c.root/'global').glob('generation-*/mutation-probe.json')]
+                    self.assertGreater(sum(p['evaluated'] for p in probes),0)
+        self.assertEqual(*outcomes)
+
     def test_paired_diagnostic_isolates_output_cache_rng_and_cohort(self):
         runtime = Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v53/preparation/tests')
         runtime.mkdir(parents=True, exist_ok=True)
