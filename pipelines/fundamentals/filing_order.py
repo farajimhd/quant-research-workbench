@@ -35,7 +35,7 @@ def sql(observations,ciks,key,*,metadata_database='sec_core',reported_metadata_d
           OR parseDateTime64BestEffortOrNull(ifNull(acceptance_datetime_raw,''),9,'UTC')!=accepted_at_utc
           OR dateDiff('day',toDate(accepted_at_utc),filing_date) NOT BETWEEN 0 AND 7)=0'''
     joined=f'''SELECT o.*,m.accepted accepted_order,
-        isNotNull(m.accepted) AND o.family IN ('sec_bulk','sec_reported','sec_original_qualified')
+        isNotNull(m.accepted) AND o.family IN ('sec_bulk','sec_reported','sec_original_qualified','sec_companyfacts_context','sec_ingested_original')
         AND o.available_at>=m.accepted
         AND toDate(o.available_at,'America/New_York')>=m.filing_day order_verified
         FROM ({observations}) o LEFT JOIN ({metadata}) m

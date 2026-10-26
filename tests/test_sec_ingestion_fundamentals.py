@@ -185,6 +185,17 @@ def test_live_clickhouse_source_normalization_and_reuse(monkeypatch,tmp_path):
         assert facts==[dict(text_value='1234567890123456789000')]
         context=client.query(f"SELECT toString(period_start) start,toString(period_end) end,unit FROM {db}.reference_context_v1 FINAL")
         assert context==[dict(start='2025-01-01',end='2025-09-30',unit='USD')]
+        from pipelines.fundamentals.v1 import financial_sql
+        served=client.query(financial_sql([CIK],datetime(2026,10,26,23,tzinfo=timezone.utc),database=db))
+        assert len(served)==1 and served[0]['value']=='1234567890123456789000'
+        legacy=dict(rows[0],company_fact_id='legacy-context-test',period_start_date=None,frame=None,
+            value_exact=None,source_kind='companyfacts')
+        typed=dict(legacy,company_fact_id='typed-context-test',period_start_date='2025-01-01',value_exact='123000')
+        writer.insert_rows('sec_xbrl_company_fact_v3',[legacy,typed])
+        monkeypatch.setitem(adapters.ADAPTERS,'sec_companyfacts_context',replace(adapters.ADAPTERS['sec_companyfacts_context'],
+            table=db+'.sec_xbrl_company_fact_v3'))
+        projection=adapters.projection('sec_companyfacts_context',[CIK],date(1900,1,1),date(2140,1,1),selected=True)
+        assert client.query('SELECT count() n FROM ('+projection+')')==[dict(n=1)]
         (tmp_path/'profile.json').write_text(json.dumps(dict(first=first,repeat=second,seconds=time.perf_counter()-started)))
     finally:
         client.query(f'DROP DATABASE IF EXISTS {db} SYNC',read=False);client.close()

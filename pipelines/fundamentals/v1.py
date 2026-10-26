@@ -11,7 +11,7 @@ from .queries import _timestamp
 from pipelines.certified_research.contracts import literal, identifier, digest
 
 VERSION='fundamentals-selected-v1'
-SERVING_VERSION='fundamentals-selected-serving-v8-ingested-context'
+SERVING_VERSION='fundamentals-selected-serving-v9-ingested-context-admission'
 # Feature, temporal kind, ordered explicit standard tags. Different debt
 # components remain separate inputs; no overlapping total is blindly summed.
 FINANCIAL={
@@ -54,7 +54,10 @@ def predicate(family):
     if family not in FAMILIES:raise ValueError('Family outside selected fundamentals v1')
     if family in ('sec_reported','sec_bulk','sec_companyfacts_context','sec_ingested_original'):
         tags=sorted({t for _,ts in FINANCIAL.values() for t in ts})
-        return "taxonomy IN ('us-gaap','ifrs-full','dei') AND tag IN ("+','.join(map(literal,tags))+')'
+        selected="taxonomy IN ('us-gaap','ifrs-full','dei') AND tag IN ("+','.join(map(literal,tags))+')'
+        if family=='sec_companyfacts_context':
+            selected+=' AND (isNotNull(period_start_date) OR isNotNull(frame) OR isNotNull(value_exact))'
+        return selected
     if family=='massive_financials':return 'metric_name IN ('+','.join(map(literal,MASSIVE))+')'
     return '1'
 
@@ -109,7 +112,8 @@ Ties with different values remain conflicts, never arbitrary winners.
         PREWHERE cik IN ({ids}) AND {predicate('sec_bulk')} GROUP BY cik,fact_id,source_file_id
         HAVING uniqExact(filed_date)=1) b ON s.family='sec_bulk' AND s.entity_id=b.cik AND s.event_key=b.fact_id
         AND s.source_hash=b.source_file_id
-      LEFT JOIN (SELECT cik,company_fact_id,source_content_sha256,any(toDate(filed_at_utc)) filing_day
+      LEFT JOIN (SELECT cik,company_fact_id,source_content_sha256,any(toDate(filed_at_utc)) filing_day,
+        any(isNotNull(period_start_date) OR isNotNull(frame) OR isNotNull(value_exact)) has_context_fields
         FROM q_live.sec_xbrl_company_fact_v3 FINAL
         PREWHERE cik IN ({ids}) AND {predicate('sec_reported')}
         GROUP BY cik,company_fact_id,source_content_sha256 HAVING uniqExact(toDate(filed_at_utc))=1) r
@@ -121,6 +125,7 @@ Ties with different values remain conflicts, never arbitrary winners.
         HAVING uniqExact(tuple(period_start,frame))=1) p
         ON s.family='sec_reported' AND s.event_key=p.company_fact_id AND s.source_hash=p.source_hash
       WHERE c.taxonomy IN ('us-gaap','ifrs-full','dei')
+      AND (s.family!='sec_companyfacts_context' OR r.has_context_fields)
       AND f.metric=concat(c.taxonomy,':',{tag})
       AND (c.dimensions IN ('{{}}','[]','') OR {reported_metadata}) AND isNotNull(c.period_end) AND isNotNull(value)'''
     from .joint_issuers import base_sql
