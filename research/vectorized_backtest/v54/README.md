@@ -16,6 +16,16 @@ V53 prospective position-risk admission cap including commissions and costs.
 Entry/add caps remain $1000/$200; one-second valid bid/ask execution and forced
 terminal liquidation rules are unchanged.
 
+The completed pilot exposed an inherited accounting limitation: very small
+target reductions can pay a $1 minimum commission larger than their profit
+and stop-risk relief. Entry/add admission remains bounded, but accumulated
+reduction fees can raise the observed paid-cost risk above $300. The unchanged
+eligibility filter rejects such candidates. Two generation-2 candidates were
+rejected at peaks of $300.99 and $302.27; replaying their first crossing events
+through the V53 financial oracle produced identical results. This is not an
+every-action hard cap. Adding prospective reduction-fee admission requires a
+separate execution change and a fresh comparison experiment.
+
 Fitness is exactly V53: net P&L - gross losing-position dollars - 2 * equity
 maximum drawdown, including open-position marks. No validation is opened.
 The experiment is laptop-only, 2026-08-13, seed 2021, 6144 fresh founders,
