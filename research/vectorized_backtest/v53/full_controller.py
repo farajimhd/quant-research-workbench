@@ -29,7 +29,7 @@ class Controller:
         self.stage='Load sealed global checkpoint' if (self.root/'global/checkpoint.json').exists() else 'Initialize fresh random/template phase2 cohort'
         self.publish(phase=2,generation=0,completed_generations=0,completed_sessions=0,total_sessions=len(train))
         root=self.root/'global';root.mkdir(exist_ok=True);objective=Objective(**self.job['objective'])
-        contract=dict(experiment=dict(mutation_probe_size=self.job.get('mutation_probe_size',0),crossover_policy='action-composition-or-and-xor-xnor-v1'),seed=self.job['seed'],source_sha256=self.job['source_sha256'],objective=self.job['objective'],training_sha256=self.job['training_sha256'],validation_sha256=self.job['validation_sha256'],generations=self.job['phase2_generations'],population=self.job['population'],initial_multiplier=self.job['initial_multiplier'],training_days=train,validation_days=valid,validation='display-only; successor and RNG frozen before opening')
+        contract=dict(comparison=self.job.get('comparison'),experiment=dict(mutation_probe_size=self.job.get('mutation_probe_size',0),crossover_policy='action-composition-or-and-xor-xnor-v1'),seed=self.job['seed'],source_sha256=self.job['source_sha256'],objective=self.job['objective'],training_sha256=self.job['training_sha256'],validation_sha256=self.job['validation_sha256'],generations=self.job['phase2_generations'],population=self.job['population'],initial_multiplier=self.job['initial_multiplier'],training_days=train,validation_days=valid,validation='display-only; successor and RNG frozen before opening')
         cp=root/'checkpoint.json';species=Species();completed=0;seals={}
         if cp.exists():
             saved=read(cp)
@@ -62,16 +62,18 @@ class Controller:
             write_json(folder/'evaluated-pedigree.json',birth_records)
             from .offspring_audit import summarize
             write_json(folder/'offspring-audit.json',summarize(birth_records,panel,generation))
+            self.stage='Score evaluated population';self.publish()
             if self.job.get('mutation_probe_size',0):
                 from .mutation_probe import run_probe
                 self.stage='Paired mutation diagnostic; selection and RNG isolated';self.publish()
                 run_probe(self,folder,members,source_ids,birth_records,panel,generation)
             write_json(folder/'training.json',dict(population_sha256=token,ids=source_ids.tolist(),panel=serializable(panel),ranking=ranking(panel,source_ids),receipts=training_receipts))
+            self.stage='Select active parents and reproduce';self.publish()
             if generation<self.job['phase2_generations']:
                 from .validation_cache import validation_scope
                 with validation_scope():
                     successor,newids,diversity=next_population(rng,members,ids,pedigree,[],generation+1,Selection(**self.job['selection']),session_values=panel['score'][None],session_eligible=panel['eligible'][None],global_values=panel['score'],global_eligible=panel['eligible'],target_size=self.job['population'],species=species,ordered=ordered,case_values=None,case_ids=None,probe=probe)
-            else:successor,newids,diversity=members,ids,species.telemetry
+            else:successor,newids,diversity=members,ids,dict(reproduction_performed=False)
             if generation<self.job['phase2_generations']:
                 audit=read(folder/'offspring-audit.json');selected=set(map(int,source_ids)) & set(map(int,newids))
                 audit['retained_ids']=sorted(selected);audit['selection_observed']=True

@@ -13,19 +13,21 @@ from research.vectorized_backtest.v53.identity import digest
 
 
 class ReproductionTests(unittest.TestCase):
-    def reproduce(self, scores, feasible=True):
+    def reproduce(self, scores, feasible=True, active=True):
         pop = members(len(scores))
         pedigree = CompactPedigree(3)
         ids = pedigree.birth(pop, 1, [(-1, -1)] * len(pop), ['fresh'] * len(pop))
         values = np.asarray(scores, float)
         rng = np.random.default_rng(2021)
+        observed=metrics(10,len(pop))
+        if not active:observed['closed_positions']=[0]*len(pop)
         with patch('research.vectorized_backtest.v53.initial_population.immigrant',
                    side_effect=lambda rng, probe: sample(rng, 1)[0]), \
              patch('research.vectorized_backtest.v53.whole_network.fits', return_value=feasible):
             result, newids, telemetry = next_population(rng, pop, ids, pedigree, [], 2,
                 session_values=values[None], session_eligible=np.ones((1, len(pop)), bool),
                 global_values=values, global_eligible=np.ones(len(pop), bool),
-                target_size=40, ordered=[metrics(10, len(pop))], probe={})
+                target_size=40, ordered=[observed], probe={})
         return result, newids, telemetry, pedigree, rng.bit_generator.state
 
     def test_repeatability_all_four_modes_and_unmutated_crossovers(self):
@@ -54,12 +56,26 @@ class ReproductionTests(unittest.TestCase):
                 self.assertGreaterEqual(record['parents'][0], 0)
                 self.assertEqual(record['parents'][1], -1)
 
-    def test_no_eligible_positive_parent_reports_fresh_fallback(self):
-        result, _, telemetry, _, _ = self.reproduce([-1.] * 40)
+    def test_no_active_parent_reports_fresh_fallback(self):
+        result, _, telemetry, _, _ = self.reproduce([-1.] * 40,active=False)
         self.assertEqual(len(result), 40)
         self.assertEqual(telemetry['crossovers'], 0)
         self.assertEqual(telemetry['parent_mutations'], 0)
         self.assertEqual(telemetry['fresh_candidates'], 40)
+
+    def test_negative_fitness_active_candidates_can_be_elites_and_parents(self):
+        _, ids, telemetry, pedigree, _ = self.reproduce([-float(i+1) for i in range(40)])
+        self.assertEqual(telemetry['active_parent_candidates'],40)
+        self.assertEqual(ids[:4].tolist(),[0,1,2,3])
+        self.assertEqual(telemetry['fresh_candidates'],telemetry['baseline_fresh'])
+        self.assertGreater(telemetry['crossovers']+telemetry['parent_mutations'],0)
+        self.assertTrue(any(r['parents'][0]>=0 for r in pedigree.records.values() if r['generation']==2))
+
+    def test_inactive_candidates_cannot_reproduce_even_with_positive_supplied_score(self):
+        _, _, telemetry, _, _ = self.reproduce([100.] * 40, active=False)
+        self.assertEqual(telemetry['active_parent_candidates'],0)
+        self.assertEqual(telemetry['elites'],0)
+        self.assertEqual(telemetry['crossovers'],0)
 
     def test_audit_counts_only_new_children_and_requires_profit_and_eligibility(self):
         from research.vectorized_backtest.v53.offspring_audit import summarize

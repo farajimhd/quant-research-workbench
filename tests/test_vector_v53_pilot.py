@@ -26,11 +26,11 @@ def metrics(value,n):
         maximum_position_risk=[10.]*n,maximum_stop_distance=[.1]*n,capital_dollar_seconds=[100.]*n,turnover=[1000.]*n)
 
 class PilotTests(unittest.TestCase):
-    def test_net_only_cost_preserves_risk_metrics(self):
-        self.assertEqual(Objective(),Objective(drawdown_weight=0.,loss_weight=0.))
+    def test_loss_drawdown_cost_preserves_risk_metrics(self):
+        self.assertEqual(Objective(),Objective(drawdown_weight=2.,loss_weight=1.))
         m=metrics(-10,1);m['drawdown']=[50.]
-        result=aggregate([m]);self.assertEqual(result['score'].tolist(),[-10.])
-        result=aggregate([metrics(100,1),m]);self.assertEqual(result['score'].tolist(),[90.])
+        result=aggregate([m]);self.assertEqual(result['score'].tolist(),[-120.])
+        result=aggregate([metrics(100,1),m]);self.assertEqual(result['score'].tolist(),[-24.])
 
     def test_fresh_seed_no_archived_experts_and_sixfold_founders(self):
         from research.vectorized_backtest.v53.full_seed import global_seed
@@ -50,6 +50,19 @@ class PilotTests(unittest.TestCase):
         with patch.dict(os.environ,{'V42_INITIAL_POOL':'does-not-exist','V53_INITIAL_POOL':'does-not-exist'}),patch('research.vectorized_backtest.v42.initial_population.initialize_random',return_value=(randoms,{})),patch('research.vectorized_backtest.v42.templates.sample_templates',return_value=(templates,['random']*3072)):
             initial,report=initialize(np.random.default_rng(2020),6144,probe={})
         self.assertEqual(len(initial),6144);self.assertEqual(report['random_count'],3072);self.assertEqual(report['seed_count'],3072);self.assertFalse(report['past_results_loaded'])
+
+    def test_matched_founder_and_rng_binding_fails_closed(self):
+        from research.vectorized_backtest.v53.full_seed import global_seed
+        founders=members(6)
+        job=dict(population=1,initial_multiplier=6,seed=2021,source_sha256='source',
+                 comparison=dict(population_sha256=digest([m.payload() for m in founders]),
+                                 rng_sha256=digest(np.random.default_rng(2021).bit_generator.state)))
+        with patch('research.vectorized_backtest.v53.full_seed.initialize',
+                   return_value=(founders,dict(initial_families=['random']*6))):
+            global_seed({},job,{})
+            job['comparison']['rng_sha256']='changed'
+            with self.assertRaisesRegex(ValueError,'Matched founder'):
+                global_seed({},job,{})
 
     @patch('research.vectorized_backtest.v42.calibration.load_probe',return_value={})
     @patch('research.vectorized_backtest.v53.initial_population.immigrant',side_effect=lambda rng,probe:sample(rng,1)[0])
@@ -95,5 +108,7 @@ class PilotTests(unittest.TestCase):
         for width,height in ((120,38),(80,24)):
             s=io.StringIO();Console(file=s,width=width,height=height,color_system=None).print(render({},width,height))
             lines=s.getvalue().splitlines();self.assertEqual(len(lines),height);self.assertTrue(all(len(line)<=width for line in lines));self.assertIn('V53',s.getvalue());self.assertIn('Score = net profit',s.getvalue());self.assertIn('Q closes',s.getvalue())
+        s=io.StringIO();Console(file=s,width=120,height=38,color_system=None).print(render(dict(objective=dict(loss_weight=1.,drawdown_weight=2.)),120,38))
+        self.assertIn('1*gross losses - 2*equity DD',s.getvalue())
 
 if __name__=='__main__':unittest.main()

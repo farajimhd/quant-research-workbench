@@ -154,7 +154,9 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
     if isolation and (any(x is None for x in owners) or not set(owners)<=set(case_ids)):raise ValueError('Incomplete phase0 ownership')
     labels=owners if isolation else ['SESSION']*n
     cases=sorted(case_ids) if isolation else ['SESSION']
-    groups={c:sorted([i for i in range(n) if labels[i]==c and valid[i] and values[i]>0],key=lambda i:(-values[i],ids[i])) for c in cases}
+    active=np.asarray([m['closed_positions'] for m in ordered],float).sum(axis=0)>0
+    if active.shape!=(n,):raise ValueError('Aligned training activity required')
+    groups={c:sorted([i for i in range(n) if labels[i]==c and valid[i] and active[i]],key=lambda i:(-values[i],ids[i])) for c in cases}
     groups={c:p for c,p in groups.items() if p}
     allocation=quotas(cases,groups,target,generation) if isolation else {'SESSION':target}
     remaining=dict(allocation)
@@ -186,10 +188,10 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
         keys.add(key);children.append(m);parents.append((-1,-1));ops.append('fresh');remaining[case]-=1
         metadata.append(dict(route=reason,case=case if isolation else None,case_owner=m.case_owner))
     for _ in range(fresh_budget):fresh('fresh')
-    for _ in range(elite_budget-len(selected)):fresh('insufficient-positive-elites')
+    for _ in range(elite_budget-len(selected)):fresh('insufficient-active-elites')
     def parent_mutation(pool,case,slot,reason):
         if not pool:
-            fresh('no-positive-eligible-parent',case);return
+            fresh('no-active-eligible-parent',case);return
         for attempt in range(config.mate_attempts):
             parent=pool[(rank_index(len(pool),slot,generation)+attempt)%len(pool)]
             try:
@@ -295,6 +297,7 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
     result=[population[i] for i in selected]+children;newids=np.concatenate((ids[selected],born))
     assert len(result)==target
     telemetry=dict(species.telemetry,selection_policy='isolated-case-score' if isolation else 'unified-session-score',
+        active_parent_candidates=int((valid&active).sum()),reproduction_policy='v53-ranked-active-risk-cost-v2',
         requested_elites=elite_budget,elites=len(selected),baseline_fresh=fresh_budget,requested_crossovers=cross_budget,
         fresh_candidates=sum(o.startswith('fresh') for o in ops),crossovers=sum('crossover' in o for o in ops),
         parent_mutations=ops.count('parent_mutation'),post_crossover_mutation=False,

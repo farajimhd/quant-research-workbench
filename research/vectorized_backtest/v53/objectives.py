@@ -6,8 +6,8 @@ from research.vectorized_backtest.v42 import objectives as base
 
 @dataclass(frozen=True)
 class Objective:
-    drawdown_weight:float=0.
-    loss_weight:float=0.
+    drawdown_weight:float=2.
+    loss_weight:float=1.
     def validate(self):
         if any(not math.isfinite(v) or v<0 for v in (self.drawdown_weight,self.loss_weight)):raise ValueError('Finite nonnegative cost weights required')
         return self

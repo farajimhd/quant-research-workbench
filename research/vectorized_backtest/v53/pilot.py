@@ -18,7 +18,7 @@ class Pilot(Controller):
     def __init__(self,job):
         self.job=job;self.root=Path(job['campaign']);self.stage='Starting direct phase2 pilot'
         self.owner=dict(pid=os.getpid(),creation_time=psutil.Process().create_time())
-        self.view={'total_generations':job['phase2_generations']};self.status='running';self.lock=threading.RLock();self.worker=None
+        self.view={'total_generations':job['phase2_generations'],'objective':job['objective']};self.status='running';self.lock=threading.RLock();self.worker=None
         self.events=queue.Queue(maxsize=1);self.stop=threading.Event()
 
     def publish(self,**extra):
