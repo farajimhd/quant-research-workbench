@@ -15,6 +15,14 @@ from pipelines.market_sip.events import market_signals as signals
 from pipelines.market_sip.flatfiles.repair_progress import Progress
 
 
+class QuoteProgress(Progress):
+    """Coalesce worker display writes; database commit receipts stay durable."""
+    def flush(self,force=False):
+        with self.lock:
+            terminal=self.state.get('status') in ('complete','failed','interrupted')
+            return super().flush(force=terminal)
+
+
 def run(a):
     root=a.run_dir.resolve();runtime=bars.RUNTIME.resolve()
     if not root.is_relative_to(runtime) or not runtime.is_dir():raise ValueError('Operational runtime required')
@@ -86,7 +94,7 @@ def run(a):
             sql.verify_storage(c.query,'arte',list(signals.TABLES))
             columns=c.query("SELECT name,type FROM system.columns WHERE database='arte' AND table='quote_bars_v1' ORDER BY position")
             if [x['name'] for x in columns]!=list(sql.FIELDS):raise ValueError('Quote schema differs')
-        progress=Progress(root);progress.update(step='quotes',title='Exact bid/ask OHLC',status='running',
+        progress=QuoteProgress(root);progress.update(step='quotes',title='Exact bid/ask OHLC',status='running',
             total=len(units),completed=0,reused=0,queued=len(units),failed=0,coverage_label='Certified ticker-days',
             products='1s -> 5s -> 10s -> 30s',
             signals='Estimated LULD from 1s trade closes; observed halt transitions; unknown halt state stays explicit')
@@ -145,8 +153,11 @@ def run(a):
                         if profile_units or counts['completed']<=128 or counts['completed']%1000==0 or int(row['event_count'])>=4000000:
                             record.update(profiles=client.profiles,totals=client.profile_totals)
                         f.write(json.dumps(record)+'\n')
-            except BaseException:
-                with mutex:counts['failed']+=1
+            except BaseException as error:
+                with mutex:
+                    if isinstance(error,(InterruptedError,KeyboardInterrupt)):
+                        counts['interrupted']=counts.get('interrupted',0)+1
+                    else:counts['failed']+=1
                 stop.set();raise
             finally:
                 try:client.query(f'DROP TABLE IF EXISTS arte.{stage} SYNC','quote_stage_cleanup',False)
@@ -184,7 +195,9 @@ def run(a):
                 profiles=profiles,luld_ready=True,halt_ready=True,official_bands=False,halt_state='unknown until explicit source status'))
             progress.update(status='complete',queued=0);return 0
         except BaseException as error:
-            stop.set();progress.update(status='interrupted' if isinstance(error,(InterruptedError,KeyboardInterrupt)) else 'failed',message=str(error))
+            interrupted=isinstance(error,(InterruptedError,KeyboardInterrupt))
+            stop.set();progress.update(status='interrupted' if interrupted else 'failed',message=str(error))
             (root/'stop.request').write_text('Preserve quote receipts. Diagnose and drain before deliberate resume.\n',encoding='utf-8')
+            if interrupted:return 130
             raise
         finally:signal.signal(signal.SIGINT,old_signal)

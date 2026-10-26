@@ -2,6 +2,22 @@ import os
 import pytest
 
 
+def test_quote_progress_coalesces_display_without_losing_terminal_state(tmp_path,monkeypatch):
+    import json
+    from scripts.backfill_quote_bars import QuoteProgress
+    from pipelines.market_sip.flatfiles import repair_progress
+    clock=[100.]
+    monkeypatch.setattr(repair_progress,'monotonic',lambda:clock[0])
+    p=QuoteProgress(tmp_path);p.update(status='running',total=100)
+    for i in range(20):
+        p.worker('worker','stage-'+str(i));p.update(completed=i+1)
+    assert json.loads((tmp_path/'status.json').read_text())['completed']==0
+    clock[0]=101.1;p.flush(force=True)
+    assert json.loads((tmp_path/'status.json').read_text())['completed']==20
+    p.update(status='complete')
+    assert json.loads((tmp_path/'status.json').read_text())['status']=='complete'
+
+
 def test_quote_terminal_separates_new_reuse_and_waiting_work():
     import io
     from datetime import datetime,timezone
