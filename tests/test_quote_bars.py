@@ -2,6 +2,15 @@ import os
 import pytest
 
 
+def test_transport_retry_requires_confirmed_query_cancellation():
+    from scripts.backfill_quote_bars import retryable_transport
+    assert retryable_transport(ConnectionResetError('reset'))
+    uncertain=ConnectionResetError('reset')
+    uncertain.add_note('Cancellation could not be confirmed; reconcile the owned query before resuming writes.')
+    assert not retryable_transport(uncertain)
+    assert not retryable_transport(ValueError('source hash differs'))
+
+
 def test_quote_progress_coalesces_display_without_losing_terminal_state(tmp_path,monkeypatch):
     import json
     from scripts.backfill_quote_bars import QuoteProgress

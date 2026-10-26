@@ -5,7 +5,7 @@ import sys
 sys.dont_write_bytecode=True
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-import json,sqlite3,time,uuid,threading,signal
+import json,sqlite3,time,uuid,threading,signal,gc,http.client
 from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED
 from datetime import date,datetime,timezone
@@ -21,6 +21,16 @@ class QuoteProgress(Progress):
         with self.lock:
             terminal=self.state.get('status') in ('complete','failed','interrupted')
             return super().flush(force=terminal)
+
+
+class RetryUnit(Exception):
+    """Previous query canceled; owned staging drained; recheck commit first."""
+
+
+def retryable_transport(error):
+    if any('Cancellation could not be confirmed' in n for n in getattr(error,'__notes__',())):
+        return False
+    return isinstance(error,(ConnectionError,TimeoutError,http.client.RemoteDisconnected))
 
 
 def run(a):
@@ -63,6 +73,9 @@ def run(a):
         start=str(a.start_date),end=str(a.end_date),tickers=sorted(requested),units=len(units),
         selected_scope_hash=bars.digest(units),frames=sql.FRAMES)
     request['signals_version']=signals.VERSION
+    # The million-unit parent is immutable invocation context. Keep it out of
+    # repeated cyclic-GC sweeps; fresh worker objects still use normal GC.
+    gc.freeze()
     with closing(bars.Client(options,persistent=False)) as c:
         sql.verify_storage(c.query,'arte',['quote_bars_v1','quote_bars_coverage_v1'],required=False)
         reporting=bars.reporting_coverage(c,a.start_date,a.end_date)
@@ -105,7 +118,7 @@ def run(a):
         counts=dict(completed=0,reused=0,failed=0);profiles={};active_clients=[]
         def guard():
             if stop.is_set() or (root/'stop.request').exists():raise InterruptedError('Graceful quote stop requested')
-        def work(row,prior):
+        def work(row,prior,retry=0):
             day=row['source_date'];ticker=row['ticker'];key=(day,ticker);source_hash=certified[key][0]
             client=bars.Client(options);stage='quote_stage_'+uuid.uuid4().hex;attempt=str(uuid.uuid4());began=time.monotonic()
             with mutex:active_clients.append(client)
@@ -154,13 +167,26 @@ def run(a):
                             record.update(profiles=client.profiles,totals=client.profile_totals)
                         f.write(json.dumps(record)+'\n')
             except BaseException as error:
+                if retryable_transport(error) and retry<2:
+                    with mutex:
+                        counts['retried']=counts.get('retried',0)+1
+                        with (root/'transport-retries.jsonl').open('a',encoding='utf-8') as f:
+                            f.write(json.dumps(dict(day=day,ticker=ticker,retry=retry+1,
+                                error=client.clean_error(error),last_query=client.profiles[-1] if client.profiles else None))+'\n')
+                    progress.emit(f'{day} {ticker}: transport interrupted; reconcile receipt before bounded retry {retry+1}/2')
+                    raise RetryUnit() from error
                 with mutex:
                     if isinstance(error,(InterruptedError,KeyboardInterrupt)):
                         counts['interrupted']=counts.get('interrupted',0)+1
                     else:counts['failed']+=1
                 stop.set();raise
             finally:
-                try:client.query(f'DROP TABLE IF EXISTS arte.{stage} SYNC','quote_stage_cleanup',False)
+                try:
+                    try:client.query(f'DROP TABLE IF EXISTS arte.{stage} SYNC','quote_stage_cleanup',False)
+                    except BaseException as error:
+                        if not retryable_transport(error):raise
+                        with closing(bars.Client(options,persistent=False)) as clean:
+                            clean.query(f'DROP TABLE IF EXISTS arte.{stage} SYNC','quote_stage_cleanup_reconnect',False)
                 finally:
                     with mutex:
                         profiles[name]=client.profile_totals;active_clients.remove(client)
@@ -170,6 +196,16 @@ def run(a):
                             new_ticker_days_per_hour=counts['completed']*3600/elapsed,
                             eta_seconds=(len(units)-done)*elapsed/counts['completed'] if counts['completed']>=max(3,a.bar_workers) else None)
                     progress.worker(name,'Idle');client.close()
+        def resilient_work(row,prior):
+            for retry in range(3):
+                if retry:
+                    guard()
+                    with closing(bars.Client(options,persistent=False)) as c:
+                        saved=c.query(f"SELECT * FROM arte.quote_bars_coverage_v1 FINAL WHERE {sql.scope(build,row['source_date'],row['ticker'])}",'quote_retry_commit_reconciliation')
+                    if len(saved)>1:raise ValueError('Ambiguous quote retry receipt')
+                    prior=saved[0] if saved else None
+                try:return work(row,prior,retry)
+                except RetryUnit:time.sleep(.25*(retry+1))
         try:
             by_day={}
             for r in units:by_day.setdefault(r['source_date'],[]).append(r)
@@ -185,7 +221,7 @@ def run(a):
                         while len(pending)<2*a.bar_workers and not stop.is_set():
                             r=next(iterator,None)
                             if r is None:break
-                            pending.add(pool.submit(work,r,saved.get(r['ticker'])))
+                            pending.add(pool.submit(resilient_work,r,saved.get(r['ticker'])))
                         if not pending:break
                         finished,pending=wait(pending,timeout=1,return_when=FIRST_COMPLETED)
                         for f in finished:f.result()
