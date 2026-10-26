@@ -91,7 +91,8 @@ def run(a):
                     return
                 client.query(sql.stage_sql('arte',stage,day,ticker),'quote_canonical_scan',False)
                 source=bars.checked_source_evidence(row,client.query(sql.stage_evidence('arte',stage),'quote_source_fingerprint')[0])
-                if bars.digest(source)!=source_hash:raise ValueError('Canonical content differs from completed trade source')
+                if bars.digest([source,plan['rules'],definition['version']])!=source_hash:
+                    raise ValueError('Canonical content differs from completed trade source')
                 guard();progress.worker(name,'Persist 1s / roll up 5s, 10s, 30s',day=day,detail=ticker)
                 client.query(sql.base_insert('arte',stage,build,day,ticker,attempt),'quote_1s',False)
                 for parent,target in zip(sql.FRAMES,sql.FRAMES[1:]):
