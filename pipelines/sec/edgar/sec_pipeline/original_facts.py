@@ -14,21 +14,9 @@ from functools import lru_cache
 from pipelines.certified_research import sec_fundamental_context, sec_precision, sec_taxonomy, facts
 from pipelines.certified_research.contracts import digest
 from .public_time import historical_time
+from .original_schema import TABLE,FACT_COLUMNS
 
 VERSION = 'sec-ingested-selected-original-v1'
-TABLE = 'sec_xbrl_original_fact_v1'
-FACT_COLUMNS = {
-    'period_start_date': 'Nullable(Date)', 'frame': 'Nullable(String)',
-    'dimensions_json': "String DEFAULT '{}'", 'value_exact': 'Nullable(String)',
-    'source_kind': "LowCardinality(String) DEFAULT 'companyfacts'",
-    'document_name': "String DEFAULT ''", 'source_positions': 'Array(UInt32)',
-    'public_available_at': "Nullable(DateTime64(9, 'UTC'))",
-    'availability_basis': "LowCardinality(String) DEFAULT ''",
-    'extraction_version': "String DEFAULT ''",
-    'source_version_key': "String DEFAULT ''",
-    'source_accession_sha256': "String DEFAULT ''",
-    'time_evidence_json': "String DEFAULT ''",
-}
 
 
 @lru_cache(maxsize=1)

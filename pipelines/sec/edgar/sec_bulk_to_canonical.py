@@ -21,6 +21,7 @@ from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import (  # noqa: E402
     XBRL_FRAME_TABLE,
     WRITE_TABLES,
     ensure_sec_write_database,
+    ensure_fact_context_columns,
 )
 from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password, default_clickhouse_url, default_clickhouse_user, quote_ident, sql_string  # noqa: E402
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
@@ -115,6 +116,7 @@ def main() -> None:
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
     ensure_sec_write_database(client, read_database=args.schema_source_database, write_database=args.target_database)
     validate_tables(client, args.source_database, args.target_database)
+    ensure_fact_context_columns(client,args.target_database)
     profiles: list[StageProfile] = []
     insert_settings = insert_settings_sql(args)
     if "xbrl" in stages:
@@ -224,6 +226,9 @@ def xbrl_company_fact_insert_sql(args: argparse.Namespace, run_id: str) -> str:
     run = sql_string(run_id)
     return f"""
     INSERT INTO {target}.{quote_ident(XBRL_COMPANY_FACT_TABLE)}
+    (company_fact_id,issuer_id,cik,taxonomy,tag,unit_code,fiscal_year,fiscal_period,
+     filed_at_utc,period_end_date,value,form_type,accession_number,recorded_at_utc,
+     source_run_id,source_content_sha256,inserted_at,period_start_date,frame)
     SELECT
         lower(hex(SHA256(concat('sec-xbrl-company-fact|', cik, '|', taxonomy, '|', tag, '|', unit, '|', ifNull(toString(start_date), ''), '|', ifNull(toString(end_date), ''), '|', ifNull(accession_number, ''), '|', ifNull(frame, ''))))) AS company_fact_id,
         CAST(NULL, 'Nullable(String)') AS issuer_id,
@@ -241,7 +246,9 @@ def xbrl_company_fact_insert_sql(args: argparse.Namespace, run_id: str) -> str:
         now64(3, 'UTC') AS recorded_at_utc,
         {run} AS source_run_id,
         lower(hex(SHA256(concat('sec-core-xbrl-fact|', fact_id)))) AS source_content_sha256,
-        now64(3, 'UTC') AS inserted_at
+        now64(3, 'UTC') AS inserted_at,
+        start_date AS period_start_date,
+        frame
     FROM {source}.sec_bulk_mirror_xbrl_fact_v3 FINAL
     WHERE filed_date >= toDate({sql_string(args.start_date)})
       AND filed_date < toDate({sql_string(args.end_date)})

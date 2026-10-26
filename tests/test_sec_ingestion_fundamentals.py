@@ -162,6 +162,12 @@ def test_live_clickhouse_source_normalization_and_reuse(monkeypatch,tmp_path):
     try:
         ensure_sec_write_database(client.http,read_database='q_live',write_database=db)
         writer=SecClickHouseWriter(client.http,database=db);writer.validate_tables()
+        from pipelines.sec.edgar.sec_bulk_to_canonical import xbrl_company_fact_insert_sql
+        bulk=xbrl_company_fact_insert_sql(SimpleNamespace(source_database='sec_core',target_database=db,
+            start_date='2026-10-26',end_date='2026-10-27'),'schema-compatibility-test')
+        # The server supports EXPLAIN only for SELECT. A zero-row INSERT
+        # validates the real target column mapping without scanning history.
+        client.query(bulk+' AND 0',read=False)
         rows,outcomes=extract(financial('1234567890123456789000'),tmp_path/'extract')
         writer.insert_rows(original.TABLE,rows)
         original.verify_readback(client.http,db,rows)

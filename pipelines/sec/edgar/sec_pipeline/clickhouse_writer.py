@@ -122,7 +122,7 @@ class SecClickHouseWriter:
         from .company_fact_identity import verify
         verify(self.client, self.database)
         ensure_fact_context_columns(self.client, self.database)
-        from .original_facts import TABLE
+        from .original_schema import TABLE
         self.client.execute(f'CREATE TABLE IF NOT EXISTS {qi(self.database)}.{TABLE} '
             f'AS {qi(self.database)}.{XBRL_COMPANY_FACT_TABLE}')
         ensure_fact_context_columns(self.client,self.database,table=TABLE)
@@ -311,10 +311,12 @@ class SecClickHouseWriter:
         self.insert_rows(XBRL_COMPANY_FACT_TABLE, xbrl_company_fact_rows or [])
         self.insert_rows(XBRL_FRAME_TABLE, xbrl_frame_rows or [])
         self.insert_rows(XBRL_FRAME_OBSERVATION_TABLE, xbrl_frame_observation_rows or [])
-        from .original_facts import verify_readback, missing_rows, TABLE
-        new_originals=missing_rows(self.client,self.database,original_fact_rows or [])
-        self.insert_rows(TABLE,new_originals)
-        verify_readback(self.client,self.database,original_fact_rows or [])
+        new_originals=[]
+        if original_fact_rows:
+            from .original_facts import verify_readback, missing_rows, TABLE
+            new_originals=missing_rows(self.client,self.database,original_fact_rows)
+            self.insert_rows(TABLE,new_originals)
+            verify_readback(self.client,self.database,original_fact_rows)
         return SecWriteResult(
             original_fact_rows=len(new_originals),
             filing_rows=1,
@@ -652,7 +654,7 @@ def verify_sec_write_storage(client,database,tables,*,require_tables=True):
 
 def ensure_fact_context_columns(client, database,*,table=XBRL_COMPANY_FACT_TABLE):
     """Additive source fields only; no old-row mutation or replacing-key change."""
-    from .original_facts import FACT_COLUMNS
+    from .original_schema import FACT_COLUMNS
     verify_sec_write_storage(client,database,[table])
     existing = {r['name']:r['type'] for r in (json.loads(line) for line in client.execute(
         f'SELECT name,type FROM system.columns WHERE database={sql_string(database)} '
