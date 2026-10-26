@@ -47,6 +47,7 @@ def arguments(argv=None):
     p.add_argument('--conid-review-hash')
     p.add_argument('--identity-anchor-date',type=date.fromisoformat)
     p.add_argument('--max-plan-units',type=int,default=250000)
+    p.add_argument('--profile-units',type=int,default=0,help='Quotes: bounded stratified first/last-session profile; published units are reused by the full run')
     p.add_argument('--allow-carried-forward-universe',action='store_true')
     p.add_argument('--with-indicators',action='store_true')
     p.add_argument('--with-quotes',action='store_true',help='Include exact quotes in the shared trade event scan; automatic for forwardfill')

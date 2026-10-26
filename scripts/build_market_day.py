@@ -1036,6 +1036,14 @@ def build_ticker(args, ledger, build, plan, ticker, rows, requested, calculation
                     raise ValueError(f'{day} {ticker}: published bars lack certified broker 100ms inputs')
                 if not completed(ledger,client,args.database,build,day,ticker,'broker_1s',source_hash):
                     raise ValueError(f'{day} {ticker}: published bars lack certified 1s liquidity')
+                if args.with_quotes:
+                    from pipelines.market_sip.events import quote_bars,market_signals
+                    prior=client.query(f"SELECT * FROM {args.database}.quote_bars_coverage_v1 FINAL WHERE {quote_bars.scope(quote_bars.recipe(build),day,ticker)}",'quote_reuse_receipt')
+                    if len(prior)!=1 or prior[0]['source_hash']!=source_hash:raise ValueError('Completed trade unit lacks matching quote receipt; run quote gap backfill')
+                    saved=prior[0];checked=client.query(quote_bars.evidence(args.database,saved['build_id'],day,ticker,saved['attempt_id']),'quote_reuse_readback')[0]
+                    if checked['bad'] or checked['n']!=saved['row_count'] or checked['hash']!=saved['content_hash']:raise ValueError('Completed quote unit differs')
+                    market_signals.publish(client,args.database,build,day,ticker,ledger.unit(build,day,ticker,'bars')['attempt_id'],source_hash,
+                        args.signal_tokens,*args.signal_session_times[str(day)])
                 progress.finish(ticker,'bars',skipped=True)
                 continue
             attempt = str(uuid.uuid4())
@@ -1070,6 +1078,10 @@ def build_ticker(args, ledger, build, plan, ticker, rows, requested, calculation
             metrics=validate_broker(client,args.database,build,day,ticker,attempt,source)
             if source_evidence(client,row) != source:
                 raise ValueError(f'{day} {ticker}: canonical source changed during build')
+            if args.with_quotes:
+                from pipelines.market_sip.events import market_signals
+                market_signals.publish(client,args.database,build,day,ticker,attempt,source_hash,
+                    args.signal_tokens,*args.signal_session_times[str(day)])
             for stage in ('broker_100ms','broker_1s','bars'):
                 result=evidence(client,args.database,stage,build,day,ticker,attempt)
                 if result['n'] != result['unique_keys']:
@@ -1205,10 +1217,18 @@ def run(args, *, typed_certificate_publisher=None, progress_sink=None):
                     verified_coverage=reporting),storage_policy=sql.POLICY,
                 controller_location=digest([str(runtime),os.environ.get('COMPUTERNAME','')]))
             if args.with_quotes:
-                from pipelines.market_sip.events import quote_bars
+                from pipelines.market_sip.events import quote_bars,market_signals
+                import pandas_market_calendars as mcal
                 definition['quote_product']=dict(version=quote_bars.VERSION,frames=quote_bars.FRAMES,
                     calculation_source=digest(Path(quote_bars.__file__).read_text(encoding='utf-8')))
+                args.signal_tokens=client.query('SELECT * FROM market_sip_compact.event_condition_token_reference ORDER BY token_id','signal_dictionary')
+                market_signals.token_sets(args.signal_tokens)
+                schedule=mcal.get_calendar('XNYS').schedule(start_date=args.start,end_date=args.end)
+                args.signal_session_times={str(stamp.date()):(int(r.market_open.timestamp()*1e6),int(r.market_close.timestamp()*1e6)) for stamp,r in schedule.iterrows()}
+                definition['market_signals']=dict(version=market_signals.VERSION,dictionary_hash=digest(args.signal_tokens),
+                    calculation_source=digest(Path(market_signals.__file__).read_text(encoding='utf-8')))
                 quote_bars.verify_storage(client.query,args.database,['quote_bars_v1','quote_bars_coverage_v1'],required=False)
+                quote_bars.verify_storage(client.query,args.database,list(market_signals.TABLES),required=False)
             build = digest(definition)
             if args.rebuild:
                 build += '-' + uuid.uuid4().hex[:12]
@@ -1252,7 +1272,9 @@ def run(args, *, typed_certificate_publisher=None, progress_sink=None):
             storage_preflight(client,args.database,True,include_liquidity_1s=True,identity_policy=args.identity_policy)
             if args.with_quotes:
                 for statement in quote_bars.ddl(args.database):client.query(statement,'quote_schema',False)
+                for statement in market_signals.ddl(args.database):client.query(statement,'signal_schema',False)
                 quote_bars.verify_storage(client.query,args.database,['quote_bars_v1','quote_bars_coverage_v1'])
+                quote_bars.verify_storage(client.query,args.database,list(market_signals.TABLES))
             database_ready=True
             ledger=Ledger(runtime.parent / 'build-ledger-v2.sqlite3')
             ledger.build(build,definition,'building')

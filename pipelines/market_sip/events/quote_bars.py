@@ -76,7 +76,7 @@ def forward_broker(client,db,build,day,ticker,attempt,rules,source_hash,settings
         query=f"SELECT intDiv(bucket_index,10) second_bucket,"+','.join(aggregates)+f",sum(_q_quote_count) quote_count,minIf(_q_first_quote_us,_q_quote_count>0) first_quote_us,max(_q_last_quote_us) last_quote_us FROM {target} GROUP BY intDiv(bucket_index,10)"
         client.query(f"INSERT INTO {db}.quote_bars_v1 SELECT {L(policy)},toDate({L(day)}),{L(ticker)},toUUID({L(attempt)}),toUInt32(1000),toUInt32(second_bucket),side,"+
             ','.join(f"if(side='bid',bid_{p},ask_{p})" for p in ('open','high','low','close'))+
-            f",if(side='bid',bid_size,ask_size),quote_count,first_quote_us,last_quote_us FROM ({query}) ARRAY JOIN ['bid','ask'] side WHERE quote_count>0",'forward_quote_1s',False)
+            f",if(side='bid',bid_size,ask_size),quote_count,first_quote_us,last_quote_us FROM ({query}) ARRAY JOIN ['bid','ask'] AS side WHERE quote_count>0",'forward_quote_1s',False)
         for parent,target_frame in zip(FRAMES,FRAMES[1:]):
             client.query(f'INSERT INTO {db}.quote_bars_v1 '+rollup_select(db,policy,day,ticker,attempt,parent,target_frame),'forward_quote_rollup',False)
             if client.query(parity(db,policy,day,ticker,attempt,parent,target_frame),'forward_quote_parity')[0]['n']:raise ValueError('Forward quote rollup differs')

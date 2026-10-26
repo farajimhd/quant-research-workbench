@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED
 from datetime import date,datetime,timezone
 from scripts import build_market_day as bars
 from pipelines.market_sip.events import quote_bars as sql
+from pipelines.market_sip.events import market_signals as signals
 from pipelines.market_sip.flatfiles.repair_progress import Progress
 
 
@@ -30,12 +31,21 @@ def run(a):
     requested=set(x.strip() for x in a.tickers.split(',') if x.strip())
     units=[r for r in plan['units'] if str(a.start_date)<=r['source_date']<=str(a.end_date)
            and (not requested or r['ticker'] in requested)]
+    profile_units=getattr(a,'profile_units',0)
+    if profile_units:
+        if not 4<=profile_units<=128:raise ValueError('Quote profile must use 4..128 units')
+        days=sorted({r['source_date'] for r in units});selected=[]
+        for day in sorted({days[0],days[-1]}):
+            rows=sorted([r for r in units if r['source_date']==day],key=lambda r:int(r['event_count']))
+            quota=min(len(rows),max(2,profile_units//2))
+            selected.extend(rows[round(i*(len(rows)-1)/(quota-1))] for i in range(quota))
+        units=selected
     if not units or len(units)>a.max_plan_units:raise ValueError('Empty or oversized quote plan')
     parent_db=sqlite3.connect((a.bars_run_dir/'build-ledger-v2.sqlite3').as_uri()+'?mode=ro',uri=True)
     try:
         restriction=(' AND ticker IN ('+','.join('?' for _ in requested)+')') if requested else ''
-        certified={(d,t):(h,n,oh) for d,t,h,n,oh in parent_db.execute(
-            "SELECT session_date,ticker,source_hash,output_rows,output_hash FROM units WHERE build_id=? AND stage='bars' AND status='complete' AND session_date BETWEEN ? AND ?"+restriction,
+        certified={(d,t):(h,n,oh,attempt) for d,t,h,n,oh,attempt in parent_db.execute(
+            "SELECT session_date,ticker,source_hash,output_rows,output_hash,attempt_id FROM units WHERE build_id=? AND stage='bars' AND status='complete' AND session_date BETWEEN ? AND ?"+restriction,
             (parent_build,str(a.start_date),str(a.end_date),*requested))}
     finally:parent_db.close()
     if any((r['source_date'],r['ticker']) not in certified for r in units):raise ValueError('Parent trade receipt missing')
@@ -44,9 +54,15 @@ def run(a):
     request=dict(version=sql.VERSION,policy_hash=policy,parent_build=parent_build,
         start=str(a.start_date),end=str(a.end_date),tickers=sorted(requested),units=len(units),
         selected_scope_hash=bars.digest(units),frames=sql.FRAMES)
+    request['signals_version']=signals.VERSION
     with closing(bars.Client(options,persistent=False)) as c:
         sql.verify_storage(c.query,'arte',['quote_bars_v1','quote_bars_coverage_v1'],required=False)
         reporting=bars.reporting_coverage(c,a.start_date,a.end_date)
+        free=c.query("SELECT free_space FROM system.disks WHERE name='live_market_ssd'",'quote_storage_reserve')
+        if len(free)!=1 or int(free[0]['free_space'])<int(a.reserve_gib*1024**3):raise ValueError('Quote SSD reserve is unavailable')
+        token_rows=c.query('SELECT * FROM market_sip_compact.event_condition_token_reference ORDER BY token_id','signal_dictionary')
+        signals.token_sets(token_rows)
+        request['signal_dictionary_hash']=bars.digest(token_rows)
         # Immutable recipe and reporting evidence are part of this campaign.
         request['reporting_hash']=bars.digest(reporting)
         if a.plan_only:
@@ -65,13 +81,18 @@ def run(a):
         if (root/'stop.request').exists():raise ValueError('Stop marker retained; diagnose and drain before resume')
         with closing(bars.Client(options,persistent=False)) as c:
             for query in sql.ddl():c.query(query,'quote_schema',False)
+            for query in signals.ddl():c.query(query,'signal_schema',False)
             sql.verify_storage(c.query,'arte',['quote_bars_v1','quote_bars_coverage_v1'])
+            sql.verify_storage(c.query,'arte',list(signals.TABLES))
             columns=c.query("SELECT name,type FROM system.columns WHERE database='arte' AND table='quote_bars_v1' ORDER BY position")
             if [x['name'] for x in columns]!=list(sql.FIELDS):raise ValueError('Quote schema differs')
         progress=Progress(root);progress.update(step='quotes',title='Exact bid/ask OHLC',status='running',
             total=len(units),completed=0,reused=0,queued=len(units),failed=0,coverage_label='Certified ticker-days',
             products='1s -> 5s -> 10s -> 30s',
-            signals='LULD blocked: official bands / tier and opening-reopening evidence absent; halt coverage must be independently certified')
+            signals='Estimated LULD from 1s trade closes; observed halt transitions; unknown halt state stays explicit')
+        import pandas_market_calendars as mcal
+        schedule=mcal.get_calendar('XNYS').schedule(start_date=a.start_date,end_date=a.end_date)
+        session_times={str(stamp.date()):(int(r.market_open.timestamp()*1e6),int(r.market_close.timestamp()*1e6)) for stamp,r in schedule.iterrows()}
         old_signal=signal.signal(signal.SIGINT,lambda *_:stop.set())
         counts=dict(completed=0,reused=0,failed=0);profiles={};active_clients=[]
         def guard():
@@ -87,6 +108,8 @@ def run(a):
                     if prior['source_hash']!=source_hash or prior['policy_hash']!=policy:raise ValueError('Published quote source/recipe differs')
                     e=client.query(sql.evidence('arte',build,day,ticker,prior['attempt_id']),'quote_reuse_readback')[0]
                     if (int(e['n']),e['hash'],int(e['bad']),int(e['unique_keys']))!=(int(prior['row_count']),prior['content_hash'],0,int(prior['row_count'])):raise ValueError('Completed quote readback differs')
+                    progress.worker(name,'Estimated bands / halt transitions',day=day,detail=ticker)
+                    signals.publish(client,'arte',parent_build,day,ticker,certified[key][3],source_hash,token_rows,*session_times[day])
                     with mutex:counts['reused']+=1
                     return
                 client.query(sql.stage_sql('arte',stage,day,ticker),'quote_canonical_scan',False)
@@ -111,10 +134,12 @@ def run(a):
                 guard();client.query(f"INSERT INTO arte.quote_bars_coverage_v1 VALUES ({sql.L(build)},toDate({sql.L(day)}),{sql.L(ticker)},toUUID({sql.L(attempt)}),{sql.L(source_hash)},{sql.L(policy)},{int(e['n'])},{sql.L(e['hash'])},now64(6))",'quote_commit',False)
                 committed=client.query(f"SELECT attempt_id,row_count,content_hash FROM arte.quote_bars_coverage_v1 FINAL WHERE {sql.scope(build,day,ticker)}",'quote_commit_readback')
                 if committed!=[dict(attempt_id=attempt,row_count=e['n'],content_hash=e['hash'])]:raise ValueError('Quote commit receipt readback differs')
+                progress.worker(name,'Estimated bands / halt transitions',day=day,detail=ticker)
+                signal_result=signals.publish(client,'arte',parent_build,day,ticker,certified[key][3],source_hash,token_rows,*session_times[day])
                 with mutex:
                     counts['completed']+=1
                     with (root/'profiles.jsonl').open('a',encoding='utf-8') as f:
-                        f.write(json.dumps(dict(day=day,ticker=ticker,seconds=time.monotonic()-began,source_events=row['event_count'],quote_events=expected['events'],rows=e['n'],profiles=client.profiles,totals=client.profile_totals))+'\n')
+                        f.write(json.dumps(dict(day=day,ticker=ticker,seconds=time.monotonic()-began,source_events=row['event_count'],quote_events=expected['events'],rows=e['n'],signals=signal_result,profiles=client.profiles,totals=client.profile_totals))+'\n')
             except BaseException:
                 with mutex:counts['failed']+=1
                 stop.set();raise
@@ -135,6 +160,8 @@ def run(a):
                 for day,rows in sorted(by_day.items()):
                     guard()
                     with closing(bars.Client(options,persistent=False)) as c:
+                        free=c.query("SELECT free_space FROM system.disks WHERE name='live_market_ssd'",'quote_storage_reserve')
+                        if len(free)!=1 or int(free[0]['free_space'])<int(a.reserve_gib*1024**3):raise ValueError('Quote SSD reserve reached; preserve receipts before resume')
                         prior=c.query(f"SELECT * FROM arte.quote_bars_coverage_v1 FINAL WHERE build_id={sql.L(build)} AND session_date=toDate({sql.L(day)})",'quote_receipt_prefetch')
                     saved={x['ticker']:x for x in prior};iterator=iter(rows);pending=set()
                     while True:
@@ -148,7 +175,7 @@ def run(a):
                         progress.flush(force=True)
                     guard()
             bars.save(root/'quote-completion.json',dict(request=request,counts=counts,seconds=time.monotonic()-started,
-                profiles=profiles,luld_ready=False,halt_ready=False))
+                profiles=profiles,luld_ready=True,halt_ready=True,official_bands=False,halt_state='unknown until explicit source status'))
             progress.update(status='complete',queued=0);return 0
         except BaseException as error:
             stop.set();progress.update(status='interrupted' if isinstance(error,(InterruptedError,KeyboardInterrupt)) else 'failed',message=str(error))
