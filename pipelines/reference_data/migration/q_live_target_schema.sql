@@ -1507,7 +1507,8 @@ CREATE TABLE IF NOT EXISTS q_live.sec_xbrl_company_fact_v1
 )
 ENGINE = ReplacingMergeTree(inserted_at)
 PARTITION BY toYYYYMM(ifNull(period_end_date, toDate('1970-01-01')))
-ORDER BY (cik, taxonomy, tag, unit_code, ifNull(period_end_date, toDate('1970-01-01')), ifNull(accession_number, ''))
+PRIMARY KEY (cik, taxonomy, tag, unit_code, ifNull(period_end_date, toDate('1970-01-01')), ifNull(accession_number, ''))
+ORDER BY (cik, taxonomy, tag, unit_code, ifNull(period_end_date, toDate('1970-01-01')), ifNull(accession_number, ''), company_fact_id, source_content_sha256)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
 CREATE TABLE IF NOT EXISTS q_live.sec_xbrl_frame_v1

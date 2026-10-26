@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from io import StringIO
 import unittest
 from datetime import UTC, datetime
@@ -260,6 +261,14 @@ class SecLiveIngestRecoveryTests(unittest.TestCase):
                 if sql.startswith("INSERT INTO"):
                     self.inserts.append(sql)
                     return ""
+                if 'FROM system.storage_policies' in sql:
+                    return json.dumps({'disk': 'live_market_ssd'})
+                if 'FROM system.tables' in sql and 'storage_policy' in sql:
+                    names = re.search(r'name IN \(([^)]+)\)', sql).group(1)
+                    return '\n'.join(json.dumps({'name': name, 'storage_policy': 'live_market_ssd'})
+                                     for name in re.findall(r"'([^']+)'", names))
+                if 'FROM system.parts' in sql:
+                    return ''
                 raise AssertionError(f"same-revision replay must not query document completion: {sql}")
 
         key = {"cik": "0000000123", "accession_number": ACCESSION_NEW, "document_id": "doc-1"}

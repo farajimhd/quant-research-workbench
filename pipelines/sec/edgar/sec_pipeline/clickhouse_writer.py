@@ -118,6 +118,8 @@ class SecClickHouseWriter:
         missing = sorted(required - present)
         if missing:
             raise RuntimeError(f"missing SEC target tables in {self.database}: {missing}")
+        from .company_fact_identity import verify
+        verify(self.client, self.database)
 
     def audit_integrity(self) -> SecWriteAudit:
         return SecWriteAudit(
@@ -322,6 +324,9 @@ class SecClickHouseWriter:
         if not rows:
             return
         verify_sec_write_storage(self.client,self.database,[table])
+        if table == XBRL_COMPANY_FACT_TABLE:
+            from .company_fact_identity import verify
+            verify(self.client, self.database)
         body = "\n".join(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) for row in rows)
         self.client.execute(f"INSERT INTO {qi(self.database)}.{qi(table)} SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n{body}")
 
