@@ -66,3 +66,27 @@ are freshly regenerated and replayed, then checked against the original cohort.
 No old financial receipts, fitness, offspring, or checkpoints seed the new search.
 This comparison changes both the risk objective and negative-score parent admission;
 it does not isolate the coefficient effect by itself.
+
+## Continue the completed risk-cost pilot to generation 50
+
+Generation 10 was terminal: its sealed successor contains the evaluated
+generation-10 population and the pre-reproduction RNG. A budget extension must
+reproduce generation 11 once from those sealed training metrics. Merely editing
+the generation count would violate the checkpoint contract or repeat a population.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -m research.vectorized_backtest.v53.continuation --source <completed-risk-cost-v53-runtime> --output <new-runtime> --code <new-immutable-deployment> --generations 50
+python -B -m research.vectorized_backtest.v53.pilot --job <new-runtime>/pilot-job.json
+```
+
+Preparation verifies the parent completion chain and receipts, then runs a
+receipt-only export process against the original pinned numerical engine. It
+retains the saved population, pedigree, species, serial counter and RNG, and
+constructs the omitted generation-11 successor without market replay. A hashed
+boundary context binds the resulting state and the unchanged numerical engine.
+Historical generations 1-10 are copied and hash-verified; the parent is untouched.
+The v3 checkpoint explicitly binds this transition and the 50-generation budget.
+The first new replay is generation 11. Ordinary interruption/resume then uses
+the continuation checkpoint and its sealed generations, not another boundary export.
+Use the scheduled launcher and visible progress terminal for the actual run.

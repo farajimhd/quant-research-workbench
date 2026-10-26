@@ -18,6 +18,12 @@ from research.vectorized_backtest.v42.publication import write_json,write_checkp
 from research.vectorized_backtest.v6.torch_backtest.materialize import owned_run
 
 
+def checkpoint_contract(job,train,valid):
+    contract=dict(comparison=job.get('comparison'),experiment=dict(mutation_probe_size=job.get('mutation_probe_size',0),crossover_policy='action-composition-or-and-xor-xnor-v1'),seed=job['seed'],source_sha256=job['source_sha256'],objective=job['objective'],training_sha256=job['training_sha256'],validation_sha256=job['validation_sha256'],generations=job['phase2_generations'],population=job['population'],initial_multiplier=job['initial_multiplier'],training_days=train,validation_days=valid,validation='display-only; successor and RNG frozen before opening')
+    if job.get('continuation'):contract['continuation_sha256']=job['continuation']['context_sha256']
+    return contract
+
+
 class Controller:
     def publish(self,**extra):raise NotImplementedError
     def evaluate(self,role,days,members,generation):raise NotImplementedError
@@ -29,12 +35,15 @@ class Controller:
         self.stage='Load sealed global checkpoint' if (self.root/'global/checkpoint.json').exists() else 'Initialize fresh random/template phase2 cohort'
         self.publish(phase=2,generation=0,completed_generations=0,completed_sessions=0,total_sessions=len(train))
         root=self.root/'global';root.mkdir(exist_ok=True);objective=Objective(**self.job['objective'])
-        contract=dict(comparison=self.job.get('comparison'),experiment=dict(mutation_probe_size=self.job.get('mutation_probe_size',0),crossover_policy='action-composition-or-and-xor-xnor-v1'),seed=self.job['seed'],source_sha256=self.job['source_sha256'],objective=self.job['objective'],training_sha256=self.job['training_sha256'],validation_sha256=self.job['validation_sha256'],generations=self.job['phase2_generations'],population=self.job['population'],initial_multiplier=self.job['initial_multiplier'],training_days=train,validation_days=valid,validation='display-only; successor and RNG frozen before opening')
+        contract=checkpoint_contract(self.job,train,valid)
         cp=root/'checkpoint.json';species=Species();completed=0;seals={}
         if cp.exists():
             saved=read(cp)
             if saved['contract']!=contract or digest(saved['state'])!=saved['state_sha256']:raise ValueError('Global resume contract changed')
             state=saved['state'];completed=state['completed'];seals=state['seals'];species=Species(state['species'])
+            if self.job.get('continuation') and completed==10:
+                from .continuation import verify
+                if digest(state)!=verify(self.job)['state_sha256']:raise ValueError('Initial continuation checkpoint differs from its boundary proof')
             self.publish(generation=completed,completed_generations=completed)
             for g,h in seals.items():
                 f=root/f'generation-{int(g):04d}'

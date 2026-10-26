@@ -8,13 +8,13 @@ from research.vectorized_backtest.v42.distributed_assets import sha
 
 
 def check_job(job):
-    if job['version']!='v53-pilot-v2':raise ValueError('V53 is restricted to the Aug13 laptop pilot')
+    if job['version'] not in ('v53-pilot-v2','v53-pilot-v3'):raise ValueError('V53 is restricted to the Aug13 laptop pilot')
     if set(job['machines'])!={'laptop'}:raise ValueError('V53 requires laptop ownership')
     if not 2<=job['phase2_generations']<=50 or job.get('mutation_probe_size')!=32:raise ValueError('Invalid bounded V53 experiment')
     if job['machines']['laptop']['days']!=dict(training=['2026-08-13'],validation=[]):raise ValueError('Pilot session ownership changed')
     if job['seed']!=2021:raise ValueError('V53 fixed seed is 2021')
     full=False
-    if job['version'] not in ('v53-pilot-v2','v53-full-v1') or source_hash()!=job['source_sha256']:raise ValueError('V53 source mismatch')
+    if job['version'] not in ('v53-pilot-v2','v53-pilot-v3','v53-full-v1') or source_hash()!=job['source_sha256']:raise ValueError('V53 source mismatch')
     if sha(job['source_job'])!=job['source_job_sha256'] or sha(job['initialization_probe'])!=job['initialization_probe_sha256']:raise ValueError('Source/probe changed')
     if sha(job['training'])!=job['training_sha256']:raise ValueError('Training manifest changed')
     train=json.loads(Path(job['training']).read_bytes())['days']
@@ -29,6 +29,11 @@ def check_job(job):
     if job['objective']!=dict(drawdown_weight=2.,loss_weight=1.):raise ValueError('V53 cost differs from authorization')
     if job.get('comparison') and sha(job['comparison']['population_file'])!=job['comparison']['population_file_sha256']:
         raise ValueError('Comparison founder file changed')
+    if job['version']=='v53-pilot-v3':
+        from .continuation import verify
+        if job['phase2_generations']!=50:raise ValueError('Continuation target changed')
+        verify(job)
+    elif job.get('continuation'):raise ValueError('Continuation requires a versioned v3 job')
     if 'reproduction_transition_sha256' in job:raise ValueError('V53 requires fresh initialization')
 
 
