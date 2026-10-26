@@ -119,7 +119,7 @@ def extract(payload,expected_hash,cik,plan,*,maximum_bytes=64*1024**2):
             if start>end:raise ValueError('HTML period order differs')
         unit=item['unit'];scale=item['scale']
         source_symbol = unit in ('source:$','source:$/shares') and native is not None
-        if unit=='source:$/shares' and (native is None or not re.search(r'per\s+share',item['label'],re.I)):
+        if unit=='source:$/shares' and (native is None or not re.search(r'per\s+(?:common\s+)?share',item['label'],re.I)):
             raise ValueError('Native dollar per-share unit needs an exact per-share label')
         if not source_symbol and unit not in (*facts.CURRENCY_UNITS,'shares',*(u+'/shares' for u in facts.CURRENCY_UNITS)):
             raise ValueError('HTML unit is unsupported')

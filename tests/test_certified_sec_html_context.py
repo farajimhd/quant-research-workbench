@@ -121,7 +121,7 @@ def test_native_measure_keeps_exact_identity_and_registered_source(monkeypatch):
     with pytest.raises(ValueError):html.extract(text,source,'1',seal(changed))
 
 
-@pytest.mark.parametrize('unit,label',[('source:$','Income'),('source:$/shares','Income per share')])
+@pytest.mark.parametrize('unit,label',[('source:$','Income'),('source:$/shares','Income per share'),('source:$/shares','Income per common share')])
 def test_native_symbol_is_not_a_standard_currency_and_requires_local_proof(unit,label):
     from pipelines.certified_research.sec_html_native import definition
     text='<p>Trust statement at December 31, 2018</p><table><tr><td>'+label+'</td><td>$</td><td>123</td></tr></table>'
