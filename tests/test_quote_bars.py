@@ -2,6 +2,20 @@ import os
 import pytest
 
 
+def test_quote_terminal_separates_new_reuse_and_waiting_work():
+    import io
+    from datetime import datetime,timezone
+    from rich.console import Console
+    from pipelines.market_sip.events.quote_terminal import snapshot
+    output=io.StringIO()
+    Console(file=output,width=80,height=24).print(snapshot(dict(status='running',total=100,
+        completed=10,reused=5,failed=0,workers={'QUOTE_1':dict(stage='Estimated bands / halt transitions',
+        day='2026-01-02',detail='AAPL')},elapsed=10,new_ticker_days_per_hour=3600,eta_seconds=85,
+        updated_at=datetime.now(timezone.utc).isoformat()),80,24))
+    text=output.getvalue()
+    assert all(s in text for s in ('New 10','Reused 5','Active 1','Queued 84','New rate'))
+
+
 def test_exact_source_fingerprint_hidden_extremes_and_all_funnel_frames():
     if os.environ.get("QUOTE_LIVE_TEST")!="1":pytest.skip("Explicit SSD integration opt-in")
     import json,uuid

@@ -151,7 +151,8 @@ def run(a):
                         done=counts['completed']+counts['reused'];elapsed=time.monotonic()-started
                         progress.update(**counts,queued=max(0,len(units)-done-counts['failed']),
                             elapsed=elapsed,ticker_days_per_hour=done*3600/elapsed,
-                            eta_seconds=(len(units)-done)*elapsed/done if done>=max(3,a.bar_workers) else None)
+                            new_ticker_days_per_hour=counts['completed']*3600/elapsed,
+                            eta_seconds=(len(units)-done)*elapsed/counts['completed'] if counts['completed']>=max(3,a.bar_workers) else None)
                     progress.worker(name,'Idle');client.close()
         try:
             by_day={}
