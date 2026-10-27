@@ -177,4 +177,12 @@ class UpdateTests(unittest.TestCase):
             top['resume_transition']['exports']['day']='changed'
             with self.assertRaises(ValueError):export_job(top,'day',dict(job_sha256=digest(old)))
 
+    def test_resume_binds_both_main_and_mutation_diagnostic_caches(self):
+        from research.vectorized_backtest.v56.campaign_resume import replay_caches
+        with TemporaryDirectory(dir=RUNTIME) as tmp:
+            root=Path(tmp)
+            for name in ('replays','mutation-probe-replay','resume-audit/old/cache'):
+                path=root/name/'training/result-cache/day.json';path.parent.mkdir(parents=True);path.write_text('{}')
+            self.assertEqual({p.relative_to(root).parts[0] for p in replay_caches(root)},{'replays','mutation-probe-replay'})
+
 if __name__=='__main__':unittest.main()

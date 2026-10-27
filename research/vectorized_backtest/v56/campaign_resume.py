@@ -8,6 +8,11 @@ from .campaign_contract import check_full_job
 from research.vectorized_backtest.v42.distributed_assets import sha,remote,copy_verified
 from research.vectorized_backtest.v42.publication import write_json
 
+def replay_caches(session):
+    """Only operational main/probe caches, never archived copies or sealed receipts."""
+    for name in ('replays','mutation-probe-replay'):
+        yield from (Path(session)/name).glob('**/result-cache/*.json')
+
 def prepare(previous,laptop_code,workstation_code):
     previous=Path(previous);old=json.loads(previous.read_bytes());root=Path(old['campaign'])
     bus=remote(old['transport'],old['workstation_share'])
@@ -31,11 +36,11 @@ def prepare(previous,laptop_code,workstation_code):
         transition['checkpoints'][day]=dict(node=node,checkpoint_sha256=sha(cp),state_sha256=saved['state_sha256'],contract_sha256=digest(saved['contract']),completed=saved['state']['completed'])
         audit=session/'resume-audit'/commit[:9];audit.mkdir(parents=True,exist_ok=True)
         copy_verified(cp,audit/'checkpoint.json',sha(cp))
-        for cache in session.glob('replays/**/result-cache/*.json'):
+        for cache in replay_caches(session):
             record=json.loads(cache.read_bytes());receipt=sha(cache)
             from .resume_authority import source_allowed
             if not source_allowed(old,record['identity']['source']):raise ValueError('Unexpected cache source')
-            target=audit/'cache'/cache.relative_to(session/'replays')
+            target=audit/'cache'/cache.relative_to(session)
             copy_verified(cache,target,receipt)
             transition['result_caches'][receipt]=dict(source=record['identity']['source'],day=day,backup=str(target))
     machines={n:dict(m,code=str(laptop_code if n=='laptop' else workstation_code),session_workers=1 if n=='laptop' else 2) for n,m in old['machines'].items()}
