@@ -163,7 +163,7 @@ class PreparedEvaluation:
     export: object
 
 
-def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',progress=None,listing_width=None,episode_capacity=65536,trace=False,protected_kernel=True,capture_only=False,replay_block=32):
+def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',progress=None,listing_width=None,episode_capacity=65536,trace=False,protected_kernel=True,capture_only=False,replay_block=32,execution_gate=None):
     """Independent sessions are dispatched by SessionLanes; no shared state."""
     if len(data)!=1 or len(gates)!=1:raise ValueError('One independent session per lane required')
     execution.validate();item=data[0];plan=gates[0]
@@ -209,7 +209,7 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
     if backend=='compile' and device.type=='cuda':
         from .replay_graph import replay
         prepared=replay(position,aggregate,opened,policy,prices,observed,membership,signals,values,ids,columns,limits,lengths,False,
-               execution,step,state_signals,progress,block=replay_block,episodes=episodes,protected_kernel=protected_kernel,signal_provider=provide,network_plan=plan,capture_only=capture_only,ticker_state=ticker_state,bids=bids,asks=asks,quote_valid=quote_valid)
+               execution,step,state_signals,progress,block=replay_block,episodes=episodes,protected_kernel=protected_kernel,signal_provider=provide,network_plan=plan,capture_only=capture_only,ticker_state=ticker_state,bids=bids,asks=asks,quote_valid=quote_valid,execution_gate=execution_gate)
         if capture_only:
             return PreparedEvaluation(prepared,lambda: _export_result(position,aggregate,episodes,t,ticker_state))
     else:

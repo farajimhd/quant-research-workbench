@@ -196,6 +196,12 @@ parent selection, and disabled risk-admission caps. It runs two independent
 phase-one sessions on the workstation and one on the laptop. Two GPU processes
 are a requested scheduling choice; earlier replay-only measurements did not
 show a concurrency speedup. Per-process memory admission remains bounded.
+The v2 workstation workers therefore take host-local GPU turns of at most 256
+chronological clocks while session preparation and scoring remain independent.
+This avoids measured kernel contention without changing cohorts or arithmetic.
+The named mutex is released on process death; stop checks run while waiting.
+Receipts separately report time spent waiting for the GPU. This applies to both
+workstation phases and does not serialize laptop execution.
 
 `campaign_resume` prepares a new immutable job alongside the original. It binds
 the exact stopped checkpoint, state, contract, completed exports, and archived

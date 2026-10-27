@@ -65,6 +65,10 @@ class Worker:
             admission_gib=config.get('host_admission_gib',32.),report=self.prefetch_report)
         self.loads=0;self.uploads=0
         self.resident_results=None
+        self.execution_gate=None
+        if config.get('gpu_execution_gate'):
+            from .gpu_gate import ReplayGate
+            self.execution_gate=ReplayGate(config['gpu_execution_gate'],self.check_stop)
         from .distributed_preparation import PopulationPreparation
         self.owns_population_preparer=preparation is None
         self.population_preparer=preparation or (PopulationPreparation() if config.get('immutable_population_cache') else None)
@@ -240,9 +244,11 @@ class Worker:
                         self.check_stop()
                         self.prefetch.release_under_pressure()
                         self.emit(day,stage='Replay positions',candidate_offset=offset,completed_seconds=done,total_seconds=total)
+                    gate_options={'execution_gate':self.execution_gate} if self.execution_gate is not None else {}
+                    gate_wait=self.execution_gate.wait_seconds if self.execution_gate is not None else 0.
                     result=self.replay([item],members,[gates],execution=execution,backend=c['backend'],listing_width=replay_width,
                         episode_capacity=c.get('episode_capacity',65536),trace=c.get('trace_validation',False) or c.get('split','training')=='training',
-                        progress=replay_progress)[0]
+                        progress=replay_progress,**gate_options)[0]
                     metrics={k:v.detach().cpu().tolist() if isinstance(v,torch.Tensor) else v for k,v in result.items()}
 
                     from .financial import ticker_totals
@@ -254,7 +260,7 @@ class Worker:
                         market_cached=market_cached,worker_load_count=self.loads,worker_upload_count=self.uploads,
                         configured_batch_size=c['batch_size'],maximum_replay_batch_size=ceiling,
                         load_seconds=load_seconds if offset==0 else 0.,host_prefetched=prefetched,rule_seconds=rule_seconds,
-                        replay_seconds=perf_counter()-replay_clock,pid=os.getpid(),finished_epoch=time())
+                        replay_seconds=perf_counter()-replay_clock,gpu_gate_wait_seconds=self.execution_gate.wait_seconds-gate_wait if self.execution_gate is not None else 0.,pid=os.getpid(),finished_epoch=time())
                     if plan.plan is not None:
                         timing.update({k:getattr(plan.plan,k)-v for k,v in prior.items()})
                     timings.append(timing);del gates,result
@@ -306,6 +312,7 @@ class Worker:
         return replay_cohort(*args,**kwargs)
 
     def close(self):
+        if getattr(self,'execution_gate',None):self.execution_gate.close();self.execution_gate=None
         if self.population_preparer and self.owns_population_preparer:self.population_preparer.close()
         self.resident_results=None
         try:self.prefetch.close()

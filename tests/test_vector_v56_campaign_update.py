@@ -137,4 +137,19 @@ class UpdateTests(unittest.TestCase):
             path.write_text('{}')
             with self.assertRaises(ValueError):accept_cache(config,path,record,expected)
 
+    def test_gpu_gate_keeps_graph_order_and_bounded_turns(self):
+        from research.vectorized_backtest.v56.gpu_gate import ReplayGate,enqueue_turns
+        from types import SimpleNamespace
+        events=[];progress=[]
+        gate=ReplayGate('bounded-fixture')
+        try:
+            with patch('torch.cuda.current_stream',return_value=SimpleNamespace(synchronize=lambda:events.append('sync'))):
+                enqueue_turns(SimpleNamespace(replay=lambda:events.append('graph')),513,32,gate,'cuda',lambda a,b:progress.append((a,b)))
+            self.assertEqual(events.count('graph'),17);self.assertEqual(events.count('sync'),3)
+            self.assertEqual(progress,[(256,513),(512,513),(513,513)])
+            with self.assertRaisesRegex(RuntimeError,'fixture'):
+                with gate.turn():raise RuntimeError('fixture')
+            with gate.turn():pass
+        finally:gate.close()
+
 if __name__=='__main__':unittest.main()

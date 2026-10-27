@@ -17,15 +17,19 @@ class CapturedReplay:
     keepalive: object
     index: object
     preparation_profile: object = None
+    execution_gate: object = None
 
     def enqueue(self):
+        if self.execution_gate is not None:
+            from .gpu_gate import enqueue_turns
+            return enqueue_turns(self.graph,self.total,self.block,self.execution_gate,self.index.device)
         for _ in range(0, self.total, self.block):
             self.graph.replay()
 
 
 def replay(position, aggregate, opened, policy, prices, observed, membership,
            signals, values, ids, columns, age_limits, lengths, stateful,
-           execution, transition, select_signals, progress=None, block=32, episodes=None,protected_kernel=True,signal_provider=None,network_plan=None,capture_only=False,*,bids,asks,quote_valid,ticker_state=None):
+           execution, transition, select_signals, progress=None, block=32, episodes=None,protected_kernel=True,signal_provider=None,network_plan=None,capture_only=False,*,bids,asks,quote_valid,ticker_state=None,execution_gate=None):
     device=position.device
     total=prices.shape[0]-1
     index=torch.ones((),dtype=torch.int64,device=device)
@@ -104,7 +108,10 @@ def replay(position, aggregate, opened, policy, prices, observed, membership,
         torch.cuda.synchronize(device)
         return CapturedReplay(graph, reset, total, block, compiled, index,
                               dict(compiler_dynamic=dynamic,compiler_warmup_host_seconds=warm_seconds,
-                                   graph_capture_host_seconds=capture_seconds))
+                                   graph_capture_host_seconds=capture_seconds),execution_gate)
+    if execution_gate is not None:
+        from .gpu_gate import enqueue_turns
+        return enqueue_turns(graph,total,block,execution_gate,device,progress)
     pending=deque();reported=0;completed=0;last_report=0.
     def publish_completed(force=False):
         nonlocal reported,completed,last_report
