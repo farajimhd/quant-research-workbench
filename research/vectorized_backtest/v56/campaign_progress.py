@@ -199,6 +199,10 @@ class Model:
         rows=sorted_rows(rows,self.sort,reverse!=self.reverse)
         return rows
     def key(self,key,height=40):
+        if key in ('1','2'):
+            self.remember();self.filter=None;self.selection=0
+            self.view=('global_ranking' if self.global_day else 'ranking') if key=='1' else 'operators'
+            return
         if key=='back':
             if self.navigation:
                 for k,v in self.navigation.pop().items():setattr(self,k,v)
@@ -213,7 +217,7 @@ class Model:
         if key=='g':self.day=None;self.global_day=None;self.view='global_sessions';self.selection=0;self.filter=None;return
         if key in ('o','f','m','a','i'):
             self.remember()
-            self.view={'o':'operators','f':'families','m':'methods','a':'candidates','i':'founders'}[key];self.selection=0;self.filter=None;return
+            self.view={'o':'operators','f':'families','m':'methods','a':'global_ranking' if self.global_day else 'ranking','i':'founders'}[key];self.selection=0;self.filter=None;return
         if key=='t':self.validation=not self.validation;return
         if key=='s':
             fields=['score','net_pnl','gross_losses','drawdown','nodes'];self.sort=fields[(fields.index(self.sort)+1)%len(fields)];self.selection=0;return
@@ -289,7 +293,7 @@ def render(model,width,height):
             cells=[r['group'],str(r['evaluated']),str(r['retained']) if r['retained'] is not None else '-',number(r['best_score']),number(r.get('median_net'))]
             if not compact:cells.extend([number(r.get('median_score_change')),number(r['median_loss']),number(r['median_drawdown']),number(r.get('median_nodes'))])
             cells.append(f"{r['beat_best_parent']}/{r['parent_comparisons']}");table.add_row(*cells,style=SELECTED if i==model.selection else None)
-        caption=f"Gen {report.get('generation',0)} | sort: {GROUP_SORT[model.sort]} {'reversed' if model.reverse else ''} | Enter: member candidates | Esc: back | groups overlap"
+        caption=f"Each row = aggregate group | sort: {GROUP_SORT[model.sort]} | Enter: members | groups overlap"
         if not rows:
             table.add_row('No groups yet',*['']*(len(table.columns)-1))
             if model.day and model.view in ('families','methods'):caption='Founder families and mixing methods apply to global founders. O: session crossover comparison | Esc: back'
@@ -314,8 +318,14 @@ def render(model,width,height):
         if not steps:table.add_row('No blind mixing provenance','See candidate birth metadata','-','-')
         caption=f"Candidate {row.get('serial')} | {len(steps)} recorded joins | page {model.detail_page+1} | N/B page"
     elif model.view=='detail':
-        r=model.selected or {};mix=r.get('mix') or {};lines=[f"Candidate {r.get('serial')} | {r.get('operation','ranking')} | measured generation {r.get('last_evaluated_generation',r.get('generation',model.report().get('generation')))}",
+        r=dict(model.selected or {})
+        if 'winning_positions' not in r:
+            matched=next((v for v in model.status().get('training_ranking',[]) if v['serial']==r.get('serial')),None)
+            if matched and model.report().get('generation')==r.get('generation'):r.update({k:matched[k] for k in ('closed_positions','winning_positions') if k in matched})
+        trades=r.get('closed_positions');wins=r.get('winning_positions');win_rate=100*wins/trades if wins is not None and trades else None
+        mix=r.get('mix') or {};lines=[f"Candidate {r.get('serial')} | {r.get('operation','ranking')} | measured generation {r.get('last_evaluated_generation',r.get('generation',model.report().get('generation')))}",
             f"Score {number(r.get('score'))} | Net {number(r.get('net_pnl'))} | Loss {number(r.get('gross_losses'))} | DD {number(r.get('drawdown'))}",
+            f"Closed trades {number(trades)} | Wins {number(wins)} | Win rate {number(win_rate)}% | Nodes {number(r.get('nodes'))}",
             f"Original founder: {r.get('original_founder','unavailable')} | families: {', '.join(r.get('founder_groups',[]))}",
             f"Operators: {', '.join(r.get('operators',[]))}",f"Sessions: {', '.join(r.get('source_sessions',[]))}",f"Mix depth: {mix.get('depth','-')} | parents: {mix.get('parent_serials',r.get('parents',[]))}",
             f"Mutations: {mix.get('mutations','see sealed pedigree')} | U lists surviving descendants; founder score is never inherited."]
@@ -333,7 +343,7 @@ def render(model,width,height):
         elif model.day:table.add_row(model.day,*(number(r.get(k)) for k in ('score','net_pnl','gross_losses','drawdown')))
         else:table.add_row('Per-session detail unavailable','-','-','-','-')
         from rich.console import Group
-        table=Group(Text('\n'.join(lines)),table);caption='N/B pages sessions | L mixing lineage | H summary | A current candidates'
+        table=Group(Text('\n'.join(lines)),table);caption='One candidate: metrics and ancestry | Esc: back | L: lineage | - = unavailable'
     else:
         rows=model.rows()
         compact=width<120;fields=('score','net_pnl','gross_losses','drawdown') if compact else ('score','net_pnl','gross_losses','drawdown','nodes')
@@ -342,7 +352,8 @@ def render(model,width,height):
         for i,r in enumerate(rows[start:start+limit],start):table.add_row(str(r['serial']),*(number(r.get(k)) for k in fields),', '.join(r.get('operators',r.get('founder_groups',[]))),style=SELECTED if i==model.selection else None)
         status=model.status();caption=f"{'VALIDATION display-only' if model.validation and model.view=='ranking' else 'TRAINING'} | {model.view} | {len(rows)} candidates | sort {model.sort} | {status.get('stage','Not evaluated')}"
         if model.view=='global_ranking':caption=f"GLOBAL {model.global_role} {'display-only' if model.global_role=='validation' else ''} | {model.global_day} | sealed generation {model.global_data['generation'] if model.global_data else '-'} | {len(rows)} candidates | sort {model.sort}"
-        if model.filter:caption=f"Group {model.filter[1]} | {len(rows)} candidates | sort {model.sort} | Enter: candidate | Esc: groups"
+        if model.filter:caption=f"Group {model.filter[1]} | {len(rows)} individual candidates | sort {model.sort} | Esc: groups"
+        elif model.view in ('ranking','candidates'):caption=f"Each row = one candidate | {len(rows)} candidates | sort {model.sort} | Enter: metrics + ancestry"
         if not rows:table.add_row('Pending',*['']*(len(fields)+1))
     if model.view!='overview':
         state=model.status();t=model.timing(model.target(),state,running=state.get('status')=='running' and time.time()-state.get('updated_epoch',0)<15,complete=state.get('status')=='complete')
@@ -353,9 +364,9 @@ def render(model,width,height):
         header.append(f"\nGenerations {state.get('completed_generations',0)}/50 ",style='white');header.append(progress_bar(state.get('completed_generations',0),50,color='bright_green'));header.append(' | Replay ',style='white');header.append(replay_progress(state.get('worker_progress',{}),state.get('status','queued')))
         p=state.get('worker_progress',{});header.append('\n'+state.get('stage','Waiting for session')+' | '+p.get('stage',''),style='bright_yellow')
     layout['head'].update(header)
-    names={'ranking':'SESSION CANDIDATES','operators':'CROSSOVER COMPARISON','families':'FOUNDER FAMILY COMPARISON','methods':'MIXING METHOD COMPARISON','global_sessions':'GLOBAL SESSION RESULTS','candidates':'GROUP MEMBERS' if model.filter else 'ALL CANDIDATES'}
+    names={'ranking':'SESSION CANDIDATES','operators':'GROUPS > CROSSOVER TECHNIQUE','families':'GROUPS > FOUNDER FAMILY','methods':'GROUPS > MIXING METHOD','global_sessions':'GLOBAL SESSION RESULTS','candidates':'GROUP > '+str(model.filter[1])+' > CANDIDATES' if model.filter else 'ALL CANDIDATES'}
     layout['body'].update(Panel(table,title=names.get(model.view,model.view.upper()),subtitle=caption,padding=0))
-    layout['keys'].update(Text('Arrows/J/K: select | Enter: open | Esc/Left: back | N/B: page\nH overview | G global | O crossovers | F families | M methods | A candidates\nS sort | R reverse | C columns | D timings | T train/val | I founders\nL lineage | U descendants | V attempts | Q close (optimizer continues)'))
+    layout['keys'].update(Text('1: CANDIDATES (individuals) | 2: GROUPS (aggregate statistics)\nGroups by O: crossover | F: founder family | M: mixing method\nArrows: select | Enter: open | Esc: back | S: sort | R: reverse | N/B: page\nH overview | G global | C columns | D timings | L lineage | Q close'))
     return layout
 
 def main():
