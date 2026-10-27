@@ -63,8 +63,12 @@ class Model:
             complete=day in ns.get('completed',[]) or (self.bus/'sessions'/day/'export.json').exists()
             active=day in ns.get('active_sessions',[]) or ns.get('active')==day
             state='complete' if complete else 'stopped' if stopped else s.get('status','running') if active else 'queued'
-            if active and not stopped and time.time()-s.get('updated_epoch',0)>15:state='STALE'
+            preparing=active and s.get('owner',{}).get('creation_time',0)<ns.get('owner',{}).get('creation_time',0)
+            if active and not complete and not stopped:
+                if preparing:state='preparing'
+                elif time.time()-s.get('updated_epoch',0)>15:state='STALE'
             progress=s.get('worker_progress',{}) if active and not complete else {};stage=progress.get('stage',s.get('stage','')) if active and not complete else ''
+            if preparing:progress={};stage='Verify inputs / resume saved state'
             sessions.append(dict(day=day,node=node,done=50 if complete else done,state=state,stage=stage,progress=progress))
         result=(nodes,sessions,stopped);self.snapshot_cache=(time.monotonic(),result);return result
     def rows(self):

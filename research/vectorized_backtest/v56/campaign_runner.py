@@ -136,22 +136,27 @@ def run(job,node):
         completed=[];skipped=[];retried=[];failed=[];unit=None;active_days=[];owner=dict(pid=os.getpid(),creation_time=psutil.Process().create_time())
         def status(stage,active=None,**extra):
             publish_transport(bus,bus/(node+'-status.json'),dict(status=stage,node=node,owner=owner,active=active,active_sessions=list(active_days),completed=completed,queued=[d for d in job['machines'][node]['session_days'] if d not in completed and d not in active_days],skipped=skipped,retried=retried,failed=failed,updated_epoch=time.time(),**extra))
+        status('starting; verify saved evidence')
         try:
             days=job['machines'][node]['session_days']
             parallel=job['machines'][node]['session_workers']>1
             if parallel:
                 from concurrent.futures import wait,FIRST_COMPLETED
+                # Scheduled entries use runpy(__main__); pickle workers through
+                # their importable module, never through that transient namespace.
+                from research.vectorized_backtest.v56.campaign_runner import session_unit as session_worker
                 pending=[]
                 for day in days:
                     target=bus/'sessions'/day
-                    if (target/'export.json').exists():load_export(target,job,day);completed.append(day);skipped.append(day)
+                    if (target/'export.json').exists():
+                        status('verify-completed-exports',day);load_export(target,job,day);completed.append(day);skipped.append(day)
                     else:pending.append(day)
                 with session_pool(root) as pool:
                     futures={}
                     while pending or futures:
                         stop_check(stops)
                         while pending and len(futures)<2:
-                            day=pending.pop(0);futures[pool.submit(session_unit,job,node,day)]=day;active_days.append(day)
+                            day=pending.pop(0);futures[pool.submit(session_worker,job,node,day)]=day;active_days.append(day)
                         status('session-stage',active_days[0] if active_days else None)
                         ready,_=wait(futures,timeout=2,return_when=FIRST_COMPLETED)
                         for future in ready:
@@ -165,8 +170,7 @@ def run(job,node):
                             unit=None
                 status('session-stage')
             for day in ([] if parallel else days):
-                unit=day;stop_check(stops);status('session-stage',day);target=bus/'sessions'/day;local=root/'sessions'/day
-                active_days[:]=[day]
+                unit=day;stop_check(stops);active_days[:]=[day];status('session-stage',day);target=bus/'sessions'/day;local=root/'sessions'/day
                 if (target/'export.json').exists():load_export(target,job,day);skipped.append(day)
                 else:
                     if (local/'global/checkpoint.json').exists():retried.append(day)

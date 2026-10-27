@@ -18,9 +18,14 @@ def predecessor(job):
     return old
 
 def source_allowed(job,source):
-    if source==job['source_sha256']:return True
-    old=predecessor(job)
-    return old is not None and source==old['source_sha256']
+    return any(source==item['source_sha256'] for item in lineage_jobs(job))
+
+def lineage_jobs(job):
+    seen=set()
+    while job is not None:
+        identity=digest(job)
+        if identity in seen:raise ValueError('Cyclic continuation authority')
+        seen.add(identity);yield job;job=predecessor(job)
 
 def accept_checkpoint(job,path,saved,expected):
     if saved['contract']==expected:return
@@ -35,8 +40,10 @@ def export_job(job,day,meta):
     if meta['job_sha256']==digest(job):return job
     old=predecessor(job)
     allowed=job.get('resume_transition',{}).get('exports',{})
-    if old is None or meta['job_sha256']!=digest(old) or day not in allowed:raise ValueError('Unapproved predecessor export')
-    return old
+    if old is None or day not in allowed:raise ValueError('Unapproved predecessor export')
+    if meta['job_sha256']==digest(old):return old
+    if old.get('resume_transition',{}).get('exports',{}).get(day)!=allowed[day]:raise ValueError('Export continuation chain changed')
+    return export_job(old,day,meta)
 
 def accept_cache(config,path,record,expected):
     if record['identity']==expected:return

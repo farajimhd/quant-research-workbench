@@ -152,4 +152,29 @@ class UpdateTests(unittest.TestCase):
             with gate.turn():pass
         finally:gate.close()
 
+    def test_runpy_entry_submits_importable_worker(self):
+        import runpy
+        namespace=runpy.run_module('research.vectorized_backtest.v56.campaign_runner',run_name='scheduled_entry_fixture')
+        run=namespace['run'];run.__globals__.update(check_job=lambda job:None,stop_check=lambda roots:None)
+        with TemporaryDirectory(dir=RUNTIME) as tmp:
+            # Only the parent skips this fixture stop marker. The real spawned
+            # worker must reach stop_check, proving serialization through runpy.
+            (Path(tmp)/'STOP').write_text('fixture')
+            job=dict(campaign=tmp,transport=tmp,machines={'workstation':dict(session_days=['one','two'],session_workers=2)})
+            with self.assertRaises(InterruptedError):run(job,'workstation')
+
+    def test_continuation_chain_keeps_original_export_authority(self):
+        from research.vectorized_backtest.v56.resume_authority import source_allowed,export_job
+        old={k:'same' for k in ('training_sha256','validation_sha256','objective','execution','selection','population','initial_multiplier','seed','phase1_generations','phase2_generations','ticker_parent_fraction','batch_size','asset_sha256')}
+        old.update(training_days=['day'],validation_days=['valid'],source_sha256='original')
+        with TemporaryDirectory(dir=RUNTIME) as tmp:
+            p=Path(tmp)/'original.json';write_json(p,old)
+            mid=dict(old,source_sha256='middle',resume_transition=dict(predecessor_job=str(p),predecessor_job_sha256=sha(p),exports={'day':'receipt'}))
+            m=Path(tmp)/'middle.json';write_json(m,mid)
+            top=dict(old,source_sha256='new',resume_transition=dict(predecessor_job=str(m),predecessor_job_sha256=sha(m),exports={'day':'receipt'}))
+            self.assertTrue(source_allowed(top,'original'));self.assertTrue(source_allowed(top,'middle'))
+            self.assertEqual(export_job(top,'day',dict(job_sha256=digest(old))),old)
+            top['resume_transition']['exports']['day']='changed'
+            with self.assertRaises(ValueError):export_job(top,'day',dict(job_sha256=digest(old)))
+
 if __name__=='__main__':unittest.main()

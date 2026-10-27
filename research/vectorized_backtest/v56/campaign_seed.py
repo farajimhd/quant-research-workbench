@@ -10,9 +10,8 @@ def seed(exports,job,probe,progress=None):
     members=[];records=[];ids=[];sources=[];seen=set()
     if job['campaign_stage']=='global':
         if set(exports)!=set(job['training_days']):raise ValueError('All 24 session exports required before global start')
-        from .resume_authority import predecessor
-        previous=predecessor(job);allowed_sources={job['source_sha256']}
-        if previous:allowed_sources.add(previous['source_sha256'])
+        from .resume_authority import lineage_jobs
+        allowed_sources={item['source_sha256'] for item in lineage_jobs(job)}
         chosen=[]
         for rank in range(job['expert_capacity_per_session']):
             for day in sorted(exports):

@@ -33,10 +33,11 @@ def prepare(previous,laptop_code,workstation_code):
         copy_verified(cp,audit/'checkpoint.json',sha(cp))
         for cache in session.glob('replays/**/result-cache/*.json'):
             record=json.loads(cache.read_bytes());receipt=sha(cache)
-            if record['identity']['source']!=old['source_sha256']:raise ValueError('Unexpected cache source')
+            from .resume_authority import source_allowed
+            if not source_allowed(old,record['identity']['source']):raise ValueError('Unexpected cache source')
             target=audit/'cache'/cache.relative_to(session/'replays')
             copy_verified(cache,target,receipt)
-            transition['result_caches'][receipt]=dict(source=old['source_sha256'],day=day,backup=str(target))
+            transition['result_caches'][receipt]=dict(source=record['identity']['source'],day=day,backup=str(target))
     machines={n:dict(m,code=str(laptop_code if n=='laptop' else workstation_code),session_workers=1 if n=='laptop' else 2) for n,m in old['machines'].items()}
     job=dict(old,version='v56-full-v2',commit=commit,source_sha256=source_hash(),machines=machines,entry_suffix='-v2-'+commit[:9],resume_transition=transition,
         global_initialization=dict(version='v56-blind-mix-v1',experts=3072,offspring=3072,group_quota=512,require_surviving_contributions=True))

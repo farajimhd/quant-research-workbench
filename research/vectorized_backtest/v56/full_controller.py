@@ -73,7 +73,7 @@ class Controller:
             write_json(root/'initial-pool.json',state);write_checkpoint(cp,contract,state)
         members=[Individual.restore(p) for p in state['population']];ids=np.asarray(state['ids']);pedigree=CompactPedigree(3,state['pedigree'],state['next_serial']);rng=np.random.default_rng();rng.bit_generator.state=state['rng']
         for generation in range(completed+1,self.job['phase2_generations']+1):
-            started=time.perf_counter();folder=root/f'generation-{generation:04d}';folder.mkdir(exist_ok=True);self.stage='Phase 2 training'
+            started=time.perf_counter();folder=root/f'generation-{generation:04d}';folder.mkdir(exist_ok=True);self.stage='Session training' if self.job.get('campaign_stage')=='session' else 'Global training'
             source_population=[m.payload() for m in members];source_ids=ids.copy();token=digest(source_population)
             write_json(folder/'population.json',dict(population=source_population,ids=ids.tolist(),population_sha256=token))
             ordered,training_receipts=self.evaluate('training',train,members,generation);session_panels=[];panel=aggregate(ordered,objective,session_sink=session_panels)
