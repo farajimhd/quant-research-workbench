@@ -129,8 +129,13 @@ def render(model,width,height):
         caption='J/K select a session; Enter opens its results. Completed exports and saved generations are preserved.'
     elif model.view in ('operators','families','methods'):
         report=model.report();rows=model.rows()
-        for h in ('Group','Eval','Keep','Best $','Median $','Change $','Loss $','DD $','Nodes','Beat parent'):table.add_column(h,no_wrap=True,justify='right')
-        for i,r in enumerate(rows[start:start+limit],start):table.add_row(r['group'],str(r['evaluated']),str(r['retained']) if r['retained'] is not None else '-',number(r['best_score']),number(r['median_score']),number(r.get('median_score_change')),number(r['median_loss']),number(r['median_drawdown']),number(r.get('median_nodes')),f"{r['beat_best_parent']}/{r['parent_comparisons']}",style='bold cyan' if i==model.selection else None)
+        compact=width<120
+        columns=('Group','Eval','Keep','Best $','Median $','Beat parent') if compact else ('Group','Eval','Keep','Best $','Median $','Change $','Loss $','DD $','Nodes','Beat parent')
+        for h in columns:table.add_column(h,no_wrap=True,justify='right')
+        for i,r in enumerate(rows[start:start+limit],start):
+            cells=[r['group'],str(r['evaluated']),str(r['retained']) if r['retained'] is not None else '-',number(r['best_score']),number(r['median_score'])]
+            if not compact:cells.extend([number(r.get('median_score_change')),number(r['median_loss']),number(r['median_drawdown']),number(r.get('median_nodes'))])
+            cells.append(f"{r['beat_best_parent']}/{r['parent_comparisons']}");table.add_row(*cells,style='bold cyan' if i==model.selection else None)
         caption=f"TRAINING | generation {report.get('generation',0)} | Overlapping groups; Enter lists members. Missing historical fields are '-'."
         if not rows:table.add_column('Status') if not table.columns else None;table.add_row('Not evaluated / unavailable',*['']*(len(table.columns)-1))
     elif model.view=='reproduction':
