@@ -60,17 +60,19 @@ class KernelSchedulingTests(unittest.TestCase):
                 return launch
         results=[]
         try:
-            for kernel in (Unsorted(),original):
+            for kernel,tile in ((Unsorted(),128),(original,128),(original,64)):
+                plan.cuda_block=tile
                 plan.reset();rows=[]
                 with patch.object(cuda,'workspace_kernel',kernel):
                     for tick in range(5):
                         out=cuda.signals(plan,values,valid,position,opened,previous,torch.tensor(tick,device='cuda'))
                         rows.append((out.cpu(),plan.ratios.cpu(),plan.export_state()))
                 results.append(rows)
-            for before,after in zip(*results):
-                self.assertTrue(torch.equal(before[0],after[0]))
-                self.assertTrue(torch.equal(before[1],after[1]))
-                for key in before[2]:self.assertTrue(torch.equal(before[2][key],after[2][key]),key)
+            for optimized in results[1:]:
+                for before,after in zip(results[0],optimized):
+                    self.assertTrue(torch.equal(before[0],after[0]))
+                    self.assertTrue(torch.equal(before[1],after[1]))
+                    for key in before[2]:self.assertTrue(torch.equal(before[2][key],after[2][key]),key)
         finally:plan.close()
 
 class PreparationTests(unittest.TestCase):
@@ -78,10 +80,14 @@ class PreparationTests(unittest.TestCase):
         from research.vectorized_backtest.v56 import validation_cache as c
         with c.validation_scope(capacity=5120):
             self.assertEqual(c._capacity.get(),5120)
+            from research.vectorized_backtest.v56 import identity_cache as identity
+            self.assertEqual(identity._capacity.get(),5120)
             with self.assertRaises(RuntimeError):
                 with c.validation_scope(capacity=10):raise RuntimeError('failed')
             self.assertEqual(c._capacity.get(),5120)
+            self.assertEqual(identity._capacity.get(),5120)
         self.assertEqual(c._capacity.get(),c.CAPACITY)
+        self.assertEqual(identity._capacity.get(),identity.CAPACITY)
         for invalid in (0,32769,True):
             with self.assertRaises(ValueError):
                 with c.validation_scope(capacity=invalid):pass

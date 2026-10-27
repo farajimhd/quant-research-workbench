@@ -91,7 +91,9 @@ class Controller:
             self.stage='Select active parents and reproduce';self.publish()
             if generation<self.job['phase2_generations']:
                 from .validation_cache import validation_scope
-                with validation_scope():
+                # Retain parents plus offspring for this bounded transaction;
+                # 4096 entries thrash even on the 5120 parental action graphs.
+                with validation_scope(capacity=min(32768,max(4096,len(members)*15))):
                     successor,newids,diversity=next_population(rng,members,ids,pedigree,[],generation+1,Selection(**self.job['selection']),session_values=panel['score'][None],session_eligible=panel['eligible'][None],global_values=panel['score'],global_eligible=panel['eligible'],target_size=self.job['population'],species=species,ordered=ordered,case_values=None,case_ids=None,probe=probe)
             else:successor,newids,diversity=members,ids,dict(reproduction_performed=False)
             if generation<self.job['phase2_generations']:

@@ -158,7 +158,7 @@ def signals(plan,values,valid,position,opened,previous,index,out=None):
     if owned:block=32
     if block not in (32,64,128,256):raise ValueError('Unsupported neural CUDA tile')
     state_kernel[(b,tr.cdiv(u,256))](position,opened,previous,index,plan.feedback,plan.position_states,u,len(STATES),256,enable_fp_fusion=False)
-    scheduled=not owned and block==128
+    scheduled=not owned and block in (64,128)
     tiles=tr.cdiv(owned_k,block)
     grid=(b*5*tiles,) if scheduled else (b,5,tiles)
     workspace_kernel[grid](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.operations,plan.bias,plan.counts,plan.offsets,plan.threshold,

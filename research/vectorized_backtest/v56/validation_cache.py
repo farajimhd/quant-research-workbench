@@ -21,7 +21,7 @@ def validation_scope(*, capacity=CAPACITY):
     limit = _capacity.set(capacity)
     try:
         from .identity_cache import identity_scope
-        with identity_scope():
+        with identity_scope(capacity=capacity):
             yield
     finally:
         _active.reset(token)

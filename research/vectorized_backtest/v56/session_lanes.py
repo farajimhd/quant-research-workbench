@@ -229,6 +229,7 @@ class Worker:
                         else:
                             from .network_pack import select_packed
                             plan=PopulationPrograms(members,device,packed=select_packed(packed_population,selection))
+                        plan.plan.cuda_block=c.get('neural_tile',plan.plan.cuda_block)
                         self.plans[batch_key]=plan
                     plan=self.plans[batch_key];self.plans.move_to_end(batch_key)
                     prior={k:getattr(plan.plan,k,0) for k in ('builds','hits','evictions','capture_seconds')}

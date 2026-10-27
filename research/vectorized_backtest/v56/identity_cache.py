@@ -8,13 +8,16 @@ import json
 
 _active=ContextVar('v42_identity_fragments',default=None)
 CAPACITY=4096
+_capacity=ContextVar('v56_identity_capacity',default=CAPACITY)
 
 
 @contextmanager
-def identity_scope():
+def identity_scope(*,capacity=CAPACITY):
+    if type(capacity) is not int or not 1<=capacity<=32768:raise ValueError('Invalid bounded identity cache capacity')
     token=_active.set(OrderedDict())
+    limit=_capacity.set(capacity)
     try:yield
-    finally:_active.reset(token)
+    finally:_active.reset(token);_capacity.reset(limit)
 
 
 def program_key(member):
@@ -38,7 +41,7 @@ def program_key(member):
             fragment=dumps(value)
             if known_immutable(net) or immutable(net):
                 cache[id(net)]=(net,fragment)
-                if len(cache)>CAPACITY:cache.popitem(last=False)
+                if len(cache)>_capacity.get():cache.popitem(last=False)
         fragments.append(dumps(stage)+':'+fragment)
     # Mutable policy/age mappings are serialized afresh on every call. Match
     # the exact legacy sorted-key JSON, including its floating-point spelling.
