@@ -7,7 +7,10 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 import numpy as np
-from tests.test_vector_v53_pilot import metrics
+from tests.test_vector_v53_pilot import metrics as base_metrics
+
+def metrics(value,n):
+    m=base_metrics(value,n);m["ticker_score"]=[{"a":float(value)} for _ in range(n)];return m
 def members(n):
     from research.vectorized_backtest.v56.genome import sample
     return sample(np.random.default_rng(2021),n)

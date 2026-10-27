@@ -5,7 +5,10 @@ import unittest
 from dataclasses import replace
 from unittest.mock import patch
 import numpy as np
-from tests.test_vector_v53_pilot import metrics
+from tests.test_vector_v53_pilot import metrics as base_metrics
+
+def metrics(value,n):
+    m=base_metrics(value,n);m["ticker_score"]=[{"a":float(value)} for _ in range(n)];return m
 def members(n):
     from research.vectorized_backtest.v56.genome import sample
     return sample(np.random.default_rng(2021),n)
@@ -42,6 +45,8 @@ class ReproductionTests(unittest.TestCase):
         self.assertEqual(set(telemetry['whole_network']['requested_modes']),
                          {'union', 'intersection', 'xor', 'xnor'})
         self.assertGreater(telemetry['crossovers'], 0)
+        self.assertGreater(telemetry['ticker_parent_selections'],0)
+        self.assertGreater(telemetry['global_parent_selections'],0)
         for record in pedigree.records.values():
             if record['generation'] == 2 and record['operation'].startswith('crossover'):
                 self.assertEqual(record['operation'], 'crossover')

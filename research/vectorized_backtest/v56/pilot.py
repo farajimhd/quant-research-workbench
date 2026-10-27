@@ -38,10 +38,6 @@ class Pilot(Controller):
             raise ValueError('This pilot cannot open another session or validation data')
         if (self.root/'STOP').exists():raise InterruptedError('V56 pilot stop requested')
         payload=[m.payload() for m in members];token=digest(payload);day=days[0]
-        if generation==1:
-            from .initial_reuse import import_receipt
-            self.publish(phase=2,generation=1,completed_generations=0,evaluated_population=len(members),founder_market_replays=0,founder_results_reused=len(members))
-            return import_receipt(self.job,payload,day)
         self.publish(phase=2,generation=generation,completed_generations=generation-1,
                      evaluated_population=len(members),completed_sessions=0,total_sessions=1)
         width=len(json.loads((Path(self.worker.config['history'])/day/'complete.json').read_bytes())['listing_ids'])

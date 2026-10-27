@@ -204,6 +204,15 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
                 structural_mutation=any(f['field'].startswith('structure:') for f in fields)))
             return
         raise RuntimeError('Distinct parent-mutation offspring attempts exhausted')
+    from .ticker_selection import specialist_pools
+    local_pools=specialist_pools(ordered,valid,active,ids) if ordered and 'ticker_score' in ordered[0] else {}
+    if (valid&active).any() and not local_pools:raise ValueError('Ticker specialist scores required for V56 reproduction')
+    ticker_names=list(local_pools)
+    parent_plan=balanced(2*cross_budget,[.25,.75],generation)==0
+    local_parent_selections=0;global_parent_selections=0
+    def parent_pool(slot,which,default):
+        if parent_plan[2*slot+which]:return local_pools[ticker_names[(2*slot+which+generation)%len(ticker_names)]]
+        return default
     budget_filtered=0
     whole_plan=balanced(cross_budget,[.25,.75],generation)==0
     whole_modes=balanced(int(whole_plan.sum()),[.4,.2,.2,.2],generation)
@@ -223,8 +232,9 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
             sibling_requests[wanted]+=1;group+=1;left-=count;route='within' if route_plan[slot]==0 else 'between';pair=None
             for attempt in range(config.mate_attempts):
                 if not pool:break
-                a=int(pool[(rank_index(len(pool),slot,generation)+attempt)%len(pool)])
-                options=[i for i in pool if mates.unrelated(a)[i] and (species.labels[i]==species.labels[a])==(route=='within')]
+                first_pool=parent_pool(slot,0,pool)
+                a=int(first_pool[(rank_index(len(first_pool),slot,generation)+attempt)%len(first_pool)])
+                options=[i for i in parent_pool(slot,1,pool) if mates.unrelated(a)[i] and (species.labels[i]==species.labels[a])==(route=='within')]
                 if whole:
                     from .whole_network import fits
                     stages=(STAGES[(slot+generation)%len(STAGES)],)
@@ -232,13 +242,15 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
                     options=[i for i in options if (fits(population[a],population[i],stages) if generation%2==0 else fits(population[i],population[a],stages))]
                     budget_filtered+=before-len(options)
                 if options:
-                    b=int(options[(rank_index(len(options),slot,generation,base=3)+attempt)%len(options)]);pair=(a,b);break
+                    b=int(options[(rank_index(len(options),slot,generation,base=3)+attempt)%len(options)]);pair=(a,b);pair_local=(bool(parent_plan[2*slot]),bool(parent_plan[2*slot+1]));break
             accepted_group=[]
             for sibling in range(count):
                 slot=cross_slot;cross_slot+=1;whole=bool(whole_plan[slot])
                 whole_mode=('union','intersection','xor','xnor')[int(whole_modes[whole_offset])] if whole else None
                 if whole:whole_offset+=1
                 if pair is None:fallbacks+=1;parent_mutation(pool,case,slot,'no-compatible-size-feasible-parent');continue
+                local_parent_selections+=sum(pair_local)
+                global_parent_selections+=2-sum(pair_local)
                 first,second=pair if (sibling+generation)%2==0 else pair[::-1]
                 offset=int(starts[slot]);width=int(action_counts[slot]);plan=dict(orientation=0,count=width,action_start=offset,modes=[SETTINGS['action_modes'][int(i)] for i in modes[offset:offset+width]])
                 accepted=False
@@ -254,7 +266,7 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
                     if key in keys:duplicates+=1;continue
                     keys.add(key);children.append(child);parents.append((int(ids[first]),int(ids[second])));ops.append('crossover');remaining[case]-=1
                     metadata.append(dict(route=route,selection_route='owned-case' if isolation else 'unified-session',case=case if isolation else None,case_owner=child.case_owner,
-                        crossover=operator,whole_network=whole,whole_mode=whole_mode,pair_group=group,sibling_index=sibling,parent_objectives=[float(values[first]),float(values[second])],
+                        parent_selection_sources=['ticker' if x else 'global' for x in (pair_local if (sibling+generation)%2==0 else pair_local[::-1])],crossover=operator,whole_network=whole,whole_mode=whole_mode,pair_group=group,sibling_index=sibling,parent_objectives=[float(values[first]),float(values[second])],
                         structural_delta=sum(len(v.nodes) for v in child.networks.values())-sum(len(v.nodes) for v in population[first].networks.values())))
                     accepted_group.append(len(metadata)-1);accepted=True;break
                 if not accepted:fallbacks+=1;parent_mutation(pool,case,slot,'invalid-or-duplicate-child')
@@ -297,7 +309,7 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
     result=[population[i] for i in selected]+children;newids=np.concatenate((ids[selected],born))
     assert len(result)==target
     telemetry=dict(species.telemetry,selection_policy='isolated-case-score' if isolation else 'unified-session-score',
-        active_parent_candidates=int((valid&active).sum()),reproduction_policy='v56-ranked-active-risk-cost-v2',
+        ticker_parent_fraction=.25,ticker_specialist_tickers=len(local_pools),ticker_parent_selections=local_parent_selections,global_parent_selections=global_parent_selections,active_parent_candidates=int((valid&active).sum()),reproduction_policy='v56-ranked-active-risk-cost-v2',
         requested_elites=elite_budget,elites=len(selected),baseline_fresh=fresh_budget,requested_crossovers=cross_budget,
         fresh_candidates=sum(o.startswith('fresh') for o in ops),crossovers=sum('crossover' in o for o in ops),
         parent_mutations=ops.count('parent_mutation'),post_crossover_mutation=False,

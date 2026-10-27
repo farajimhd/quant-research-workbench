@@ -10,13 +10,19 @@ class Execution:
     cost_bps:float=0.
     fee_per_share:float=0.
     minimum_order_fee:float=0.
+    risk_limits_enabled:bool=True
     risk_protection:bool=True
     maximum_stop_distance:float=.20
     maximum_position_risk:float=300.
     minimum_order_dollars:float=0.
     price_mode:str='bid-ask'
     maximum_quote_age_seconds:float=1.
+    @property
+    def admission_distance(self):return self.maximum_stop_distance if self.risk_limits_enabled else 1.
+    @property
+    def admission_budget(self):return self.maximum_position_risk if self.risk_limits_enabled else float("inf")
     def validate(self):
+        if type(self.risk_limits_enabled) is not bool:raise ValueError("Invalid risk admission switch")
         if self.price_mode!='bid-ask' or self.maximum_quote_age_seconds!=1.:raise ValueError('Strict V56 bid/ask execution required')
         if any(not math.isfinite(v) or v<0 for v in (self.entry_dollars,self.add_dollars,self.cost_bps,self.fee_per_share,self.minimum_order_fee)) or min(self.entry_dollars,self.add_dollars)<=0 or not math.isfinite(self.minimum_order_dollars) or self.minimum_order_dollars<0:
             raise ValueError('Invalid assumed-fill sizing/cost')
@@ -180,6 +186,7 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
     position=torch.zeros((1,b,u,9),dtype=torch.float64,device=device)
     aggregate=torch.zeros((1,b,16),dtype=torch.float64,device=device);aggregate[...,8]=float('inf')
     policy=torch.tensor([[getattr(m.policy,k) for k in ('stop_fraction','target_fraction','reduce_fraction','trail_fraction','add_minimum_profit','reduce_minimum_profit','maximum_adds','cooldown','swing_left')] for m in members],dtype=torch.float64,device=device)[None,:,None]
+    ticker_state=torch.zeros((1,b,u,2),dtype=torch.float64,device=device)
     opened=torch.zeros((1,b,u),dtype=torch.float64,device=device)
     prices=pad(item.tensors['mark'][:t],(0,u-len(item.listing_ids)),value=float('nan'))[:,None,None]
     bids=pad(item.tensors['bid'][:t],(0,u-len(item.listing_ids)),value=0.)[:,None,None]
@@ -202,9 +209,9 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
     if backend=='compile' and device.type=='cuda':
         from .replay_graph import replay
         prepared=replay(position,aggregate,opened,policy,prices,observed,membership,signals,values,ids,columns,limits,lengths,False,
-               execution,step,state_signals,progress,block=replay_block,episodes=episodes,protected_kernel=protected_kernel,signal_provider=provide,network_plan=plan,capture_only=capture_only,bids=bids,asks=asks,quote_valid=quote_valid)
+               execution,step,state_signals,progress,block=replay_block,episodes=episodes,protected_kernel=protected_kernel,signal_provider=provide,network_plan=plan,capture_only=capture_only,ticker_state=ticker_state,bids=bids,asks=asks,quote_valid=quote_valid)
         if capture_only:
-            return PreparedEvaluation(prepared,lambda: _export_result(position,aggregate,episodes,t))
+            return PreparedEvaluation(prepared,lambda: _export_result(position,aggregate,episodes,t,ticker_state))
     else:
         for clock in range(1,t):
             index=torch.tensor(clock-1,device=device);provide(index,position,opened);held=position[...,0]>1e-12
@@ -213,23 +220,25 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
             before=position
             position,aggregate=step(position,aggregate,prices[clock],prices[clock-1],observed[clock],membership[clock-1],selected,swing,policy,
                 torch.tensor(float(clock),device=device),torch.tensor(clock==t-1,device=device),execution.entry_dollars,execution.add_dollars,execution.cost_bps/10000,execution.fee_per_share,execution.minimum_order_fee,
-                execution.risk_protection,execution.maximum_stop_distance,execution.maximum_position_risk,plan.ratios,execution.minimum_order_dollars,bid=bids[clock],ask=asks[clock],quote_valid=quote_valid[clock])
+                execution.risk_protection,execution.admission_distance,execution.admission_budget,plan.ratios,execution.minimum_order_dollars,bid=bids[clock],ask=asks[clock],quote_valid=quote_valid[clock])
+            from .ticker_selection import update_equity
+            update_equity(ticker_state,position,prices[clock],torch.tensor(True,device=device))
             from .network import outcome_values
             plan.feedback.copy_(outcome_values(before,position,asks[clock],selected,plan.ratios,plan.feedback))
             episodes.append(before,position,torch.tensor([True],device=device),opened,torch.tensor(float(clock),device=device))
             opened=torch.where(~held&(position[...,0]>1e-12),float(clock),opened)
             if progress and (clock%256==0 or clock==t-1):progress(clock,t-1)
     if device.type=='cuda':torch.cuda.synchronize(device)
-    return _export_result(position,aggregate,episodes,t)
+    return _export_result(position,aggregate,episodes,t,ticker_state)
 
 
-def _export_result(position,aggregate,episodes,t):
+def _export_result(position,aggregate,episodes,t,ticker_state):
     episode_results=episodes.export();q=position[0,...,0];realized=position[0,...,7].sum(-1)
     held=(q>1e-12).cpu().numpy()
     open_cash=(position[0,...,7]-position[0,...,8]).detach().cpu().numpy()
     open_ids=[row.nonzero()[0].tolist() for row in held]
     open_profits=[open_cash[i,row].tolist() for i,row in enumerate(held)]
-    result=dict(open_episode_listings=open_ids,open_episode_realized=open_profits,net_pnl=realized,drawdown=aggregate[0,:,1],capital_dollar_seconds=aggregate[0,:,2],stop_risk_dollar_seconds=aggregate[0,:,3],
+    result=dict(ticker_drawdown=ticker_state[0,...,1],open_episode_listings=open_ids,open_episode_realized=open_profits,net_pnl=realized,drawdown=aggregate[0,:,1],capital_dollar_seconds=aggregate[0,:,2],stop_risk_dollar_seconds=aggregate[0,:,3],
         filled_batches=aggregate[0,:,4],terminal_valid=(q<=1e-12).all(-1)&torch.isfinite(realized),unliquidated_positions=(q>1e-12).sum(-1),inactivity_fraction=aggregate[0,:,7]/max(1,t-1),
         add_count=aggregate[0,:,5],reduce_count=aggregate[0,:,6],worst_position_pnl=torch.where(torch.isfinite(aggregate[0,:,8]),aggregate[0,:,8],0.),
         closed_positions=aggregate[0,:,9],winning_positions=aggregate[0,:,10],turnover=aggregate[0,:,11],maximum_position_risk=aggregate[0,:,12],maximum_stop_distance=aggregate[0,:,13],

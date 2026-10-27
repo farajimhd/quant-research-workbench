@@ -49,17 +49,9 @@ class BudgetTests(unittest.TestCase):
         from research.vectorized_backtest.v56.initial_reuse import import_receipt
         with patch('research.vectorized_backtest.v56.initial_reuse.verify',return_value=dict(population_sha256='other')):
             with self.assertRaises(ValueError):import_receipt({},[],'2026-08-13')
-    def test_founder_reuse_invokes_no_worker_replay(self):
-        from research.vectorized_backtest.v56.pilot import Pilot
-        from research.vectorized_backtest.v56.initial_reuse import sha
-        root=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v56/qualification/tests');root.mkdir(parents=True,exist_ok=True)
-        members=[helpers.parent(0)]*6144;payload=[m.payload() for m in members];token=digest(payload)
-        with TemporaryDirectory(dir=root) as tmp:
-            path=Path(tmp)/'receipt.json';receipt=dict(population_sha256=token,full_session=True,validation_opened=False,split='training',execution={},case_owners=[None]*6144,metrics={'net_pnl':[0.]*6144})
-            path.write_text(json.dumps(receipt));bound=dict(population_sha256=token,receipts={'2026-08-13':dict(receipt=str(path),receipt_sha256=sha(path))})
-            c=Pilot.__new__(Pilot);c.root=Path(tmp);c.job=dict(training_days=['2026-08-13'],execution={});c.worker=Mock();c.publish=lambda **kw:None
-            with patch('research.vectorized_backtest.v56.initial_reuse.verify',return_value=bound):values,refs=c.evaluate('training',['2026-08-13'],members,1)
-            c.worker.run.assert_not_called();self.assertEqual(len(values[0]['net_pnl']),6144);self.assertTrue(refs['2026-08-13']['authorized_founder_reuse'])
+    def test_changed_execution_forbids_old_financial_receipt_reuse(self):
+        from research.vectorized_backtest.v56.initial_reuse import import_receipt
+        with self.assertRaisesRegex(ValueError,'changed execution'):import_receipt({},[],'2026-08-13')
     @unittest.skipUnless(torch.cuda.is_available(),'CUDA required')
     def test_above_512_nodes_cpu_cuda_parity(self):
         a=helpers.parent(0);a=replace(a,networks=dict(a.networks,entry=wide(1020))).validate()

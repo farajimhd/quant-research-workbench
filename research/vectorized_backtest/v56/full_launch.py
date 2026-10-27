@@ -13,21 +13,22 @@ def prepare(source,root,code,*,generations=50,comparison=None):
     root=require_runtime(root);code=Path(code)
     if (root/'pilot-job.json').exists():raise ValueError('Existing pilot must be audited, not recreated')
     original=json.loads(Path(source).read_bytes());probe=Path(original['probe_root'])/'2026-08-13.npz'
-    job=dict(version='v56-pilot-v1',source_sha256=source_hash(),source_job=str(source),source_job_sha256=sha(source),
+    job=dict(version='v56-pilot-v2',source_sha256=source_hash(),source_job=str(source),source_job_sha256=sha(source),
         commit=json.loads((code/'deployment.json').read_bytes())['commit'],campaign=str(root),code=str(code),
         training=original['training'],training_sha256=original['training_sha256'],validation_sha256=original['validation_sha256'],
         training_days=['2026-08-13'],validation_days=[],initialization_probe=str(probe),initialization_probe_sha256=sha(probe),
         population=1024,initial_multiplier=6,seed=2021,phase2_generations=generations,mutation_probe_size=32,
-        objective=dict(drawdown_weight=2.,loss_weight=1.),execution=original['execution'],selection=original['selection'],batch_size=512,
+        objective=dict(drawdown_weight=2.,loss_weight=1.),execution=dict(original['execution'],risk_limits_enabled=False),selection=original['selection'],batch_size=512,
         transport=str(root/'asset-bus'),workstation_share=original['workstation_share'],assets={'training':{'2026-08-13':original['assets']['training']['2026-08-13']}},asset_sha256=original['asset_sha256'],
         machines={'laptop':dict(original['machines']['laptop'],code=str(code),days=dict(training=['2026-08-13'],validation=[]))})
     if comparison is None:raise ValueError('Explicit completed V53 founder source required')
     from .initial_reuse import bind
     job['selection_risk_caps']=False
+    job['ticker_parent_fraction']=.25
     bind(comparison,job)
     check_job(job);root.mkdir(parents=True,exist_ok=True);write_json(root/'pilot-job.json',job)
-    write_json(root/'manifest.json',dict(version='v56-pilot-v1',days=job['training_days'],generations=generations,population=1024,
-        initial_candidates=6144,initial_random=3072,initial_templates=3072,source_sha256=job['source_sha256'],commit=job['commit'],objective=job['objective'],validation_opened=False,global_only=True))
+    write_json(root/'manifest.json',dict(version='v56-pilot-v2',days=job['training_days'],generations=generations,population=1024,
+        ticker_parent_fraction=.25,risk_limits_enabled=False,founder_market_replays_required=6144,financial_receipts_reused=False,initial_candidates=6144,initial_random=3072,initial_templates=3072,source_sha256=job['source_sha256'],commit=job['commit'],objective=job['objective'],validation_opened=False,global_only=True))
     return job
 
 def prepare_full(*args,**kwargs):

@@ -218,6 +218,8 @@ class Worker:
 
                     from .financial import ticker_totals
                     metrics['ticker_pnl']=ticker_totals(metrics,item)
+                    from .ticker_selection import ticker_scores
+                    metrics['ticker_score']=ticker_scores(metrics,item)
                     for j,i in enumerate(selection):cached[keys[i]]={k:v[j] for k,v in metrics.items()}
                     timing=dict(day=day,offset=offset,candidates=actual,padded_candidates=len(members),
                         load_seconds=load_seconds if offset==0 else 0.,host_prefetched=prefetched,rule_seconds=rule_seconds,

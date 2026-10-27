@@ -8,13 +8,13 @@ from research.vectorized_backtest.v42.distributed_assets import sha
 
 
 def check_job(job):
-    if job['version'] not in ('v56-pilot-v1',):raise ValueError('V56 is restricted to the Aug13 laptop pilot')
+    if job['version'] not in ('v56-pilot-v2',):raise ValueError('V56 is restricted to the Aug13 laptop pilot')
     if set(job['machines'])!={'laptop'}:raise ValueError('V56 requires laptop ownership')
     if job['phase2_generations']!=50 or job.get('mutation_probe_size')!=32:raise ValueError('Invalid bounded V56 experiment')
     if job['machines']['laptop']['days']!=dict(training=['2026-08-13'],validation=[]):raise ValueError('Pilot session ownership changed')
     if job['seed']!=2021:raise ValueError('V56 fixed seed is 2021')
     full=False
-    if job['version'] not in ('v56-pilot-v1',) or source_hash()!=job['source_sha256']:raise ValueError('V56 source mismatch')
+    if job['version'] not in ('v56-pilot-v2',) or source_hash()!=job['source_sha256']:raise ValueError('V56 source mismatch')
     if sha(job['source_job'])!=job['source_job_sha256'] or sha(job['initialization_probe'])!=job['initialization_probe_sha256']:raise ValueError('Source/probe changed')
     if sha(job['training'])!=job['training_sha256']:raise ValueError('Training manifest changed')
     train=json.loads(Path(job['training']).read_bytes())['days']
@@ -32,7 +32,8 @@ def check_job(job):
     if job.get('selection_risk_caps') is not False:raise ValueError('V56 selection risk caps must be disabled')
     from .evaluator import Execution
     Execution(**job['execution']).validate()
-    if job['execution']!=json.loads(Path(job['source_job']).read_bytes())['execution']:raise ValueError('Execution guards must remain unchanged')
+    if job['execution']!=dict(json.loads(Path(job['source_job']).read_bytes())['execution'],risk_limits_enabled=False):raise ValueError('Only the authorized risk-admission switch may change execution')
+    if job.get('ticker_parent_fraction')!=.25:raise ValueError('Approved ticker parent fraction required')
     from .initial_reuse import verify
     verify(job)
     if 'reproduction_transition_sha256' in job:raise ValueError('V56 requires fresh initialization')

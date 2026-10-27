@@ -22,6 +22,8 @@ def checkpoint_contract(job,train,valid):
     contract=dict(comparison=job.get('comparison'),experiment=dict(mutation_probe_size=job.get('mutation_probe_size',0),crossover_policy='action-composition-or-and-xor-xnor-v1'),seed=job['seed'],source_sha256=job['source_sha256'],objective=job['objective'],training_sha256=job['training_sha256'],validation_sha256=job['validation_sha256'],generations=job['phase2_generations'],population=job['population'],initial_multiplier=job['initial_multiplier'],training_days=train,validation_days=valid,validation='display-only; successor and RNG frozen before opening')
     if job.get('continuation'):contract['continuation_sha256']=job['continuation']['context_sha256']
     contract['selection_risk_caps']=False
+    contract['execution']=job.get('execution',{})
+    contract['ticker_parent_fraction']=job.get('ticker_parent_fraction',.25)
     contract['node_budget']=dict(total=1024,per_action=1024,depth=512)
     contract['founder_reuse']=job.get('founder_reuse')
     contract['batch_size']=job.get('batch_size',512)

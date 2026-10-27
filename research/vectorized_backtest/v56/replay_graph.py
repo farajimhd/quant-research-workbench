@@ -25,7 +25,7 @@ class CapturedReplay:
 
 def replay(position, aggregate, opened, policy, prices, observed, membership,
            signals, values, ids, columns, age_limits, lengths, stateful,
-           execution, transition, select_signals, progress=None, block=32, episodes=None,protected_kernel=True,signal_provider=None,network_plan=None,capture_only=False,*,bids,asks,quote_valid):
+           execution, transition, select_signals, progress=None, block=32, episodes=None,protected_kernel=True,signal_provider=None,network_plan=None,capture_only=False,*,bids,asks,quote_valid,ticker_state=None):
     device=position.device
     total=prices.shape[0]-1
     index=torch.ones((),dtype=torch.int64,device=device)
@@ -46,10 +46,13 @@ def replay(position, aggregate, opened, policy, prices, observed, membership,
         selected_policy=policy
         args=(position,aggregate,take(prices,clock),take(prices,clock-1),take(observed,clock),take(membership,clock-1),selected,swing,selected_policy,clock.to(torch.float64),(index==lengths-1)[:,None,None],execution.entry_dollars,execution.add_dollars,execution.cost_bps/10000.,execution.fee_per_share,execution.minimum_order_fee)
         if execution.risk_protection and protected_kernel:
-            p,a=protected_transition(*args,execution.maximum_stop_distance,execution.maximum_position_risk,ratios,execution.minimum_order_dollars,take(bids,clock),take(asks,clock),take(quote_valid,clock))
+            p,a=protected_transition(*args,execution.admission_distance,execution.admission_budget,ratios,execution.minimum_order_dollars,take(bids,clock),take(asks,clock),take(quote_valid,clock))
         else:
-            p,a=transition(*args,execution.risk_protection,execution.maximum_stop_distance,execution.maximum_position_risk,ratios,execution.minimum_order_dollars,bid=take(bids,clock),ask=take(asks,clock),quote_valid=take(quote_valid,clock))
+            p,a=transition(*args,execution.risk_protection,execution.admission_distance,execution.admission_budget,ratios,execution.minimum_order_dollars,bid=take(bids,clock),ask=take(asks,clock),quote_valid=take(quote_valid,clock))
         active=index<lengths
+        if ticker_state is not None:
+            from .ticker_selection import update_equity
+            update_equity(ticker_state,p,take(prices,clock),active[:,None,None])
         closed=held&(p[...,0]<=1e-12)&active[:,None,None]
         profits=p[...,7]-position[...,8]
         entry_clocks=opened.clone() if episodes is not None and episodes.trace else None
@@ -77,6 +80,7 @@ def replay(position, aggregate, opened, policy, prices, observed, membership,
             else:append_ledger(closed,profits)
     def reset():
         network_plan.reset()
+        if ticker_state is not None:ticker_state.zero_()
         position.zero_();aggregate.zero_();aggregate[...,8]=float('inf')
         opened.zero_();index.fill_(1)
         if episodes is not None:episodes.reset()
