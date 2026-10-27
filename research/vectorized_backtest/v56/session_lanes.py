@@ -126,6 +126,9 @@ class Worker:
         return item
 
     def run(self,day,next_day,payload,generation,token,replay_width):
+        if getattr(self,'last_result_day',None)!=day:self.resident_results=None
+        self.last_result_day=day
+        self.check_stop()
         from .lineage import program_key
         from research.vectorized_backtest.v6.torch_backtest.runtime import file_hash
         from hashlib import sha256
@@ -209,6 +212,7 @@ class Worker:
                     rule_seconds=perf_counter()-batch_start;replay_start=time();replay_clock=perf_counter()
                     self.emit(day,stage='Replay positions',candidate_offset=offset,replay_started=replay_start)
                     def replay_progress(done,total):
+                        self.check_stop()
                         self.prefetch.release_under_pressure()
                         self.emit(day,stage='Replay positions',candidate_offset=offset,completed_seconds=done,total_seconds=total)
                     result=self.replay([item],members,[gates],execution=execution,backend=c['backend'],listing_width=replay_width,
@@ -251,6 +255,10 @@ class Worker:
             if not self.config.get('retain_session_residency'):
                 if hasattr(item,'resident_features'):item.resident_features.deactivate()
                 item.deactivate()
+
+    def check_stop(self):
+        if any((Path(p)/'STOP').exists() for p in self.config.get('stop_roots',[])):
+            raise InterruptedError('V56 campaign stop requested')
 
     def replay(self,*args,**kwargs):
         """Retry only a preflight rejection after evicting recomputable graphs."""
@@ -345,7 +353,7 @@ class SessionLanes:
         if self.config.get('shared_replay'):
             from research.vectorized_backtest.v42.global_pipeline import GenerationPopulation
             payload=prepared_population if prepared_population is not None else GenerationPopulation(population)
-        else:payload=[dict(v.payload(),canonical_sha256=program_key(v)) for v in population]
+        else:payload=[v.payload() for v in population]
         timings=[]
         if not self.widths:
             def width(day):return day,len(json.loads((Path(self.config['history'])/day/'complete.json').read_text(encoding='utf-8-sig'))['listing_ids'])

@@ -27,6 +27,8 @@ def checkpoint_contract(job,train,valid):
     contract['node_budget']=dict(total=1024,per_action=1024,depth=512)
     contract['founder_reuse']=job.get('founder_reuse')
     contract['batch_size']=job.get('batch_size',512)
+    if job.get('campaign_stage'):
+        contract['campaign_context']={k:job.get(k) for k in ('campaign_stage','parent_job_sha256','initialization_probe_sha256','promotion_exports')}
     return contract
 
 

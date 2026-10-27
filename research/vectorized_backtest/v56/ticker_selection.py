@@ -23,9 +23,13 @@ def ticker_scores(metrics,item):
     return result
 
 def specialist_pools(ordered,valid,active,ids):
-    if len(ordered)!=1:raise ValueError('V56 specialist policy requires one session')
-    rows=ordered[0]['ticker_score']
-    if len(rows)!=len(ids):raise ValueError('Ticker score alignment changed')
+    rows=[{} for _ in ids]
+    for session in ordered:
+        if len(session['ticker_score'])!=len(ids):raise ValueError('Ticker score alignment changed')
+        for i,values in enumerate(session['ticker_score']):
+            for ticker,score in values.items():
+                if not np.isfinite(score):raise ValueError('Nonfinite ticker score')
+                key=str(ticker);rows[i][key]=rows[i].get(key,0.)+score
     pools={}
     for i,row in enumerate(rows):
         if not valid[i] or not active[i]:continue

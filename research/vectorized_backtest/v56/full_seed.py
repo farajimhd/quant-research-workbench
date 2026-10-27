@@ -3,6 +3,9 @@ from .initial_reuse import verify,read
 from .identity import digest
 from .genome import Individual
 def global_seed(exports,job,probe):
+    if job.get('campaign_stage') in ('session','global'):
+        from .campaign_seed import seed
+        return seed(exports,job,probe)
     if exports:raise ValueError('No trained winner import route')
     bound=verify(job);state=read(bound['initial_pool'])
     if digest(state['population'])!=bound['population_sha256'] or digest(state['rng'])!=bound['rng_sha256']:raise ValueError('Founder population or RNG changed')

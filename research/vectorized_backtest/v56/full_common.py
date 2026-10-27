@@ -8,6 +8,9 @@ from research.vectorized_backtest.v42.distributed_assets import sha
 
 
 def check_job(job):
+    if job.get('version')=='v56-full-v1':
+        from .campaign_contract import check_full_job
+        return check_full_job(job)
     if job['version'] not in ('v56-pilot-v2',):raise ValueError('V56 is restricted to the Aug13 laptop pilot')
     if set(job['machines'])!={'laptop'}:raise ValueError('V56 requires laptop ownership')
     if job['phase2_generations']!=50 or job.get('mutation_probe_size')!=32:raise ValueError('Invalid bounded V56 experiment')
@@ -69,7 +72,7 @@ def aggregate(ordered,objective=Objective()):
     score=pnl-objective.drawdown_weight*dd-objective.loss_weight*loss
     if not np.isfinite(score).all():raise ValueError('Nonfinite global cost')
     # User-authorized selection policy: valid terminal replay only. Risk and
-    # distance remain observed diagnostics; execution admission is unchanged.
+    # distance remain observed diagnostics; admission is governed by the job.
     if not np.isfinite(risk).all() or not np.isfinite(distance).all() or (risk<0).any() or (distance<0).any():raise ValueError('Invalid risk diagnostics')
     return dict(score=score,net_pnl=pnl,gross_losses=loss,drawdown=dd,closed_positions=trades,winning_positions=wins,maximum_position_risk=risk,eligible=eligible)
 

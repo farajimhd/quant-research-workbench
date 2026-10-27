@@ -47,3 +47,70 @@ Use a committed immutable deployment and full_launch with --generations 50 and
 --comparison-source. The scheduled runtime entry pins code and job hashes;
 active-pilot.json identifies its actual paths. Earlier V56 output is preserved
 and stopped before assigning the laptop GPU to the new run.
+
+
+## Full 24/12 campaign
+
+`full_launch --full` prepares a separate `v56-full-v1` job; it does not start it
+or stop the pinned Aug13 pilot. Session stage: all 24 training days independently
+run 50 generations, with one evolutionary session at a time on each host. The
+certified source job's historical 9/15 laptop/workstation allocation is retained;
+this is affinity reuse, not a newly measured V56 speed estimate. Each session
+starts with 3072 templates and 3072 fresh candidates calibrated on that day only.
+Training and validation manifests, all session probes and exact host ownership
+are pinned. Validation never participates in this stage.
+
+After all session exports are sealed, global stage runs only on the workstation
+for 50 generations. Up to 128 active, terminal-valid candidates from each final
+session population are promoted in round-robin order, with no positive-score
+gate. Global initialization deduplicates programs and fills the 6144-candidate
+screen with fresh random candidates (at least 3072 fresh). Source session IDs,
+parents and ancestors are namespaced before mixing; promotion references and
+initialization probes enter the checkpoint contract. Export bundles include the
+final checkpoint, seal, evaluated population/pedigree, training scores and source
+financial receipt. Global promotion rechecks their hashes and score reconciliation.
+No session fitness is reused as a global score.
+
+Two persistent process lanes replay independent sessions concurrently on the
+workstation GPU. Each owns its session state and CUDA graph; they share no
+recurrent or financial state. Lanes have separate memory admission, compiler
+caches and bounded host residency. Training replays cover all 24 days for every
+candidate. The unchanged global score sums daily P&L, gross losses and twice the
+daily equity drawdowns. Ticker ranks likewise sum each listing's local costs
+across training days before ranking. Approximately 25% of crossover parent draws
+use these ticker ranks and 75% global ranks, subject to existing sibling, species,
+ancestry and fallback rules. Elites remain globally ranked.
+
+Every generation freezes successor genomes and RNG before replaying all 12
+validation sessions on the workstation, also with two lanes. Validation reports
+are display only. Paired mutation diagnostics keep separate outputs and do not
+enter parent selection. Switching training/validation/diagnostic output closes
+and recreates the lane pool; this favors isolation over retaining GPU residency
+across those boundaries. Actual full-workload throughput must be profiled after
+launch; two-lane process tests alone do not establish GPU speedup or memory fit.
+
+From the pinned laptop code directory, prepare with:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -m research.vectorized_backtest.v56.full_launch --full --source-job <certified-full-job.json> --output D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v56/<full-run> --code <pinned-laptop-code> --workstation-code <pinned-workstation-code> --generations 50
+python -B -m research.vectorized_backtest.v56.campaign_launch --job <full-run>/full-job.json
+```
+
+The second command writes hash-pinned node entries and `launch-plan.json`, without
+starting tasks. Synchronize immutable code and the prepared job/entries to the
+workstation after committing and pushing source. On each matching host, use the
+exact command and working directory in `launch-plan.json` to install/start its
+scheduled node. `campaign_launch --job ... --node <host> --preflight` checks the
+contract and reports GPU memory without launching optimization. Run it on both
+hosts before starting. Do not overlap this full job with an existing optimizer.
+
+Per-node status and completed export bundles live under `exchange/`; per-session
+status lives under `sessions/<day>/full-status.json`; global status lives under
+`phase-2/full-status.json`. Node status includes active, queued, completed, skipped,
+retried and failed units. Create `STOP` under the campaign or exchange to stop;
+existing seals remain. Resume by auditing exact exited owners, clearing STOP,
+and rerunning the same pinned node entry. Completed session exports are verified
+and skipped; incomplete sessions/global evolution resume their sealed checkpoints.
+Missing or conflicting evidence fails closed. Crash-left owner locks require an
+explicit ownership audit before removal; they are never stolen by timeouts.
