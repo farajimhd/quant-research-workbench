@@ -336,6 +336,7 @@ def render(model,width,height):
             panels=model.global_data['panels'];first=next(iter(panels.values()),None)
             if first:data=dict(ids=first['ids'],sessions={k:v['panel'] for k,v in panels.items()})
         if r.get('metric_scope'):lines[0]+=' | '+r['metric_scope']+(' display-only' if r['metric_scope'].startswith('validation:') else '')
+        if model.day:lines=[line for line in lines if not line.startswith(('Original founder:','Sessions:','Mutations:'))]
         if r.get('serial') in data.get('ids',[]):
             index=data['ids'].index(r['serial'])
             page_size=max(1,height-19);offset=model.detail_page*page_size
