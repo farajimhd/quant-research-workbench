@@ -36,6 +36,12 @@ def replay_progress(progress,state='running'):
     if total:return progress_bar(progress.get('completed_seconds'),total)
     return Text(progress.get('stage','working'),style='bright_yellow')
 
+def generation_progress(done,total=50):
+    filled=int(6*max(0,min(total,done))/total)
+    value=Text(f'{done}/{total} ',style='bright_green')
+    value.append('━'*filled,style='bright_green');value.append('─'*(6-filled),style='bright_black')
+    return value
+
 GROUP_SORT={'score':'best_score','net_pnl':'median_net','gross_losses':'median_loss','drawdown':'median_drawdown','nodes':'median_nodes'}
 
 def sorted_rows(rows,field,descending):
@@ -240,21 +246,22 @@ def render(model,width,height):
             if initial:stage+=f" | blind {initial['completed']}/{initial['total']}"
         title+=f' | {done}/24 complete';note=stage+'\n'+note
         compact=width<120
-        columns=('Session','Host','Gen','Last','Current','Work','ETA','Progress') if compact else ('Session','Host','Sealed','Progress','Last gen','Current gen','Session work','Session ETA','Activity')
-        if model.summary_mode=='combined':columns=('Session','Gen','Progress','Top net $','Median $','Win %') if compact else ('Session','Host','Gen','Progress','Last','Current','Work','ETA','Best score','Top net $','Median $','Top DD $','Win %','Profit %')
+        columns=('Session','Generations','Replay','Last','Current','Work','ETA') if compact else ('Session','Host','Generations','Replay','Last gen','Current gen','Session work','Session ETA','Activity')
+        if model.summary_mode=='combined':columns=('Session','Generations','Replay','Top net $','Median $','Win %') if compact else ('Session','Host','Generations','Replay','Last','Current','Work','ETA','Best score','Top net $','Median $','Top DD $','Win %','Profit %')
         for h in columns:table.add_column(h,no_wrap=True)
         for i,r in enumerate(rows[start:start+limit],start):
             p=r['progress'];activity=r['stage']+(f" {p.get('completed_seconds',0)}/{p.get('total_seconds',0)} clocks" if p else '')
             t=r['timing'];eta='done' if t['complete'] else '~'+duration(t['eta']) if t['eta'] is not None else '-'
             times=[duration(t['last']),duration(t['elapsed']),duration(t['work']),eta]
             progress=replay_progress(p,r['state'])
-            cells=[r['day'],r['node'][0].upper(),f"{r['done']}/50",*times,progress] if compact else [r['day'],r['node'],f"{r['done']}/50",progress,*times,activity]
+            generations=generation_progress(r['done'])
+            cells=[r['day'],generations,progress,*times] if compact else [r['day'],r['node'],generations,progress,*times,activity]
             if model.summary_mode=='combined':
                 s=r['strength'];metrics=[number(s.get(k)) for k in ('top_net','median_net','top_drawdown','top_win_rate')]
-                cells=[r['day'],f"{r['done']}/50",progress,*metrics[:2],metrics[3]] if compact else [r['day'],r['node'][0].upper(),f"{r['done']}/50",progress,*times,number(s.get('best_score')),*metrics,number(s.get('profitable_fraction'))]
+                cells=[r['day'],generations,progress,*metrics[:2],metrics[3]] if compact else [r['day'],r['node'][0].upper(),generations,progress,*times,number(s.get('best_score')),*metrics,number(s.get('profitable_fraction'))]
             color={'complete':'bright_green','running':'bright_cyan','preparing':'bright_yellow','failed':'bold bright_red','STALE':'bold bright_red','stopped':'dim'}.get(r['state'])
             table.add_row(*cells,style=SELECTED if i==model.selection else color)
-        caption='Progress: current replay | C: strength / timings | DD / Win %: top-profit candidate | Profit %: eligible profitable'
+        caption='Generations: sealed / 50 | Replay: current replay only | C: strength / timings | DD / Win %: top-profit candidate'
         if rows:
             selected=rows[min(model.selection,len(rows)-1)];t=selected['timing']
             note+='\nSelected '+selected['day']+' | generation ETA '+('done' if t['complete'] else '~'+duration(t['generation_eta']) if t['generation_eta'] is not None else 'warming / unavailable')+' | Enter then D: generation history'
