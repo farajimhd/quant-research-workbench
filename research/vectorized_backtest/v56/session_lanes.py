@@ -174,13 +174,20 @@ class Worker:
             if sha256(raw.encode()).hexdigest()!=record['results_sha256']:raise ValueError('Result cache integrity mismatch')
             cached=record['results']
         missing=[i for i,k in enumerate(keys) if k not in cached]
-        self.batch_progress=dict(completed_local_batches=0,total_local_batches=(len(missing)+c['batch_size']-1)//c['batch_size'])
+        from .replay_batches import plan_batches
+        ceiling=c.get('maximum_replay_batch_size',c['batch_size'])
+        if device.type=='cuda':
+            fixed=item.bytes+item.resident_features.bytes+(2+c['capture_gib'])*1024**3
+            larger=fixed+ceiling*(c.get('episode_capacity',65536)+replay_width)*32
+            if larger>c['lane_memory_bytes']:ceiling=c['batch_size']
+        batches=plan_batches(population,missing,replay_width,c['batch_size'],ceiling)
+        self.batch_progress=dict(completed_local_batches=0,total_local_batches=len(batches))
         timings=[];execution=Execution(**c['execution'])
         try:
             if missing:
                 if device.type=='cuda':
                     required=item.bytes+item.resident_features.bytes+(2+c['capture_gib'])*1024**3
-                    required+=c['batch_size']*(c.get('episode_capacity',65536)+replay_width)*32
+                    required+=max(map(len,batches))*(c.get('episode_capacity',65536)+replay_width)*32
                     if required>c['lane_memory_bytes']:raise MemoryError('Independent session exceeds admitted GPU memory budget')
                 if not c.get('retain_session_residency') or item.device!=device:
                     self.staging.activate([(day,item)],device)
@@ -195,9 +202,9 @@ class Worker:
                 gc.collect()
                 self.prefetch.start(next_day,self.read_host)
             with Publisher() as publisher:
-                for offset in range(0,len(missing),c['batch_size']):
-                    self.batch_progress['completed_local_batches']=offset//c['batch_size']
-                    selection=missing[offset:offset+c['batch_size']]
+                offset=0
+                for batch_index,selection in enumerate(batches):
+                    self.batch_progress['completed_local_batches']=batch_index
                     members=[population[i] for i in selection]
                     # Native candidate tails avoid replaying artificial duplicates.
                     actual=len(members)
@@ -241,12 +248,14 @@ class Worker:
                     for j,i in enumerate(selection):cached[keys[i]]={k:v[j] for k,v in metrics.items()}
                     timing=dict(day=day,offset=offset,candidates=actual,padded_candidates=len(members),
                         market_cached=market_cached,worker_load_count=self.loads,worker_upload_count=self.uploads,
+                        configured_batch_size=c['batch_size'],maximum_replay_batch_size=ceiling,
                         load_seconds=load_seconds if offset==0 else 0.,host_prefetched=prefetched,rule_seconds=rule_seconds,
                         replay_seconds=perf_counter()-replay_clock,pid=os.getpid(),finished_epoch=time())
                     if plan.plan is not None:
                         timing.update({k:getattr(plan.plan,k)-v for k,v in prior.items()})
                     timings.append(timing);del gates,result
                     self.emit(day,stage='Batch complete',candidate_offset=offset,completed_local_batches=len(timings))
+                    offset+=len(selection)
                 selected={key:cached[key] for key in keys}
                 raw=json.dumps(selected,sort_keys=True,separators=(',',':'),allow_nan=False)
                 publisher.write(cache_path,dict(identity=identity,results=selected,results_sha256=sha256(raw.encode()).hexdigest()))

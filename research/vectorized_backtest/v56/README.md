@@ -167,3 +167,23 @@ excluded. This is a short replay measurement, not a full-generation or workstati
 speedup claim. GPU traces and alternating baseline/optimized measurements are
 under the V56 runtime `gpu-profile-20261027` directory. The one-warp trial was
 rejected because it changed results. No full campaign is launched by these tests.
+
+Execution batching now has a 1024-candidate ceiling, while the job's original
+512-candidate batch remains the fallback. Adjacent uncached candidates are
+combined only within the existing 4 GiB neural workspace and per-lane GPU
+admission limits. Candidate order, listing width, result-cache keys, diagnostics,
+selection, and all trading calculations remain unchanged. Receipts expose the
+configured base batch, execution ceiling, and actual candidate count.
+
+The `execution-profile-20261027` runtime contains bounded trials of batch sizes
+256/512/1024, size-grouped batches, recurrent-memory cache policy, loop unrolling,
+register limits, action-buffer reuse, and real two-process workstation execution.
+Larger batches improved throughput on both hosts; size grouping was less useful.
+Explicit buffer reuse and cache-policy changes did not justify additional code.
+Full sum-loop unrolling changed recurrent state and was rejected. Two concurrent
+workstation replays were slower than sequential replay at both tested batch
+sizes, so concurrency was not increased. Existing global campaign scheduling is
+unchanged. A short real Worker-path check verifies identical receipt metrics,
+including ticker scores; its prefix receipts explicitly declare full_session=false.
+These timing comparisons exclude startup and do not promise an end-to-end
+generation or campaign duration. No checkpoint or active job is migrated here.

@@ -11,6 +11,24 @@ from research.vectorized_backtest.v42.publication import write_json
 from research.vectorized_backtest.v56.session_lanes import output_scope
 import torch
 
+class ReplayBatchTests(unittest.TestCase):
+    def test_larger_batches_preserve_missing_candidate_order_and_tail(self):
+        from research.vectorized_backtest.v56.replay_batches import plan_batches
+        pop=members(1)*1200;missing=list(range(100,1200))
+        batches=plan_batches(pop,missing,491)
+        self.assertEqual(list(map(len,batches)),[1024,76])
+        self.assertEqual([i for batch in batches for i in batch],missing)
+        self.assertEqual(plan_batches(pop,[],491),[])
+
+    def test_workspace_limit_retains_original_batch_without_dropping_members(self):
+        from research.vectorized_backtest.v56.replay_batches import plan_batches
+        from research.vectorized_backtest.v56.config import STATES
+        pop=members(1)*922;width=491
+        per=sum(len(n.nodes) for n in pop[0].networks.values())*width*10+width*len(STATES)*4
+        batches=plan_batches(pop,list(range(922)),width,workspace_bytes=per*512)
+        self.assertEqual(list(map(len,batches)),[512,410])
+        self.assertEqual([i for batch in batches for i in batch],list(range(922)))
+
 class KernelSchedulingTests(unittest.TestCase):
     @unittest.skipUnless(torch.cuda.is_available(),'CUDA required')
     def test_sorted_two_warp_execution_preserves_recurrence_and_tail_listings(self):
